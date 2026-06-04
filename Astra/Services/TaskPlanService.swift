@@ -456,6 +456,7 @@ extension TaskPlanService {
                 existing: step.likelyTools,
                 textParts: [stepTitle, detail, doneSignal]
             )
+            let outputs = normalizeStepOutputs(step.outputs, stepID: id)
 
             steps.append(TaskPlanPayloadStep(
                 id: id,
@@ -464,7 +465,8 @@ extension TaskPlanService {
                 status: step.status,
                 risk: step.risk,
                 likelyTools: likelyTools,
-                doneSignal: doneSignal
+                doneSignal: doneSignal,
+                outputs: outputs
             ))
         }
 
@@ -481,6 +483,38 @@ extension TaskPlanService {
             steps: steps,
             validationContract: validationContract
         )
+    }
+
+    private static func normalizeStepOutputs(
+        _ outputs: [TaskPlanStepOutput],
+        stepID: String
+    ) -> [TaskPlanStepOutput] {
+        var seen = Set<String>()
+        return outputs.compactMap { output in
+            let path = output.path?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .nilIfEmpty
+            let source = output.source?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .nilIfEmpty
+            let normalized = TaskPlanStepOutput(
+                kind: output.kind,
+                scope: output.scope,
+                path: path,
+                required: output.required,
+                prepareParentDirectories: output.prepareParentDirectories,
+                source: source ?? "step:\(stepID)"
+            )
+            let key = [
+                normalized.kind.rawValue,
+                normalized.scope.rawValue,
+                normalized.path ?? "",
+                String(normalized.required),
+                String(normalized.prepareParentDirectories)
+            ].joined(separator: "\u{1F}")
+            guard seen.insert(key).inserted else { return nil }
+            return normalized
+        }
     }
 
     private static func normalizeValidationContract(

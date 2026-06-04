@@ -41,6 +41,14 @@ struct TaskContextState: Codable, Sendable, Equatable {
     }
 
     struct Verification: Codable, Sendable, Equatable {
+        struct DeliverableCheckSummary: Codable, Sendable, Equatable, Hashable {
+            var id: String
+            var title: String
+            var status: String
+            var summary: String
+            var path: String?
+        }
+
         var status: String
         var strategy: String
         var command: String?
@@ -49,6 +57,9 @@ struct TaskContextState: Codable, Sendable, Equatable {
         var updatedAt: String?
         var completionVerified: Bool
         var artifactStatus: String
+        var deliverableLevel: String?
+        var deliverableSummary: String?
+        var deliverableChecks: [DeliverableCheckSummary]
 
         init(
             status: String,
@@ -58,7 +69,10 @@ struct TaskContextState: Codable, Sendable, Equatable {
             evidence: [SourcePointer],
             updatedAt: String?,
             completionVerified: Bool? = nil,
-            artifactStatus: String = "unknown"
+            artifactStatus: String = "unknown",
+            deliverableLevel: String? = nil,
+            deliverableSummary: String? = nil,
+            deliverableChecks: [DeliverableCheckSummary] = []
         ) {
             self.status = status
             self.strategy = strategy
@@ -68,6 +82,9 @@ struct TaskContextState: Codable, Sendable, Equatable {
             self.updatedAt = updatedAt
             self.completionVerified = completionVerified ?? (status == "passed")
             self.artifactStatus = artifactStatus
+            self.deliverableLevel = deliverableLevel
+            self.deliverableSummary = deliverableSummary
+            self.deliverableChecks = deliverableChecks
         }
 
         private enum CodingKeys: String, CodingKey {
@@ -79,6 +96,9 @@ struct TaskContextState: Codable, Sendable, Equatable {
             case updatedAt
             case completionVerified
             case artifactStatus
+            case deliverableLevel
+            case deliverableSummary
+            case deliverableChecks
         }
 
         init(from decoder: Decoder) throws {
@@ -92,6 +112,12 @@ struct TaskContextState: Codable, Sendable, Equatable {
             let decodedCompletionVerified = try container.decodeIfPresent(Bool.self, forKey: .completionVerified)
             completionVerified = decodedCompletionVerified ?? (status == "passed")
             artifactStatus = try container.decodeIfPresent(String.self, forKey: .artifactStatus) ?? "unknown"
+            deliverableLevel = try container.decodeIfPresent(String.self, forKey: .deliverableLevel)
+            deliverableSummary = try container.decodeIfPresent(String.self, forKey: .deliverableSummary)
+            deliverableChecks = try container.decodeIfPresent(
+                [DeliverableCheckSummary].self,
+                forKey: .deliverableChecks
+            ) ?? []
         }
     }
 
@@ -292,6 +318,13 @@ enum TaskContextStateManager {
         lines.append("- Verification: \(state.verification.status) via \(state.verification.strategy) - \(boundedInline(state.verification.summary, maxCharacters: 320))")
         lines.append("  - Completion verified: \(state.verification.completionVerified ? "yes" : "no")")
         lines.append("  - Artifact status: \(boundedInline(state.verification.artifactStatus, maxCharacters: 240))")
+        if let deliverableLevel = state.verification.deliverableLevel, !deliverableLevel.isEmpty {
+            lines.append("  - Deliverable quality: \(boundedInline(deliverableLevel, maxCharacters: 120))")
+        }
+        if let deliverableSummary = state.verification.deliverableSummary, !deliverableSummary.isEmpty {
+            lines.append("  - Deliverable summary: \(boundedInline(deliverableSummary, maxCharacters: 320))")
+        }
+        appendDeliverableChecks(state.verification.deliverableChecks, to: &lines, limit: 4)
         if let command = state.verification.command, !command.isEmpty {
             lines.append("  - Verification command: \(boundedInline(command, maxCharacters: 320))")
         }
@@ -437,7 +470,7 @@ enum TaskContextStateManager {
             filesChanged: [],
             changedFiles: [],
             artifacts: [],
-            verification: verificationState(task: task, latestRun: nil),
+            verification: verificationState(task: task, latestRun: nil, artifacts: []),
             validationContract: nil,
             latestHandoff: nil,
             correctiveWork: nil,
@@ -451,6 +484,8 @@ enum TaskContextStateManager {
     @MainActor
     private static func updateDerivedFields(_ state: inout TaskContextState, task: AgentTask, latestRun: TaskRun?) {
         let planState = TaskPlanService.reconstruct(for: task)
+        let discoveredTaskOutputFiles = TaskOutputDiscovery.files(for: task)
+        TaskArtifactPersistenceService.persistDiscoveredTaskOutputArtifacts(discoveredTaskOutputFiles, for: task)
         state.mode = inferredMode(task: task, planState: planState, latestRun: latestRun)
         state.startingRequest = firstNonEmpty(
             firstConversationRequest(for: task),
@@ -499,7 +534,8 @@ enum TaskContextStateManager {
             .sorted { $0.startedAt < $1.startedAt }
             .flatMap(\.fileChanges)
             .map(\.path)
-        state.filesChanged = dedupeKeepingOrder(state.filesChanged + changedFiles, limit: 50)
+        let discoveredChangedFiles = discoveredTaskOutputFiles.map(\.path)
+        state.filesChanged = dedupeKeepingOrder(state.filesChanged + changedFiles + discoveredChangedFiles, limit: 50)
         state.openQuestions = dedupeKeepingOrder(state.openQuestions + recentQuestions(for: task), limit: 10)
         state.nextLikelyAction = nextLikelyAction(task: task, planState: planState)
         state.objective = objectiveState(task: task, planState: planState, state: state)
@@ -512,9 +548,9 @@ enum TaskContextStateManager {
         state.testCommand = normalizedTestCommand(task)
         state.decisionFacts = decisionFacts(for: state, task: task, planState: planState)
         state.blockerFacts = blockerFacts(for: task, planBlockers: planBlockers)
-        state.changedFiles = changedFileReferences(for: task)
-        state.artifacts = artifactReferences(for: task)
-        state.verification = verificationState(task: task, latestRun: latestRun)
+        state.changedFiles = changedFileReferences(for: task, discoveredFiles: discoveredTaskOutputFiles)
+        state.artifacts = artifactReferences(for: task, discoveredFiles: discoveredTaskOutputFiles)
+        state.verification = verificationState(task: task, latestRun: latestRun, artifacts: state.artifacts)
         state.validationContract = validationContractState(task: task, planState: planState)
         state.latestHandoff = latestHandoffState(task: task)
         state.correctiveWork = correctiveWorkState(task: task)
@@ -639,6 +675,7 @@ enum TaskContextStateManager {
         return folder.isEmpty ? nil : folder
     }
 
+    @MainActor
     private static func makeTurn(
         number: Int,
         message: String,
@@ -650,11 +687,15 @@ enum TaskContextStateManager {
             .filter { $0.run?.id == run.id }
             .filter { ["error", "permission.denied", "permission.approval.requested", "budget.exceeded"].contains($0.type) }
             .map { boundedInline($0.payload, maxCharacters: 220) }
+        let discoveredRunFiles = TaskOutputDiscovery.filesChanged(
+            during: run,
+            from: TaskOutputDiscovery.files(in: taskFolder)
+        ).map(\.path)
         return TaskContextState.Turn(
             turn: number,
             ask: boundedInline(message, maxCharacters: 400),
             summary: summarizeOutput(run.output, fallback: run.stopReason),
-            filesChanged: dedupeKeepingOrder(run.fileChanges.map(\.path), limit: 20),
+            filesChanged: dedupeKeepingOrder(run.fileChanges.map(\.path) + discoveredRunFiles, limit: 20),
             blockers: dedupeKeepingOrder(runBlockers, limit: 8),
             outputFile: formattedOutputFileName(turn: number),
             runStatus: run.status.rawValue,
@@ -726,7 +767,10 @@ enum TaskContextStateManager {
     }
 
     @MainActor
-    private static func changedFileReferences(for task: AgentTask) -> [TaskContextState.ChangedFile] {
+    private static func changedFileReferences(
+        for task: AgentTask,
+        discoveredFiles: [TaskOutputDiscoveredFile]
+    ) -> [TaskContextState.ChangedFile] {
         let sortedRuns = task.runs.sorted { $0.startedAt < $1.startedAt }
         var output: [TaskContextState.ChangedFile] = []
         var indexByPath: [String: Int] = [:]
@@ -750,25 +794,94 @@ enum TaskContextStateManager {
                 }
             }
         }
+        for file in discoveredFiles {
+            let pointer = sourcePointer(
+                kind: "task_output_file",
+                path: file.path,
+                summary: "Discovered task output file \(file.relativePath)"
+            )
+            if let index = indexByPath[file.path] {
+                output[index].sourcePointers = dedupeSourcePointers(output[index].sourcePointers + [pointer])
+            } else {
+                indexByPath[file.path] = output.count
+                output.append(TaskContextState.ChangedFile(
+                    path: file.path,
+                    changeType: "discovered",
+                    sourcePointers: [pointer]
+                ))
+            }
+        }
         return Array(output.suffix(50))
     }
 
     @MainActor
-    private static func artifactReferences(for task: AgentTask) -> [TaskContextState.ArtifactReference] {
-        task.artifacts
-            .sorted { $0.createdAt < $1.createdAt }
-            .suffix(30)
-            .map { artifact in
-                TaskContextState.ArtifactReference(
-                    type: artifact.type,
-                    path: artifact.path,
-                    version: artifact.version,
-                    isStale: artifact.isStale,
-                    sourcePointers: [
-                        sourcePointer(kind: "artifact", id: artifact.id.uuidString, path: artifact.path, summary: "Generated artifact")
-                    ]
-                )
+    private static func artifactReferences(
+        for task: AgentTask,
+        discoveredFiles: [TaskOutputDiscoveredFile]
+    ) -> [TaskContextState.ArtifactReference] {
+        var references: [TaskContextState.ArtifactReference] = []
+        var indexByPath: [String: Int] = [:]
+
+        for artifact in task.artifacts.sorted(by: { $0.createdAt < $1.createdAt }) {
+            let key = artifactReferenceKey(artifact.path)
+            guard !key.isEmpty else { continue }
+
+            let pointer = sourcePointer(
+                kind: "artifact",
+                id: artifact.id.uuidString,
+                path: artifact.path,
+                summary: "Generated artifact"
+            )
+            let incoming = TaskContextState.ArtifactReference(
+                type: artifact.type,
+                path: artifact.path,
+                version: artifact.version,
+                isStale: artifact.isStale,
+                sourcePointers: [pointer]
+            )
+
+            if let index = indexByPath[key] {
+                let mergedSources = dedupeSourcePointers(references[index].sourcePointers + incoming.sourcePointers)
+                if incoming.version >= references[index].version {
+                    references[index] = TaskContextState.ArtifactReference(
+                        type: incoming.type,
+                        path: incoming.path,
+                        version: incoming.version,
+                        isStale: incoming.isStale,
+                        sourcePointers: mergedSources
+                    )
+                } else {
+                    references[index].sourcePointers = mergedSources
+                }
+            } else {
+                indexByPath[key] = references.count
+                references.append(incoming)
             }
+        }
+
+        for file in discoveredFiles {
+            let key = artifactReferenceKey(file.path)
+            guard !key.isEmpty else { continue }
+
+            let pointer = sourcePointer(
+                kind: "task_output_file",
+                path: file.path,
+                summary: "Discovered task output artifact \(file.relativePath)"
+            )
+            if let index = indexByPath[key] {
+                references[index].sourcePointers = dedupeSourcePointers(references[index].sourcePointers + [pointer])
+            } else {
+                indexByPath[key] = references.count
+                references.append(TaskContextState.ArtifactReference(
+                    type: file.type,
+                    path: file.path,
+                    version: 1,
+                    isStale: false,
+                    sourcePointers: [pointer]
+                ))
+            }
+        }
+        return Array(references.suffix(30))
     }
 
     @MainActor
@@ -776,11 +889,21 @@ enum TaskContextStateManager {
         task: AgentTask,
         planState: TaskPlanState
     ) -> TaskContextState.ValidationContractSummary? {
-        guard let plan = planState.plan,
-              let contract = plan.validationContract,
-              !contract.assertions.isEmpty else {
-            return nil
+        if let plan = planState.plan,
+           let contract = plan.validationContract,
+           !contract.assertions.isEmpty {
+            return validationContractState(task: task, plan: plan, contract: contract)
         }
+
+        return validationContractStateFromEvents(task: task)
+    }
+
+    private static func validationContractState(
+        task: AgentTask,
+        plan: TaskPlanPayload,
+        contract: TaskValidationContract
+    ) -> TaskContextState.ValidationContractSummary? {
+        guard !contract.assertions.isEmpty else { return nil }
 
         let assertionEvents = latestAssertionEventsByID(task: task, planID: plan.planID)
         var requiredPassed = 0
@@ -822,14 +945,19 @@ enum TaskContextStateManager {
             guard [TaskValidationEventTypes.contractCreated,
                    TaskValidationEventTypes.contractUpdated,
                    TaskValidationEventTypes.contractPassed,
-                   TaskValidationEventTypes.contractFailed].contains(event.type),
+                   TaskValidationEventTypes.contractFailed,
+                   TaskValidationEventTypes.contractOverridden].contains(event.type),
                   let payload = decodeContractPayload(event.payload) else {
                 return false
             }
             return payload.planID == plan.planID
         }
         let latestContractOutcome = contractEvents
-            .filter { [TaskValidationEventTypes.contractPassed, TaskValidationEventTypes.contractFailed].contains($0.type) }
+            .filter {
+                [TaskValidationEventTypes.contractPassed,
+                 TaskValidationEventTypes.contractFailed,
+                 TaskValidationEventTypes.contractOverridden].contains($0.type)
+            }
             .sorted { $0.timestamp > $1.timestamp }
             .first
         let requiredTotal = contract.assertions.filter(\.required).count
@@ -839,7 +967,9 @@ enum TaskContextStateManager {
             ["passed", "failed", "skipped", "reviewed"].contains(summary.status)
         }
         let status: String
-        if latestContractOutcome?.type == TaskValidationEventTypes.contractFailed {
+        if latestContractOutcome?.type == TaskValidationEventTypes.contractOverridden {
+            status = "overridden"
+        } else if latestContractOutcome?.type == TaskValidationEventTypes.contractFailed {
             status = "failed"
         } else if latestContractOutcome?.type == TaskValidationEventTypes.contractPassed {
             status = "passed"
@@ -869,6 +999,75 @@ enum TaskContextStateManager {
                 [sourcePointer(kind: "plan", id: plan.planID.uuidString, summary: "Validation contract")]
                     + eventPointers
             )
+        )
+    }
+
+    private static func validationContractStateFromEvents(
+        task: AgentTask
+    ) -> TaskContextState.ValidationContractSummary? {
+        let contractEvents = task.events.compactMap { event -> (event: TaskEvent, payload: TaskValidationContractEventPayload)? in
+            guard [TaskValidationEventTypes.contractCreated,
+                   TaskValidationEventTypes.contractUpdated,
+                   TaskValidationEventTypes.contractPassed,
+                   TaskValidationEventTypes.contractFailed,
+                   TaskValidationEventTypes.contractOverridden].contains(event.type),
+                  let payload = decodeContractPayload(event.payload) else {
+                return nil
+            }
+            return (event, payload)
+        }
+        guard let latest = contractEvents.sorted(by: { $0.event.timestamp > $1.event.timestamp }).first else {
+            return nil
+        }
+
+        let planID = latest.payload.planID
+        let assertionEvents = latestAssertionEventsByID(task: task, planID: planID)
+        let assertions = assertionEvents.values
+            .sorted { lhs, rhs in
+                lhs.payload.assertionID.localizedStandardCompare(rhs.payload.assertionID) == .orderedAscending
+            }
+            .map { pair in
+                let payload = pair.payload
+                var sources = [eventSource(pair.event, summary: "Validation assertion \(payload.status)")]
+                if let evidence = payload.evidence,
+                   evidence.hasPrefix("/") {
+                    sources.append(sourcePointer(
+                        kind: "validation_evidence",
+                        id: payload.assertionID,
+                        path: evidence,
+                        summary: "Validation evidence artifact"
+                    ))
+                }
+                return TaskContextState.ValidationAssertionSummary(
+                    id: payload.assertionID,
+                    scope: payload.scope.rawValue,
+                    stepID: payload.stepID,
+                    method: payload.method.rawValue,
+                    required: payload.required,
+                    description: boundedInline(payload.summary, maxCharacters: 320),
+                    status: payload.status,
+                    summary: payload.summary,
+                    sourcePointers: dedupeSourcePointers(sources)
+                )
+            }
+        let status = switch latest.event.type {
+        case TaskValidationEventTypes.contractPassed:
+            "passed"
+        case TaskValidationEventTypes.contractFailed:
+            "failed"
+        case TaskValidationEventTypes.contractOverridden:
+            "overridden"
+        default:
+            latest.payload.status
+        }
+
+        return TaskContextState.ValidationContractSummary(
+            status: status,
+            assertionCount: max(assertions.count, latest.payload.requiredTotal),
+            requiredPassed: latest.payload.requiredPassed,
+            requiredTotal: latest.payload.requiredTotal,
+            assertions: assertions,
+            sourcePointers: [eventSource(latest.event, summary: "Validation contract event \(latest.event.type)")]
         )
     }
 
@@ -940,15 +1139,24 @@ enum TaskContextStateManager {
     }
 
     @MainActor
-    private static func verificationState(task: AgentTask, latestRun: TaskRun?) -> TaskContextState.Verification {
+    private static func verificationState(
+        task: AgentTask,
+        latestRun: TaskRun?,
+        artifacts: [TaskContextState.ArtifactReference]
+    ) -> TaskContextState.Verification {
         let command = normalizedTestCommand(task)
-        let artifactStatus = artifactVerificationStatus(for: task)
+        let artifactStatus = artifactVerificationStatus(for: artifacts)
         let latestValidation = task.events
             .filter(isValidationEvent)
             .sorted { $0.timestamp > $1.timestamp }
             .first
+        let latestDeliverableVerification = task.events
+            .filter(isDeliverableVerificationEvent)
+            .sorted { $0.timestamp > $1.timestamp }
+            .first
 
-        if let event = latestValidation {
+        if let event = latestValidation,
+           latestDeliverableVerification == nil || event.timestamp >= latestDeliverableVerification!.timestamp {
             let status = verificationStatus(for: event)
             return TaskContextState.Verification(
                 status: status,
@@ -959,6 +1167,29 @@ enum TaskContextStateManager {
                 updatedAt: timestamp(event.timestamp),
                 completionVerified: status == "passed",
                 artifactStatus: artifactStatus
+            )
+        }
+
+        if let event = latestDeliverableVerification,
+           let payload = TaskDeliverableVerificationService.decode(event.payload) {
+            let evidence = dedupeSourcePointers(
+                [eventSource(event, summary: "Deliverable verification \(payload.status)")]
+                    + payload.evidencePaths.prefix(6).map {
+                        sourcePointer(kind: "task_output_file", path: $0, summary: "Deliverable verification evidence")
+                    }
+            )
+            return TaskContextState.Verification(
+                status: payload.status,
+                strategy: "deliverable_verification",
+                command: command,
+                summary: boundedInline(payload.summary, maxCharacters: 500),
+                evidence: evidence,
+                updatedAt: timestamp(payload.verifiedAt),
+                completionVerified: payload.status == "passed",
+                artifactStatus: artifactStatus,
+                deliverableLevel: payload.level.rawValue,
+                deliverableSummary: boundedInline(payload.summary, maxCharacters: 500),
+                deliverableChecks: payload.checks.map(deliverableCheckSummary)
             )
         }
 
@@ -1000,9 +1231,7 @@ enum TaskContextStateManager {
         )
     }
 
-    @MainActor
-    private static func artifactVerificationStatus(for task: AgentTask) -> String {
-        let artifacts = task.artifacts
+    private static func artifactVerificationStatus(for artifacts: [TaskContextState.ArtifactReference]) -> String {
         guard !artifacts.isEmpty else { return "none recorded" }
         let staleCount = artifacts.filter(\.isStale).count
         let currentCount = artifacts.count - staleCount
@@ -1278,7 +1507,8 @@ enum TaskContextStateManager {
 
     private static func isValidationEvent(_ event: TaskEvent) -> Bool {
         if event.type == TaskValidationEventTypes.contractPassed ||
-            event.type == TaskValidationEventTypes.contractFailed {
+            event.type == TaskValidationEventTypes.contractFailed ||
+            event.type == TaskValidationEventTypes.contractOverridden {
             return true
         }
         let payload = event.payload.lowercased()
@@ -1292,12 +1522,33 @@ enum TaskContextStateManager {
             || payload.contains("ai check error")
     }
 
+    private static func isDeliverableVerificationEvent(_ event: TaskEvent) -> Bool {
+        event.type == TaskDeliverableVerificationEventTypes.passed ||
+            event.type == TaskDeliverableVerificationEventTypes.reviewNeeded ||
+            event.type == TaskDeliverableVerificationEventTypes.failed
+    }
+
+    private static func deliverableCheckSummary(
+        _ check: TaskDeliverableCheck
+    ) -> TaskContextState.Verification.DeliverableCheckSummary {
+        TaskContextState.Verification.DeliverableCheckSummary(
+            id: check.id,
+            title: check.title,
+            status: check.status.rawValue,
+            summary: boundedInline(check.summary, maxCharacters: 500),
+            path: check.path
+        )
+    }
+
     private static func verificationStatus(for event: TaskEvent) -> String {
         if event.type == TaskValidationEventTypes.contractPassed {
             return "passed"
         }
         if event.type == TaskValidationEventTypes.contractFailed {
             return "failed"
+        }
+        if event.type == TaskValidationEventTypes.contractOverridden {
+            return "overridden"
         }
         let payload = event.payload.lowercased()
         if event.type == "task.completed" {
@@ -1321,7 +1572,8 @@ enum TaskContextStateManager {
 
     private static func validationStrategy(for task: AgentTask, event: TaskEvent) -> String {
         if event.type == TaskValidationEventTypes.contractPassed ||
-            event.type == TaskValidationEventTypes.contractFailed {
+            event.type == TaskValidationEventTypes.contractFailed ||
+            event.type == TaskValidationEventTypes.contractOverridden {
             return "validation_contract"
         }
         return task.validationStrategy.rawValue
@@ -1435,6 +1687,20 @@ enum TaskContextStateManager {
         }
     }
 
+    private static func appendDeliverableChecks(
+        _ values: [TaskContextState.Verification.DeliverableCheckSummary],
+        to lines: inout [String],
+        limit: Int
+    ) {
+        let items = values.prefix(limit)
+        guard !items.isEmpty else { return }
+        lines.append("  - Deliverable checks:")
+        for check in items {
+            let path = check.path.map { " path: \(boundedInline($0, maxCharacters: 180))" } ?? ""
+            lines.append("    - [\(check.status)] \(boundedInline(check.title, maxCharacters: 100))\(path): \(boundedInline(check.summary, maxCharacters: 220))")
+        }
+    }
+
     private static func appendMarkdownSection(_ title: String, _ values: [String], to parts: inout [String]) {
         guard !values.isEmpty else { return }
         parts.append("")
@@ -1484,6 +1750,19 @@ enum TaskContextStateManager {
         }
         parts.append("- Completion verified: \(verification.completionVerified ? "yes" : "no")")
         parts.append("- Artifact status: \(verification.artifactStatus)")
+        if let deliverableLevel = verification.deliverableLevel, !deliverableLevel.isEmpty {
+            parts.append("- Deliverable quality: \(deliverableLevel)")
+        }
+        if let deliverableSummary = verification.deliverableSummary, !deliverableSummary.isEmpty {
+            parts.append("- Deliverable summary: \(deliverableSummary)")
+        }
+        if !verification.deliverableChecks.isEmpty {
+            parts.append("- Deliverable checks:")
+            for check in verification.deliverableChecks.prefix(8) {
+                let path = check.path.map { " `\($0)`" } ?? ""
+                parts.append("  - [\(check.status)] \(check.title)\(path): \(check.summary)")
+            }
+        }
         parts.append("- Summary: \(verification.summary)")
         if let updatedAt = verification.updatedAt {
             parts.append("- Updated: \(updatedAt)")
@@ -1614,6 +1893,13 @@ enum TaskContextStateManager {
             if output.count >= limit { break }
         }
         return output
+    }
+
+    private static func artifactReferenceKey(_ path: String) -> String {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        guard trimmed.hasPrefix("/") else { return trimmed }
+        return URL(fileURLWithPath: trimmed).standardizedFileURL.path
     }
 
     private static func dedupeFacts(

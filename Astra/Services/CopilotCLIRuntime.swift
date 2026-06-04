@@ -13,6 +13,8 @@ struct CopilotCLICapabilities: Equatable {
     var supportsAllowAllURLs: Bool
     var requiresAllowAllToolsForPrompt: Bool
     var supportsNoCustomInstructions: Bool
+    var supportsAvailableTools: Bool
+    var supportsExcludedTools: Bool
 
     static let conservative = CopilotCLICapabilities(
         supportsOutputFormatJSON: false,
@@ -25,7 +27,9 @@ struct CopilotCLICapabilities: Equatable {
         supportsAllowAllPaths: false,
         supportsAllowAllURLs: false,
         requiresAllowAllToolsForPrompt: true,
-        supportsNoCustomInstructions: false
+        supportsNoCustomInstructions: false,
+        supportsAvailableTools: false,
+        supportsExcludedTools: false
     )
 
     init(helpText: String) {
@@ -41,6 +45,8 @@ struct CopilotCLICapabilities: Equatable {
         requiresAllowAllToolsForPrompt = helpText.contains("required for\n                                      non-interactive mode")
             || helpText.contains("required for non-interactive mode")
         supportsNoCustomInstructions = Self.hasOption("--no-custom-instructions", in: helpText)
+        supportsAvailableTools = Self.hasOption("--available-tools", in: helpText)
+        supportsExcludedTools = Self.hasOption("--excluded-tools", in: helpText)
     }
 
     private init(
@@ -54,7 +60,9 @@ struct CopilotCLICapabilities: Equatable {
         supportsAllowAllPaths: Bool,
         supportsAllowAllURLs: Bool,
         requiresAllowAllToolsForPrompt: Bool,
-        supportsNoCustomInstructions: Bool
+        supportsNoCustomInstructions: Bool,
+        supportsAvailableTools: Bool,
+        supportsExcludedTools: Bool
     ) {
         self.supportsOutputFormatJSON = supportsOutputFormatJSON
         self.supportsStreamingFlag = supportsStreamingFlag
@@ -67,6 +75,8 @@ struct CopilotCLICapabilities: Equatable {
         self.supportsAllowAllURLs = supportsAllowAllURLs
         self.requiresAllowAllToolsForPrompt = requiresAllowAllToolsForPrompt
         self.supportsNoCustomInstructions = supportsNoCustomInstructions
+        self.supportsAvailableTools = supportsAvailableTools
+        self.supportsExcludedTools = supportsExcludedTools
     }
 
     private static func hasOption(_ option: String, in helpText: String) -> Bool {
@@ -154,6 +164,8 @@ enum CopilotCLIRuntime {
         pathPrefix: [String] = [],
         includeAstraToolsPath: Bool = false,
         localToolCommands: [String] = [],
+        runtimeSupportTools: [String] = [],
+        askFirstTools: [String] = [],
         disableCustomInstructions: Bool = false
     ) -> CopilotCLICommandPlan {
         var args = ["--prompt", prompt, "--model", model, "--no-color", "--log-level", "error"]
@@ -188,6 +200,7 @@ enum CopilotCLIRuntime {
             policy: permissionPolicy,
             allowedTools: allowedTools,
             localToolCommands: localToolCommands,
+            runtimeSupportTools: runtimeSupportTools,
             supportsAllowAll: capabilities.supportsAllowAll,
             supportsAllowAllTools: capabilities.supportsAllowAllTools,
             supportsAllowAllPaths: capabilities.supportsAllowAllPaths,
@@ -195,6 +208,14 @@ enum CopilotCLIRuntime {
             requiresAllowAllToolsForPrompt: capabilities.requiresAllowAllToolsForPrompt
         )
         args += permissionArgs
+        args += copilotToolSurfaceArguments(
+            policy: permissionPolicy,
+            allowedTools: allowedTools,
+            askFirstTools: askFirstTools,
+            localToolCommands: localToolCommands,
+            runtimeSupportTools: runtimeSupportTools,
+            capabilities: capabilities
+        )
 
         if capabilities.supportsSecretEnvVars {
             let secretKeys = copilotSecretEnvironmentKeys(
@@ -244,15 +265,13 @@ enum CopilotCLIRuntime {
         policy: PermissionPolicy,
         allowedTools: [String],
         localToolCommands: [String] = [],
+        runtimeSupportTools: [String] = [],
         supportsAllowAll: Bool = false,
         supportsAllowAllTools: Bool = false,
         supportsAllowAllPaths: Bool = false,
         supportsAllowAllURLs: Bool = false,
         requiresAllowAllToolsForPrompt: Bool
     ) -> [String] {
-        let localToolPermissions = shouldAddLocalToolPermissions(policy: policy, allowedTools: allowedTools)
-            ? copilotShellPermissions(forLocalToolCommands: localToolCommands)
-            : []
         switch policy {
         case .autonomous:
             if supportsAllowAll {
@@ -276,16 +295,83 @@ enum CopilotCLIRuntime {
                 "shell(swift:*)",
                 "shell(./script/*)",
                 "shell(xcodebuild:*)"
-            ] + localToolPermissions
+            ] + localToolPermissionEntries(policy: policy, allowedTools: allowedTools, localToolCommands: localToolCommands)
         case .restricted:
-            let mapped = (allowedTools.isEmpty
-                ? ["read", "shell(git status)", "shell(git diff)", "shell(git log)"]
-                : allowedTools.flatMap(mapClaudeToolToCopilotPermissions)) + localToolPermissions
+            let mapped = restrictedPermissionEntries(
+                allowedTools: allowedTools,
+                localToolCommands: localToolCommands,
+                runtimeSupportTools: runtimeSupportTools
+            )
             guard !mapped.isEmpty else { return [] }
             return ["--allow-tool"] + Array(Set(mapped)).sorted()
         case .interactive:
             return []
         }
+    }
+
+    private static func copilotToolSurfaceArguments(
+        policy: PermissionPolicy,
+        allowedTools: [String],
+        askFirstTools: [String],
+        localToolCommands: [String],
+        runtimeSupportTools: [String],
+        capabilities: CopilotCLICapabilities
+    ) -> [String] {
+        guard policy == .restricted else { return [] }
+        let allowedSurfaceEntries = copilotToolSurfaceEntries(
+            tools: allowedTools,
+            runtimeSupportTools: runtimeSupportTools
+        )
+        let askFirstEntries = copilotToolSurfaceEntries(tools: askFirstTools)
+        let entries = allowedSurfaceEntries + askFirstEntries
+        var args: [String] = []
+        if capabilities.supportsAvailableTools, !entries.isEmpty {
+            args += ["--available-tools"] + Array(Set(entries)).sorted()
+        }
+        if capabilities.supportsExcludedTools,
+           !entries.contains(where: isDelegationToolPermission) {
+            args += ["--excluded-tools", "task"]
+        }
+        return args
+    }
+
+    private static func restrictedPermissionEntries(
+        allowedTools: [String],
+        localToolCommands: [String],
+        runtimeSupportTools: [String]
+    ) -> [String] {
+        let base = allowedTools.isEmpty
+            ? ["read", "shell(git status)", "shell(git diff)", "shell(git log)"]
+            : allowedTools.flatMap(mapClaudeToolToCopilotPermissionPatterns)
+        return base
+            + localToolPermissionEntries(policy: .restricted, allowedTools: allowedTools, localToolCommands: localToolCommands)
+            + supportToolPermissionEntries(runtimeSupportTools)
+    }
+
+    private static func localToolPermissionEntries(
+        policy: PermissionPolicy,
+        allowedTools: [String],
+        localToolCommands: [String]
+    ) -> [String] {
+        shouldAddLocalToolPermissions(policy: policy, allowedTools: allowedTools)
+            ? copilotShellPermissions(forLocalToolCommands: localToolCommands)
+            : []
+    }
+
+    private static func supportToolPermissionEntries(_ runtimeSupportTools: [String]) -> [String] {
+        Array(Set(runtimeSupportTools.map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.filter { !$0.isEmpty })).sorted()
+    }
+
+    private static func copilotToolSurfaceEntries(
+        tools: [String],
+        runtimeSupportTools: [String] = []
+    ) -> [String] {
+        Array(Set(
+            tools.flatMap(mapClaudeToolToCopilotAvailableTools)
+                + supportToolPermissionEntries(runtimeSupportTools)
+        )).sorted()
     }
 
     static func copilotSecretEnvironmentKeys(
@@ -341,18 +427,26 @@ enum CopilotCLIRuntime {
         return executable
     }
 
-    private static func mapClaudeToolToCopilotPermissions(_ tool: String) -> [String] {
+    private static func mapClaudeToolToCopilotPermissionPatterns(_ tool: String) -> [String] {
         let trimmed = tool.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = trimmed.lowercased()
         switch lower {
-        case "read", "grep", "glob", "ls":
-            return ["read"]
-        case "write", "edit", "multiedit":
+        case "read":
+            return ["view", "grep", "glob"]
+        case "view":
+            return ["view"]
+        case "grep":
+            return ["grep"]
+        case "glob", "ls":
+            return ["glob"]
+        case "write", "create", "edit", "multiedit", "multi_edit":
             return ["write"]
         case "bash":
             return ["shell(git:*)", "shell(swift:*)", "shell(./script/*)"]
         case "webfetch", "websearch":
             return ["shell(curl:*)"]
+        case "agent", "task":
+            return ["task"]
         default:
             if lower.hasPrefix("bash("), lower.hasSuffix(")") {
                 let patternStart = trimmed.index(trimmed.startIndex, offsetBy: "Bash(".count)
@@ -364,6 +458,44 @@ enum CopilotCLIRuntime {
             }
             return []
         }
+    }
+
+    private static func mapClaudeToolToCopilotAvailableTools(_ tool: String) -> [String] {
+        let trimmed = tool.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = trimmed.lowercased()
+        switch lower {
+        case "read":
+            return ["view", "grep", "glob", "rg"]
+        case "view":
+            return ["view"]
+        case "grep":
+            return ["grep", "rg"]
+        case "glob", "ls":
+            return ["glob"]
+        case "write":
+            return ["create", "edit", "apply_patch"]
+        case "create":
+            return ["create", "apply_patch"]
+        case "edit", "multiedit", "multi_edit":
+            return ["edit", "apply_patch"]
+        case "bash", "shell", "webfetch", "websearch":
+            return ["shell"]
+        case "agent", "task":
+            return ["task"]
+        default:
+            if lower.hasPrefix("bash(") || lower.hasPrefix("shell(") {
+                return ["shell"]
+            }
+            return trimmed.isEmpty ? [] : [trimmed]
+        }
+    }
+
+    private static func isDelegationToolPermission(_ value: String) -> Bool {
+        let lower = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return lower == "task"
+            || lower == "agent"
+            || lower.hasPrefix("task(")
+            || lower.hasPrefix("agent(")
     }
 
     private static func probeVersion(executablePath: String, args: [String]) -> String? {

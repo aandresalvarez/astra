@@ -395,6 +395,7 @@ struct AgentRuntimeAdapterTests {
         #expect(claudePlan.executablePath == "/bin/claude")
         #expect(claudePlan.arguments.contains("--output-format"))
         #expect(claudePlan.arguments.contains("stream-json"))
+        #expect(claudePlan.arguments.contains("--include-partial-messages"))
         #expect(claudePlan.arguments.contains("--resume") == false)
         #expect(claudePlan.commandPlannedFields["phase"] == "run")
         #expect(claudePlan.commandPlannedFields["supports_native_continuation"] == "true")
@@ -423,6 +424,435 @@ struct AgentRuntimeAdapterTests {
         #expect(antigravityPlan.commandPlannedFields["model"] == AgentRuntimeAdapterRegistry.defaultModel(for: .antigravityCLI))
         #expect(antigravityPlan.commandPlannedFields["provider_model"] == AgentRuntimeAdapterRegistry.defaultModel(for: .antigravityCLI))
         #expect(antigravityPlan.commandPlannedFields["model_applied"] == "false")
+    }
+
+    @Test("Copilot launch audit separates task and runtime support tools")
+    @MainActor
+    func copilotLaunchAuditSeparatesTaskAndRuntimeSupportTools() {
+        let workspace = Workspace(name: "Copilot Support", primaryPath: "/tmp/astra-copilot-support")
+        let task = AgentTask(
+            title: "Copilot",
+            goal: "Who are you?",
+            workspace: workspace,
+            model: "gpt-5",
+            runtime: .copilotCLI
+        )
+        let supportTools = CopilotPolicyAdapter().runtimeSupportTools
+        let providerRender = ProviderPolicyRender(
+            providerID: .copilotCLI,
+            adapterVersion: 1,
+            policyLevel: .review,
+            configOwnership: .generated,
+            permissionMode: PermissionPolicy.restricted.rawValue,
+            allowedTools: ["read"],
+            runtimeSupportTools: supportTools,
+            askFirstTools: [],
+            deniedTools: [],
+            allowedShellPatterns: [],
+            askFirstShellPatterns: [],
+            deniedShellPatterns: [],
+            allowedURLPatterns: [],
+            deniedURLPatterns: [],
+            cliArgumentsSummary: [],
+            settingsSummary: "test",
+            generatedConfigPreview: "",
+            enforcementTiers: [.providerNative, .astraBrokered],
+            diagnostics: [],
+            usesBroadProviderPermissions: false
+        )
+        let manifest = RunPermissionManifest(
+            taskID: task.id,
+            runID: UUID(),
+            phase: "test",
+            providerID: .copilotCLI,
+            providerVersion: nil,
+            model: "gpt-5",
+            policyLevel: .review,
+            policyScope: .builtInDefault,
+            providerRender: providerRender,
+            workspacePath: workspace.primaryPath,
+            additionalPaths: [],
+            environmentKeyNames: [],
+            credentialLabels: [],
+            approvalsGranted: [],
+            approvalGrants: []
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .copilotCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/copilot-not-present",
+                providerHomeDirectory: "/tmp/astra-provider-home",
+                permissionPolicy: .restricted,
+                executionPolicy: .approvedPlan(runtime: .copilotCLI, currentPermissionPolicy: .restricted, allowedTools: ["read"]),
+                permissionManifest: manifest,
+                timeoutSeconds: 30
+            ))
+
+        #expect(plan.commandPlannedFields["allowed_tools_count"] == "1")
+        #expect(plan.commandPlannedFields["runtime_support_tool_count"] == "2")
+        #expect(plan.commandPlannedFields["runtime_support_tool_names"] == "fetch_copilot_cli_documentation,report_intent")
+        #expect(plan.arguments.contains("view"))
+        #expect(plan.arguments.contains("grep"))
+        #expect(plan.arguments.contains("glob"))
+        #expect(plan.arguments.contains("fetch_copilot_cli_documentation"))
+        #expect(plan.arguments.contains("report_intent"))
+    }
+
+    @Test("Artifact bootstrap policy adds minimal write only for artifact tasks")
+    @MainActor
+    func artifactBootstrapPolicyAddsMinimalWriteOnlyForArtifactTasks() {
+        let workspace = Workspace(name: "Artifact Bootstrap", primaryPath: "/tmp/astra-artifact-bootstrap")
+        let artifactTask = AgentTask(
+            title: "Create Masterball puzzle web solver",
+            goal: "createa web page wit a masterball (similar to rubicks cube but as aball ) with a solver in javascript",
+            workspace: workspace,
+            runtime: .copilotCLI
+        )
+        let informationalTask = AgentTask(
+            title: "Explain",
+            goal: "explain who you are",
+            workspace: workspace,
+            runtime: .copilotCLI
+        )
+
+        #expect(ProviderArtifactBootstrapPolicy.launchTools(
+            task: artifactTask,
+            permissionPolicy: .restricted,
+            providerAllowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Write", "Edit", "Bash"]
+        ) == ["Write"])
+        #expect(ProviderArtifactBootstrapPolicy.launchTools(
+            task: artifactTask,
+            permissionPolicy: .restricted,
+            providerAllowedTools: ["Read", "Write"],
+            askFirstTools: ["Write", "Edit", "Bash"]
+        ).isEmpty)
+        #expect(ProviderArtifactBootstrapPolicy.launchTools(
+            task: artifactTask,
+            permissionPolicy: .autonomous,
+            providerAllowedTools: ["Read"],
+            askFirstTools: ["Write", "Edit", "Bash"]
+        ).isEmpty)
+        #expect(ProviderArtifactBootstrapPolicy.launchTools(
+            task: informationalTask,
+            permissionPolicy: .restricted,
+            providerAllowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Write", "Edit", "Bash"]
+        ).isEmpty)
+    }
+
+    @Test("Copilot artifact launch grants bootstrap write without counting it as a task tool")
+    @MainActor
+    func copilotArtifactLaunchGrantsBootstrapWriteWithoutCountingAsTaskTool() throws {
+        let workspaceURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-artifact-bootstrap-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: workspaceURL) }
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        let copilotPath = try Self.writeFakeCopilotExecutable(in: workspaceURL)
+
+        let workspace = Workspace(name: "Copilot Artifact", primaryPath: workspaceURL.path)
+        let task = AgentTask(
+            title: "Create Masterball puzzle web solver",
+            goal: "createa web page wit a masterball (similar to rubicks cube but as aball ) with a solver in javascript",
+            workspace: workspace,
+            model: "gpt-5.3-codex",
+            runtime: .copilotCLI
+        )
+        let manifest = Self.copilotManifest(
+            task: task,
+            workspacePath: workspace.primaryPath,
+            allowedTools: ["read"],
+            askFirstTools: ["Write", "Edit", "MultiEdit", "Bash"]
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .copilotCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: copilotPath,
+                providerHomeDirectory: workspaceURL.appendingPathComponent("copilot-home", isDirectory: true).path,
+                permissionPolicy: .restricted,
+                executionPolicy: .approvedPlan(runtime: .copilotCLI, currentPermissionPolicy: .restricted, allowedTools: ["read"]),
+                permissionManifest: manifest,
+                timeoutSeconds: 30
+            ))
+
+        let allowedEntries = Set(Self.argumentValues(after: "--allow-tool", in: plan.arguments))
+        let availableEntries = Set(Self.argumentValues(after: "--available-tools", in: plan.arguments))
+
+        #expect(plan.commandPlannedFields["allowed_tools_count"] == "1")
+        #expect(plan.commandPlannedFields["provider_launch_allowed_tool_count"] == "2")
+        #expect(plan.commandPlannedFields["artifact_bootstrap_profile"] == "true")
+        #expect(plan.commandPlannedFields["artifact_bootstrap_tool_count"] == "1")
+        #expect(plan.commandPlannedFields["artifact_bootstrap_tool_names"] == "Write")
+        #expect(allowedEntries.contains("view"))
+        #expect(allowedEntries.contains("grep"))
+        #expect(allowedEntries.contains("glob"))
+        #expect(allowedEntries.contains("write"))
+        #expect(!allowedEntries.contains("create"))
+        #expect(!allowedEntries.contains("edit"))
+        #expect(availableEntries.contains("apply_patch"))
+        #expect(availableEntries.contains("create"))
+        #expect(availableEntries.contains("edit"))
+        #expect(availableEntries.contains("rg"))
+    }
+
+    @Test("Copilot informational launch does not get artifact bootstrap write")
+    @MainActor
+    func copilotInformationalLaunchDoesNotGetArtifactBootstrapWrite() throws {
+        let workspaceURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-info-bootstrap-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: workspaceURL) }
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        let copilotPath = try Self.writeFakeCopilotExecutable(in: workspaceURL)
+
+        let workspace = Workspace(name: "Copilot Info", primaryPath: workspaceURL.path)
+        let task = AgentTask(
+            title: "Explain",
+            goal: "explain who you are",
+            workspace: workspace,
+            model: "gpt-5.3-codex",
+            runtime: .copilotCLI
+        )
+        let manifest = Self.copilotManifest(
+            task: task,
+            workspacePath: workspace.primaryPath,
+            allowedTools: ["read"],
+            askFirstTools: ["Write", "Edit", "MultiEdit", "Bash"]
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .copilotCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: copilotPath,
+                providerHomeDirectory: workspaceURL.appendingPathComponent("copilot-home", isDirectory: true).path,
+                permissionPolicy: .restricted,
+                executionPolicy: .approvedPlan(runtime: .copilotCLI, currentPermissionPolicy: .restricted, allowedTools: ["read"]),
+                permissionManifest: manifest,
+                timeoutSeconds: 30
+            ))
+
+        let allowedEntries = Set(Self.argumentValues(after: "--allow-tool", in: plan.arguments))
+        let availableEntries = Set(Self.argumentValues(after: "--available-tools", in: plan.arguments))
+
+        #expect(plan.commandPlannedFields["allowed_tools_count"] == "1")
+        #expect(plan.commandPlannedFields["provider_launch_allowed_tool_count"] == "1")
+        #expect(plan.commandPlannedFields["artifact_bootstrap_profile"] == "false")
+        #expect(plan.commandPlannedFields["artifact_bootstrap_tool_count"] == "0")
+        #expect(!allowedEntries.contains("write"))
+        #expect(availableEntries.contains("apply_patch"))
+        #expect(availableEntries.contains("create"))
+        #expect(availableEntries.contains("edit"))
+        #expect(availableEntries.contains("rg"))
+    }
+
+    @Test("Claude launch surfaces ask-first tools without counting them as allowed task tools")
+    @MainActor
+    func claudeLaunchSurfacesAskFirstToolsWithoutCountingThemAsAllowedTaskTools() throws {
+        let workspaceURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-claude-ask-first-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: workspaceURL) }
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Claude Ask First", primaryPath: workspaceURL.path)
+        let task = AgentTask(
+            title: "Claude",
+            goal: "Create index.html",
+            workspace: workspace,
+            model: "claude-sonnet-4-6",
+            runtime: .claudeCode
+        )
+        let providerRender = ProviderPolicyRender(
+            providerID: .claudeCode,
+            adapterVersion: 1,
+            policyLevel: .review,
+            configOwnership: .generated,
+            permissionMode: PermissionPolicy.restricted.rawValue,
+            allowedTools: ["Read"],
+            runtimeSupportTools: [],
+            askFirstTools: ["Write", "Edit", "Bash"],
+            deniedTools: [],
+            allowedShellPatterns: [],
+            askFirstShellPatterns: [],
+            deniedShellPatterns: [],
+            allowedURLPatterns: [],
+            deniedURLPatterns: [],
+            cliArgumentsSummary: [],
+            settingsSummary: "test",
+            generatedConfigPreview: "",
+            enforcementTiers: [.providerNative, .astraBrokered],
+            diagnostics: [],
+            usesBroadProviderPermissions: false
+        )
+        let manifest = RunPermissionManifest(
+            taskID: task.id,
+            runID: UUID(),
+            phase: "test",
+            providerID: .claudeCode,
+            providerVersion: nil,
+            model: "claude-sonnet-4-6",
+            policyLevel: .review,
+            policyScope: .builtInDefault,
+            providerRender: providerRender,
+            workspacePath: workspace.primaryPath,
+            additionalPaths: [],
+            environmentKeyNames: [],
+            credentialLabels: [],
+            approvalsGranted: [],
+            approvalGrants: []
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .claudeCode)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/claude",
+                providerHomeDirectory: "",
+                permissionPolicy: .restricted,
+                executionPolicy: .approvedPlan(runtime: .claudeCode, currentPermissionPolicy: .restricted, allowedTools: ["Read"]),
+                permissionManifest: manifest,
+                timeoutSeconds: 30
+            ))
+
+        #expect(plan.commandPlannedFields["allowed_tools_count"] == "1")
+        #expect(plan.commandPlannedFields["ask_first_tool_count"] == "3")
+        #expect(plan.commandPlannedFields["ask_first_tool_names"] == "Bash,Edit,Write")
+        #expect(plan.commandPlannedFields["uses_visible_tools_filter"] == "true")
+        #expect(plan.commandPlannedFields["visible_tools_count"] == "4")
+        #expect(plan.commandPlannedFields["visible_tool_names"] == "Bash,Edit,Read,Write")
+        #expect(plan.commandPlannedFields["artifact_bootstrap_profile"] == "true")
+        #expect(plan.commandPlannedFields["artifact_bootstrap_tool_count"] == "1")
+        #expect(plan.commandPlannedFields["artifact_bootstrap_tool_names"] == "Write")
+        #expect(plan.commandPlannedFields["provider_launch_allowed_tool_count"] == "4")
+        #expect(plan.commandPlannedFields["launch_effort"] == "low")
+        let effortFlagIndex = try #require(plan.arguments.firstIndex(of: "--effort"))
+        #expect(plan.arguments[effortFlagIndex + 1] == "low")
+        let toolsFlagIndex = try #require(plan.arguments.firstIndex(of: "--tools"))
+        #expect(plan.arguments[toolsFlagIndex + 1] == "Bash,Edit,Read,Write")
+        #expect(!plan.arguments[toolsFlagIndex + 1].contains("TaskCreate"))
+        #expect(plan.arguments.contains("--allowedTools"))
+        #expect(plan.arguments.contains("Read"))
+        #expect(plan.arguments.contains("Write"))
+        #expect(plan.arguments.contains("Edit"))
+        #expect(plan.arguments.contains("Bash"))
+
+        let settingsURL = workspaceURL
+            .appendingPathComponent(".claude", isDirectory: true)
+            .appendingPathComponent("settings.local.json")
+        let data = try Data(contentsOf: settingsURL)
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let permissions = try #require(json["permissions"] as? [String: Any])
+        let allow = try #require(permissions["allow"] as? [String])
+        #expect(allow.contains("Read(*)"))
+        #expect(allow.contains("Write(*)"))
+        #expect(allow.contains("Edit(*)"))
+        #expect(allow.contains("Bash(*)"))
+
+        task.useAgentTeam = true
+        let teamPlan = AgentRuntimeAdapterRegistry
+            .adapter(for: .claudeCode)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/claude",
+                providerHomeDirectory: "",
+                permissionPolicy: .restricted,
+                executionPolicy: .approvedPlan(runtime: .claudeCode, currentPermissionPolicy: .restricted, allowedTools: ["Read"]),
+                permissionManifest: manifest,
+                timeoutSeconds: 30
+            ))
+        let teamToolsFlagIndex = try #require(teamPlan.arguments.firstIndex(of: "--tools"))
+        let teamTools = teamPlan.arguments[teamToolsFlagIndex + 1]
+        #expect(teamTools.contains("TeamCreate"))
+        #expect(teamTools.contains("TaskOutput"))
+        #expect(teamPlan.commandPlannedFields["visible_tool_names"]?.contains("TeamCreate") == true)
+    }
+
+    @Test("Claude launch keeps informational tasks on default effort")
+    @MainActor
+    func claudeLaunchKeepsInformationalTasksOnDefaultEffort() throws {
+        let workspaceURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-claude-default-effort-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: workspaceURL) }
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Claude Default Effort", primaryPath: workspaceURL.path)
+        let task = AgentTask(
+            title: "Explain",
+            goal: "explain who you are",
+            workspace: workspace,
+            model: "claude-sonnet-4-6",
+            runtime: .claudeCode
+        )
+        let providerRender = ProviderPolicyRender(
+            providerID: .claudeCode,
+            adapterVersion: 1,
+            policyLevel: .review,
+            configOwnership: .generated,
+            permissionMode: PermissionPolicy.restricted.rawValue,
+            allowedTools: ["Read"],
+            runtimeSupportTools: [],
+            askFirstTools: ["Write", "Edit", "Bash"],
+            deniedTools: [],
+            allowedShellPatterns: [],
+            askFirstShellPatterns: [],
+            deniedShellPatterns: [],
+            allowedURLPatterns: [],
+            deniedURLPatterns: [],
+            cliArgumentsSummary: [],
+            settingsSummary: "test",
+            generatedConfigPreview: "",
+            enforcementTiers: [.providerNative, .astraBrokered],
+            diagnostics: [],
+            usesBroadProviderPermissions: false
+        )
+        let manifest = RunPermissionManifest(
+            taskID: task.id,
+            runID: UUID(),
+            phase: "test",
+            providerID: .claudeCode,
+            providerVersion: nil,
+            model: "claude-sonnet-4-6",
+            policyLevel: .review,
+            policyScope: .builtInDefault,
+            providerRender: providerRender,
+            workspacePath: workspace.primaryPath,
+            additionalPaths: [],
+            environmentKeyNames: [],
+            credentialLabels: [],
+            approvalsGranted: [],
+            approvalGrants: []
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .claudeCode)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/claude",
+                providerHomeDirectory: "",
+                permissionPolicy: .restricted,
+                executionPolicy: .approvedPlan(runtime: .claudeCode, currentPermissionPolicy: .restricted, allowedTools: ["Read"]),
+                permissionManifest: manifest,
+                timeoutSeconds: 30
+            ))
+
+        #expect(plan.commandPlannedFields["artifact_bootstrap_profile"] == "false")
+        #expect(plan.commandPlannedFields["launch_effort"] == "default")
+        #expect(!plan.arguments.contains("--effort"))
     }
 
     @Test("Antigravity declares shared launch state and suggestion-only model availability")
@@ -476,5 +906,132 @@ struct AgentRuntimeAdapterTests {
         #expect(claude.blockingProcessPermissionMessage(line: permissionPrompt, parsesJSONLines: false) == nil)
         #expect(copilot.blockingProcessPermissionMessage(line: permissionPrompt, parsesJSONLines: false) != nil)
         #expect(antigravity.blockingProcessPermissionMessage(line: permissionPrompt, parsesJSONLines: false) != nil)
+    }
+
+    @Test("Copilot launch exposes browser bridge from follow-up context")
+    @MainActor
+    func copilotLaunchExposesBrowserBridgeFromFollowUpContext() throws {
+        ShelfBrowserBridgeRegistry.shared.reset()
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-browser-context-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            ShelfBrowserBridgeRegistry.shared.reset()
+            try? FileManager.default.removeItem(at: root)
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Browser Context", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Continue task",
+            goal: "Continue the task",
+            workspace: workspace,
+            model: "gpt-5",
+            runtime: .copilotCLI
+        )
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: nil,
+            currentTitle: nil,
+            taskID: task.id,
+            isPresented: false,
+            isEnabled: true
+        )
+
+        let hiddenEnvironment = AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: task)
+        #expect(hiddenEnvironment["ASTRA_BROWSER_URL"] == nil)
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .copilotCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "Use the browser shelf",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/copilot-not-present",
+                providerHomeDirectory: root.appendingPathComponent("copilot-home").path,
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30,
+                phase: "resume",
+                contextText: "Use the browser shelf to inspect the current page."
+            ))
+
+        #expect(plan.environment["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+        #expect(plan.browserShimDirectory?.hasSuffix(".runtime-bin") == true)
+    }
+
+    private static func copilotManifest(
+        task: AgentTask,
+        workspacePath: String,
+        allowedTools: [String],
+        askFirstTools: [String]
+    ) -> RunPermissionManifest {
+        let providerRender = ProviderPolicyRender(
+            providerID: .copilotCLI,
+            adapterVersion: 1,
+            policyLevel: .review,
+            configOwnership: .generated,
+            permissionMode: PermissionPolicy.restricted.rawValue,
+            allowedTools: allowedTools,
+            runtimeSupportTools: CopilotPolicyAdapter().runtimeSupportTools,
+            askFirstTools: askFirstTools,
+            deniedTools: [],
+            allowedShellPatterns: [],
+            askFirstShellPatterns: [],
+            deniedShellPatterns: [],
+            allowedURLPatterns: [],
+            deniedURLPatterns: [],
+            cliArgumentsSummary: [],
+            settingsSummary: "test",
+            generatedConfigPreview: "",
+            enforcementTiers: [.providerNative, .astraBrokered],
+            diagnostics: [],
+            usesBroadProviderPermissions: false
+        )
+        return RunPermissionManifest(
+            taskID: task.id,
+            runID: UUID(),
+            phase: "test",
+            providerID: .copilotCLI,
+            providerVersion: nil,
+            model: task.model,
+            policyLevel: .review,
+            policyScope: .builtInDefault,
+            providerRender: providerRender,
+            workspacePath: workspacePath,
+            additionalPaths: [],
+            environmentKeyNames: [],
+            credentialLabels: [],
+            approvalsGranted: [],
+            approvalGrants: []
+        )
+    }
+
+    private static func writeFakeCopilotExecutable(in directory: URL) throws -> String {
+        let url = directory.appendingPathComponent("copilot")
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "help" ]; then
+          cat <<'HELP'
+        --allow-tool TOOL --available-tools=TOOLS --excluded-tools=TOOLS --output-format=FORMAT --stream=MODE --no-ask-user
+        HELP
+          exit 0
+        fi
+        if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+          echo "copilot fake 1.0"
+          exit 0
+        fi
+        exit 0
+        """
+        try script.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        return url.path
+    }
+
+    private static func argumentValues(after flag: String, in arguments: [String]) -> [String] {
+        guard let index = arguments.firstIndex(of: flag) else { return [] }
+        let start = arguments.index(after: index)
+        guard start < arguments.endIndex else { return [] }
+        return Array(arguments[start...].prefix { !$0.hasPrefix("--") })
     }
 }

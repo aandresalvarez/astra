@@ -2615,13 +2615,16 @@ struct TaskThreadSnapshotTests {
         let outputs = root.appendingPathComponent("outputs", isDirectory: true)
         let turns = root.appendingPathComponent("turns", isDirectory: true)
         let runtimeBin = root.appendingPathComponent(".runtime-bin", isDirectory: true)
+        let diagnostics = root.appendingPathComponent("diagnostics", isDirectory: true)
 
         try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: outputs, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: turns, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: runtimeBin, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: diagnostics, withIntermediateDirectories: true)
         try "# Report".write(to: root.appendingPathComponent("report.md"), atomically: true, encoding: .utf8)
         try "details".write(to: nested.appendingPathComponent("details.txt"), atomically: true, encoding: .utf8)
+        try "provider log".write(to: diagnostics.appendingPathComponent("antigravity.log"), atomically: true, encoding: .utf8)
         try "state".write(to: root.appendingPathComponent("current_state.md"), atomically: true, encoding: .utf8)
         try "{}".write(to: root.appendingPathComponent("current_state.json"), atomically: true, encoding: .utf8)
         try "history".write(to: root.appendingPathComponent("session_history.md"), atomically: true, encoding: .utf8)
@@ -2656,6 +2659,8 @@ struct TaskThreadSnapshotTests {
         #expect(!paths.contains("turns"))
         #expect(!paths.contains("turns/turn_002.md"))
         #expect(!paths.contains(".runtime-bin/astra-browser"))
+        #expect(!paths.contains("diagnostics"))
+        #expect(!paths.contains("diagnostics/antigravity.log"))
     }
 
     @Test("Generated file preview prefers task index HTML")
@@ -4598,11 +4603,36 @@ struct AgentTaskPropertyTests {
         let manualPresentation = TaskPresentationState.verificationPresentation(for: manual)
         let failedPresentation = TaskPresentationState.verificationPresentation(for: failed)
 
-        #expect(manualPresentation.summary == "No automated verification")
+        #expect(manualPresentation.summary == "Not automatically verified")
         #expect(manualPresentation.tone == .attention)
+        #expect(manualPresentation.detail?.contains("Artifacts: none recorded") != true)
         #expect(failedPresentation.summary == "Verification failed")
         #expect(failedPresentation.tone == .failed)
         #expect(failedPresentation.systemImage == "exclamationmark.triangle.fill")
+        #expect(failedPresentation.detail?.contains("Artifacts: none recorded") != true)
+    }
+
+    @Test("verificationPresentation surfaces deliverable review quality")
+    func verificationPresentationDeliverableReviewNeeded() {
+        let verification = TaskContextState.Verification(
+            status: "review_needed",
+            strategy: "deliverable_verification",
+            command: nil,
+            summary: "Deliverable artifact exists, but ASTRA needs human review.",
+            evidence: [],
+            updatedAt: nil,
+            completionVerified: false,
+            artifactStatus: "1 current",
+            deliverableLevel: "needs_human_review",
+            deliverableSummary: "Deterministic probes were incomplete."
+        )
+
+        let presentation = TaskPresentationState.verificationPresentation(for: verification)
+
+        #expect(presentation.title == "Needs review")
+        #expect(presentation.summary == "Needs review")
+        #expect(presentation.tone == .attention)
+        #expect(presentation.detail?.contains("Deliverable quality: needs_human_review") == true)
     }
 
     @Test("verification loader reads finished task state asynchronously")
@@ -4637,8 +4667,8 @@ struct AgentTaskPropertyTests {
             taskFolder: folder
         )
 
-        #expect(presentation.title == "No automated verification")
-        #expect(presentation.summary == "No automated verification")
+        #expect(presentation.title == "Not automatically verified")
+        #expect(presentation.summary == "Not automatically verified")
         #expect(hiddenPresentation == nil)
     }
 }
@@ -4876,6 +4906,41 @@ struct SidebarGroupingTests {
         let index = SidebarTaskIndex(tasks: [older, newer, middle], searchText: "")
 
         #expect(index.reviewTasks(for: workspace).map(\.id) == [newer.id, middle.id, older.id])
+    }
+
+    @Test("Workspace sidebar shows retry attempts as separate task rows")
+    func workspaceSidebarShowsRetryAttemptsAsSeparateRows() {
+        let workspace = makeWorkspace(name: "Astra Work")
+        let titles = [
+            "Build solved Rubik's cube",
+            "Build solved Rubik's cube (attempt 2)",
+            "Create 3D page",
+            "Create 3D solver",
+            "Explain who you are",
+            "Describe who you are",
+            "Build solved cube notes",
+            "Review output"
+        ]
+
+        let tasks = titles.enumerated().map { offset, title in
+            let task = makeTask(title: title, status: .completed, workspace: workspace)
+            task.updatedAt = Date(timeIntervalSince1970: TimeInterval(800 - offset))
+            return task
+        }
+
+        let index = SidebarTaskIndex(tasks: tasks, searchText: "")
+        let reviewTasks = index.reviewTasks(for: workspace)
+        let visibleTasks = SidebarWorkspaceTaskList.visibleTasks(reviewTasks, isShowingAll: false)
+
+        #expect(reviewTasks.count == 8)
+        #expect(visibleTasks.map(\.id) == Array(reviewTasks.prefix(6)).map(\.id))
+        #expect(visibleTasks.map(\.id).contains(tasks[0].id))
+        #expect(visibleTasks.map(\.id).contains(tasks[1].id))
+        #expect(Set(visibleTasks.map(\.id)).count == 6)
+        #expect(SidebarWorkspaceTaskList.hiddenTaskCount(
+            totalTasks: reviewTasks.count,
+            visibleTasks: visibleTasks.count
+        ) == 2)
     }
 
     @Test("SidebarTaskIndex surfaces unread tasks under the dock")

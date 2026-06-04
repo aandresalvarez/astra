@@ -11,7 +11,7 @@ struct TaskPresentationStateTests {
         #expect(finished.runOutcomeLabel == "Run finished")
         #expect(finished.reviewLabel == "Needs review")
         #expect(finished.composerLabel == "Needs review")
-        #expect(finished.decisionTitle == "Ready to close?")
+        #expect(finished.decisionTitle == "Result ready for review")
 
         #expect(closed.runOutcomeLabel == "Run finished")
         #expect(closed.reviewLabel == "Closed")

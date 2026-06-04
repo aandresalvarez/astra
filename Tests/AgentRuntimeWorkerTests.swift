@@ -206,6 +206,16 @@ struct TaskDeliverableExpectationTests {
         #expect(TaskDeliverableExpectation.requiresStandaloneArtifact(task))
     }
 
+    @Test("Artifact detector keeps joined create article typo")
+    func artifactDetectorKeepsJoinedCreateArticleTypo() {
+        let task = AgentTask(
+            title: "Create Masterball puzzle web solver",
+            goal: "createa web page wit a masterball similar to rubicks cube but as aball with a solver in javascript"
+        )
+
+        #expect(TaskDeliverableExpectation.requiresStandaloneArtifact(task))
+    }
+
     @Test("Artifact scan finds shallow task output files")
     func artifactScanFindsShallowTaskOutputFiles() throws {
         let container = try makeContainer()
@@ -228,6 +238,84 @@ struct TaskDeliverableExpectationTests {
         )
 
         #expect(TaskDeliverableExpectation.hasArtifact(for: task, run: run))
+    }
+
+    @Test("Artifact detector ignores provider diagnostic file changes")
+    func artifactDetectorIgnoresProviderDiagnosticFileChanges() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspacePath = NSTemporaryDirectory() + "deliverable-diagnostics-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: workspacePath) }
+        try FileManager.default.createDirectory(atPath: workspacePath, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Deliverable Diagnostics", primaryPath: workspacePath)
+        let task = AgentTask(title: "Create HTML", goal: "create an html file", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let diagnostics = URL(fileURLWithPath: taskFolder).appendingPathComponent("diagnostics", isDirectory: true)
+        try FileManager.default.createDirectory(at: diagnostics, withIntermediateDirectories: true)
+        let logURL = diagnostics.appendingPathComponent("antigravity-12345678.log")
+        try "RESOURCE_EXHAUSTED".write(to: logURL, atomically: true, encoding: .utf8)
+
+        run.appendFileChange(StoredFileChange(from: FileChange(
+            path: "diagnostics/antigravity-12345678.log",
+            changeType: .write,
+            content: "Provider diagnostic log",
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        )))
+        run.appendFileChange(StoredFileChange(from: FileChange(
+            path: logURL.path,
+            changeType: .write,
+            content: "Provider diagnostic log",
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        )))
+        run.appendFileChange(StoredFileChange(from: FileChange(
+            path: (workspacePath as NSString).appendingPathComponent("cache/projects.json"),
+            changeType: .write,
+            content: "Provider cache",
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        )))
+
+        #expect(!TaskDeliverableExpectation.hasArtifact(for: task, run: run))
+        #expect(!TaskDeliverableExpectation.hasRunScopedArtifact(for: task, run: run))
+    }
+
+    @Test("Artifact detector counts workspace scoped deliverable file changes")
+    func artifactDetectorCountsWorkspaceScopedDeliverableFileChanges() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspacePath = NSTemporaryDirectory() + "deliverable-workspace-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: workspacePath) }
+        try FileManager.default.createDirectory(atPath: workspacePath, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Workspace Deliverable", primaryPath: workspacePath)
+        let task = AgentTask(title: "Create report", goal: "write report.md in the workspace", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let reportPath = (workspacePath as NSString).appendingPathComponent("report.md")
+        run.appendFileChange(StoredFileChange(from: FileChange(
+            path: reportPath,
+            changeType: .write,
+            content: "Report",
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        )))
+
+        #expect(TaskDeliverableExpectation.hasArtifact(for: task, run: run))
+        #expect(TaskDeliverableExpectation.hasRunScopedArtifact(for: task, run: run))
     }
 
     @Test("Artifact scan respects explicit entry and depth caps")
@@ -258,6 +346,47 @@ struct TaskDeliverableExpectationTests {
         #expect(!TaskDeliverableExpectation.hasArtifact(for: task, run: run, scanEntryLimit: 0))
         #expect(!TaskDeliverableExpectation.hasArtifact(for: task, run: run, scanDepthLimit: 0))
         #expect(TaskDeliverableExpectation.hasArtifact(for: task, run: run, scanDepthLimit: 3))
+    }
+}
+
+@Suite("Agent File Change Detector")
+@MainActor
+struct AgentFileChangeDetectorTests {
+    @Test("Inferred file changes ignore provider cache files")
+    func inferredFileChangesIgnoreProviderCacheFiles() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspacePath = NSTemporaryDirectory() + "file-change-runtime-cache-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: workspacePath) }
+        try FileManager.default.createDirectory(atPath: workspacePath, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "File Change Detector", primaryPath: workspacePath)
+        let task = AgentTask(title: "Summarize", goal: "Summarize the repo", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        try context.save()
+
+        let runStart = Date().addingTimeInterval(-1)
+        let cache = URL(fileURLWithPath: workspacePath).appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        try "{}".write(to: cache.appendingPathComponent("projects.json"), atomically: true, encoding: .utf8)
+        let report = URL(fileURLWithPath: workspacePath).appendingPathComponent("report.md")
+        try "# Report".write(to: report, atomically: true, encoding: .utf8)
+
+        AgentFileChangeDetector.appendInferredFileChanges(
+            to: run,
+            task: task,
+            modelContext: context,
+            workspacePath: workspacePath,
+            beforeGitStatus: [],
+            beforeDirtyFingerprints: [:],
+            runStart: runStart
+        )
+
+        #expect(run.fileChanges.map(\.path) == [report.path])
+        #expect(task.artifacts.map(\.path) == [report.path])
     }
 }
 
@@ -358,8 +487,44 @@ struct BuildPromptTests {
             #expect(prompt.contains("Task Output Folder:"))
             #expect(prompt.contains("create them in this task output folder by default"))
             #expect(prompt.contains("Only write to workspace or project files when the user explicitly names that target path"))
+            #expect(prompt.contains("ASTRA owns state/history files in this folder"))
+            #expect(prompt.contains("outputs/turn_*.md"))
+            #expect(prompt.contains("do not create, edit, overwrite, or use them as deliverables"))
             #expect(prompt.contains("For informational tasks, summaries, reviews, lookups, and status checks, return the useful answer in chat"))
+            #expect(prompt.contains("Artifact first-action requirement:"))
+            #expect(prompt.contains("Your first provider-visible action should be to create or update a useful baseline deliverable"))
+            #expect(prompt.contains("Artifact delivery contract:"))
+            #expect(prompt.contains("Create the first useful deliverable promptly"))
+            #expect(prompt.contains("preferably as index.html"))
+            #expect(prompt.contains("Do not spend an extended period perfecting design, puzzle mechanics, algorithms, or research before writing the initial artifact"))
+            #expect(prompt.contains("If a tool permission is needed to create the artifact, request that tool permission instead of continuing hidden planning"))
+            if let actionRange = prompt.range(of: "Artifact first-action requirement:") {
+                #expect(prompt.distance(from: prompt.startIndex, to: actionRange.lowerBound) < 1_200)
+            } else {
+                Issue.record("Expected artifact first-action requirement near prompt start")
+            }
         }
+    }
+
+    @Test("Prompt omits artifact delivery contract for informational tasks")
+    func promptOmitsArtifactDeliveryContractForInformationalTasks() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Test", primaryPath: "/tmp/prompt-informational")
+        ctx.insert(ws)
+        let task = AgentTask(
+            title: "Explain JavaScript",
+            goal: "explain how javascript modules work",
+            workspace: ws
+        )
+        ctx.insert(task)
+        try ctx.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(prompt.contains("Task Output Folder:"))
+        #expect(!prompt.contains("Artifact delivery contract:"))
+        #expect(!prompt.contains("Create the first useful deliverable promptly"))
     }
 
     @Test("Prompt keeps current task explicit before context and at current-goal section end")
@@ -895,7 +1060,7 @@ struct BuildPromptTests {
         second.workspace = ws
         ctx.insert(first)
         ctx.insert(second)
-        let task = AgentTask(title: "T", goal: "List pull requests", workspace: ws)
+        let task = AgentTask(title: "T", goal: "List GitHub pull requests", workspace: ws)
         task.skills = [first, second]
         ctx.insert(task)
         try ctx.save()
@@ -906,8 +1071,8 @@ struct BuildPromptTests {
         #expect(prompt.contains("Use GitHub CLI for GitHub work."))
     }
 
-    @Test("Copied preview case has no pending prompt and dedupes duplicate capability behavior")
-    func copiedPreviewCaseHasNoPendingPromptAndDedupesDuplicateCapabilityBehavior() throws {
+    @Test("Copied preview case has no pending prompt and prunes irrelevant duplicate capability behavior")
+    func copiedPreviewCaseHasNoPendingPromptAndPrunesIrrelevantDuplicateCapabilityBehavior() throws {
         let container = try makeContainer()
         let ctx = container.mainContext
         let ws = Workspace(name: "Copied Preview", primaryPath: "/tmp/copied-preview")
@@ -941,7 +1106,8 @@ struct BuildPromptTests {
 
         #expect(request.kind == .unavailable)
         #expect(request.unavailableReason?.contains("No provider prompt is pending") == true)
-        #expect(prompt.components(separatedBy: "[GitHub Agent]:").count - 1 == 1)
+        #expect(prompt.components(separatedBy: "[GitHub Agent]:").count - 1 == 0)
+        #expect(!prompt.contains("Use GitHub CLI for GitHub work."))
         #expect(prompt.contains("cognition-eval-smoke.md"))
         #expect(prompt.contains("/tmp/copied-preview/.astra/tasks/14DE8D76/current_state.json"))
     }
@@ -1048,8 +1214,7 @@ struct BuildPromptTests {
         let prompt = AgentPromptBuilder.buildPrompt(for: task)
 
         #expect(prompt.contains("Shelf Browser Session:"))
-        #expect(prompt.contains("Available CLI/Script Tools"))
-        #expect(prompt.contains("Shelf Browser Control: `astra-browser`"))
+        #expect(prompt.contains("Use the provider-neutral `astra-browser` command"))
         #expect(prompt.contains("ASTRA_BROWSER_URL"))
         #expect(prompt.contains(task.id.uuidString))
         #expect(prompt.contains("https://outlook.office.com/mail/"))
@@ -1176,6 +1341,41 @@ struct BuildPromptTests {
         #expect(prompt.contains("ASTRA_BROWSER_URL"))
         #expect(prompt.contains("http://127.0.0.1:47831/"))
         #expect(ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id)["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+    }
+
+    @Test("Standalone artifact prompt omits hidden empty Shelf browser bridge")
+    func standaloneArtifactPromptOmitsHiddenEmptyShelfBrowserBridge() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Test", primaryPath: "/tmp/prompt-browser-artifact-hidden-empty")
+        ctx.insert(ws)
+        let task = AgentTask(
+            title: "Create Masterball puzzle web solver",
+            goal: "createa web page wit a masterball (similar to rubicks cube but as aball ) with a solver in javascript",
+            workspace: ws
+        )
+        ctx.insert(task)
+        try ctx.save()
+
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: nil,
+            currentTitle: nil,
+            taskID: task.id,
+            isPresented: false,
+            isEnabled: true
+        )
+        defer { ShelfBrowserBridgeRegistry.shared.reset() }
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        let environment = AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: task)
+        let scope = TaskCapabilityResolver(task: task).promptScope()
+
+        #expect(ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id)["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+        #expect(!prompt.contains("Shelf Browser Session:"))
+        #expect(!prompt.contains("ASTRA_BROWSER_URL"))
+        #expect(environment["ASTRA_BROWSER_URL"] == nil)
+        #expect(!scope.localTools.contains { $0.command == "astra-browser" })
     }
 
     @Test("Prompt hides Shelf browser bridge when disabled")

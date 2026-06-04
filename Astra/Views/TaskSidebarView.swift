@@ -166,11 +166,16 @@ enum SidebarTaskIndexInvalidation {
     }
 }
 
-private struct SidebarTaskAttemptGroup: Identifiable {
-    let task: AgentTask
-    let attemptCount: Int
+enum SidebarWorkspaceTaskList {
+    static let collapsedLimit = 6
 
-    var id: UUID { task.id }
+    static func visibleTasks(_ tasks: [AgentTask], isShowingAll: Bool) -> [AgentTask] {
+        isShowingAll ? tasks : Array(tasks.prefix(collapsedLimit))
+    }
+
+    static func hiddenTaskCount(totalTasks: Int, visibleTasks: Int) -> Int {
+        max(0, totalTasks - visibleTasks)
+    }
 }
 
 struct TaskSidebarView: View {
@@ -933,11 +938,14 @@ struct TaskSidebarView: View {
     private func workspaceListRow(for workspace: Workspace, using taskIndex: SidebarTaskIndex) -> some View {
         let isExpanded = isWorkspaceExpanded(workspace, using: taskIndex)
         let workspaceTasks = tasksForWorkspace(workspace, using: taskIndex)
-        let workspaceTaskGroups = groupedTaskAttempts(workspaceTasks)
         let hasTasks = !workspaceTasks.isEmpty
         let hasAny = hasAnyTask(in: workspace, using: taskIndex)
         let isShowingAll = expandedWorkspaceTaskLists.contains(workspace.id)
-        let visibleTaskGroups = isShowingAll ? workspaceTaskGroups : Array(workspaceTaskGroups.prefix(6))
+        let visibleTasks = SidebarWorkspaceTaskList.visibleTasks(workspaceTasks, isShowingAll: isShowingAll)
+        let hiddenTaskCount = SidebarWorkspaceTaskList.hiddenTaskCount(
+            totalTasks: workspaceTasks.count,
+            visibleTasks: visibleTasks.count
+        )
 
         VStack(spacing: 0) {
             workspaceRow(for: workspace, using: taskIndex)
@@ -947,16 +955,15 @@ struct TaskSidebarView: View {
                     if !hasTasks && !hasAny {
                         emptyWorkspaceRow(for: workspace)
                     } else if hasTasks {
-                        ForEach(visibleTaskGroups) { group in
+                        ForEach(visibleTasks) { task in
                             compactTaskRow(
-                                for: group.task,
-                                attemptCount: group.attemptCount,
+                                for: task,
                                 contentLeadingPadding: SidebarLeanPresentation.childTaskContentLeadingPadding
                             )
                         }
-                        if workspaceTaskGroups.count > visibleTaskGroups.count {
+                        if hiddenTaskCount > 0 {
                             sidebarShowMoreButton(
-                                title: "Show \(workspaceTaskGroups.count - visibleTaskGroups.count) more",
+                                title: "Show \(hiddenTaskCount) more",
                                 action: {
                                     withAnimation(disclosureAnimation) {
                                         _ = expandedWorkspaceTaskLists.insert(workspace.id)
@@ -1191,34 +1198,6 @@ struct TaskSidebarView: View {
         expandedWorkspaceIDs.remove(workspace.id)
         collapsedWorkspaceIDs.insert(workspace.id)
         expandedWorkspaceTaskLists.remove(workspace.id)
-    }
-
-    private func groupedTaskAttempts(_ tasks: [AgentTask]) -> [SidebarTaskAttemptGroup] {
-        var buckets: [String: [AgentTask]] = [:]
-        var orderedKeys: [String] = []
-
-        for task in tasks {
-            let key = retryGroupingKey(for: task)
-            if buckets[key] == nil {
-                orderedKeys.append(key)
-            }
-            buckets[key, default: []].append(task)
-        }
-
-        return orderedKeys.compactMap { key in
-            guard let attempts = buckets[key], !attempts.isEmpty else { return nil }
-            let latestAttempt = attempts.max { $0.updatedAt < $1.updatedAt } ?? attempts[0]
-            return SidebarTaskAttemptGroup(task: latestAttempt, attemptCount: attempts.count)
-        }
-    }
-
-    private func retryGroupingKey(for task: AgentTask) -> String {
-        task.title
-            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-            .replacingOccurrences(of: "\\s*\\(?attempt\\s+\\d+\\)?\\s*$", with: "", options: .regularExpression)
-            .replacingOccurrences(of: "\\s*\\(?retry\\s+\\d+\\)?\\s*$", with: "", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func sidebarShowMoreButton(title: String, action: @escaping () -> Void) -> some View {

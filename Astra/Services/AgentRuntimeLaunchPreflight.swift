@@ -48,7 +48,8 @@ enum AgentRuntimeLaunchPreflight {
             task: task,
             run: run,
             modelContext: modelContext,
-            phase: phase
+            phase: phase,
+            contextText: contextText
         ) else {
             return false
         }
@@ -59,11 +60,15 @@ enum AgentRuntimeLaunchPreflight {
             contextText
         ].joined(separator: "\n")
         let connectors = ConnectorPreflightService.connectorsRequiringPreflight(
-            from: TaskCapabilityResolver(task: task).allConnectors,
+            from: TaskCapabilityResolver(task: task).promptScope(contextText: contextText).connectors,
             contextText: fullContext
         )
         let traceID = AuditTrace.make("connector-preflight")
-        var preflightFields = CapabilityAudit.taskContextFields(source: "connector_preflight_candidates", task: task)
+        var preflightFields = CapabilityAudit.taskContextFields(
+            source: "connector_preflight_candidates",
+            task: task,
+            scope: .providerLaunch(contextText: contextText)
+        )
         preflightFields["trace_id"] = traceID
         preflightFields["phase"] = phase
         preflightFields["preflight_connector_count"] = String(connectors.count)
@@ -115,7 +120,8 @@ enum AgentRuntimeLaunchPreflight {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String
+        phase: String,
+        contextText: String = ""
     ) -> Bool {
         let policyContext = task.workspace.map {
             CapabilityCatalogPolicyContext.workspaceUser(
@@ -125,9 +131,14 @@ enum AgentRuntimeLaunchPreflight {
         }
         let issues = CapabilityRuntimeIntegrityService.issues(
             for: task,
-            policyContext: policyContext
+            policyContext: policyContext,
+            scope: .providerLaunch(contextText: contextText)
         )
-        var fields = CapabilityAudit.taskContextFields(source: "capability_runtime_integrity", task: task)
+        var fields = CapabilityAudit.taskContextFields(
+            source: "capability_runtime_integrity",
+            task: task,
+            scope: .providerLaunch(contextText: contextText)
+        )
         fields["phase"] = phase
         fields["result"] = issues.isEmpty ? "passed" : "missing_resources"
         for (key, value) in CapabilityRuntimeIntegrityService.summaryFields(for: issues) {

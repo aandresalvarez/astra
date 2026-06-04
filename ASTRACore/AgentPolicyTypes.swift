@@ -411,6 +411,80 @@ public struct PolicyRenderContext: Codable, Equatable, Sendable {
     }
 }
 
+public struct ProviderRuntimeSupportToolDescriptor: Codable, Equatable, Sendable, Identifiable {
+    public var id: String { name }
+    public var name: String
+    public var providerNativePermission: String?
+    public var purpose: String
+    public var allowedInputKeys: [String]
+    public var deniedInputKeys: [String]
+    public var maxSummaryLength: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case name
+        case providerNativePermission
+        case purpose
+        case allowedInputKeys
+        case deniedInputKeys
+        case maxSummaryLength
+    }
+
+    public init(
+        name: String,
+        providerNativePermission: String? = nil,
+        purpose: String,
+        allowedInputKeys: [String] = [],
+        deniedInputKeys: [String] = Self.defaultDeniedActionInputKeys,
+        maxSummaryLength: Int = 500
+    ) {
+        self.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let nativePermission = providerNativePermission?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        self.providerNativePermission = nativePermission.isEmpty ? nil : nativePermission
+        self.purpose = purpose.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.allowedInputKeys = Array(Set(allowedInputKeys.map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }.filter { !$0.isEmpty })).sorted()
+        self.deniedInputKeys = Array(Set(deniedInputKeys.map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }.filter { !$0.isEmpty })).sorted()
+        self.maxSummaryLength = max(0, maxSummaryLength)
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            name: try container.decode(String.self, forKey: .name),
+            providerNativePermission: try container.decodeIfPresent(String.self, forKey: .providerNativePermission),
+            purpose: try container.decode(String.self, forKey: .purpose),
+            allowedInputKeys: try container.decodeIfPresent([String].self, forKey: .allowedInputKeys) ?? [],
+            deniedInputKeys: try container.decodeIfPresent([String].self, forKey: .deniedInputKeys) ?? Self.defaultDeniedActionInputKeys,
+            maxSummaryLength: try container.decodeIfPresent(Int.self, forKey: .maxSummaryLength) ?? 500
+        )
+    }
+
+    public static let defaultDeniedActionInputKeys: [String] = [
+        "body",
+        "cmd",
+        "command",
+        "cwd",
+        "directory",
+        "endpoint",
+        "file",
+        "file_path",
+        "filepath",
+        "href",
+        "method",
+        "path",
+        "request",
+        "script",
+        "shell",
+        "target",
+        "target_path",
+        "uri",
+        "url"
+    ]
+}
+
 public struct ProviderPolicyRender: Codable, Equatable, Sendable {
     public var providerID: AgentRuntimeID
     public var adapterVersion: Int
@@ -418,6 +492,7 @@ public struct ProviderPolicyRender: Codable, Equatable, Sendable {
     public var configOwnership: PolicyConfigOwnership
     public var permissionMode: String
     public var allowedTools: [String]
+    public var runtimeSupportTools: [ProviderRuntimeSupportToolDescriptor]
     public var askFirstTools: [String]
     public var deniedTools: [String]
     public var allowedShellPatterns: [String]
@@ -439,6 +514,7 @@ public struct ProviderPolicyRender: Codable, Equatable, Sendable {
         case configOwnership
         case permissionMode
         case allowedTools
+        case runtimeSupportTools
         case askFirstTools
         case deniedTools
         case allowedShellPatterns
@@ -461,6 +537,7 @@ public struct ProviderPolicyRender: Codable, Equatable, Sendable {
         configOwnership: PolicyConfigOwnership,
         permissionMode: String,
         allowedTools: [String],
+        runtimeSupportTools: [ProviderRuntimeSupportToolDescriptor] = [],
         askFirstTools: [String] = [],
         deniedTools: [String],
         allowedShellPatterns: [String],
@@ -481,6 +558,7 @@ public struct ProviderPolicyRender: Codable, Equatable, Sendable {
         self.configOwnership = configOwnership
         self.permissionMode = permissionMode
         self.allowedTools = allowedTools
+        self.runtimeSupportTools = runtimeSupportTools.sorted { $0.name < $1.name }
         self.askFirstTools = askFirstTools
         self.deniedTools = deniedTools
         self.allowedShellPatterns = allowedShellPatterns
@@ -504,6 +582,7 @@ public struct ProviderPolicyRender: Codable, Equatable, Sendable {
         configOwnership = try container.decode(PolicyConfigOwnership.self, forKey: .configOwnership)
         permissionMode = try container.decode(String.self, forKey: .permissionMode)
         allowedTools = try container.decode([String].self, forKey: .allowedTools)
+        runtimeSupportTools = try container.decodeIfPresent([ProviderRuntimeSupportToolDescriptor].self, forKey: .runtimeSupportTools) ?? []
         askFirstTools = try container.decodeIfPresent([String].self, forKey: .askFirstTools) ?? []
         deniedTools = try container.decode([String].self, forKey: .deniedTools)
         allowedShellPatterns = try container.decode([String].self, forKey: .allowedShellPatterns)
@@ -536,6 +615,18 @@ public struct PolicyObservedEvent: Codable, Equatable, Sendable, Identifiable {
     public var path: String?
     public var url: String?
     public var summary: String?
+    public var inputKeys: [String]
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case kind
+        case toolName
+        case command
+        case path
+        case url
+        case summary
+        case inputKeys
+    }
 
     public init(
         id: UUID = UUID(),
@@ -544,7 +635,8 @@ public struct PolicyObservedEvent: Codable, Equatable, Sendable, Identifiable {
         command: String? = nil,
         path: String? = nil,
         url: String? = nil,
-        summary: String? = nil
+        summary: String? = nil,
+        inputKeys: [String] = []
     ) {
         self.id = id
         self.kind = kind
@@ -553,16 +645,35 @@ public struct PolicyObservedEvent: Codable, Equatable, Sendable, Identifiable {
         self.path = path
         self.url = url
         self.summary = summary
+        self.inputKeys = Self.normalizedInputKeys(inputKeys)
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        kind = try container.decode(PolicyObservedEventKind.self, forKey: .kind)
+        toolName = try container.decodeIfPresent(String.self, forKey: .toolName)
+        command = try container.decodeIfPresent(String.self, forKey: .command)
+        path = try container.decodeIfPresent(String.self, forKey: .path)
+        url = try container.decodeIfPresent(String.self, forKey: .url)
+        summary = try container.decodeIfPresent(String.self, forKey: .summary)
+        inputKeys = Self.normalizedInputKeys(try container.decodeIfPresent([String].self, forKey: .inputKeys) ?? [])
     }
 
     public init?(providerEvent: ParsedEvent) {
         switch providerEvent {
         case .toolUse(let name, _, let input):
             let normalizedInput = Self.normalizedToolInput(input)
+            let inputKeys = Self.providerInputKeys(from: input)
+            let patchText = Self.isPatchTool(name)
+                ? Self.firstString(in: normalizedInput, keys: ["arguments", "input", "args", "summary"])
+                : nil
+            let patchPath = patchText.flatMap { Self.patchFilePaths(in: $0).first }
             let command = Self.firstString(in: normalizedInput, keys: ["command", "cmd"])
                 ?? (Self.isShellTool(name) ? Self.firstString(in: normalizedInput, keys: ["summary"]) : nil)
             let path = Self.firstString(in: normalizedInput, keys: ["file_path", "path", "target_path"])
-                ?? (Self.isFileTool(name) ? Self.firstString(in: normalizedInput, keys: ["summary"]) : nil)
+                ?? patchPath
+                ?? (Self.isFileTool(name) && !Self.isPatchTool(name) ? Self.firstString(in: normalizedInput, keys: ["summary"]) : nil)
             let url = Self.firstString(in: input, keys: ["url", "uri"])
                 ?? Self.firstString(in: normalizedInput, keys: ["url", "uri"])
                 ?? (Self.isNetworkTool(name) ? Self.firstString(in: normalizedInput, keys: ["summary"]) : nil)
@@ -580,7 +691,8 @@ public struct PolicyObservedEvent: Codable, Equatable, Sendable, Identifiable {
                 command: command,
                 path: path,
                 url: url,
-                summary: command ?? path ?? url ?? Self.firstString(in: normalizedInput, keys: ["summary"])
+                summary: command ?? patchText ?? path ?? url ?? Self.firstString(in: normalizedInput, keys: ["summary"]),
+                inputKeys: inputKeys
             )
         case .toolResult(let toolId, let content):
             self.init(kind: .toolResult, toolName: toolId.isEmpty ? nil : toolId, summary: String(content.prefix(500)))
@@ -589,6 +701,24 @@ public struct PolicyObservedEvent: Codable, Equatable, Sendable, Identifiable {
         default:
             return nil
         }
+    }
+
+    private static func providerInputKeys(from input: [String: Any]?) -> [String] {
+        guard let input else { return [] }
+        if let summary = input["summary"] as? String,
+           let summaryObject = jsonDictionary(from: summary) {
+            let nonSummaryKeys = input.keys.filter { $0 != "summary" }
+            if nonSummaryKeys.isEmpty {
+                return normalizedInputKeys(Array(summaryObject.keys))
+            }
+        }
+        return normalizedInputKeys(Array(input.keys))
+    }
+
+    private static func normalizedInputKeys(_ keys: [String]) -> [String] {
+        Array(Set(keys.map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }.filter { !$0.isEmpty })).sorted()
     }
 
     private static func normalizedToolInput(_ input: [String: Any]?) -> [String: Any]? {
@@ -636,17 +766,45 @@ public struct PolicyObservedEvent: Codable, Equatable, Sendable, Identifiable {
     }
 
     private static func isFileTool(_ tool: String) -> Bool {
-        ["read", "view", "write", "create", "edit", "multiedit", "multi_edit"].contains(
+        ["read", "view", "write", "create", "edit", "multiedit", "multi_edit", "apply_patch"].contains(
             tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         )
     }
 
     private static func isMutationTool(_ tool: String) -> Bool {
-        ["write", "create", "edit", "multiedit", "multi_edit"].contains(tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        ["write", "create", "edit", "multiedit", "multi_edit", "apply_patch"].contains(tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 
     private static func isNetworkTool(_ tool: String) -> Bool {
         ["webfetch", "websearch"].contains(tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
+
+    private static func isPatchTool(_ tool: String) -> Bool {
+        tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "apply_patch"
+    }
+
+    public static func patchFilePaths(in patch: String) -> [String] {
+        let patterns = [
+            #"(?m)^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$"#,
+            #"(?m)^\*\*\* Move to:\s*(.+?)\s*$"#
+        ]
+        var paths: [String] = []
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            let range = NSRange(patch.startIndex..<patch.endIndex, in: patch)
+            for match in regex.matches(in: patch, range: range) {
+                guard match.numberOfRanges > 1,
+                      let valueRange = Range(match.range(at: 1), in: patch) else {
+                    continue
+                }
+                let path = String(patch[valueRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !path.isEmpty {
+                    paths.append(path)
+                }
+            }
+        }
+        var seen: Set<String> = []
+        return paths.filter { seen.insert($0).inserted }
     }
 
     private static func jsonDictionary(from text: String) -> [String: Any]? {

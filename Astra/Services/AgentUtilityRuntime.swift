@@ -2,8 +2,11 @@ import Foundation
 import ASTRACore
 
 struct AgentUtilityRuntimeConfiguration: Equatable {
+    static let defaultTimeoutSeconds: TimeInterval = 60
+
     var runtime: AgentRuntimeID
     var model: String
+    var timeoutSeconds: TimeInterval
     private var providerSettings: AgentRuntimeProviderSettings
 
     init(
@@ -12,6 +15,7 @@ struct AgentUtilityRuntimeConfiguration: Equatable {
         claudePath: String = RuntimePathResolver.detectClaudePath(),
         copilotPath: String = CopilotCLIRuntime.detectPath(),
         copilotHome: String = CopilotCLIRuntime.channelHome(),
+        timeoutSeconds: TimeInterval = AgentUtilityRuntimeConfiguration.defaultTimeoutSeconds,
         providerSettings: AgentRuntimeProviderSettings = AgentRuntimeProviderSettings()
     ) {
         var resolvedSettings = providerSettings
@@ -26,6 +30,7 @@ struct AgentUtilityRuntimeConfiguration: Equatable {
         }
         self.runtime = runtime
         self.model = RuntimeModelAvailability.normalizedModel(model ?? "", for: runtime)
+        self.timeoutSeconds = timeoutSeconds
         self.providerSettings = resolvedSettings
     }
 

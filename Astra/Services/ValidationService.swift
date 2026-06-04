@@ -22,6 +22,9 @@ struct TaskValidationContractEvaluation: Sendable, Equatable {
 }
 
 enum ValidationService {
+    private static let maximumTextContainsBytes: UInt64 = 2 * 1024 * 1024
+    static var textContainsFileSizeProbe: (String) -> UInt64? = defaultFileSize
+
     /// Run tests in the task's workspace using the configured test command.
     static func runTests(task: AgentTask) async -> ValidationResult {
         let command = task.testCommand.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -276,6 +279,9 @@ enum ValidationService {
     private static func suggestedRepair(for failure: TaskValidationAssertionEventPayload) -> String {
         switch failure.method {
         case .command:
+            if failure.reason == "command_not_allowed" {
+                return "Replace this command assertion with structured artifact, text_contains, browser_behavior, or verifier assertions; do not use shell composition."
+            }
             let command = failure.command?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             return command.isEmpty
                 ? "Add or fix the missing validation command, then rerun validation."
@@ -289,6 +295,11 @@ enum ValidationService {
             return "Request the required manual review or change the contract if this proof is no longer required."
         case .textEvidence:
             return "Record structured validation evidence for this assertion, then rerun validation."
+        case .textContains:
+            let path = failure.path?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return path.isEmpty
+                ? "Add the expected text to the required artifact, then rerun validation."
+                : "Update \(path) so it contains the expected text, then rerun validation."
         case .verifier:
             return "Address the verifier finding, then rerun the independent verifier assertion."
         case .browserBehavior:
@@ -350,6 +361,8 @@ enum ValidationService {
             return evaluateManual(assertion: assertion, planID: plan.planID, task: task)
         case .textEvidence:
             return evaluateTextEvidence(assertion: assertion, planID: plan.planID, task: task, run: run)
+        case .textContains:
+            return evaluateTextContains(assertion: assertion, planID: plan.planID, task: task)
         case .verifier:
             return await evaluateVerifier(
                 assertion: assertion,
@@ -564,6 +577,116 @@ enum ValidationService {
             status: assertion.required ? "failed" : "skipped",
             summary: assertion.required ? "No structured text evidence was recorded." : "Optional text evidence was not recorded.",
             reason: assertion.required ? "text_evidence_missing" : "text_evidence_optional"
+        )
+    }
+
+    private static func evaluateTextContains(
+        assertion: TaskValidationAssertion,
+        planID: UUID,
+        task: AgentTask
+    ) -> TaskValidationAssertionEventPayload {
+        guard let requestedPath = assertion.path?.trimmingCharacters(in: .whitespacesAndNewlines), !requestedPath.isEmpty else {
+            return assertionPayload(
+                assertion: assertion,
+                planID: planID,
+                status: "failed",
+                summary: "Text contains assertion is missing an artifact path.",
+                path: assertion.path,
+                reason: "missing_path"
+            )
+        }
+        guard isScopedValidationArtifactPath(requestedPath) else {
+            return assertionPayload(
+                assertion: assertion,
+                planID: planID,
+                status: "failed",
+                summary: "Text contains assertion path must be relative to the task folder or workspace.",
+                path: requestedPath,
+                reason: "path_outside_scope"
+            )
+        }
+
+        let expected = assertion.evidenceQuery?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !expected.isEmpty else {
+            return assertionPayload(
+                assertion: assertion,
+                planID: planID,
+                status: "failed",
+                summary: "Text contains assertion is missing expected text.",
+                path: requestedPath,
+                reason: "missing_expected_text"
+            )
+        }
+
+        let scopedCandidate = scopedExistingArtifactPath(requestedPath, task: task, allowDirectory: false)
+        guard let existingPath = scopedCandidate.path else {
+            let reason: String
+            let summary: String
+            if scopedCandidate.rejectedOutOfScope {
+                reason = "path_outside_scope"
+                summary = "Text contains artifact resolved outside the task folder or workspace."
+            } else if scopedCandidate.rejectedDirectory {
+                reason = "artifact_directory_not_allowed"
+                summary = "Text contains assertion matched a directory, but text validation requires a file artifact."
+            } else {
+                reason = "artifact_missing"
+                summary = "Text contains artifact was not found. Checked: \(scopedCandidate.checked.joined(separator: ", "))."
+            }
+            return assertionPayload(
+                assertion: assertion,
+                planID: planID,
+                status: "failed",
+                summary: summary,
+                path: requestedPath,
+                reason: reason
+            )
+        }
+
+        guard let byteCount = textContainsFileSizeProbe(existingPath) else {
+            return assertionPayload(
+                assertion: assertion,
+                planID: planID,
+                status: "failed",
+                summary: "Text contains artifact size could not be determined safely.",
+                path: existingPath,
+                reason: "artifact_size_unknown"
+            )
+        }
+
+        if byteCount > maximumTextContainsBytes {
+            return assertionPayload(
+                assertion: assertion,
+                planID: planID,
+                status: "failed",
+                summary: "Text contains artifact is too large to inspect safely.",
+                path: existingPath,
+                reason: "artifact_too_large"
+            )
+        }
+
+        guard let content = try? String(contentsOfFile: existingPath, encoding: .utf8) else {
+            return assertionPayload(
+                assertion: assertion,
+                planID: planID,
+                status: "failed",
+                summary: "Text contains artifact could not be read as UTF-8 text.",
+                path: existingPath,
+                reason: "artifact_text_unreadable"
+            )
+        }
+
+        let matched = content.localizedCaseInsensitiveContains(expected)
+        let summary = matched
+            ? "Artifact text contains expected text in \(existingPath)."
+            : "Artifact text did not contain expected text: \(String(expected.prefix(160)))."
+        return assertionPayload(
+            assertion: assertion,
+            planID: planID,
+            status: matched ? "passed" : (assertion.required ? "failed" : "skipped"),
+            summary: summary,
+            path: existingPath,
+            evidence: matched ? String(expected.prefix(500)) : nil,
+            reason: matched ? nil : "expected_text_missing"
         )
     }
 
@@ -1061,6 +1184,16 @@ enum ValidationService {
         } catch {
             return nil
         }
+    }
+
+    private static func defaultFileSize(atPath path: String) -> UInt64? {
+        guard let value = try? FileManager.default.attributesOfItem(atPath: path)[.size] else {
+            return nil
+        }
+        if let number = value as? NSNumber {
+            return number.uint64Value
+        }
+        return nil
     }
 
     private static func artifactCandidatePaths(_ path: String, task: AgentTask) -> [String] {

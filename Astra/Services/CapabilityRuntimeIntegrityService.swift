@@ -36,22 +36,38 @@ enum CapabilityRuntimeIntegrityService {
         for task: AgentTask,
         packages suppliedPackages: [PluginPackage]? = nil,
         checkExecutables: Bool = true,
-        policyContext: CapabilityCatalogPolicyContext? = nil
+        policyContext: CapabilityCatalogPolicyContext? = nil,
+        scope requestedScope: TaskCapabilityResolutionScope = .fullInventory
     ) -> [CapabilityRuntimeIntegrityIssue] {
         guard let workspace = task.workspace else { return [] }
 
         let packages = suppliedPackages ?? CapabilityRuntimeResourceMatcher.packageDefinitions()
         let enabledPackageIDs = Set(workspace.enabledCapabilityIDs)
-        let selectedSkillNames = liveSelectedPackageSkillNames(for: task)
         let resolver = TaskCapabilityResolver(task: task)
-        let resolvedSkills = resolver.allBehaviorSkills
-        let resolvedConnectors = resolver.allConnectors
-        let resolvedTools = resolver.allLocalTools
-        let enabledBrowserAdapters = Set(resolver.enabledBrowserAdapters)
+        let resolvedScope = resolver.resolvedScope(requestedScope)
+        let resolvedSkills = resolvedScope.behaviorSkills
+        let resolvedConnectors = resolvedScope.connectors
+        let resolvedTools = resolvedScope.localTools
+        let enabledBrowserAdapters = Set(resolvedScope.enabledBrowserAdapters)
+        let selectedSkillNames = liveSelectedPackageSkillNames(
+            for: task,
+            resolvedSkills: resolvedSkills,
+            scope: requestedScope
+        )
         let availableConnectors = availableConnectors(for: task)
 
         var checks: [(PluginPackage, CapabilityRuntimeIntegrityIssue.Source)] = []
         for package in packages where enabledPackageIDs.contains(package.id) {
+            guard shouldCheckEnabledPackage(
+                package,
+                task: task,
+                scope: requestedScope,
+                resolvedSkills: resolvedSkills,
+                resolvedConnectors: resolvedConnectors,
+                resolvedTools: resolvedTools
+            ) else {
+                continue
+            }
             checks.append((package, .enabledPackage))
         }
 
@@ -332,20 +348,174 @@ enum CapabilityRuntimeIntegrityService {
         return "connector \(displayName) is configured but not active for this workspace"
     }
 
-    private static func liveSelectedPackageSkillNames(for task: AgentTask) -> Set<String> {
+    private static func shouldCheckEnabledPackage(
+        _ package: PluginPackage,
+        task: AgentTask,
+        scope: TaskCapabilityResolutionScope,
+        resolvedSkills: [Skill],
+        resolvedConnectors: [Connector],
+        resolvedTools: [LocalTool]
+    ) -> Bool {
+        guard scope.isProviderLaunch else { return true }
+
+        if packageHasScopedRuntimeResource(
+            package,
+            resolvedSkills: resolvedSkills,
+            resolvedConnectors: resolvedConnectors,
+            resolvedTools: resolvedTools
+        ) {
+            return true
+        }
+
+        return packageMatchesTaskIntent(package, task: task, contextText: scope.contextText)
+    }
+
+    private static func packageHasScopedRuntimeResource(
+        _ package: PluginPackage,
+        resolvedSkills: [Skill],
+        resolvedConnectors: [Connector],
+        resolvedTools: [LocalTool]
+    ) -> Bool {
+        if package.skills.contains(where: { pluginSkill in
+            resolvedSkills.contains { CapabilityRuntimeResourceMatcher.skillMatches(pluginSkill, skill: $0) }
+        }) {
+            return true
+        }
+
+        if package.connectors.contains(where: { pluginConnector in
+            resolvedConnectors.contains { CapabilityRuntimeResourceMatcher.connectorMatches(pluginConnector, connector: $0) }
+        }) {
+            return true
+        }
+
+        return package.localTools.contains { pluginTool in
+            resolvedTools.contains { CapabilityRuntimeResourceMatcher.toolMatches(pluginTool, tool: $0) }
+        }
+    }
+
+    private static func packageMatchesTaskIntent(
+        _ package: PluginPackage,
+        task: AgentTask,
+        contextText: String
+    ) -> Bool {
+        let taskText = normalizedSearchText([
+            task.title,
+            task.goal,
+            task.inputs.joined(separator: " "),
+            task.constraints.joined(separator: " "),
+            task.acceptanceCriteria.joined(separator: " "),
+            contextText
+        ].joined(separator: " "))
+        let taskTokens = searchTokens(taskText)
+        guard !taskTokens.isEmpty else { return false }
+
+        let packageText = normalizedSearchText([
+            package.id,
+            package.name,
+            package.description,
+            package.category,
+            package.tags.joined(separator: " "),
+            package.skills.map { "\($0.name) \($0.description) \($0.behaviorInstructions)" }.joined(separator: " "),
+            package.connectors.map { "\($0.name) \($0.serviceType) \($0.description) \($0.baseURL)" }.joined(separator: " "),
+            package.localTools.map { "\($0.name) \($0.command) \($0.description)" }.joined(separator: " "),
+            package.mcpServers.map { "\($0.id) \($0.displayName) \($0.command ?? "") \($0.url?.absoluteString ?? "")" }.joined(separator: " "),
+            package.browserAdapters.joined(separator: " ")
+        ].joined(separator: " "))
+        let packageTokens = searchTokens(packageText)
+        guard !packageTokens.isEmpty else { return false }
+
+        if !taskTokens.isDisjoint(with: packageTokens) {
+            return true
+        }
+        return packageTokens.contains { token in
+            token.count >= 4 && taskText.contains(token)
+        }
+    }
+
+    private static func searchTokens(_ text: String) -> Set<String> {
+        var tokens = Set<String>()
+        for token in normalizedSearchText(text).split(separator: " ").map(String.init) {
+            guard token.count >= 3, !genericIntentTokens.contains(token) else { continue }
+            tokens.insert(token)
+            if token.count > 4, token.hasSuffix("s") {
+                tokens.insert(String(token.dropLast()))
+            }
+        }
+        return tokens
+    }
+
+    private static func normalizedSearchText(_ text: String) -> String {
+        text
+            .lowercased()
+            .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func liveSelectedPackageSkillNames(
+        for task: AgentTask,
+        resolvedSkills: [Skill],
+        scope: TaskCapabilityResolutionScope
+    ) -> Set<String> {
         // Snapshots are durable history for prompt reconstruction. They can outlive
         // the user's current capability selection, so only live task skills should
         // trigger selected-package launch blockers.
-        Set(
-            task.skills.map(\.name)
+        let skills = scope.isProviderLaunch ? resolvedSkills : task.skills
+        return Set(
+            skills.map(\.name)
                 .map(CapabilityRuntimeResourceMatcher.normalizedName)
                 .filter { !$0.isEmpty }
         )
     }
 
     private static func hasRuntimeCompanionResources(_ package: PluginPackage) -> Bool {
-        !package.connectors.isEmpty || !package.localTools.isEmpty || !package.browserAdapters.isEmpty
+        !package.connectors.isEmpty || !package.localTools.isEmpty || !package.mcpServers.isEmpty || !package.browserAdapters.isEmpty
     }
+
+    private static let genericIntentTokens: Set<String> = [
+        "agent",
+        "and",
+        "api",
+        "app",
+        "are",
+        "can",
+        "browser",
+        "capability",
+        "connector",
+        "create",
+        "data",
+        "demo",
+        "doc",
+        "document",
+        "file",
+        "for",
+        "html",
+        "javascript",
+        "page",
+        "plugin",
+        "prototype",
+        "resource",
+        "resources",
+        "service",
+        "site",
+        "task",
+        "the",
+        "this",
+        "through",
+        "tool",
+        "tools",
+        "use",
+        "user",
+        "via",
+        "web",
+        "webpage",
+        "website",
+        "when",
+        "with",
+        "work",
+        "workflow",
+        "workspace"
+    ]
 
     private static func issue(
         package: PluginPackage,

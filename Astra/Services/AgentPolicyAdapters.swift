@@ -6,6 +6,7 @@ protocol ProviderPolicyAdapter {
     var providerID: AgentRuntimeID { get }
     var adapterVersion: Int { get }
     var supportedFeatures: ProviderPolicyFeatures { get }
+    var runtimeSupportTools: [ProviderRuntimeSupportToolDescriptor] { get }
 
     func render(policy: AgentPolicy, context: PolicyRenderContext) -> ProviderPolicyRender
     func validate(render: ProviderPolicyRender, context: PolicyRenderContext) -> [PolicyDiagnostic]
@@ -16,6 +17,8 @@ protocol ProviderPolicyAdapter {
 }
 
 extension ProviderPolicyAdapter {
+    var runtimeSupportTools: [ProviderRuntimeSupportToolDescriptor] { [] }
+
     func validate(render: ProviderPolicyRender, context _: PolicyRenderContext) -> [PolicyDiagnostic] {
         render.diagnostics
     }
@@ -98,11 +101,16 @@ struct ClaudePolicyAdapter: ProviderPolicyAdapter {
             ))
         }
 
-        let settingsSummary = "Generated .claude/settings.local.json permissions allow=\(allowedTools.count) deny=\(deniedTools.count)"
-        let cliSummary = permissionPolicy.cliArguments + (allowedTools.isEmpty ? [] : ["--allowedTools", "\(allowedTools.count) tools"])
+        let askFirstProviderTools = providerVisibleAskFirstTools(policy.askFirstTools, permissionPolicy: permissionPolicy)
+        let providerVisibleTools = Array(Set(allowedTools + askFirstProviderTools)).sorted()
+        let settingsSummary = "Generated .claude/settings.local.json permissions allow=\(allowedTools.count) ask=\(askFirstProviderTools.count) deny=\(deniedTools.count)"
+        let toolSummary = askFirstProviderTools.isEmpty
+            ? "\(allowedTools.count) tools"
+            : "\(allowedTools.count) allowed + \(askFirstProviderTools.count) ask-first tools"
+        let cliSummary = permissionPolicy.cliArguments + (providerVisibleTools.isEmpty ? [] : ["--allowedTools", toolSummary])
         let generatedConfigPreview = ClaudeSettingsStore.generatedConfigPreview(
             policy: permissionPolicy,
-            allowedTools: allowedTools
+            allowedTools: providerVisibleTools
         )
 
         return ProviderPolicyRender(
@@ -112,6 +120,7 @@ struct ClaudePolicyAdapter: ProviderPolicyAdapter {
             configOwnership: context.providerConfigOwnership,
             permissionMode: permissionPolicy.rawValue,
             allowedTools: allowedTools,
+            runtimeSupportTools: runtimeSupportTools,
             askFirstTools: policy.askFirstTools,
             deniedTools: deniedTools,
             allowedShellPatterns: policy.allowedShellPatterns,
@@ -169,12 +178,70 @@ struct ClaudePolicyAdapter: ProviderPolicyAdapter {
         }
         return "Bash(\(executable) \(pattern))"
     }
+
+    private func providerVisibleAskFirstTools(_ tools: [String], permissionPolicy: PermissionPolicy) -> [String] {
+        guard permissionPolicy == .restricted else { return [] }
+        return Array(Set(tools.compactMap(providerVisibleClaudeToolPermission))).sorted()
+    }
+
+    private func providerVisibleClaudeToolPermission(_ tool: String) -> String? {
+        let trimmed = tool.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if let openParen = trimmed.firstIndex(of: "("),
+           trimmed.hasSuffix(")") {
+            let rawTool = String(trimmed[..<openParen])
+            guard let canonicalTool = safeCanonicalClaudeToolName(rawTool) else { return nil }
+            let patternStart = trimmed.index(after: openParen)
+            let pattern = String(trimmed[patternStart..<trimmed.index(before: trimmed.endIndex)])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: ":", with: " ")
+            return pattern.isEmpty ? canonicalTool : "\(canonicalTool)(\(pattern))"
+        }
+
+        return safeCanonicalClaudeToolName(trimmed)
+    }
+
+    private func safeCanonicalClaudeToolName(_ name: String) -> String? {
+        switch name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "read", "view": return "Read"
+        case "grep": return "Grep"
+        case "glob": return "Glob"
+        case "write", "create": return "Write"
+        case "edit": return "Edit"
+        case "multiedit", "multi_edit": return "MultiEdit"
+        case "bash", "shell": return "Bash"
+        case "webfetch": return "WebFetch"
+        case "websearch": return "WebSearch"
+        case "agent": return "Agent"
+        default: return nil
+        }
+    }
 }
 
 struct CopilotPolicyAdapter: ProviderPolicyAdapter {
     let providerID: AgentRuntimeID = .copilotCLI
     let adapterVersion = 1
     var capabilities: AgentRuntimePolicyCapabilities = .conservative
+
+    var runtimeSupportTools: [ProviderRuntimeSupportToolDescriptor] {
+        [
+            ProviderRuntimeSupportToolDescriptor(
+                name: "fetch_copilot_cli_documentation",
+                providerNativePermission: "fetch_copilot_cli_documentation",
+                purpose: "Read GitHub Copilot CLI help and documentation for self-description questions.",
+                allowedInputKeys: [],
+                maxSummaryLength: 2
+            ),
+            ProviderRuntimeSupportToolDescriptor(
+                name: "report_intent",
+                providerNativePermission: "report_intent",
+                purpose: "Report non-mutating provider progress intent to the runtime.",
+                allowedInputKeys: ["intent"],
+                maxSummaryLength: 240
+            )
+        ]
+    }
 
     var supportedFeatures: ProviderPolicyFeatures {
         ProviderPolicyFeatures(
@@ -240,6 +307,7 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
             configOwnership: .generated,
             permissionMode: permissionPolicy.rawValue,
             allowedTools: providerAllowedTools,
+            runtimeSupportTools: runtimeSupportTools,
             askFirstTools: policy.askFirstTools,
             deniedTools: policy.deniedTools,
             allowedShellPatterns: policy.allowedShellPatterns,
@@ -278,9 +346,7 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
         case "read", "view": return "read"
         case "grep": return "grep"
         case "glob": return "glob"
-        case "write": return "write"
-        case "edit": return "edit"
-        case "multiedit", "multi_edit": return "multiedit"
+        case "write", "create", "edit", "multiedit", "multi_edit": return "write"
         case "bash", "shell": return "shell"
         case "webfetch": return "webfetch"
         case "websearch": return "websearch"
@@ -356,6 +422,7 @@ struct AntigravityPolicyAdapter: ProviderPolicyAdapter {
             configOwnership: .generated,
             permissionMode: permissionPolicy.rawValue,
             allowedTools: permissionPolicy == .autonomous ? ["*"] : [],
+            runtimeSupportTools: runtimeSupportTools,
             askFirstTools: policy.askFirstTools,
             deniedTools: policy.deniedTools,
             allowedShellPatterns: policy.allowedShellPatterns,
@@ -602,6 +669,7 @@ enum AgentPolicyManifestService {
         )
         let basePolicy = resolution.policy
         let taskCapabilityResolver = TaskCapabilityResolver(task: task)
+        let taskCapabilityScope = taskCapabilityResolver.promptScope()
         let taskScopedGrants = TaskRuntimePermissionGrants.approvedGrants(for: task)
         let executionGrants = executionPolicy.permissionGrantsOverride ?? []
         let effectiveGrants = PermissionBroker.sanitizeApprovedGrants(taskScopedGrants + executionGrants)
@@ -612,7 +680,7 @@ enum AgentPolicyManifestService {
             ? basePolicy
             : basePolicy.applyingOneRunAllowedTools(policyApprovedTools)
         let requestedAllowedTools = uniqueStrings(
-            executionPolicy.allowedTools(default: taskCapabilityResolver.resolver.resolvedProviderAllowedTools)
+            executionPolicy.allowedTools(default: taskCapabilityScope.resolver.resolvedProviderAllowedTools)
                 + taskScopedProviderGrants
         )
         let manifestExecutionPolicy = AgentRuntimeExecutionPolicy(
@@ -620,7 +688,7 @@ enum AgentPolicyManifestService {
             allowedToolsOverride: policyApprovedTools.isEmpty ? executionPolicy.allowedToolsOverride : policyApprovedTools,
             permissionGrantsOverride: effectiveGrants.isEmpty ? executionPolicy.permissionGrantsOverride : effectiveGrants
         )
-        let envKeys = Array(taskCapabilityResolver.resolver.resolvedEnvironmentVariables.keys).sorted()
+        let envKeys = Array(taskCapabilityScope.resolver.resolvedEnvironmentVariables.keys).sorted()
         let runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: runtime)
         let providerPolicyAdapter = runtimeAdapter.policyAdapter(runtimeCapabilities: providerCapabilities)
         let configOwnership = runtimeAdapter.providerConfigOwnership(workspacePath: workspacePath)
@@ -715,7 +783,8 @@ enum AgentPolicyManifestService {
 
     @MainActor
     private static func localToolCommands(for task: AgentTask) -> [String] {
-        var commands: [String] = TaskCapabilityResolver(task: task).allLocalTools.compactMap { tool in
+        let capabilityScope = TaskCapabilityResolver(task: task).promptScope()
+        var commands: [String] = capabilityScope.localTools.compactMap { tool in
             guard tool.toolType != "mcp" else { return nil }
             let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)
             return command.isEmpty ? nil : command
@@ -728,8 +797,9 @@ enum AgentPolicyManifestService {
 
     @MainActor
     private static func credentialLabels(for task: AgentTask) -> [String] {
-        let skillKeys = task.skills.flatMap(\.environmentKeys)
-        let connectorKeys = TaskCapabilityResolver(task: task).allConnectors.flatMap(\.credentialKeys)
+        let capabilityScope = TaskCapabilityResolver(task: task).promptScope()
+        let skillKeys = capabilityScope.behaviorSkills.flatMap(\.environmentKeys)
+        let connectorKeys = capabilityScope.connectors.flatMap(\.credentialKeys)
         return Array(Set(skillKeys + connectorKeys)).sorted()
     }
 

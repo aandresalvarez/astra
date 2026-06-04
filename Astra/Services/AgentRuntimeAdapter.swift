@@ -534,6 +534,7 @@ struct AgentRuntimeProcessLaunchContext {
     let permissionManifest: RunPermissionManifest?
     let timeoutSeconds: TimeInterval
     let phase: String
+    let contextText: String
     let nativeContinuationSessionID: String?
     let runID: UUID?
 
@@ -548,6 +549,7 @@ struct AgentRuntimeProcessLaunchContext {
         permissionManifest: RunPermissionManifest?,
         timeoutSeconds: TimeInterval,
         phase: String = "run",
+        contextText: String = "",
         nativeContinuationSessionID: String? = nil,
         runID: UUID? = nil
     ) {
@@ -561,6 +563,7 @@ struct AgentRuntimeProcessLaunchContext {
         self.permissionManifest = permissionManifest
         self.timeoutSeconds = timeoutSeconds
         self.phase = phase
+        self.contextText = contextText
         self.nativeContinuationSessionID = nativeContinuationSessionID
         self.runID = runID
     }
@@ -960,19 +963,46 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
 
     @MainActor
     func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
-        let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: context.task)
+        let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
+            for: context.task,
+            contextText: context.contextText
+        )
         let browserShimDirectory = AgentRuntimeProcessRunner.browserToolShimDirectory(
             for: context.task,
             taskEnv: taskEnv
         )
         let effectivePermissionPolicy = context.executionPolicy.permissionPolicy(default: context.permissionPolicy)
+        let capabilityScope = TaskCapabilityResolver(task: context.task).promptScope(contextText: context.contextText)
         let allowed = context.executionPolicy.allowedTools(
-            default: TaskCapabilityResolver(task: context.task).resolver.resolvedProviderAllowedTools
+            default: capabilityScope.resolver.resolvedProviderAllowedTools
         )
         let providerAllowed = AgentRuntimeProcessRunner.providerAllowedTools(
             for: id,
             baseAllowedTools: allowed,
             permissionManifest: context.permissionManifest
+        )
+        let runtimeSupportTools = AgentRuntimeProcessRunner.providerRuntimeSupportToolPermissions(
+            for: id,
+            permissionManifest: context.permissionManifest
+        )
+        let askFirstToolPermissions = AgentRuntimeProcessRunner.providerAskFirstToolPermissions(
+            for: id,
+            permissionManifest: context.permissionManifest
+        )
+        let artifactBootstrapTools = ProviderArtifactBootstrapPolicy.launchTools(
+            task: context.task,
+            permissionPolicy: effectivePermissionPolicy,
+            providerAllowedTools: providerAllowed,
+            askFirstTools: askFirstToolPermissions
+        )
+        let nativeAllowedTools = Array(Set(
+            providerAllowed + askFirstToolPermissions + runtimeSupportTools + artifactBootstrapTools
+        )).sorted()
+        let usesArtifactBootstrapProfile = !artifactBootstrapTools.isEmpty
+        let visibleTools = Self.visibleProviderTools(
+            from: nativeAllowedTools,
+            task: context.task,
+            permissionPolicy: effectivePermissionPolicy
         )
         let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
         var args = [
@@ -988,19 +1018,26 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             AgentRuntimeProcessRunner.translatedModelForProvider(model),
             "--output-format",
             "stream-json",
+            "--include-partial-messages",
             "--verbose"
         ]
+        if usesArtifactBootstrapProfile {
+            args += ["--effort", "low"]
+        }
         args += effectivePermissionPolicy.cliArguments
         AgentRuntimeProcessRunner.ensureSubAgentPermissions(
             at: context.workspacePath,
             policy: effectivePermissionPolicy,
-            allowedTools: providerAllowed
+            allowedTools: nativeAllowedTools
         )
         if context.task.maxTurns > 0 {
             args += ["--max-turns", String(context.task.maxTurns)]
         }
-        if !providerAllowed.isEmpty {
-            args += ["--allowedTools"] + providerAllowed
+        if !visibleTools.isEmpty {
+            args += ["--tools", visibleTools.joined(separator: ",")]
+        }
+        if !nativeAllowedTools.isEmpty {
+            args += ["--allowedTools"] + nativeAllowedTools
         }
 
         return AgentRuntimeProcessLaunchPlan(
@@ -1031,7 +1068,19 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
                 "model": model,
                 "provider_model": AgentRuntimeProcessRunner.translatedModelForProvider(model),
                 "permission_policy": effectivePermissionPolicy.rawValue,
+                "artifact_bootstrap_profile": String(usesArtifactBootstrapProfile),
+                "launch_effort": usesArtifactBootstrapProfile ? "low" : "default",
                 "allowed_tools_count": String(providerAllowed.count),
+                "provider_launch_allowed_tool_count": String(nativeAllowedTools.count),
+                "runtime_support_tool_count": String(runtimeSupportTools.count),
+                "runtime_support_tool_names": runtimeSupportTools.joined(separator: ","),
+                "ask_first_tool_count": String(askFirstToolPermissions.count),
+                "ask_first_tool_names": askFirstToolPermissions.joined(separator: ","),
+                "artifact_bootstrap_tool_count": String(artifactBootstrapTools.count),
+                "artifact_bootstrap_tool_names": artifactBootstrapTools.joined(separator: ","),
+                "visible_tools_count": String(visibleTools.count),
+                "visible_tool_names": visibleTools.joined(separator: ","),
+                "uses_visible_tools_filter": String(!visibleTools.isEmpty),
                 "allowed_tools_override": String(context.executionPolicy.allowedToolsOverride != nil),
                 "task_env_count": String(taskEnv.count),
                 "max_turns": String(context.task.maxTurns),
@@ -1040,6 +1089,73 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
                 "native_session_prefix": context.nativeContinuationSessionID.map { String($0.prefix(8)) } ?? "none"
             ]
         )
+    }
+
+    private static func visibleProviderTools(
+        from nativeAllowedTools: [String],
+        task: AgentTask,
+        permissionPolicy: PermissionPolicy
+    ) -> [String] {
+        guard permissionPolicy != .autonomous else { return [] }
+
+        var visible = Set<String>()
+        for tool in nativeAllowedTools {
+            if let normalized = visibleProviderToolName(for: tool) {
+                visible.insert(normalized)
+            }
+        }
+
+        if task.useAgentTeam {
+            visible.formUnion([
+                "Task",
+                "TeamCreate",
+                "TeamDelete",
+                "TaskCreate",
+                "TaskGet",
+                "TaskList",
+                "TaskOutput",
+                "TaskStop",
+                "TaskUpdate"
+            ])
+        }
+
+        return visible.sorted()
+    }
+
+    private static func visibleProviderToolName(for rawTool: String) -> String? {
+        let trimmed = rawTool.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let baseName = trimmed
+            .split(separator: "(", maxSplits: 1, omittingEmptySubsequences: true)
+            .first
+            .map(String.init) ?? trimmed
+        let normalized = baseName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        switch normalized {
+        case "bash", "shell":
+            return "Bash"
+        case "edit":
+            return "Edit"
+        case "glob":
+            return "Glob"
+        case "grep":
+            return "Grep"
+        case "multiedit":
+            return "MultiEdit"
+        case "notebookedit":
+            return "NotebookEdit"
+        case "read":
+            return "Read"
+        case "webfetch":
+            return "WebFetch"
+        case "websearch":
+            return "WebSearch"
+        case "write":
+            return "Write"
+        default:
+            return nil
+        }
     }
 
     func parseProcessEvents(line: String, parsesJSONLines _: Bool) -> [ParsedEvent] {
@@ -1137,7 +1253,12 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         // Non-interactive helper: hand the CLI an empty stdin so it never blocks
         // waiting for input it will never receive (provider-agnostic safeguard).
         process.standardInput = FileHandle.nullDevice
-        let result = await AsyncProcessRunner.run(process, stdout: stdoutPipe, stderr: stderrPipe)
+        let result = await AsyncProcessRunner.run(
+            process,
+            stdout: stdoutPipe,
+            stderr: stderrPipe,
+            timeoutSeconds: configuration.timeoutSeconds
+        )
         return AgentUtilityRunResult(exitCode: result.exitCode, output: result.stdout, error: result.stderr)
     }
 
@@ -1497,20 +1618,36 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
 
     @MainActor
     func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
-        let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: context.task)
+        let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
+            for: context.task,
+            contextText: context.contextText
+        )
         let browserShimDirectory = AgentRuntimeProcessRunner.browserToolShimDirectory(
             for: context.task,
             taskEnv: taskEnv
         )
         let effectivePermissionPolicy = context.executionPolicy.permissionPolicy(default: context.permissionPolicy)
+        let capabilityScope = TaskCapabilityResolver(task: context.task).promptScope(contextText: context.contextText)
         let allowed = context.executionPolicy.allowedTools(
-            default: TaskCapabilityResolver(task: context.task).resolver.resolvedProviderAllowedTools
+            default: capabilityScope.resolver.resolvedProviderAllowedTools
         )
         let providerAllowed = AgentRuntimeProcessRunner.providerAllowedTools(
             for: id,
             baseAllowedTools: allowed,
             permissionManifest: context.permissionManifest
         )
+        let runtimeSupportTools = AgentRuntimeProcessRunner.providerRuntimeSupportToolPermissions(
+            for: id,
+            permissionManifest: context.permissionManifest
+        )
+        let askFirstTools = context.permissionManifest?.providerRender.askFirstTools ?? []
+        let artifactBootstrapTools = ProviderArtifactBootstrapPolicy.launchTools(
+            task: context.task,
+            permissionPolicy: effectivePermissionPolicy,
+            providerAllowedTools: providerAllowed,
+            askFirstTools: askFirstTools
+        )
+        let providerLaunchAllowed = Array(Set(providerAllowed + artifactBootstrapTools)).sorted()
         let pathPrefix = AgentRuntimeProcessRunner.pathPrefix(for: context.task, taskEnv: taskEnv)
         let executable = context.executablePath.isEmpty ? CopilotCLIRuntime.detectPath() : context.executablePath
         let providerVersion = CopilotCLIRuntime.versionSummary(executablePath: executable)
@@ -1528,7 +1665,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             workspacePath: context.workspacePath,
             additionalPaths: additionalPaths,
             permissionPolicy: effectivePermissionPolicy,
-            allowedTools: providerAllowed,
+            allowedTools: providerLaunchAllowed,
             timeoutSeconds: context.timeoutSeconds,
             capabilities: capabilities,
             taskEnvironment: taskEnv,
@@ -1536,7 +1673,9 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             pathPrefix: pathPrefix,
             includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task)
                 || taskEnv["ASTRA_BROWSER_URL"] != nil,
-            localToolCommands: localToolCommands
+            localToolCommands: localToolCommands,
+            runtimeSupportTools: runtimeSupportTools,
+            askFirstTools: askFirstTools
         )
 
         return AgentRuntimeProcessLaunchPlan(
@@ -1571,9 +1710,19 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "supports_allow_all_tools": String(capabilities.supportsAllowAllTools),
                 "supports_allow_all_paths": String(capabilities.supportsAllowAllPaths),
                 "supports_allow_all_urls": String(capabilities.supportsAllowAllURLs),
+                "supports_available_tools": String(capabilities.supportsAvailableTools),
+                "supports_excluded_tools": String(capabilities.supportsExcludedTools),
                 "requires_allow_all_tools": String(capabilities.requiresAllowAllToolsForPrompt),
                 "permission_policy": effectivePermissionPolicy.rawValue,
                 "allowed_tools_count": String(providerAllowed.count),
+                "provider_launch_allowed_tool_count": String(providerLaunchAllowed.count),
+                "runtime_support_tool_count": String(runtimeSupportTools.count),
+                "runtime_support_tool_names": runtimeSupportTools.joined(separator: ","),
+                "ask_first_tool_count": String(askFirstTools.count),
+                "ask_first_tool_names": askFirstTools.joined(separator: ","),
+                "artifact_bootstrap_tool_count": String(artifactBootstrapTools.count),
+                "artifact_bootstrap_tool_names": artifactBootstrapTools.joined(separator: ","),
+                "artifact_bootstrap_profile": String(!artifactBootstrapTools.isEmpty),
                 "allowed_tools_override": String(context.executionPolicy.allowedToolsOverride != nil),
                 "local_tool_commands_count": String(localToolCommands.count),
                 "additional_paths_count": String(additionalPaths.count),
@@ -1587,9 +1736,19 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "uses_allow_all_tools": String(plan.arguments.contains("--allow-all-tools")),
                 "uses_allow_all_paths": String(plan.arguments.contains("--allow-all-paths")),
                 "uses_allow_all_urls": String(plan.arguments.contains("--allow-all-urls")),
-                "uses_allow_tool": String(plan.arguments.contains("--allow-tool"))
+                "uses_allow_tool": String(plan.arguments.contains("--allow-tool")),
+                "uses_available_tools": String(plan.arguments.contains("--available-tools")),
+                "uses_excluded_tools": String(plan.arguments.contains("--excluded-tools")),
+                "excludes_task_tool": String(Self.argumentList(plan.arguments, after: "--excluded-tools").contains("task"))
             ]
         )
+    }
+
+    private static func argumentList(_ arguments: [String], after flag: String) -> [String] {
+        guard let index = arguments.firstIndex(of: flag) else { return [] }
+        let start = arguments.index(after: index)
+        guard start < arguments.endIndex else { return [] }
+        return Array(arguments[start...].prefix { !$0.hasPrefix("--") })
     }
 
     func parseProcessEvents(line: String, parsesJSONLines: Bool) -> [ParsedEvent] {
@@ -1671,7 +1830,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             additionalPaths: [],
             permissionPolicy: .restricted,
             allowedTools: allowedTools,
-            timeoutSeconds: 120,
+            timeoutSeconds: configuration.timeoutSeconds,
             capabilities: capabilities,
             taskEnvironment: [:],
             copilotHome: copilotHome,
@@ -1692,11 +1851,122 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         // Non-interactive helper: hand the CLI an empty stdin so it never blocks
         // waiting for input it will never receive (provider-agnostic safeguard).
         process.standardInput = FileHandle.nullDevice
-        let result = await AsyncProcessRunner.run(process, stdout: stdoutPipe, stderr: stderrPipe)
+        if plan.parsesJSONLines {
+            return await runStreamingCopilotUtilityPrompt(
+                process,
+                stdout: stdoutPipe,
+                stderr: stderrPipe,
+                timeoutSeconds: configuration.timeoutSeconds
+            )
+        }
+
+        let result = await AsyncProcessRunner.run(
+            process,
+            stdout: stdoutPipe,
+            stderr: stderrPipe,
+            timeoutSeconds: configuration.timeoutSeconds
+        )
         let output = plan.parsesJSONLines
             ? extractCopilotUtilityText(from: result.stdout)
             : result.stdout
         return AgentUtilityRunResult(exitCode: result.exitCode, output: output, error: result.stderr)
+    }
+
+    private func runStreamingCopilotUtilityPrompt(
+        _ process: Process,
+        stdout: Pipe,
+        stderr: Pipe,
+        timeoutSeconds: TimeInterval?
+    ) async -> AgentUtilityRunResult {
+        let state = CopilotUtilityStreamRunState()
+        let stdoutLines = AgentLockedBuffer()
+
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let finish: @Sendable (AgentUtilityRunResult, Bool) -> Void = { result, shouldTerminate in
+                    stdout.fileHandleForReading.readabilityHandler = nil
+                    stderr.fileHandleForReading.readabilityHandler = nil
+                    if shouldTerminate {
+                        AsyncProcessRunner.terminateProcessTree(process)
+                    }
+                    continuation.resume(returning: result)
+                }
+
+                let handleLine: @Sendable (String) -> Void = { line in
+                    if let result = state.appendStdoutLineAndCompleteIfReady(line) {
+                        finish(result, true)
+                    }
+                }
+
+                stdout.fileHandleForReading.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    guard !data.isEmpty,
+                          let chunk = String(data: data, encoding: .utf8) else { return }
+                    stdoutLines.appendAndProcessLines(chunk, handleLine)
+                }
+
+                stderr.fileHandleForReading.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    guard !data.isEmpty,
+                          let chunk = String(data: data, encoding: .utf8) else { return }
+                    state.appendStderr(chunk)
+                }
+
+                process.terminationHandler = { proc in
+                    stdout.fileHandleForReading.readabilityHandler = nil
+                    stderr.fileHandleForReading.readabilityHandler = nil
+                    if let chunk = String(
+                        data: stdout.fileHandleForReading.readDataToEndOfFile(),
+                        encoding: .utf8
+                    ), !chunk.isEmpty {
+                        stdoutLines.appendAndProcessLines(chunk, handleLine)
+                    }
+                    let remaining = stdoutLines.drainRemaining()
+                    if !remaining.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        handleLine(remaining)
+                    }
+                    if let chunk = String(
+                        data: stderr.fileHandleForReading.readDataToEndOfFile(),
+                        encoding: .utf8
+                    ), !chunk.isEmpty {
+                        state.appendStderr(chunk)
+                    }
+                    if let result = state.completeWithProcessExit(exitCode: Int(proc.terminationStatus)) {
+                        finish(result, false)
+                    }
+                }
+
+                do {
+                    try process.run()
+                    scheduleCopilotUtilityTimeout(
+                        process: process,
+                        timeoutSeconds: timeoutSeconds,
+                        state: state,
+                        finish: finish
+                    )
+                } catch {
+                    if let result = state.completeWithLaunchError(error.localizedDescription) {
+                        finish(result, false)
+                    }
+                }
+            }
+        } onCancel: {
+            AsyncProcessRunner.terminateProcessTree(process)
+        }
+    }
+
+    private func scheduleCopilotUtilityTimeout(
+        process: Process,
+        timeoutSeconds: TimeInterval?,
+        state: CopilotUtilityStreamRunState,
+        finish: @escaping @Sendable (AgentUtilityRunResult, Bool) -> Void
+    ) {
+        guard let timeoutSeconds, timeoutSeconds > 0 else { return }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeoutSeconds) {
+            if let result = state.completeWithTimeout(timeoutSeconds: timeoutSeconds) {
+                finish(result, true)
+            }
+        }
     }
 
     @MainActor
@@ -1786,6 +2056,134 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         }
         let joined = pieces.joined()
         return joined.isEmpty ? output : joined.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+private final class CopilotUtilityStreamRunState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var completed = false
+    private var rawOutput = ""
+    private var outputPieces: [String] = []
+    private var stderrOutput = ""
+
+    func appendStdoutLineAndCompleteIfReady(_ line: String) -> AgentUtilityRunResult? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !completed else { return nil }
+
+        rawOutput += line
+        rawOutput += "\n"
+
+        var completedLine = false
+        for event in CopilotStreamEventParser.parseAgentEvents(line: line) {
+            switch event {
+            case .text(let text):
+                outputPieces.append(text)
+            case .completed(let summary):
+                completedLine = true
+                if let summary, !summary.isEmpty {
+                    outputPieces.append(summary)
+                }
+            default:
+                continue
+            }
+        }
+
+        let hasOutput = !renderedOutputLocked().isEmpty
+        guard completedLine || (hasOutput && Self.isTerminalLine(line)) else {
+            return nil
+        }
+
+        completed = true
+        return makeResultLocked(exitCode: 0, error: stderrOutput)
+    }
+
+    func appendStderr(_ chunk: String) {
+        lock.lock()
+        stderrOutput += chunk
+        lock.unlock()
+    }
+
+    func completeWithProcessExit(exitCode: Int) -> AgentUtilityRunResult? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !completed else { return nil }
+
+        completed = true
+        return makeResultLocked(exitCode: exitCode, error: stderrOutput)
+    }
+
+    func completeWithLaunchError(_ message: String) -> AgentUtilityRunResult? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !completed else { return nil }
+
+        completed = true
+        return AgentUtilityRunResult(exitCode: -1, output: "", error: message)
+    }
+
+    func completeWithTimeout(timeoutSeconds: TimeInterval) -> AgentUtilityRunResult? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !completed else { return nil }
+
+        completed = true
+        let timeoutText = "Process timed out after \(Int(timeoutSeconds.rounded())) seconds."
+        return AgentUtilityRunResult(exitCode: -1, output: "", error: timeoutText)
+    }
+
+    private func makeResultLocked(exitCode: Int, error: String) -> AgentUtilityRunResult {
+        AgentUtilityRunResult(
+            exitCode: exitCode,
+            output: renderedOutputLocked(),
+            error: error.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+    }
+
+    private func renderedOutputLocked() -> String {
+        let parsed = outputPieces.joined().trimmingCharacters(in: .whitespacesAndNewlines)
+        if !parsed.isEmpty {
+            return parsed
+        }
+        return rawOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func isTerminalLine(_ line: String) -> Bool {
+        let terminalTypes: Set<String> = [
+            "assistant.turn_end",
+            "session.shutdown",
+            "result",
+            "completed",
+            "complete"
+        ]
+        guard let object = jsonObject(from: line),
+              let type = eventType(in: object)?.lowercased() else {
+            return false
+        }
+        return terminalTypes.contains(type)
+    }
+
+    private static func eventType(in object: [String: Any]) -> String? {
+        for key in ["type", "event", "kind", "sessionUpdate", "name"] {
+            if let value = object[key] as? String {
+                return value
+            }
+        }
+        for key in ["data", "payload", "message"] {
+            if let nested = object[key] as? [String: Any],
+               let value = eventType(in: nested) {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private static func jsonObject(from line: String) -> [String: Any]? {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let data = trimmed.data(using: .utf8) else {
+            return nil
+        }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }
 }
 
@@ -1953,7 +2351,10 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
 
     @MainActor
     func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
-        let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: context.task)
+        let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
+            for: context.task,
+            contextText: context.contextText
+        )
         let browserShimDirectory = AgentRuntimeProcessRunner.browserToolShimDirectory(
             for: context.task,
             taskEnv: taskEnv
@@ -2118,7 +2519,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             workspacePath: workspacePath,
             additionalPaths: [],
             permissionPolicy: .restricted,
-            timeoutSeconds: 120,
+            timeoutSeconds: configuration.timeoutSeconds,
             taskEnvironment: [:],
             providerHomeDirectory: configuration.homeDirectory(for: id)
         )
@@ -2136,7 +2537,12 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         // Non-interactive helper: hand the CLI an empty stdin so it never blocks
         // waiting for input it will never receive (provider-agnostic safeguard).
         process.standardInput = FileHandle.nullDevice
-        let result = await AsyncProcessRunner.run(process, stdout: stdoutPipe, stderr: stderrPipe)
+        let result = await AsyncProcessRunner.run(
+            process,
+            stdout: stdoutPipe,
+            stderr: stderrPipe,
+            timeoutSeconds: configuration.timeoutSeconds
+        )
         await AgentRuntimeSharedStateGate.shared.release(sharedStateKey)
         return AgentUtilityRunResult(exitCode: result.exitCode, output: result.stdout, error: result.stderr)
     }

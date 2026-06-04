@@ -29,11 +29,21 @@ enum AgentRuntimeRunPersistence {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String
+        phase: String,
+        handoffDiscoveredFiles: [TaskOutputDiscoveredFile]? = nil
     ) {
+        let persistedArtifacts = TaskArtifactPersistenceService.persistDiscoveredTaskOutputArtifacts(
+            for: task,
+            modelContext: modelContext
+        )
         AgentEventCompactor.compactEvents(for: task, modelContext: modelContext)
         AgentPolicyManifestService.recordPostRunSummary(task: task, run: run, modelContext: modelContext)
-        TaskWorkerHandoffService.recordCreatedIfNeeded(task: task, run: run, modelContext: modelContext)
+        TaskWorkerHandoffService.recordCreatedIfNeeded(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            discoveredFiles: handoffDiscoveredFiles
+        )
         MissionHardeningService.recordCheckpoint(task: task, run: run, modelContext: modelContext)
 
         let finishedAt = Date()
@@ -47,11 +57,16 @@ enum AgentRuntimeRunPersistence {
             workspace: task.workspace,
             modelContext: modelContext,
             taskID: task.id,
-            auditFields: fields(task: task, run: run, phase: phase)
+            auditFields: fields(task: task, run: run, phase: phase, persistedArtifactCount: persistedArtifacts.count)
         )
     }
 
-    static func fields(task: AgentTask, run: TaskRun, phase: String) -> [String: String] {
+    static func fields(
+        task: AgentTask,
+        run: TaskRun,
+        phase: String,
+        persistedArtifactCount: Int = 0
+    ) -> [String: String] {
         let runEvents = task.events.filter { $0.run?.id == run.id }
         return [
             "phase": phase,
@@ -68,6 +83,8 @@ enum AgentRuntimeRunPersistence {
             "error_event_count": String(runEvents.filter { $0.type == "error" }.count),
             "run_event_count": String(runEvents.count),
             "file_changes": String(run.fileChanges.count),
+            "task_artifacts": String(task.artifacts.count),
+            "persisted_task_output_artifacts": String(persistedArtifactCount),
             "tokens_input": String(run.inputTokens),
             "tokens_output": String(run.outputTokens),
             "provider_version": run.providerVersion ?? "unknown"

@@ -7,13 +7,14 @@ enum TaskWorkerHandoffService {
     static func recordCreatedIfNeeded(
         task: AgentTask,
         run: TaskRun,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        discoveredFiles: [TaskOutputDiscoveredFile]? = nil
     ) -> TaskEvent? {
         if task.events.contains(where: { $0.type == TaskHandoffEventTypes.created && $0.run?.id == run.id }) {
             return nil
         }
 
-        let payload = makePayload(task: task, run: run)
+        let payload = makePayload(task: task, run: run, discoveredFiles: discoveredFiles)
         let event = TaskEvent(task: task, type: TaskHandoffEventTypes.created, payload: encode(payload), run: run)
         modelContext.insert(event)
         AppLogger.audit(.handoffCreated, category: "Worker", taskID: task.id, fields: [
@@ -35,7 +36,11 @@ enum TaskWorkerHandoffService {
         return try? JSONDecoder().decode(TaskWorkerHandoffPayload.self, from: data)
     }
 
-    private static func makePayload(task: AgentTask, run: TaskRun) -> TaskWorkerHandoffPayload {
+    private static func makePayload(
+        task: AgentTask,
+        run: TaskRun,
+        discoveredFiles: [TaskOutputDiscoveredFile]?
+    ) -> TaskWorkerHandoffPayload {
         let runEvents = task.events.filter { $0.run?.id == run.id }
         let completedWork = completedWorkFacts(task: task, run: run, runEvents: runEvents)
         let unfinishedWork = unfinishedWorkFacts(task: task)
@@ -43,6 +48,10 @@ enum TaskWorkerHandoffService {
         let validationEvidence = runEvents
             .filter { $0.type.hasPrefix("validation.") }
             .map { "\($0.type): \(boundedInline($0.payload, maxCharacters: 220))" }
+        let discoveredFiles = discoveredFiles ?? TaskOutputDiscovery.files(for: task)
+        let discoveredRunFiles = TaskOutputDiscovery.filesChanged(during: run, from: discoveredFiles).map(\.path)
+        let filesChanged = dedupe(run.fileChanges.map(\.path) + discoveredRunFiles, limit: 50)
+        let artifactsCreated = dedupe(task.artifacts.map(\.path) + discoveredFiles.map(\.path), limit: 30)
         let commands = runEvents
             .filter { $0.type == "tool.use" }
             .prefix(12)
@@ -62,8 +71,8 @@ enum TaskWorkerHandoffService {
             completedWork: completedWork,
             unfinishedWork: unfinishedWork,
             commands: Array(commands),
-            filesChanged: Array(run.fileChanges.map(\.path).prefix(50)),
-            artifactsCreated: Array(task.artifacts.map(\.path).prefix(30)),
+            filesChanged: filesChanged,
+            artifactsCreated: artifactsCreated,
             validationEvidence: Array(validationEvidence.prefix(12)),
             blockers: blockers,
             risks: risks,
@@ -111,6 +120,21 @@ enum TaskWorkerHandoffService {
     }
 
     private static func blockerFacts(run: TaskRun, runEvents: [TaskEvent]) -> [String] {
+        let planBlockers = runEvents
+            .filter { $0.type == TaskPlanEventTypes.stepBlocked }
+            .compactMap { event -> String? in
+                guard let payload = TaskPlanService.decodeStepProgressPayload(event.payload) else {
+                    return "plan.step.blocked: \(boundedInline(event.payload, maxCharacters: 260))"
+                }
+                let reason = [
+                    payload.reason,
+                    payload.detail,
+                    payload.summary
+                ]
+                    .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .first { !$0.isEmpty } ?? "No reason recorded"
+                return "Plan step blocked: \(payload.stepID) - \(boundedInline(reason, maxCharacters: 220))"
+            }
         let eventBlockers = runEvents
             .filter {
                 ["error", "permission.denied", "permission.approval.requested", "budget.exceeded"].contains($0.type) ||
@@ -118,7 +142,12 @@ enum TaskWorkerHandoffService {
             }
             .map { "\($0.type): \(boundedInline($0.payload, maxCharacters: 260))" }
         let stopReason = run.stopReason.trimmingCharacters(in: .whitespacesAndNewlines)
-        return dedupe((stopReason.isEmpty || stopReason == "completed" ? [] : ["Run stopped: \(stopReason)"]) + eventBlockers, limit: 12)
+        return dedupe(
+            (stopReason.isEmpty || stopReason == "completed" ? [] : ["Run stopped: \(stopReason)"]) +
+                planBlockers +
+                eventBlockers,
+            limit: 12
+        )
     }
 
     private static func riskFacts(task: AgentTask, run: TaskRun, blockers: [String]) -> [String] {
@@ -186,4 +215,3 @@ enum TaskWorkerHandoffService {
         return string
     }
 }
-

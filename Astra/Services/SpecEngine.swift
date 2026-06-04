@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 // MARK: - Async Process Runner
@@ -11,26 +12,65 @@ enum AsyncProcessRunner {
         let stderr: String
     }
 
-    static func run(_ process: Process, stdout: Pipe?, stderr: Pipe?) async -> Output {
-        await withTaskCancellationHandler {
+    final class RunState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var completed = false
+        private var timedOut = false
+
+        func markTimedOutIfRunning(_ process: Process) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !completed, process.isRunning else { return false }
+            timedOut = true
+            return true
+        }
+
+        func markCompleted() -> (didComplete: Bool, didTimeOut: Bool) {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !completed else { return (false, timedOut) }
+            completed = true
+            return (true, timedOut)
+        }
+    }
+
+    static func run(
+        _ process: Process,
+        stdout: Pipe?,
+        stderr: Pipe?,
+        timeoutSeconds: TimeInterval? = nil
+    ) async -> Output {
+        let state = RunState()
+        return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 process.terminationHandler = { proc in
+                    let completion = state.markCompleted()
+                    guard completion.didComplete else { return }
+                    let timedOut = completion.didTimeOut
+
                     let stdoutStr: String
-                    if let stdout {
+                    if timedOut {
+                        stdoutStr = ""
+                    } else if let stdout {
                         stdoutStr = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
                     } else {
                         stdoutStr = ""
                     }
 
                     let stderrStr: String
-                    if let stderr {
+                    if timedOut {
+                        let timeoutText = timeoutSeconds.map {
+                            "Process timed out after \(Int($0.rounded())) seconds."
+                        } ?? "Process timed out."
+                        stderrStr = timeoutText
+                    } else if let stderr {
                         stderrStr = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
                     } else {
                         stderrStr = ""
                     }
 
                     continuation.resume(returning: Output(
-                        exitCode: Int(proc.terminationStatus),
+                        exitCode: timedOut ? -1 : Int(proc.terminationStatus),
                         stdout: stdoutStr.trimmingCharacters(in: .whitespacesAndNewlines),
                         stderr: stderrStr.trimmingCharacters(in: .whitespacesAndNewlines)
                     ))
@@ -38,12 +78,73 @@ enum AsyncProcessRunner {
 
                 do {
                     try process.run()
+                    scheduleTimeoutIfNeeded(
+                        timeoutSeconds: timeoutSeconds,
+                        process: process,
+                        state: state
+                    )
                 } catch {
+                    guard state.markCompleted().didComplete else { return }
                     continuation.resume(returning: Output(exitCode: -1, stdout: "", stderr: error.localizedDescription))
                 }
             }
         } onCancel: {
-            if process.isRunning { process.terminate() }
+            terminateProcessTree(process)
+        }
+    }
+
+    private static func scheduleTimeoutIfNeeded(
+        timeoutSeconds: TimeInterval?,
+        process: Process,
+        state: RunState
+    ) {
+        guard let timeoutSeconds, timeoutSeconds > 0 else { return }
+
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeoutSeconds) {
+            guard state.markTimedOutIfRunning(process) else { return }
+            terminateProcessTree(process)
+        }
+    }
+
+    static func terminateProcessTree(_ process: Process) {
+        guard process.isRunning else { return }
+        let pid = process.processIdentifier
+        terminateDescendants(of: pid, signal: SIGTERM)
+        process.terminate()
+
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) {
+            guard process.isRunning else { return }
+            terminateDescendants(of: pid, signal: SIGKILL)
+            kill(pid, SIGKILL)
+        }
+    }
+
+    private static func terminateDescendants(of pid: pid_t, signal: Int32) {
+        for child in childPIDs(of: pid) {
+            terminateDescendants(of: child, signal: signal)
+            kill(child, signal)
+        }
+    }
+
+    private static func childPIDs(of pid: pid_t) -> [pid_t] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        process.arguments = ["-P", String(pid)]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let output = String(data: data, encoding: .utf8) ?? ""
+            return output
+                .split(whereSeparator: \.isNewline)
+                .compactMap { pid_t($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        } catch {
+            return []
         }
     }
 }
@@ -356,6 +457,12 @@ enum SpecEngine {
         )
 
         guard result.exitCode == 0 else {
+            AppLogger.audit(.specExtractionFailed, category: "Worker", fields: [
+                "exit_code": String(result.exitCode),
+                "source": "chat",
+                "runtime": utilityRuntime.runtime.rawValue,
+                "error": String(result.error.prefix(200))
+            ], level: .error)
             return .failure(.providerError("Exit code \(result.exitCode): \(result.error.prefix(200))"))
         }
 

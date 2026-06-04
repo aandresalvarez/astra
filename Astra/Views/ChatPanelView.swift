@@ -1347,7 +1347,7 @@ struct ChatPanelView: View {
     }
 
     private func baseNewTaskSkillContext() -> String {
-        var skillCtx = selectedSkills.map { skill in
+        var skillCtx = scopedSelectedSkills(forTaskText: messageText, inputs: attachedFiles).map { skill in
             var desc = "## Skill: \(skill.name)\nInstructions:\n\(skill.behaviorInstructions)"
             if !skill.connectors.isEmpty {
                 desc += "\nConnectors: \(skill.connectorSummary)"
@@ -1380,6 +1380,22 @@ struct ChatPanelView: View {
         }
 
         return skillCtx
+    }
+
+    private func scopedSelectedSkills(forTaskText taskText: String, inputs: [String] = []) -> [Skill] {
+        let trimmed = taskText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !selectedSkills.isEmpty else { return selectedSkills }
+
+        let probe = AgentTask(
+            title: String(trimmed.prefix(60)),
+            goal: trimmed,
+            workspace: workspace
+        )
+        probe.inputs = inputs
+        probe.skills = selectedSkills
+        return TaskCapabilityResolver(task: probe)
+            .activationScope(contextText: trimmed)
+            .behaviorSkills
     }
 
     private func submitComposer() {
@@ -1534,10 +1550,11 @@ struct ChatPanelView: View {
             "runtime": runtime.rawValue,
             "model": model,
             "workspace_id": workspace?.id.uuidString ?? "none",
-            "selected_skill_count": String(selectedSkills.count),
+            "selected_skill_count": String(scopedSelectedSkills(forTaskText: input, inputs: attachedFiles).count),
             "message_length": String(input.count)
         ])
 
+        let taskSkills = scopedSelectedSkills(forTaskText: input, inputs: attachedFiles)
         let task = AgentTask(
             title: String(input.prefix(60)),
             goal: input,
@@ -1548,7 +1565,7 @@ struct ChatPanelView: View {
         )
         task.status = .queued
         task.inputs = attachedFiles
-        task.skills = selectedSkills
+        task.skills = taskSkills
         TaskCapabilitySnapshotter.capture(for: task)
         task.useAgentTeam = useAgentTeam
         task.teamSize = teamSize
@@ -1714,11 +1731,12 @@ struct ChatPanelView: View {
             "runtime": runtime.rawValue,
             "model": model,
             "workspace_id": workspace?.id.uuidString ?? "none",
-            "selected_skill_count": String(selectedSkills.count),
+            "selected_skill_count": String(scopedSelectedSkills(forTaskText: spec.goal, inputs: spec.inputs + attachedFiles).count),
             "inputs_count": String(spec.inputs.count + attachedFiles.count),
             "criteria_count": String(spec.acceptanceCriteria.count)
         ])
 
+        let taskSkills = scopedSelectedSkills(forTaskText: spec.goal, inputs: spec.inputs + attachedFiles)
         let task = AgentTask(
             title: spec.title,
             goal: spec.goal,
@@ -1731,7 +1749,7 @@ struct ChatPanelView: View {
         task.inputs = spec.inputs + attachedFiles
         task.constraints = spec.constraints
         task.acceptanceCriteria = spec.acceptanceCriteria
-        task.skills = selectedSkills
+        task.skills = taskSkills
         TaskCapabilitySnapshotter.capture(for: task)
         task.chainedGoal = chainedGoal
         task.useAgentTeam = useAgentTeam
@@ -2491,7 +2509,7 @@ struct ChatPanelView: View {
             draft.model = model
             draft.runtimeID = runtime.rawValue
             draft.inputs = attachedFiles
-            draft.skills = selectedSkills
+            draft.skills = scopedSelectedSkills(forTaskText: draft.goal, inputs: attachedFiles)
             TaskCapabilitySnapshotter.capture(for: draft)
             draft.useAgentTeam = useAgentTeam
             draft.teamSize = teamSize
@@ -2518,7 +2536,7 @@ struct ChatPanelView: View {
             draft.status = .draft
             draft.draftMessages = json
             draft.inputs = attachedFiles
-            draft.skills = selectedSkills
+            draft.skills = scopedSelectedSkills(forTaskText: draft.goal, inputs: attachedFiles)
             TaskCapabilitySnapshotter.capture(for: draft)
             draft.useAgentTeam = useAgentTeam
             draft.teamSize = teamSize
@@ -2595,9 +2613,9 @@ struct ChatPanelView: View {
         The visible primary action is "Define Goal" while exploring. The user's confirmation button is named "Approve Plan" once a candidate goal exists. Do not tell the user to click "Create Task" in Goal Mode; when the draft is acceptable, tell them to click "Approve Plan".
 
         When you can propose a useful starting plan, include exactly one structured plan line before any prose or clarification questions, using this prefix:
-        ASTRA_PLAN {"version":1,"planID":"UUID","title":"Short title","goal":"Brief goal summary","steps":[{"id":"stable-step-id","title":"Step title","detail":"What to do","status":"pending","risk":"low","likelyTools":["Read"],"doneSignal":"How ASTRA knows this step is done"}],"validationContract":{"version":1,"assertions":[{"id":"required-proof-id","scope":"plan","description":"What must be proven before ASTRA marks the plan complete","method":"command","required":true,"command":"test command or script"}]}}
+        ASTRA_PLAN {"version":1,"planID":"UUID","title":"Short title","goal":"Brief goal summary","steps":[{"id":"stable-step-id","title":"Step title","detail":"What to do","status":"pending","risk":"low","likelyTools":["Read"],"doneSignal":"How ASTRA knows this step is done","outputs":[{"kind":"file","scope":"task_output","path":"relative/path.ext","required":true,"prepareParentDirectories":true}]}],"validationContract":{"version":1,"assertions":[{"id":"artifact-exists","scope":"plan","description":"Generated artifact exists","method":"artifact","required":true,"path":"relative/path.ext"},{"id":"artifact-text","scope":"plan","description":"Generated artifact contains expected text","method":"text_contains","required":true,"path":"relative/path.ext","evidenceQuery":"Expected visible text"}]}}
 
-        Step risk must be low, medium, or high. Step status must be pending. Include every likely permission needed for each step: Read for inspection, Grep for search, Write for creating files, Edit for changing existing files, and Bash for tests/builds/scripts. If a step creates an HTML/CSS/JS/file artifact, include Write in likelyTools. Include a done signal for each step. Include validationContract assertions when the task has verifiable proof, such as commands that must exit 0, artifacts that must exist, manual approvals, structured text evidence, browser-visible behavior in a generated artifact, or independent verifier review. Use method values command, artifact, manual, text_evidence, browser_behavior, or verifier. For browser_behavior, set path to the generated HTML/artifact path and evidenceQuery to the expected visible text. Use scope plan for final proof and scope step with stepID for step-specific proof. After the ASTRA_PLAN line, keep prose brief: summarize assumptions and ask only the most important clarification questions before approval. Ask only clarifying questions, without ASTRA_PLAN, if there is not enough information to define a responsible goal.
+        Step risk must be low, medium, or high. Step status must be pending. Include every likely permission needed for each step: Read for inspection, Grep for search, Write for creating files, Edit for changing existing files, and Bash for tests/builds/scripts. If a step creates an HTML/CSS/JS/file artifact, include Write in likelyTools and add an outputs entry with kind file, scope task_output, and the relative path. Use task_output for generated task artifacts; use workspace only when the user explicitly asks to modify the project/repository. Include a done signal for each step. Include validationContract assertions when the task has verifiable proof, such as commands that must exit 0, artifacts that must exist, file text that must be present, manual approvals, structured text evidence, browser-visible behavior in a generated artifact, or independent verifier review. Use method values command, artifact, text_contains, manual, text_evidence, browser_behavior, or verifier. For generated files, prefer artifact plus text_contains assertions instead of shell commands; set path to the generated artifact path and evidenceQuery to the expected text. For browser_behavior, set path to the generated HTML/artifact path and evidenceQuery to the expected visible text. Command assertions must be a single allowlisted command and must not use shell composition such as &&, ||, semicolons, pipes, or redirects. Use scope plan for final proof and scope step with stepID for step-specific proof. After the ASTRA_PLAN line, keep prose brief: summarize assumptions and ask only the most important clarification questions before approval. Ask only clarifying questions, without ASTRA_PLAN, if there is not enough information to define a responsible goal.
         """
     }
 

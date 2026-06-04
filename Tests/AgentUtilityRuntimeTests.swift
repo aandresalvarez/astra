@@ -345,4 +345,90 @@ struct AgentUtilityRuntimeTests {
         #expect(result.exitCode == 0)
         #expect(args.contains("--no-custom-instructions"))
     }
+
+    @Test("Copilot utility timeout returns instead of leaving Goal Mode thinking")
+    func copilotUtilityTimeoutReturns() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-utility-copilot-timeout-\(UUID().uuidString)", isDirectory: true)
+        let fakeCopilot = root.appendingPathComponent("copilot")
+        let copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "help" ]; then
+          cat <<'HELP'
+        \(modernCopilotHelpText())
+        HELP
+          exit 0
+        fi
+        sleep 10 &
+        wait
+        """
+        try writeExecutableScript(at: fakeCopilot, contents: script)
+
+        let start = Date()
+        let result = await AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI).runUtilityPrompt(
+            "Define the executable goal and plan now",
+            workspacePath: root.path,
+            configuration: AgentUtilityRuntimeConfiguration(
+                runtime: .copilotCLI,
+                model: "gpt-5",
+                copilotPath: fakeCopilot.path,
+                copilotHome: copilotHome.path,
+                timeoutSeconds: 0.2
+            ),
+            toolMode: .readOnly
+        )
+        let elapsed = Date().timeIntervalSince(start)
+
+        #expect(elapsed < 8, "Timed-out Copilot utility did not return promptly: \(elapsed)s")
+        #expect(result.exitCode == -1)
+        #expect(result.error.contains("timed out"))
+    }
+
+    @Test("Copilot utility returns after completed stream output even if wrapper stays alive")
+    func copilotUtilityReturnsAfterCompletedStreamOutput() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-utility-copilot-stream-complete-\(UUID().uuidString)", isDirectory: true)
+        let fakeCopilot = root.appendingPathComponent("copilot")
+        let copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "help" ]; then
+          cat <<'HELP'
+        \(modernCopilotHelpText())
+        HELP
+          exit 0
+        fi
+        printf '%s\\n' '{"type":"assistant.message","data":{"content":"Goal plan ready"}}'
+        printf '%s\\n' '{"type":"assistant.turn_end"}'
+        sleep 10 &
+        wait
+        """
+        try writeExecutableScript(at: fakeCopilot, contents: script)
+
+        let start = Date()
+        let result = await AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI).runUtilityPrompt(
+            "Define the executable goal and plan now",
+            workspacePath: root.path,
+            configuration: AgentUtilityRuntimeConfiguration(
+                runtime: .copilotCLI,
+                model: "gpt-5",
+                copilotPath: fakeCopilot.path,
+                copilotHome: copilotHome.path,
+                timeoutSeconds: 3
+            ),
+            toolMode: .readOnly
+        )
+        let elapsed = Date().timeIntervalSince(start)
+
+        #expect(elapsed < 8, "Completed Copilot utility stream waited for wrapper exit: \(elapsed)s")
+        #expect(result.exitCode == 0)
+        #expect(result.output == "Goal plan ready")
+    }
 }

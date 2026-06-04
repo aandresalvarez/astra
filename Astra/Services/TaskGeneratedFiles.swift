@@ -77,6 +77,9 @@ enum TaskGeneratedFiles {
         if rel == "turns" || rel.hasPrefix("turns/") {
             return false
         }
+        if rel == "diagnostics" || rel.hasPrefix("diagnostics/") {
+            return false
+        }
         if name == "current_state.json" || name == "current_state.md" {
             return false
         }

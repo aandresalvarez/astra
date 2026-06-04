@@ -122,8 +122,8 @@ enum TaskPresentationState {
                 composerIcon: "eye.fill",
                 composerHelp: "The run finished. Review the result, then close the task when no action remains.",
                 tone: .attention,
-                decisionTitle: "Ready to close?",
-                decisionDetail: "Close this task when the current result no longer needs action."
+                decisionTitle: "Result ready for review",
+                decisionDetail: "Review the result and evidence, then close this task when no action remains."
             )
         case .failed:
             return TaskReviewPresentation(
@@ -177,10 +177,20 @@ enum TaskPresentationState {
 
         if status == "manual_completion" {
             return TaskVerificationPresentation(
-                title: "No automated verification",
-                summary: "No automated verification",
+                title: "Not automatically verified",
+                summary: "Not automatically verified",
                 detail: detail,
                 systemImage: "checkmark.circle",
+                tone: .attention
+            )
+        }
+
+        if status == "review_needed" {
+            return TaskVerificationPresentation(
+                title: "Needs review",
+                summary: "Needs review",
+                detail: detail,
+                systemImage: "eye.fill",
                 tone: .attention
             )
         }
@@ -206,14 +216,29 @@ enum TaskPresentationState {
 
     private static func verificationDetail(for verification: TaskContextState.Verification) -> String? {
         var parts: [String] = []
-        parts.append("\(verification.status) via \(verification.strategy)")
+        if verification.status.lowercased() == "manual_completion" {
+            parts.append("ASTRA found the result, but no validation contract or automated check was available for this task.")
+        } else {
+            parts.append("\(verification.status) via \(verification.strategy)")
+        }
         if let command = verification.command?.trimmingCharacters(in: .whitespacesAndNewlines),
            !command.isEmpty {
             parts.append("Command: \(command)")
         }
         let artifactStatus = verification.artifactStatus.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !artifactStatus.isEmpty, artifactStatus != "unknown" {
+        if !artifactStatus.isEmpty, artifactStatus != "unknown", artifactStatus != "none recorded" {
             parts.append("Artifacts: \(artifactStatus)")
+        }
+        if let deliverableLevel = verification.deliverableLevel?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !deliverableLevel.isEmpty {
+            parts.append("Deliverable quality: \(deliverableLevel)")
+        }
+        let failedChecks = verification.deliverableChecks
+            .filter { $0.status == TaskDeliverableCheckStatus.failed.rawValue }
+            .prefix(2)
+            .map { "\($0.title): \($0.summary)" }
+        for check in failedChecks {
+            parts.append(check)
         }
         let summary = verification.summary.trimmingCharacters(in: .whitespacesAndNewlines)
         if !summary.isEmpty {

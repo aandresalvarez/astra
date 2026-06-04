@@ -2,6 +2,34 @@ import Foundation
 import SwiftData
 import ASTRACore
 
+enum TaskCapabilityResolutionScope: Equatable {
+    case fullInventory
+    case providerLaunch(contextText: String)
+
+    var auditName: String {
+        switch self {
+        case .fullInventory:
+            return "full_inventory"
+        case .providerLaunch:
+            return "provider_launch"
+        }
+    }
+
+    var contextText: String {
+        switch self {
+        case .fullInventory:
+            return ""
+        case .providerLaunch(let contextText):
+            return contextText
+        }
+    }
+
+    var isProviderLaunch: Bool {
+        if case .providerLaunch = self { return true }
+        return false
+    }
+}
+
 struct TaskCapabilityResolver {
     private let task: AgentTask
 
@@ -20,7 +48,7 @@ struct TaskCapabilityResolver {
                 .filter { $0.toolType != "mcp" && !$0.command.isEmpty }
                 .map(\.command)
         )
-        if Self.hasBrowserBridge(for: task) {
+        if Self.shouldExposeBrowserBridge(for: task) {
             liveCLICommands.insert("astra-browser")
         }
 
@@ -283,23 +311,34 @@ struct TaskCapabilityResolver {
     }
 
     func promptScope(contextText: String = "") -> TaskCapabilityPromptScope {
+        makePromptScope(contextText: contextText, forcePrune: false)
+    }
+
+    func activationScope(contextText: String = "") -> TaskCapabilityPromptScope {
+        makePromptScope(contextText: contextText, forcePrune: true)
+    }
+
+    private func makePromptScope(contextText: String, forcePrune: Bool) -> TaskCapabilityPromptScope {
         let connectors = allConnectors
         var tools = allLocalTools
-        if Self.hasBrowserBridge(for: task),
+        if Self.shouldExposeBrowserBridge(for: task, contextText: contextText),
            !tools.contains(where: { $0.command == "astra-browser" }) {
             tools.append(Self.browserBridgeTool())
         }
         let skills = allBehaviorSkills(connectors: connectors)
 
-        guard Self.shouldPruneForBrowserTask(task: task, contextText: contextText) else {
+        let shouldPruneForRuntimeScope = Self.shouldPruneCapabilitiesForTask(task: task, contextText: contextText)
+            || Self.hasRuntimeScopedCapabilities(skills: skills, connectors: connectors, localTools: tools)
+
+        guard forcePrune || shouldPruneForRuntimeScope else {
             return makePromptScope(
                 skills: skills,
-            connectors: connectors,
-            localTools: tools,
-            prunedForBrowserTask: false,
-            excludedSkillNames: [],
-            contextText: contextText
-        )
+                connectors: connectors,
+                localTools: tools,
+                prunedForBrowserTask: false,
+                excludedSkillNames: [],
+                contextText: contextText
+            )
         }
 
         let searchableText = Self.searchableTaskText(task: task, contextText: contextText)
@@ -349,6 +388,28 @@ struct TaskCapabilityResolver {
             excludedSkillNames: excludedNames,
             contextText: contextText
         )
+    }
+
+    func resolvedScope(_ scope: TaskCapabilityResolutionScope) -> TaskCapabilityPromptScope {
+        switch scope {
+        case .fullInventory:
+            let connectors = allConnectors
+            var tools = allLocalTools
+            if Self.shouldExposeBrowserBridge(for: task, contextText: ""),
+               !tools.contains(where: { $0.command == "astra-browser" }) {
+                tools.append(Self.browserBridgeTool())
+            }
+            return makePromptScope(
+                skills: allBehaviorSkills(connectors: connectors),
+                connectors: connectors,
+                localTools: tools,
+                prunedForBrowserTask: false,
+                excludedSkillNames: [],
+                contextText: ""
+            )
+        case .providerLaunch(let contextText):
+            return promptScope(contextText: contextText)
+        }
     }
 
     private var effectiveSkillSnapshots: [SkillSnapshotConfig] {
@@ -462,14 +523,50 @@ struct TaskCapabilityResolver {
         )
     }
 
-    private static func shouldPruneForBrowserTask(task: AgentTask, contextText: String) -> Bool {
-        guard hasBrowserBridge(for: task) else { return false }
+    private static func shouldPruneCapabilitiesForTask(task: AgentTask, contextText: String) -> Bool {
         let text = searchableTaskText(task: task, contextText: contextText)
-        return browserIntentTerms.contains { text.contains($0) }
+        guard !text.isEmpty else { return false }
+        if shouldExposeBrowserBridge(for: task, contextText: contextText),
+           browserIntentTerms.contains(where: { text.contains($0) }) {
+            return true
+        }
+        if hasStandaloneArtifactIntent(text) {
+            return true
+        }
+        return false
     }
 
-    private static func hasBrowserBridge(for task: AgentTask) -> Bool {
-        !ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id).isEmpty
+    private static func hasRuntimeScopedCapabilities(
+        skills: [Skill],
+        connectors: [Connector],
+        localTools: [LocalTool]
+    ) -> Bool {
+        if !connectors.isEmpty || !localTools.isEmpty {
+            return true
+        }
+
+        return skills.contains { skill in
+            !skill.allowedTools.isEmpty
+                || !skill.disallowedTools.isEmpty
+                || !skill.customTools.isEmpty
+                || !skill.environmentKeys.isEmpty
+        }
+    }
+
+    private static func hasStandaloneArtifactIntent(_ text: String) -> Bool {
+        let hasAction = artifactActionTerms.contains { text.contains($0) }
+        let hasTarget = artifactTargetTerms.contains { text.contains($0) }
+        return hasAction && hasTarget
+    }
+
+    static func shouldExposeBrowserBridge(for task: AgentTask, contextText: String = "") -> Bool {
+        let state = ShelfBrowserBridgeRegistry.shared.promptState(for: task.id)
+        guard state.isExposed else { return false }
+        if state.isPresented || state.hasCurrentURL || !state.enabledBrowserAdapters.isEmpty {
+            return true
+        }
+        let text = searchableTaskText(task: task, contextText: contextText)
+        return explicitBrowserControlTerms.contains { text.contains($0) }
     }
 
     private static func browserBridgeTool() -> LocalTool {
@@ -483,7 +580,7 @@ struct TaskCapabilityResolver {
     }
 
     private static func shouldKeepSkill(_ skill: Skill, taskText: String) -> Bool {
-        if !skill.disallowedTools.isEmpty {
+        if Skill.isBuiltInName(skill.name) {
             return true
         }
         return matchesSkill(skill, taskText: taskText)
@@ -569,12 +666,7 @@ struct TaskCapabilityResolver {
         let taskTokens = searchTokens(taskText)
         guard !taskTokens.isEmpty else { return false }
         let capabilityTokens = searchTokens(capability)
-        if !taskTokens.isDisjoint(with: capabilityTokens) {
-            return true
-        }
-        return capabilityTokens.contains { token in
-            token.count >= 4 && taskText.contains(token)
-        }
+        return !taskTokens.isDisjoint(with: capabilityTokens)
     }
 
     private static func searchableTaskText(task: AgentTask, contextText: String) -> String {
@@ -632,6 +724,64 @@ struct TaskCapabilityResolver {
         "open "
     ]
 
+    private static let explicitBrowserControlTerms: [String] = [
+        "browser",
+        "current site",
+        "current tab",
+        "click",
+        "fill",
+        "navigate",
+        "screenshot",
+        "read page",
+        "inspect page",
+        "use browser",
+        "open url",
+        "outlook",
+        "email",
+        "emails",
+        "mail",
+        "inbox",
+        "google docs",
+        "google drive"
+    ]
+
+    private static let artifactActionTerms: [String] = [
+        "build",
+        "create",
+        "deliver",
+        "develop",
+        "generate",
+        "implement",
+        "make",
+        "produce",
+        "render",
+        "scaffold",
+        "write"
+    ]
+
+    private static let artifactTargetTerms: [String] = [
+        "app",
+        "artifact",
+        "demo",
+        "design",
+        "doc",
+        "document",
+        "file",
+        "homepage",
+        "html",
+        "javascript",
+        "js",
+        "landing page",
+        "mockup",
+        "page",
+        "prototype",
+        "report",
+        "site",
+        "web page",
+        "webpage",
+        "website"
+    ]
+
     private static let genericCapabilityTokens: Set<String> = [
         "agent",
         "and",
@@ -645,31 +795,44 @@ struct TaskCapabilityResolver {
         "cloud",
         "code",
         "content",
+        "create",
         "current",
         "data",
+        "delete",
+        "deliver",
+        "develop",
         "doc",
         "document",
+        "download",
         "drive",
         "file",
         "files",
         "for",
+        "forward",
         "from",
+        "generate",
         "get",
         "google",
+        "implement",
         "inspect",
         "list",
         "local",
         "look",
         "manage",
+        "make",
         "must",
         "open",
         "only",
         "page",
+        "produce",
         "project",
         "query",
         "read",
+        "render",
+        "reply",
         "resource",
         "resources",
+        "scaffold",
         "search",
         "service",
         "shared",

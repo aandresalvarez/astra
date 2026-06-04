@@ -15,12 +15,14 @@ enum TaskDeliverableExpectation {
             .lowercased()
 
         let artifactActionWords = [
-            "write", "create", "creat", "cerate", "build", "make", "generate", "save"
+            "write", "create", "creat", "cerate", "crefate", "build", "buid", "make", "generate", "save"
         ]
         let artifactActionPhrases = [
             "put this in files", "write this in files"
         ]
-        guard containsAnyWholeWord(text, artifactActionWords) || containsAny(text, artifactActionPhrases) else {
+        guard containsAnyWholeWord(text, artifactActionWords)
+                || containsJoinedArticleAction(text, artifactActionWords)
+                || containsAny(text, artifactActionPhrases) else {
             return false
         }
 
@@ -87,6 +89,16 @@ enum TaskDeliverableExpectation {
     private static func containsAnyWholeWord(_ text: String, _ words: [String]) -> Bool {
         let tokens = Set(text.split { !$0.isLetter && !$0.isNumber }.map(String.init))
         return words.contains { tokens.contains($0) }
+    }
+
+    private static func containsJoinedArticleAction(_ text: String, _ words: [String]) -> Bool {
+        let tokens = text.split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        let joinedArticleWords = words.flatMap { word in
+            ["\(word)a", "\(word)an"]
+        }
+        return tokens.contains { token in
+            joinedArticleWords.contains(String(token))
+        }
     }
 
     private static func deliverableRelevantText(from rawText: String) -> String {
@@ -268,18 +280,43 @@ enum TaskDeliverableExpectation {
     private static func isUserArtifactPath(_ path: String, task: AgentTask) -> Bool {
         let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
         guard !taskFolder.isEmpty else { return true }
+        let normalizedPath = path.replacingOccurrences(of: "\\", with: "/")
+        if !normalizedPath.hasPrefix("/"), isRuntimeDiagnosticRelativePath(normalizedPath) {
+            return false
+        }
         let root = URL(fileURLWithPath: taskFolder)
             .resolvingSymlinksInPath()
             .standardizedFileURL
-        let url = URL(fileURLWithPath: path)
-            .resolvingSymlinksInPath()
-            .standardizedFileURL
-        guard let relative = relativePath(of: url, taskFolder: root) else { return true }
-        return !isRuntimeDiagnosticRelativePath(relative)
+        let url = normalizedPath.hasPrefix("/")
+            ? URL(fileURLWithPath: normalizedPath)
+            : root.appendingPathComponent(normalizedPath)
+        if let relative = relativePath(of: url, taskFolder: root) {
+            return !isRuntimeDiagnosticRelativePath(relative)
+        }
+
+        let workspacePath = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
+        if !workspacePath.isEmpty {
+            let workspaceRoot = URL(fileURLWithPath: workspacePath)
+                .resolvingSymlinksInPath()
+                .standardizedFileURL
+            if let workspaceRelative = relativePath(of: url, taskFolder: workspaceRoot) {
+                return !isRuntimeDiagnosticRelativePath(workspaceRelative)
+            }
+        }
+
+        return true
     }
 
     private static func isRuntimeDiagnosticRelativePath(_ relative: String) -> Bool {
-        relative == "diagnostics" || relative.hasPrefix("diagnostics/")
+        let normalized = relative
+            .replacingOccurrences(of: "\\", with: "/")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return normalized == "diagnostics"
+            || normalized.hasPrefix("diagnostics/")
+            || normalized == "cache/projects.json"
+            || normalized.hasPrefix(".astra/")
+            || normalized.hasPrefix(".agentflow/")
+            || normalized.hasPrefix(".claude/")
     }
 
     private static func relativeDepth(of relative: String) -> Int {

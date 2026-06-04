@@ -101,6 +101,17 @@ struct SpecEngineTests {
         #expect(SpecEngine.maxRetries == 2)
     }
 
+    @Test("Timeout state does not latch after process exits")
+    func timeoutStateDoesNotLatchAfterProcessExits() {
+        let state = AsyncProcessRunner.RunState()
+        let process = Process()
+
+        #expect(!state.markTimedOutIfRunning(process))
+        let completion = state.markCompleted()
+        #expect(completion.didComplete)
+        #expect(!completion.didTimeOut)
+    }
+
     @Test("JSON schema contains all required fields")
     func jsonSchemaFields() {
 

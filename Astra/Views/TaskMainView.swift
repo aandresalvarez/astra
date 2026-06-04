@@ -8,6 +8,10 @@ enum TaskComposerPresentation {
     static let usesForcedExpandedInputHeight = false
     static let decisionRowUsesNestedChrome = false
     static let decisionRowUsesNestedStroke = false
+    static let decisionDetailsUsePopover = true
+    static let decisionActionsUseOverflowMenu = false
+    static let decisionUtilitiesStayLeftAligned = true
+    static let decisionSummaryVisibleInCompactRow = false
     static let decisionDockHorizontalPadding: CGFloat = 14
     static let decisionDockTopPadding: CGFloat = 12
     static let decisionDockBottomPadding: CGFloat = 8
@@ -207,6 +211,7 @@ struct TaskMainView: View {
     @State private var isPlanning = false
     @State private var isAgentPlanExpanded = false
     @State private var isThreadStatusExpanded = false
+    @State private var isTaskDecisionDetailsExpanded = false
     @State private var cachedPlanState = TaskPlanState.empty
     @State private var cachedPlanStateSignature = TaskPlanStateCacheSignature.empty
     @State private var pendingPlanStateRefreshTask: Task<Void, Never>?
@@ -505,9 +510,10 @@ struct TaskMainView: View {
             loadSSHConnections()
             alignTaskAfterRuntimeAvailabilityRefresh()
             initializeTaskPolicySelection()
-            refreshPlanStateCache()
             cachedVerificationRequest = nil
             cachedVerificationPresentation = nil
+            refreshTaskContextState()
+            refreshPlanStateCache()
         }
         .onAppear {
             alignTaskModelWithRuntime()
@@ -516,9 +522,10 @@ struct TaskMainView: View {
             pendingInitialChatScrollTaskID = task.id
             threadViewModel.reset(for: task)
             loadSSHConnections()
-            refreshPlanStateCache()
             cachedVerificationRequest = nil
             cachedVerificationPresentation = nil
+            refreshTaskContextState()
+            refreshPlanStateCache()
             logRuntimeHealthIfNeeded(reason: "appear")
             installPasteMonitor()
         }
@@ -539,6 +546,7 @@ struct TaskMainView: View {
         }
         .onChange(of: generatedFilesTrigger) { _, _ in
             threadViewModel.refreshGeneratedFiles(folder: TaskWorkspaceAccess(task: task).taskFolder)
+            refreshTaskContextState()
         }
         .onChange(of: runtimeHealth.telemetrySignature) { _, _ in
             logRuntimeHealthIfNeeded(reason: "health")
@@ -592,6 +600,22 @@ struct TaskMainView: View {
         guard cachedPlanStateSignature != signature else { return }
         cachedPlanState = TaskPlanService.reconstruct(for: task)
         cachedPlanStateSignature = signature
+    }
+
+    private func refreshTaskContextState() {
+        TaskContextStateManager.refresh(task: task)
+        refreshCachedVerificationPresentationFromCurrentState()
+    }
+
+    private func refreshCachedVerificationPresentationFromCurrentState() {
+        guard let request = verificationLoadRequest else {
+            cachedVerificationRequest = nil
+            cachedVerificationPresentation = nil
+            return
+        }
+        let verification = TaskContextStateManager.load(taskFolder: request.taskFolder)?.verification
+        cachedVerificationRequest = request
+        cachedVerificationPresentation = verification.map(TaskPresentationState.verificationPresentation(for:))
     }
 
     private func schedulePlanStateCacheRefresh() {
@@ -1213,16 +1237,6 @@ struct TaskMainView: View {
                 .padding(.horizontal, 14)
         }
 
-        if let missionControlPresentation {
-            MissionControlPanelView(
-                presentation: missionControlPresentation,
-                onApproveCorrection: { approveMissionCorrection($0) },
-                onDismissCorrection: { dismissMissionCorrection($0) },
-                onCreateCorrectionTask: { createMissionCorrectionTask($0) }
-            )
-            .padding(.horizontal, 14)
-        }
-
         if !currentThreadSnapshot.latestAgentPlanItems.isEmpty {
             agentPlanPanel(items: currentThreadSnapshot.latestAgentPlanItems)
                 .padding(.horizontal, 14)
@@ -1250,7 +1264,6 @@ struct TaskMainView: View {
                 .id(item.id)
         }
 
-        threadStatusDisclosure
     }
 
     @ViewBuilder
@@ -3365,6 +3378,148 @@ struct TaskMainView: View {
         TaskPresentationState.reviewPresentation(status: task.status, isClosed: task.isDone)
     }
 
+    private var taskDecisionDockPresentation: TaskDecisionDockPresentation? {
+        let plan = executableApprovedPlan
+        let nextStep = plan.flatMap { TaskPlanService.nextExecutableStep(in: $0) }
+        let planActionTitle = plan == nil ? nil : (skipPermissions ? "Run remaining plan" : "Approve next step")
+        let planActionDetail = plan.map { nextStep.map { "Next: \($0.title)" } ?? $0.title }
+        let planModeLabel = plan == nil
+            ? nil
+            : (skipPermissions
+                ? "Auto mode runs every remaining step."
+                : "Ask mode runs one approved step, then pauses again.")
+
+        return TaskDecisionDockPresentation.build(TaskDecisionDockPresentation.Context(
+            status: task.status,
+            isClosed: task.isDone,
+            review: taskReviewPresentation,
+            mission: missionControlPresentation,
+            verification: currentVerificationPresentation,
+            pendingReviewState: pendingTaskReviewState,
+            hasRuntimePermissionRequest: hasOpenRuntimePermissionApprovalRequest,
+            runtimePermissionTitle: pendingRuntimePermissionDecision?.title,
+            runtimePermissionSummary: pendingRuntimePermissionDecision?.summary,
+            runtimePermissionScope: pendingRuntimePermissionDecision?.scope,
+            runtimePermissionCommandPreview: pendingRuntimePermissionDecision?.commandPreview,
+            runtimePermissionAllowSimilarLabel: pendingRuntimePermissionDecision?.allowSimilarLabel,
+            canApproveSimilarRuntimePermission: canApproveSimilarRuntimePermissionForTask,
+            hasExecutableApprovedPlan: plan != nil,
+            planActionTitle: planActionTitle,
+            planActionDetail: planActionDetail,
+            planModeLabel: planModeLabel,
+            canOpenPlan: onOpenPlan != nil,
+            isPlanCanvasVisible: isPlanCanvasVisible,
+            canRunApprovedPlan: taskQueue != nil,
+            latestRunHasNoUsableResult: latestRunHasNoUsableResult,
+            completedTaskNeedsArtifactAttention: completedTaskNeedsArtifactAttention,
+            canCancel: onCancelTask != nil,
+            canRun: onRunTask != nil,
+            canApprove: onApproveTask != nil,
+            canRetry: onRetryTask != nil,
+            canResume: task.hasProviderSession && onResumeTask != nil,
+            canToggleDone: canToggleTaskDoneFromDecisionDock,
+            hasProviderSession: task.hasProviderSession,
+            failureReason: failureReason,
+            artifactPaths: taskDecisionArtifactPaths,
+            extraDetails: taskDecisionExtraDetails,
+            visibleThreadAffordances: taskDecisionVisibleThreadAffordances
+        ))
+    }
+
+    private var taskDecisionVisibleThreadAffordances: Set<TaskThreadAffordance> {
+        var affordances: Set<TaskThreadAffordance> = [.runDetails]
+        if !taskDecisionArtifactPaths.isEmpty {
+            affordances.insert(.artifactOpen)
+        }
+        if missionControlPresentation != nil {
+            affordances.insert(.missionControlDetails)
+        }
+        if isPlanCanvasVisible {
+            affordances.insert(.planDetails)
+        }
+        return affordances
+    }
+
+    private var taskDecisionArtifactPaths: [String] {
+        dedupePaths(threadViewModel.generatedFilePaths + task.artifacts.filter { !$0.isStale }.map(\.path))
+    }
+
+    private var taskDecisionExtraDetails: [TaskDecisionDockDetail] {
+        var details: [TaskDecisionDockDetail] = []
+        if task.status == .running {
+            details.append(TaskDecisionDockDetail(
+                id: "runtime-health",
+                title: runtimeHealth.message,
+                summary: runtimeHealth.detail ?? runtimeHealth.message,
+                systemImage: runtimeHealth.isAttentionState ? "exclamationmark.triangle" : "arrow.triangle.2.circlepath",
+                tone: runtimeHealth.isAttentionState ? .attention : .running
+            ))
+        }
+
+        if shouldShowPendingApprovalStatus && !hasOpenRuntimePermissionApprovalRequest {
+            details.append(TaskDecisionDockDetail(
+                id: "pending-approval",
+                title: "Waiting for your approval",
+                summary: pendingApprovalStatusDetail,
+                systemImage: "person.crop.circle.badge.questionmark",
+                tone: .attention
+            ))
+        }
+
+        if isCreatingScheduleForCurrentTask {
+            details.append(TaskDecisionDockDetail(
+                id: "routine-creating",
+                title: "Creating routine",
+                summary: "ASTRA is creating the routine for this task.",
+                systemImage: "arrow.triangle.2.circlepath",
+                tone: .running
+            ))
+        }
+
+        if isGeneratingRecap {
+            details.append(TaskDecisionDockDetail(
+                id: "recap-generating",
+                title: "Generating recap",
+                summary: "ASTRA is summarizing the task conversation.",
+                systemImage: "doc.text.magnifyingglass",
+                tone: .running
+            ))
+        }
+
+        if let msg = recapStatusMessage {
+            details.append(TaskDecisionDockDetail(
+                id: "recap-message",
+                title: "Recap needs attention",
+                summary: msg,
+                systemImage: "exclamationmark.triangle",
+                tone: .attention
+            ))
+        }
+
+        if let statusMsg = currentScheduleStatusMessage {
+            details.append(TaskDecisionDockDetail(
+                id: "routine-status",
+                title: isScheduleStatusError ? "Routine needs attention" : "Routine created",
+                summary: statusMsg,
+                systemImage: isScheduleStatusError ? "exclamationmark.triangle" : "checkmark.circle",
+                tone: isScheduleStatusError ? .attention : .verified
+            ))
+        }
+
+        return details
+    }
+
+    private func dedupePaths(_ paths: [String]) -> [String] {
+        var seen = Set<String>()
+        var output: [String] = []
+        for path in paths {
+            let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { continue }
+            output.append(trimmed)
+        }
+        return output
+    }
+
     private var composerTaskStatusOverride: ComposerTaskStatusPresentation? {
         if task.status == .failed, let run = latestRun {
             let activity = currentThreadSnapshot.activity(for: run)
@@ -3653,24 +3808,7 @@ struct TaskMainView: View {
     }
 
     private var shouldShowTaskDecisionDock: Bool {
-        let reviewState = pendingTaskReviewState
-        switch task.status {
-        case .running:
-            return onCancelTask != nil
-        case .pendingUser:
-            return hasOpenRuntimePermissionApprovalRequest ||
-                executableApprovedPlan != nil ||
-                reviewState.dismissalReason != nil ||
-                (!reviewState.isDismissed && onApproveTask != nil)
-        case .queued:
-            return executableApprovedPlan != nil || onRunTask != nil || canToggleTaskDoneFromDecisionDock
-        case .failed, .budgetExceeded:
-            return executableApprovedPlan != nil || onResumeTask != nil || onRetryTask != nil || canToggleTaskDoneFromDecisionDock
-        case .completed, .cancelled:
-            return executableApprovedPlan != nil || canToggleTaskDoneFromDecisionDock
-        case .draft:
-            return executableApprovedPlan != nil
-        }
+        taskDecisionDockPresentation != nil
     }
 
     private var latestRunHasNoUsableResult: Bool {
@@ -3757,40 +3895,55 @@ struct TaskMainView: View {
 
     @ViewBuilder
     private var taskDecisionDock: some View {
-        let reviewState = pendingTaskReviewState
-        if task.status == .running, let onCancel = onCancelTask {
-            taskDecisionSurface(
-                icon: "stop.circle.fill",
-                color: Stanford.cardinalRed,
-                title: "Task running",
-                detail: "The agent is working. Stop it here if you need to change direction."
-            ) {
-                Button {
-                    onCancel(task)
-                } label: {
-                    Label("Stop", systemImage: "stop.fill")
-                        .labelStyle(.titleAndIcon)
-                }
-                .buttonStyle(StanfordButtonStyle(isPrimary: true, color: Stanford.cardinalRed))
-                .controlSize(.small)
-                .keyboardShortcut(.escape, modifiers: [])
-                .accessibilityIdentifier("CancelTaskButton")
-                .accessibilityLabel("Stop task")
+        if let presentation = taskDecisionDockPresentation {
+            TaskDecisionDockView(
+                presentation: presentation,
+                isExpanded: $isTaskDecisionDetailsExpanded,
+                onAction: handleTaskDecisionDockAction
+            )
+            .onAppear {
+                isTaskDecisionDetailsExpanded = false
             }
-        } else if task.status == .pendingUser, hasOpenRuntimePermissionApprovalRequest {
-            pendingReviewDecisionDock
-        } else if let plan = executableApprovedPlan {
-            planDecisionDock(plan)
-        } else if task.status == .pendingUser, !reviewState.isDismissed || reviewState.dismissalReason != nil {
-            pendingReviewDecisionDock
-        } else if completedTaskNeedsArtifactAttention {
-            completedNoUsableResultDecisionDock
-        } else if task.status == .failed || task.status == .budgetExceeded {
-            failedDecisionDock
-        } else if task.status == .queued {
-            queuedDecisionDock
-        } else if task.status == .completed || task.status == .cancelled {
-            doneStateDecisionDock
+            .onChange(of: presentation.id) { _, _ in
+                isTaskDecisionDetailsExpanded = false
+            }
+        }
+    }
+
+    private func handleTaskDecisionDockAction(_ action: TaskDecisionDockAction) {
+        switch action.kind {
+        case .stop:
+            onCancelTask?(task)
+        case .allowOnce, .approveResult, .dismissReview:
+            onApproveTask?(task)
+        case .allowSimilar:
+            approveSimilarRuntimePermissionForTask()
+        case .approveCorrection:
+            if let id = action.payload { approveMissionCorrection(id) }
+        case .createCorrectionTask:
+            if let id = action.payload { createMissionCorrectionTask(id) }
+        case .dismissCorrection:
+            if let id = action.payload { dismissMissionCorrection(id) }
+        case .openPlan:
+            onOpenPlan?(task)
+        case .runApprovedPlan:
+            guard let plan = executableApprovedPlan else { return }
+            runApprovedPlan(plan, mode: skipPermissions ? .fullPlan : .nextStep)
+        case .runTask:
+            onRunTask?(task)
+        case .retry:
+            onRetryTask?(task)
+        case .resume:
+            onResumeTask?(task)
+        case .openArtifact:
+            guard let path = action.payload else { return }
+            if let onOpenGeneratedFile {
+                onOpenGeneratedFile(path)
+            } else {
+                NSWorkspace.shared.open(URL(fileURLWithPath: path))
+            }
+        case .closeTask, .closeAnyway, .closeWithoutRunningPlan, .reopenTask:
+            toggleTaskDoneFromDecisionDock()
         }
     }
 
@@ -5178,9 +5331,9 @@ struct TaskMainView: View {
         The user confirms the plan through ASTRA's Plan controls. The confirmation button is named "Approve Plan"; do not tell them to click "Create Task" in Goal Mode.
 
         Return concise planning prose, then include exactly one structured plan line using this prefix:
-        ASTRA_PLAN {"version":1,"planID":"UUID","title":"Short title","goal":"Brief goal summary","steps":[{"id":"stable-step-id","title":"Step title","detail":"What to do","status":"pending","risk":"low","likelyTools":["Read"],"doneSignal":"How ASTRA knows this step is done"}],"validationContract":{"version":1,"assertions":[{"id":"required-proof-id","scope":"plan","description":"What must be proven before ASTRA marks the plan complete","method":"command","required":true,"command":"test command or script"}]}}
+        ASTRA_PLAN {"version":1,"planID":"UUID","title":"Short title","goal":"Brief goal summary","steps":[{"id":"stable-step-id","title":"Step title","detail":"What to do","status":"pending","risk":"low","likelyTools":["Read"],"doneSignal":"How ASTRA knows this step is done","outputs":[{"kind":"file","scope":"task_output","path":"relative/path.ext","required":true,"prepareParentDirectories":true}]}],"validationContract":{"version":1,"assertions":[{"id":"artifact-exists","scope":"plan","description":"Generated artifact exists","method":"artifact","required":true,"path":"relative/path.ext"},{"id":"artifact-text","scope":"plan","description":"Generated artifact contains expected text","method":"text_contains","required":true,"path":"relative/path.ext","evidenceQuery":"Expected visible text"}]}}
 
-        Step risk must be low, medium, or high. Step status must be pending. Include every likely permission needed for each step: Read for inspection, Grep for search, Write for creating files, Edit for changing existing files, and Bash for tests/builds/scripts. If a step creates an HTML/CSS/JS/file artifact, include Write in likelyTools. Include a done signal for each step. Include validationContract assertions when the task has verifiable proof, such as commands that must exit 0, artifacts that must exist, manual approvals, structured text evidence, browser-visible behavior in a generated artifact, or independent verifier review. Use method values command, artifact, manual, text_evidence, browser_behavior, or verifier. For browser_behavior, set path to the generated HTML/artifact path and evidenceQuery to the expected visible text. Use scope plan for final proof and scope step with stepID for step-specific proof. The user must confirm from the Plan panel before execution starts.
+        Step risk must be low, medium, or high. Step status must be pending. Include every likely permission needed for each step: Read for inspection, Grep for search, Write for creating files, Edit for changing existing files, and Bash for tests/builds/scripts. If a step creates an HTML/CSS/JS/file artifact, include Write in likelyTools and add an outputs entry with kind file, scope task_output, and the relative path. Use task_output for generated task artifacts; use workspace only when the user explicitly asks to modify the project/repository. Include a done signal for each step. Include validationContract assertions when the task has verifiable proof, such as commands that must exit 0, artifacts that must exist, file text that must be present, manual approvals, structured text evidence, browser-visible behavior in a generated artifact, or independent verifier review. Use method values command, artifact, text_contains, manual, text_evidence, browser_behavior, or verifier. For generated files, prefer artifact plus text_contains assertions instead of shell commands; set path to the generated artifact path and evidenceQuery to the expected text. For browser_behavior, set path to the generated HTML/artifact path and evidenceQuery to the expected visible text. Command assertions must be a single allowlisted command and must not use shell composition such as &&, ||, semicolons, pipes, or redirects. Use scope plan for final proof and scope step with stepID for step-specific proof. The user must confirm from the Plan panel before execution starts.
         """
 
         let capabilityContext = taskCapabilitySkillContext()
@@ -5192,9 +5345,10 @@ struct TaskMainView: View {
 
     private func taskCapabilitySkillContext() -> String {
         let resolver = TaskCapabilityResolver(task: task)
-        let skills = resolver.allBehaviorSkills
-        let connectors = resolver.allConnectors
-        let localTools = resolver.allLocalTools
+        let scope = resolver.promptScope()
+        let skills = scope.behaviorSkills
+        let connectors = scope.connectors
+        let localTools = scope.localTools
 
         var sections: [String] = []
         if !skills.isEmpty {
@@ -5222,6 +5376,9 @@ struct TaskMainView: View {
         if !localTools.isEmpty {
             let toolList = localTools.map { "- \($0.name) (\($0.toolType))" }.joined(separator: "\n")
             sections.append("Enabled local tools for this task:\n\(toolList)")
+        }
+        if scope.prunedForBrowserTask, !scope.excludedSkillNames.isEmpty {
+            sections.append("Configured capabilities excluded from this provider task scope:\n\(scope.excludedSkillNames.map { "- \($0)" }.joined(separator: "\n"))")
         }
         return sections.joined(separator: "\n\n")
     }

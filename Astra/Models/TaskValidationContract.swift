@@ -31,6 +31,7 @@ enum TaskValidationAssertionMethod: String, Codable, CaseIterable, Sendable, Equ
     case artifact
     case manual
     case textEvidence = "text_evidence"
+    case textContains = "text_contains"
     case verifier
     case browserBehavior = "browser_behavior"
 
@@ -44,6 +45,8 @@ enum TaskValidationAssertionMethod: String, Codable, CaseIterable, Sendable, Equ
             return "Manual"
         case .textEvidence:
             return "Text evidence"
+        case .textContains:
+            return "Text contains"
         case .verifier:
             return "Verifier"
         case .browserBehavior:
@@ -68,6 +71,8 @@ enum TaskValidationAssertionMethod: String, Codable, CaseIterable, Sendable, Equ
             self = .manual
         case "text_evidence", "textevidence", "evidence", "structured_evidence":
             self = .textEvidence
+        case "text_contains", "textcontains", "contains_text", "file_contains", "file_text", "artifact_contains", "artifact_text":
+            self = .textContains
         case "verifier", "independent_verifier", "reviewer", "ai_verifier":
             self = .verifier
         case "browser", "browser_behavior", "browser_check", "behavior", "behavioral", "ui", "ui_behavior":
@@ -171,6 +176,7 @@ enum TaskValidationEventTypes {
     static let assertionReviewed = "validation.assertion.reviewed"
     static let contractPassed = "validation.contract.passed"
     static let contractFailed = "validation.contract.failed"
+    static let contractOverridden = "validation.contract.override"
     static let evidence = "validation.evidence"
 }
 
