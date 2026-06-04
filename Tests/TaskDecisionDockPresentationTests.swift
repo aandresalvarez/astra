@@ -61,6 +61,7 @@ struct TaskDecisionDockPresentationTests {
         })
         #expect(!actionTitles(dock).contains { $0.localizedCaseInsensitiveContains("verification") })
         #expect(dock.usesOverflowMenu == false)
+        #expect(dock.showsDetailsToggle)
         #expect(dock.utilityActions.isEmpty)
         #expect(dock.secondaryDecisionActions.isEmpty)
         let proofDetail = try #require(dock.details.first { $0.id == "proof" })
@@ -117,6 +118,26 @@ struct TaskDecisionDockPresentationTests {
         #expect(!dock.secondaryDecisionActions.contains { $0.kind == .openArtifact })
         #expect(dock.details.contains { $0.id == "proof" })
         #expect(dock.details.contains { $0.id == "run" })
+        #expect(dock.showsDetailsToggle)
+    }
+
+    @Test("details toggle is hidden when there are no run details")
+    func detailsToggleIsHiddenWhenThereAreNoRunDetails() throws {
+        let dock = TaskDecisionDockPresentation(
+            id: "empty",
+            icon: "info.circle",
+            tone: .neutral,
+            title: "Empty",
+            summary: "No details",
+            metrics: [],
+            details: [],
+            primaryAction: nil,
+            secondaryActions: [],
+            overflowActions: [],
+            prefersExpandedDetails: false
+        )
+        #expect(dock.details.isEmpty)
+        #expect(!dock.showsDetailsToggle)
     }
 
     @Test("artifact open remains available when thread has no visible artifact card")

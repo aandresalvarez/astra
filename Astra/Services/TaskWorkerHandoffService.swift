@@ -7,13 +7,14 @@ enum TaskWorkerHandoffService {
     static func recordCreatedIfNeeded(
         task: AgentTask,
         run: TaskRun,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        discoveredFiles: [TaskOutputDiscoveredFile]? = nil
     ) -> TaskEvent? {
         if task.events.contains(where: { $0.type == TaskHandoffEventTypes.created && $0.run?.id == run.id }) {
             return nil
         }
 
-        let payload = makePayload(task: task, run: run)
+        let payload = makePayload(task: task, run: run, discoveredFiles: discoveredFiles)
         let event = TaskEvent(task: task, type: TaskHandoffEventTypes.created, payload: encode(payload), run: run)
         modelContext.insert(event)
         AppLogger.audit(.handoffCreated, category: "Worker", taskID: task.id, fields: [
@@ -35,7 +36,11 @@ enum TaskWorkerHandoffService {
         return try? JSONDecoder().decode(TaskWorkerHandoffPayload.self, from: data)
     }
 
-    private static func makePayload(task: AgentTask, run: TaskRun) -> TaskWorkerHandoffPayload {
+    private static func makePayload(
+        task: AgentTask,
+        run: TaskRun,
+        discoveredFiles: [TaskOutputDiscoveredFile]?
+    ) -> TaskWorkerHandoffPayload {
         let runEvents = task.events.filter { $0.run?.id == run.id }
         let completedWork = completedWorkFacts(task: task, run: run, runEvents: runEvents)
         let unfinishedWork = unfinishedWorkFacts(task: task)
@@ -43,7 +48,7 @@ enum TaskWorkerHandoffService {
         let validationEvidence = runEvents
             .filter { $0.type.hasPrefix("validation.") }
             .map { "\($0.type): \(boundedInline($0.payload, maxCharacters: 220))" }
-        let discoveredFiles = TaskOutputDiscovery.files(for: task)
+        let discoveredFiles = discoveredFiles ?? TaskOutputDiscovery.files(for: task)
         let discoveredRunFiles = TaskOutputDiscovery.filesChanged(during: run, from: discoveredFiles).map(\.path)
         let filesChanged = dedupe(run.fileChanges.map(\.path) + discoveredRunFiles, limit: 50)
         let artifactsCreated = dedupe(task.artifacts.map(\.path) + discoveredFiles.map(\.path), limit: 30)

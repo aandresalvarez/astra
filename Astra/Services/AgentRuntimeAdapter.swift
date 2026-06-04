@@ -534,6 +534,7 @@ struct AgentRuntimeProcessLaunchContext {
     let permissionManifest: RunPermissionManifest?
     let timeoutSeconds: TimeInterval
     let phase: String
+    let contextText: String
     let nativeContinuationSessionID: String?
     let runID: UUID?
 
@@ -548,6 +549,7 @@ struct AgentRuntimeProcessLaunchContext {
         permissionManifest: RunPermissionManifest?,
         timeoutSeconds: TimeInterval,
         phase: String = "run",
+        contextText: String = "",
         nativeContinuationSessionID: String? = nil,
         runID: UUID? = nil
     ) {
@@ -561,6 +563,7 @@ struct AgentRuntimeProcessLaunchContext {
         self.permissionManifest = permissionManifest
         self.timeoutSeconds = timeoutSeconds
         self.phase = phase
+        self.contextText = contextText
         self.nativeContinuationSessionID = nativeContinuationSessionID
         self.runID = runID
     }
@@ -960,13 +963,16 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
 
     @MainActor
     func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
-        let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: context.task)
+        let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
+            for: context.task,
+            contextText: context.contextText
+        )
         let browserShimDirectory = AgentRuntimeProcessRunner.browserToolShimDirectory(
             for: context.task,
             taskEnv: taskEnv
         )
         let effectivePermissionPolicy = context.executionPolicy.permissionPolicy(default: context.permissionPolicy)
-        let capabilityScope = TaskCapabilityResolver(task: context.task).promptScope()
+        let capabilityScope = TaskCapabilityResolver(task: context.task).promptScope(contextText: context.contextText)
         let allowed = context.executionPolicy.allowedTools(
             default: capabilityScope.resolver.resolvedProviderAllowedTools
         )
@@ -1612,13 +1618,16 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
 
     @MainActor
     func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
-        let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: context.task)
+        let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
+            for: context.task,
+            contextText: context.contextText
+        )
         let browserShimDirectory = AgentRuntimeProcessRunner.browserToolShimDirectory(
             for: context.task,
             taskEnv: taskEnv
         )
         let effectivePermissionPolicy = context.executionPolicy.permissionPolicy(default: context.permissionPolicy)
-        let capabilityScope = TaskCapabilityResolver(task: context.task).promptScope()
+        let capabilityScope = TaskCapabilityResolver(task: context.task).promptScope(contextText: context.contextText)
         let allowed = context.executionPolicy.allowedTools(
             default: capabilityScope.resolver.resolvedProviderAllowedTools
         )
@@ -2342,7 +2351,10 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
 
     @MainActor
     func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
-        let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: context.task)
+        let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
+            for: context.task,
+            contextText: context.contextText
+        )
         let browserShimDirectory = AgentRuntimeProcessRunner.browserToolShimDirectory(
             for: context.task,
             taskEnv: taskEnv

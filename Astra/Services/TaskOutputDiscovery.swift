@@ -13,6 +13,17 @@ enum TaskOutputDiscovery {
         files(in: TaskWorkspaceAccess(task: task).taskFolder, fileManager: fileManager)
     }
 
+    @MainActor
+    static func filesAsync(for task: AgentTask, fileManager: FileManager = .default) async -> [TaskOutputDiscoveredFile] {
+        await filesAsync(in: TaskWorkspaceAccess(task: task).taskFolder, fileManager: fileManager)
+    }
+
+    static func filesAsync(in taskFolder: String, fileManager: FileManager = .default) async -> [TaskOutputDiscoveredFile] {
+        await Task.detached(priority: .utility) {
+            files(in: taskFolder, fileManager: fileManager)
+        }.value
+    }
+
     static func files(in taskFolder: String, fileManager: FileManager = .default) -> [TaskOutputDiscoveredFile] {
         guard !taskFolder.isEmpty else { return [] }
         let folderURL = URL(fileURLWithPath: taskFolder)

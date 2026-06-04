@@ -112,16 +112,16 @@ final class TaskLifecycleCoordinator {
         }
     }
 
-    func approveTask(_ task: AgentTask) {
+    @discardableResult
+    func approveTask(_ task: AgentTask) -> Task<Void, Never>? {
         if task.status == .pendingUser,
            hasOpenRuntimePermissionApprovalRequest(task) {
-            approveRuntimePermissionAndContinue(task)
-            return
+            return approveRuntimePermissionAndContinue(task)
         }
 
         if let latestRun = dismissibleLatestRun(for: task) {
             dismissWithoutMarkingCompleted(task, latestRun: latestRun)
-            return
+            return nil
         }
 
         let recordedValidationOverride = recordValidationOverrideIfNeeded(for: task)
@@ -141,6 +141,7 @@ final class TaskLifecycleCoordinator {
         )
         modelContext.insert(event)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+        return nil
     }
 
     private func recordValidationOverrideIfNeeded(for task: AgentTask) -> Bool {
@@ -210,11 +211,11 @@ final class TaskLifecycleCoordinator {
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
     }
 
-    func approveSimilarRuntimePermissionForTask(_ task: AgentTask) {
+    @discardableResult
+    func approveSimilarRuntimePermissionForTask(_ task: AgentTask) -> Task<Void, Never>? {
         guard task.status == .pendingUser,
               hasOpenRuntimePermissionApprovalRequest(task) else {
-            approveTask(task)
-            return
+            return approveTask(task)
         }
 
         let runtime = task.resolvedRuntimeID
@@ -227,8 +228,7 @@ final class TaskLifecycleCoordinator {
             source: "approve_similar"
         )
         guard !taskScopedGrants.isEmpty else {
-            approveRuntimePermissionAndContinue(task)
-            return
+            return approveRuntimePermissionAndContinue(task)
         }
 
         AppLogger.audit(.taskApproved, category: "UI", taskID: task.id, fields: [
@@ -256,7 +256,7 @@ final class TaskLifecycleCoordinator {
                 .flatMap { PermissionBroker.permissionGrant(fromProviderString: $0)?.displayName },
             scopeDescription: "task-scoped runtime permission for similar requests in this task"
         )
-        Task {
+        return Task {
             await taskQueue.continueSession(
                 task: task,
                 message: resumeMessage,
@@ -270,7 +270,7 @@ final class TaskLifecycleCoordinator {
         }
     }
 
-    private func approveRuntimePermissionAndContinue(_ task: AgentTask) {
+    private func approveRuntimePermissionAndContinue(_ task: AgentTask) -> Task<Void, Never> {
         AppLogger.audit(.taskApproved, category: "UI", taskID: task.id, fields: [
             "approval_type": "runtime_permission",
             "runtime": task.resolvedRuntimeID.rawValue
@@ -291,7 +291,7 @@ final class TaskLifecycleCoordinator {
         let approvedGrants = Self.approvedRuntimePermissionGrants(for: task)
         let executionPolicy = PermissionBroker.executionPolicy(forRuntime: runtime, grants: approvedGrants)
         let resumeMessage = Self.runtimePermissionApprovalResumeMessage(for: task, grants: approvedGrants)
-        Task {
+        return Task {
             await taskQueue.continueSession(
                 task: task,
                 message: resumeMessage,

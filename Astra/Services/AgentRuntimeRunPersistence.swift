@@ -29,7 +29,8 @@ enum AgentRuntimeRunPersistence {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String
+        phase: String,
+        handoffDiscoveredFiles: [TaskOutputDiscoveredFile]? = nil
     ) {
         let persistedArtifacts = TaskArtifactPersistenceService.persistDiscoveredTaskOutputArtifacts(
             for: task,
@@ -37,7 +38,12 @@ enum AgentRuntimeRunPersistence {
         )
         AgentEventCompactor.compactEvents(for: task, modelContext: modelContext)
         AgentPolicyManifestService.recordPostRunSummary(task: task, run: run, modelContext: modelContext)
-        TaskWorkerHandoffService.recordCreatedIfNeeded(task: task, run: run, modelContext: modelContext)
+        TaskWorkerHandoffService.recordCreatedIfNeeded(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            discoveredFiles: handoffDiscoveredFiles
+        )
         MissionHardeningService.recordCheckpoint(task: task, run: run, modelContext: modelContext)
 
         let finishedAt = Date()

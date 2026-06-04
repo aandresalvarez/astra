@@ -1352,14 +1352,16 @@ struct HeadlessChatScenarioTests {
             validationModel: "gpt-5"
         )
         let coordinator = TaskLifecycleCoordinator(modelContext: harness.context, taskQueue: queue)
+        defer { queue.cancelAll() }
 
         await queue.executeTask(task, modelContext: harness.context)
         #expect(task.status == .pendingUser)
         #expect(task.runs.first?.stopReason == "permission_approval_required")
         #expect(task.events.contains { $0.type == "permission.approval.requested" })
 
-        coordinator.approveTask(task)
+        let continuation = coordinator.approveTask(task)
         let completed = await harness.waitUntil(task: task, timeoutSeconds: 20) { $0.status == .completed }
+        await continuation?.value
 
         let args = try String(contentsOf: argsURL, encoding: .utf8)
         let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
@@ -1448,8 +1450,9 @@ struct HeadlessChatScenarioTests {
         let coordinator = TaskLifecycleCoordinator(modelContext: harness.context, taskQueue: queue)
         defer { queue.cancelAll() }
 
-        coordinator.approveTask(task)
+        let continuation = coordinator.approveTask(task)
         let completed = await harness.waitUntil(task: task, timeoutSeconds: 60) { $0.status == .completed }
+        await continuation?.value
 
         let args = try String(contentsOf: argsURL, encoding: .utf8)
         let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
@@ -1535,8 +1538,9 @@ struct HeadlessChatScenarioTests {
         let coordinator = TaskLifecycleCoordinator(modelContext: harness.context, taskQueue: queue)
         defer { queue.cancelAll() }
 
-        coordinator.approveSimilarRuntimePermissionForTask(task)
+        let continuation = coordinator.approveSimilarRuntimePermissionForTask(task)
         let completed = await harness.waitUntil(task: task, timeoutSeconds: 60) { $0.status == .completed }
+        await continuation?.value
 
         let args = try String(contentsOf: argsURL, encoding: .utf8)
         let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
@@ -1594,6 +1598,7 @@ struct HeadlessChatScenarioTests {
             validationModel: "claude-haiku-4-5-20251001"
         )
         let coordinator = TaskLifecycleCoordinator(modelContext: harness.context, taskQueue: queue)
+        defer { queue.cancelAll() }
 
         await queue.executeTask(task, modelContext: harness.context)
         #expect(task.status == .pendingUser)
@@ -1606,8 +1611,9 @@ struct HeadlessChatScenarioTests {
         #expect(approvalPayload.grants.contains(.shellCommand(executable: "curl", pattern: "*redcap.stanford.edu*")))
         #expect(approvalPayload.displayMessage.contains("Runtime grant: Bash(curl *redcap.stanford.edu*)"))
 
-        coordinator.approveTask(task)
+        let continuation = coordinator.approveTask(task)
         let completed = await harness.waitUntil(task: task, timeoutSeconds: 20) { $0.status == .completed }
+        await continuation?.value
 
         let args = try String(contentsOf: argsURL, encoding: .utf8)
         let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
@@ -1670,6 +1676,7 @@ struct HeadlessChatScenarioTests {
             validationModel: "claude-haiku-4-5-20251001"
         )
         let coordinator = TaskLifecycleCoordinator(modelContext: harness.context, taskQueue: queue)
+        defer { queue.cancelAll() }
 
         await queue.executeTask(task, modelContext: harness.context)
         #expect(task.status == .pendingUser)
@@ -1683,8 +1690,9 @@ struct HeadlessChatScenarioTests {
             pattern: "dev/workspaces/test/.astra/tasks/bf0b91bc/ *"
         )))
 
-        coordinator.approveTask(task)
+        let continuation = coordinator.approveTask(task)
         let completed = await harness.waitUntil(task: task, timeoutSeconds: 20) { $0.status == .completed }
+        await continuation?.value
 
         let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
         #expect(completed)
@@ -1799,8 +1807,9 @@ struct HeadlessChatScenarioTests {
         let coordinator = TaskLifecycleCoordinator(modelContext: harness.context, taskQueue: queue)
         defer { queue.cancelAll() }
 
-        coordinator.approveTask(task)
+        let continuation = coordinator.approveTask(task)
         let completed = await harness.waitUntil(task: task, timeoutSeconds: 60) { $0.status == .completed }
+        await continuation?.value
 
         let args = try String(contentsOf: argsURL, encoding: .utf8)
             .split(separator: "\n")
@@ -1871,8 +1880,9 @@ struct HeadlessChatScenarioTests {
         let coordinator = TaskLifecycleCoordinator(modelContext: harness.context, taskQueue: queue)
         defer { queue.cancelAll() }
 
-        coordinator.approveTask(task)
+        let continuation = coordinator.approveTask(task)
         let completed = await harness.waitUntil(task: task, timeoutSeconds: 60) { $0.status == .completed }
+        await continuation?.value
 
         let args = try String(contentsOf: argsURL, encoding: .utf8)
         #expect(completed)
@@ -1960,8 +1970,9 @@ struct HeadlessChatScenarioTests {
         let coordinator = TaskLifecycleCoordinator(modelContext: harness.context, taskQueue: queue)
         defer { queue.cancelAll() }
 
-        coordinator.approveTask(task)
+        let continuation = coordinator.approveTask(task)
         let completed = await harness.waitUntil(task: task, timeoutSeconds: 60) { $0.status == .completed }
+        await continuation?.value
 
         let args = try String(contentsOf: argsURL, encoding: .utf8)
         #expect(completed)

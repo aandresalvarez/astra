@@ -908,6 +908,58 @@ struct AgentRuntimeAdapterTests {
         #expect(antigravity.blockingProcessPermissionMessage(line: permissionPrompt, parsesJSONLines: false) != nil)
     }
 
+    @Test("Copilot launch exposes browser bridge from follow-up context")
+    @MainActor
+    func copilotLaunchExposesBrowserBridgeFromFollowUpContext() throws {
+        ShelfBrowserBridgeRegistry.shared.reset()
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-browser-context-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            ShelfBrowserBridgeRegistry.shared.reset()
+            try? FileManager.default.removeItem(at: root)
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Browser Context", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Continue task",
+            goal: "Continue the task",
+            workspace: workspace,
+            model: "gpt-5",
+            runtime: .copilotCLI
+        )
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: nil,
+            currentTitle: nil,
+            taskID: task.id,
+            isPresented: false,
+            isEnabled: true
+        )
+
+        let hiddenEnvironment = AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: task)
+        #expect(hiddenEnvironment["ASTRA_BROWSER_URL"] == nil)
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .copilotCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "Use the browser shelf",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/copilot-not-present",
+                providerHomeDirectory: root.appendingPathComponent("copilot-home").path,
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30,
+                phase: "resume",
+                contextText: "Use the browser shelf to inspect the current page."
+            ))
+
+        #expect(plan.environment["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+        #expect(plan.browserShimDirectory?.hasSuffix(".runtime-bin") == true)
+    }
+
     private static func copilotManifest(
         task: AgentTask,
         workspacePath: String,

@@ -36,6 +36,7 @@ final class AgentRuntimeProcessRunner {
         budgetEnforcementMode: BudgetEnforcementMode = .configuredDefault,
         timeoutSeconds: TimeInterval,
         phase: String = "run",
+        contextText: String = "",
         nativeContinuationSessionID: String? = nil,
         runID: UUID? = nil,
         onLine: @escaping (String, Bool) -> Void
@@ -51,6 +52,7 @@ final class AgentRuntimeProcessRunner {
             permissionManifest: permissionManifest,
             timeoutSeconds: timeoutSeconds,
             phase: phase,
+            contextText: contextText,
             nativeContinuationSessionID: nativeContinuationSessionID,
             runID: runID
         )
@@ -552,14 +554,14 @@ final class AgentRuntimeProcessRunner {
     }
 
     @MainActor
-    static func scopedEnvironmentVariables(for task: AgentTask) -> [String: String] {
-        let capabilityScope = TaskCapabilityResolver(task: task).promptScope()
+    static func scopedEnvironmentVariables(for task: AgentTask, contextText: String = "") -> [String: String] {
+        let capabilityScope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
         var taskEnv = capabilityScope.resolver.resolvedEnvironmentVariables
         if hasStanfordOutlookMailAccess(in: capabilityScope) {
             taskEnv["ASTRA_CHANNEL"] = AppChannel.current.rawValue
             taskEnv["ASTRA_MAIL_REGISTRY_PATH"] = StanfordOutlookMail.registryURL.path
         }
-        if TaskCapabilityResolver.shouldExposeBrowserBridge(for: task) {
+        if TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) {
             for (key, value) in ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id) {
                 taskEnv[key] = value
             }

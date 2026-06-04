@@ -117,6 +117,7 @@ struct TaskDecisionDockPresentation: Equatable {
     var utilityActions: [TaskDecisionDockAction] {
         flattenedSupportActions.filter(\.kind.isDecisionDockUtility)
     }
+    var showsDetailsToggle: Bool { hasDetails }
     var secondaryDecisionActions: [TaskDecisionDockAction] {
         flattenedSupportActions.filter { !$0.kind.isDecisionDockUtility }
     }

@@ -423,18 +423,20 @@ final class AgentRuntimeWorker {
         let startEvent = TaskEvent(task: task, type: startEventType, payload: startPayload, run: run)
         modelContext.insert(startEvent)
 
+        let providerLaunchContextText = runtimeAdapter.connectorPreflightContextText(
+            task: task,
+            promptOverride: promptOverride,
+            startPayload: startPayload,
+            sessionMessage: sessionMessage,
+            phase: auditPhase
+        )
+
         guard await AgentRuntimeLaunchPreflight.preflightConnectorsBeforeLaunch(
             task: task,
             run: run,
             modelContext: modelContext,
             phase: auditPhase,
-            contextText: runtimeAdapter.connectorPreflightContextText(
-                task: task,
-                promptOverride: promptOverride,
-                startPayload: startPayload,
-                sessionMessage: sessionMessage,
-                phase: auditPhase
-            )
+            contextText: providerLaunchContextText
         ) else {
             isRunning = false
             return
@@ -619,6 +621,7 @@ final class AgentRuntimeWorker {
             budgetEnforcementMode: budgetEnforcementMode,
             timeoutSeconds: timeoutSeconds,
             phase: auditPhase,
+            contextText: providerLaunchContextText,
             nativeContinuationSessionID: nativeContinuationSessionID,
             runID: run.id,
             onLine: { line, parsesJSONLines in
@@ -994,11 +997,14 @@ final class AgentRuntimeWorker {
         if shouldCleanupIsolation {
             IsolationService.cleanup(task: task, executionPath: executionPath)
         }
+        let handoffTaskFolder = TaskWorkspaceAccess(task: task).taskFolder
+        let handoffDiscoveredFiles = await TaskOutputDiscovery.filesAsync(in: handoffTaskFolder)
         AgentRuntimeRunPersistence.finalizeAndPersist(
             task: task,
             run: run,
             modelContext: modelContext,
-            phase: auditPhase
+            phase: auditPhase,
+            handoffDiscoveredFiles: handoffDiscoveredFiles
         )
         isRunning = false
     }

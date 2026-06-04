@@ -67,6 +67,10 @@ struct TaskDecisionDockView: View {
         HStack(alignment: .center, spacing: 10) {
             statusTitleCluster
 
+            if includeUtilities, presentation.showsDetailsToggle {
+                detailsToggle
+            }
+
             if includeUtilities, hasUtilityActions {
                 utilityActionsView
             }
