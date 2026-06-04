@@ -22,15 +22,24 @@ enum TaskArtifactPersistenceService {
         for task: AgentTask,
         modelContext: ModelContext? = nil
     ) -> [Artifact] {
-        var seenPaths = Set(task.artifacts.map { normalizedPath($0.path) })
+        var seenPaths = Set<String>()
+        for artifact in task.artifacts {
+            let path = normalizedPath(artifact.path, task: task)
+            if artifact.path != path {
+                artifact.path = path
+            }
+            if !path.isEmpty {
+                seenPaths.insert(path)
+            }
+        }
         var created: [Artifact] = []
 
         for file in files {
-            let path = normalizedPath(file.path)
+            let path = normalizedPath(file.path, task: task)
             guard !path.isEmpty, seenPaths.insert(path).inserted else { continue }
 
             let nextVersion = (task.artifacts
-                .filter { normalizedPath($0.path) == path }
+                .filter { normalizedPath($0.path, task: task) == path }
                 .map(\.version)
                 .max() ?? 0) + 1
             let artifact = Artifact(
@@ -49,10 +58,27 @@ enum TaskArtifactPersistenceService {
         return created
     }
 
-    private static func normalizedPath(_ path: String) -> String {
+    private static func normalizedPath(_ path: String, task: AgentTask) -> String {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
-        guard trimmed.hasPrefix("/") else { return trimmed }
-        return URL(fileURLWithPath: trimmed).standardizedFileURL.path
+        if trimmed.hasPrefix("/") {
+            return URL(fileURLWithPath: trimmed)
+                .resolvingSymlinksInPath()
+                .standardizedFileURL
+                .path
+        }
+
+        let access = TaskWorkspaceAccess(task: task)
+        let base = access.effectiveWorkspacePath.isEmpty
+            ? URL(fileURLWithPath: access.taskFolder).deletingLastPathComponent().path
+            : access.effectiveWorkspacePath
+        guard !base.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return trimmed
+        }
+        return URL(fileURLWithPath: base)
+            .appendingPathComponent(trimmed)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+            .path
     }
 }

@@ -608,6 +608,48 @@ struct TaskContextStateTests {
         #expect(task.artifacts.filter { $0.path == indexPath }.count == 1)
     }
 
+    @Test("artifact persistence canonicalizes relative and absolute task output paths")
+    func artifactPersistenceCanonicalizesRelativeAndAbsoluteTaskOutputPaths() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Artifact Canonicalization", primaryPath: root)
+        let task = AgentTask(
+            title: "Create HTML",
+            goal: "create a standalone html page",
+            workspace: workspace
+        )
+        context.insert(workspace)
+        context.insert(task)
+
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let indexPath = (folder as NSString).appendingPathComponent("index.html")
+        try "<!doctype html><html><body>Canonical</body></html>".write(
+            toFile: indexPath,
+            atomically: true,
+            encoding: .utf8
+        )
+        let relativePath = String(indexPath.dropFirst(root.count + 1))
+        let existing = Artifact(task: task, type: "html", path: relativePath, version: 1)
+        context.insert(existing)
+        task.artifacts.append(existing)
+
+        let created = TaskArtifactPersistenceService.persistDiscoveredTaskOutputArtifacts([
+            TaskOutputDiscoveredFile(
+                path: indexPath,
+                relativePath: "index.html",
+                type: "html",
+                modifiedAt: Date()
+            )
+        ], for: task, modelContext: context)
+
+        #expect(created.isEmpty)
+        #expect(existing.path == indexPath)
+        #expect(task.artifacts.filter { $0.path == indexPath }.count == 1)
+        #expect(task.artifacts.count == 1)
+    }
+
     @Test("context capsule refresh repairs stale task output metadata")
     func contextCapsuleRefreshRepairsStaleTaskOutputMetadata() throws {
         let root = try temporaryRoot()

@@ -8,7 +8,7 @@ struct TaskDecisionDockView: View {
     var body: some View {
         summaryRow
             .padding(.horizontal, TaskComposerPresentation.decisionRowHorizontalPadding)
-            .padding(.vertical, 8)
+            .padding(.vertical, TaskComposerPresentation.decisionRowVerticalPadding)
             .contentShape(Rectangle())
             .overlay(alignment: .leading) {
                 Capsule()
