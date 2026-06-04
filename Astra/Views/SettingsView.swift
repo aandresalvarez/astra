@@ -691,7 +691,7 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
 
                 Toggle("Browser Debug Capture", isOn: $browserDebugCapture)
-                Text("When enabled, browser-control tasks receive ASTRA_BROWSER_DEBUG_CAPTURE=1. Failed browser actions persist a per-task browser-flight JSONL entry with a compact tree, console/navigation/network summaries, and a screenshot thumbnail, which may include visible page content.")
+                Text("When enabled, browser-control tasks receive ASTRA_BROWSER_DEBUG_CAPTURE=1. Failed browser actions persist a per-task browser-flight JSONL entry with a compact tree, console/navigation/network summaries, and a screenshot thumbnail that may contain visible page content. Controlled Chromium uses probed CDP event streams; embedded WebKit uses page instrumentation.")
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
 

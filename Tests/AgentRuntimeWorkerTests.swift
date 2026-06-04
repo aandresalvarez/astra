@@ -1521,10 +1521,27 @@ struct ControlledBrowserTests {
     func defaultCandidatesCoverCommonChromiumBrowsers() {
         let names = Set(ControlledBrowserCandidate.defaultCandidates.map(\.name))
 
+        #expect(names.contains("Google Chrome for Testing"))
         #expect(names.contains("Google Chrome"))
         #expect(names.contains("Microsoft Edge"))
         #expect(names.contains("Brave Browser"))
         #expect(names.contains("Chromium"))
+    }
+
+    @Test("controlled browser executable environment override wins")
+    func controlledBrowserExecutableEnvironmentOverrideWins() throws {
+        let executable = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-controlled-browser-\(UUID().uuidString)")
+        FileManager.default.createFile(atPath: executable.path, contents: Data("#!/bin/sh\n".utf8))
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        defer { try? FileManager.default.removeItem(at: executable) }
+
+        let candidate = ControlledBrowserCandidate.firstAvailable(environment: [
+            ControlledBrowserCandidate.executablePathEnvironmentKey: executable.path,
+            ControlledBrowserCandidate.browserNameEnvironmentKey: "Pinned Chrome for Testing"
+        ])
+
+        #expect(candidate == ControlledBrowserCandidate(name: "Pinned Chrome for Testing", executablePath: executable.path))
     }
 
     @Test("controlled browser handoff preserves embedded page URL")

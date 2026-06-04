@@ -32,17 +32,44 @@ struct ControlledBrowserCandidate: Equatable {
     let name: String
     let executablePath: String
 
+    static let executablePathEnvironmentKey = "ASTRA_CONTROLLED_BROWSER_EXECUTABLE"
+    static let browserNameEnvironmentKey = "ASTRA_CONTROLLED_BROWSER_NAME"
+
     static let defaultCandidates: [ControlledBrowserCandidate] = [
+        .init(name: "Google Chrome for Testing", executablePath: "/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"),
         .init(name: "Google Chrome", executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
         .init(name: "Microsoft Edge", executablePath: "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
         .init(name: "Brave Browser", executablePath: "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
         .init(name: "Chromium", executablePath: "/Applications/Chromium.app/Contents/MacOS/Chromium"),
+        .init(name: "Google Chrome for Testing", executablePath: "\(NSHomeDirectory())/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"),
         .init(name: "Google Chrome", executablePath: "\(NSHomeDirectory())/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
         .init(name: "Microsoft Edge", executablePath: "\(NSHomeDirectory())/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge")
     ]
 
-    static func firstAvailable(fileManager: FileManager = .default) -> ControlledBrowserCandidate? {
-        defaultCandidates.first { fileManager.isExecutableFile(atPath: $0.executablePath) }
+    static func firstAvailable(
+        fileManager: FileManager = .default,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> ControlledBrowserCandidate? {
+        if let override = environment[executablePathEnvironmentKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !override.isEmpty {
+            let expanded = (override as NSString).expandingTildeInPath
+            if fileManager.isExecutableFile(atPath: expanded) {
+                let name = environment[browserNameEnvironmentKey]?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let resolvedName: String
+                if let name, !name.isEmpty {
+                    resolvedName = name
+                } else {
+                    resolvedName = URL(fileURLWithPath: expanded).lastPathComponent
+                }
+                return ControlledBrowserCandidate(
+                    name: resolvedName,
+                    executablePath: expanded
+                )
+            }
+        }
+        return defaultCandidates.first { fileManager.isExecutableFile(atPath: $0.executablePath) }
     }
 
     func launchArguments(profilePath: String, debugPort: UInt16, initialURL: URL?) -> [String] {
@@ -64,6 +91,153 @@ struct ControlledBrowserCandidate: Equatable {
 struct ControlledBrowserDebugTarget: Equatable {
     let processID: pid_t
     let debugPort: UInt16
+}
+
+struct ControlledBrowserCDPCapabilityReport: Equatable {
+    let browser: String
+    let protocolVersion: String
+    let domains: [String: Bool]
+    let errors: [String: String]
+
+    var jsonObject: [String: Any] {
+        [
+            "browser": browser,
+            "protocolVersion": protocolVersion,
+            "domains": domains,
+            "errors": errors
+        ]
+    }
+}
+
+enum ControlledBrowserCDPDiagnosticsFormatter {
+    static func diagnosticsObject(
+        url: String,
+        title: String,
+        events: [[String: Any]],
+        capabilities: ControlledBrowserCDPCapabilityReport
+    ) -> [String: Any] {
+        [
+            "ok": true,
+            "captureMode": "cdp_event_stream",
+            "url": url,
+            "title": title,
+            "capabilities": capabilities.jsonObject,
+            "consoleEvents": consoleEvents(from: events),
+            "navigationEvents": navigationEvents(from: events),
+            "networkEvents": networkEvents(from: events)
+        ]
+    }
+
+    private static func consoleEvents(from events: [[String: Any]]) -> [[String: Any]] {
+        events.compactMap { event in
+            let method = stringValue(event["method"])
+            let params = event["params"] as? [String: Any] ?? [:]
+            switch method {
+            case "Runtime.consoleAPICalled":
+                let args = params["args"] as? [[String: Any]] ?? []
+                let message = args.map { arg in
+                    stringValue(arg["value"]).isEmpty ? stringValue(arg["description"]) : stringValue(arg["value"])
+                }.joined(separator: " ")
+                return [
+                    "source": "cdp.Runtime.consoleAPICalled",
+                    "level": stringValue(params["type"]),
+                    "message": message
+                ]
+            case "Runtime.exceptionThrown":
+                let details = params["exceptionDetails"] as? [String: Any] ?? [:]
+                let exception = details["exception"] as? [String: Any] ?? [:]
+                return [
+                    "source": stringValue(details["url"]).isEmpty ? "cdp.Runtime.exceptionThrown" : stringValue(details["url"]),
+                    "level": "exception",
+                    "message": stringValue(details["text"]).isEmpty ? stringValue(exception["description"]) : stringValue(details["text"]),
+                    "line": intValue(details["lineNumber"]) ?? 0,
+                    "column": intValue(details["columnNumber"]) ?? 0
+                ]
+            case "Log.entryAdded":
+                let entry = params["entry"] as? [String: Any] ?? [:]
+                return [
+                    "source": stringValue(entry["url"]).isEmpty ? "cdp.Log.entryAdded" : stringValue(entry["url"]),
+                    "level": stringValue(entry["level"]),
+                    "message": stringValue(entry["text"]),
+                    "line": intValue(entry["lineNumber"]) ?? 0
+                ]
+            default:
+                return nil
+            }
+        }
+    }
+
+    private static func navigationEvents(from events: [[String: Any]]) -> [[String: Any]] {
+        events.compactMap { event in
+            let method = stringValue(event["method"])
+            let params = event["params"] as? [String: Any] ?? [:]
+            switch method {
+            case "Page.frameNavigated":
+                let frame = params["frame"] as? [String: Any] ?? [:]
+                return [
+                    "source": "cdp.Page.frameNavigated",
+                    "type": "frameNavigated",
+                    "url": stringValue(frame["url"])
+                ]
+            case "Page.domContentEventFired":
+                return ["source": "cdp.Page.domContentEventFired", "type": "DOMContentLoaded"]
+            case "Page.loadEventFired":
+                return ["source": "cdp.Page.loadEventFired", "type": "load"]
+            case "Page.lifecycleEvent":
+                return [
+                    "source": "cdp.Page.lifecycleEvent",
+                    "type": stringValue(params["name"]),
+                    "frameId": stringValue(params["frameId"])
+                ]
+            default:
+                return nil
+            }
+        }
+    }
+
+    private static func networkEvents(from events: [[String: Any]]) -> [[String: Any]] {
+        events.compactMap { event in
+            let method = stringValue(event["method"])
+            let params = event["params"] as? [String: Any] ?? [:]
+            switch method {
+            case "Network.responseReceived":
+                let response = params["response"] as? [String: Any] ?? [:]
+                let status = intValue(response["status"]) ?? 0
+                guard status >= 400 else { return nil }
+                return [
+                    "source": "cdp.Network.responseReceived",
+                    "type": stringValue(params["type"]).isEmpty ? "response" : stringValue(params["type"]),
+                    "method": "",
+                    "url": stringValue(response["url"]),
+                    "status": status
+                ]
+            case "Network.loadingFailed":
+                return [
+                    "source": "cdp.Network.loadingFailed",
+                    "type": stringValue(params["type"]).isEmpty ? "request" : stringValue(params["type"]),
+                    "method": "",
+                    "url": "",
+                    "error": stringValue(params["errorText"])
+                ]
+            default:
+                return nil
+            }
+        }
+    }
+
+    private static func stringValue(_ value: Any?) -> String {
+        if let string = value as? String { return string }
+        if let number = value as? NSNumber { return number.stringValue }
+        if let bool = value as? Bool { return bool ? "true" : "false" }
+        return ""
+    }
+
+    private static func intValue(_ value: Any?) -> Int? {
+        if let int = value as? Int { return int }
+        if let number = value as? NSNumber { return number.intValue }
+        if let string = value as? String { return Int(string) }
+        return nil
+    }
 }
 
 enum ControlledBrowserRunState: String, CaseIterable {
@@ -112,12 +286,15 @@ final class ControlledBrowserController: ObservableObject {
 
     private var process: Process?
     private var attachedProcessID: pid_t?
+    private var diagnosticsClient: PersistentCDPDiagnosticsClient?
+    private var diagnosticsPageID: String?
 
     var isLaunching: Bool {
         runState == .launching
     }
 
     deinit {
+        diagnosticsClient?.close()
         process?.terminate()
     }
 
@@ -188,6 +365,9 @@ final class ControlledBrowserController: ObservableObject {
     }
 
     func stop() {
+        diagnosticsClient?.close()
+        diagnosticsClient = nil
+        diagnosticsPageID = nil
         if let process, process.isRunning {
             process.terminate()
         } else if let attachedProcessID {
@@ -289,15 +469,38 @@ final class ControlledBrowserController: ObservableObject {
     }
 
     func installDebugInstrumentation() async throws {
+        try await startCDPDiagnostics()
+    }
+
+    func startCDPDiagnostics() async throws {
         try await ensureLaunched(initialURL: URL(string: "about:blank"))
-        _ = try await evaluate(script: BrowserAutomationScripts.debugInstrumentationScript)
+        let page = try await currentPage()
+        if diagnosticsClient != nil, diagnosticsPageID == page.id {
+            return
+        }
+        diagnosticsClient?.close()
+        diagnosticsClient = nil
+        diagnosticsPageID = nil
+
+        guard let webSocketURL = URL(string: page.webSocketDebuggerURL),
+              let debugPort else {
+            throw ControlledBrowserError.invalidDevToolsResponse
+        }
+        let version = try await devToolsVersion(debugPort: debugPort)
+        let client = PersistentCDPDiagnosticsClient(webSocketURL: webSocketURL)
+        try await client.connect()
+        try await client.probeAndEnable(version: version)
+        diagnosticsClient = client
+        diagnosticsPageID = page.id
     }
 
     func debugEvents() async throws -> String {
-        try await ensureLaunched(initialURL: URL(string: "about:blank"))
-        let value = try await evaluate(script: BrowserAutomationScripts.debugReadScript)
+        try await startCDPDiagnostics()
         try await refreshPageMetadata()
-        return value
+        guard let diagnosticsClient else {
+            throw ControlledBrowserError.invalidDevToolsResponse
+        }
+        return try Self.jsonString(diagnosticsClient.snapshot(url: currentURL, title: pageTitle))
     }
 
     func screenshotJPEGBase64(quality: Int = 45) async throws -> String {
@@ -1191,12 +1394,15 @@ final class ControlledBrowserController: ObservableObject {
     }
 
     private func browserWebSocketDebuggerURL(debugPort: UInt16) async throws -> String {
+        try await devToolsVersion(debugPort: debugPort).webSocketDebuggerURL
+    }
+
+    private func devToolsVersion(debugPort: UInt16) async throws -> DevToolsVersion {
         let url = URL(string: "http://127.0.0.1:\(debugPort)/json/version")!
         var request = URLRequest(url: url)
         request.timeoutInterval = 4
         let (data, _) = try await URLSession.shared.data(for: request)
-        let version = try JSONDecoder().decode(DevToolsVersion.self, from: data)
-        return version.webSocketDebuggerURL
+        return try JSONDecoder().decode(DevToolsVersion.self, from: data)
     }
 
     private func attachToExistingControlledBrowser() async -> Bool {
@@ -1791,6 +1997,211 @@ final class ControlledBrowserController: ObservableObject {
         let truncated: Bool
     }
 
+    private final class PersistentCDPDiagnosticsClient: @unchecked Sendable {
+        private let configuration: URLSessionConfiguration
+        private let session: URLSession
+        private let task: URLSessionWebSocketTask
+        private let queue = DispatchQueue(label: "com.coral.astra.controlled-browser.cdp-diagnostics")
+        private var nextID = 1
+        private var responses: [Int: [String: Any]] = [:]
+        private var events: [[String: Any]] = []
+        private var receiveTask: Task<Void, Never>?
+        private var isClosed = false
+        private var capabilities = ControlledBrowserCDPCapabilityReport(
+            browser: "",
+            protocolVersion: "",
+            domains: [:],
+            errors: [:]
+        )
+
+        init(webSocketURL: URL) {
+            configuration = .ephemeral
+            configuration.timeoutIntervalForRequest = 8
+            configuration.timeoutIntervalForResource = 0
+            session = URLSession(configuration: configuration)
+            task = session.webSocketTask(with: webSocketURL)
+        }
+
+        func connect() async throws {
+            task.resume()
+            receiveTask = Task { [weak self] in
+                await self?.receiveLoop()
+            }
+        }
+
+        func close() {
+            queue.sync {
+                isClosed = true
+            }
+            receiveTask?.cancel()
+            task.cancel(with: .normalClosure, reason: nil)
+            session.invalidateAndCancel()
+        }
+
+        func probeAndEnable(version: DevToolsVersion) async throws {
+            var domains = try await schemaDomains()
+            var errors: [String: String] = [:]
+            let activeProbes: [(domain: String, method: String)] = [
+                ("Runtime", "Runtime.enable"),
+                ("Log", "Log.enable"),
+                ("Network", "Network.enable"),
+                ("Page", "Page.enable"),
+                ("DOM", "DOM.enable")
+            ]
+
+            for probe in activeProbes {
+                do {
+                    _ = try await send(method: probe.method)
+                    domains[probe.domain] = true
+                } catch {
+                    domains[probe.domain] = false
+                    errors[probe.domain] = error.localizedDescription
+                }
+            }
+
+            if domains["Accessibility"] == true {
+                do {
+                    _ = try await send(method: "Accessibility.getFullAXTree", params: ["interestingOnly": true])
+                } catch {
+                    domains["Accessibility"] = false
+                    errors["Accessibility"] = error.localizedDescription
+                }
+            }
+
+            queue.sync {
+                capabilities = ControlledBrowserCDPCapabilityReport(
+                    browser: version.browser,
+                    protocolVersion: version.protocolVersion,
+                    domains: domains,
+                    errors: errors
+                )
+            }
+        }
+
+        func snapshot(url: String, title: String) -> [String: Any] {
+            let state = queue.sync {
+                (events, capabilities)
+            }
+            return ControlledBrowserCDPDiagnosticsFormatter.diagnosticsObject(
+                url: url,
+                title: title,
+                events: state.0,
+                capabilities: state.1
+            )
+        }
+
+        private func schemaDomains() async throws -> [String: Bool] {
+            do {
+                let response = try await send(method: "Schema.getDomains")
+                let rawDomains = ((response["result"] as? [String: Any])?["domains"] as? [[String: Any]]) ?? []
+                var domains: [String: Bool] = [:]
+                for domain in rawDomains {
+                    let name = ControlledBrowserController.stringValue(domain["name"])
+                    if !name.isEmpty {
+                        domains[name] = true
+                    }
+                }
+                return domains
+            } catch {
+                return [
+                    "Runtime": false,
+                    "Log": false,
+                    "Network": false,
+                    "Page": false,
+                    "DOM": false,
+                    "Accessibility": false,
+                    "Input": false
+                ]
+            }
+        }
+
+        private func send(method: String, params: [String: Any] = [:]) async throws -> [String: Any] {
+            let id = queue.sync {
+                let value = nextID
+                nextID += 1
+                return value
+            }
+
+            let payload: [String: Any] = [
+                "id": id,
+                "method": method,
+                "params": params
+            ]
+            let data = try JSONSerialization.data(withJSONObject: payload)
+            guard let json = String(data: data, encoding: .utf8) else {
+                throw ControlledBrowserError.invalidDevToolsResponse
+            }
+            try await ControlledBrowserController.sendWebSocketMessage(
+                .string(json),
+                on: task,
+                timeout: 4,
+                operationName: "sending a browser diagnostics command"
+            )
+
+            let deadline = Date().addingTimeInterval(6)
+            while Date() < deadline {
+                let response = queue.sync {
+                    responses.removeValue(forKey: id)
+                }
+                if let response {
+                    if let error = response["error"] as? [String: Any] {
+                        throw ControlledBrowserError.commandFailed(String(describing: error))
+                    }
+                    return response
+                }
+                try await Task.sleep(nanoseconds: 20_000_000)
+            }
+            throw ControlledBrowserError.timedOut("waiting for a browser diagnostics command response")
+        }
+
+        private func receiveLoop() async {
+            while !Task.isCancelled {
+                let closed = queue.sync { isClosed }
+                if closed { return }
+
+                do {
+                    let message = try await receiveWebSocketMessage()
+                    let messageData: Data
+                    switch message {
+                    case .data(let data):
+                        messageData = data
+                    case .string(let text):
+                        messageData = Data(text.utf8)
+                    @unknown default:
+                        continue
+                    }
+                    guard let object = try JSONSerialization.jsonObject(with: messageData) as? [String: Any] else {
+                        continue
+                    }
+                    record(object)
+                } catch {
+                    return
+                }
+            }
+        }
+
+        private func record(_ object: [String: Any]) {
+            queue.sync {
+                if let id = ControlledBrowserController.responseID(from: object) {
+                    responses[id] = object
+                    return
+                }
+                events.append(object)
+                if events.count > 240 {
+                    events.removeFirst(events.count - 240)
+                }
+            }
+        }
+
+        private func receiveWebSocketMessage() async throws -> URLSessionWebSocketTask.Message {
+            try await withCheckedThrowingContinuation { continuation in
+                task.receive { result in
+                    continuation.resume(with: result)
+                }
+            }
+        }
+    }
+
     // Operation-scoped and serial-only. Callers must not invoke send concurrently;
     // nextID and the event buffer intentionally avoid locking for this short-lived read path.
     private final class OperationCDPClient: @unchecked Sendable {
@@ -1902,9 +2313,13 @@ final class ControlledBrowserController: ObservableObject {
 
     private struct DevToolsVersion: Decodable {
         let webSocketDebuggerURL: String
+        let browser: String
+        let protocolVersion: String
 
         enum CodingKeys: String, CodingKey {
             case webSocketDebuggerURL = "webSocketDebuggerUrl"
+            case browser = "Browser"
+            case protocolVersion = "Protocol-Version"
         }
     }
 }

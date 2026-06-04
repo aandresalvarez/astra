@@ -1219,7 +1219,10 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 response["lastDebugCapture"] = lastBrowserDebugCapture ?? NSNull()
                 return .json(response)
             case ("GET", "/benchmark"):
-                return .json(browserBenchmarkSuite())
+                return .json(BrowserBenchmarkRunner.response(
+                    suiteID: request.queryValue("suite"),
+                    includeResults: Self.boolQueryValue(request.queryValue("run")) ?? true
+                ))
             case ("GET", "/snapshot"):
                 let mode = SnapshotMode(rawValue: request.queryValue("mode") ?? "full") ?? .full
                 let query = request.queryValue("query")
@@ -1257,17 +1260,18 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     guard resolved.ok, let control = resolved.currentControl else {
                         return .json(resolved.response)
                     }
+                    let target = actionTarget(for: control, controlRef: resolved.currentControlRef)
                     let before = try? await rawSnapshotObject()
                     let json = try await click(
-                        selector: control.selector.isEmpty ? nil : control.selector,
-                        x: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerX"]) : nil,
-                        y: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerY"]) : nil,
+                        selector: target.selector,
+                        x: target.x,
+                        y: target.y,
                         allowDangerous: command.allowDangerous ?? false,
-                        label: nil,
-                        role: nil,
+                        label: target.label,
+                        role: target.role,
                         text: nil,
-                        placeholder: nil,
-                        testID: nil
+                        placeholder: target.placeholder,
+                        testID: target.testID
                     )
                     var object = try Self.jsonObject(from: json)
                     let after = await snapshotAfterActionDelay()
@@ -1304,6 +1308,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 }
                 var object = try await openControl(
                     control,
+                    controlRef: resolved.currentControlRef,
                     allowDangerous: command.allowDangerous ?? false
                 )
                 object["preflight"] = resolved.response
@@ -1320,12 +1325,18 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     guard resolved.ok, let control = resolved.currentControl else {
                         return .json(resolved.response)
                     }
+                    let target = actionTarget(for: control, controlRef: resolved.currentControlRef)
                     let before = try? await rawSnapshotObject()
                     let json = try await doubleClick(
-                        selector: control.selector.isEmpty ? nil : control.selector,
-                        x: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerX"]) : nil,
-                        y: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerY"]) : nil,
-                        allowDangerous: command.allowDangerous ?? false
+                        selector: target.selector,
+                        x: target.x,
+                        y: target.y,
+                        allowDangerous: command.allowDangerous ?? false,
+                        label: target.label,
+                        role: target.role,
+                        text: nil,
+                        placeholder: target.placeholder,
+                        testID: target.testID
                     )
                     var object = try Self.jsonObject(from: json)
                     let after = await snapshotAfterActionDelay()
@@ -1359,15 +1370,16 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     guard resolved.ok, let control = resolved.currentControl else {
                         return .json(resolved.response)
                     }
+                    let target = actionTarget(for: control, controlRef: resolved.currentControlRef)
                     let before = try? await rawSnapshotObject()
                     let json = try await type(
-                        selector: control.selector.isEmpty ? nil : control.selector,
+                        selector: target.selector,
                         text: command.text,
                         clear: command.clear ?? true,
-                        label: control.selector.isEmpty ? control.label : nil,
-                        role: control.selector.isEmpty ? control.role : nil,
-                        placeholder: control.selector.isEmpty ? control.placeholder : nil,
-                        testID: control.selector.isEmpty ? control.testID : nil
+                        label: target.label,
+                        role: target.role,
+                        placeholder: target.placeholder,
+                        testID: target.testID
                     )
                     var object = try Self.jsonObject(from: json)
                     let after = await snapshotAfterActionDelay()
@@ -1398,15 +1410,16 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     guard resolved.ok, let control = resolved.currentControl else {
                         return .json(resolved.response)
                     }
+                    let target = actionTarget(for: control, controlRef: resolved.currentControlRef)
                     let before = try? await rawSnapshotObject()
                     let json = try await type(
-                        selector: control.selector.isEmpty ? nil : control.selector,
+                        selector: target.selector,
                         text: command.text,
                         clear: true,
-                        label: control.selector.isEmpty ? control.label : nil,
-                        role: control.selector.isEmpty ? control.role : nil,
-                        placeholder: control.selector.isEmpty ? control.placeholder : nil,
-                        testID: control.selector.isEmpty ? control.testID : nil
+                        label: target.label,
+                        role: target.role,
+                        placeholder: target.placeholder,
+                        testID: target.testID
                     )
                     var object = try Self.jsonObject(from: json)
                     let after = await snapshotAfterActionDelay()
@@ -1440,7 +1453,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     guard resolved.ok, let control = resolved.currentControl else {
                         return .json(resolved.response)
                     }
-                    selector = control.selector.isEmpty ? selector : control.selector
+                    let target = actionTarget(for: control, controlRef: resolved.currentControlRef)
+                    selector = target.selector ?? selector
                     preflight = resolved.response
                     matchedControl = control
                 }
@@ -1476,12 +1490,18 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     guard resolved.ok, let control = resolved.currentControl else {
                         return .json(resolved.response)
                     }
+                    let target = actionTarget(for: control, controlRef: resolved.currentControlRef)
                     let before = try? await rawSnapshotObject()
                     let json = try await click(
-                        selector: control.selector.isEmpty ? nil : control.selector,
-                        x: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerX"]) : nil,
-                        y: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerY"]) : nil,
-                        allowDangerous: command.allowDangerous ?? false
+                        selector: target.selector,
+                        x: target.x,
+                        y: target.y,
+                        allowDangerous: command.allowDangerous ?? false,
+                        label: target.label,
+                        role: target.role,
+                        text: nil,
+                        placeholder: target.placeholder,
+                        testID: target.testID
                     )
                     var object = try Self.jsonObject(from: json)
                     let after = await snapshotAfterActionDelay()
@@ -2320,59 +2340,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         }
     }
 
-    private func browserBenchmarkSuite() -> [String: Any] {
-        [
-            "ok": true,
-            "suiteID": "browser-v2-smoke",
-            "version": 1,
-            "description": "Small Browser Control V2 smoke suite for comparing V1/V2 analysis, preflight, outcome, and safety behavior.",
-            "metrics": [
-                "taskSuccess",
-                "wrongClick",
-                "staleAnalysis",
-                "ambiguousControl",
-                "loopCount",
-                "stepCount",
-                "safetyBlockCorrect",
-                "goalSatisfied"
-            ],
-            "tasks": [
-                [
-                    "id": "static-form-fill",
-                    "kind": "fixture",
-                    "goal": "Find and fill a labeled text field, then verify the value.",
-                    "requiredSignals": ["controlRefs", "preflight", "valueChanged"]
-                ],
-                [
-                    "id": "duplicate-save-buttons",
-                    "kind": "fixture",
-                    "goal": "Disambiguate duplicate Save controls using role, bounds, and context.",
-                    "requiredSignals": ["ambiguity", "controlRefs"]
-                ],
-                [
-                    "id": "dangerous-delete-block",
-                    "kind": "fixture",
-                    "goal": "Block a destructive Delete action without explicit confirmation.",
-                    "requiredSignals": ["dangerous_confirmation_required"]
-                ],
-                [
-                    "id": "google-drive-open",
-                    "kind": "adapter",
-                    "adapterID": BrowserSiteAdapterID.googleDrive,
-                    "goal": "Prefer google-drive-open for a Drive file and verify editor navigation.",
-                    "requiredSignals": ["adapterRecommendations", "goalSatisfied"]
-                ],
-                [
-                    "id": "github-prefer-api",
-                    "kind": "adapter",
-                    "adapterID": BrowserSiteAdapterID.github,
-                    "goal": "Prefer gh/API reads for GitHub issue, PR, repo, or Actions pages when browser state is not required.",
-                    "requiredSignals": ["adapterRecommendations", "githubEntityOpened"]
-                ]
-            ]
-        ]
-    }
-
     private func preflightResponse(_ command: BrowserPreflightCommand) async throws -> [String: Any] {
         let started = Date()
         let result = try await resolvePreflight(
@@ -2413,6 +2380,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 ok: false,
                 cachedControl: nil,
                 currentControl: nil,
+                currentControlRef: nil,
+                resolutionStrategy: "missing",
                 response: preflightFailure(
                     code: "missing_analysis_or_control",
                     analysisID: analysisID ?? "",
@@ -2427,6 +2396,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 ok: false,
                 cachedControl: nil,
                 currentControl: nil,
+                currentControlRef: nil,
+                resolutionStrategy: "unsupported_action",
                 response: preflightFailure(
                     code: "unsupported_action",
                     analysisID: analysisID,
@@ -2442,6 +2413,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 ok: false,
                 cachedControl: nil,
                 currentControl: nil,
+                currentControlRef: nil,
+                resolutionStrategy: "missing_cache",
                 response: preflightFailure(
                     code: "stale_analysis",
                     analysisID: analysisID,
@@ -2456,6 +2429,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 ok: false,
                 cachedControl: cachedControl,
                 currentControl: nil,
+                currentControlRef: nil,
+                resolutionStrategy: "expired",
                 response: preflightFailure(
                     code: "stale_analysis",
                     analysisID: analysisID,
@@ -2482,6 +2457,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 ok: false,
                 cachedControl: cachedControl,
                 currentControl: nil,
+                currentControlRef: nil,
+                resolutionStrategy: "stale_fingerprint",
                 response: preflightFailure(
                     code: "stale_analysis",
                     analysisID: analysisID,
@@ -2497,11 +2474,17 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             )
         }
 
-        guard let currentControl = matchingLiveControl(for: cachedControl, in: liveAnalysis) else {
+        guard let controlMatch = BrowserControlResolver.matchingLiveControl(
+            cachedControl: cachedControl,
+            cachedAnalysis: cachedAnalysis,
+            liveAnalysis: liveAnalysis
+        ) else {
             return BrowserPreflightExecution(
                 ok: false,
                 cachedControl: cachedControl,
                 currentControl: nil,
+                currentControlRef: nil,
+                resolutionStrategy: "unresolved",
                 response: preflightFailure(
                     code: "control_changed",
                     analysisID: analysisID,
@@ -2512,12 +2495,15 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 )
             )
         }
+        let currentControl = controlMatch.control
 
         guard currentControl.supports(actionKind) else {
             return BrowserPreflightExecution(
                 ok: false,
                 cachedControl: cachedControl,
                 currentControl: currentControl,
+                currentControlRef: controlMatch.controlRef,
+                resolutionStrategy: controlMatch.strategy,
                 response: preflightFailure(
                     code: "unsupported_action",
                     analysisID: analysisID,
@@ -2535,6 +2521,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 ok: false,
                 cachedControl: cachedControl,
                 currentControl: currentControl,
+                currentControlRef: controlMatch.controlRef,
+                resolutionStrategy: controlMatch.strategy,
                 response: preflightFailure(
                     code: "credential_input_blocked",
                     analysisID: analysisID,
@@ -2552,6 +2540,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 ok: false,
                 cachedControl: cachedControl,
                 currentControl: currentControl,
+                currentControlRef: controlMatch.controlRef,
+                resolutionStrategy: controlMatch.strategy,
                 response: preflightFailure(
                     code: "mfa_input_blocked",
                     analysisID: analysisID,
@@ -2569,6 +2559,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 ok: false,
                 cachedControl: cachedControl,
                 currentControl: currentControl,
+                currentControlRef: controlMatch.controlRef,
+                resolutionStrategy: controlMatch.strategy,
                 response: preflightFailure(
                     code: "dangerous_confirmation_required",
                     analysisID: analysisID,
@@ -2581,7 +2573,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             )
         }
 
-        let targetJSON = try await targetInfo(for: currentControl, allowDangerous: true)
+        let targetJSON = try await targetInfo(for: currentControl, controlRef: controlMatch.controlRef, allowDangerous: true)
         let target = try Self.jsonObject(from: targetJSON)
         guard Self.boolValue(target["ok"]) else {
             let code = target["error"] as? String ?? "target_not_actionable"
@@ -2589,6 +2581,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 ok: false,
                 cachedControl: cachedControl,
                 currentControl: currentControl,
+                currentControlRef: controlMatch.controlRef,
+                resolutionStrategy: controlMatch.strategy,
                 response: preflightFailure(
                     code: code,
                     analysisID: analysisID,
@@ -2612,10 +2606,9 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             "controlID": controlID,
             "action": actionKind.rawValue,
             "matched": true,
-            "controlRef": BrowserControlRef(
-                control: currentControl,
-                accessibilityNode: liveAnalysis.accessibilitySnapshot?.matchingNode(for: currentControl)
-            ).jsonObject(debug: false),
+            "controlRef": controlMatch.controlRef.jsonObject(debug: false),
+            "resolutionStrategy": controlMatch.strategy,
+            "usedSelectorFallback": controlMatch.usedSelectorFallback,
             "risk": currentControl.risk.rawValue,
             "requiresUserConfirmation": currentControl.requiresUserConfirmation,
             "matchedControl": currentControl.jsonObject(debug: false),
@@ -2636,56 +2629,58 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             ok: true,
             cachedControl: cachedControl,
             currentControl: currentControl,
+            currentControlRef: controlMatch.controlRef,
+            resolutionStrategy: controlMatch.strategy,
             response: response
         )
     }
 
-    private func matchingLiveControl(for cachedControl: BrowserControl, in liveAnalysis: BrowserAnalysis) -> BrowserControl? {
-        if let exact = liveAnalysis.control(id: cachedControl.controlID) {
-            return exact
-        }
-        if let identity = liveAnalysis.controls.first(where: { $0.identityHash == cachedControl.identityHash }) {
-            return identity
-        }
-        if !cachedControl.selector.isEmpty,
-           let selector = liveAnalysis.controls.first(where: {
-               $0.selector == cachedControl.selector
-                   && ($0.label == cachedControl.label || cachedControl.label.isEmpty || $0.label.isEmpty)
-                   && ($0.role == cachedControl.role || cachedControl.role.isEmpty || $0.role.isEmpty)
-           }) {
-            return selector
-        }
-        return nil
-    }
-
-    private func targetInfo(for control: BrowserControl, allowDangerous: Bool) async throws -> String {
-        let bounds = control.bounds
-        let x = control.selector.isEmpty ? Self.doubleValue(bounds["centerX"]) : nil
-        let y = control.selector.isEmpty ? Self.doubleValue(bounds["centerY"]) : nil
+    private func targetInfo(for control: BrowserControl, controlRef: BrowserControlRef?, allowDangerous: Bool) async throws -> String {
+        let target = actionTarget(for: control, controlRef: controlRef)
         if isUsingControlledBrowser {
             return try await controlledBrowser.targetInfo(
-                selector: control.selector.isEmpty ? nil : control.selector,
-                x: x,
-                y: y,
+                selector: target.selector,
+                x: target.x,
+                y: target.y,
                 allowDangerous: allowDangerous,
-                label: control.label.isEmpty ? nil : control.label,
-                role: control.role.isEmpty ? nil : control.role,
+                label: target.label,
+                role: target.role,
                 text: nil,
-                placeholder: control.placeholder.isEmpty ? nil : control.placeholder,
-                testID: control.testID.isEmpty ? nil : control.testID
+                placeholder: target.placeholder,
+                testID: target.testID
             )
         }
         return try await evaluateJavaScriptString(BrowserAutomationScripts.targetInfoScript(
-            selector: control.selector.isEmpty ? nil : control.selector,
-            x: x,
-            y: y,
+            selector: target.selector,
+            x: target.x,
+            y: target.y,
             allowDangerous: allowDangerous,
-            label: control.label.isEmpty ? nil : control.label,
-            role: control.role.isEmpty ? nil : control.role,
+            label: target.label,
+            role: target.role,
             text: nil,
-            placeholder: control.placeholder.isEmpty ? nil : control.placeholder,
-            testID: control.testID.isEmpty ? nil : control.testID
+            placeholder: target.placeholder,
+            testID: target.testID
         ))
+    }
+
+    private func actionTarget(for control: BrowserControl, controlRef: BrowserControlRef?) -> BrowserControlActionTarget {
+        let source = controlRef?.source ?? .dom
+        let semanticName = control.name.isEmpty ? control.label : control.name
+        let hasSemanticAnchor = !semanticName.isEmpty || !control.role.isEmpty || !control.placeholder.isEmpty || !control.testID.isEmpty
+        let shouldUseSelector = source == .dom && !control.selector.isEmpty
+        let shouldUseCoordinates = !shouldUseSelector && !hasSemanticAnchor
+        let bounds = control.bounds
+        return BrowserControlActionTarget(
+            selector: shouldUseSelector ? control.selector : nil,
+            x: shouldUseCoordinates ? Self.doubleValue(bounds["centerX"]) : nil,
+            y: shouldUseCoordinates ? Self.doubleValue(bounds["centerY"]) : nil,
+            label: shouldUseSelector ? nil : (semanticName.isEmpty ? nil : semanticName),
+            role: shouldUseSelector ? nil : (control.role.isEmpty ? nil : control.role),
+            placeholder: shouldUseSelector ? nil : (control.placeholder.isEmpty ? nil : control.placeholder),
+            testID: shouldUseSelector ? nil : (control.testID.isEmpty ? nil : control.testID),
+            source: source.rawValue,
+            usedSelector: shouldUseSelector
+        )
     }
 
     private func preflightFailure(
@@ -3090,6 +3085,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     private func openControl(
         _ control: BrowserControl,
+        controlRef: BrowserControlRef?,
         allowDangerous: Bool,
         timeoutSeconds: Double = 12,
         intervalMilliseconds: Int = 500
@@ -3122,11 +3118,17 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 "url": url.absoluteString
             ]
         } else {
+            let target = actionTarget(for: control, controlRef: controlRef)
             let json = try await doubleClick(
-                selector: control.selector.isEmpty ? nil : control.selector,
-                x: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerX"]) : nil,
-                y: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerY"]) : nil,
-                allowDangerous: allowDangerous
+                selector: target.selector,
+                x: target.x,
+                y: target.y,
+                allowDangerous: allowDangerous,
+                label: target.label,
+                role: target.role,
+                text: nil,
+                placeholder: target.placeholder,
+                testID: target.testID
             )
             object = try Self.jsonObject(from: json)
         }
@@ -5259,15 +5261,16 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 results.append(resolved.response.merging(["action": "set"], uniquingKeysWith: { current, _ in current }))
                 return ["ok": false, "results": results]
             }
+            let target = actionTarget(for: control, controlRef: resolved.currentControlRef)
             let before = try? await rawSnapshotObject()
             let json = try await type(
-                selector: control.selector.isEmpty ? nil : control.selector,
+                selector: target.selector,
                 text: set,
                 clear: true,
-                label: control.selector.isEmpty ? control.label : nil,
-                role: control.selector.isEmpty ? control.role : nil,
-                placeholder: control.selector.isEmpty ? control.placeholder : nil,
-                testID: control.selector.isEmpty ? control.testID : nil
+                label: target.label,
+                role: target.role,
+                placeholder: target.placeholder,
+                testID: target.testID
             )
             var object = try Self.jsonObject(from: json)
             let after = await snapshotAfterActionDelay()
@@ -5309,12 +5312,18 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 results.append(resolved.response.merging(["action": "click"], uniquingKeysWith: { current, _ in current }))
                 return ["ok": false, "results": results]
             }
+            let target = actionTarget(for: control, controlRef: resolved.currentControlRef)
             let before = try? await rawSnapshotObject()
             let json = try await click(
-                selector: control.selector.isEmpty ? nil : control.selector,
-                x: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerX"]) : nil,
-                y: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerY"]) : nil,
-                allowDangerous: command.allowDangerous ?? false
+                selector: target.selector,
+                x: target.x,
+                y: target.y,
+                allowDangerous: command.allowDangerous ?? false,
+                label: target.label,
+                role: target.role,
+                text: nil,
+                placeholder: target.placeholder,
+                testID: target.testID
             )
             var object = try Self.jsonObject(from: json)
             let after = await snapshotAfterActionDelay()
@@ -5423,12 +5432,18 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         stopReason = resolved.response["error"] as? String ?? "preflight_failed"
                         break batchLoop
                     }
+                    let target = actionTarget(for: control, controlRef: resolved.currentControlRef)
                     let before = try? await rawSnapshotObject()
                     let json = try await click(
-                        selector: control.selector.isEmpty ? nil : control.selector,
-                        x: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerX"]) : nil,
-                        y: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerY"]) : nil,
-                        allowDangerous: action.allowDangerous ?? false
+                        selector: target.selector,
+                        x: target.x,
+                        y: target.y,
+                        allowDangerous: action.allowDangerous ?? false,
+                        label: target.label,
+                        role: target.role,
+                        text: nil,
+                        placeholder: target.placeholder,
+                        testID: target.testID
                     )
                     var object = try Self.jsonObject(from: json)
                     let after = await snapshotAfterActionDelay()
@@ -5468,6 +5483,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 }
                 var object = try await openControl(
                     control,
+                    controlRef: resolved.currentControlRef,
                     allowDangerous: action.allowDangerous ?? false,
                     timeoutSeconds: action.timeoutSeconds ?? 12,
                     intervalMilliseconds: action.intervalMilliseconds ?? 500
@@ -5487,12 +5503,18 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         stopReason = resolved.response["error"] as? String ?? "preflight_failed"
                         break batchLoop
                     }
+                    let target = actionTarget(for: control, controlRef: resolved.currentControlRef)
                     let before = try? await rawSnapshotObject()
                     let json = try await doubleClick(
-                        selector: control.selector.isEmpty ? nil : control.selector,
-                        x: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerX"]) : nil,
-                        y: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerY"]) : nil,
-                        allowDangerous: action.allowDangerous ?? false
+                        selector: target.selector,
+                        x: target.x,
+                        y: target.y,
+                        allowDangerous: action.allowDangerous ?? false,
+                        label: target.label,
+                        role: target.role,
+                        text: nil,
+                        placeholder: target.placeholder,
+                        testID: target.testID
                     )
                     var object = try Self.jsonObject(from: json)
                     let after = await snapshotAfterActionDelay()
@@ -5530,15 +5552,16 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         stopReason = resolved.response["error"] as? String ?? "preflight_failed"
                         break batchLoop
                     }
+                    let target = actionTarget(for: control, controlRef: resolved.currentControlRef)
                     let before = try? await rawSnapshotObject()
                     let json = try await type(
-                        selector: control.selector.isEmpty ? nil : control.selector,
+                        selector: target.selector,
                         text: text,
                         clear: action.clear ?? true,
-                        label: control.selector.isEmpty ? control.label : nil,
-                        role: control.selector.isEmpty ? control.role : nil,
-                        placeholder: control.selector.isEmpty ? control.placeholder : nil,
-                        testID: control.selector.isEmpty ? control.testID : nil
+                        label: target.label,
+                        role: target.role,
+                        placeholder: target.placeholder,
+                        testID: target.testID
                     )
                     var object = try Self.jsonObject(from: json)
                     let after = await snapshotAfterActionDelay()
@@ -5575,15 +5598,16 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         break batchLoop
                     }
                     let browserAction = action.normalizedAction == "fill" ? BrowserActionKind.fill : BrowserActionKind.setValue
+                    let target = actionTarget(for: control, controlRef: resolved.currentControlRef)
                     let before = try? await rawSnapshotObject()
                     let json = try await type(
-                        selector: control.selector.isEmpty ? nil : control.selector,
+                        selector: target.selector,
                         text: text,
                         clear: true,
-                        label: control.selector.isEmpty ? control.label : nil,
-                        role: control.selector.isEmpty ? control.role : nil,
-                        placeholder: control.selector.isEmpty ? control.placeholder : nil,
-                        testID: control.selector.isEmpty ? control.testID : nil
+                        label: target.label,
+                        role: target.role,
+                        placeholder: target.placeholder,
+                        testID: target.testID
                     )
                     var object = try Self.jsonObject(from: json)
                     let after = await snapshotAfterActionDelay()
@@ -5623,7 +5647,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         stopReason = resolved.response["error"] as? String ?? "preflight_failed"
                         break batchLoop
                     }
-                    selector = control.selector.isEmpty ? selector : control.selector
+                    let target = actionTarget(for: control, controlRef: resolved.currentControlRef)
+                    selector = target.selector ?? selector
                     preflight = resolved.response
                     matchedControl = control
                 }
@@ -5661,12 +5686,18 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         stopReason = resolved.response["error"] as? String ?? "preflight_failed"
                         break batchLoop
                     }
+                    let target = actionTarget(for: control, controlRef: resolved.currentControlRef)
                     let before = try? await rawSnapshotObject()
                     let json = try await click(
-                        selector: control.selector.isEmpty ? nil : control.selector,
-                        x: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerX"]) : nil,
-                        y: control.selector.isEmpty ? Self.doubleValue(control.bounds["centerY"]) : nil,
-                        allowDangerous: action.allowDangerous ?? false
+                        selector: target.selector,
+                        x: target.x,
+                        y: target.y,
+                        allowDangerous: action.allowDangerous ?? false,
+                        label: target.label,
+                        role: target.role,
+                        text: nil,
+                        placeholder: target.placeholder,
+                        testID: target.testID
                     )
                     var object = try Self.jsonObject(from: json)
                     let after = await snapshotAfterActionDelay()
@@ -6410,7 +6441,21 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         let ok: Bool
         let cachedControl: BrowserControl?
         let currentControl: BrowserControl?
+        let currentControlRef: BrowserControlRef?
+        let resolutionStrategy: String
         let response: [String: Any]
+    }
+
+    private struct BrowserControlActionTarget {
+        let selector: String?
+        let x: Double?
+        let y: Double?
+        let label: String?
+        let role: String?
+        let placeholder: String?
+        let testID: String?
+        let source: String
+        let usedSelector: Bool
     }
 
     private struct VerifyTextCommand: Decodable {
