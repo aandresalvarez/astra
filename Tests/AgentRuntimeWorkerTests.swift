@@ -448,6 +448,52 @@ struct CompactionSwiftDataTests {
 @MainActor
 struct BuildPromptTests {
 
+    @Test("Initial prompt uses typed section providers in stable order")
+    func initialPromptSectionProvidersAreStable() {
+        let providers = AgentPromptBuilder.promptSectionProviderIDs(for: .initialRun)
+
+        #expect(providers == [
+            .agentTeam,
+            .currentTask,
+            .threadState,
+            .workspaceInstructions,
+            .memories,
+            .recentTasks,
+            .workspaceEnvironment,
+            .taskOutputFolder,
+            .taskDetails,
+            .capabilities,
+            .browser,
+            .documentReader,
+            .astraRunProtocol,
+            .currentTaskReminder
+        ])
+        #expect(Set(providers).count == providers.count)
+    }
+
+    @Test("Follow-up prompt uses typed section providers in stable order")
+    func followUpPromptSectionProvidersAreStable() {
+        let providers = AgentPromptBuilder.promptSectionProviderIDs(for: .followUp)
+
+        #expect(providers == [
+            .followUpIntro,
+            .threadState,
+            .contextSourceIndex,
+            .nativeContinuation,
+            .conversationHistory,
+            .changedFiles,
+            .taskOutputFolder,
+            .followUpContext,
+            .capabilities,
+            .browser,
+            .memories,
+            .astraRunProtocol,
+            .historyLookupRule,
+            .followUpRequest
+        ])
+        #expect(Set(providers).count == providers.count)
+    }
+
     @Test("Prompt includes goal")
     func includesGoal() throws {
         let container = try makeContainer()
