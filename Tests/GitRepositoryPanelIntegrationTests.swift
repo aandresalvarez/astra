@@ -4,6 +4,155 @@ import Testing
 
 @Suite("Git Repository Panel Integration")
 struct GitRepositoryPanelIntegrationTests {
+    private final class FakeGitRepositoryOperations: GitRepositoryOperating {
+        var scannedPrimaryPath: String?
+        var scannedAdditionalPaths: [String] = []
+        var repositories: [GitRepositoryInfo] = []
+        var acquiredIndexGuardCount = 0
+        var releasedIndexGuardCount = 0
+        var refreshedStatusPaths: [String] = []
+        var refreshedWorktreeRoots: [String] = []
+        var currentBranch = "feature/test"
+        var localBranches = ["main", "feature/test"]
+        var statusFiles: [GitStatusFile] = []
+        var diffStats = (additions: 0, deletions: 0)
+        var upstream = false
+        var remote = false
+        var unpushedCount = 0
+        var aheadBehind: (ahead: Int, behind: Int)?
+        var worktrees: [GitWorktreeInfo] = []
+
+        func acquireIndexGuard() -> Bool {
+            acquiredIndexGuardCount += 1
+            return true
+        }
+
+        func releaseIndexGuard() {
+            releasedIndexGuardCount += 1
+        }
+
+        func scanForGitRepositories(primaryPath: String, additionalPaths: [String]) async -> [GitRepositoryInfo] {
+            scannedPrimaryPath = primaryPath
+            scannedAdditionalPaths = additionalPaths
+            return repositories
+        }
+
+        func getCurrentBranch(at repoPath: String) async -> String {
+            refreshedStatusPaths.append(repoPath)
+            return currentBranch
+        }
+
+        func getLocalBranches(at repoPath: String) async -> [String] { localBranches }
+        func checkoutBranch(_ branch: String, at repoPath: String) async throws {}
+        func createBranch(_ branch: String, from base: String?, at repoPath: String) async throws {}
+        func getStatusFiles(at repoPath: String) async -> [GitStatusFile] { statusFiles }
+        func stageFile(_ file: GitStatusFile, at repoPath: String) async throws {}
+        func stageAll(at repoPath: String) async throws {}
+        func unstageFile(_ file: GitStatusFile, at repoPath: String) async throws {}
+        func unstageAll(at repoPath: String) async throws {}
+        func applyDiffPatchToIndex(_ patch: String, at repoPath: String, reverse: Bool) async throws {}
+        func commit(message: String, at repoPath: String) async throws {}
+        func pullRebase(at repoPath: String) async throws {}
+        func push(at repoPath: String) async throws {}
+        func pushSetUpstream(branch: String, remote: String, at repoPath: String) async throws {}
+        func hasRemote(at repoPath: String) async -> Bool { remote }
+
+        func lookupOpenPullRequest(
+            repoPath: String,
+            head: String,
+            ghPathOverride: String?
+        ) async -> GitHubPullRequestLookupResult {
+            .none
+        }
+
+        func lookupPullRequestComments(
+            repoPath: String,
+            pullRequest: GitHubPullRequestRef,
+            ghPathOverride: String?
+        ) async -> GitHubPullRequestCommentLookupResult {
+            .unavailable("not implemented")
+        }
+
+        func lookupPullRequestChecks(
+            repoPath: String,
+            pullRequest: GitHubPullRequestRef,
+            ghPathOverride: String?
+        ) async -> GitHubPullRequestCheckLookupResult {
+            .unavailable("not implemented")
+        }
+
+        func getUnpushedCommitCount(at repoPath: String) async -> Int { unpushedCount }
+        func getAheadBehind(at repoPath: String) async -> (ahead: Int, behind: Int)? { aheadBehind }
+        func hasUpstream(at repoPath: String) async -> Bool { upstream }
+        func getDefaultRemote(at repoPath: String) async -> String? { nil }
+        func getStagedDiff(at repoPath: String, limit: Int) async -> String { "" }
+
+        func getFileDiff(at repoPath: String, file: GitStatusFile, limit: Int) async -> GitFileDiff {
+            GitFileDiff(
+                id: file.id,
+                file: file,
+                kind: .unavailable,
+                diff: "",
+                isTruncated: false,
+                message: nil
+            )
+        }
+
+        func getRecentCommitSubjects(at repoPath: String, count: Int) async -> [String] { [] }
+        func getDefaultBaseBranch(at repoPath: String, remote: String?) async -> String { "origin/main" }
+
+        func getBranchLog(
+            at repoPath: String,
+            base: String,
+            branch: String,
+            limit: Int,
+            maxBytes: Int
+        ) async -> String {
+            ""
+        }
+
+        func getBranchDiffStat(at repoPath: String, base: String, branch: String, maxBytes: Int) async -> String {
+            ""
+        }
+
+        func getDiffStats(at repoPath: String) async -> (additions: Int, deletions: Int) { diffStats }
+
+        func listWorktrees(at repoPath: String) async -> [GitWorktreeInfo] {
+            refreshedWorktreeRoots.append(repoPath)
+            return worktrees
+        }
+
+        func localBranchExists(_ branch: String, at repoPath: String) async -> Bool { false }
+
+        func addWorktree(
+            repoPath: String,
+            branch: String,
+            createBranch: Bool,
+            base: String?,
+            worktreesRoot: String
+        ) async throws -> String {
+            repoPath
+        }
+
+        func removeWorktree(repoPath: String, worktreePath: String, force: Bool) async throws {}
+        func getRemoteURL(at repoPath: String, remote: String?) async -> String? { nil }
+
+        func createPullRequest(
+            repoPath: String,
+            base: String,
+            head: String,
+            title: String,
+            body: String,
+            ghPathOverride: String?
+        ) async throws -> String {
+            "https://github.com/example/repo/pull/1"
+        }
+
+        func normalizeBaseBranch(_ raw: String) -> String {
+            GitService.normalizeBaseBranch(raw)
+        }
+    }
+
     private func makeTempDir(_ label: String) throws -> String {
         let path = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-repo-panel-\(label)-\(UUID().uuidString)", isDirectory: true)
@@ -155,6 +304,57 @@ struct GitRepositoryPanelIntegrationTests {
         #expect(repos.map(\.path) == [WorkspacePathPresentation.standardizedPath(repo)])
         #expect(repos.first?.name == URL(fileURLWithPath: repo).lastPathComponent)
         #expect(repos.first?.id == repos.first?.path)
+    }
+
+    @MainActor
+    @Test("View model scans and refreshes through injected git operations")
+    func viewModelUsesInjectedGitOperationsForScanAndRefresh() async throws {
+        let primary = try makeTempDir("primary-injected")
+        let repo = try makeTempDir("repo-injected")
+        let docs = try makeTempDir("docs-injected")
+        defer {
+            try? FileManager.default.removeItem(atPath: primary)
+            try? FileManager.default.removeItem(atPath: repo)
+            try? FileManager.default.removeItem(atPath: docs)
+        }
+
+        let fakeGit = FakeGitRepositoryOperations()
+        let repoInfo = GitRepositoryInfo(name: "Injected", path: repo)
+        fakeGit.repositories = [repoInfo]
+        fakeGit.statusFiles = [GitStatusFile(relativePath: "Astra/Injected.swift", status: "M", isStaged: false)]
+        fakeGit.diffStats = (additions: 3, deletions: 1)
+        fakeGit.aheadBehind = (ahead: 2, behind: 1)
+        fakeGit.remote = false
+        fakeGit.upstream = true
+        fakeGit.unpushedCount = 2
+
+        let workspace = Workspace(name: "Injected Ops", primaryPath: primary, additionalPaths: [repo, docs])
+        let viewModel = WorkspaceGitViewModel(git: fakeGit)
+        viewModel.setWorkspaceForTesting(workspace)
+        viewModel.selectedRepository = repoInfo
+
+        await viewModel.scanRepositories()
+
+        #expect(fakeGit.scannedPrimaryPath == primary)
+        #expect(fakeGit.scannedAdditionalPaths == [repo, docs])
+        #expect(viewModel.repositories == [repoInfo])
+        #expect(viewModel.selectedRepository == repoInfo)
+        #expect(fakeGit.acquiredIndexGuardCount >= 1)
+        #expect(fakeGit.releasedIndexGuardCount == fakeGit.acquiredIndexGuardCount)
+        #expect(!fakeGit.refreshedStatusPaths.isEmpty)
+        #expect(fakeGit.refreshedStatusPaths.allSatisfy { $0 == repo })
+        #expect(!fakeGit.refreshedWorktreeRoots.isEmpty)
+        #expect(fakeGit.refreshedWorktreeRoots.allSatisfy { $0 == repo })
+        #expect(viewModel.currentBranch == "feature/test")
+        #expect(viewModel.branches == ["main", "feature/test"])
+        #expect(viewModel.statusFiles == fakeGit.statusFiles)
+        #expect(viewModel.additions == 3)
+        #expect(viewModel.deletions == 1)
+        #expect(viewModel.ahead == 2)
+        #expect(viewModel.behind == 1)
+        #expect(viewModel.hasUpstream == true)
+        #expect(viewModel.hasRemote == false)
+        #expect(viewModel.unpushedCount == 2)
     }
 
     @Test("Files shelf roots use path presentation and mark git repositories")
