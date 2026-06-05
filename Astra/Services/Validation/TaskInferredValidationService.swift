@@ -39,7 +39,7 @@ enum TaskInferredValidationService {
         }
 
         if let expectedText,
-           primaryFile.type == "html" {
+           primaryFile.kind.isHTML {
             assertions.append(TaskValidationAssertion(
                 id: uniqueAssertionID(prefix: "browser", path: primaryFile.relativePath, index: assertions.count),
                 description: "\(primaryFile.relativePath) exposes expected visible text",
@@ -118,17 +118,13 @@ enum TaskInferredValidationService {
 
     private static func preferredFile(from files: [TaskOutputDiscoveredFile]) -> TaskOutputDiscoveredFile {
         files.first { $0.relativePath == "index.html" } ??
-            files.first { $0.type == "html" } ??
+            files.first { $0.kind.isHTML } ??
             files.first { isTextInspectable($0) } ??
             files[0]
     }
 
     private static func isTextInspectable(_ file: TaskOutputDiscoveredFile) -> Bool {
-        let textTypes: Set<String> = [
-            "html", "markdown", "md", "txt", "text", "json", "js", "css",
-            "csv", "xml", "sql", "py", "swift", "ts", "tsx", "jsx", "yaml", "yml"
-        ]
-        return textTypes.contains(file.type.lowercased())
+        file.kind.isTextInspectable
     }
 
     private static func inferredExpectedText(for task: AgentTask) -> String? {

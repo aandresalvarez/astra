@@ -49,19 +49,43 @@ final class TaskRun {
 
     /// Decoded file changes from JSON storage
     var fileChanges: [StoredFileChange] {
-        guard let data = fileChangesJSON.data(using: .utf8),
-              let changes = try? JSONDecoder().decode([StoredFileChange].self, from: data) else {
+        switch fileChangesDecodeResult {
+        case .success(let changes):
+            return changes
+        case .failure:
             return []
         }
-        return changes
+    }
+
+    var fileChangesDecodeResult: Result<[StoredFileChange], TaskRunFileChangesDecodeError> {
+        guard let data = fileChangesJSON.data(using: .utf8),
+              !data.isEmpty else {
+            return .failure(.invalidUTF8)
+        }
+        do {
+            return .success(try TaskEventPayloadCodec.makeDecoder().decode([StoredFileChange].self, from: data))
+        } catch {
+            return .failure(.decodingFailed(error.localizedDescription))
+        }
     }
 
     func appendFileChange(_ change: StoredFileChange) {
         var changes = fileChanges
         changes.append(change)
-        if let data = try? JSONEncoder().encode(changes),
-           let json = String(data: data, encoding: .utf8) {
-            fileChangesJSON = json
+        fileChangesJSON = TaskEvent.payloadString(changes, fallback: fileChangesJSON)
+    }
+}
+
+enum TaskRunFileChangesDecodeError: Error, Equatable, CustomStringConvertible {
+    case invalidUTF8
+    case decodingFailed(String)
+
+    var description: String {
+        switch self {
+        case .invalidUTF8:
+            "Run file changes payload is not valid UTF-8."
+        case .decodingFailed(let message):
+            "Could not decode run file changes: \(message)"
         }
     }
 }
@@ -76,10 +100,28 @@ struct StoredFileChange: Codable, Identifiable, Hashable, Sendable {
     let newString: String?
     let timestamp: Date
 
+    init(
+        id: UUID = UUID(),
+        path: String,
+        changeType: String,
+        content: String?,
+        oldString: String?,
+        newString: String?,
+        timestamp: Date = Date()
+    ) {
+        self.id = id
+        self.path = path
+        self.changeType = changeType
+        self.content = content
+        self.oldString = oldString
+        self.newString = newString
+        self.timestamp = timestamp
+    }
+
     init(from fileChange: FileChange) {
         self.id = fileChange.id
         self.path = fileChange.path
-        self.changeType = fileChange.changeType.rawValue
+        self.changeType = StoredFileChangeKind(changeType: fileChange.changeType.rawValue).rawValue
         self.content = fileChange.content
         self.oldString = fileChange.oldString
         self.newString = fileChange.newString
