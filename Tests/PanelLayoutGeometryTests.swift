@@ -101,6 +101,34 @@ struct PanelLayoutGeometryTests {
         ) == withConversationBMarkdown)
     }
 
+    @Test("Remembered shelf restore yields to an explicitly visible right rail")
+    func rememberedShelfRestoreYieldsToVisibleRightRail() {
+        #expect(!WorkspaceCanvasItemPreference.shouldRestoreRememberedItem(
+            activeItem: nil,
+            isRightRailVisible: true,
+            rememberedItem: .browser,
+            canPresentRememberedItem: true
+        ))
+        #expect(WorkspaceCanvasItemPreference.shouldRestoreRememberedItem(
+            activeItem: nil,
+            isRightRailVisible: false,
+            rememberedItem: .browser,
+            canPresentRememberedItem: true
+        ))
+        #expect(!WorkspaceCanvasItemPreference.shouldRestoreRememberedItem(
+            activeItem: .markdown,
+            isRightRailVisible: false,
+            rememberedItem: .browser,
+            canPresentRememberedItem: true
+        ))
+        #expect(!WorkspaceCanvasItemPreference.shouldRestoreRememberedItem(
+            activeItem: nil,
+            isRightRailVisible: false,
+            rememberedItem: .browser,
+            canPresentRememberedItem: false
+        ))
+    }
+
     // MARK: - isCompactPanelLayout
 
     @Test("isCompactPanelLayout is false for zero or negative widths (layout not measured yet)")

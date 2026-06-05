@@ -88,6 +88,18 @@ struct WorkspaceCanvasItemPreference: Equatable {
         return encodedStorage(storage)
     }
 
+    static func shouldRestoreRememberedItem(
+        activeItem: WorkspaceCanvasItem?,
+        isRightRailVisible: Bool,
+        rememberedItem: WorkspaceCanvasItem?,
+        canPresentRememberedItem: Bool
+    ) -> Bool {
+        activeItem == nil
+            && !isRightRailVisible
+            && rememberedItem != nil
+            && canPresentRememberedItem
+    }
+
     private static func decodedStorage(_ rawValue: String) -> [String: String] {
         guard let data = rawValue.data(using: .utf8),
               let decoded = try? JSONDecoder().decode([String: String].self, from: data) else {
@@ -1177,9 +1189,13 @@ struct ContentView: View {
     }
 
     private func restoreRememberedWorkspaceCanvasItemIfAvailable() {
-        guard activeWorkspaceCanvasItem == nil,
-              let item = rememberedWorkspaceCanvasItem,
-              canPresentWorkspaceCanvasItem(item) else {
+        let rememberedItem = rememberedWorkspaceCanvasItem
+        guard WorkspaceCanvasItemPreference.shouldRestoreRememberedItem(
+            activeItem: activeWorkspaceCanvasItem,
+            isRightRailVisible: isWorkspaceRightRailVisible,
+            rememberedItem: rememberedItem,
+            canPresentRememberedItem: rememberedItem.map(canPresentWorkspaceCanvasItem) ?? false
+        ), let item = rememberedItem else {
             return
         }
 
@@ -1510,6 +1526,7 @@ struct ContentView: View {
         let taskID = selectedTask.id
         let taskFolder = TaskWorkspaceAccess(task: selectedTask).taskFolder
         guard !taskFolder.isEmpty else {
+            generatedHTMLDiscoveryTask?.cancel()
             selectedTaskPreferredHTMLPath = ""
             return
         }
@@ -1554,7 +1571,11 @@ struct ContentView: View {
         guard !selectedTaskPreferredHTMLPath.isEmpty else { return }
 
         let taskID = selectedTask?.id
-        let session = browserSessionStore.session(for: taskID, pinnedToTask: isBrowserPinnedToTask)
+        let session = browserSessionStore.session(
+            for: taskID,
+            pinnedToTask: isBrowserPinnedToTask,
+            enabledBrowserAdapters: enabledBrowserAdapterIDs(for: selectedTask)
+        )
         guard TaskGeneratedFiles.shouldLoadGeneratedHTMLOnUserOpen(
             currentBrowserURL: session.currentURL,
             targetPath: selectedTaskPreferredHTMLPath
@@ -1590,7 +1611,11 @@ struct ContentView: View {
         switch TaskGeneratedFiles.shelfDestination(for: path) {
         case .browser?:
             let taskID = selectedTask?.id
-            let session = browserSessionStore.session(for: taskID, pinnedToTask: isBrowserPinnedToTask)
+            let session = browserSessionStore.session(
+                for: taskID,
+                pinnedToTask: isBrowserPinnedToTask,
+                enabledBrowserAdapters: enabledBrowserAdapterIDs(for: selectedTask)
+            )
             session.load(url, source: "generated_file")
             if let taskID {
                 selectedTaskPreferredHTMLPath = path
