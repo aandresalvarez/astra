@@ -1,173 +1,413 @@
-# ASTRA Architecture Debt Reduction PR Plan
+# ASTRA Architecture Debt Tracker
 
-Date: 2026-06-04
+Date created: 2026-06-04
+Last reviewed: 2026-06-05
 
-This plan groups the architecture debt reduction work into PR-sized changes.
-The ordering is by combined impact and urgency: correctness and future-change
-drag first, cosmetic or lower-risk cleanup later.
+This document supersedes the original architecture debt PR plan after the
+merged architecture cleanup stack. The app is in better shape: services are
+foldered, runtime adapter roles are more explicit, task-event names are typed,
+completion policy is centralized, prompt assembly has a provider contract,
+artifact reconciliation exists, architecture docs were added, and the largest
+test files were decomposed.
+
+The remaining debt is now narrower and easier to attack. The biggest risks are
+still at durable storage boundaries, oversized owner files, direct settings
+access, and main-actor IO. The ordering below is by combined impact and urgency.
+
+## Current Baseline
+
+### Completed Architecture Improvements
+
+- `Astra/Services` has no direct Swift files. Service code is grouped under:
+  `Browser`, `Capabilities`, `Diagnostics`, `Git`, `Persistence`, `Runtime`,
+  `Settings`, `Tasks`, and `Validation`.
+- `TaskEventType` and `TaskEventTypes` wrap persisted event strings, and
+  `TaskEvent.decodePayload(...)` exposes explicit decode failures.
+- `TaskCompletionPolicy` centralizes validation-contract, deliverable,
+  inferred-validation, and manual artifact completion gates.
+- `TaskArtifactPersistenceService` reconciles discovered task output artifacts
+  and gives run finalization, deliverable verification, and context state a
+  shared promotion path.
+- `AgentRuntimeAdapter` is split into smaller protocol responsibilities, with
+  the registry remaining the provider composition point.
+- `PromptContextSectionProvider` exists and prompt sections are ordered through
+  provider lists.
+- `ContentSceneState` and workspace import/orchestration helpers removed some
+  routing logic from `ContentView`.
+- The headless and view test suites are split into smaller files with focused
+  regression coverage.
+- Architecture docs now exist for runtime adapters, task events, prompt
+  assembly, artifact persistence, and validation/completion policy.
+
+### Current Debt Signals
+
+These counts are not targets by themselves. They identify where repeated
+change pressure still lives.
+
+- Large source files:
+  - `Astra/Views/TaskMainView.swift`: 6,774 lines.
+  - `Astra/Services/Browser/ShelfBrowserSession.swift`: 6,346 lines.
+  - `Astra/Views/ContentView.swift`: 4,806 lines.
+  - `Astra/Views/WorkspaceRightRailView.swift`: 3,505 lines.
+  - `Astra/Views/ChatPanelView.swift`: 3,053 lines.
+  - `Astra/Views/PluginCatalogView.swift`: 2,951 lines.
+  - `Astra/Services/Runtime/AgentRuntimeAdapter.swift`: 2,772 lines.
+  - `Astra/Services/Runtime/AgentPromptBuilder.swift`: 2,180 lines.
+  - `Astra/Services/Git/GitService.swift`: 2,170 lines.
+  - `Astra/Services/Persistence/TaskContextStateManager.swift`: 2,129 lines.
+  - `Astra/Services/Runtime/AgentRuntimeWorker.swift`: 1,969 lines.
+  - `Astra/Services/Validation/ValidationService.swift`: 1,500 lines.
+- Repeated source patterns:
+  - `@AppStorage`: 137 source occurrences.
+  - `FileManager.default`: 182 source occurrences.
+  - `try?`: 461 source occurrences.
+  - `JSONSerialization`: 74 source occurrences.
+  - `Process()`: 20 source occurrences.
+  - `@MainActor`: 262 source occurrences.
+- Package boundary:
+  - `Package.swift` still builds most app code as one `ASTRA` target. The new
+    service folders improve ownership but do not enforce dependencies at compile
+    time.
 
 ## Guiding Rules
 
-- Keep each PR narrow enough to review independently.
-- Preserve current behavior unless a PR explicitly changes a contract.
-- Add or update regression tests for every bug fix, debt reduction, and new
-  abstraction.
-- Prefer typed wrappers and presentation snapshots over ad hoc string parsing in
-  views.
-- For runtime, persistence, validation, or migration changes, run full
-  `swift test` before merge.
+- Keep each PR reviewable and behavior-preserving unless the contract change is
+  explicit.
+- Add or update regression tests for every bug fix, new abstraction, or debt
+  reduction.
+- Keep persisted SwiftData storage compatible unless the PR includes a tested
+  migration.
+- Prefer typed wrappers, Codable payloads, and presentation snapshots over raw
+  strings and ad hoc parsing in views.
+- Keep SwiftData mutations on the main actor, but move pure parsing, file IO,
+  process execution, and presentation construction off the main actor when
+  practical.
+- For runtime, persistence, validation, migration, or provider contract changes,
+  run full `swift test` before merge.
 
-## PR 1 - Typed Task Event API
-
-Impact: Critical
-Urgency: Critical
-
-### Problem
-
-`TaskEvent` stores `type` and `payload` as raw strings. Those strings are used
-across runtime recording, task review policy, validation, task snapshots,
-mission control, and SwiftUI rendering. This makes refactors fragile because
-misspelled event names or mismatched payload schemas compile cleanly.
-
-### Scope
-
-- Add a typed task-event namespace around the existing persisted string format.
-- Introduce factories for common event families:
-  - task lifecycle
-  - conversation
-  - tool activity
-  - permission approval and denial
-  - plan lifecycle and plan step progress
-  - validation contract and validation assertion events
-  - deliverable verification
-  - corrective work
-- Add typed payload decode helpers that return explicit failures instead of
-  silent `nil` where the caller needs diagnostics.
-- Keep `TaskEvent.type` and `TaskEvent.payload` in SwiftData for compatibility.
-
-### Primary Files
-
-- `Astra/Models/TaskEvent.swift`
-- `Astra/Models/TaskValidationContract.swift`
-- `Astra/Services/Tasks/TaskPlanService.swift`
-- `Astra/Services/Validation/ValidationService.swift`
-- `Astra/Services/Tasks/TaskLifecycleCoordinator.swift`
-- `Astra/Views/TaskThreadSnapshot.swift`
-- `Astra/Views/RunActivityPresentation.swift`
-
-### Tests
-
-- Add `TaskEventTypesTests`.
-- Update `ValidationServiceTests`.
-- Update `TaskPlanServiceTests`.
-- Update `TaskRuntimeHealthTests`.
-- Update `TaskDecisionDockPresentationTests` where event type inputs are
-  currently raw strings.
-
-## PR 2 - Durable Artifact and File-Change Source of Truth
-
-Impact: Critical
-Urgency: Critical
-
-### Problem
-
-ASTRA currently has several related surfaces for generated output:
-
-- files on disk under `.astra/tasks/<id>`
-- SwiftData `Artifact` rows
-- `TaskRun.fileChangesJSON`
-- `current_state.json`
-- generated-file discovery in views
-
-Past bugs have appeared when these surfaces disagree. The app should have a
-single promotion/reconciliation path that every completion and refresh flow
-uses.
-
-### Scope
-
-- Define one artifact reconciliation service contract.
-- Ensure run finalization, context refresh, generated-file shelf presentation,
-  and deliverable verification call the same reconciliation path.
-- Make duplicate detection explicit and tested.
-- Add typed file-change kind instead of raw `changeType: String`.
-- Make reconciliation idempotent.
-
-### Primary Files
-
-- `Astra/Services/Persistence/TaskArtifactPersistenceService.swift`
-- `Astra/Services/Runtime/AgentRuntimeRunPersistence.swift`
-- `Astra/Services/Persistence/TaskContextStateManager.swift`
-- `Astra/Services/Tasks/TaskGeneratedFiles.swift`
-- `Astra/Services/Validation/TaskDeliverableVerificationService.swift`
-- `Astra/Models/Artifact.swift`
-- `Astra/Models/TaskRun.swift`
-
-### Tests
-
-- Add regression tests for:
-  - disk file exists but no SwiftData artifact exists
-  - SwiftData artifact exists but stale disk path is gone
-  - duplicate discovered files do not create duplicate artifacts
-  - generated file appears in both task detail and file shelf after refresh
-- Update `TaskContextStateTests`.
-- Update `TaskDeliverableVerificationServiceTests`.
-- Update `HeadlessChatScenarioTests` for no-usable-result coverage.
-
-## PR 3 - Extract TaskMainView Decision and Runtime Surfaces
+## Next PR 1 - Durable Event Payload and Stop-Reason Typing
 
 Impact: Critical
 Urgency: High
 
 ### Problem
 
-`TaskMainView.swift` is the largest owner file and mixes task rendering,
-composer state, runtime permission handling, plan state, generated-file
-presentation, decision dock wiring, and lifecycle actions. This increases merge
-conflicts and makes UI behavior hard to reason about.
+`TaskEvent.type` now has a typed namespace, but `TaskEvent.payload` remains a
+mixed plain-text/JSON string boundary. Completion and review logic also still
+uses raw stop-reason strings such as `no_usable_result`,
+`validation_contract_failed`, and `deliverable_verification_failed`.
+
+This is the highest cross-cutting risk because runtime recording, validation,
+task snapshots, mission control, pending-review policy, and UI rendering all
+depend on the same durable event and stop-reason strings.
 
 ### Scope
 
-- Extract task decision state construction into a coordinator or presentation
-  builder.
-- Extract runtime permission state and action handling.
-- Extract generated-file opening and artifact affordance wiring.
-- Extract plan/mission/verification snapshot loading out of the main view body.
-- Keep user-visible layout unchanged in this PR.
+- Add typed factories or envelopes for high-value structured event families:
+  - validation contracts and assertions
+  - deliverable verification
+  - plan lifecycle and plan step progress
+  - handoff and corrective work
+  - mission checkpoints and audit bundles
+  - permission approval requests
+- Introduce `TaskRunStopReason` as a typed wrapper around persisted stop-reason
+  strings.
+- Keep raw SwiftData storage fields for compatibility, but make new code write
+  through typed constructors.
+- Add explicit decode diagnostics where currently a failed payload decode is
+  treated as absence.
+- Document which event families are allowed to remain plain text.
 
 ### Primary Files
 
-- `Astra/Views/TaskMainView.swift`
-- `Astra/Views/TaskDecisionDockView.swift`
-- `Astra/Services/Tasks/TaskDecisionDockPresentation.swift`
-- `Astra/Services/Tasks/MissionControlPresentation.swift`
-- `Astra/Services/Tasks/TaskPresentationState.swift`
+- `Astra/Models/TaskEvent.swift`
+- `Astra/Models/TaskEventTypes.swift`
+- `Astra/Models/TaskRun.swift`
+- `Astra/Models/TaskValidationContract.swift`
+- `Astra/Services/Tasks/AgentEventRecorder.swift`
+- `Astra/Services/Tasks/PendingTaskReviewPolicy.swift`
+- `Astra/Services/Runtime/AgentRuntimeWorker.swift`
+- `Astra/Views/TaskThreadSnapshot.swift`
+- `Astra/Views/RunActivityPresentation.swift`
 
 ### Tests
 
+- Add or expand `TaskEventTypesTests`.
+- Add `TaskRunStopReasonTests`.
+- Update `ValidationServiceTests`.
+- Update `TaskPlanServiceTests`.
+- Update `TaskRuntimeHealthTests`.
 - Update `TaskDecisionDockPresentationTests`.
-- Update `MissionControlPresentationTests`.
-- Update `ViewTests` only for integration behavior that cannot move to a
-  narrower presentation test.
-- Add focused tests for the extracted coordinator.
+- Update headless completion-blocking scenarios.
 
-## PR 4 - Split ContentView into App Shell, Routing, and Workspace Actions
+## Next PR 2 - Artifact and File-Change Storage Hardening
+
+Impact: Critical
+Urgency: High
+
+### Problem
+
+Artifact reconciliation exists, but durable artifact and file-change storage is
+still partly stringly:
+
+- `Artifact.type` is a raw string.
+- `TaskRun.fileChangesJSON` stores a JSON blob.
+- `StoredFileChange.changeType` is a raw string.
+- `TaskContextState` mirrors changed files and artifact references with string
+  statuses and types.
+
+The app is safer than before, but there is still room for disk artifacts,
+SwiftData artifacts, run file changes, and current state to drift.
+
+### Scope
+
+- Introduce typed `ArtifactKind` and `StoredFileChangeKind` persistence helpers.
+- Keep compatibility readers for historic artifact and file-change strings.
+- Make artifact/file-change normalization report typed reconciliation outcomes.
+- Define one generated-output index that can feed shelf presentation,
+  validation, context state, and run finalization.
+- Ensure stale artifact detection and duplicate detection use the same normalized
+  path rules.
+- Keep `TaskArtifactPersistenceService` as the single write/promotion boundary.
+
+### Primary Files
+
+- `Astra/Models/Artifact.swift`
+- `Astra/Models/TaskRun.swift`
+- `Astra/Services/Persistence/TaskArtifactPersistenceService.swift`
+- `Astra/Services/Persistence/TaskContextStateManager.swift`
+- `Astra/Services/Persistence/TaskOutputDiscovery.swift`
+- `Astra/Services/Tasks/TaskGeneratedFiles.swift`
+- `Astra/Services/Validation/TaskDeliverableExpectation.swift`
+- `Astra/Services/Validation/TaskDeliverableVerificationService.swift`
+- `Astra/Services/Runtime/AgentRuntimeRunPersistence.swift`
+
+### Tests
+
+- Expand `TaskArtifactPersistenceServiceTests`.
+- Expand `TaskContextStateTests`.
+- Expand `TaskDeliverableVerificationServiceTests`.
+- Expand `TaskFileShelfSnapshotTests`.
+- Add regressions for:
+  - historic `Write` and `Edit` file-change strings
+  - unknown artifact kinds
+  - duplicate normalized paths
+  - stale SwiftData artifact rows
+  - disk file discovered after a run but before UI refresh
+
+## Next PR 3 - Browser Session Command Router Split
+
+Impact: Critical
+Urgency: High
+
+### Problem
+
+`ShelfBrowserSession` is still the largest remaining service owner. It combines
+WebKit lifecycle, controlled Chromium lifecycle, bridge health and command
+routing, page reads, snapshots, browser actions, Google Drive and Google Docs
+workflows, flight recording, debug capture, and run-guard decisions.
+
+The browser subsystem has better support files now, but the main session class
+is still too broad for safe changes.
+
+### Scope
+
+- Keep `ShelfBrowserSession` focused on observable session state and browser
+  lifecycle.
+- Extract bridge command dispatch to a `BrowserBridgeCommandRouter`.
+- Extract page read and snapshot behavior to a `BrowserPageSnapshotService`.
+- Extract click/type/fill/control-ID actions to a `BrowserControlActionService`.
+- Extract Google Drive and Google Docs workflows to
+  `GoogleWorkspaceBrowserService`.
+- Extract debug capture and flight recording orchestration to a small service
+  that can be tested without a full session.
+- Preserve the public bridge response contract.
+
+### Primary Files
+
+- `Astra/Services/Browser/ShelfBrowserSession.swift`
+- `Astra/Services/Browser/BrowserBridgeServer.swift`
+- `Astra/Services/Browser/BrowserPageReadService.swift`
+- `Astra/Services/Browser/BrowserAnalysis.swift`
+- `Astra/Services/Browser/BrowserFlightRecorder.swift`
+- `Astra/Services/Browser/BrowserFailureDebugCapture.swift`
+- `Astra/Services/Browser/BrowserSiteAdapters.swift`
+- `Astra/Services/Browser/ControlledBrowserController.swift`
+
+### Tests
+
+- Expand `BrowserBridgeSecurityTests`.
+- Expand `BrowserPageReadServiceTests`.
+- Expand `BrowserAnalysisTests`.
+- Expand `BrowserControlSafetyTests`.
+- Expand `BrowserFlightRecorderTests`.
+- Expand `BrowserFailureDebugCaptureTests`.
+- Add command-router tests that do not require WebKit.
+
+## Next PR 4 - Central Settings Snapshot Injection
 
 Impact: High
 Urgency: High
 
 ### Problem
 
-`ContentView.swift` owns app shell layout, workspace routing, onboarding,
-workspace creation/import, shelf sessions, query/browser/markdown panels, and
-settings propagation. This causes unrelated changes to touch the same file.
+Typed settings snapshots and stores exist, but views still read and write many
+of the same defaults directly through `@AppStorage`. This repeats default
+values, revision triggers, provider path rules, model-cache dependencies, and
+runtime selection behavior across multiple views.
 
 ### Scope
 
-- Extract workspace routing into a small `ContentSceneCoordinator`.
-- Extract workspace creation/import/onboarding finalization into a service or
-  coordinator.
-- Extract shelf session stores into dedicated files.
-- Keep the `ContentDetailPresentation` routing contract as the tested boundary.
+- Introduce a narrow app-level settings environment or observable store that
+  exposes:
+  - runtime defaults
+  - provider paths and provider-specific settings
+  - model cache and revisions
+  - budget and policy defaults
+  - UI preferences that affect layout
+- Replace repeated provider/model/path `@AppStorage` reads in task/composer
+  surfaces with snapshot injection.
+- Keep `SettingsView` as the primary editing surface for persisted defaults.
+- Preserve existing storage keys.
+- Centralize storage-key constants for legacy keys that are still string
+  literals, such as `defaultRuntimeID`, `defaultModel`, `claudePath`,
+  `copilotPath`, `workspacesRoot`, `timeoutSeconds`, and `validationModel`.
+
+### Primary Files
+
+- `Astra/Services/Settings/RuntimeSettingsSnapshot.swift`
+- `Astra/Services/Settings/RuntimeProviderSettingsStore.swift`
+- `Astra/Services/Settings/AppearancePreference.swift`
+- `Astra/Views/ContentView.swift`
+- `Astra/Views/TaskMainView.swift`
+- `Astra/Views/ChatPanelView.swift`
+- `Astra/Views/NewTaskView.swift`
+- `Astra/Views/ScheduleEditorView.swift`
+- `Astra/Views/Components/ComposerToolbar.swift`
+- `Astra/Views/SettingsView.swift`
+
+### Tests
+
+- Expand `RuntimeSettingsSnapshotTests`.
+- Expand `RuntimeProviderSettingsStoreTests`.
+- Expand `SettingsViewPrivacyTests`.
+- Update composer and new-task presentation tests.
+- Add regression coverage for model normalization after default runtime changes.
+
+## Next PR 5 - Prompt Provider Extraction and IO Snapshot Boundary
+
+Impact: High
+Urgency: High
+
+### Problem
+
+`PromptContextSectionProvider` exists, but most provider implementations are
+still nested inside `AgentPromptBuilder`. The builder is also main-actor
+isolated and still performs file reads and directory listing while assembling
+prompts.
+
+This keeps prompt changes concentrated in a 2,180-line file and makes it harder
+to reason about what work runs on the main actor.
+
+### Scope
+
+- Move prompt section providers out of `AgentPromptBuilder` into focused files.
+- Keep provider ordering explicit and tested.
+- Introduce a prompt IO snapshot that is loaded before prompt assembly:
+  - current state paths
+  - session history presence
+  - recent turn output paths
+  - generated task-folder files
+  - readfile availability
+- Keep SwiftData/task reads where needed, but make pure prompt assembly
+  deterministic over the snapshot.
+- Keep Context Capsule and Context Source Index wording unchanged unless tests
+  intentionally update it.
+
+### Primary Files
+
+- `Astra/Services/Runtime/AgentPromptBuilder.swift`
+- `Astra/Services/Tasks/PromptContextSectionProvider.swift`
+- `Astra/Services/Persistence/TaskContextStateManager.swift`
+- `Astra/Services/Persistence/SessionHistoryManager.swift`
+- `Astra/Services/Tasks/TaskGeneratedFiles.swift`
+- `Astra/Views/PromptContextPreviewView.swift`
+
+### Tests
+
+- Expand `AgentRuntimeWorkerTests`.
+- Expand `ContextInjectionTests`.
+- Expand `TaskContextStateTests`.
+- Expand `PromptContextPreviewPresentationTests`.
+- Add provider-ordering tests for initial and follow-up prompt modes.
+- Add tests that prompt assembly uses a supplied IO snapshot.
+
+## Next PR 6 - TaskMainView Composer and Runtime Coordinator Split
+
+Impact: High
+Urgency: Medium
+
+### Problem
+
+`TaskMainView` is still the largest source file. It mixes chat rendering,
+composer state, runtime readiness, permission decisions, plan state, verification
+loading, generated-file actions, schedule creation, recap generation, and
+toolbar behavior.
+
+Some presentation helpers now exist, but the owner file still receives too many
+unrelated changes.
+
+### Scope
+
+- Extract composer state and actions into a testable coordinator.
+- Extract runtime readiness and permission presentation wiring.
+- Extract generated-file opening and files-popover state.
+- Extract schedule creation and recap side effects.
+- Keep the visible layout stable.
+- Preserve `TaskThreadViewModel`, `TaskDecisionDockPresentation`, and
+  `MissionControlPresentation` as the primary presentation boundaries.
+
+### Primary Files
+
+- `Astra/Views/TaskMainView.swift`
+- `Astra/Views/TaskThreadViewModel.swift`
+- `Astra/Services/Tasks/TaskDecisionDockContextBuilder.swift`
+- `Astra/Services/Tasks/TaskDecisionDockPresentation.swift`
+- `Astra/Services/Tasks/MissionControlPresentation.swift`
+- `Astra/Services/Tasks/TaskGeneratedFileOpenRouter.swift`
+- `Astra/Services/Tasks/TaskVerificationPresentationLoader.swift`
+
+### Tests
+
+- Expand `TaskDecisionDockContextBuilderTests`.
+- Expand `TaskDecisionDockPresentationTests`.
+- Expand `MissionControlPresentationTests`.
+- Expand `TaskGeneratedFileOpenRouterTests`.
+- Expand `TaskThreadConversationSnapshotTests`.
+- Keep `ViewTests` for integration-only behavior.
+
+## Next PR 7 - ContentView App Shell and Workspace Action Split
+
+Impact: High
+Urgency: Medium
+
+### Problem
+
+`ContentView` still owns app shell layout, workspace selection, onboarding,
+workspace setup, workspace import, shelf panel state, external routing,
+provider-settings propagation, runtime model refreshes, and generated preview
+loading.
+
+`ContentSceneState` and import helpers reduced some risk, but the shell still
+has too much responsibility.
+
+### Scope
+
+- Move workspace setup form and validation to dedicated files.
+- Extract shelf panel state and preview auto-load behavior into a coordinator.
+- Extract runtime model refresh orchestration out of the shell view.
+- Keep `ContentDetailPresentation` as the routing contract.
+- Keep user-visible shell behavior unchanged.
 
 ### Primary Files
 
@@ -175,500 +415,382 @@ settings propagation. This causes unrelated changes to touch the same file.
 - `Astra/Views/ContentSceneState.swift`
 - `Astra/Services/Persistence/WorkspaceImportOrchestrator.swift`
 - `Astra/Services/Settings/AstraExternalRouteStore.swift`
-- `Astra/Services/Browser/ShelfBrowserSession.swift`
-- `Astra/Services/Browser/ShelfMarkdownSession.swift`
-- `Astra/Services/Browser/ShelfQuerySession.swift`
+- `Astra/Services/Runtime/RuntimeProviderAvailabilityService.swift`
+- `Astra/Services/Runtime/RuntimeModelAvailability.swift`
+- `Astra/Services/Browser/ShelfSessionStores.swift`
 
 ### Tests
 
-- Update `OnboardingWizardTests`.
-- Update `WorkspaceHomePresentationTests`.
-- Update `ViewTests` routing coverage.
-- Add focused tests for workspace creation/import routing if needed.
+- Expand `ViewTests`.
+- Expand `OnboardingWizardTests`.
+- Expand `WorkspaceHomePresentationTests`.
+- Expand `RuntimeProviderListPresentationTests`.
+- Add focused tests for shelf panel state transitions and preview auto-load.
 
-## PR 5 - Runtime Adapter Contract Split
-
-Impact: High
-Urgency: High
-
-### Problem
-
-The runtime adapter direction is strong, but `AgentRuntimeAdapter` combines too
-many responsibilities: readiness, policy, launch planning, process event
-parsing, worker event recording, utility prompts, post-processing, and
-telemetry.
-
-### Scope
-
-- Split the adapter responsibilities into smaller protocols:
-  - descriptor and readiness
-  - policy rendering
-  - process launch planning
-  - process event parsing
-  - worker event recording
-  - utility runtime
-  - post-run diagnostics
-- Keep `AgentRuntimeAdapterRegistry` as the composition point.
-- Add default protocol extensions to avoid a large mechanical migration in one
-  commit.
-
-### Primary Files
-
-- `Astra/Services/Runtime/AgentRuntimeAdapter.swift`
-- `Astra/Services/Runtime/AgentRuntimeProcessRunner.swift`
-- `Astra/Services/Runtime/AgentRuntimeWorker.swift`
-- `Astra/Services/Runtime/ClaudeModelAvailabilityService.swift`
-- `Astra/Services/Runtime/CopilotModelAvailabilityService.swift`
-- `Astra/Services/Runtime/RuntimeReadinessService.swift`
-
-### Tests
-
-- Update `AgentRuntimeAdapterTests`.
-- Update `RuntimeReadinessServiceTests`.
-- Update `AgentRuntimeWorkerTests`.
-- Update provider-specific runtime tests.
-
-## PR 6 - Central Runtime and App Settings Snapshot
-
-Impact: High
-Urgency: High
-
-### Problem
-
-Runtime and app settings are read directly through repeated `@AppStorage`
-properties in many views. This spreads defaults, revision triggers, and provider
-configuration rules across UI files.
-
-### Scope
-
-- Introduce typed settings snapshots:
-  - `RuntimeSettingsSnapshot`
-  - `ProviderSettingsSnapshot`
-  - `AppUIPreferencesSnapshot`
-- Add a store that reads from `UserDefaults` and exposes these snapshots.
-- Replace repeated provider/model/path `@AppStorage` reads in task/composer
-  views with snapshot injection.
-- Preserve existing storage keys.
-
-### Primary Files
-
-- `Astra/Services/Settings/AppearancePreference.swift`
-- `Astra/Services/Settings/RuntimeProviderSettingsStore.swift`
-- `Astra/Services/Runtime/AgentRuntimeConfiguration.swift`
-- `Astra/Views/SettingsView.swift`
-- `Astra/Views/ContentView.swift`
-- `Astra/Views/TaskMainView.swift`
-- `Astra/Views/ChatPanelView.swift`
-- `Astra/Views/NewTaskView.swift`
-- `Astra/Views/Components/ComposerToolbar.swift`
-
-### Tests
-
-- Add `RuntimeSettingsSnapshotTests`.
-- Update `RuntimeProviderSettingsStoreTests`.
-- Update `RuntimeProviderListPresentationTests`.
-- Update composer/new-task presentation tests.
-
-## PR 7 - Main-Actor Boundary Reduction
+## Next PR 8 - Main-Actor IO Boundary Reduction
 
 Impact: High
 Urgency: Medium
 
 ### Problem
 
-Many services are marked `@MainActor`, including runtime and task state paths.
-Some main-actor usage is required by SwiftData, but file scanning, provider
-parsing, process monitoring, diagnostics, and git status reads should not
-inherit UI-thread constraints.
+Many services are `@MainActor` because they touch SwiftData or UI-observed
+state, but several of those same services also perform file IO, JSON parsing,
+directory scans, and process-adjacent work. This increases UI responsiveness
+risk and makes concurrency behavior harder to reason about.
 
 ### Scope
 
-- Identify functions that only read immutable snapshots and move them off main.
-- Introduce snapshot structs for task/workspace data needed by background work.
-- Keep SwiftData mutation points on main.
-- Use actors for shared mutable runtime state where appropriate.
-
-### Primary Files
-
-- `Astra/Services/Runtime/AgentRuntimeWorker.swift`
-- `Astra/Services/Tasks/TaskQueue.swift`
-- `Astra/Services/Persistence/TaskContextStateManager.swift`
-- `Astra/Services/Validation/ValidationService.swift`
-- `Astra/Services/Tasks/AgentEventRecorder.swift`
-- `Astra/Services/Git/GitService.swift`
-
-### Tests
-
-- Update `ConcurrencyTests`.
-- Update `QueueLockTests`.
-- Update `AgentRuntimeWorkerTests`.
-- Add tests proving background snapshot work does not require `@MainActor`.
-
-## PR 8 - IO and Process Injection Expansion
-
-Impact: High
-Urgency: Medium
-
-### Problem
-
-The repo already has `FileSystem`, `SecretStore`, and `BinaryRunner`, but many
-services still call `FileManager.default`, `Process()`, `URLSession.shared`, or
-`NSWorkspace.shared` directly. This makes focused tests harder and hides failure
-modes.
-
-### Scope
-
-- Introduce small protocols for:
-  - file IO
-  - process execution
-  - URL loading
-  - workspace opening/selecting files
-- Replace direct usage in high-value services first.
-- Do not abstract every AppKit call in one PR.
-
-### Primary Files
-
-- `ASTRACore/Protocols.swift`
-- `ASTRACore/BinaryRunner.swift`
-- `Astra/Services/Persistence/RealFileSystem.swift`
-- `Astra/Services/Validation/ValidationService.swift`
-- `Astra/Services/Runtime/RuntimeReadinessService.swift`
-- `Astra/Services/Git/GitService.swift`
-- `Astra/Services/Persistence/TaskWorkspaceAccess.swift`
-- `Astra/Services/Validation/TaskDeliverableVerificationService.swift`
-
-### Tests
-
-- Extend `MockFileSystem`.
-- Extend `StubBinaryRunner`.
-- Update `ValidationServiceTests`.
-- Update `GitRepositoryPanelIntegrationTests` only where direct git calls are
-  still intended.
-
-## PR 9 - Structured Error and Diagnostic Results
-
-Impact: Medium
-Urgency: Medium
-
-### Problem
-
-Core code uses many `try?` paths. Silent failure is acceptable for best-effort
-UI niceties, but persistence, validation, provider launch, and diagnostics need
-explicit failure reasons.
-
-### Scope
-
-- Introduce typed diagnostic result structs for:
-  - context-state load/save
-  - workspace import/export
-  - validation assertion execution
-  - artifact reconciliation
-  - provider launch preflight
-- Keep UI best-effort paths quiet, but have services record audit fields.
-
-### Primary Files
-
-- `Astra/Services/Persistence/TaskContextStateManager.swift`
-- `Astra/Services/Persistence/WorkspaceConfigManager.swift`
-- `Astra/Services/Validation/ValidationService.swift`
-- `Astra/Services/Runtime/AgentRuntimeLaunchPreflight.swift`
-- `Astra/Services/Diagnostics/LogDiagnosticsService.swift`
-- `Astra/Services/Diagnostics/Logger.swift`
-
-### Tests
-
-- Update `TaskContextStateTests`.
-- Update `WorkspacePersistenceTests`.
-- Update `ValidationServiceTests`.
-- Update `LogDiagnosticsTests`.
-
-## PR 10 - Browser Subsystem Split
-
-Impact: Medium
-Urgency: Medium
-
-### Problem
-
-Browser control is valuable but concentrated in large files. `ShelfBrowserSession`
-and `ControlledBrowserController` combine transport, state, interaction policy,
-debug capture, bridge environment, and presentation-facing session state.
-
-### Scope
-
-- Split browser logic into:
-  - CDP transport
-  - page/session state
-  - interaction safety policy
-  - debug capture
-  - bridge environment registration
-  - UI-facing session model
-- Preserve current browser behavior.
-
-### Primary Files
-
-- `Astra/Services/Browser/ShelfBrowserSession.swift`
-- `Astra/Services/Browser/ControlledBrowserController.swift`
-- `Astra/Services/Browser/ShelfBrowserBridgeRegistry.swift`
-- `Astra/Services/Browser/BrowserFailureDebugCapture.swift`
-- `Astra/Services/Browser/BrowserKeypressSafety.swift`
-- `Astra/Views/ShelfBrowserPanelView.swift`
-
-### Tests
-
-- Update `BrowserControlSafetyTests`.
-- Update `BrowserFailureDebugCaptureTests`.
-- Update `BrowserBridgeSecurityTests`.
-- Update `ShelfBrowserPanelLayoutTests`.
-
-## PR 11 - Prompt Assembly Section Providers
-
-Impact: Medium
-Urgency: Medium
-
-### Problem
-
-`AgentPromptBuilder` has good typed concepts, but the file owns too many
-section sources and assembly details. Prompt behavior is central enough to need
-smaller, testable section providers.
-
-### Scope
-
-- Define `PromptContextSectionProvider`.
-- Extract providers for:
-  - current task
-  - thread state
-  - workspace instructions
-  - memories
-  - recent tasks
-  - skills/connectors/tools
-  - browser
-  - task output folder
-  - ASTRA run protocol instructions
-- Keep `PromptAssemblyManifest` as the public result.
+- Identify main-actor services that mix SwiftData mutation with pure IO.
+- Move pure file reads, directory enumeration, and JSON parsing behind async
+  loaders or nonisolated helpers.
+- Expand `FileSystem` or introduce narrower file-reader protocols where tests
+  need deterministic IO.
+- Keep SwiftData object mutation on the main actor.
+- Replace `DispatchQueue.main.async` patterns with structured Swift concurrency
+  where safe.
 
 ### Primary Files
 
 - `Astra/Services/Runtime/AgentPromptBuilder.swift`
-- `Astra/Services/Capabilities/TaskCapabilityResolver.swift`
 - `Astra/Services/Persistence/TaskContextStateManager.swift`
-- `Astra/Views/PromptContextPreviewView.swift`
+- `Astra/Services/Persistence/TaskOutputDiscovery.swift`
+- `Astra/Services/Tasks/TaskVerificationPresentationLoader.swift`
+- `Astra/Views/TaskThreadViewModel.swift`
+- `Astra/Views/TaskMainView.swift`
+- `Astra/Views/ContentView.swift`
+- `ASTRACore/Protocols.swift`
+- `Astra/Services/Persistence/RealFileSystem.swift`
 
 ### Tests
 
-- Update `ContextInjectionTests`.
-- Update `PromptContextPreviewPresentationTests`.
-- Update `AgentRuntimeWorkerTests` where prompt behavior is asserted.
+- Expand `ConcurrencyTests`.
+- Expand `TaskContextStateTests`.
+- Expand `TaskThreadSnapshotTests`.
+- Expand `TaskVerificationPresentationLoader` coverage.
+- Expand `QueueLockTests` for injected filesystem behavior.
+- Run full `swift test`.
 
-## PR 12 - Validation Contract Result Typing and Shared Completion Policy
+## Next PR 9 - Git Service Decomposition
 
 Impact: Medium
 Urgency: Medium
 
 ### Problem
 
-Validation contract metadata is now a strong direction, but completion policy is
-still spread across approved-plan execution, validation service, task lifecycle,
-deliverable verification, and no-usable-result handling.
+Git is now foldered and authoring has its own service, but `GitService` still
+combines repository discovery, status parsing, worktree management, GitHub PR
+lookup, comments, checks, command execution, and timeout handling.
+
+This is a moderate-risk boundary because it is user-facing and process-heavy,
+but it is less cross-cutting than task events and runtime completion.
 
 ### Scope
 
-- Add typed validation result enums for assertion and contract outcomes.
-- Introduce `TaskCompletionPolicy` that decides whether a run can complete.
-- Route approved-plan, normal-run, corrective-run, and inferred-verification
-  completion checks through that policy.
-- Preserve current behavior unless an existing bug is explicitly fixed.
-
-### Primary Files
-
-- `Astra/Services/Validation/ValidationService.swift`
-- `Astra/Services/Validation/TaskDeliverableVerificationService.swift`
-- `Astra/Services/Tasks/TaskRunLifecycleService.swift`
-- `Astra/Services/Runtime/AgentRuntimeWorker.swift`
-- `Astra/Services/Validation/TaskCorrectiveWorkService.swift`
-- `Astra/Models/TaskValidationContract.swift`
-
-### Tests
-
-- Update `ValidationServiceTests`.
-- Update `TaskRunLifecycleServiceTests`.
-- Update `TaskDeliverableVerificationServiceTests`.
-- Update `HeadlessChatScenarioTests`.
-
-## PR 13 - Git Service Boundary and Testability
-
-Impact: Medium
-Urgency: Low
-
-### Problem
-
-`GitService.shared` is used heavily from `WorkspaceGitViewModel`. It mixes git
-status, worktree management, diffing, staging, PR lookup, PR checks, and
-authoring. This makes the repository panel hard to test without real git state.
-
-### Scope
-
-- Split git responsibilities into smaller clients:
-  - status
-  - diff
-  - worktree
-  - branch
-  - authoring
-  - pull request metadata
-- Inject a git client into `WorkspaceGitViewModel`.
-- Keep a live `GitService` facade for app wiring.
+- Split pure parsing from process execution.
+- Extract `GitStatusService`.
+- Extract `GitWorktreeService`.
+- Extract `GitHubPullRequestService`.
+- Extract comments and check summary lookup into focused components.
+- Keep the current UI-facing structs stable unless tests update them.
+- Route git subprocesses through a single runner abstraction.
 
 ### Primary Files
 
 - `Astra/Services/Git/GitService.swift`
+- `Astra/Services/Git/GitAuthoringService.swift`
 - `Astra/Views/WorkspaceGitViewModel.swift`
 - `Astra/Views/WorkspaceGitSectionView.swift`
-- `Astra/Services/Git/GitAuthoringService.swift`
+- `ASTRACore/BinaryRunner.swift`
 
 ### Tests
 
-- Update `GitRepositoryPanelIntegrationTests`.
-- Update `GitAuthoringServiceTests`.
-- Update `GitPullRequestTests`.
-- Update `GitPushEnablementTests`.
+- Expand `GitWorktreeTests`.
+- Expand `GitRepositoryPanelIntegrationTests`.
+- Expand `GitPullRequestTests`.
+- Expand `GitPushEnablementTests`.
+- Expand `GitAuthoringRegressionTests`.
+- Add tests for parser-only components with no subprocess execution.
 
-## PR 14 - Test Suite Decomposition
+## Next PR 10 - Process Execution and Timeout Contract
+
+Impact: Medium
+Urgency: Medium
+
+### Problem
+
+Direct `Process()` usage is relatively contained, but process launch, timeout,
+cancellation, stdout/stderr collection, and failure diagnostics still appear in
+multiple services. Several services also use `DispatchQueue.asyncAfter` for
+timeouts.
+
+### Scope
+
+- Define one process execution result shape with:
+  - exit code
+  - stdout
+  - stderr
+  - launch error
+  - timeout flag
+  - cancellation flag
+  - elapsed time
+- Route Git, validation commands, runtime helper probes, database shell commands,
+  and browser helper processes through shared process primitives where practical.
+- Preserve provider-specific launch planning in runtime adapters.
+- Standardize timeout messages and audit fields.
+
+### Primary Files
+
+- `ASTRACore/BinaryRunner.swift`
+- `Astra/Services/Runtime/AgentProcessSupport.swift`
+- `Astra/Services/Runtime/AgentRuntimeProcessRunner.swift`
+- `Astra/Services/Git/GitService.swift`
+- `Astra/Services/Validation/ValidationService.swift`
+- `Astra/Services/Validation/TaskDeliverableVerificationService.swift`
+- `Astra/Services/Tasks/SpecEngine.swift`
+- `Astra/Services/Tasks/DatabaseQueryService.swift`
+- `Astra/Services/Browser/ControlledBrowserController.swift`
+
+### Tests
+
+- Expand `AsyncProcessTests`.
+- Expand `ProcessMonitorTests`.
+- Expand `GitAuthoringRegressionTests`.
+- Expand `ValidationServiceTests`.
+- Expand `TaskDeliverableVerificationServiceTests`.
+- Expand runtime adapter process-launch tests.
+
+## Next PR 11 - Structured JSON Decode and Diagnostic Results
+
+Impact: Medium
+Urgency: Medium
+
+### Problem
+
+`JSONSerialization` and `try?` are still used in many source paths. Some uses are
+fine for generic bridge objects, but critical runtime, browser, validation, and
+diagnostic paths should return typed decode errors rather than collapsing
+failures into empty results.
+
+### Scope
+
+- Audit `JSONSerialization` in runtime, browser, diagnostics, and validation.
+- Replace high-value bridge and runtime payload parsing with Codable structs.
+- Keep generic `[String: Any]` only at true dynamic bridge boundaries.
+- Convert silent `try?` in critical state-loading paths to typed result values.
+- Add logging or user-facing diagnostics for malformed provider/runtime payloads.
+
+### Primary Files
+
+- `Astra/Services/Browser/ShelfBrowserSession.swift`
+- `Astra/Services/Browser/ControlledBrowserCDPTransport.swift`
+- `Astra/Services/Runtime/AgentRuntimeAdapter.swift`
+- `Astra/Services/Runtime/AgentProcessSupport.swift`
+- `Astra/Services/Diagnostics/LogDiagnosticsService.swift`
+- `Astra/Services/Persistence/TaskContextStateManager.swift`
+- `Astra/Services/Validation/ValidationService.swift`
+- `ASTRACore/StreamEventParser.swift`
+- `ASTRACore/CopilotStreamEventParser.swift`
+
+### Tests
+
+- Expand `StreamParserTests`.
+- Expand `CopilotRuntimeTests`.
+- Expand `BrowserBridgeSecurityTests`.
+- Expand `BrowserPageReadServiceTests`.
+- Expand `LogDiagnosticsTests`.
+- Expand `TaskContextStateTests`.
+- Add malformed-payload regressions for each converted boundary.
+
+## Next PR 12 - SwiftPM Module Boundary Pilot
 
 Impact: Medium
 Urgency: Low
 
 ### Problem
 
-Some tests are now large integration buckets. That makes failures harder to
-triage and increases the chance of hidden async side effects.
+Service folders improved ownership, but the compiler still sees most app code as
+one `ASTRA` module. That means views can still reach directly into lower-level
+runtime, persistence, and browser internals.
+
+This should wait until the higher-impact storage and owner-file splits land,
+because moving modules too early can create broad mechanical churn.
 
 ### Scope
 
-- Split `ViewTests` into focused presentation and integration suites.
-- Split `HeadlessChatScenarioTests` by runtime and scenario family where
-  practical.
-- Move shared fixtures into small helpers.
-- Mark real-provider and smoke tests clearly.
-
-### Primary Files
-
-- `Tests/ViewTests.swift`
-- `Tests/HeadlessChatScenarioTests.swift`
-- `Tests/TaskPromptFixtures.swift`
-- `Tests/E2ETestSupport.swift`
-
-### Tests
-
-- This PR is itself test-structure work. Run full `swift test`.
-
-## PR 15 - Package and Folder Architecture Cleanup
-
-Impact: Low
-Urgency: Low
-
-### Problem
-
-`Astra/Services` is very flat. As the app grows, finding the owner for a change
-gets harder.
-
-### Scope
-
-- Move files into grouped folders without behavior changes:
-  - `Runtime`
-  - `Tasks`
-  - `Persistence`
-  - `Validation`
-  - `Capabilities`
-  - `Browser`
-  - `Git`
-  - `Settings`
-  - `Diagnostics`
-- Keep SwiftPM target paths working.
-- Avoid mixing moves with logic changes.
+- Pilot one small compile-time boundary before splitting the whole app.
+- Candidate module boundaries:
+  - task domain/event payload contracts
+  - runtime adapter contracts
+  - persistence path and file-index contracts
+  - git parser contracts
+- Keep SwiftUI views in the app target.
+- Avoid circular dependencies by moving only pure or low-dependency types first.
 
 ### Primary Files
 
 - `Package.swift`
-- `Astra/Services/**`
-- `Tests/**` imports only if needed
+- `ASTRACore`
+- `Astra/Models`
+- `Astra/Services/Runtime`
+- `Astra/Services/Persistence`
+- `Astra/Services/Git`
+- `Tests`
 
 ### Tests
 
 - Run full `swift test`.
-- Run `git diff --check`.
+- Run `swift build`.
+- Add import-boundary tests only if the new module exposes public contracts.
+- Verify `./script/build_and_run.sh --verify` for app packaging.
 
-## PR 16 - Architecture Contract Documentation
+## Next PR 13 - Capability Catalog and Plugin UI Boundary
+
+Impact: Medium
+Urgency: Low
+
+### Problem
+
+Capabilities are organized in their own folder, but the capability/plugin area
+still has broad owner files. `PluginCatalogView` is almost 3,000 lines and
+capability services contain many related but distinct concerns: package
+validation, activation, catalog inventory, install/uninstall, sharing,
+runtime integrity, and UI projection.
+
+### Scope
+
+- Separate capability catalog data from UI presentation state.
+- Extract plugin catalog sections into focused views or presentation models.
+- Keep package validation and runtime integrity as service boundaries.
+- Keep install/uninstall side effects out of view code.
+- Preserve existing package schema behavior.
+
+### Primary Files
+
+- `Astra/Views/PluginCatalogView.swift`
+- `Astra/Services/Capabilities/PluginCatalog.swift`
+- `Astra/Services/Capabilities/CapabilityCatalogInventory.swift`
+- `Astra/Services/Capabilities/CapabilityPackageValidator.swift`
+- `Astra/Services/Capabilities/CapabilityInstaller.swift`
+- `Astra/Services/Capabilities/CapabilityUninstaller.swift`
+- `Astra/Services/Capabilities/CapabilityRuntimeIntegrityService.swift`
+
+### Tests
+
+- Expand `PluginCatalogTests`.
+- Expand `CapabilityCatalogPolicyTests`.
+- Expand `CapabilityPackageValidatorTests`.
+- Expand `CapabilityInstallerTests`.
+- Expand `CapabilityUninstallerTests`.
+- Expand `CapabilityRuntimeIntegrityServiceTests`.
+
+## Next PR 14 - Workspace Rail and Catalog View Decomposition
+
+Impact: Medium
+Urgency: Low
+
+### Problem
+
+Some large SwiftUI surfaces remain large primarily because of presentation
+composition rather than core correctness risk. `WorkspaceRightRailView`,
+`PluginCatalogView`, `ChatPanelView`, and shelf views are still likely merge
+conflict points.
+
+### Scope
+
+- Extract presentation models before extracting view fragments.
+- Split repeated row/card/section UI into focused components.
+- Keep the lean design-system rules intact.
+- Avoid new nested card chrome or marketing-style composition.
+- Keep integration tests narrow and move pure decisions to presentation tests.
+
+### Primary Files
+
+- `Astra/Views/WorkspaceRightRailView.swift`
+- `Astra/Views/PluginCatalogView.swift`
+- `Astra/Views/ChatPanelView.swift`
+- `Astra/Views/ShelfMarkdownPanelView.swift`
+- `Astra/Views/ShelfQueryPanelView.swift`
+- `Astra/Views/ShelfBrowserPanelView.swift`
+- `docs/design-system/lean-ui-system.md`
+
+### Tests
+
+- Expand `CapabilityRailPresentationTests`.
+- Expand `WorkspaceCanvasPanelPresentationTests`.
+- Expand `ComposerPresentationTests`.
+- Expand `QuerySessionPresentationTests`.
+- Expand shelf panel layout tests.
+
+## Next PR 15 - Architecture Fitness Tests and Debt Metrics
 
 Impact: Low
 Urgency: Low
 
 ### Problem
 
-The architecture has strong implicit contracts, but they are scattered across
-code and tests.
+The architecture cleanup improved the tree, but there are few automated guard
+rails preventing drift back to root service files, hidden event strings, broad
+direct settings reads, or unbounded owner files.
 
 ### Scope
 
-- Add concise docs for:
-  - runtime adapter responsibilities
-  - task-event schema
-  - artifact persistence lifecycle
-  - prompt assembly and context capsule
-  - validation and completion gates
-  - workspace storage boundaries
+- Add lightweight architecture fitness tests or scripts for:
+  - no direct Swift files under `Astra/Services`
+  - all new task-event constants registered in category mapping
+  - no new raw stop-reason strings outside the typed boundary
+  - prompt provider IDs remain unique and ordered
+  - service folders remain known and intentional
+- Add non-blocking debt metrics documentation for:
+  - large files
+  - direct `@AppStorage`
+  - direct `FileManager.default`
+  - `JSONSerialization`
+  - direct `Process()`
+- Keep thresholds realistic so the tests stop regressions without forcing a
+  giant cleanup PR.
 
 ### Primary Files
 
-- `docs/architecture/runtime-adapters.md`
-- `docs/architecture/task-events.md`
-- `docs/architecture/artifact-persistence.md`
-- `docs/architecture/prompt-assembly.md`
-- `docs/architecture/validation-completion-policy.md`
-- `docs/security/security-boundaries.md`
+- `Tests`
+- `docs/specs/2026-06-04-architecture-debt-pr-plan.md`
+- `Astra/Models/TaskEventTypes.swift`
+- `Astra/Services/Tasks/PromptContextSectionProvider.swift`
+- `Package.swift`
 
 ### Tests
 
-- No runtime tests required unless docs expose an inaccurate behavior and code
-  is corrected in the same PR.
+- Add `ArchitectureFitnessTests`.
 - Run `git diff --check`.
+- Run focused architecture tests.
+- Run full `swift test` when a rule touches runtime, persistence, or event
+  contracts.
 
-## Suggested Merge Sequence
+## Suggested Execution Order
 
-1. PR 1 - Typed Task Event API
-2. PR 2 - Durable Artifact and File-Change Source of Truth
-3. PR 3 - Extract TaskMainView Decision and Runtime Surfaces
-4. PR 4 - Split ContentView into App Shell, Routing, and Workspace Actions
-5. PR 5 - Runtime Adapter Contract Split
-6. PR 6 - Central Runtime and App Settings Snapshot
-7. PR 7 - Main-Actor Boundary Reduction
-8. PR 8 - IO and Process Injection Expansion
-9. PR 9 - Structured Error and Diagnostic Results
-10. PR 10 - Browser Subsystem Split
-11. PR 11 - Prompt Assembly Section Providers
-12. PR 12 - Validation Contract Result Typing and Shared Completion Policy
-13. PR 13 - Git Service Boundary and Testability
-14. PR 14 - Test Suite Decomposition
-15. PR 15 - Package and Folder Architecture Cleanup
-16. PR 16 - Architecture Contract Documentation
+1. Next PR 1: Durable Event Payload and Stop-Reason Typing.
+2. Next PR 2: Artifact and File-Change Storage Hardening.
+3. Next PR 3: Browser Session Command Router Split.
+4. Next PR 4: Central Settings Snapshot Injection.
+5. Next PR 5: Prompt Provider Extraction and IO Snapshot Boundary.
+6. Next PR 6: TaskMainView Composer and Runtime Coordinator Split.
+7. Next PR 7: ContentView App Shell and Workspace Action Split.
+8. Next PR 8: Main-Actor IO Boundary Reduction.
+9. Next PR 9: Git Service Decomposition.
+10. Next PR 10: Process Execution and Timeout Contract.
+11. Next PR 11: Structured JSON Decode and Diagnostic Results.
+12. Next PR 12: SwiftPM Module Boundary Pilot.
+13. Next PR 13: Capability Catalog and Plugin UI Boundary.
+14. Next PR 14: Workspace Rail and Catalog View Decomposition.
+15. Next PR 15: Architecture Fitness Tests and Debt Metrics.
 
-## Validation Baseline
+## Definition of Done for Each PR
 
-Every PR should run:
-
-```bash
-git diff --check
-swift test --filter <RelevantSuiteOrTestName>
-```
-
-PRs touching runtime, persistence, validation, migration, task lifecycle, or
-shared presentation should also run:
-
-```bash
-swift test
-```
-
-UI PRs should additionally launch the development app:
-
-```bash
-./script/build_and_run.sh --verify
-```
-
+- The PR states which architecture boundary it tightens.
+- The PR preserves behavior unless the contract change is explicit.
+- Regression tests cover the changed boundary.
+- For source-only docs or fitness-test changes, `git diff --check` is enough.
+- For runtime, persistence, validation, provider, process, or SwiftData changes,
+  run focused tests plus full `swift test`.
+- For UI shell or SwiftUI surface changes, run focused presentation/view tests
+  and rebuild `ASTRA Dev.app` with `./script/build_and_run.sh --verify`.
