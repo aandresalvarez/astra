@@ -425,12 +425,15 @@ struct TaskMainView: View {
             }
         }
         .environment(\.openURL, OpenURLAction { url in
-            guard url.isFileURL,
-                  TaskGeneratedFiles.shelfDestination(for: url.path) != nil,
+            guard let route = TaskGeneratedFileOpenRouter.route(
+                fileURL: url,
+                canOpenInShelf: onOpenGeneratedFile != nil
+            ),
+                  case let .shelf(path) = route,
                   let onOpenGeneratedFile else {
                 return .systemAction
             }
-            onOpenGeneratedFile(url.path)
+            onOpenGeneratedFile(path)
             return .handled
         })
         .sheet(isPresented: $showDiffsSheet) {
@@ -698,25 +701,41 @@ struct TaskMainView: View {
     }
 
     private var headerTextShelfFileItems: [TaskFileItem] {
-        headerFileItems.filter { $0.destination == .files }
+        TaskGeneratedFileOpenRouter.textShelfItems(headerFileItems)
+    }
+
+    private var canOpenHeaderTextShelfItems: Bool {
+        TaskGeneratedFileOpenRouter.canOpenTextShelfItems(
+            headerFileItems,
+            canOpenInShelf: onOpenGeneratedFile != nil
+        )
     }
 
     private func openHeaderFileItem(_ item: TaskFileItem) {
         isShowingFilesPopover = false
-        if item.destination != nil, let onOpenGeneratedFile {
-            onOpenGeneratedFile(item.path)
-        } else {
-            NSWorkspace.shared.open(URL(fileURLWithPath: item.path))
-        }
+        openGeneratedFile(path: item.path, destination: item.destination)
     }
 
     private func openHeaderTextFilesInShelf() {
-        guard let onOpenGeneratedFile else { return }
+        guard canOpenHeaderTextShelfItems,
+              let onOpenGeneratedFile else { return }
         let items = headerTextShelfFileItems
-        guard !items.isEmpty else { return }
         isShowingFilesPopover = false
         for item in items {
             onOpenGeneratedFile(item.path)
+        }
+    }
+
+    private func openGeneratedFile(path: String, destination: TaskGeneratedFileShelfDestination?) {
+        switch TaskGeneratedFileOpenRouter.route(
+            path: path,
+            destination: destination,
+            canOpenInShelf: onOpenGeneratedFile != nil
+        ) {
+        case let .shelf(path):
+            onOpenGeneratedFile?(path)
+        case let .system(path):
+            NSWorkspace.shared.open(URL(fileURLWithPath: path))
         }
     }
 
@@ -827,8 +846,8 @@ struct TaskMainView: View {
                         .font(Stanford.caption(12).weight(.medium))
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(headerTextShelfFileItems.isEmpty || onOpenGeneratedFile == nil ? .secondary : Stanford.lagunita)
-                .disabled(headerTextShelfFileItems.isEmpty || onOpenGeneratedFile == nil)
+                .foregroundStyle(canOpenHeaderTextShelfItems ? Stanford.lagunita : .secondary)
+                .disabled(!canOpenHeaderTextShelfItems)
                 .help("Open all text files in the Files shelf")
 
                 Spacer()
@@ -3825,11 +3844,7 @@ struct TaskMainView: View {
             onResumeTask?(task)
         case .openArtifact:
             guard let path = action.payload else { return }
-            if let onOpenGeneratedFile {
-                onOpenGeneratedFile(path)
-            } else {
-                NSWorkspace.shared.open(URL(fileURLWithPath: path))
-            }
+            openGeneratedFile(path: path, destination: TaskGeneratedFiles.shelfDestination(for: path))
         case .closeTask, .closeAnyway, .closeWithoutRunningPlan, .reopenTask:
             toggleTaskDoneFromDecisionDock()
         }
