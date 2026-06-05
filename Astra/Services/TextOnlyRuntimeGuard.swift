@@ -147,8 +147,6 @@ enum TextOnlyRuntimeGuard {
         "jira",
         "ticket",
         "tickets",
-        "story",
-        "stories",
         "github",
         "pull request",
         "pr ",

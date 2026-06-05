@@ -149,6 +149,8 @@ struct AppBundlePackagingTests {
         #expect(missingEvidenceInputs.output.contains("script/local_mlx_collect_hardware_evidence.sh --dry-run"))
         #expect(missingEvidenceInputs.output.contains("script/local_mlx_validation_bundle.py --dry-run"))
         #expect(missingEvidenceInputs.output.contains("--out /tmp/astra-local-mlx-validation-bundle-merged.json"))
+        #expect(releaseScript.contains(#"LOCAL_MLX_MISSING_EVIDENCE+=("ASTRA_LOCAL_MLX_HARDWARE_EVIDENCE_FILES or ASTRA_LOCAL_MLX_HARDWARE_EVIDENCE")"#))
+        #expect(!releaseScript.contains("LOCAL_MLX_MISSING_EVIDENCE+=(ASTRA_LOCAL_MLX_HARDWARE_EVIDENCE_FILES or ASTRA_LOCAL_MLX_HARDWARE_EVIDENCE)"))
 
         let evidenceDirectory = temporaryDirectory()
         let releaseEvidence = evidenceDirectory.appendingPathComponent("release.json")

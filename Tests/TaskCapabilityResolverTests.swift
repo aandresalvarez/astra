@@ -191,6 +191,16 @@ struct TaskCapabilityResolverTests {
         context.insert(chatOnly)
         try context.save()
         #expect(TextOnlyRuntimeGuard.blockReason(task: chatOnly, runtime: .localMLX) == nil)
+
+        let creativeWriting = AgentTask(
+            title: "Write story",
+            goal: "Write a short story about a quiet launch day",
+            workspace: workspace,
+            runtime: .localMLX
+        )
+        context.insert(creativeWriting)
+        try context.save()
+        #expect(TextOnlyRuntimeGuard.blockReason(task: creativeWriting, runtime: .localMLX) == nil)
     }
 
     @Test("Text-only runtime guard blocks workspace file read requests")

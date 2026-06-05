@@ -145,15 +145,19 @@ struct JiraConnectorSearchService {
             return jql
         }
         if let project = cleaned(arguments["project"]?.stringValue), !project.isEmpty {
-            return "project = \(project.uppercased()) ORDER BY updated DESC"
+            return "\(jqlProjectClause(project)) ORDER BY updated DESC"
         }
         if let query = cleaned(arguments["query"]?.stringValue), !query.isEmpty {
             if let project = bestConfiguredProject(connector: connector) {
-                return #"project = \#(project) AND text ~ "\#(escapeJQLString(query))" ORDER BY updated DESC"#
+                return #"\#(jqlProjectClause(project)) AND text ~ "\#(escapeJQLString(query))" ORDER BY updated DESC"#
             }
             return #"text ~ "\#(escapeJQLString(query))" ORDER BY updated DESC"#
         }
         return nil
+    }
+
+    private func jqlProjectClause(_ project: String) -> String {
+        #"project = "\#(escapeJQLString(project.uppercased()))""#
     }
 
     private func bestConfiguredProject(connector: Connector) -> String? {

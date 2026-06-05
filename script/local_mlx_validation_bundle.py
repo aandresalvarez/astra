@@ -37,7 +37,7 @@ def load_samples(path, label):
 def load_sample_files(paths, label):
     samples = []
     for path in paths or []:
-        samples.extend(load_samples(path, label))
+        samples.extend(load_samples(path, f"{label} file {path}"))
     return samples
 
 

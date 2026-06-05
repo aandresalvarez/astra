@@ -154,7 +154,7 @@ struct GmailConnectorSearchService {
             return .failure(.missingMessageID)
         }
 
-        var request = URLRequest(url: ConnectorRequestBuilder.url(
+        var request = URLRequest(url: ConnectorRequestBuilder.urlWithPercentEncodedPath(
             base: baseURL,
             path: "/gmail/v1/users/me/messages/\(escapedPathComponent(messageID))",
             queryItems: [URLQueryItem(name: "format", value: "full")]
@@ -237,7 +237,7 @@ struct GmailConnectorSearchService {
         baseURL: URL,
         connector: Connector
     ) async -> Result<GmailMessageSearchResult, SearchError> {
-        var request = URLRequest(url: ConnectorRequestBuilder.url(
+        var request = URLRequest(url: ConnectorRequestBuilder.urlWithPercentEncodedPath(
             base: baseURL,
             path: "/gmail/v1/users/me/messages/\(escapedPathComponent(id))",
             queryItems: [
@@ -332,7 +332,9 @@ struct GmailConnectorSearchService {
     }
 
     private func escapedPathComponent(_ value: String) -> String {
-        value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? value
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove(charactersIn: "/")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
 
     private func errorMessage(from data: Data) -> String {
@@ -364,6 +366,15 @@ struct GmailConnectorSearchService {
 
 private struct GmailMessageListPayload: Decodable {
     var messages: [MessageReference]
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        messages = try container.decodeIfPresent([MessageReference].self, forKey: .messages) ?? []
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case messages
+    }
 
     struct MessageReference: Decodable {
         var id: String

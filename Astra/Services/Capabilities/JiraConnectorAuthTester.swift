@@ -27,6 +27,23 @@ enum ConnectorRequestBuilder {
         path: String,
         queryItems: [URLQueryItem] = []
     ) -> URL {
+        url(base: base, path: path, queryItems: queryItems, pathIsPercentEncoded: false)
+    }
+
+    static func urlWithPercentEncodedPath(
+        base: URL,
+        path: String,
+        queryItems: [URLQueryItem] = []
+    ) -> URL {
+        url(base: base, path: path, queryItems: queryItems, pathIsPercentEncoded: true)
+    }
+
+    private static func url(
+        base: URL,
+        path: String,
+        queryItems: [URLQueryItem],
+        pathIsPercentEncoded: Bool
+    ) -> URL {
         guard var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
             return base
         }
@@ -43,11 +60,17 @@ enum ConnectorRequestBuilder {
             embeddedQueryItems = []
         }
 
-        let basePath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let basePath = (pathIsPercentEncoded ? components.percentEncodedPath : components.path)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let childPath = pathWithoutQuery.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        components.path = "/" + [basePath, childPath]
+        let resolvedPath = "/" + [basePath, childPath]
             .filter { !$0.isEmpty }
             .joined(separator: "/")
+        if pathIsPercentEncoded {
+            components.percentEncodedPath = resolvedPath
+        } else {
+            components.path = resolvedPath
+        }
         let combinedQueryItems = (components.queryItems ?? []) + embeddedQueryItems + queryItems
         components.queryItems = combinedQueryItems.isEmpty ? nil : combinedQueryItems
         return components.url ?? base

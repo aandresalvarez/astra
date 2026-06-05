@@ -139,7 +139,7 @@ struct GoogleDriveConnectorSearchService {
             return .failure(.missingFileID)
         }
 
-        var metadataRequest = URLRequest(url: ConnectorRequestBuilder.url(
+        var metadataRequest = URLRequest(url: ConnectorRequestBuilder.urlWithPercentEncodedPath(
             base: baseURL,
             path: "/drive/v3/files/\(escapedPathComponent(fileID))",
             queryItems: [
@@ -300,13 +300,13 @@ struct GoogleDriveConnectorSearchService {
 
     private func contentURL(baseURL: URL, fileID: String, mimeType: String) -> URL {
         if let exportType = exportMimeType(for: mimeType) {
-            return ConnectorRequestBuilder.url(
+            return ConnectorRequestBuilder.urlWithPercentEncodedPath(
                 base: baseURL,
                 path: "/drive/v3/files/\(escapedPathComponent(fileID))/export",
                 queryItems: [URLQueryItem(name: "mimeType", value: exportType)]
             )
         }
-        return ConnectorRequestBuilder.url(
+        return ConnectorRequestBuilder.urlWithPercentEncodedPath(
             base: baseURL,
             path: "/drive/v3/files/\(escapedPathComponent(fileID))",
             queryItems: [URLQueryItem(name: "alt", value: "media")]
@@ -336,7 +336,9 @@ struct GoogleDriveConnectorSearchService {
     }
 
     private func escapedPathComponent(_ value: String) -> String {
-        value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? value
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove(charactersIn: "/")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
 
     private func errorMessage(from data: Data) -> String {

@@ -310,6 +310,18 @@ struct LocalModelRuntimeTests {
         #expect(request.timeoutInterval == JiraConnectorSearchService.requestTimeout)
         #expect(request.value(forHTTPHeaderField: "Authorization")?.contains("secret-token") == false)
 
+        let projectResult = await service.search(arguments: [
+            "project": .string(#"STAR" OR updated >= -30d"#),
+            "max_results": .number(1)
+        ])
+        guard case .success = projectResult else {
+            Issue.record("Expected quoted Jira project search success")
+            return
+        }
+        let projectRequest = try #require(transport.requests.dropFirst().first)
+        let projectItems = URLComponents(url: try #require(projectRequest.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+        #expect(projectItems.first { $0.name == "jql" }?.value == #"project = "STAR\" OR UPDATED >= -30D" ORDER BY updated DESC"#)
+
         let observation = JiraConnectorSearchService.observation(from: result)
         #expect(observation.status == "ok")
         #expect(observation.content.contains("STAR-12246"))
@@ -500,6 +512,51 @@ struct LocalModelRuntimeTests {
     }
 
     @MainActor
+    @Test("Local Google Drive read percent-escapes slash in file id path")
+    func localGoogleDriveReadPercentEscapesSlashInFileIDPath() async throws {
+        let connector = Connector(
+            name: "Team Drive",
+            serviceType: "google_drive",
+            baseURL: "https://www.googleapis.com",
+            authMethod: "bearer"
+        )
+        connector.credentialKeys = ["GOOGLE_DRIVE_TOKEN"]
+
+        let store = MockSecretStore()
+        let entityID = KeychainSecretStore.connectorEntityID(for: connector.id)
+        store.save(key: "GOOGLE_DRIVE_TOKEN", value: "secret-drive-token", entityID: entityID, label: nil)
+
+        let transport = LocalConnectorRouteMockTransport(routes: [
+            .init(pathContains: "/drive/v3/files/drive%2Ffile-1/export", body: "Slash id content"),
+            .init(pathContains: "/drive/v3/files/drive%2Ffile-1", body: """
+            {
+              "id": "drive/file-1",
+              "name": "Slash ID Notes",
+              "mimeType": "application/vnd.google-apps.document",
+              "webViewLink": "https://drive.google.com/document/d/drive%2Ffile-1"
+            }
+            """)
+        ])
+        let service = GoogleDriveConnectorSearchService(
+            connectors: [connector],
+            contextText: "",
+            store: store,
+            transport: transport
+        )
+
+        let result = await service.read(arguments: [
+            "file_id": .string("drive/file-1")
+        ])
+
+        guard case .success(let summary) = result else {
+            Issue.record("Expected Google Drive read success")
+            return
+        }
+        #expect(summary.text.contains("Slash id content"))
+        #expect(transport.requests.allSatisfy { $0.url?.absoluteString.contains("drive%2Ffile-1") == true })
+    }
+
+    @MainActor
     @Test("Local Gmail search and read use configured connector without exposing credentials")
     func localGmailSearchAndReadUseConfiguredConnectorWithoutExposingCredentials() async throws {
         let connector = Connector(
@@ -609,6 +666,95 @@ struct LocalModelRuntimeTests {
         #expect(readObservation.status == "ok")
         #expect(readObservation.content.contains("Please review the summary before Friday."))
         #expect(!readObservation.content.contains("secret-gmail-token"))
+    }
+
+    @MainActor
+    @Test("Local Gmail search handles empty list payload without messages key")
+    func localGmailSearchHandlesEmptyListPayloadWithoutMessagesKey() async throws {
+        let connector = Connector(
+            name: "Team Gmail",
+            serviceType: "gmail",
+            baseURL: "https://gmail.googleapis.com",
+            authMethod: "bearer"
+        )
+        connector.credentialKeys = ["GMAIL_TOKEN"]
+
+        let store = MockSecretStore()
+        let entityID = KeychainSecretStore.connectorEntityID(for: connector.id)
+        store.save(key: "GMAIL_TOKEN", value: "secret-gmail-token", entityID: entityID, label: nil)
+
+        let transport = LocalConnectorRouteMockTransport(routes: [
+            .init(pathContains: "/gmail/v1/users/me/messages", body: #"{"resultSizeEstimate":0}"#)
+        ])
+        let service = GmailConnectorSearchService(
+            connectors: [connector],
+            contextText: "",
+            store: store,
+            transport: transport
+        )
+
+        let result = await service.search(arguments: [
+            "query": .string("no matches")
+        ])
+
+        guard case .success(let messages) = result else {
+            Issue.record("Expected empty Gmail search success")
+            return
+        }
+        #expect(messages.isEmpty)
+        #expect(transport.requests.count == 1)
+    }
+
+    @MainActor
+    @Test("Local Gmail read percent-escapes slash in message id path")
+    func localGmailReadPercentEscapesSlashInMessageIDPath() async throws {
+        let connector = Connector(
+            name: "Team Gmail",
+            serviceType: "gmail",
+            baseURL: "https://gmail.googleapis.com",
+            authMethod: "bearer"
+        )
+        connector.credentialKeys = ["GMAIL_TOKEN"]
+
+        let store = MockSecretStore()
+        let entityID = KeychainSecretStore.connectorEntityID(for: connector.id)
+        store.save(key: "GMAIL_TOKEN", value: "secret-gmail-token", entityID: entityID, label: nil)
+
+        let transport = LocalConnectorRouteMockTransport(routes: [
+            .init(pathContains: "/gmail/v1/users/me/messages/gmail%2Fmsg-1", body: """
+            {
+              "id": "gmail/msg-1",
+              "threadId": "gmail-thread-1",
+              "snippet": "Slash id message.",
+              "payload": {
+                "mimeType": "text/plain",
+                "headers": [
+                  {"name": "Subject", "value": "Slash id"}
+                ],
+                "body": {
+                  "data": "U2xhc2ggaWQgbWVzc2FnZS4"
+                }
+              }
+            }
+            """)
+        ])
+        let service = GmailConnectorSearchService(
+            connectors: [connector],
+            contextText: "",
+            store: store,
+            transport: transport
+        )
+
+        let result = await service.read(arguments: [
+            "message_id": .string("gmail/msg-1")
+        ])
+
+        guard case .success(let summary) = result else {
+            Issue.record("Expected Gmail read success")
+            return
+        }
+        #expect(summary.body.contains("Slash id message."))
+        #expect(transport.requests.allSatisfy { $0.url?.absoluteString.contains("gmail%2Fmsg-1") == true })
     }
 
     @MainActor
@@ -3588,6 +3734,14 @@ struct LocalModelRuntimeTests {
         let emptyBundle = try runValidationBundleBuilder([])
         #expect(emptyBundle.status == 2)
         #expect(emptyBundle.output.contains("no Local MLX evidence samples provided"))
+
+        let malformedBundleReleaseURL = directory.appendingPathComponent("malformed-bundle-release.json")
+        try "not json".write(to: malformedBundleReleaseURL, atomically: true, encoding: .utf8)
+        let malformedBundle = try runValidationBundleBuilder([
+            "--release-candidate", malformedBundleReleaseURL.path
+        ])
+        #expect(malformedBundle.status == 2)
+        #expect(malformedBundle.output.contains("release-candidate evidence file \(malformedBundleReleaseURL.path): no JSON object found"))
 
         let currentBuild = try runReleaseReadinessInspector([
             "--release-candidate", releaseURL.path,
