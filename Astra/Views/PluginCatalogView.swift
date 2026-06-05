@@ -38,17 +38,6 @@ private struct CapabilityImportReview: Identifiable {
     }
 }
 
-enum CapabilityImportPresentation {
-    static func overviewDescription(for package: PluginPackage, contentSummary: String) -> String {
-        let description = package.description.trimmingCharacters(in: .whitespacesAndNewlines)
-        return description.isEmpty ? "No description provided." : description
-    }
-
-    static func shouldShowContentSummary(for package: PluginPackage) -> Bool {
-        !package.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-}
-
 struct PluginCatalogView: View {
     var workspace: Workspace
     var catalog: PluginCatalog

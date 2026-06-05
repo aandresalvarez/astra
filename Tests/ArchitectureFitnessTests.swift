@@ -221,6 +221,38 @@ struct ArchitectureFitnessTests {
         #expect(view.contains("CapabilityCatalogActionService("))
     }
 
+    @Test("Plugin catalog import presentation lives with catalog presentation contracts")
+    func pluginCatalogImportPresentationLivesWithCatalogPresentationContracts() throws {
+        let root = try repositoryRoot()
+        let view = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/PluginCatalogView.swift"),
+            encoding: .utf8
+        )
+        let presentation = try String(
+            contentsOf: root.appendingPathComponent("Astra/Services/Capabilities/PluginCatalogPresentation.swift"),
+            encoding: .utf8
+        )
+
+        #expect(!view.contains("enum CapabilityImportPresentation"))
+        #expect(presentation.contains("enum CapabilityImportPresentation"))
+    }
+
+    @Test("Workspace rail view keeps pure presentation contracts extracted")
+    func workspaceRailViewKeepsPurePresentationContractsExtracted() throws {
+        let root = try repositoryRoot()
+        let railView = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/WorkspaceRightRailView.swift"),
+            encoding: .utf8
+        )
+        let presentationFile = root.appendingPathComponent("Astra/Views/WorkspaceRightRailPresentation.swift")
+
+        #expect(FileManager.default.fileExists(atPath: presentationFile.path))
+        #expect(!railView.contains("enum WorkspaceRightRailPresentation"))
+        #expect(!railView.contains("enum CapabilityRailLayout"))
+        #expect(!railView.contains("enum CapabilityRailSectionPresentation"))
+        #expect(!railView.contains("struct CapabilityRailPackagePresentation"))
+    }
+
     private func declaredTaskEventTypeConstants() throws -> Set<String> {
         let file = try repositoryRoot().appendingPathComponent("Astra/Models/TaskEventTypes.swift")
         let text = try String(contentsOf: file, encoding: .utf8)

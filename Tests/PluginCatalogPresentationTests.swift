@@ -121,6 +121,31 @@ struct PluginCatalogPresentationTests {
         #expect(state.filteredPackages.map(\.id) == ["connector-package"])
         #expect(state.enabledCount == 0)
     }
+
+    @Test("import overview preserves package description and hides duplicate content summary")
+    func importOverviewPreservesPackageDescriptionAndHidesDuplicateContentSummary() {
+        let package = makePresentationPackage(
+            id: "described",
+            name: "Described",
+            category: "A"
+        )
+
+        #expect(CapabilityImportPresentation.overviewDescription(for: package, contentSummary: "Ignored") == "Described package")
+        #expect(CapabilityImportPresentation.shouldShowContentSummary(for: package))
+    }
+
+    @Test("import overview falls back when package description is blank")
+    func importOverviewFallsBackWhenPackageDescriptionIsBlank() {
+        var package = makePresentationPackage(
+            id: "blank",
+            name: "Blank",
+            category: "A"
+        )
+        package.description = "   "
+
+        #expect(CapabilityImportPresentation.overviewDescription(for: package, contentSummary: "A skill") == "No description provided.")
+        #expect(!CapabilityImportPresentation.shouldShowContentSummary(for: package))
+    }
 }
 
 private func makePresentationPackage(
