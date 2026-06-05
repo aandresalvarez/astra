@@ -111,8 +111,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     private let browserAnalysisCache = BrowserAnalysisCache()
     private var enabledBrowserAdapters: Set<String> = []
     private var lastBrowserTrace: [String: Any]?
-    private var lastBrowserDebugCapture: [String: Any]?
-    private var browserFlightRecorder = BrowserFlightRecorder()
+    private var browserDiagnostics = BrowserDiagnosticsSessionState()
     private var lastPageFingerprint: String?
     private var embeddedPageReadRequests: [String: EmbeddedPageReadRequest] = [:]
     private var pageReadMessageHandler: WeakPageReadMessageHandler?
@@ -273,9 +272,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         boundTaskID = taskID
         keypressSafetyState = BrowserKeypressSafetyState()
         browserRunGuard.reset()
-        browserFlightRecorder.reset()
+        browserDiagnostics.reset()
         lastBrowserTrace = nil
-        lastBrowserDebugCapture = nil
         publishBridgeState()
     }
 
@@ -884,7 +882,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         let route = ShelfBrowserBridgeCommandRouter.route(method: request.method, path: request.path)
 
         if route == .health {
-            let flightSnapshot = browserFlightRecorder.snapshot()
+            let flightSnapshot = browserDiagnostics.flightSnapshot
             var health: [String: Any] = [
                 "ok": true,
                 "url": currentURL,
@@ -919,13 +917,13 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 controlledRunning: controlledBrowser.isRunning,
                 hasDebugPort: controlledBrowser.debugPort != nil,
                 activeAdapterCount: activeBrowserSiteAdapters.count,
-                lastFailure: flightSnapshot["lastError"] as? String
+                lastFailure: browserDiagnostics.lastFailure
             )
             if let lastBrowserTrace {
                 health["lastBrowserTrace"] = lastBrowserTrace
             }
-            if let lastBrowserDebugCapture {
-                health["lastBrowserDebugCapture"] = lastBrowserDebugCapture
+            if let lastDebugCapture = browserDiagnostics.lastDebugCapture {
+                health["lastBrowserDebugCapture"] = lastDebugCapture
             }
             if let debugPort = controlledBrowser.debugPort {
                 health["controlledBrowserDebugPort"] = Int(debugPort)
@@ -994,11 +992,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 let command = try request.decodeJSON(BrowserPreflightCommand.self)
                 return .json(try await preflightResponse(command))
             case .trace:
-                var response: [String: Any] = ["ok": true]
-                response["trace"] = lastBrowserTrace ?? NSNull()
-                response["flight"] = browserFlightRecorder.snapshot()
-                response["lastDebugCapture"] = lastBrowserDebugCapture ?? NSNull()
-                return .json(response)
+                return .json(browserDiagnostics.traceResponse(lastBrowserTrace: lastBrowserTrace))
             case .benchmark:
                 return .json(BrowserBenchmarkRunner.response(
                     suiteID: request.queryValue("suite"),
@@ -1525,7 +1519,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 result: result,
                 page: page
             )
-            lastBrowserDebugCapture = capture
+            browserDiagnostics.rememberDebugCapture(capture)
             return capture
         }
 
@@ -1595,7 +1589,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             capture["captureErrors"] = captureErrors
         }
 
-        lastBrowserDebugCapture = capture
+        browserDiagnostics.rememberDebugCapture(capture)
         return capture
     }
 
@@ -1629,17 +1623,15 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         started: Date
     ) {
         let after = browserFlightPageSnapshot(result: result)
-        let runGuard = result?["runGuard"] as? [String: Any]
         let trace = result?["browserTrace"] as? [String: Any]
         let browserTraceID = trace?["id"] as? String ?? lastBrowserTrace?["id"] as? String
-        let entry = browserFlightRecorder.record(
+        let entry = browserDiagnostics.recordFlightStep(
             request: request,
             statusCode: response.statusCode,
             before: before,
             after: after,
             duration: Date().timeIntervalSince(started),
             result: result,
-            runGuard: runGuard,
             lastBrowserTraceID: browserTraceID,
             debugCapture: debugCapture
         )
