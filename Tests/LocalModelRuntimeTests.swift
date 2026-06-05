@@ -242,6 +242,71 @@ struct LocalModelRuntimeTests {
         #expect(!messages[1].content.contains("/no_think"))
     }
 
+    @Test("Local Agent branch preflight reports selected workspace is not a git repo")
+    func localAgentBranchPreflightReportsSelectedWorkspaceIsNotAGitRepo() {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let decision = LocalAgentGitBranchPreflight.decision(
+            requestText: "can you see the abailable bracnhes in the repo ?",
+            workspacePath: directory.path,
+            shellExecutionEnabled: true
+        )
+
+        guard case .notGitRepository(let answer) = decision else {
+            Issue.record("Expected non-repo branch request to produce a clear local answer.")
+            return
+        }
+        #expect(answer.contains("not a Git repository"))
+        #expect(answer.contains(directory.standardizedFileURL.path))
+    }
+
+    @Test("Local Agent branch preflight requests git branch shell approval in git repo")
+    func localAgentBranchPreflightRequestsGitBranchShellApprovalInGitRepo() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(
+            at: directory.appendingPathComponent(".git", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+
+        let decision = LocalAgentGitBranchPreflight.decision(
+            requestText: "Can you list the available branches in this repository?",
+            workspacePath: directory.path,
+            shellExecutionEnabled: true
+        )
+
+        guard case .requestShellApproval(let command, let cwd) = decision else {
+            Issue.record("Expected git branch request in a repo to request shell approval.")
+            return
+        }
+        #expect(command == "git branch --all --no-color")
+        #expect(cwd == ".")
+    }
+
+    @Test("Local Agent branch preflight reports disabled shell commands")
+    func localAgentBranchPreflightReportsDisabledShellCommands() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(
+            at: directory.appendingPathComponent(".git", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+
+        let decision = LocalAgentGitBranchPreflight.decision(
+            requestText: "show git branches",
+            workspacePath: directory.path,
+            shellExecutionEnabled: false
+        )
+
+        guard case .shellUnavailable(let answer) = decision else {
+            Issue.record("Expected branch request with disabled shell to explain the setting.")
+            return
+        }
+        #expect(answer.contains("shell commands are disabled"))
+        #expect(answer.contains("git branch --all --no-color"))
+    }
+
     @MainActor
     @Test("Local Jira search uses configured connector without exposing credentials")
     func localJiraSearchUsesConfiguredConnectorWithoutExposingCredentials() async throws {
@@ -2353,6 +2418,7 @@ struct LocalModelRuntimeTests {
             ("Local Agent could advertise high-risk tools when disabled", testSource, "Local Agent prompt only advertises enabled high-risk tools"),
             ("unsupported browser mutations could slip into the beta surface", testSource, "Local Agent beta surface defers browser mutations beyond click and type"),
             ("tool broker and policy mappings drifted apart", testSource, "Local Agent tool surface audit covers prompt broker policy and capabilities"),
+            ("branch listing requests could ask vague clarification instead of checking git state", testSource, "Local Agent branch preflight reports selected workspace is not a git repo"),
             ("Gate C could be marked beta-ready without required tool coverage", testSource, "Local Agent beta soak report tracks required tool coverage"),
             ("release gates could pass without live Local Chat and Agent evidence", testSource, "Release candidate validation evidence exports and gates GA live e2e"),
             ("hardware validation could pass without representative tiers", testSource, "Hardware validation matrix reports missing sustained Mac tiers"),

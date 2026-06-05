@@ -170,6 +170,77 @@ struct LocalAgentRuntimeControls: Sendable, Equatable {
     }
 }
 
+enum LocalAgentGitBranchPreflightDecision: Equatable {
+    case notGitRepository(answer: String)
+    case shellUnavailable(answer: String)
+    case requestShellApproval(command: String, cwd: String)
+}
+
+enum LocalAgentGitBranchPreflight {
+    static let branchListCommand = "git branch --all --no-color"
+
+    static func decision(
+        requestText: String,
+        workspacePath: String,
+        shellExecutionEnabled: Bool,
+        fileManager: FileManager = .default
+    ) -> LocalAgentGitBranchPreflightDecision? {
+        guard isGitBranchListingRequest(requestText) else { return nil }
+
+        let displayPath = URL(fileURLWithPath: workspacePath, isDirectory: true).standardizedFileURL.path
+        guard isInsideGitWorkTree(workspacePath: workspacePath, fileManager: fileManager) else {
+            return .notGitRepository(answer: """
+            I cannot list Git branches because the selected workspace is not a Git repository: \(displayPath).
+
+            Select or import a workspace that contains a Git checkout, then ask again.
+            """)
+        }
+
+        guard shellExecutionEnabled else {
+            return .shellUnavailable(answer: """
+            The selected workspace is a Git repository, but Local Agent shell commands are disabled. I need shell approval to run `\(branchListCommand)`.
+
+            Enable Shell commands in Runtime settings, then ask again.
+            """)
+        }
+
+        return .requestShellApproval(command: branchListCommand, cwd: ".")
+    }
+
+    static func isGitBranchListingRequest(_ text: String) -> Bool {
+        let normalized = text
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            .lowercased()
+        let branchTerms = ["branch", "branches", "bracnh", "bracnhes", "brach", "braches"]
+        guard branchTerms.contains(where: { normalized.contains($0) }) else { return false }
+        let gitContextTerms = ["git", "repo", "repository", "checkout", "worktree", "available", "abailable", "list", "show", "see"]
+        return gitContextTerms.contains(where: { normalized.contains($0) })
+    }
+
+    static func isInsideGitWorkTree(workspacePath: String, fileManager: FileManager = .default) -> Bool {
+        let trimmed = workspacePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: trimmed, isDirectory: &isDirectory) else { return false }
+
+        var current = URL(fileURLWithPath: trimmed, isDirectory: isDirectory.boolValue)
+            .standardizedFileURL
+        if !isDirectory.boolValue {
+            current.deleteLastPathComponent()
+        }
+
+        while true {
+            if fileManager.fileExists(atPath: current.appendingPathComponent(".git").path) {
+                return true
+            }
+            let parent = current.deletingLastPathComponent()
+            guard parent.path != current.path else { return false }
+            current = parent
+        }
+    }
+}
+
 @MainActor
 final class LocalAgentOrchestrator {
     private let inferenceClient = LocalAgentInferenceClient()
@@ -472,12 +543,227 @@ final class LocalAgentOrchestrator {
             )
         }
 
+        func handleGitBranchPreflightIfNeeded() async -> AgentProcessResult? {
+            let requestText = [
+                task.title,
+                task.goal,
+                task.inputs.joined(separator: " "),
+                task.constraints.joined(separator: " "),
+                task.acceptanceCriteria.joined(separator: " "),
+                prompt
+            ].joined(separator: "\n")
+
+            guard let decision = LocalAgentGitBranchPreflight.decision(
+                requestText: requestText,
+                workspacePath: workspacePath,
+                shellExecutionEnabled: capabilities.contains(.shellExecution)
+            ) else {
+                return nil
+            }
+
+            switch decision {
+            case .notGitRepository(let answer):
+                Self.recordLocalAgentEvent(
+                    type: "local_agent.git_branch_preflight",
+                    fields: ["status": "not_git_repository"],
+                    task: task,
+                    run: run,
+                    modelContext: modelContext
+                )
+                return completeFinal(answer: answer, turn: 0, finalFormat: "git_branch_preflight")
+
+            case .shellUnavailable(let answer):
+                Self.recordLocalAgentEvent(
+                    type: "local_agent.git_branch_preflight",
+                    fields: ["status": "shell_unavailable"],
+                    task: task,
+                    run: run,
+                    modelContext: modelContext
+                )
+                return completeFinal(answer: answer, turn: 0, finalFormat: "git_branch_preflight")
+
+            case .requestShellApproval(let command, let cwd):
+                let tool = "shell.exec"
+                let callID = "git-branches"
+                let arguments: [String: LocalModelJSONValue] = [
+                    "command": .string(command),
+                    "cwd": .string(cwd),
+                    "timeout_seconds": .number(20),
+                    "max_output_bytes": .number(12_000)
+                ]
+                proposedToolNames.insert(tool)
+                Self.recordLocalAgentEvent(
+                    type: "local_agent.git_branch_preflight",
+                    fields: [
+                        "status": "shell_required",
+                        "command": command
+                    ],
+                    task: task,
+                    run: run,
+                    modelContext: modelContext
+                )
+
+                let approvalRequest = PermissionRequest.shell(command: command, toolName: Self.policyToolName(for: tool))
+                let approvalGrants = PermissionBroker.approvalGrants(for: approvalRequest)
+                guard !approvalGrants.isEmpty else {
+                    policyDecisionCount += 1
+                    policyViolationCount += 1
+                    recordMetrics(status: "blocked", stopReason: "policy_violation", turn: 0)
+                    return Self.policyStopResult(
+                        violation: AgentRuntimePolicyViolation(
+                            reason: "Local Agent shell execution could not be mapped to a scoped approval grant",
+                            toolName: Self.policyToolName(for: tool),
+                            detail: command
+                        ),
+                        fallbackRequest: approvalRequest,
+                        callID: callID,
+                        tool: tool,
+                        arguments: arguments,
+                        task: task,
+                        run: run,
+                        modelContext: modelContext
+                    )
+                }
+
+                guard policyGuard.hasAppliedApprovalGrants(approvalGrants) else {
+                    policyDecisionCount += 1
+                    policyApprovalRequestCount += 1
+                    recordMetrics(status: "approval_required", stopReason: "permission_approval_required", turn: 0)
+                    return Self.policyStopResult(
+                        violation: AgentRuntimePolicyViolation(
+                            reason: "Local Agent branch listing requires explicit ASTRA shell approval",
+                            toolName: Self.policyToolName(for: tool),
+                            detail: command,
+                            requiresApproval: true,
+                            permissionRequest: approvalRequest,
+                            approvalGrants: approvalGrants
+                        ),
+                        fallbackRequest: approvalRequest,
+                        callID: callID,
+                        tool: tool,
+                        arguments: arguments,
+                        task: task,
+                        run: run,
+                        modelContext: modelContext
+                    )
+                }
+
+                policyDecisionCount += 1
+                Self.recordLocalAgentEvent(
+                    type: "local_agent.policy_decision",
+                    fields: [
+                        "status": "approved_grant",
+                        "call_id": callID,
+                        "tool": tool,
+                        "policy_tool": Self.policyToolName(for: tool)
+                    ],
+                    task: task,
+                    run: run,
+                    modelContext: modelContext
+                )
+                modelContext.insert(TaskEvent(
+                    task: task,
+                    type: "local_agent.policy",
+                    payload: "Allowed previously approved ASTRA-brokered local tool `\(tool)`.",
+                    run: run
+                ))
+                AgentEventRecorder.recordLocalModelEvent(
+                    .toolUse(name: tool, id: callID, inputSummary: Self.argumentSummary(arguments)),
+                    to: task,
+                    run: run,
+                    modelContext: modelContext
+                )
+                onEvent(.toolUse(name: tool, id: callID, input: nil))
+
+                if shouldStopForCancellation(task: task) {
+                    recordMetrics(status: "cancelled", stopReason: "local_agent_cancelled", turn: 0)
+                    return cancellationResult(task: task, run: run, modelContext: modelContext, phase: "before git branch preflight")
+                }
+
+                let toolStartedAt = Date()
+                let observation = await toolExecutor.execute(callID: callID, tool: tool, arguments: arguments)
+                let toolDurationMs = max(0, Int(Date().timeIntervalSince(toolStartedAt) * 1_000))
+                executedToolCount += 1
+                executedToolNames.insert(tool)
+
+                AgentEventRecorder.recordLocalModelEvent(
+                    .toolResult(id: callID, content: observation.modelVisibleContent),
+                    to: task,
+                    run: run,
+                    modelContext: modelContext
+                )
+                onEvent(.toolResult(toolId: callID, content: observation.modelVisibleContent))
+                Self.recordLocalAgentEvent(
+                    type: "local_agent.observation",
+                    fields: [
+                        "call_id": callID,
+                        "tool": tool,
+                        "status": observation.status,
+                        "content_chars": "\(observation.modelVisibleContent.count)",
+                        "duration_ms": "\(toolDurationMs)"
+                    ],
+                    task: task,
+                    run: run,
+                    modelContext: modelContext
+                )
+                if !observation.eventFields.isEmpty {
+                    var fields = observation.eventFields
+                    fields["call_id"] = callID
+                    fields["tool"] = tool
+                    fields["status"] = observation.status
+                    Self.recordLocalAgentEvent(
+                        type: "local_agent.tool_artifact",
+                        fields: fields,
+                        task: task,
+                        run: run,
+                        modelContext: modelContext
+                    )
+                }
+                if observation.status.lowercased() == "ok" {
+                    successfulToolObservationCount += 1
+                    successfulToolNames.insert(tool)
+                    lastSuccessfulObservationContent = observation.modelVisibleContent
+                    lastSuccessfulObservationTool = tool
+                } else {
+                    failedToolObservationCount += 1
+                }
+                if Self.shouldReportToolWatchdog(
+                    observation: observation,
+                    durationMs: toolDurationMs,
+                    timeoutSeconds: controls.toolTimeoutSeconds
+                ) {
+                    recordWatchdog(
+                        reason: "tool_slow_or_timeout",
+                        phase: "git_branch_preflight",
+                        fields: [
+                            "tool": tool,
+                            "status": observation.status,
+                            "duration_ms": "\(toolDurationMs)",
+                            "timeout_seconds": "\(controls.toolTimeoutSeconds)"
+                        ]
+                    )
+                }
+
+                let answer: String
+                if observation.status.lowercased() == "ok" {
+                    answer = "Here is the available Git branch listing from `\(command)`:\n\n\(observation.modelVisibleContent)"
+                } else {
+                    answer = "I tried to list Git branches with `\(command)`, but the command failed:\n\n\(observation.modelVisibleContent)"
+                }
+                return completeFinal(answer: answer, turn: 0, finalFormat: "git_branch_preflight")
+            }
+        }
+
         modelContext.insert(TaskEvent(
             task: task,
             type: "system.info",
             payload: "Local Agent mode is running with ASTRA-brokered tools.",
             run: run
         ))
+
+        if let preflightResult = await handleGitBranchPreflightIfNeeded() {
+            return preflightResult
+        }
 
         for turn in 1...controls.maxTurns {
             if shouldStopForCancellation(task: task) {
