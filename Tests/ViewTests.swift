@@ -215,6 +215,47 @@ struct ContentSelectionResolverTests {
         #expect(restoredByPath?.id == byPath.id)
         #expect(restoredFirst?.id == first.id)
     }
+
+    @Test("Content scene coordinator centralizes workspace routing values")
+    @MainActor
+    func contentSceneCoordinatorCentralizesWorkspaceRoutingValues() {
+        let selectedWorkspace = makeWorkspace(name: "Selected")
+        let taskWorkspace = makeWorkspace(name: "Task")
+        let task = makeTask(workspace: taskWorkspace)
+        let coordinator = ContentSceneCoordinator(
+            workspaces: [selectedWorkspace, taskWorkspace],
+            selectedTask: task,
+            selectedWorkspace: selectedWorkspace,
+            lastSelectedWorkspaceID: selectedWorkspace.id.uuidString,
+            lastSelectedWorkspacePath: selectedWorkspace.primaryPath
+        )
+
+        #expect(coordinator.effectiveWorkspace?.id == taskWorkspace.id)
+        #expect(coordinator.effectiveWorkspaceID == taskWorkspace.id)
+        #expect(coordinator.workspaceSelectionSignature.contains(taskWorkspace.primaryPath))
+        #expect(coordinator.presentation(isComposingTask: false) == .existingTask)
+        #expect(coordinator.restoredWorkspace()?.id == selectedWorkspace.id)
+    }
+
+    @Test("Content scene coordinator serializes selected workspace persistence")
+    @MainActor
+    func contentSceneCoordinatorSerializesSelectedWorkspacePersistence() {
+        let workspace = makeWorkspace(name: "Persisted")
+        let coordinator = ContentSceneCoordinator(
+            workspaces: [workspace],
+            selectedTask: nil,
+            selectedWorkspace: workspace,
+            lastSelectedWorkspaceID: "",
+            lastSelectedWorkspacePath: ""
+        )
+
+        let persisted = coordinator.persistence(for: workspace)
+        let cleared = coordinator.persistence(for: nil)
+
+        #expect(persisted.workspaceID == workspace.id.uuidString)
+        #expect(persisted.workspacePath == workspace.primaryPath)
+        #expect(cleared == .empty)
+    }
 }
 
 // MARK: - Content Detail Presentation
@@ -560,6 +601,24 @@ struct MarkdownTextViewTests {
 
 @Suite("ShelfMarkdownSession")
 struct ShelfMarkdownSessionTests {
+
+    @MainActor
+    @Test("Markdown session store keeps task-pinned sessions separate from shared session")
+    func markdownSessionStoreKeepsPinnedSessionsSeparateFromSharedSession() {
+        let store = ShelfMarkdownSessionStore()
+        let taskID = UUID()
+
+        let shared = store.session(for: nil, pinnedToTask: false)
+        let sharedForTask = store.session(for: taskID, pinnedToTask: false)
+        let pinned = store.session(for: taskID, pinnedToTask: true)
+        let pinnedAgain = store.session(for: taskID, pinnedToTask: true)
+
+        #expect(shared === sharedForTask)
+        #expect(shared.boundTaskID == taskID)
+        #expect(pinned !== shared)
+        #expect(pinned === pinnedAgain)
+        #expect(pinned.boundTaskID == taskID)
+    }
 
     @MainActor
     @Test("Opening multiple Markdown files keeps them as selectable tabs")
