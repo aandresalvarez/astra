@@ -7,6 +7,34 @@ enum ValidationResult {
     case error(String)
 }
 
+struct ValidationCommandResult: Equatable, Sendable {
+    let exitCode: Int
+    let stdout: String
+    let stderr: String
+}
+
+protocol ValidationCommandRunning: Sendable {
+    func run(command: String, workingDirectory: String, environment: [String: String]) async -> ValidationCommandResult
+}
+
+struct ShellValidationCommandRunner: ValidationCommandRunning {
+    func run(command: String, workingDirectory: String, environment: [String: String]) async -> ValidationCommandResult {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-c", command]
+        process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory)
+        process.environment = environment
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        let result = await AsyncProcessRunner.run(process, stdout: stdoutPipe, stderr: stderrPipe)
+        return ValidationCommandResult(exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr)
+    }
+}
+
 struct TaskValidationContractEvaluation: Sendable, Equatable {
     var didRun: Bool
     var canComplete: Bool
@@ -25,8 +53,17 @@ enum ValidationService {
     private static let maximumTextContainsBytes: UInt64 = 2 * 1024 * 1024
     static var textContainsFileSizeProbe: (String) -> UInt64? = defaultFileSize
 
+    private static func validationCommandEnvironment() -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
+        return env
+    }
+
     /// Run tests in the task's workspace using the configured test command.
-    static func runTests(task: AgentTask) async -> ValidationResult {
+    static func runTests(
+        task: AgentTask,
+        commandRunner: ValidationCommandRunning = ShellValidationCommandRunner()
+    ) async -> ValidationResult {
         let command = task.testCommand.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !command.isEmpty else {
             return .error("No test command configured")
@@ -37,21 +74,11 @@ enum ValidationService {
             "workspace_id": task.workspace?.id.uuidString ?? "none"
         ])
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-c", command]
-        process.currentDirectoryURL = URL(fileURLWithPath: TaskWorkspaceAccess(task: task).effectiveWorkspacePath)
-
-        var env = ProcessInfo.processInfo.environment
-        env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
-        process.environment = env
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        let result = await AsyncProcessRunner.run(process, stdout: stdoutPipe, stderr: stderrPipe)
+        let result = await commandRunner.run(
+            command: command,
+            workingDirectory: TaskWorkspaceAccess(task: task).effectiveWorkspacePath,
+            environment: validationCommandEnvironment()
+        )
         let output = [result.stdout, result.stderr].filter { !$0.isEmpty }.joined(separator: "\n")
 
         if result.exitCode == 0 {
@@ -140,7 +167,8 @@ enum ValidationService {
         plan: TaskPlanPayload,
         run: TaskRun?,
         modelContext: ModelContext,
-        verifierRuntime: AgentUtilityRuntimeConfiguration? = nil
+        verifierRuntime: AgentUtilityRuntimeConfiguration? = nil,
+        commandRunner: ValidationCommandRunning = ShellValidationCommandRunner()
     ) async -> TaskValidationContractEvaluation {
         guard let contract = plan.validationContract, !contract.assertions.isEmpty else {
             return .notRequired
@@ -174,7 +202,8 @@ enum ValidationService {
                 task: task,
                 run: run,
                 modelContext: modelContext,
-                verifierRuntime: verifierRuntime
+                verifierRuntime: verifierRuntime,
+                commandRunner: commandRunner
             )
             finalPayloads.append(payload)
             let eventType = switch payload.status {
@@ -350,11 +379,12 @@ enum ValidationService {
         task: AgentTask,
         run: TaskRun?,
         modelContext: ModelContext,
-        verifierRuntime: AgentUtilityRuntimeConfiguration?
+        verifierRuntime: AgentUtilityRuntimeConfiguration?,
+        commandRunner: ValidationCommandRunning
     ) async -> TaskValidationAssertionEventPayload {
         switch assertion.method {
         case .command:
-            return await evaluateCommand(assertion: assertion, planID: plan.planID, task: task)
+            return await evaluateCommand(assertion: assertion, planID: plan.planID, task: task, commandRunner: commandRunner)
         case .artifact:
             return evaluateArtifact(assertion: assertion, planID: plan.planID, task: task)
         case .manual:
@@ -386,7 +416,8 @@ enum ValidationService {
     private static func evaluateCommand(
         assertion: TaskValidationAssertion,
         planID: UUID,
-        task: AgentTask
+        task: AgentTask,
+        commandRunner: ValidationCommandRunning
     ) async -> TaskValidationAssertionEventPayload {
         guard let command = assertion.command?.trimmingCharacters(in: .whitespacesAndNewlines), !command.isEmpty else {
             return assertionPayload(
@@ -409,20 +440,11 @@ enum ValidationService {
             )
         }
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-c", command]
-        process.currentDirectoryURL = URL(fileURLWithPath: TaskWorkspaceAccess(task: task).effectiveWorkspacePath)
-        var env = ProcessInfo.processInfo.environment
-        env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
-        process.environment = env
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        let result = await AsyncProcessRunner.run(process, stdout: stdoutPipe, stderr: stderrPipe)
+        let result = await commandRunner.run(
+            command: command,
+            workingDirectory: TaskWorkspaceAccess(task: task).effectiveWorkspacePath,
+            environment: validationCommandEnvironment()
+        )
         let output = [result.stdout, result.stderr]
             .filter { !$0.isEmpty }
             .joined(separator: "\n")

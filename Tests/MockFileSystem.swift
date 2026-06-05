@@ -3,7 +3,7 @@ import ASTRACore
 
 final class MockFileSystem: FileSystem {
     private(set) var createdDirectories: [URL] = []
-    private var existingPaths: Set<String> = []
+    private var existingPaths: [String: Bool] = [:]
     var shouldThrowOnCreate = false
 
     func createDirectory(at url: URL, withIntermediateDirectories: Bool) throws {
@@ -11,18 +11,27 @@ final class MockFileSystem: FileSystem {
             throw CocoaError(.fileWriteNoPermission)
         }
         createdDirectories.append(url)
-        existingPaths.insert(url.path)
+        existingPaths[url.path] = true
     }
 
     func fileExists(atPath path: String) -> Bool {
-        existingPaths.contains(path)
+        existingPaths[path] != nil
+    }
+
+    func fileExists(atPath path: String, isDirectory: inout Bool) -> Bool {
+        guard let directory = existingPaths[path] else {
+            isDirectory = false
+            return false
+        }
+        isDirectory = directory
+        return true
     }
 
     func contentsOfDirectory(at url: URL, includingPropertiesForKeys keys: [URLResourceKey]?) throws -> [URL] {
         []
     }
 
-    func addExistingPath(_ path: String) {
-        existingPaths.insert(path)
+    func addExistingPath(_ path: String, isDirectory: Bool = false) {
+        existingPaths[path] = isDirectory
     }
 }

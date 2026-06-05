@@ -3,6 +3,12 @@ import ASTRACore
 
 struct TaskWorkspaceAccess {
     let task: AgentTask
+    private let fileSystem: FileSystem
+
+    init(task: AgentTask, fileSystem: FileSystem = RealFileSystem()) {
+        self.task = task
+        self.fileSystem = fileSystem
+    }
 
     var effectiveWorkspacePath: String {
         task.workspace?.primaryPath ?? ""
@@ -14,7 +20,7 @@ struct TaskWorkspaceAccess {
         // workspace default instead of failing on a missing directory.
         if let pinned = task.executionRootPath,
            !pinned.isEmpty,
-           FileManager.default.fileExists(atPath: pinned) {
+           fileSystem.fileExists(atPath: pinned) {
             return pinned
         }
         return task.workspace?.resolvedWorkingPath ?? effectiveWorkspacePath
@@ -42,7 +48,8 @@ struct TaskWorkspaceAccess {
     }
 
     @discardableResult
-    func ensureTaskFolder(fileSystem: FileSystem = RealFileSystem()) throws -> String {
+    func ensureTaskFolder(fileSystem overrideFileSystem: FileSystem? = nil) throws -> String {
+        let fileSystem = overrideFileSystem ?? self.fileSystem
         let path = WorkspaceFileLayout.migrateLegacyTaskFolderIfNeeded(
             workspacePath: effectiveWorkspacePath,
             taskID: task.id
@@ -64,9 +71,7 @@ struct TaskWorkspaceAccess {
     private var inputDirectoryPaths: [String] {
         task.inputs.compactMap { input in
             let path = (input as NSString).expandingTildeInPath
-            var isDirectory: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
-                  isDirectory.boolValue else {
+            guard fileSystem.directoryExists(atPath: path) else {
                 return nil
             }
             return path
