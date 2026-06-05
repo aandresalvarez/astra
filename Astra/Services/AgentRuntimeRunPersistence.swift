@@ -32,7 +32,7 @@ enum AgentRuntimeRunPersistence {
         phase: String,
         handoffDiscoveredFiles: [TaskOutputDiscoveredFile]? = nil
     ) {
-        let persistedArtifacts = TaskArtifactPersistenceService.persistDiscoveredTaskOutputArtifacts(
+        let artifactReconciliation = TaskArtifactPersistenceService.reconcileTaskOutputArtifacts(
             for: task,
             modelContext: modelContext
         )
@@ -57,7 +57,12 @@ enum AgentRuntimeRunPersistence {
             workspace: task.workspace,
             modelContext: modelContext,
             taskID: task.id,
-            auditFields: fields(task: task, run: run, phase: phase, persistedArtifactCount: persistedArtifacts.count)
+            auditFields: fields(
+                task: task,
+                run: run,
+                phase: phase,
+                persistedArtifactCount: artifactReconciliation.createdArtifacts.count
+            )
         )
     }
 

@@ -43,6 +43,29 @@ struct AgentRuntimeAdapterTests {
         #expect(catalog.supportsNativeContinuation(for: futureRuntime) == false)
     }
 
+    @Test("Registry exposes typed runtime adapter boundaries")
+    @MainActor
+    func registryExposesTypedRuntimeAdapterBoundaries() {
+        let runtime = AgentRuntimeID.copilotCLI
+        let adapter = AgentRuntimeAdapterRegistry.adapter(for: runtime)
+        let descriptorReadiness = AgentRuntimeAdapterRegistry.descriptorReadiness(for: runtime)
+        let policyRenderer = AgentRuntimeAdapterRegistry.policyRenderer(for: runtime)
+        let processLauncher = AgentRuntimeAdapterRegistry.processLauncher(for: runtime)
+        let processParser = AgentRuntimeAdapterRegistry.processEventParser(for: runtime)
+        let workerRecorder = AgentRuntimeAdapterRegistry.workerEventRecorder(for: runtime)
+        let utilityRuntime = AgentRuntimeAdapterRegistry.utilityRuntime(for: runtime)
+        let postRunDiagnostics = AgentRuntimeAdapterRegistry.postRunDiagnostics(for: runtime)
+
+        #expect(descriptorReadiness.id == adapter.id)
+        #expect(descriptorReadiness.descriptor == adapter.descriptor)
+        #expect(policyRenderer.policyAdapter(runtimeCapabilities: .conservative).providerID == runtime)
+        #expect(processLauncher.launchSettings(configuration: AgentRuntimeConfiguration()).homeDirectory == CopilotCLIRuntime.channelHome())
+        #expect(processParser.parseProcessEvents(line: #"{"type":"agent.message.delta","data":{"text":"hello"}}"#, parsesJSONLines: true).isEmpty == false)
+        #expect(workerRecorder.recordsStreamTelemetry == adapter.recordsStreamTelemetry)
+        #expect(postRunDiagnostics.manualCompletionPayload(phase: "run") == adapter.manualCompletionPayload(phase: "run"))
+        _ = utilityRuntime
+    }
+
     @Test("Adapter catalogs report duplicate provider registrations")
     func adapterCatalogsReportDuplicateProviderRegistrations() {
         let catalog = AgentRuntimeAdapterCatalog(providers: [

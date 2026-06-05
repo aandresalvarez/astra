@@ -87,7 +87,7 @@ enum ValidationService {
         var changeSummary = ""
         for change in changes.prefix(10) {
             changeSummary += "[\(change.changeType)] \(change.path)\n"
-            if change.changeType == "Edit" {
+            if change.kind == .edit {
                 if let old = change.oldString { changeSummary += "- \(old.prefix(200))\n" }
                 if let new = change.newString { changeSummary += "+ \(new.prefix(200))\n" }
             }

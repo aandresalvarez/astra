@@ -150,7 +150,7 @@ struct RuntimeReadinessService {
             isExecutable: isExecutable
         )
         return await AgentRuntimeAdapterRegistry
-            .adapter(for: configuration.runtime)
+            .descriptorReadiness(for: configuration.runtime)
             .readinessReport(configuration: configuration, probes: probes)
     }
 

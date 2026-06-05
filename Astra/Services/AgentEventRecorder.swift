@@ -12,14 +12,14 @@ final class AgentEventRecordingState {
     }
 
     func appendConversationChunk(
-        type: String,
+        eventType: TaskEventType,
         text: String,
         to task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext
     ) {
         guard !text.isEmpty else { return }
-        let key = conversationKey(type: type, run: run)
+        let key = conversationKey(eventType: eventType, run: run)
         if let existing = lastConversationEventByKey[key],
            existing.payload.count + text.count <= maxCoalescedPayloadLength {
             existing.payload += text
@@ -27,7 +27,7 @@ final class AgentEventRecordingState {
             return
         }
 
-        let event = TaskEvent(task: task, type: type, payload: text, run: run)
+        let event = TaskEvent(task: task, eventType: eventType, payload: text, run: run)
         modelContext.insert(event)
         lastConversationEventByKey[key] = event
     }
@@ -39,8 +39,81 @@ final class AgentEventRecordingState {
         }
     }
 
-    private func conversationKey(type: String, run: TaskRun) -> String {
-        "\(run.id.uuidString)#\(type)"
+    private func conversationKey(eventType: TaskEventType, run: TaskRun) -> String {
+        "\(run.id.uuidString)#\(eventType.rawValue)"
+    }
+}
+
+enum AgentEventRecordingPresentation {
+    static func normalizedPermissionTool(_ tool: String) -> String {
+        let trimmed = tool.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "unknown" : trimmed
+    }
+
+    static func responseTextToAppend(_ incomingText: String, after existingOutput: String) -> String {
+        guard !incomingText.isEmpty else { return "" }
+        guard !existingOutput.isEmpty else { return incomingText }
+        if incomingText == existingOutput {
+            return ""
+        }
+        if incomingText.count > existingOutput.count,
+           incomingText.hasPrefix(existingOutput) {
+            let suffixStart = incomingText.index(incomingText.startIndex, offsetBy: existingOutput.count)
+            return String(incomingText[suffixStart...])
+        }
+        return incomingText
+    }
+
+    static func permissionReasonSummary(_ reason: String) -> String {
+        let words = reason
+            .replacingOccurrences(of: "\n", with: " ")
+            .split(separator: " ")
+            .prefix(18)
+            .joined(separator: " ")
+        return words.isEmpty ? "none" : words
+    }
+
+    static func toolUsePayload(name: String, input: [String: Any]?) -> String {
+        let summary = toolInputSummary(name: name, input: input)
+        let base = "Using tool: \(name)"
+        guard let summary, !summary.isEmpty else { return base }
+        return "\(base): \(LogSanitizer.sanitize(summary, maxLength: 300))"
+    }
+
+    static func visibleTextWithoutProtocolMarkers(_ text: String) -> String {
+        var pipeline = AgentRuntimeEventPipeline(supportsAstraRunProtocol: true)
+        var output = ""
+        for item in pipeline.process(ParsedEvent.text(text: text)) + pipeline.flushParsedEvents() {
+            if case .text(let text) = item {
+                output += text
+            }
+        }
+        return output
+    }
+
+    private static func toolInputSummary(name: String, input: [String: Any]?) -> String? {
+        guard let input else { return nil }
+        let lower = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if lower == "bash" || lower == "shell" {
+            return firstString(in: input, keys: ["command", "cmd", "summary"])
+        }
+        if ["read", "write", "edit", "multiedit"].contains(lower) {
+            return firstString(in: input, keys: ["file_path", "path", "target_path", "summary"])
+        }
+        if ["webfetch", "websearch"].contains(lower) {
+            return firstString(in: input, keys: ["url", "uri", "summary"])
+        }
+        return firstString(in: input, keys: ["summary"])
+    }
+
+    private static func firstString(in input: [String: Any], keys: [String]) -> String? {
+        for key in keys {
+            if let value = input[key] as? String {
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { return trimmed }
+            }
+        }
+        return nil
     }
 }
 
@@ -56,7 +129,7 @@ enum AgentEventRecorder {
         switch parsed {
         case .thinking(let text):
             appendConversationChunk(
-                type: "agent.thinking",
+                eventType: TaskEventTypes.Conversation.agentThinking,
                 text: text,
                 to: task,
                 run: run,
@@ -77,28 +150,20 @@ enum AgentEventRecorder {
             recordingState?.breakConversationCoalescing(for: run)
             modelContext.insert(TaskEvent(
                 task: task,
-                type: "tool.use",
-                payload: toolUsePayload(name: name, input: input),
+                eventType: TaskEventTypes.Tool.use,
+                payload: AgentEventRecordingPresentation.toolUsePayload(name: name, input: input),
                 run: run
             ))
             if let fileChange = StreamEventParser.extractFileChange(from: parsed) {
-                run.appendFileChange(StoredFileChange(from: fileChange))
-                let existingVersion = task.artifacts
-                    .filter { $0.path == fileChange.path }
-                    .map(\.version)
-                    .max() ?? 0
-                modelContext.insert(Artifact(
-                    task: task,
-                    type: fileChange.changeType.rawValue,
-                    path: fileChange.path,
-                    version: existingVersion + 1
-                ))
+                let change = StoredFileChange(from: fileChange)
+                run.appendFileChange(change)
+                TaskArtifactPersistenceService.persistFileChangeArtifact(change, for: task, modelContext: modelContext)
             }
 
         case .toolResult(_, let content):
             recordingState?.breakConversationCoalescing(for: run)
             if !content.isEmpty {
-                modelContext.insert(TaskEvent(task: task, type: "tool.result", payload: String(content.prefix(10000)), run: run))
+                modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Tool.result, payload: String(content.prefix(10000)), run: run))
             }
 
         case .usage(let totalInput, let totalOutput):
@@ -123,7 +188,7 @@ enum AgentEventRecorder {
                 run.costUSD = cost
             }
             if let text, run.output.isEmpty {
-                let visibleText = visibleTextWithoutProtocolMarkers(text)
+                let visibleText = AgentEventRecordingPresentation.visibleTextWithoutProtocolMarkers(text)
                 if !visibleText.isEmpty {
                     run.output = visibleText
                 }
@@ -135,7 +200,7 @@ enum AgentEventRecorder {
                 durationMs.map { "duration: \($0)ms" },
                 numTurns.map { "turns: \($0)" }
             ].compactMap { $0 }.joined(separator: " | ")
-            modelContext.insert(TaskEvent(task: task, type: "task.stats", payload: details, run: run))
+            modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Task.stats, payload: details, run: run))
 
             AppLogger.audit(.taskStats, category: "Worker", taskID: task.id, fields: [
                 "tokens_total": String(totalTokens),
@@ -169,7 +234,7 @@ enum AgentEventRecorder {
             recordingState?.breakConversationCoalescing(for: run)
             modelContext.insert(TaskEvent(
                 task: task,
-                type: "team.agent.started",
+                eventType: TaskEventTypes.Team.agentStarted,
                 payload: "\(name) spawned: \(String(prompt.prefix(200)))",
                 run: run,
                 agentName: name,
@@ -184,7 +249,7 @@ enum AgentEventRecorder {
             recordingState?.breakConversationCoalescing(for: run)
             modelContext.insert(TaskEvent(
                 task: task,
-                type: "team.agent.completed",
+                eventType: TaskEventTypes.Team.agentCompleted,
                 payload: "\(name) finished",
                 run: run,
                 agentName: name,
@@ -197,28 +262,28 @@ enum AgentEventRecorder {
 
         case .teamCreated(let name, let description):
             recordingState?.breakConversationCoalescing(for: run)
-            modelContext.insert(TaskEvent(task: task, type: "team.created", payload: "Team '\(name)' created: \(description)", run: run, teamName: name))
+            modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Team.created, payload: "Team '\(name)' created: \(description)", run: run, teamName: name))
             AppLogger.audit(.workerStarted, category: "Worker", taskID: task.id, fields: [
                 "team_event": "team_created"
             ])
 
         case .teamDeleted(let name):
             recordingState?.breakConversationCoalescing(for: run)
-            modelContext.insert(TaskEvent(task: task, type: "team.deleted", payload: "Team '\(name)' disbanded", run: run, teamName: name))
+            modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Team.deleted, payload: "Team '\(name)' disbanded", run: run, teamName: name))
             AppLogger.audit(.taskCompleted, category: "Worker", taskID: task.id, fields: [
                 "team_event": "team_deleted"
             ])
 
         case .teamMessage(let from, let to, let content):
             recordingState?.breakConversationCoalescing(for: run)
-            modelContext.insert(TaskEvent(task: task, type: "team.message", payload: content, run: run, agentName: from, agentId: to))
+            modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Team.message, payload: content, run: run, agentName: from, agentId: to))
 
         case .permissionDenied(let tool, let reason):
             recordingState?.breakConversationCoalescing(for: run)
-            modelContext.insert(TaskEvent(task: task, type: "permission.denied", payload: "Permission denied for tool: \(tool). \(String(reason.prefix(300)))", run: run))
+            modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Tool.permissionDenied, payload: "Permission denied for tool: \(tool). \(String(reason.prefix(300)))", run: run))
             AppLogger.audit(.workerPermissionDenied, category: "Worker", taskID: task.id, fields: [
-                "tool": normalizedPermissionTool(tool),
-                "reason_summary": permissionReasonSummary(reason),
+                "tool": AgentEventRecordingPresentation.normalizedPermissionTool(tool),
+                "reason_summary": AgentEventRecordingPresentation.permissionReasonSummary(reason),
                 "source": "claude_stream"
             ], level: .warning)
 
@@ -246,7 +311,7 @@ enum AgentEventRecorder {
         switch parsed {
         case .thinking(let text):
             appendConversationChunk(
-                type: "agent.thinking",
+                eventType: TaskEventTypes.Conversation.agentThinking,
                 text: text,
                 to: task,
                 run: run,
@@ -265,8 +330,8 @@ enum AgentEventRecorder {
             recordingState?.breakConversationCoalescing(for: run)
             modelContext.insert(TaskEvent(
                 task: task,
-                type: "tool.use",
-                payload: toolUsePayload(name: name, input: input),
+                eventType: TaskEventTypes.Tool.use,
+                payload: AgentEventRecordingPresentation.toolUsePayload(name: name, input: input),
                 run: run
             ))
             if let fileChange = StreamEventParser.extractFileChange(from: parsed) {
@@ -302,14 +367,14 @@ enum AgentEventRecorder {
         case .toolResult(_, let content):
             recordingState?.breakConversationCoalescing(for: run)
             if !content.isEmpty {
-                modelContext.insert(TaskEvent(task: task, type: "tool.result", payload: String(content.prefix(10000)), run: run))
+                modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Tool.result, payload: String(content.prefix(10000)), run: run))
             }
         case .permissionDenied(let tool, let reason):
             recordingState?.breakConversationCoalescing(for: run)
-            modelContext.insert(TaskEvent(task: task, type: "permission.denied", payload: "Permission denied for tool: \(tool). \(String(reason.prefix(300)))", run: run))
+            modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Tool.permissionDenied, payload: "Permission denied for tool: \(tool). \(String(reason.prefix(300)))", run: run))
             AppLogger.audit(.workerPermissionDenied, category: "Worker", taskID: task.id, fields: [
-                "tool": normalizedPermissionTool(tool),
-                "reason_summary": permissionReasonSummary(reason),
+                "tool": AgentEventRecordingPresentation.normalizedPermissionTool(tool),
+                "reason_summary": AgentEventRecordingPresentation.permissionReasonSummary(reason),
                 "source": "claude_follow_up"
             ], level: .warning)
         case .astraProtocol(let event):
@@ -381,11 +446,11 @@ enum AgentEventRecorder {
             }
             let payload = model.map { "\(providerDisplayName) stream started with model \($0)." }
                 ?? "\(providerDisplayName) stream started."
-            modelContext.insert(TaskEvent(task: task, type: "task.started", payload: payload, run: run))
+            modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Task.started, payload: payload, run: run))
 
         case .thinking(let text):
             appendConversationChunk(
-                type: "agent.thinking",
+                eventType: TaskEventTypes.Conversation.agentThinking,
                 text: text,
                 to: task,
                 run: run,
@@ -405,12 +470,12 @@ enum AgentEventRecorder {
         case .toolUse(let name, _, let inputSummary):
             recordingState?.breakConversationCoalescing(for: run)
             let suffix = inputSummary.map { ": \($0.prefix(300))" } ?? ""
-            modelContext.insert(TaskEvent(task: task, type: "tool.use", payload: "Using tool: \(name)\(suffix)", run: run))
+            modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Tool.use, payload: "Using tool: \(name)\(suffix)", run: run))
 
         case .toolResult(_, let content):
             recordingState?.breakConversationCoalescing(for: run)
             if !content.isEmpty {
-                modelContext.insert(TaskEvent(task: task, type: "tool.result", payload: String(content.prefix(10000)), run: run))
+                modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Tool.result, payload: String(content.prefix(10000)), run: run))
             }
 
         case .fileChange(let path, let kind, let summary):
@@ -419,10 +484,10 @@ enum AgentEventRecorder {
 
         case .permissionRequested(let tool, let reason):
             recordingState?.breakConversationCoalescing(for: run)
-            modelContext.insert(TaskEvent(task: task, type: "permission.denied", payload: "Permission requested for tool: \(tool). \(String(reason.prefix(300)))", run: run))
+            modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Tool.permissionDenied, payload: "Permission requested for tool: \(tool). \(String(reason.prefix(300)))", run: run))
             AppLogger.audit(.workerPermissionDenied, category: "Worker", taskID: task.id, fields: [
-                "tool": normalizedPermissionTool(tool),
-                "reason_summary": permissionReasonSummary(reason),
+                "tool": AgentEventRecordingPresentation.normalizedPermissionTool(tool),
+                "reason_summary": AgentEventRecordingPresentation.permissionReasonSummary(reason),
                 "source": permissionSource
             ], level: .warning)
 
@@ -446,13 +511,13 @@ enum AgentEventRecorder {
                 turns.map { "turns: \($0)" }
             ].compactMap { $0 }.joined(separator: " | ")
             if !details.isEmpty {
-                modelContext.insert(TaskEvent(task: task, type: "task.stats", payload: details, run: run))
+                modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Task.stats, payload: details, run: run))
             }
 
         case .completed(let summary):
             recordingState?.breakConversationCoalescing(for: run)
             if let summary, run.output.isEmpty {
-                let visibleText = visibleTextWithoutProtocolMarkers(summary)
+                let visibleText = AgentEventRecordingPresentation.visibleTextWithoutProtocolMarkers(summary)
                 if !visibleText.isEmpty {
                     run.output = visibleText
                 }
@@ -464,7 +529,7 @@ enum AgentEventRecorder {
 
         case .failed(let message):
             recordingState?.breakConversationCoalescing(for: run)
-            modelContext.insert(TaskEvent(task: task, type: "error", payload: message, run: run))
+            modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: message, run: run))
 
         case .unknown(_, let type, _):
             recordingState?.breakConversationCoalescing(for: run)
@@ -510,11 +575,6 @@ enum AgentEventRecorder {
         }
     }
 
-    private static func normalizedPermissionTool(_ tool: String) -> String {
-        let trimmed = tool.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "unknown" : trimmed
-    }
-
     @MainActor
     private static func appendResponseText(
         _ text: String,
@@ -523,11 +583,11 @@ enum AgentEventRecorder {
         modelContext: ModelContext,
         recordingState: AgentEventRecordingState?
     ) {
-        let textToAppend = responseTextToAppend(text, after: run.output)
+        let textToAppend = AgentEventRecordingPresentation.responseTextToAppend(text, after: run.output)
         guard !textToAppend.isEmpty else { return }
         run.output += textToAppend
         appendConversationChunk(
-            type: "agent.response",
+            eventType: TaskEventTypes.Conversation.agentResponse,
             text: textToAppend,
             to: task,
             run: run,
@@ -536,23 +596,9 @@ enum AgentEventRecorder {
         )
     }
 
-    private static func responseTextToAppend(_ incomingText: String, after existingOutput: String) -> String {
-        guard !incomingText.isEmpty else { return "" }
-        guard !existingOutput.isEmpty else { return incomingText }
-        if incomingText == existingOutput {
-            return ""
-        }
-        if incomingText.count > existingOutput.count,
-           incomingText.hasPrefix(existingOutput) {
-            let suffixStart = incomingText.index(incomingText.startIndex, offsetBy: existingOutput.count)
-            return String(incomingText[suffixStart...])
-        }
-        return incomingText
-    }
-
     @MainActor
     private static func appendConversationChunk(
-        type: String,
+        eventType: TaskEventType,
         text: String,
         to task: AgentTask,
         run: TaskRun,
@@ -561,56 +607,15 @@ enum AgentEventRecorder {
     ) {
         if let recordingState {
             recordingState.appendConversationChunk(
-                type: type,
+                eventType: eventType,
                 text: text,
                 to: task,
                 run: run,
                 modelContext: modelContext
             )
         } else {
-            modelContext.insert(TaskEvent(task: task, type: type, payload: text, run: run))
+            modelContext.insert(TaskEvent(task: task, eventType: eventType, payload: text, run: run))
         }
-    }
-
-    private static func permissionReasonSummary(_ reason: String) -> String {
-        let words = reason
-            .replacingOccurrences(of: "\n", with: " ")
-            .split(separator: " ")
-            .prefix(18)
-            .joined(separator: " ")
-        return words.isEmpty ? "none" : words
-    }
-
-    private static func toolUsePayload(name: String, input: [String: Any]?) -> String {
-        let summary = toolInputSummary(name: name, input: input)
-        let base = "Using tool: \(name)"
-        guard let summary, !summary.isEmpty else { return base }
-        return "\(base): \(LogSanitizer.sanitize(summary, maxLength: 300))"
-    }
-
-    private static func toolInputSummary(name: String, input: [String: Any]?) -> String? {
-        guard let input else { return nil }
-        let lower = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if lower == "bash" || lower == "shell" {
-            return firstString(in: input, keys: ["command", "cmd", "summary"])
-        }
-        if ["read", "write", "edit", "multiedit"].contains(lower) {
-            return firstString(in: input, keys: ["file_path", "path", "target_path", "summary"])
-        }
-        if ["webfetch", "websearch"].contains(lower) {
-            return firstString(in: input, keys: ["url", "uri", "summary"])
-        }
-        return firstString(in: input, keys: ["summary"])
-    }
-
-    private static func firstString(in input: [String: Any], keys: [String]) -> String? {
-        for key in keys {
-            if let value = input[key] as? String {
-                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty { return trimmed }
-            }
-        }
-        return nil
     }
 
     @MainActor
@@ -647,17 +652,6 @@ enum AgentEventRecorder {
         ))
     }
 
-    private static func visibleTextWithoutProtocolMarkers(_ text: String) -> String {
-        var pipeline = AgentRuntimeEventPipeline(supportsAstraRunProtocol: true)
-        var output = ""
-        for item in pipeline.process(ParsedEvent.text(text: text)) + pipeline.flushParsedEvents() {
-            if case .text(let text) = item {
-                output += text
-            }
-        }
-        return output
-    }
-
     @MainActor
     private static func appendFileChange(
         path: String,
@@ -678,11 +672,8 @@ enum AgentEventRecorder {
             newString: nil,
             timestamp: Date()
         )
-        run.appendFileChange(StoredFileChange(from: change))
-        let existingVersion = task.artifacts
-            .filter { $0.path == path }
-            .map(\.version)
-            .max() ?? 0
-        modelContext.insert(Artifact(task: task, type: changeType.rawValue, path: path, content: summary, version: existingVersion + 1))
+        let storedChange = StoredFileChange(from: change)
+        run.appendFileChange(storedChange)
+        TaskArtifactPersistenceService.persistFileChangeArtifact(storedChange, for: task, modelContext: modelContext)
     }
 }

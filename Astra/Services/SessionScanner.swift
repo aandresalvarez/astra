@@ -85,14 +85,22 @@ enum SessionScanner {
             modelContext.insert(run)
 
             // Create conversation events from user messages
-            let startEvent = TaskEvent(task: task, type: "task.started",
-                                       payload: "Imported from Claude Code session", run: run)
+            let startEvent = TaskEvent(
+                task: task,
+                eventType: TaskEventTypes.Task.started,
+                payload: "Imported from Claude Code session",
+                run: run
+            )
             startEvent.timestamp = session.startedAt
             modelContext.insert(startEvent)
 
             for (i, msg) in session.userMessages.enumerated() {
-                let event = TaskEvent(task: task, type: "user.message",
-                                      payload: String(msg.prefix(2000)), run: run)
+                let event = TaskEvent(
+                    task: task,
+                    eventType: TaskEventTypes.Conversation.userMessage,
+                    payload: String(msg.prefix(2000)),
+                    run: run
+                )
                 // Spread timestamps evenly
                 let fraction = Double(i + 1) / Double(session.userMessages.count + 1)
                 event.timestamp = session.startedAt.addingTimeInterval(
@@ -101,8 +109,12 @@ enum SessionScanner {
                 modelContext.insert(event)
             }
 
-            let endEvent = TaskEvent(task: task, type: "task.completed",
-                                     payload: "Session completed", run: run)
+            let endEvent = TaskEvent(
+                task: task,
+                eventType: TaskEventTypes.Task.completed,
+                payload: "Session completed",
+                run: run
+            )
             endEvent.timestamp = session.lastActivity
             modelContext.insert(endEvent)
 

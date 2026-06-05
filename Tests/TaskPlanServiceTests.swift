@@ -369,6 +369,31 @@ struct TaskPlanServiceTests {
         #expect(after != before)
     }
 
+    @Test("Plan state snapshot refreshes only when signature changes")
+    func planStateSnapshotRefreshesOnlyWhenSignatureChanges() {
+        let task = AgentTask(title: "Plan task", goal: "Do work")
+        let cached = TaskPlanStateSnapshot.build(for: task)
+
+        #expect(TaskPlanStateSnapshot.refreshed(for: task, cached: cached) == nil)
+
+        let plan = TaskPlanPayload(
+            title: "Plan",
+            goal: "Do work",
+            steps: [TaskPlanPayloadStep(id: "step-1", title: "Inspect")]
+        )
+        task.events.append(TaskEvent(
+            task: task,
+            type: TaskPlanEventTypes.created,
+            payload: TaskPlanService.encodePlanPayload(plan)
+        ))
+
+        let refreshed = TaskPlanStateSnapshot.refreshed(for: task, cached: cached)
+
+        #expect(refreshed?.signature != cached.signature)
+        #expect(refreshed?.state.plan?.title == "Plan")
+        #expect(refreshed?.state.plan?.steps.map(\.id) == ["step-1"])
+    }
+
     @Test("Plan cache signature ignores unrelated event insertion positions")
     func planCacheSignatureIgnoresUnrelatedEventInsertionPositions() {
         let task = AgentTask(title: "Plan task", goal: "Do work")

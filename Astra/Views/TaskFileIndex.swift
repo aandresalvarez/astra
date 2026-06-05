@@ -34,11 +34,7 @@ enum TaskFileIndex {
     private static let filePathRegex = try? NSRegularExpression(pattern: #"(?:/[\w.@\-]+){2,}(?:\.\w+)?"#)
 
     static func sourceLabel(for change: StoredFileChange) -> String {
-        switch change.changeType.lowercased() {
-        case "write": return "created"
-        case "edit": return "edited"
-        default: return change.changeType.lowercased()
-        }
+        change.kind.sourceLabel
     }
 
     static func headerItems(

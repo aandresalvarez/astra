@@ -174,7 +174,7 @@ enum AgentRuntimeLaunchPreflight {
         task.status = .failed
         task.updatedAt = Date()
         task.markUnreadForCurrentStatus(at: task.updatedAt)
-        let event = TaskEvent(task: task, type: "error", payload: payload, run: run)
+        let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: payload, run: run)
         modelContext.insert(event)
         AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
             "reason": reason

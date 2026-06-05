@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 
 enum TaskDeliverableProfile: String, Codable, Sendable, Equatable {
     case notRequired = "not_required"
@@ -88,9 +89,9 @@ struct TaskDeliverableVerificationEventPayload: Codable, Sendable, Equatable {
 }
 
 enum TaskDeliverableVerificationEventTypes {
-    static let passed = "deliverable.verification.passed"
-    static let reviewNeeded = "deliverable.verification.review_needed"
-    static let failed = "deliverable.verification.failed"
+    static let passed = TaskEventTypes.Deliverable.verificationPassed.rawValue
+    static let reviewNeeded = TaskEventTypes.Deliverable.verificationReviewNeeded.rawValue
+    static let failed = TaskEventTypes.Deliverable.verificationFailed.rawValue
 }
 
 enum JavaScriptSyntaxCheckResult: Sendable, Equatable {
@@ -119,10 +120,15 @@ enum TaskDeliverableVerificationService {
     static func evaluate(
         task: AgentTask,
         run: TaskRun?,
+        modelContext: ModelContext? = nil,
         environment: TaskDeliverableVerificationEnvironment = .live
     ) async -> TaskDeliverableVerificationResult {
         let requiresArtifact = TaskDeliverableExpectation.requiresStandaloneArtifact(task)
-        let files = TaskOutputDiscovery.files(for: task)
+        let artifactReconciliation = TaskArtifactPersistenceService.reconcileTaskOutputArtifacts(
+            for: task,
+            modelContext: modelContext
+        )
+        let files = artifactReconciliation.discoveredFiles
         let profile = profile(for: task, files: files, requiresArtifact: requiresArtifact)
 
         guard requiresArtifact || !files.isEmpty else {

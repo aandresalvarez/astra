@@ -142,95 +142,6 @@ private struct CompactPanelLayoutCoordinator: ViewModifier {
     }
 }
 
-@MainActor
-private final class ShelfBrowserSessionStore: ObservableObject {
-    private var sharedSession = ShelfBrowserSession()
-    private var taskSessions: [UUID: ShelfBrowserSession] = [:]
-
-    func session(for taskID: UUID?, pinnedToTask: Bool, enabledBrowserAdapters: [String] = []) -> ShelfBrowserSession {
-        guard pinnedToTask, let taskID else {
-            sharedSession.bindToTask(taskID)
-            sharedSession.setEnabledBrowserAdapters(enabledBrowserAdapters)
-            return sharedSession
-        }
-
-        if let session = taskSessions[taskID] {
-            session.bindToTask(taskID)
-            session.setEnabledBrowserAdapters(enabledBrowserAdapters)
-            return session
-        }
-
-        let session = ShelfBrowserSession()
-        session.bindToTask(taskID)
-        session.setEnabledBrowserAdapters(enabledBrowserAdapters)
-        taskSessions[taskID] = session
-        return session
-    }
-
-    func promoteSharedSession(
-        to taskID: UUID,
-        pinnedToTask: Bool,
-        isPresented: Bool,
-        enabledBrowserAdapters: [String] = []
-    ) -> Bool {
-        guard pinnedToTask,
-              taskSessions[taskID] == nil,
-              sharedSession.hasDisplayablePage || sharedSession.isLoading else {
-            return false
-        }
-
-        sharedSession.bindToTask(taskID)
-        sharedSession.setEnabledBrowserAdapters(enabledBrowserAdapters)
-        sharedSession.setPresented(isPresented)
-        taskSessions[taskID] = sharedSession
-        sharedSession = ShelfBrowserSession()
-        sharedSession.bindToTask(nil)
-        return true
-    }
-
-    func setPresented(
-        _ isPresented: Bool,
-        taskID: UUID?,
-        pinnedToTask: Bool,
-        enabledBrowserAdapters: [String] = []
-    ) {
-        sharedSession.setPresented(false)
-        for session in taskSessions.values {
-            session.setPresented(false)
-        }
-
-        guard isPresented else { return }
-        session(
-            for: taskID,
-            pinnedToTask: pinnedToTask,
-            enabledBrowserAdapters: enabledBrowserAdapters
-        ).setPresented(true)
-    }
-}
-
-@MainActor
-private final class ShelfMarkdownSessionStore: ObservableObject {
-    private let sharedSession = ShelfMarkdownSession()
-    private var taskSessions: [UUID: ShelfMarkdownSession] = [:]
-
-    func session(for taskID: UUID?, pinnedToTask: Bool) -> ShelfMarkdownSession {
-        guard pinnedToTask, let taskID else {
-            sharedSession.bindToTask(taskID)
-            return sharedSession
-        }
-
-        if let session = taskSessions[taskID] {
-            session.bindToTask(taskID)
-            return session
-        }
-
-        let session = ShelfMarkdownSession()
-        session.bindToTask(taskID)
-        taskSessions[taskID] = session
-        return session
-    }
-}
-
 private struct ShelfBoundaryOverlayModifier: ViewModifier {
     func body(content: Content) -> some View {
         content.overlayPreferenceValue(ShelfBoundaryMetricsPreferenceKey.self) { metrics in
@@ -404,14 +315,11 @@ struct ContentView: View {
     }
 
     private var effectiveWorkspace: Workspace? {
-        ContentSelectionResolver.effectiveWorkspace(
-            selectedTask: selectedTask,
-            selectedWorkspace: selectedWorkspace
-        )
+        sceneCoordinator.effectiveWorkspace
     }
 
     private var effectiveWorkspaceID: UUID? {
-        effectiveWorkspace?.id
+        sceneCoordinator.effectiveWorkspaceID
     }
 
     private var queryUtilityRuntime: AgentUtilityRuntimeConfiguration {
@@ -424,14 +332,26 @@ struct ContentView: View {
         return AgentUtilityRuntimeConfiguration(
             runtime: runtime,
             model: RuntimeModelAvailability.normalizedModel(preferredModel, for: runtime),
-            providerSettings: currentProviderSettings()
+            providerSettings: providerSettingsSnapshot.providerSettings
+        )
+    }
+
+    private var providerSettingsSnapshot: ProviderSettingsSnapshot {
+        RuntimeSettingsSnapshotStore.providerSnapshot(
+            claudePath: claudePath,
+            copilotPath: copilotPath,
+            providerSettingsRevision: runtimeProviderSettingsRevision,
+            claudeProviderRaw: claudeProviderRaw,
+            vertexProjectID: "",
+            vertexRegion: "",
+            vertexOpusModel: claudeVertexOpusModel,
+            vertexSonnetModel: claudeVertexSonnetModel,
+            vertexHaikuModel: claudeVertexHaikuModel
         )
     }
 
     private var workspaceSelectionSignature: String {
-        workspaces
-            .map { "\($0.id.uuidString)|\($0.primaryPath)" }
-            .joined(separator: ",")
+        sceneCoordinator.workspaceSelectionSignature
     }
 
     private var pendingExternalRouteID: UUID? {
@@ -440,15 +360,8 @@ struct ContentView: View {
 
     private var executionSettingsSignature: String {
         [
-            claudePath,
-            copilotPath,
-            String(runtimeProviderSettingsRevision),
-            RuntimeProviderSettingsStore.signature(),
+            providerSettingsSnapshot.signature,
             defaultRuntimeID,
-            claudeProviderRaw,
-            claudeVertexOpusModel,
-            claudeVertexSonnetModel,
-            claudeVertexHaikuModel,
             String(timeoutSeconds),
             validationModel,
             String(skipPermissions),
@@ -1733,8 +1646,22 @@ struct ContentView: View {
         TaskLifecycleCoordinator(modelContext: modelContext, taskQueue: runtime.taskQueue)
     }
 
-    private var workspaceImporter: WorkspaceImportOrchestrator {
-        WorkspaceImportOrchestrator(modelContext: modelContext, taskQueue: runtime.taskQueue)
+    private var sceneCoordinator: ContentSceneCoordinator {
+        ContentSceneCoordinator(
+            workspaces: workspaces,
+            selectedTask: selectedTask,
+            selectedWorkspace: selectedWorkspace,
+            lastSelectedWorkspaceID: lastSelectedWorkspaceID,
+            lastSelectedWorkspacePath: lastSelectedWorkspacePath
+        )
+    }
+
+    private var workspaceActionCoordinator: ContentWorkspaceActionCoordinator {
+        ContentWorkspaceActionCoordinator(
+            modelContext: modelContext,
+            taskQueue: runtime.taskQueue,
+            workspacesRoot: workspacesRoot
+        )
     }
 
     private var externalRouteResolver: ContentExternalRouteResolver {
@@ -1853,12 +1780,7 @@ struct ContentView: View {
     }
 
     private func restoreWorkspaceSelection() {
-        let restored = ContentWorkspaceSelectionResolver.restoredWorkspace(
-            workspaces: workspaces,
-            currentSelection: selectedWorkspace,
-            lastSelectedWorkspaceID: lastSelectedWorkspaceID,
-            lastSelectedWorkspacePath: lastSelectedWorkspacePath
-        )
+        let restored = sceneCoordinator.restoredWorkspace()
         if let restored {
             if selectedWorkspace?.id != restored.id {
                 selectedWorkspace = restored
@@ -1871,19 +1793,13 @@ struct ContentView: View {
     }
 
     private func persistWorkspaceSelection() {
-        guard let selectedWorkspace else {
-            lastSelectedWorkspaceID = ""
-            lastSelectedWorkspacePath = ""
-            return
-        }
-
-        lastSelectedWorkspaceID = selectedWorkspace.id.uuidString
-        lastSelectedWorkspacePath = selectedWorkspace.primaryPath
+        let persistence = sceneCoordinator.persistence(for: selectedWorkspace)
+        lastSelectedWorkspaceID = persistence.workspaceID
+        lastSelectedWorkspacePath = persistence.workspacePath
     }
 
     private var resolvedRoot: String {
-        if !workspacesRoot.isEmpty { return workspacesRoot }
-        return AppChannel.current.defaultWorkspacesRoot
+        workspaceActionCoordinator.resolvedRoot
     }
 
     private func finalizeNewWorkspace() {
@@ -1899,69 +1815,9 @@ struct ContentView: View {
 
     @discardableResult
     private func createWorkspace(from draft: NewWorkspaceDraft, source: String) -> Bool {
-        guard draft.canCreate else { return false }
-        let workspace = coordinator.createWorkspace(name: draft.trimmedName, rootPath: resolvedRoot)
-        workspace.instructions = draft.trimmedInstructions
-        applyNewWorkspaceCapabilities(to: workspace, from: draft, source: source)
-        selectedWorkspace = workspace
+        guard let result = workspaceActionCoordinator.createWorkspace(from: draft, source: source) else { return false }
+        selectedWorkspace = result.workspace
         return true
-    }
-
-    private func applyNewWorkspaceCapabilities(to workspace: Workspace, from draft: NewWorkspaceDraft, source: String) {
-        let selectedIDs = draft.selectedCapabilityIDs
-        guard !selectedIDs.isEmpty else { return }
-
-        var packagesByID: [String: PluginPackage] = [:]
-        for package in PluginCatalog.builtInPackages {
-            packagesByID[package.id] = package
-        }
-        let packages = OnboardingCapabilitySetup.configurableOptions.compactMap { option -> PluginPackage? in
-            guard let packageID = option.packageID, selectedIDs.contains(packageID) else { return nil }
-            return packagesByID[packageID]
-        }
-        guard !packages.isEmpty else { return }
-
-        let installer = CapabilityInstaller()
-        let policyContext = CapabilityCatalogPolicyContext.workspaceUser(
-            workspace: workspace,
-            isAdmin: true,
-            approvalRecords: CapabilityApprovalStore().records()
-        )
-        for package in packages {
-            let inputs = draft.capabilityConfiguration.installationInputs(for: package.id)
-            let traceID = AuditTrace.make("workspace-capability")
-            AppLogger.breadcrumb(action: "onboarding_capability_enable_selected", category: "Capabilities", traceID: traceID, fields: [
-                "source": source,
-                "package_id": package.id,
-                "package_name": package.name,
-                "workspace_id": workspace.id.uuidString,
-                "credential_input_count": String(inputs.credentialInputs.count),
-                "config_input_count": String(inputs.configInputs.count),
-                "base_url_override_count": String(inputs.baseURLOverrides.count)
-            ])
-            do {
-                try installer.install(
-                    package,
-                    into: workspace,
-                    modelContext: modelContext,
-                    credentialInputs: inputs.credentialInputs,
-                    configInputs: inputs.configInputs,
-                    baseURLOverrides: inputs.baseURLOverrides,
-                    policyContext: policyContext,
-                    traceID: traceID
-                )
-            } catch {
-                AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
-                    "source": source,
-                    "trace_id": traceID,
-                    "package_id": package.id,
-                    "package_name": package.name,
-                    "package_version": package.version,
-                    "workspace_id": workspace.id.uuidString,
-                    "error_type": String(describing: type(of: error))
-                ], level: .error)
-            }
-        }
     }
 
     private func deleteWorkspace(_ ws: Workspace) {
@@ -1978,7 +1834,7 @@ struct ContentView: View {
         let urls = WorkspaceImportPanel.selectedURLs()
         guard !urls.isEmpty else { return }
 
-        let result = workspaceImporter.importWorkspaces(
+        let result = workspaceActionCoordinator.importWorkspaces(
             from: urls,
             existingWorkspaces: workspaces,
             askDuplicateAction: WorkspaceDuplicateActionPrompt.ask
@@ -2142,7 +1998,7 @@ struct ContentView: View {
             coordinator: coordinator,
             claudePath: claudePath,
             copilotPath: copilotPath,
-            providerSettings: currentProviderSettings(),
+            providerSettings: providerSettingsSnapshot.providerSettings,
             defaultRuntimeID: defaultRuntimeID,
             validationModel: validationModel,
             isUITestingSeededLaunch: isUITestingSeededLaunch
@@ -2274,7 +2130,7 @@ struct ContentView: View {
         runtime.applySettings(
             claudePath: claudePath,
             copilotPath: copilotPath,
-            providerSettings: RuntimeProviderSettingsStore.settings(),
+            providerSettings: providerSettingsSnapshot.providerSettings,
             defaultRuntimeID: defaultRuntimeID,
             timeoutSeconds: timeoutSeconds,
             validationModel: validationModel,
@@ -2286,7 +2142,7 @@ struct ContentView: View {
 
     private func refreshProviderModelsInBackground() {
         guard !isUITestingSeededLaunch else { return }
-        let providerSettings = currentProviderSettings()
+        let providerSettings = providerSettingsSnapshot.providerSettings
         for runtime in AgentRuntimeAdapterRegistry.runtimeIDs {
             refreshRuntimeModelsInBackground(runtime, providerSettings: providerSettings)
         }
@@ -2302,29 +2158,16 @@ struct ContentView: View {
         )
         guard FileManager.default.isExecutableFile(atPath: resolvedExecutablePath) else { return }
 
-        let signature = RuntimeModelRefreshSignature.make(
+        let signature = providerSettingsSnapshot.modelRefreshSignature(
             runtime: runtime,
             executablePath: resolvedExecutablePath,
-            providerSettings: providerSettings,
-            claudeProviderRaw: claudeProviderRaw,
-            claudeVertexOpusModel: claudeVertexOpusModel,
-            claudeVertexSonnetModel: claudeVertexSonnetModel,
-            claudeVertexHaikuModel: claudeVertexHaikuModel
         )
         guard runtimeModelRefreshTasks[runtime] == nil,
               lastRuntimeModelRefreshSignatures[runtime] != signature else { return }
         lastRuntimeModelRefreshSignatures[runtime] = signature
 
-        let configuration = RuntimeReadinessConfiguration(
-            runtime: runtime,
-            providerSettings: providerSettings,
-            claudeProvider: ClaudeProvider(rawValue: claudeProviderRaw) ?? .anthropic,
-            vertexProjectID: "",
-            vertexRegion: "",
-            vertexOpusModel: claudeVertexOpusModel,
-            vertexSonnetModel: claudeVertexSonnetModel,
-            vertexHaikuModel: claudeVertexHaikuModel
-        )
+        var configuration = providerSettingsSnapshot.readinessConfiguration(for: runtime)
+        configuration.providerSettings = providerSettings
         runtimeModelRefreshTasks[runtime] = Task {
             _ = await AgentRuntimeAdapterRegistry
                 .adapter(for: runtime)
@@ -2333,13 +2176,6 @@ struct ContentView: View {
                 runtimeModelRefreshTasks[runtime] = nil
             }
         }
-    }
-
-    private func currentProviderSettings() -> AgentRuntimeProviderSettings {
-        var settings = RuntimeProviderSettingsStore.settings()
-        settings.setExecutablePath(claudePath, for: .claudeCode)
-        settings.setExecutablePath(copilotPath, for: .copilotCLI)
-        return settings
     }
 
     private func resolvedRuntimeExecutablePath(

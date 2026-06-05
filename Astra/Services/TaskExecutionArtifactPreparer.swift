@@ -350,7 +350,7 @@ enum TaskExecutionArtifactPreparer {
         task.updatedAt = now
         task.completedAt = now
         task.markUnreadForCurrentStatus(at: now)
-        modelContext.insert(TaskEvent(task: task, type: "error", payload: message))
+        modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: message))
         AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
             "reason": reason,
             "phase": phase

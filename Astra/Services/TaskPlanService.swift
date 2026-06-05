@@ -3,20 +3,20 @@ import SwiftData
 import ASTRACore
 
 enum TaskPlanEventTypes {
-    static let created = "plan.created"
-    static let updated = "plan.updated"
-    static let approved = "plan.approved"
-    static let cancelled = "plan.cancelled"
-    static let executionStarted = "plan.execution.started"
-    static let executionCompleted = "plan.execution.completed"
-    static let executionFailed = "plan.execution.failed"
-    static let userMessage = "plan.user.message"
-    static let assistantMessage = "plan.assistant.message"
+    static let created = TaskEventTypes.Plan.created.rawValue
+    static let updated = TaskEventTypes.Plan.updated.rawValue
+    static let approved = TaskEventTypes.Plan.approved.rawValue
+    static let cancelled = TaskEventTypes.Plan.cancelled.rawValue
+    static let executionStarted = TaskEventTypes.Plan.executionStarted.rawValue
+    static let executionCompleted = TaskEventTypes.Plan.executionCompleted.rawValue
+    static let executionFailed = TaskEventTypes.Plan.executionFailed.rawValue
+    static let userMessage = TaskEventTypes.Plan.userMessage.rawValue
+    static let assistantMessage = TaskEventTypes.Plan.assistantMessage.rawValue
 
-    static let stepStarted = "plan.step.started"
-    static let stepCompleted = "plan.step.completed"
-    static let stepBlocked = "plan.step.blocked"
-    static let stepSkipped = "plan.step.skipped"
+    static let stepStarted = TaskEventTypes.Plan.stepStarted.rawValue
+    static let stepCompleted = TaskEventTypes.Plan.stepCompleted.rawValue
+    static let stepBlocked = TaskEventTypes.Plan.stepBlocked.rawValue
+    static let stepSkipped = TaskEventTypes.Plan.stepSkipped.rawValue
 
     static let stepEvents: Set<String> = [
         stepStarted,

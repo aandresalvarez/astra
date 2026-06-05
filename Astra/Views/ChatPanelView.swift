@@ -443,15 +443,11 @@ struct ChatPanelView: View {
     }
 
     private var defaultRuntime: AgentRuntimeID {
-        AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
+        runtimeSettingsSnapshot.defaultRuntime
     }
 
     private var normalizedDefaultModel: String {
-        RuntimeModelAvailability.normalizedModel(
-            defaultModel,
-            for: defaultRuntime,
-            cache: runtimeModelCache
-        )
+        runtimeSettingsSnapshot.normalizedDefaultModel
     }
 
     private var currentAgentPolicyLevel: AgentPolicyLevel {
@@ -466,7 +462,7 @@ struct ChatPanelView: View {
             defaultModel: normalizedDefaultModel,
             defaultBudget: defaultBudget,
             defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
-            providerSettings: providerSettingsForUtilityRuntime,
+            providerSettings: providerSettingsSnapshot.providerSettings,
             cache: runtimeModelCache
         ).configuration
     }
@@ -479,16 +475,9 @@ struct ChatPanelView: View {
             defaultModel: normalizedDefaultModel,
             defaultBudget: defaultBudget,
             defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
-            providerSettings: providerSettingsForUtilityRuntime,
+            providerSettings: providerSettingsSnapshot.providerSettings,
             cache: runtimeModelCache
         )
-    }
-
-    private var providerSettingsForUtilityRuntime: AgentRuntimeProviderSettings {
-        var settings = RuntimeProviderSettingsStore.settings()
-        settings.setExecutablePath(claudePath, for: .claudeCode)
-        settings.setExecutablePath(copilotPath, for: .copilotCLI)
-        return settings
     }
 
     private func alignDefaultModelWithRuntime() {
@@ -500,45 +489,43 @@ struct ChatPanelView: View {
     }
 
     private var runtimeModelCache: RuntimeModelAvailabilityCache {
-        _ = runtimeModelCacheRevision
-        return RuntimeModelAvailabilityCache.appStorage(
+        runtimeSettingsSnapshot.runtimeModelCache
+    }
+
+    private var runtimeSettingsSnapshot: RuntimeSettingsSnapshot {
+        RuntimeSettingsSnapshotStore.runtimeSnapshot(
+            defaultRuntimeID: defaultRuntimeID,
+            defaultModel: defaultModel,
+            defaultBudget: defaultBudget,
+            skipPermissions: skipPermissions,
+            defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
             cachedClaudeModelsJSON: claudeAvailableModels,
-            cachedCopilotModelsJSON: copilotAvailableModels
+            cachedCopilotModelsJSON: copilotAvailableModels,
+            runtimeModelCacheRevision: runtimeModelCacheRevision,
+            providerSnapshot: providerSettingsSnapshot
         )
     }
 
     private var runtimeAvailabilityConfiguration: RuntimeProviderAvailabilityConfiguration {
-        RuntimeProviderAvailabilityConfiguration(
-            providerSettings: providerSettingsForReadiness,
-            claudeProvider: ClaudeProvider(rawValue: claudeProviderRaw) ?? .anthropic,
+        providerSettingsSnapshot.availabilityConfiguration
+    }
+
+    private var runtimeAvailabilitySignature: String {
+        providerSettingsSnapshot.signature
+    }
+
+    private var providerSettingsSnapshot: ProviderSettingsSnapshot {
+        RuntimeSettingsSnapshotStore.providerSnapshot(
+            claudePath: claudePath,
+            copilotPath: copilotPath,
+            providerSettingsRevision: runtimeProviderSettingsRevision,
+            claudeProviderRaw: claudeProviderRaw,
             vertexProjectID: claudeVertexProjectID,
             vertexRegion: claudeVertexRegion,
             vertexOpusModel: claudeVertexOpusModel,
             vertexSonnetModel: claudeVertexSonnetModel,
             vertexHaikuModel: claudeVertexHaikuModel
         )
-    }
-
-    private var providerSettingsForReadiness: AgentRuntimeProviderSettings {
-        var settings = RuntimeProviderSettingsStore.settings()
-        settings.setExecutablePath(claudePath, for: .claudeCode)
-        settings.setExecutablePath(copilotPath, for: .copilotCLI)
-        return settings
-    }
-
-    private var runtimeAvailabilitySignature: String {
-        [
-            claudePath,
-            copilotPath,
-            String(runtimeProviderSettingsRevision),
-            RuntimeProviderSettingsStore.signature(),
-            claudeProviderRaw,
-            claudeVertexProjectID,
-            claudeVertexRegion,
-            claudeVertexOpusModel,
-            claudeVertexSonnetModel,
-            claudeVertexHaikuModel
-        ].joined(separator: "|")
     }
 
     private var showSlashMenu: Bool {
@@ -1493,7 +1480,7 @@ struct ChatPanelView: View {
                 defaultModel: normalizedDefaultModel,
                 defaultBudget: defaultBudget,
                 defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
-                providerSettings: providerSettingsForUtilityRuntime,
+                providerSettings: providerSettingsSnapshot.providerSettings,
                 cache: runtimeModelCache
             )
             TaskRoleProfileStore.recordSelected(selection, task: planningDraft, modelContext: modelContext)
@@ -1623,7 +1610,7 @@ struct ChatPanelView: View {
                 defaultModel: normalizedDefaultModel,
                 defaultBudget: defaultBudget,
                 defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
-                providerSettings: providerSettingsForUtilityRuntime,
+                providerSettings: providerSettingsSnapshot.providerSettings,
                 cache: runtimeModelCache
             )
             TaskRoleProfileStore.recordSelected(selection, task: planningDraft, modelContext: modelContext)

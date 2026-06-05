@@ -313,7 +313,7 @@ final class AgentRuntimeWorker {
     ) {
         let notice = TaskEvent(
             task: task,
-            type: "system.info",
+            eventType: TaskEventTypes.System.info,
             payload: message,
             run: run
         )
@@ -455,7 +455,7 @@ final class AgentRuntimeWorker {
             task.status = .failed
             task.updatedAt = Date()
             task.markUnreadForCurrentStatus(at: task.updatedAt)
-            let event = TaskEvent(task: task, type: "error",
+            let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error,
                 payload: runtimeAdapter.missingExecutableMessage(executablePath: launchSettings.executablePath), run: run)
             modelContext.insert(event)
             isRunning = false
@@ -477,7 +477,7 @@ final class AgentRuntimeWorker {
             task.status = .failed
             task.updatedAt = Date()
             task.markUnreadForCurrentStatus(at: task.updatedAt)
-            let event = TaskEvent(task: task, type: "error",
+            let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error,
                 payload: "Workspace directory not found: \(codeDir)", run: run)
             modelContext.insert(event)
             isRunning = false
@@ -491,7 +491,7 @@ final class AgentRuntimeWorker {
                 executionPath = try await IsolationService.prepare(task: task)
                 shouldCleanupIsolation = true
                 if executionPath != TaskWorkspaceAccess(task: task).effectiveWorkspacePath {
-                    let isoEvent = TaskEvent(task: task, type: "tool.use",
+                    let isoEvent = TaskEvent(task: task, eventType: TaskEventTypes.Tool.use,
                         payload: "Isolation: \(task.isolationStrategy.rawValue) -> \(executionPath)", run: run)
                     modelContext.insert(isoEvent)
                 }
@@ -506,7 +506,7 @@ final class AgentRuntimeWorker {
                 task.status = .failed
                 task.updatedAt = Date()
                 task.markUnreadForCurrentStatus(at: task.updatedAt)
-                let event = TaskEvent(task: task, type: "error",
+                let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error,
                     payload: "Workspace isolation failed: \(error.localizedDescription)", run: run)
                 modelContext.insert(event)
                 isRunning = false
@@ -534,7 +534,8 @@ final class AgentRuntimeWorker {
         }
         Self.logCapabilityResolution(for: task, runtime: selectedRuntime, phase: auditPhase)
         await logGitHubCLIPreflightIfNeeded(for: task, phase: auditPhase)
-        let providerCapabilities = runtimeAdapter.policyCapabilities(executablePath: launchSettings.executablePath)
+        let policyRenderer = AgentRuntimeAdapterRegistry.policyRenderer(for: selectedRuntime)
+        let providerCapabilities = policyRenderer.policyCapabilities(executablePath: launchSettings.executablePath)
         let runPermissionPolicy = effectivePermissionPolicy(for: task, executionPolicy: executionPolicy)
         let manifest = AgentPolicyManifestService.recordPreflightManifest(
             task: task,
@@ -596,7 +597,7 @@ final class AgentRuntimeWorker {
         let capabilityScope = TaskCapabilityResolver(task: task).promptScope()
         if !capabilityScope.behaviorSkills.isEmpty {
             let skillNames = capabilityScope.behaviorSkills.map(\.name).joined(separator: ", ")
-            let skillEvent = TaskEvent(task: task, type: "skill.active",
+            let skillEvent = TaskEvent(task: task, eventType: TaskEventTypes.System.skillActive,
                 payload: "Active skills: \(skillNames)", run: run)
             modelContext.insert(skillEvent)
         }
@@ -773,7 +774,7 @@ final class AgentRuntimeWorker {
             run.status = .timeout
             run.stopReason = "timeout"
             task.status = .failed
-            let event = TaskEvent(task: task, type: "error",
+            let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error,
                                   payload: runtimeAdapter.timeoutPayload(
                                     phase: auditPhase,
                                     timeoutSeconds: timeoutSeconds
@@ -783,7 +784,7 @@ final class AgentRuntimeWorker {
             run.status = .budgetExceeded
             run.stopReason = "max_turns_reached"
             task.status = .budgetExceeded
-            let event = TaskEvent(task: task, type: "budget.exceeded",
+            let event = TaskEvent(task: task, eventType: TaskEventTypes.Budget.exceeded,
                                   payload: runtimeAdapter.maxTurnsPayload(phase: auditPhase, task: task), run: run)
             modelContext.insert(event)
         } else if applyRuntimeStopIfNeeded(result, task: task, run: run, modelContext: modelContext, phase: auditPhase) {
@@ -794,7 +795,7 @@ final class AgentRuntimeWorker {
             task.status = .pendingUser
             let event = TaskEvent(
                 task: task,
-                type: "permission.approval.requested",
+                eventType: TaskEventTypes.Tool.permissionApprovalRequested,
                 payload: result.policyApprovalMessage ?? "The provider needs a runtime permission before it can continue.",
                 run: run
             )
@@ -805,14 +806,14 @@ final class AgentRuntimeWorker {
             task.status = .pendingUser
             let event = TaskEvent(
                 task: task,
-                type: "error",
+                eventType: TaskEventTypes.System.error,
                 payload: result.policyViolationMessage ?? "ASTRA stopped the provider because observed activity violated the run policy.",
                 run: run
             )
             modelContext.insert(event)
         } else if AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
             result: result,
-            task: task,
+            budget: AgentRuntimeBudgetSnapshot(task: task),
             budgetEnforcementMode: budgetEnforcementMode
         ) {
             run.status = .budgetExceeded
@@ -820,7 +821,7 @@ final class AgentRuntimeWorker {
             task.status = .budgetExceeded
             let reason = "Token budget exceeded"
             let outcome = result.budgetExceeded ? "Process killed." : "Provider reported usage above budget."
-            let event = TaskEvent(task: task, type: "budget.exceeded",
+            let event = TaskEvent(task: task, eventType: TaskEventTypes.Budget.exceeded,
                                   payload: "\(reason) (\(task.tokensUsed)/\(task.tokenBudget)). \(outcome)", run: run)
             modelContext.insert(event)
         } else if result.exitCode == 0,
@@ -867,25 +868,25 @@ final class AgentRuntimeWorker {
                             )
                         }
                     case .runTests:
-                        let testEvent = TaskEvent(task: task, type: "tool.use", payload: "Running validation tests...", run: run)
+                        let testEvent = TaskEvent(task: task, eventType: TaskEventTypes.Tool.use, payload: "Running validation tests...", run: run)
                         modelContext.insert(testEvent)
                         let testResult = await ValidationService.runTests(task: task)
                         switch testResult {
                         case .passed(let details):
                             task.status = .completed
-                            let event = TaskEvent(task: task, type: "task.completed", payload: "Tests passed. \(String(details.prefix(300)))", run: run)
+                            let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.completed, payload: "Tests passed. \(String(details.prefix(300)))", run: run)
                             modelContext.insert(event)
                         case .failed(let details):
                             task.status = .failed
-                            let event = TaskEvent(task: task, type: "error", payload: "Tests failed:\n\(String(details.prefix(500)))", run: run)
+                            let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "Tests failed:\n\(String(details.prefix(500)))", run: run)
                             modelContext.insert(event)
                         case .error(let msg):
                             task.status = .pendingUser
-                            let event = TaskEvent(task: task, type: "error", payload: "Validation error: \(msg). Needs manual review.", run: run)
+                            let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "Validation error: \(msg). Needs manual review.", run: run)
                             modelContext.insert(event)
                         }
                     case .aiCheck:
-                        let checkEvent = TaskEvent(task: task, type: "tool.use", payload: "Running AI self-check...", run: run)
+                        let checkEvent = TaskEvent(task: task, eventType: TaskEventTypes.Tool.use, payload: "Running AI self-check...", run: run)
                         modelContext.insert(checkEvent)
                         let aiResult = await ValidationService.aiCheck(
                             task: task,
@@ -902,15 +903,15 @@ final class AgentRuntimeWorker {
                         switch aiResult {
                         case .passed(let details):
                             task.status = .completed
-                            let event = TaskEvent(task: task, type: "task.completed", payload: "AI check passed. \(String(details.prefix(300)))", run: run)
+                            let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.completed, payload: "AI check passed. \(String(details.prefix(300)))", run: run)
                             modelContext.insert(event)
                         case .failed(let details):
                             task.status = .pendingUser
-                            let event = TaskEvent(task: task, type: "error", payload: "AI check flagged issues:\n\(String(details.prefix(500)))", run: run)
+                            let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "AI check flagged issues:\n\(String(details.prefix(500)))", run: run)
                             modelContext.insert(event)
                         case .error(let msg):
                             task.status = .pendingUser
-                            let event = TaskEvent(task: task, type: "error", payload: "AI check error: \(msg). Needs manual review.", run: run)
+                            let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "AI check error: \(msg). Needs manual review.", run: run)
                             modelContext.insert(event)
                         }
                     }
@@ -942,14 +943,14 @@ final class AgentRuntimeWorker {
                 diagnostic: failureDiagnostic,
                 result: result
             )
-            let event = TaskEvent(task: task, type: "permission.approval.requested", payload: payload, run: run)
+            let event = TaskEvent(task: task, eventType: TaskEventTypes.Tool.permissionApprovalRequested, payload: payload, run: run)
             modelContext.insert(event)
         } else {
             run.status = .failed
             run.stopReason = "failed"
             if runtimeAdapter.shouldClearStaleSessionOnFailure(phase: auditPhase, result: result) {
                 task.sessionId = nil
-                let event = TaskEvent(task: task, type: "error",
+                let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error,
                                       payload: "Session expired or not found. Session cleared - retry will start fresh.", run: run)
                 modelContext.insert(event)
                 AppLogger.audit(.workerSessionCleared, category: "Worker", taskID: task.id, fields: [
@@ -965,7 +966,7 @@ final class AgentRuntimeWorker {
                     rawError: result.error,
                     task: task
                 )
-                let event = TaskEvent(task: task, type: "error", payload: payload, run: run)
+                let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: payload, run: run)
                 modelContext.insert(event)
             }
             task.status = .failed
@@ -1019,7 +1020,7 @@ final class AgentRuntimeWorker {
 
     @MainActor
     private static func applyEmptySuccessfulRunIfNeeded(
-        runtimeAdapter: any AgentRuntimeAdapter,
+        runtimeAdapter: any AgentRuntimePostRunDiagnostics,
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
@@ -1053,7 +1054,7 @@ final class AgentRuntimeWorker {
         if let error = result.error?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
             payload += " Provider stderr: \(String(RuntimeReadinessRedactor.redacted(error).prefix(300)))"
         }
-        let event = TaskEvent(task: task, type: "error", payload: payload, run: run)
+        let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: payload, run: run)
         modelContext.insert(event)
         var auditFields = [
             "runtime": runtimeAdapter.id.rawValue,
@@ -1078,7 +1079,7 @@ final class AgentRuntimeWorker {
         run: TaskRun,
         modelContext: ModelContext
     ) async -> Bool {
-        let result = await TaskDeliverableVerificationService.evaluate(task: task, run: run)
+        let result = await TaskDeliverableVerificationService.evaluate(task: task, run: run, modelContext: modelContext)
         guard let eventType = TaskDeliverableVerificationService.eventType(for: result) else {
             return false
         }
@@ -1191,14 +1192,14 @@ final class AgentRuntimeWorker {
         }
 
         task.status = .completed
-        let event = TaskEvent(task: task, type: "task.completed", payload: successPayload, run: run)
+        let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.completed, payload: successPayload, run: run)
         modelContext.insert(event)
         return true
     }
 
     @MainActor
     private static func recordEstimatedUsageIfProviderDidNotReport(
-        runtimeAdapter: any AgentRuntimeAdapter,
+        runtimeAdapter: any AgentRuntimeWorkerEventRecording,
         selectedRuntime: AgentRuntimeID,
         prompt: String,
         task: AgentTask,
@@ -1224,7 +1225,7 @@ final class AgentRuntimeWorker {
         task.tokensUsed += estimatedTotal
 
         let detail = "estimated tokens: \(estimatedTotal) (in: \(estimatedInput), out: \(estimatedOutput)) | provider usage unavailable"
-        modelContext.insert(TaskEvent(task: task, type: "task.stats", payload: detail, run: run))
+        modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Task.stats, payload: detail, run: run))
         AppLogger.audit(.taskStats, category: "Worker", taskID: task.id, fields: [
             "tokens_total": String(estimatedTotal),
             "tokens_input": String(estimatedInput),
@@ -1300,7 +1301,7 @@ final class AgentRuntimeWorker {
         TaskCapabilitySnapshotter.capture(for: nextTask)
         modelContext.insert(nextTask)
 
-        let chainEvent = TaskEvent(task: task, type: "task.chained",
+        let chainEvent = TaskEvent(task: task, eventType: TaskEventTypes.Task.chained,
             payload: "Chained to next task: \(nextTask.title)")
         modelContext.insert(chainEvent)
         AppLogger.audit(.taskChained, category: "Worker", taskID: task.id, fields: [
@@ -1553,7 +1554,7 @@ final class AgentRuntimeWorker {
     private static func nativeContinuationSessionID(
         for task: AgentTask,
         currentRun: TaskRun,
-        runtimeAdapter: any AgentRuntimeAdapter,
+        runtimeAdapter: any AgentRuntimeDescriptorReadiness,
         phase: String,
         currentLaunchSignature: ProviderLaunchSignaturePayload
     ) -> NativeContinuationDecision {
@@ -1868,7 +1869,7 @@ final class AgentRuntimeWorker {
 
         let payload = result.runtimeStopMessage
             ?? "ASTRA stopped the provider because browser control reached a terminal guardrail: \(reason)."
-        modelContext.insert(TaskEvent(task: task, type: "error", payload: payload, run: run))
+        modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: payload, run: run))
         AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
             "phase": phase,
             "reason": reason,

@@ -3,7 +3,7 @@ import SwiftData
 import ASTRACore
 
 enum TaskRuntimePermissionGrants {
-    static let eventType = "permission.grant.task"
+    static let eventType = TaskEventTypes.Tool.permissionGrantTask.rawValue
 
     struct Payload: Codable, Equatable {
         var brokerVersion: Int

@@ -1,0 +1,243 @@
+import Foundation
+import ASTRACore
+
+struct TaskRuntimePermissionState {
+    struct Event: Hashable, Sendable {
+        let type: String
+        let payload: String
+        let timestamp: Date
+    }
+
+    let latestRequestPayload: String?
+    let hasOpenApprovalRequest: Bool
+    let decision: RuntimePermissionDecisionPresentation?
+    let taskScopedGrants: [PermissionGrant]
+
+    var canApproveSimilarForTask: Bool {
+        hasOpenApprovalRequest && !taskScopedGrants.isEmpty
+    }
+
+    static let empty = TaskRuntimePermissionState(
+        latestRequestPayload: nil,
+        hasOpenApprovalRequest: false,
+        decision: nil,
+        taskScopedGrants: []
+    )
+
+    static func build(events: [Event]) -> TaskRuntimePermissionState {
+        let latestRequest = events
+            .filter { $0.type == "permission.approval.requested" }
+            .max { $0.timestamp < $1.timestamp }
+        guard let latestRequest else { return .empty }
+
+        let latestApproval = events
+            .filter { $0.type == "task.approved" }
+            .max { $0.timestamp < $1.timestamp }
+        let hasOpenRequest = latestApproval.map { latestRequest.timestamp > $0.timestamp } ?? true
+        let structured = PermissionBroker.structuredApprovalGrants(from: latestRequest.payload)
+        let grants = structured.isEmpty ? PermissionBroker.legacyApprovalGrants(from: latestRequest.payload) : structured
+
+        return TaskRuntimePermissionState(
+            latestRequestPayload: latestRequest.payload,
+            hasOpenApprovalRequest: hasOpenRequest,
+            decision: RuntimePermissionDecisionPresentation(payload: latestRequest.payload),
+            taskScopedGrants: PermissionBroker.taskScopedApprovalGrants(for: grants)
+        )
+    }
+}
+
+enum TaskDecisionDockContextBuilder {
+    struct Input {
+        var status: TaskStatus
+        var isClosed: Bool
+        var review: TaskReviewPresentation
+        var mission: MissionControlPresentation?
+        var verification: TaskVerificationPresentation?
+        var pendingReviewState: PendingTaskReviewState
+        var runtimePermission: TaskRuntimePermissionState
+        var executableApprovedPlan: TaskPlanPayload?
+        var skipPermissions: Bool
+        var canOpenPlan: Bool
+        var isPlanCanvasVisible: Bool
+        var canRunApprovedPlan: Bool
+        var latestRunHasNoUsableResult: Bool
+        var completedTaskNeedsArtifactAttention: Bool
+        var canCancel: Bool
+        var canRun: Bool
+        var canApprove: Bool
+        var canRetry: Bool
+        var canResume: Bool
+        var canToggleDone: Bool
+        var hasProviderSession: Bool
+        var failureReason: String?
+        var artifactPaths: [String]
+        var extraDetails: [TaskDecisionDockDetail]
+    }
+
+    struct ExtraDetailsInput {
+        var status: TaskStatus
+        var runtimeHealth: TaskRuntimeHealth
+        var shouldShowPendingApprovalStatus: Bool
+        var hasRuntimePermissionRequest: Bool
+        var pendingApprovalStatusDetail: String
+        var isCreatingScheduleForCurrentTask: Bool
+        var isGeneratingRecap: Bool
+        var recapStatusMessage: String?
+        var currentScheduleStatusMessage: String?
+        var isScheduleStatusError: Bool
+    }
+
+    static func build(_ input: Input) -> TaskDecisionDockPresentation? {
+        TaskDecisionDockPresentation.build(context(input))
+    }
+
+    static func context(_ input: Input) -> TaskDecisionDockPresentation.Context {
+        let plan = input.executableApprovedPlan
+        let nextStep = plan.flatMap { TaskPlanService.nextExecutableStep(in: $0) }
+        let planActionTitle = plan == nil ? nil : (input.skipPermissions ? "Run remaining plan" : "Approve next step")
+        let planActionDetail = plan.map { nextStep.map { "Next: \($0.title)" } ?? $0.title }
+        let planModeLabel = plan == nil
+            ? nil
+            : (input.skipPermissions
+                ? "Auto mode runs every remaining step."
+                : "Ask mode runs one approved step, then pauses again.")
+
+        return TaskDecisionDockPresentation.Context(
+            status: input.status,
+            isClosed: input.isClosed,
+            review: input.review,
+            mission: input.mission,
+            verification: input.verification,
+            pendingReviewState: input.pendingReviewState,
+            hasRuntimePermissionRequest: input.runtimePermission.hasOpenApprovalRequest,
+            runtimePermissionTitle: input.runtimePermission.decision?.title,
+            runtimePermissionSummary: input.runtimePermission.decision?.summary,
+            runtimePermissionScope: input.runtimePermission.decision?.scope,
+            runtimePermissionCommandPreview: input.runtimePermission.decision?.commandPreview,
+            runtimePermissionAllowSimilarLabel: input.runtimePermission.decision?.allowSimilarLabel,
+            canApproveSimilarRuntimePermission: input.runtimePermission.canApproveSimilarForTask,
+            hasExecutableApprovedPlan: plan != nil,
+            planActionTitle: planActionTitle,
+            planActionDetail: planActionDetail,
+            planModeLabel: planModeLabel,
+            canOpenPlan: input.canOpenPlan,
+            isPlanCanvasVisible: input.isPlanCanvasVisible,
+            canRunApprovedPlan: input.canRunApprovedPlan,
+            latestRunHasNoUsableResult: input.latestRunHasNoUsableResult,
+            completedTaskNeedsArtifactAttention: input.completedTaskNeedsArtifactAttention,
+            canCancel: input.canCancel,
+            canRun: input.canRun,
+            canApprove: input.canApprove,
+            canRetry: input.canRetry,
+            canResume: input.canResume,
+            canToggleDone: input.canToggleDone,
+            hasProviderSession: input.hasProviderSession,
+            failureReason: input.failureReason,
+            artifactPaths: input.artifactPaths,
+            extraDetails: input.extraDetails,
+            visibleThreadAffordances: visibleThreadAffordances(
+                artifactPaths: input.artifactPaths,
+                mission: input.mission,
+                isPlanCanvasVisible: input.isPlanCanvasVisible
+            )
+        )
+    }
+
+    static func artifactPaths(generatedFilePaths: [String], storedArtifactPaths: [String]) -> [String] {
+        dedupePaths(generatedFilePaths + storedArtifactPaths)
+    }
+
+    static func visibleThreadAffordances(
+        artifactPaths: [String],
+        mission: MissionControlPresentation?,
+        isPlanCanvasVisible: Bool
+    ) -> Set<TaskThreadAffordance> {
+        var affordances: Set<TaskThreadAffordance> = [.runDetails]
+        if !artifactPaths.isEmpty {
+            affordances.insert(.artifactOpen)
+        }
+        if mission != nil {
+            affordances.insert(.missionControlDetails)
+        }
+        if isPlanCanvasVisible {
+            affordances.insert(.planDetails)
+        }
+        return affordances
+    }
+
+    static func extraDetails(_ input: ExtraDetailsInput) -> [TaskDecisionDockDetail] {
+        var details: [TaskDecisionDockDetail] = []
+        if input.status == .running {
+            details.append(TaskDecisionDockDetail(
+                id: "runtime-health",
+                title: input.runtimeHealth.message,
+                summary: input.runtimeHealth.detail ?? input.runtimeHealth.message,
+                systemImage: input.runtimeHealth.isAttentionState ? "exclamationmark.triangle" : "arrow.triangle.2.circlepath",
+                tone: input.runtimeHealth.isAttentionState ? .attention : .running
+            ))
+        }
+
+        if input.shouldShowPendingApprovalStatus && !input.hasRuntimePermissionRequest {
+            details.append(TaskDecisionDockDetail(
+                id: "pending-approval",
+                title: "Waiting for your approval",
+                summary: input.pendingApprovalStatusDetail,
+                systemImage: "person.crop.circle.badge.questionmark",
+                tone: .attention
+            ))
+        }
+
+        if input.isCreatingScheduleForCurrentTask {
+            details.append(TaskDecisionDockDetail(
+                id: "routine-creating",
+                title: "Creating routine",
+                summary: "ASTRA is creating the routine for this task.",
+                systemImage: "arrow.triangle.2.circlepath",
+                tone: .running
+            ))
+        }
+
+        if input.isGeneratingRecap {
+            details.append(TaskDecisionDockDetail(
+                id: "recap-generating",
+                title: "Generating recap",
+                summary: "ASTRA is summarizing the task conversation.",
+                systemImage: "doc.text.magnifyingglass",
+                tone: .running
+            ))
+        }
+
+        if let msg = input.recapStatusMessage {
+            details.append(TaskDecisionDockDetail(
+                id: "recap-message",
+                title: "Recap needs attention",
+                summary: msg,
+                systemImage: "exclamationmark.triangle",
+                tone: .attention
+            ))
+        }
+
+        if let statusMsg = input.currentScheduleStatusMessage {
+            details.append(TaskDecisionDockDetail(
+                id: "routine-status",
+                title: input.isScheduleStatusError ? "Routine needs attention" : "Routine created",
+                summary: statusMsg,
+                systemImage: input.isScheduleStatusError ? "exclamationmark.triangle" : "checkmark.circle",
+                tone: input.isScheduleStatusError ? .attention : .verified
+            ))
+        }
+
+        return details
+    }
+
+    private static func dedupePaths(_ paths: [String]) -> [String] {
+        var seen = Set<String>()
+        var output: [String] = []
+        for path in paths {
+            let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { continue }
+            output.append(trimmed)
+        }
+        return output
+    }
+}

@@ -973,6 +973,7 @@ struct TaskGeneratedFilesTrigger: Equatable {
     let taskFolder: String
     let latestRunID: UUID?
     let latestRunFileChangesLength: Int
+    let artifactSignature: [String]
     let status: TaskStatus
 
     init(task: AgentTask, latestRun: TaskRunSnapshot?) {
@@ -980,6 +981,9 @@ struct TaskGeneratedFilesTrigger: Equatable {
         taskFolder = TaskWorkspaceAccess(task: task).taskFolder
         latestRunID = latestRun?.id
         latestRunFileChangesLength = latestRun?.fileChangesJSONLength ?? 0
+        artifactSignature = task.artifacts
+            .map { "\($0.path)#\($0.version)#\($0.isStale)" }
+            .sorted()
         status = task.status
     }
 }

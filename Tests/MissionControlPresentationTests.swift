@@ -12,6 +12,46 @@ private func makeMissionControlContainer() throws -> ModelContainer {
 @Suite("Mission Control presentation")
 @MainActor
 struct MissionControlPresentationTests {
+    @Test("mission control snapshot loads source state and finished verification request")
+    func missionControlSnapshotLoadsSourceStateAndFinishedVerificationRequest() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeMissionControlContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Mission Snapshot", primaryPath: root)
+        let task = AgentTask(title: "Snapshot task", goal: "Summarize mission snapshot", workspace: workspace)
+        task.status = .completed
+        context.insert(workspace)
+        context.insert(task)
+        let run = TaskRun(task: task)
+        run.status = .completed
+        run.output = "Finished."
+        task.runs = [run]
+        context.insert(run)
+
+        TaskContextStateManager.refresh(task: task)
+
+        let snapshot = TaskMissionControlSnapshot.build(
+            task: task,
+            planState: TaskPlanState.empty,
+            isFinished: true
+        )
+
+        #expect(!snapshot.taskFolder.isEmpty)
+        #expect(snapshot.state != nil)
+        #expect(snapshot.presentation?.objective == "Summarize mission snapshot")
+        #expect(snapshot.verificationLoadRequest?.taskID == task.id)
+        #expect(snapshot.verificationLoadRequest?.taskStatus == .completed)
+        #expect(snapshot.verificationLoadRequest?.taskFolder == snapshot.taskFolder)
+
+        let runningSnapshot = TaskMissionControlSnapshot.build(
+            task: task,
+            planState: TaskPlanState.empty,
+            isFinished: false
+        )
+        #expect(runningSnapshot.verificationLoadRequest == nil)
+    }
+
     @Test("mission control summarizes source-backed validation and correction state")
     func missionControlSummarizesValidationAndCorrectionState() async throws {
         let root = try temporaryRoot()

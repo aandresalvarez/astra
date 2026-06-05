@@ -1,9 +1,9 @@
 import Foundation
 
 enum TaskHandoffEventTypes {
-    static let created = "handoff.created"
-    static let updated = "handoff.updated"
-    static let missing = "handoff.missing"
+    static let created = TaskEventTypes.Handoff.created.rawValue
+    static let updated = TaskEventTypes.Handoff.updated.rawValue
+    static let missing = TaskEventTypes.Handoff.missing.rawValue
 }
 
 struct TaskWorkerHandoffPayload: Codable, Sendable, Equatable {
@@ -44,4 +44,3 @@ struct TaskWorkerHandoffPayload: Codable, Sendable, Equatable {
         case createdAt
     }
 }
-
