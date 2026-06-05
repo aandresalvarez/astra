@@ -179,6 +179,87 @@ struct PluginCatalogPresentationTests {
         ])
     }
 
+    @Test("approval-required packages group under needs attention, not blocked")
+    func approvalRequiredPackagesGroupUnderNeedsAttention() {
+        // Regression: a draft / admin-approval package sets canEnable == false
+        // but is actionable via approval, so it must land in "Needs attention".
+        let draft = makePresentationPackage(
+            id: "draft",
+            name: "Draft Capability",
+            category: "Integrations",
+            governance: .localDraft()
+        )
+        // A genuinely blocked package (explicit blocked status) must remain
+        // under "Blocked" even though it also flags requiresApproval.
+        let blocked = makePresentationPackage(
+            id: "blocked",
+            name: "Blocked Capability",
+            category: "Security",
+            governance: CapabilityGovernance(
+                approvalStatus: .blocked,
+                riskLevel: .restricted,
+                visibility: .adminOnly,
+                requiresAdminApproval: true,
+                requiresExplicitUserConsent: true,
+                policyNotes: ""
+            )
+        )
+
+        let state = PluginCatalogPresentation.makeState(
+            packages: [draft, blocked],
+            focus: .all,
+            selectedCategory: nil,
+            approvalFilter: .all,
+            riskFilter: .all,
+            showsNeedsAttentionOnly: false,
+            showsEnabledOnly: false,
+            searchText: "",
+            policyContext: CapabilityCatalogPolicyContext(isAdmin: true),
+            isEnabled: { _ in false },
+            requiresSetup: { _ in false }
+        )
+
+        let kindByID = Dictionary(uniqueKeysWithValues: state.groupedPackages.flatMap { group in
+            group.packages.map { ($0.id, group.kind) }
+        })
+        #expect(kindByID["draft"] == .needsSetup)
+        #expect(kindByID["blocked"] == .blocked)
+    }
+
+    @Test("row attention label reflects the concrete reason for attention")
+    func rowAttentionLabelReflectsConcreteReason() {
+        let context = CapabilityCatalogPolicyContext(isAdmin: true)
+
+        let draft = makePresentationPackage(
+            id: "draft",
+            name: "Draft",
+            category: "A",
+            governance: .localDraft()
+        )
+        let draftDecision = CapabilityCatalogPolicy.decision(for: draft, context: context)
+        // Draft requires approval but no setup flow: must not claim setup.
+        #expect(CapabilityRowPresentation.attentionLabel(needsSetup: false, decision: draftDecision) == "Approval required")
+        #expect(CapabilityRowPresentation.attentionLabel(needsSetup: true, decision: draftDecision) == "Setup required")
+
+        let highRisk = makePresentationPackage(
+            id: "high",
+            name: "High",
+            category: "A",
+            governance: .builtInApproved(riskLevel: .high)
+        )
+        let highRiskDecision = CapabilityCatalogPolicy.decision(for: highRisk, context: context)
+        #expect(CapabilityRowPresentation.attentionLabel(needsSetup: false, decision: highRiskDecision) == "Policy warning")
+
+        let clean = makePresentationPackage(
+            id: "clean",
+            name: "Clean",
+            category: "A",
+            governance: .builtInApproved(riskLevel: .medium)
+        )
+        let cleanDecision = CapabilityCatalogPolicy.decision(for: clean, context: context)
+        #expect(CapabilityRowPresentation.attentionLabel(needsSetup: false, decision: cleanDecision) == nil)
+    }
+
     @Test("import overview preserves package description and hides duplicate content summary")
     func importOverviewPreservesPackageDescriptionAndHidesDuplicateContentSummary() {
         let package = makePresentationPackage(

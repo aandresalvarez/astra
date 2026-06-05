@@ -719,8 +719,8 @@ struct PluginCatalogView: View {
     private func capabilityRowMetadata(_ package: PluginPackage, needsSetup: Bool) -> String {
         let decision = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext)
         var parts: [String] = []
-        if needsSetup || decision.requiresApproval || !decision.warnings.isEmpty {
-            parts.append("Setup required")
+        if let attention = CapabilityRowPresentation.attentionLabel(needsSetup: needsSetup, decision: decision) {
+            parts.append(attention)
         }
         parts.append(capabilityApprovalLabel(decision.governance.approvalStatus))
         parts.append("\(capabilityRiskLabel(decision.governance.riskLevel)) risk")
@@ -729,7 +729,7 @@ struct PluginCatalogView: View {
 
     private func capabilityRowMetadataColor(_ package: PluginPackage, needsSetup: Bool) -> Color {
         let decision = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext)
-        if needsSetup || decision.requiresApproval || !decision.warnings.isEmpty {
+        if CapabilityRowPresentation.attentionLabel(needsSetup: needsSetup, decision: decision) != nil {
             return Stanford.poppy
         }
         switch decision.governance.riskLevel {

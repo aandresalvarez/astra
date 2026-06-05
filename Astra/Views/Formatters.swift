@@ -82,8 +82,7 @@ enum Formatters {
     /// Compact task-title presentation for navigation rows. Generic task verbs
     /// become a quiet prefix so the object phrase stays scannable.
     static func sidebarTaskTitlePresentation(
-        _ text: String,
-        maxDisplayCharacters _: Int = 40
+        _ text: String
     ) -> SidebarTaskTitlePresentation {
         let normalized = normalizedSidebarTaskTitle(text)
         let (prefix, primarySource) = sidebarTaskPrefixAndPrimary(normalized)

@@ -174,6 +174,25 @@ struct CapabilityCatalogPackageGroup {
     let packages: [PluginPackage]
 }
 
+enum CapabilityRowPresentation {
+    /// Leading attention label for a capability row. Each branch reflects the
+    /// concrete reason the row needs attention so we never claim "Setup
+    /// required" for a draft that only needs approval or a package that only
+    /// carries policy warnings. Returns `nil` when no attention is needed.
+    static func attentionLabel(needsSetup: Bool, decision: CapabilityCatalogDecision) -> String? {
+        if needsSetup {
+            return "Setup required"
+        }
+        if decision.requiresApproval {
+            return "Approval required"
+        }
+        if !decision.warnings.isEmpty {
+            return "Policy warning"
+        }
+        return nil
+    }
+}
+
 enum PluginCatalogSearch {
     static func matches(_ package: PluginPackage, query: String) -> Bool {
         let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -420,12 +439,18 @@ enum PluginCatalogPresentation {
         for package in packages {
             let decision = CapabilityCatalogPolicy.decision(for: package, context: policyContext)
             let kind: CapabilityCatalogPackageGroupKind
-            if !decision.canEnable && !isEnabled(package) {
-                kind = .blocked
-            } else if isEnabled(package) {
+            if isEnabled(package) {
                 kind = .enabled
+            } else if decision.hasNonApprovalBlockers {
+                // Only genuine, non-approval blockers count as "Blocked". Draft
+                // and admin-approval packages set canEnable == false but are
+                // actionable via approval, so they fall through to "Needs
+                // attention" below instead of being misclassified here.
+                kind = .blocked
             } else if requiresSetup(package) || decision.requiresApproval || !decision.warnings.isEmpty {
                 kind = .needsSetup
+            } else if !decision.canEnable {
+                kind = .blocked
             } else {
                 kind = .available
             }

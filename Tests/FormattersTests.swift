@@ -99,8 +99,7 @@ struct FormattersTests {
     @Test("sidebarTaskTitlePresentation keeps ordinary prose readable")
     func sidebarTaskTitlePresentationKeepsOrdinaryProseReadable() {
         let output = Formatters.sidebarTaskTitlePresentation(
-            "Create component smoke file",
-            maxDisplayCharacters: 18
+            "Create component smoke file"
         )
 
         #expect(output.primary == "component smoke file")
