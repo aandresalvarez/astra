@@ -324,12 +324,13 @@ struct GitAuthoringRegressionTests {
 
         // Commit budget is intentionally too short (1s) and the helper takes 2s.
         // If PR drafting wrongly reused the commit budget it would time out; the
-        // PR budget (10s) must govern instead.
+        // PR budget (20s) must govern instead. Keep this comfortably above the
+        // helper delay so full-suite process scheduling load cannot win the race.
         let service = try makeFakeCopilotService(
             root: root,
             script: slowCopilotPRScript(seconds: 2),
             timeoutSeconds: 1,
-            pullRequestTimeoutSeconds: 10
+            pullRequestTimeoutSeconds: 20
         )
 
         let start = Date()

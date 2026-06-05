@@ -194,4 +194,23 @@ struct BrowserFailureDebugCaptureTests {
         let navigationEvents = try #require(compact["navigationEvents"] as? [[String: Any]])
         #expect(navigationEvents.first?["url"] as? String == "https://example.com/next")
     }
+
+    @Test("Controlled CDP transport matches numeric and string response IDs")
+    func controlledCDPTransportMatchesDevToolsResponseIDs() {
+        #expect(ControlledBrowserCDPTransport.responseID(from: ["id": 42]) == 42)
+        #expect(ControlledBrowserCDPTransport.responseID(from: ["id": NSNumber(value: 43)]) == 43)
+        #expect(ControlledBrowserCDPTransport.responseID(from: ["id": "44"]) == 44)
+        #expect(ControlledBrowserCDPTransport.responseID(from: ["id": "not-a-number"]) == nil)
+        #expect(ControlledBrowserCDPTransport.responseID(from: ["method": "Runtime.consoleAPICalled"]) == nil)
+    }
+
+    @Test("Controlled CDP transport stringifies JSON booleans as boolean text")
+    func controlledCDPTransportStringifiesJSONBooleansAsBooleanText() throws {
+        let data = Data(#"{"enabled":true,"disabled":false,"count":2}"#.utf8)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        #expect(ControlledBrowserCDPTransport.stringValue(object["enabled"]) == "true")
+        #expect(ControlledBrowserCDPTransport.stringValue(object["disabled"]) == "false")
+        #expect(ControlledBrowserCDPTransport.stringValue(object["count"]) == "2")
+    }
 }

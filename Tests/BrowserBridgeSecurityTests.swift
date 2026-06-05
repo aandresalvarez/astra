@@ -48,6 +48,54 @@ struct BrowserBridgeSecurityTests {
         #expect(body.contains(#""ok" : true"#) || body.contains(#""ok":true"#))
     }
 
+    @Test("Bridge command contracts normalize decoded targeting fields")
+    func bridgeCommandContractsNormalizeDecodedTargetingFields() throws {
+        let clickJSON = Data("""
+        {
+          "analysisID": " analysis-1 ",
+          "controlID": " control-2 ",
+          "selector": " button[data-id='submit'] ",
+          "label": " Submit ",
+          "role": " button ",
+          "placeholder": " ",
+          "testID": "",
+          "allowDangerous": true
+        }
+        """.utf8)
+        let click = try JSONDecoder().decode(ClickCommand.self, from: clickJSON)
+
+        #expect(click.normalizedSelector == "button[data-id='submit']")
+        #expect(click.normalizedLabel == "Submit")
+        #expect(click.normalizedRole == "button")
+        #expect(click.normalizedPlaceholder == nil)
+        #expect(click.normalizedTestID == nil)
+        #expect(click.hasAnalysisControl)
+        #expect(click.allowDangerous == true)
+
+        let batchJSON = Data("""
+        {
+          "actions": [
+            {
+              "action": " CLICK ",
+              "analysisID": "analysis-1",
+              "controlID": " ",
+              "selector": " button.primary "
+            }
+          ],
+          "snapshotMode": "summary",
+          "snapshotLimit": 12
+        }
+        """.utf8)
+        let batch = try JSONDecoder().decode(BatchCommand.self, from: batchJSON)
+        let action = try #require(batch.actions.first)
+
+        #expect(action.normalizedAction == "click")
+        #expect(action.normalizedSelector == "button.primary")
+        #expect(!action.hasAnalysisControl)
+        #expect(batch.snapshotMode == "summary")
+        #expect(batch.snapshotLimit == 12)
+    }
+
     private func httpGet(_ url: URL, token: String?) async throws -> (statusCode: Int, body: String) {
         var request = URLRequest(url: url)
         if let token {
