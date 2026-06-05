@@ -195,8 +195,7 @@ struct TaskMainView: View {
     @State private var isAgentPlanExpanded = false
     @State private var isThreadStatusExpanded = false
     @State private var isTaskDecisionDetailsExpanded = false
-    @State private var cachedPlanState = TaskPlanState.empty
-    @State private var cachedPlanStateSignature = TaskPlanStateCacheSignature.empty
+    @State private var cachedPlanStateSnapshot = TaskPlanStateSnapshot.empty
     @State private var pendingPlanStateRefreshTask: Task<Void, Never>?
     @State private var cachedVerificationRequest: TaskVerificationLoadRequest?
     @State private var cachedVerificationPresentation: TaskVerificationPresentation?
@@ -263,7 +262,7 @@ struct TaskMainView: View {
     }
 
     private var planStateCacheRefreshTrigger: TaskPlanStateCacheSignature {
-        TaskPlanStateCacheSignature(task: task)
+        TaskPlanStateSnapshot.signature(for: task)
     }
 
     private var runtimeHealth: TaskRuntimeHealth {
@@ -275,7 +274,7 @@ struct TaskMainView: View {
     }
 
     private var currentPlanState: TaskPlanState {
-        cachedPlanState
+        cachedPlanStateSnapshot.state
     }
 
     private var executableApprovedPlan: TaskPlanPayload? {
@@ -582,10 +581,10 @@ struct TaskMainView: View {
     }
 
     private func refreshPlanStateCache() {
-        let signature = TaskPlanStateCacheSignature(task: task)
-        guard cachedPlanStateSignature != signature else { return }
-        cachedPlanState = TaskPlanService.reconstruct(for: task)
-        cachedPlanStateSignature = signature
+        guard let snapshot = TaskPlanStateSnapshot.refreshed(for: task, cached: cachedPlanStateSnapshot) else {
+            return
+        }
+        cachedPlanStateSnapshot = snapshot
     }
 
     private func refreshTaskContextState() {
@@ -1006,7 +1005,7 @@ struct TaskMainView: View {
     private var missionControlSnapshot: TaskMissionControlSnapshot {
         TaskMissionControlSnapshot.build(
             task: task,
-            planState: cachedPlanState,
+            planState: currentPlanState,
             isFinished: isFinished
         )
     }
