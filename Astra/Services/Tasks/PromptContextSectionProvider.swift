@@ -71,10 +71,40 @@ struct PromptContextSectionProviderContext {
     let task: AgentTask
     let followUpMessage: String
     let capabilityScope: TaskCapabilityPromptScope
+    let ioSnapshot: PromptContextIOSnapshot
+
+    init(
+        mode: PromptAssemblyMode,
+        task: AgentTask,
+        followUpMessage: String,
+        capabilityScope: TaskCapabilityPromptScope,
+        ioSnapshot: PromptContextIOSnapshot = .empty
+    ) {
+        self.mode = mode
+        self.task = task
+        self.followUpMessage = followUpMessage
+        self.capabilityScope = capabilityScope
+        self.ioSnapshot = ioSnapshot
+    }
 }
 
 struct PromptContextSectionProviderState {
     var includedExactSessionTranscript = false
+}
+
+struct PromptContextSnapshotText: Equatable, Sendable {
+    var text: String
+    var sourcePointers: [PromptContextSourcePointer]
+}
+
+struct PromptContextIOSnapshot: Equatable, Sendable {
+    var recentConversationTranscript: PromptContextSnapshotText?
+    var sessionHistorySummary: PromptContextSnapshotText?
+
+    static let empty = PromptContextIOSnapshot(
+        recentConversationTranscript: nil,
+        sessionHistorySummary: nil
+    )
 }
 
 @MainActor

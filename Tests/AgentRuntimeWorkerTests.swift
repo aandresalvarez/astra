@@ -799,6 +799,76 @@ struct BuildPromptTests {
         #expect(prompt.contains("User's follow-up request:\nrevise the draft"))
     }
 
+    @Test("Follow-up prompt assembly uses supplied IO snapshot")
+    func followUpPromptAssemblyUsesSuppliedIOSnapshot() throws {
+        let root = NSTemporaryDirectory() + "prompt-followup-injected-snapshot-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Injected Snapshot", primaryPath: root)
+        ctx.insert(ws)
+        let task = AgentTask(title: "T", goal: "Use injected state", workspace: ws)
+        ctx.insert(task)
+        try ctx.save()
+        _ = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+
+        let injected = PromptContextIOSnapshot(
+            recentConversationTranscript: PromptContextSnapshotText(
+                text: "INJECTED_EXACT_TRANSCRIPT",
+                sourcePointers: [PromptContextSourcePointer(label: "test transcript", target: "memory")]
+            ),
+            sessionHistorySummary: PromptContextSnapshotText(
+                text: "SHOULD_NOT_BE_USED_WHEN_EXACT_TRANSCRIPT_EXISTS",
+                sourcePointers: [PromptContextSourcePointer(label: "test history", target: "memory")]
+            )
+        )
+
+        let manifest = AgentPromptBuilder.buildFreshFollowUpPromptAssembly(
+            message: "continue",
+            task: task,
+            ioSnapshot: injected
+        )
+
+        #expect(manifest.prompt.contains("Recent conversation transcript"))
+        #expect(manifest.prompt.contains("INJECTED_EXACT_TRANSCRIPT"))
+        #expect(!manifest.prompt.contains("SHOULD_NOT_BE_USED_WHEN_EXACT_TRANSCRIPT_EXISTS"))
+        #expect(manifest.sections.contains { section in
+            section.sourcePointers.contains(PromptContextSourcePointer(label: "test transcript", target: "memory"))
+        })
+    }
+
+    @Test("Prompt IO snapshot loader owns turn output and session history reads")
+    func promptIOSnapshotLoaderOwnsTurnOutputAndSessionHistoryReads() throws {
+        let folder = NSTemporaryDirectory() + "prompt-io-snapshot-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: folder) }
+        let outputs = (folder as NSString).appendingPathComponent("outputs")
+        try FileManager.default.createDirectory(atPath: outputs, withIntermediateDirectories: true)
+
+        let turnPath = (outputs as NSString).appendingPathComponent("turn_001.md")
+        try "LOADER_TURN_OUTPUT".write(toFile: turnPath, atomically: true, encoding: .utf8)
+        try """
+        # Session
+
+        ## Turn 1
+        LOADER_SESSION_HISTORY
+        """.write(
+            toFile: SessionHistoryManager.historyPath(taskFolder: folder),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let snapshot = PromptContextIOSnapshotLoader.snapshot(taskFolder: folder)
+
+        #expect(snapshot.recentConversationTranscript?.text.contains("LOADER_TURN_OUTPUT") == true)
+        #expect(snapshot.recentConversationTranscript?.sourcePointers.contains { pointer in
+            pointer.label == "turn output"
+                && (pointer.target as NSString).lastPathComponent == (turnPath as NSString).lastPathComponent
+        } == true)
+        #expect(snapshot.sessionHistorySummary?.text.contains("LOADER_SESSION_HISTORY") == true)
+    }
+
     @Test("Follow-up prompt includes context source index for just-in-time retrieval")
     func followUpPromptIncludesContextSourceIndexForRetrieval() throws {
         let root = NSTemporaryDirectory() + "prompt-followup-source-index-\(UUID().uuidString)"

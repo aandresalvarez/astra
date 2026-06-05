@@ -116,10 +116,6 @@ private struct PromptContextText: Sendable {
 
 @MainActor
 enum AgentPromptBuilder {
-    private static let recentSessionOutputFileLimit = 6
-    private static let recentSessionFullOutputFileLimit = 4
-    private static let recentSessionFullOutputMaxCharacters = 8_000
-    private static let olderSessionOutputMaxCharacters = 2_000
     private static let contextSourceIndexOutputFileLimit = 12
     private static let contextSourceIndexArtifactLimit = 12
     private static let fallbackRunResponseLimit = 8
@@ -153,7 +149,8 @@ enum AgentPromptBuilder {
                 mode: .initialRun,
                 task: task,
                 followUpMessage: "",
-                capabilityScope: TaskCapabilityResolver(task: task).promptScope()
+                capabilityScope: TaskCapabilityResolver(task: task).promptScope(),
+                ioSnapshot: .empty
             )
         )
     }
@@ -760,10 +757,15 @@ enum AgentPromptBuilder {
     static func buildFreshFollowUpPromptAssembly(
         message: String,
         task: AgentTask,
-        budgetProfile: PromptContextBudgetProfile = .standard
+        budgetProfile: PromptContextBudgetProfile = .standard,
+        ioSnapshot: PromptContextIOSnapshot? = nil
     ) -> PromptAssemblyManifest {
         assemblePrompt(
-            buildFreshFollowUpPromptSections(message: message, task: task),
+            buildFreshFollowUpPromptSections(
+                message: message,
+                task: task,
+                ioSnapshot: ioSnapshot ?? PromptContextIOSnapshotLoader.snapshot(for: task)
+            ),
             mode: .followUp,
             budgetProfile: budgetProfile
         )
@@ -771,7 +773,8 @@ enum AgentPromptBuilder {
 
     private static func buildFreshFollowUpPromptSections(
         message: String,
-        task: AgentTask
+        task: AgentTask,
+        ioSnapshot: PromptContextIOSnapshot
     ) -> [PromptContextSection] {
         buildPromptSections(
             using: PromptContextSectionProviderRegistry.providerIDs(for: .followUp),
@@ -779,7 +782,8 @@ enum AgentPromptBuilder {
                 mode: .followUp,
                 task: task,
                 followUpMessage: message,
-                capabilityScope: TaskCapabilityResolver(task: task).promptScope(contextText: message)
+                capabilityScope: TaskCapabilityResolver(task: task).promptScope(contextText: message),
+                ioSnapshot: ioSnapshot
             )
         )
     }
@@ -966,7 +970,7 @@ enum AgentPromptBuilder {
             let task = context.task
             let folder = TaskWorkspaceAccess(task: task).taskFolder
             if !folder.isEmpty {
-                if let transcript = buildRecentConversationTranscriptWithSources(for: task) {
+                if let transcript = context.ioSnapshot.recentConversationTranscript {
                     appendSection(
                         "Recent conversation transcript (exact recent turns from this task):\n\(transcript.text)",
                         kind: .recentTranscript,
@@ -974,17 +978,13 @@ enum AgentPromptBuilder {
                         sourcePointers: transcript.sourcePointers
                     )
                     state.includedExactSessionTranscript = true
-                } else {
-                    let historyPath = SessionHistoryManager.historyPath(taskFolder: folder)
-                    if let history = try? String(contentsOfFile: historyPath, encoding: .utf8) {
-                        let trimmed = recentSessionHistorySummary(from: history)
-                        appendSection(
-                            "Session History (prior turns):\n\(trimmed)",
-                            kind: .recentTranscript,
-                            to: &sections,
-                            sourcePointers: [sourcePointer(label: "session history", target: historyPath)]
-                        )
-                    }
+                } else if let history = context.ioSnapshot.sessionHistorySummary {
+                    appendSection(
+                        "Session History (prior turns):\n\(history.text)",
+                        kind: .recentTranscript,
+                        to: &sections,
+                        sourcePointers: history.sourcePointers
+                    )
                 }
             }
 
@@ -1328,77 +1328,12 @@ enum AgentPromptBuilder {
     }
 
     static func buildRecentConversationTranscript(for task: AgentTask) -> String? {
-        buildRecentConversationTranscriptWithSources(for: task)?.text
-    }
-
-    private static func buildRecentConversationTranscriptWithSources(for task: AgentTask) -> PromptContextText? {
-        let folder = TaskWorkspaceAccess(task: task).taskFolder
-        guard !folder.isEmpty else { return nil }
-        return recentSessionOutputTranscript(taskFolder: folder)
+        PromptContextIOSnapshotLoader.recentConversationTranscript(for: task)
     }
 
     private enum TextBound {
         case prefix
         case suffix
-    }
-
-    private static func recentSessionOutputTranscript(taskFolder: String) -> PromptContextText? {
-        let turnFiles = outputTurnFilePaths(taskFolder: taskFolder)
-            .suffix(recentSessionOutputFileLimit)
-
-        guard !turnFiles.isEmpty else { return nil }
-
-        let transcriptSections = turnFiles.enumerated().compactMap { offset, path -> String? in
-            guard let text = try? String(contentsOfFile: path, encoding: .utf8),
-                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                return nil
-            }
-            let recentIndex = turnFiles.count - offset
-            let maxCharacters = recentIndex <= recentSessionFullOutputFileLimit
-                ? recentSessionFullOutputMaxCharacters
-                : olderSessionOutputMaxCharacters
-            let excerpt = boundedText(text, maxCharacters: maxCharacters, keeping: .prefix)
-            return "--- \((path as NSString).lastPathComponent) ---\n\(excerpt)"
-        }
-
-        guard !transcriptSections.isEmpty else { return nil }
-        let sourcePointers = turnFiles.map {
-            sourcePointer(label: "turn output", target: $0)
-        } + [sourcePointer(label: "session history", target: SessionHistoryManager.historyPath(taskFolder: taskFolder))]
-        return PromptContextText(
-            text: transcriptSections.joined(separator: "\n\n"),
-            sourcePointers: sourcePointers
-        )
-    }
-
-    private static func outputTurnFilePaths(taskFolder: String) -> [String] {
-        let outputDirectory = (taskFolder as NSString).appendingPathComponent("outputs")
-        guard let urls = try? FileManager.default.contentsOfDirectory(
-            at: URL(fileURLWithPath: outputDirectory),
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else { return [] }
-
-        return urls
-            .filter { url in
-                let name = url.lastPathComponent
-                return name.hasPrefix("turn_") && name.hasSuffix(".md")
-            }
-            .map(\.path)
-            .sorted { ($0 as NSString).lastPathComponent < ($1 as NSString).lastPathComponent }
-    }
-
-    private static func recentSessionHistorySummary(from history: String) -> String {
-        let marker = "\n## Turn "
-        let pieces = history.components(separatedBy: marker)
-        guard pieces.count > 1 else {
-            return boundedText(history, maxCharacters: 4_000, keeping: .suffix)
-        }
-
-        let header = pieces[0]
-        let recentTurns = pieces.dropFirst().suffix(recentSessionOutputFileLimit).map { "## Turn " + $0 }
-        let summary = ([header] + recentTurns).joined(separator: "\n")
-        return boundedText(summary, maxCharacters: 8_000, keeping: .suffix)
     }
 
     private static func followUpContextRuns(for task: AgentTask) -> [TaskRun] {
@@ -1529,7 +1464,7 @@ enum AgentPromptBuilder {
                 pointers.append(sourcePointer(label: "session history", target: historyPath))
             }
 
-            let turnOutputs = outputTurnFilePaths(taskFolder: folder)
+            let turnOutputs = PromptContextIOSnapshotLoader.outputTurnFilePaths(taskFolder: folder)
                 .suffix(contextSourceIndexOutputFileLimit)
             if !turnOutputs.isEmpty {
                 lines.append("- Turn outputs:")
