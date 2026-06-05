@@ -35,23 +35,6 @@ private struct TaskScopedStatusMessage: Equatable {
     let text: String
 }
 
-private struct TaskVerificationLoadRequest: Hashable {
-    let taskID: UUID
-    let taskStatus: TaskStatus
-    let taskUpdatedAt: Date
-    let taskFolder: String
-}
-
-enum TaskVerificationPresentationLoader {
-    static func presentation(isFinished: Bool, taskFolder: String) async -> TaskVerificationPresentation? {
-        guard isFinished, !taskFolder.isEmpty else { return nil }
-        let verification = await Task.detached(priority: .utility) {
-            TaskContextStateManager.load(taskFolder: taskFolder)?.verification
-        }.value
-        return verification.map(TaskPresentationState.verificationPresentation(for:))
-    }
-}
-
 private struct ScheduleSourceContext {
     let taskID: UUID
     let title: String
@@ -212,8 +195,7 @@ struct TaskMainView: View {
     @State private var isAgentPlanExpanded = false
     @State private var isThreadStatusExpanded = false
     @State private var isTaskDecisionDetailsExpanded = false
-    @State private var cachedPlanState = TaskPlanState.empty
-    @State private var cachedPlanStateSignature = TaskPlanStateCacheSignature.empty
+    @State private var cachedPlanStateSnapshot = TaskPlanStateSnapshot.empty
     @State private var pendingPlanStateRefreshTask: Task<Void, Never>?
     @State private var cachedVerificationRequest: TaskVerificationLoadRequest?
     @State private var cachedVerificationPresentation: TaskVerificationPresentation?
@@ -280,7 +262,7 @@ struct TaskMainView: View {
     }
 
     private var planStateCacheRefreshTrigger: TaskPlanStateCacheSignature {
-        TaskPlanStateCacheSignature(task: task)
+        TaskPlanStateSnapshot.signature(for: task)
     }
 
     private var runtimeHealth: TaskRuntimeHealth {
@@ -292,7 +274,7 @@ struct TaskMainView: View {
     }
 
     private var currentPlanState: TaskPlanState {
-        cachedPlanState
+        cachedPlanStateSnapshot.state
     }
 
     private var executableApprovedPlan: TaskPlanPayload? {
@@ -442,12 +424,15 @@ struct TaskMainView: View {
             }
         }
         .environment(\.openURL, OpenURLAction { url in
-            guard url.isFileURL,
-                  TaskGeneratedFiles.shelfDestination(for: url.path) != nil,
+            guard let route = TaskGeneratedFileOpenRouter.route(
+                fileURL: url,
+                canOpenInShelf: onOpenGeneratedFile != nil
+            ),
+                  case let .shelf(path) = route,
                   let onOpenGeneratedFile else {
                 return .systemAction
             }
-            onOpenGeneratedFile(url.path)
+            onOpenGeneratedFile(path)
             return .handled
         })
         .sheet(isPresented: $showDiffsSheet) {
@@ -596,10 +581,10 @@ struct TaskMainView: View {
     }
 
     private func refreshPlanStateCache() {
-        let signature = TaskPlanStateCacheSignature(task: task)
-        guard cachedPlanStateSignature != signature else { return }
-        cachedPlanState = TaskPlanService.reconstruct(for: task)
-        cachedPlanStateSignature = signature
+        guard let snapshot = TaskPlanStateSnapshot.refreshed(for: task, cached: cachedPlanStateSnapshot) else {
+            return
+        }
+        cachedPlanStateSnapshot = snapshot
     }
 
     private func refreshTaskContextState() {
@@ -613,9 +598,8 @@ struct TaskMainView: View {
             cachedVerificationPresentation = nil
             return
         }
-        let verification = TaskContextStateManager.load(taskFolder: request.taskFolder)?.verification
         cachedVerificationRequest = request
-        cachedVerificationPresentation = verification.map(TaskPresentationState.verificationPresentation(for:))
+        cachedVerificationPresentation = TaskVerificationPresentationLoader.presentation(taskFolder: request.taskFolder)
     }
 
     private func schedulePlanStateCacheRefresh() {
@@ -715,25 +699,41 @@ struct TaskMainView: View {
     }
 
     private var headerTextShelfFileItems: [TaskFileItem] {
-        headerFileItems.filter { $0.destination == .files }
+        TaskGeneratedFileOpenRouter.textShelfItems(headerFileItems)
+    }
+
+    private var canOpenHeaderTextShelfItems: Bool {
+        TaskGeneratedFileOpenRouter.canOpenTextShelfItems(
+            headerFileItems,
+            canOpenInShelf: onOpenGeneratedFile != nil
+        )
     }
 
     private func openHeaderFileItem(_ item: TaskFileItem) {
         isShowingFilesPopover = false
-        if item.destination != nil, let onOpenGeneratedFile {
-            onOpenGeneratedFile(item.path)
-        } else {
-            NSWorkspace.shared.open(URL(fileURLWithPath: item.path))
-        }
+        openGeneratedFile(path: item.path, destination: item.destination)
     }
 
     private func openHeaderTextFilesInShelf() {
-        guard let onOpenGeneratedFile else { return }
+        guard canOpenHeaderTextShelfItems,
+              let onOpenGeneratedFile else { return }
         let items = headerTextShelfFileItems
-        guard !items.isEmpty else { return }
         isShowingFilesPopover = false
         for item in items {
             onOpenGeneratedFile(item.path)
+        }
+    }
+
+    private func openGeneratedFile(path: String, destination: TaskGeneratedFileShelfDestination?) {
+        switch TaskGeneratedFileOpenRouter.route(
+            path: path,
+            destination: destination,
+            canOpenInShelf: onOpenGeneratedFile != nil
+        ) {
+        case let .shelf(path):
+            onOpenGeneratedFile?(path)
+        case let .system(path):
+            NSWorkspace.shared.open(URL(fileURLWithPath: path))
         }
     }
 
@@ -844,8 +844,8 @@ struct TaskMainView: View {
                         .font(Stanford.caption(12).weight(.medium))
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(headerTextShelfFileItems.isEmpty || onOpenGeneratedFile == nil ? .secondary : Stanford.lagunita)
-                .disabled(headerTextShelfFileItems.isEmpty || onOpenGeneratedFile == nil)
+                .foregroundStyle(canOpenHeaderTextShelfItems ? Stanford.lagunita : .secondary)
+                .disabled(!canOpenHeaderTextShelfItems)
                 .help("Open all text files in the Files shelf")
 
                 Spacer()
@@ -1002,26 +1002,20 @@ struct TaskMainView: View {
         return cachedVerificationPresentation
     }
 
-    private var missionControlPresentation: MissionControlPresentation? {
-        let folder = TaskWorkspaceAccess(task: task).taskFolder
-        let state = folder.isEmpty ? nil : TaskContextStateManager.load(taskFolder: folder)
-        return MissionControlPresentation.build(
+    private var missionControlSnapshot: TaskMissionControlSnapshot {
+        TaskMissionControlSnapshot.build(
             task: task,
-            planState: cachedPlanState,
-            state: state
+            planState: currentPlanState,
+            isFinished: isFinished
         )
     }
 
+    private var missionControlPresentation: MissionControlPresentation? {
+        missionControlSnapshot.presentation
+    }
+
     private var verificationLoadRequest: TaskVerificationLoadRequest? {
-        guard isFinished else { return nil }
-        let folder = TaskWorkspaceAccess(task: task).taskFolder
-        guard !folder.isEmpty else { return nil }
-        return TaskVerificationLoadRequest(
-            taskID: task.id,
-            taskStatus: task.status,
-            taskUpdatedAt: task.updatedAt,
-            taskFolder: folder
-        )
+        missionControlSnapshot.verificationLoadRequest
     }
 
     @MainActor
@@ -3379,34 +3373,16 @@ struct TaskMainView: View {
     }
 
     private var taskDecisionDockPresentation: TaskDecisionDockPresentation? {
-        let plan = executableApprovedPlan
-        let nextStep = plan.flatMap { TaskPlanService.nextExecutableStep(in: $0) }
-        let planActionTitle = plan == nil ? nil : (skipPermissions ? "Run remaining plan" : "Approve next step")
-        let planActionDetail = plan.map { nextStep.map { "Next: \($0.title)" } ?? $0.title }
-        let planModeLabel = plan == nil
-            ? nil
-            : (skipPermissions
-                ? "Auto mode runs every remaining step."
-                : "Ask mode runs one approved step, then pauses again.")
-
-        return TaskDecisionDockPresentation.build(TaskDecisionDockPresentation.Context(
+        TaskDecisionDockContextBuilder.build(TaskDecisionDockContextBuilder.Input(
             status: task.status,
             isClosed: task.isDone,
             review: taskReviewPresentation,
             mission: missionControlPresentation,
             verification: currentVerificationPresentation,
             pendingReviewState: pendingTaskReviewState,
-            hasRuntimePermissionRequest: hasOpenRuntimePermissionApprovalRequest,
-            runtimePermissionTitle: pendingRuntimePermissionDecision?.title,
-            runtimePermissionSummary: pendingRuntimePermissionDecision?.summary,
-            runtimePermissionScope: pendingRuntimePermissionDecision?.scope,
-            runtimePermissionCommandPreview: pendingRuntimePermissionDecision?.commandPreview,
-            runtimePermissionAllowSimilarLabel: pendingRuntimePermissionDecision?.allowSimilarLabel,
-            canApproveSimilarRuntimePermission: canApproveSimilarRuntimePermissionForTask,
-            hasExecutableApprovedPlan: plan != nil,
-            planActionTitle: planActionTitle,
-            planActionDetail: planActionDetail,
-            planModeLabel: planModeLabel,
+            runtimePermission: runtimePermissionState,
+            executableApprovedPlan: executableApprovedPlan,
+            skipPermissions: skipPermissions,
             canOpenPlan: onOpenPlan != nil,
             isPlanCanvasVisible: isPlanCanvasVisible,
             canRunApprovedPlan: taskQueue != nil,
@@ -3421,103 +3397,30 @@ struct TaskMainView: View {
             hasProviderSession: task.hasProviderSession,
             failureReason: failureReason,
             artifactPaths: taskDecisionArtifactPaths,
-            extraDetails: taskDecisionExtraDetails,
-            visibleThreadAffordances: taskDecisionVisibleThreadAffordances
+            extraDetails: taskDecisionExtraDetails
         ))
     }
 
-    private var taskDecisionVisibleThreadAffordances: Set<TaskThreadAffordance> {
-        var affordances: Set<TaskThreadAffordance> = [.runDetails]
-        if !taskDecisionArtifactPaths.isEmpty {
-            affordances.insert(.artifactOpen)
-        }
-        if missionControlPresentation != nil {
-            affordances.insert(.missionControlDetails)
-        }
-        if isPlanCanvasVisible {
-            affordances.insert(.planDetails)
-        }
-        return affordances
-    }
-
     private var taskDecisionArtifactPaths: [String] {
-        dedupePaths(threadViewModel.generatedFilePaths + task.artifacts.filter { !$0.isStale }.map(\.path))
+        TaskDecisionDockContextBuilder.artifactPaths(
+            generatedFilePaths: threadViewModel.generatedFilePaths,
+            storedArtifactPaths: task.artifacts.filter { !$0.isStale }.map(\.path)
+        )
     }
 
     private var taskDecisionExtraDetails: [TaskDecisionDockDetail] {
-        var details: [TaskDecisionDockDetail] = []
-        if task.status == .running {
-            details.append(TaskDecisionDockDetail(
-                id: "runtime-health",
-                title: runtimeHealth.message,
-                summary: runtimeHealth.detail ?? runtimeHealth.message,
-                systemImage: runtimeHealth.isAttentionState ? "exclamationmark.triangle" : "arrow.triangle.2.circlepath",
-                tone: runtimeHealth.isAttentionState ? .attention : .running
-            ))
-        }
-
-        if shouldShowPendingApprovalStatus && !hasOpenRuntimePermissionApprovalRequest {
-            details.append(TaskDecisionDockDetail(
-                id: "pending-approval",
-                title: "Waiting for your approval",
-                summary: pendingApprovalStatusDetail,
-                systemImage: "person.crop.circle.badge.questionmark",
-                tone: .attention
-            ))
-        }
-
-        if isCreatingScheduleForCurrentTask {
-            details.append(TaskDecisionDockDetail(
-                id: "routine-creating",
-                title: "Creating routine",
-                summary: "ASTRA is creating the routine for this task.",
-                systemImage: "arrow.triangle.2.circlepath",
-                tone: .running
-            ))
-        }
-
-        if isGeneratingRecap {
-            details.append(TaskDecisionDockDetail(
-                id: "recap-generating",
-                title: "Generating recap",
-                summary: "ASTRA is summarizing the task conversation.",
-                systemImage: "doc.text.magnifyingglass",
-                tone: .running
-            ))
-        }
-
-        if let msg = recapStatusMessage {
-            details.append(TaskDecisionDockDetail(
-                id: "recap-message",
-                title: "Recap needs attention",
-                summary: msg,
-                systemImage: "exclamationmark.triangle",
-                tone: .attention
-            ))
-        }
-
-        if let statusMsg = currentScheduleStatusMessage {
-            details.append(TaskDecisionDockDetail(
-                id: "routine-status",
-                title: isScheduleStatusError ? "Routine needs attention" : "Routine created",
-                summary: statusMsg,
-                systemImage: isScheduleStatusError ? "exclamationmark.triangle" : "checkmark.circle",
-                tone: isScheduleStatusError ? .attention : .verified
-            ))
-        }
-
-        return details
-    }
-
-    private func dedupePaths(_ paths: [String]) -> [String] {
-        var seen = Set<String>()
-        var output: [String] = []
-        for path in paths {
-            let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { continue }
-            output.append(trimmed)
-        }
-        return output
+        TaskDecisionDockContextBuilder.extraDetails(TaskDecisionDockContextBuilder.ExtraDetailsInput(
+            status: task.status,
+            runtimeHealth: runtimeHealth,
+            shouldShowPendingApprovalStatus: shouldShowPendingApprovalStatus,
+            hasRuntimePermissionRequest: hasOpenRuntimePermissionApprovalRequest,
+            pendingApprovalStatusDetail: pendingApprovalStatusDetail,
+            isCreatingScheduleForCurrentTask: isCreatingScheduleForCurrentTask,
+            isGeneratingRecap: isGeneratingRecap,
+            recapStatusMessage: recapStatusMessage,
+            currentScheduleStatusMessage: currentScheduleStatusMessage,
+            isScheduleStatusError: isScheduleStatusError
+        ))
     }
 
     private var composerTaskStatusOverride: ComposerTaskStatusPresentation? {
@@ -3773,38 +3676,34 @@ struct TaskMainView: View {
         id == "recap"
     }
 
-    private var hasOpenRuntimePermissionApprovalRequest: Bool {
-        let latestRequest = sortedEvents
-            .filter { $0.type == "permission.approval.requested" }
-            .max { $0.timestamp < $1.timestamp }
-        guard let latestRequest else { return false }
+    private var runtimePermissionState: TaskRuntimePermissionState {
+        TaskRuntimePermissionState.build(events: sortedEvents.map {
+            TaskRuntimePermissionState.Event(
+                type: $0.type,
+                payload: $0.payload,
+                timestamp: $0.timestamp
+            )
+        })
+    }
 
-        let latestApproval = sortedEvents
-            .filter { $0.type == "task.approved" }
-            .max { $0.timestamp < $1.timestamp }
-        return latestApproval.map { latestRequest.timestamp > $0.timestamp } ?? true
+    private var hasOpenRuntimePermissionApprovalRequest: Bool {
+        runtimePermissionState.hasOpenApprovalRequest
     }
 
     private var latestRuntimePermissionRequestPayload: String? {
-        sortedEvents
-            .filter { $0.type == "permission.approval.requested" }
-            .max { $0.timestamp < $1.timestamp }?
-            .payload
+        runtimePermissionState.latestRequestPayload
     }
 
     private var pendingRuntimePermissionDecision: RuntimePermissionDecisionPresentation? {
-        latestRuntimePermissionRequestPayload.map(RuntimePermissionDecisionPresentation.init(payload:))
+        runtimePermissionState.decision
     }
 
     private var latestRuntimePermissionTaskScopedGrants: [PermissionGrant] {
-        guard let payload = latestRuntimePermissionRequestPayload else { return [] }
-        let structured = PermissionBroker.structuredApprovalGrants(from: payload)
-        let grants = structured.isEmpty ? PermissionBroker.legacyApprovalGrants(from: payload) : structured
-        return PermissionBroker.taskScopedApprovalGrants(for: grants)
+        runtimePermissionState.taskScopedGrants
     }
 
     private var canApproveSimilarRuntimePermissionForTask: Bool {
-        hasOpenRuntimePermissionApprovalRequest && !latestRuntimePermissionTaskScopedGrants.isEmpty
+        runtimePermissionState.canApproveSimilarForTask
     }
 
     private var shouldShowTaskDecisionDock: Bool {
@@ -3937,11 +3836,7 @@ struct TaskMainView: View {
             onResumeTask?(task)
         case .openArtifact:
             guard let path = action.payload else { return }
-            if let onOpenGeneratedFile {
-                onOpenGeneratedFile(path)
-            } else {
-                NSWorkspace.shared.open(URL(fileURLWithPath: path))
-            }
+            openGeneratedFile(path: path, destination: TaskGeneratedFiles.shelfDestination(for: path))
         case .closeTask, .closeAnyway, .closeWithoutRunningPlan, .reopenTask:
             toggleTaskDoneFromDecisionDock()
         }
@@ -4003,12 +3898,15 @@ struct TaskMainView: View {
     }
 
     private func approveSimilarRuntimePermissionForTask() {
-        guard let taskQueue else {
+        let action = TaskRuntimePermissionActionHandler.approveSimilarRuntimePermissionForTask(
+            task,
+            modelContext: modelContext,
+            taskQueue: taskQueue,
+            canApproveSimilarForTask: canApproveSimilarRuntimePermissionForTask
+        )
+        if action == .approveOnce {
             onApproveTask?(task)
-            return
         }
-        let coordinator = TaskLifecycleCoordinator(modelContext: modelContext, taskQueue: taskQueue)
-        coordinator.approveSimilarRuntimePermissionForTask(task)
     }
 
     private func planDecisionDock(_ plan: TaskPlanPayload) -> some View {
