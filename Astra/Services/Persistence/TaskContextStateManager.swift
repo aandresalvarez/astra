@@ -392,6 +392,9 @@ enum TaskContextStateManager {
         if let checkpoint = checkpointSummary(for: task) {
             lines.append("Checkpoint:")
             lines.append("- \(boundedInline(checkpoint, maxCharacters: 420))")
+            if let warning = TaskForkManifestService.sourceAvailabilityWarning(for: task) {
+                lines.append("- \(boundedInline(warning, maxCharacters: 240))")
+            }
         }
         if !state.objective.startingRequest.isEmpty {
             lines.append("- Starting request: \(boundedInline(state.objective.startingRequest, maxCharacters: 240))")
@@ -1428,6 +1431,7 @@ enum TaskContextStateManager {
         if let checkpointPointer = checkpointSourcePointer(for: task) {
             pointers.append(checkpointPointer)
         }
+        pointers += TaskForkManifestService.sourcePointers(for: task)
         pointers += state.verification.evidence
         if let validationContract = state.validationContract {
             pointers += validationContract.sourcePointers

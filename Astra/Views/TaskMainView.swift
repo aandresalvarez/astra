@@ -1198,11 +1198,18 @@ struct TaskMainView: View {
     @ViewBuilder
     private var chatThreadContentBody: some View {
         if task.isForked {
-            HStack(spacing: 6) {
-                Image(systemName: "arrow.branch")
-                    .font(Stanford.ui(11))
-                Text("Forked from another task at step \(task.forkedAtRunIndex + 1)")
-                    .font(Stanford.caption(12))
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.branch")
+                        .font(Stanford.ui(11))
+                    Text("Forked from another task at step \(task.forkedAtRunIndex + 1)")
+                        .font(Stanford.caption(12))
+                }
+                if let warning = TaskForkManifestService.sourceAvailabilityWarning(for: task) {
+                    Text(warning)
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(Stanford.coolGrey)
+                }
             }
             .foregroundStyle(Stanford.plum)
             .padding(.horizontal, 12)

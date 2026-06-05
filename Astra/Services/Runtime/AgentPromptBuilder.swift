@@ -1508,6 +1508,7 @@ enum AgentPromptBuilder {
             let stateJSONPath = (folder as NSString).appendingPathComponent(TaskContextStateManager.jsonFileName)
             let stateMarkdownPath = (folder as NSString).appendingPathComponent(TaskContextStateManager.markdownFileName)
             let historyPath = SessionHistoryManager.historyPath(taskFolder: folder)
+            let forkManifestPath = TaskForkManifestService.manifestPath(taskFolder: folder)
 
             lines.append("- Canonical state JSON: \(stateJSONPath)")
             lines.append("- Canonical state Markdown: \(stateMarkdownPath)")
@@ -1526,6 +1527,34 @@ enum AgentPromptBuilder {
                 for path in turnOutputs {
                     lines.append("  - \((path as NSString).lastPathComponent): \(path)")
                     pointers.append(sourcePointer(label: "turn output", target: path))
+                }
+            }
+
+            if let forkManifest = TaskForkManifestService.load(taskFolder: folder) {
+                lines.append("- Fork manifest: \(forkManifestPath)")
+                lines.append("  - Source task: \(forkManifest.sourceTaskID.uuidString)")
+                lines.append("  - Checkpoint run: \(forkManifest.checkpointRunID.uuidString)")
+                if let warning = TaskForkManifestService.sourceAvailabilityWarning(for: task) {
+                    lines.append("  - Warning: \(warning)")
+                }
+                pointers.append(sourcePointer(label: "fork manifest", target: forkManifestPath))
+                if let historyPath = forkManifest.checkpointSessionHistoryPath {
+                    lines.append("  - Fork-local checkpoint history: \(historyPath)")
+                    pointers.append(sourcePointer(label: "fork checkpoint history", target: historyPath))
+                }
+                if !forkManifest.sourceOutputFiles.isEmpty {
+                    lines.append("  - Source checkpoint outputs:")
+                    for ref in forkManifest.sourceOutputFiles.suffix(contextSourceIndexOutputFileLimit) {
+                        lines.append("    - \((ref.sourcePath as NSString).lastPathComponent): \(ref.localCopyPath ?? ref.sourcePath)")
+                        pointers.append(sourcePointer(label: "source checkpoint output", target: ref.localCopyPath ?? ref.sourcePath))
+                    }
+                }
+                if !forkManifest.sourceArtifacts.isEmpty {
+                    lines.append("  - Source checkpoint artifacts:")
+                    for ref in forkManifest.sourceArtifacts.suffix(contextSourceIndexArtifactLimit) {
+                        lines.append("    - \((ref.sourcePath as NSString).lastPathComponent): \(ref.localCopyPath ?? ref.sourcePath)")
+                        pointers.append(sourcePointer(label: "source checkpoint artifact", target: ref.localCopyPath ?? ref.sourcePath))
+                    }
                 }
             }
 

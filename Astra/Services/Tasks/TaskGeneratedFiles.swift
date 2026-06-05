@@ -80,7 +80,13 @@ enum TaskGeneratedFiles {
         if rel == "diagnostics" || rel.hasPrefix("diagnostics/") {
             return false
         }
+        if rel == "fork_sources/history" || rel.hasPrefix("fork_sources/history/") {
+            return false
+        }
         if name == "current_state.json" || name == "current_state.md" {
+            return false
+        }
+        if name == TaskForkManifest.fileName {
             return false
         }
         if name.hasPrefix("turn_") && name.hasSuffix(".md") {
