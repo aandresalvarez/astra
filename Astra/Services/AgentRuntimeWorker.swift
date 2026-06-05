@@ -534,7 +534,8 @@ final class AgentRuntimeWorker {
         }
         Self.logCapabilityResolution(for: task, runtime: selectedRuntime, phase: auditPhase)
         await logGitHubCLIPreflightIfNeeded(for: task, phase: auditPhase)
-        let providerCapabilities = runtimeAdapter.policyCapabilities(executablePath: launchSettings.executablePath)
+        let policyRenderer = AgentRuntimeAdapterRegistry.policyRenderer(for: selectedRuntime)
+        let providerCapabilities = policyRenderer.policyCapabilities(executablePath: launchSettings.executablePath)
         let runPermissionPolicy = effectivePermissionPolicy(for: task, executionPolicy: executionPolicy)
         let manifest = AgentPolicyManifestService.recordPreflightManifest(
             task: task,
@@ -1019,7 +1020,7 @@ final class AgentRuntimeWorker {
 
     @MainActor
     private static func applyEmptySuccessfulRunIfNeeded(
-        runtimeAdapter: any AgentRuntimeAdapter,
+        runtimeAdapter: any AgentRuntimePostRunDiagnostics,
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
@@ -1198,7 +1199,7 @@ final class AgentRuntimeWorker {
 
     @MainActor
     private static func recordEstimatedUsageIfProviderDidNotReport(
-        runtimeAdapter: any AgentRuntimeAdapter,
+        runtimeAdapter: any AgentRuntimeWorkerEventRecording,
         selectedRuntime: AgentRuntimeID,
         prompt: String,
         task: AgentTask,
@@ -1553,7 +1554,7 @@ final class AgentRuntimeWorker {
     private static func nativeContinuationSessionID(
         for task: AgentTask,
         currentRun: TaskRun,
-        runtimeAdapter: any AgentRuntimeAdapter,
+        runtimeAdapter: any AgentRuntimeDescriptorReadiness,
         phase: String,
         currentLaunchSignature: ProviderLaunchSignaturePayload
     ) -> NativeContinuationDecision {
