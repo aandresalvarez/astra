@@ -1,5 +1,6 @@
 import Testing
 import CoreGraphics
+import Foundation
 @testable import ASTRA
 
 /// Regression tests for the panel layout math that drives the
@@ -53,6 +54,19 @@ struct PanelLayoutGeometryTests {
         #expect(WorkspaceCanvasItemPreference.rawValue(for: nil) == "")
         #expect(WorkspaceCanvasItemPreference.rawValue(for: .browser) == "browser")
         #expect(WorkspaceCanvasItemPreference.emptyStorageRawValue == "{}")
+        #expect(GeneratedHTMLDiscoveryState.empty.preferredPath == "")
+        #expect(GeneratedHTMLDiscoveryState.empty.signature == "")
+    }
+
+    @Test("Generated HTML discovery can rediscover the same path after unavailable scan")
+    func generatedHTMLDiscoveryCanRediscoverSamePathAfterUnavailableScan() {
+        let taskID = UUID()
+        let path = "/tmp/astra-task/index.html"
+        let discovered = GeneratedHTMLDiscoveryState.discovered(preferredPath: path, taskID: taskID)
+
+        #expect(discovered.preferredPath == path)
+        #expect(!discovered.shouldApplyDiscovery(preferredPath: path, taskID: taskID))
+        #expect(GeneratedHTMLDiscoveryState.empty.shouldApplyDiscovery(preferredPath: path, taskID: taskID))
     }
 
     @Test("Workspace shelf preference changes only for explicit user choices in the current conversation")
@@ -83,7 +97,9 @@ struct PanelLayoutGeometryTests {
             item: nil,
             remember: true
         )
+        #expect(withConversationAClosed == WorkspaceCanvasItemPreference.emptyStorageRawValue)
         #expect(WorkspaceCanvasItemPreference.item(in: withConversationAClosed, for: conversationA) == nil)
+        #expect(!withConversationAClosed.contains(conversationA))
 
         let withConversationBMarkdown = WorkspaceCanvasItemPreference.updatedStorageRawValue(
             currentStorageRawValue: withConversationAClosed,
@@ -93,6 +109,7 @@ struct PanelLayoutGeometryTests {
         )
         #expect(WorkspaceCanvasItemPreference.item(in: withConversationBMarkdown, for: conversationA) == nil)
         #expect(WorkspaceCanvasItemPreference.item(in: withConversationBMarkdown, for: conversationB) == .markdown)
+        #expect(!withConversationBMarkdown.contains(conversationA))
         #expect(WorkspaceCanvasItemPreference.updatedStorageRawValue(
             currentStorageRawValue: withConversationBMarkdown,
             conversationID: nil,

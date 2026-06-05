@@ -84,7 +84,11 @@ struct WorkspaceCanvasItemPreference: Equatable {
         }
 
         var storage = decodedStorage(currentStorageRawValue)
-        storage[conversationID] = rawValue(for: item)
+        if let item {
+            storage[conversationID] = rawValue(for: item)
+        } else {
+            storage.removeValue(forKey: conversationID)
+        }
         return encodedStorage(storage)
     }
 
@@ -118,6 +122,24 @@ struct WorkspaceCanvasItemPreference: Equatable {
             return emptyStorageRawValue
         }
         return encoded
+    }
+}
+
+struct GeneratedHTMLDiscoveryState: Equatable {
+    let preferredPath: String
+    let signature: String
+
+    static let empty = GeneratedHTMLDiscoveryState(preferredPath: "", signature: "")
+
+    static func discovered(preferredPath: String, taskID: UUID) -> GeneratedHTMLDiscoveryState {
+        GeneratedHTMLDiscoveryState(
+            preferredPath: preferredPath,
+            signature: TaskGeneratedFiles.htmlPreviewSignature(for: preferredPath, taskID: taskID)
+        )
+    }
+
+    func shouldApplyDiscovery(preferredPath: String, taskID: UUID) -> Bool {
+        signature != TaskGeneratedFiles.htmlPreviewSignature(for: preferredPath, taskID: taskID)
     }
 }
 
@@ -1515,11 +1537,16 @@ struct ContentView: View {
         }
     }
 
+    private func clearGeneratedHTMLDiscoveryState() {
+        selectedTaskPreferredHTMLPath = GeneratedHTMLDiscoveryState.empty.preferredPath
+        lastGeneratedHTMLDiscoverySignature = GeneratedHTMLDiscoveryState.empty.signature
+    }
+
     private func refreshGeneratedHTMLAvailabilityForSelectedTask() {
         guard isBrowserPinnedToTask else { return }
         guard let selectedTask else {
             generatedHTMLDiscoveryTask?.cancel()
-            selectedTaskPreferredHTMLPath = ""
+            clearGeneratedHTMLDiscoveryState()
             return
         }
 
@@ -1527,7 +1554,7 @@ struct ContentView: View {
         let taskFolder = TaskWorkspaceAccess(task: selectedTask).taskFolder
         guard !taskFolder.isEmpty else {
             generatedHTMLDiscoveryTask?.cancel()
-            selectedTaskPreferredHTMLPath = ""
+            clearGeneratedHTMLDiscoveryState()
             return
         }
 
@@ -1541,26 +1568,29 @@ struct ContentView: View {
                           self.selectedTask?.id == taskID else {
                         return
                     }
-                    selectedTaskPreferredHTMLPath = ""
+                    clearGeneratedHTMLDiscoveryState()
                 }
                 return
             }
 
-            let signature = TaskGeneratedFiles.htmlPreviewSignature(for: path, taskID: taskID)
+            let discoveryState = GeneratedHTMLDiscoveryState.discovered(preferredPath: path, taskID: taskID)
             await MainActor.run {
                 guard !Task.isCancelled,
                       self.selectedTask?.id == taskID,
-                      lastGeneratedHTMLDiscoverySignature != signature else {
+                      GeneratedHTMLDiscoveryState(
+                          preferredPath: selectedTaskPreferredHTMLPath,
+                          signature: lastGeneratedHTMLDiscoverySignature
+                      ).shouldApplyDiscovery(preferredPath: path, taskID: taskID) else {
                     return
                 }
 
-                selectedTaskPreferredHTMLPath = path
-                lastGeneratedHTMLDiscoverySignature = signature
+                selectedTaskPreferredHTMLPath = discoveryState.preferredPath
+                lastGeneratedHTMLDiscoverySignature = discoveryState.signature
                 logGeneratedHTMLDiscovery(
                     taskID: taskID,
                     event: "artifact_discovered",
                     reason: "explicit_open_required",
-                    targetPath: path
+                    targetPath: discoveryState.preferredPath
                 )
                 restoreRememberedWorkspaceCanvasItemIfAvailable()
             }
@@ -1585,10 +1615,12 @@ struct ContentView: View {
 
         session.load(URL(fileURLWithPath: selectedTaskPreferredHTMLPath), source: source)
         if let taskID {
-            lastGeneratedHTMLDiscoverySignature = TaskGeneratedFiles.htmlPreviewSignature(
-                for: selectedTaskPreferredHTMLPath,
+            let discoveryState = GeneratedHTMLDiscoveryState.discovered(
+                preferredPath: selectedTaskPreferredHTMLPath,
                 taskID: taskID
             )
+            selectedTaskPreferredHTMLPath = discoveryState.preferredPath
+            lastGeneratedHTMLDiscoverySignature = discoveryState.signature
         }
         syncBrowserPresentation()
     }
@@ -1618,8 +1650,9 @@ struct ContentView: View {
             )
             session.load(url, source: "generated_file")
             if let taskID {
-                selectedTaskPreferredHTMLPath = path
-                lastGeneratedHTMLDiscoverySignature = TaskGeneratedFiles.htmlPreviewSignature(for: path, taskID: taskID)
+                let discoveryState = GeneratedHTMLDiscoveryState.discovered(preferredPath: path, taskID: taskID)
+                selectedTaskPreferredHTMLPath = discoveryState.preferredPath
+                lastGeneratedHTMLDiscoverySignature = discoveryState.signature
             }
             presentCanvas(.browser)
             syncBrowserPresentation()
@@ -1676,8 +1709,7 @@ struct ContentView: View {
         let previousSession = currentBrowserSession
         let previousAddress = previousSession.currentURL
         isBrowserPinnedToTask = pinnedToTask
-        lastGeneratedHTMLDiscoverySignature = ""
-        selectedTaskPreferredHTMLPath = ""
+        clearGeneratedHTMLDiscoveryState()
 
         let nextSession = currentBrowserSession
         if !previousAddress.isEmpty && nextSession.currentURL.isEmpty {
@@ -2032,8 +2064,7 @@ struct ContentView: View {
         }
         selectedTask = task
         if previousTaskID != task?.id {
-            lastGeneratedHTMLDiscoverySignature = ""
-            selectedTaskPreferredHTMLPath = ""
+            clearGeneratedHTMLDiscoveryState()
             currentBrowserSession.bindToTask(task?.id)
             currentMarkdownSession.bindToTask(task?.id)
             querySession.bindToTask(task?.id)
