@@ -199,6 +199,7 @@ struct TaskMainView: View {
     @State private var pendingPlanStateRefreshTask: Task<Void, Never>?
     @State private var cachedVerificationRequest: TaskVerificationLoadRequest?
     @State private var cachedVerificationPresentation: TaskVerificationPresentation?
+    @State private var cachedForkSourceAvailabilityWarning: String?
     @FocusState private var isComposerFocused: Bool
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
@@ -479,6 +480,7 @@ struct TaskMainView: View {
             cachedVerificationRequest = nil
             cachedVerificationPresentation = nil
             refreshTaskContextState()
+            refreshForkSourceAvailabilityWarning()
             refreshPlanStateCache()
         }
         .onAppear {
@@ -491,6 +493,7 @@ struct TaskMainView: View {
             cachedVerificationRequest = nil
             cachedVerificationPresentation = nil
             refreshTaskContextState()
+            refreshForkSourceAvailabilityWarning()
             refreshPlanStateCache()
             logRuntimeHealthIfNeeded(reason: "appear")
             installPasteMonitor()
@@ -513,6 +516,7 @@ struct TaskMainView: View {
         .onChange(of: generatedFilesTrigger) { _, _ in
             threadViewModel.refreshGeneratedFiles(folder: TaskWorkspaceAccess(task: task).taskFolder)
             refreshTaskContextState()
+            refreshForkSourceAvailabilityWarning()
         }
         .onChange(of: runtimeHealth.telemetrySignature) { _, _ in
             logRuntimeHealthIfNeeded(reason: "health")
@@ -571,6 +575,10 @@ struct TaskMainView: View {
     private func refreshTaskContextState() {
         TaskContextStateManager.refresh(task: task)
         refreshCachedVerificationPresentationFromCurrentState()
+    }
+
+    private func refreshForkSourceAvailabilityWarning() {
+        cachedForkSourceAvailabilityWarning = TaskForkManifestService.sourceAvailabilityWarning(for: task)
     }
 
     private func refreshCachedVerificationPresentationFromCurrentState() {
@@ -1198,11 +1206,18 @@ struct TaskMainView: View {
     @ViewBuilder
     private var chatThreadContentBody: some View {
         if task.isForked {
-            HStack(spacing: 6) {
-                Image(systemName: "arrow.branch")
-                    .font(Stanford.ui(11))
-                Text("Forked from another task at step \(task.forkedAtRunIndex + 1)")
-                    .font(Stanford.caption(12))
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.branch")
+                        .font(Stanford.ui(11))
+                    Text("Forked from another task at step \(task.forkedAtRunIndex + 1)")
+                        .font(Stanford.caption(12))
+                }
+                if let warning = cachedForkSourceAvailabilityWarning {
+                    Text(warning)
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(Stanford.coolGrey)
+                }
             }
             .foregroundStyle(Stanford.plum)
             .padding(.horizontal, 12)

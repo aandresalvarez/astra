@@ -141,6 +141,19 @@ enum WorkspaceFileIndexService {
         if let task {
             let access = TaskWorkspaceAccess(task: task)
             append(kind: .taskFolder, title: "Task Folder", rawPath: access.taskFolder)
+            if let forkManifest = TaskForkManifestService.load(for: task, fileManager: fileManager) {
+                let checkpointFiles = (forkManifest.sourceOutputFiles + forkManifest.sourceArtifacts)
+                    .map { $0.localCopyPath ?? $0.sourcePath }
+                for path in checkpointFiles {
+                    append(
+                        kind: .input,
+                        title: "Fork Checkpoint File",
+                        rawPath: path,
+                        subtitle: "Source task checkpoint",
+                        roleLabel: "Checkpoint"
+                    )
+                }
+            }
             for path in TaskRelatedOutputFolders.legacyOutputFolders(for: task, workspace: task.workspace ?? workspace, fileManager: fileManager) {
                 let name = URL(fileURLWithPath: path).lastPathComponent
                 append(kind: .taskFolder, title: "Task Output \(name)", rawPath: path)
