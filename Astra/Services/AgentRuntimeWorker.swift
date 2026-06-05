@@ -813,7 +813,7 @@ final class AgentRuntimeWorker {
             modelContext.insert(event)
         } else if AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
             result: result,
-            task: task,
+            budget: AgentRuntimeBudgetSnapshot(task: task),
             budgetEnforcementMode: budgetEnforcementMode
         ) {
             run.status = .budgetExceeded
