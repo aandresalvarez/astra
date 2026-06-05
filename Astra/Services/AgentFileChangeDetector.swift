@@ -76,12 +76,9 @@ enum AgentFileChangeDetector {
                 newString: nil,
                 timestamp: Date()
             )
-            run.appendFileChange(StoredFileChange(from: change))
-            let existingVersion = task.artifacts
-                .filter { $0.path == path }
-                .map(\.version)
-                .max() ?? 0
-            modelContext.insert(Artifact(task: task, type: FileChange.FileChangeType.edit.rawValue, path: path, version: existingVersion + 1))
+            let storedChange = StoredFileChange(from: change)
+            run.appendFileChange(storedChange)
+            TaskArtifactPersistenceService.persistFileChangeArtifact(storedChange, for: task, modelContext: modelContext)
         }
     }
 

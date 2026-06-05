@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 
 enum TaskDeliverableProfile: String, Codable, Sendable, Equatable {
     case notRequired = "not_required"
@@ -119,10 +120,15 @@ enum TaskDeliverableVerificationService {
     static func evaluate(
         task: AgentTask,
         run: TaskRun?,
+        modelContext: ModelContext? = nil,
         environment: TaskDeliverableVerificationEnvironment = .live
     ) async -> TaskDeliverableVerificationResult {
         let requiresArtifact = TaskDeliverableExpectation.requiresStandaloneArtifact(task)
-        let files = TaskOutputDiscovery.files(for: task)
+        let artifactReconciliation = TaskArtifactPersistenceService.reconcileTaskOutputArtifacts(
+            for: task,
+            modelContext: modelContext
+        )
+        let files = artifactReconciliation.discoveredFiles
         let profile = profile(for: task, files: files, requiresArtifact: requiresArtifact)
 
         guard requiresArtifact || !files.isEmpty else {

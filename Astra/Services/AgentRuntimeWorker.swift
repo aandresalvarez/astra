@@ -1078,7 +1078,7 @@ final class AgentRuntimeWorker {
         run: TaskRun,
         modelContext: ModelContext
     ) async -> Bool {
-        let result = await TaskDeliverableVerificationService.evaluate(task: task, run: run)
+        let result = await TaskDeliverableVerificationService.evaluate(task: task, run: run, modelContext: modelContext)
         guard let eventType = TaskDeliverableVerificationService.eventType(for: result) else {
             return false
         }

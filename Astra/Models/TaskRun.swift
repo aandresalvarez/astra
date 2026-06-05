@@ -85,4 +85,41 @@ struct StoredFileChange: Codable, Identifiable, Hashable, Sendable {
         self.newString = fileChange.newString
         self.timestamp = fileChange.timestamp
     }
+
+    var kind: StoredFileChangeKind {
+        StoredFileChangeKind(changeType: changeType)
+    }
+}
+
+enum StoredFileChangeKind: String, Codable, CaseIterable, Sendable, Equatable, Hashable {
+    case write = "Write"
+    case edit = "Edit"
+    case discovered = "discovered"
+    case unknown = "unknown"
+
+    init(changeType: String) {
+        switch changeType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "write":
+            self = .write
+        case "edit":
+            self = .edit
+        case "discovered":
+            self = .discovered
+        default:
+            self = .unknown
+        }
+    }
+
+    var sourceLabel: String {
+        switch self {
+        case .write:
+            "created"
+        case .edit:
+            "edited"
+        case .discovered:
+            "output"
+        case .unknown:
+            "changed"
+        }
+    }
 }

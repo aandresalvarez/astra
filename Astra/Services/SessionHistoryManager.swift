@@ -49,7 +49,7 @@ enum SessionHistoryManager {
         if !fileChanges.isEmpty {
             entry += "**Files changed**:\n"
             for change in fileChanges {
-                let icon = change.changeType == "Write" ? "+" : "~"
+                let icon = change.kind == .write ? "+" : "~"
                 entry += "- [\(icon)] `\(change.path)`\n"
             }
             entry += "\n"

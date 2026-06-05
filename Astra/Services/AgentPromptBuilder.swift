@@ -914,7 +914,7 @@ enum AgentPromptBuilder {
             let uniquePaths = Array(Set(allChanges.map { $0.path })).sorted().suffix(20)
             let changeList = uniquePaths.map { path -> String in
                 let lastChange = allChanges.last { $0.path == path }
-                let icon = lastChange?.changeType == "Write" ? "+" : "~"
+                let icon = lastChange?.kind == .write ? "+" : "~"
                 return "[\(icon)] \(path)"
             }.joined(separator: "\n")
             appendSection(

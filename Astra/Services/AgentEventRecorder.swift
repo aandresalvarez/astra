@@ -82,17 +82,9 @@ enum AgentEventRecorder {
                 run: run
             ))
             if let fileChange = StreamEventParser.extractFileChange(from: parsed) {
-                run.appendFileChange(StoredFileChange(from: fileChange))
-                let existingVersion = task.artifacts
-                    .filter { $0.path == fileChange.path }
-                    .map(\.version)
-                    .max() ?? 0
-                modelContext.insert(Artifact(
-                    task: task,
-                    type: fileChange.changeType.rawValue,
-                    path: fileChange.path,
-                    version: existingVersion + 1
-                ))
+                let change = StoredFileChange(from: fileChange)
+                run.appendFileChange(change)
+                TaskArtifactPersistenceService.persistFileChangeArtifact(change, for: task, modelContext: modelContext)
             }
 
         case .toolResult(_, let content):
@@ -678,11 +670,8 @@ enum AgentEventRecorder {
             newString: nil,
             timestamp: Date()
         )
-        run.appendFileChange(StoredFileChange(from: change))
-        let existingVersion = task.artifacts
-            .filter { $0.path == path }
-            .map(\.version)
-            .max() ?? 0
-        modelContext.insert(Artifact(task: task, type: changeType.rawValue, path: path, content: summary, version: existingVersion + 1))
+        let storedChange = StoredFileChange(from: change)
+        run.appendFileChange(storedChange)
+        TaskArtifactPersistenceService.persistFileChangeArtifact(storedChange, for: task, modelContext: modelContext)
     }
 }

@@ -3585,8 +3585,8 @@ struct TaskMainView: View {
         if let run = latestRun {
             let fileChanges = currentThreadSnapshot.activity(for: run).fileChanges
             let fileCount = fileChanges.count
-            let writeCount = fileChanges.filter { $0.changeType == "Write" }.count
-            let editCount = fileChanges.filter { $0.changeType == "Edit" }.count
+            let writeCount = fileChanges.filter { $0.kind == .write }.count
+            let editCount = fileChanges.filter { $0.kind == .edit }.count
 
             VStack(alignment: .leading, spacing: 6) {
                 if task.status == .pendingUser {
