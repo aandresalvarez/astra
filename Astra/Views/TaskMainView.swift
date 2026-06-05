@@ -3898,12 +3898,15 @@ struct TaskMainView: View {
     }
 
     private func approveSimilarRuntimePermissionForTask() {
-        guard let taskQueue else {
+        let action = TaskRuntimePermissionActionHandler.approveSimilarRuntimePermissionForTask(
+            task,
+            modelContext: modelContext,
+            taskQueue: taskQueue,
+            canApproveSimilarForTask: canApproveSimilarRuntimePermissionForTask
+        )
+        if action == .approveOnce {
             onApproveTask?(task)
-            return
         }
-        let coordinator = TaskLifecycleCoordinator(modelContext: modelContext, taskQueue: taskQueue)
-        coordinator.approveSimilarRuntimePermissionForTask(task)
     }
 
     private func planDecisionDock(_ plan: TaskPlanPayload) -> some View {
