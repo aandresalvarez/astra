@@ -5,13 +5,23 @@ import ASTRACore
 
 @Suite("Runtime Settings Snapshot")
 struct RuntimeSettingsSnapshotTests {
+    @Test("Central runtime snapshot keys preserve legacy raw values")
+    func centralRuntimeSnapshotKeysPreserveLegacyRawValues() {
+        #expect(AppStorageKeys.defaultRuntimeID == "defaultRuntimeID")
+        #expect(AppStorageKeys.defaultModel == "defaultModel")
+        #expect(AppStorageKeys.appUIScale == "appUIScale")
+        #expect(AppStorageKeys.workspacesRoot == "workspacesRoot")
+        #expect(AppStorageKeys.timeoutSeconds == "timeoutSeconds")
+        #expect(AppStorageKeys.validationModel == "validationModel")
+    }
+
     @Test("Provider snapshot preserves legacy path keys and trims values")
     func providerSnapshotPreservesLegacyPathKeysAndTrimsValues() {
         let (defaults, suiteName) = makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
-        defaults.set(" /usr/local/bin/claude \n", forKey: "claudePath")
-        defaults.set("\t/usr/local/bin/copilot ", forKey: "copilotPath")
+        defaults.set(" /usr/local/bin/claude \n", forKey: AppStorageKeys.claudePath)
+        defaults.set("\t/usr/local/bin/copilot ", forKey: AppStorageKeys.copilotPath)
         defaults.set(7, forKey: AppStorageKeys.runtimeProviderSettingsRevision)
         defaults.set(ClaudeProvider.vertex.rawValue, forKey: AppStorageKeys.claudeProvider)
         defaults.set(" astra-gcp ", forKey: AppStorageKeys.claudeVertexProjectID)
@@ -92,6 +102,20 @@ struct RuntimeSettingsSnapshotTests {
         #expect(snapshot.modelCacheSignature.contains("9|"))
     }
 
+    @Test("Runtime snapshot reads legacy default runtime and model keys")
+    func runtimeSnapshotReadsLegacyDefaultRuntimeAndModelKeys() {
+        let (defaults, suiteName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        defaults.set(AgentRuntimeID.copilotCLI.rawValue, forKey: AppStorageKeys.defaultRuntimeID)
+        defaults.set("gpt-5.1", forKey: AppStorageKeys.defaultModel)
+
+        let snapshot = RuntimeSettingsSnapshotStore.runtimeSnapshot(defaults: defaults)
+
+        #expect(snapshot.defaultRuntime == .copilotCLI)
+        #expect(snapshot.defaultModel == "gpt-5.1")
+    }
+
     @Test("UI preference snapshot applies stable defaults")
     func uiPreferenceSnapshotAppliesStableDefaults() {
         let (defaults, suiteName) = makeDefaults()
@@ -106,10 +130,10 @@ struct RuntimeSettingsSnapshotTests {
         ))
 
         defaults.set(AppearancePreference.dark.rawValue, forKey: AppearancePreference.storageKey)
-        defaults.set(1.2, forKey: "appUIScale")
-        defaults.set("/tmp/workspaces", forKey: "workspacesRoot")
-        defaults.set(900, forKey: "timeoutSeconds")
-        defaults.set("validator", forKey: "validationModel")
+        defaults.set(1.2, forKey: AppStorageKeys.appUIScale)
+        defaults.set("/tmp/workspaces", forKey: AppStorageKeys.workspacesRoot)
+        defaults.set(900, forKey: AppStorageKeys.timeoutSeconds)
+        defaults.set("validator", forKey: AppStorageKeys.validationModel)
 
         #expect(RuntimeSettingsSnapshotStore.appUIPreferences(defaults: defaults) == AppUIPreferencesSnapshot(
             appearance: .dark,

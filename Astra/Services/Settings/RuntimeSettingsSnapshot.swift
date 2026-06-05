@@ -156,8 +156,9 @@ enum RuntimeSettingsSnapshotStore {
 
     static func runtimeSnapshot(defaults: UserDefaults = .standard) -> RuntimeSettingsSnapshot {
         runtimeSnapshot(
-            defaultRuntimeID: defaults.string(forKey: "defaultRuntimeID") ?? TaskExecutionDefaults.runtime.rawValue,
-            defaultModel: defaults.string(forKey: "defaultModel") ?? TaskExecutionDefaults.model,
+            defaultRuntimeID: defaults.string(forKey: AppStorageKeys.defaultRuntimeID)
+                ?? TaskExecutionDefaults.runtime.rawValue,
+            defaultModel: defaults.string(forKey: AppStorageKeys.defaultModel) ?? TaskExecutionDefaults.model,
             defaultBudget: defaults.object(forKey: AppStorageKeys.defaultTokenBudget) == nil
                 ? TaskExecutionDefaults.tokenBudget
                 : defaults.integer(forKey: AppStorageKeys.defaultTokenBudget),
@@ -204,10 +205,14 @@ enum RuntimeSettingsSnapshotStore {
     static func appUIPreferences(defaults: UserDefaults = .standard) -> AppUIPreferencesSnapshot {
         AppUIPreferencesSnapshot(
             appearance: AppearancePreference(rawValue: defaults.string(forKey: AppearancePreference.storageKey) ?? "") ?? .system,
-            uiScale: defaults.object(forKey: "appUIScale") == nil ? 1.0 : defaults.double(forKey: "appUIScale"),
-            workspacesRoot: defaults.string(forKey: "workspacesRoot") ?? "",
-            timeoutSeconds: defaults.object(forKey: "timeoutSeconds") == nil ? 600 : defaults.integer(forKey: "timeoutSeconds"),
-            validationModel: defaults.string(forKey: "validationModel") ?? "claude-haiku-4-5-20251001"
+            uiScale: defaults.object(forKey: AppStorageKeys.appUIScale) == nil
+                ? 1.0
+                : defaults.double(forKey: AppStorageKeys.appUIScale),
+            workspacesRoot: defaults.string(forKey: AppStorageKeys.workspacesRoot) ?? "",
+            timeoutSeconds: defaults.object(forKey: AppStorageKeys.timeoutSeconds) == nil
+                ? 600
+                : defaults.integer(forKey: AppStorageKeys.timeoutSeconds),
+            validationModel: defaults.string(forKey: AppStorageKeys.validationModel) ?? "claude-haiku-4-5-20251001"
         )
     }
 }

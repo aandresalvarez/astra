@@ -148,7 +148,7 @@ enum AgentPromptBuilder {
 
     private static func buildPromptSections(for task: AgentTask) -> [PromptContextSection] {
         buildPromptSections(
-            using: initialRunSectionProviders,
+            using: PromptContextSectionProviderRegistry.providerIDs(for: .initialRun),
             context: PromptContextSectionProviderContext(
                 mode: .initialRun,
                 task: task,
@@ -774,7 +774,7 @@ enum AgentPromptBuilder {
         task: AgentTask
     ) -> [PromptContextSection] {
         buildPromptSections(
-            using: followUpSectionProviders,
+            using: PromptContextSectionProviderRegistry.providerIDs(for: .followUp),
             context: PromptContextSectionProviderContext(
                 mode: .followUp,
                 task: task,
@@ -785,58 +785,68 @@ enum AgentPromptBuilder {
     }
 
     static func promptSectionProviderIDs(for mode: PromptAssemblyMode) -> [PromptContextSectionProviderID] {
-        switch mode {
-        case .initialRun:
-            initialRunSectionProviders.map(\.id)
-        case .followUp:
-            followUpSectionProviders.map(\.id)
-        }
+        PromptContextSectionProviderRegistry.providerIDs(for: mode)
     }
 
-    private static let initialRunSectionProviders: [any PromptContextSectionProvider] = [
-        AgentTeamSectionProvider(),
-        CurrentTaskSectionProvider(),
-        ThreadStateSectionProvider(),
-        WorkspaceInstructionsSectionProvider(),
-        WorkspaceMemoriesSectionProvider(),
-        RecentTasksSectionProvider(),
-        WorkspaceEnvironmentSectionProvider(),
-        TaskOutputFolderSectionProvider(),
-        InitialTaskDetailsSectionProvider(),
-        CapabilitySectionProvider(),
-        BrowserSectionProvider(),
-        DocumentReaderSectionProvider(),
-        AstraRunProtocolSectionProvider(),
-        CurrentTaskReminderSectionProvider()
-    ]
-
-    private static let followUpSectionProviders: [any PromptContextSectionProvider] = [
-        FollowUpIntroSectionProvider(),
-        ThreadStateSectionProvider(),
-        ContextSourceIndexSectionProvider(),
-        NativeContinuationSectionProvider(),
-        ConversationHistorySectionProvider(),
-        ChangedFilesSectionProvider(),
-        TaskOutputFolderSectionProvider(),
-        FollowUpContextSectionProvider(),
-        CapabilitySectionProvider(),
-        BrowserSectionProvider(),
-        WorkspaceMemoriesSectionProvider(),
-        AstraRunProtocolSectionProvider(),
-        HistoryLookupRuleSectionProvider(),
-        FollowUpRequestSectionProvider()
-    ]
-
     private static func buildPromptSections(
-        using providers: [any PromptContextSectionProvider],
+        using providerIDs: [PromptContextSectionProviderID],
         context: PromptContextSectionProviderContext
     ) -> [PromptContextSection] {
         var sections: [PromptContextSection] = []
         var state = PromptContextSectionProviderState()
-        for provider in providers {
-            provider.appendSections(for: context, state: &state, to: &sections)
+        for providerID in providerIDs {
+            sectionProvider(for: providerID).appendSections(for: context, state: &state, to: &sections)
         }
         return sections
+    }
+
+    private static func sectionProvider(for id: PromptContextSectionProviderID) -> any PromptContextSectionProvider {
+        switch id {
+        case .agentTeam:
+            AgentTeamSectionProvider()
+        case .currentTask:
+            CurrentTaskSectionProvider()
+        case .followUpIntro:
+            FollowUpIntroSectionProvider()
+        case .threadState:
+            ThreadStateSectionProvider()
+        case .contextSourceIndex:
+            ContextSourceIndexSectionProvider()
+        case .nativeContinuation:
+            NativeContinuationSectionProvider()
+        case .conversationHistory:
+            ConversationHistorySectionProvider()
+        case .changedFiles:
+            ChangedFilesSectionProvider()
+        case .workspaceInstructions:
+            WorkspaceInstructionsSectionProvider()
+        case .memories:
+            WorkspaceMemoriesSectionProvider()
+        case .recentTasks:
+            RecentTasksSectionProvider()
+        case .workspaceEnvironment:
+            WorkspaceEnvironmentSectionProvider()
+        case .taskOutputFolder:
+            TaskOutputFolderSectionProvider()
+        case .taskDetails:
+            InitialTaskDetailsSectionProvider()
+        case .followUpContext:
+            FollowUpContextSectionProvider()
+        case .capabilities:
+            CapabilitySectionProvider()
+        case .browser:
+            BrowserSectionProvider()
+        case .documentReader:
+            DocumentReaderSectionProvider()
+        case .astraRunProtocol:
+            AstraRunProtocolSectionProvider()
+        case .historyLookupRule:
+            HistoryLookupRuleSectionProvider()
+        case .followUpRequest:
+            FollowUpRequestSectionProvider()
+        case .currentTaskReminder:
+            CurrentTaskReminderSectionProvider()
+        }
     }
 
     private struct AgentTeamSectionProvider: PromptContextSectionProvider {

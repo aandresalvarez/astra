@@ -1791,6 +1791,8 @@ final class AgentRuntimeWorker {
             return "auth_failed"
         case .timedOut:
             return "timeout"
+        case .cancelled:
+            return "cancelled"
         case .launchFailed:
             return "launch_failed"
         }

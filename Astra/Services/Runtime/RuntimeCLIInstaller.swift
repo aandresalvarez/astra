@@ -97,6 +97,8 @@ struct RuntimeCLIInstaller: Sendable {
         switch result.outcome {
         case .timedOut:
             return "Install timed out after \(Int(timeout))s."
+        case .cancelled:
+            return "Install was cancelled."
         case .launchFailed(let reason):
             return "Could not launch installer: \(reason)"
         case .exited(let code):

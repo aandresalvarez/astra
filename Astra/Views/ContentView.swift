@@ -4315,6 +4315,8 @@ struct WorkspaceSetupForm: View {
             return "exit \(code)"
         case .timedOut:
             return "timed out after 10s"
+        case .cancelled:
+            return "cancelled"
         case .launchFailed(let reason):
             return reason
         }

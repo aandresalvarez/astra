@@ -494,6 +494,18 @@ struct BuildPromptTests {
         #expect(Set(providers).count == providers.count)
     }
 
+    @Test("AgentPromptBuilder uses extracted prompt section provider registry")
+    func promptBuilderUsesExtractedPromptSectionProviderRegistry() {
+        #expect(
+            AgentPromptBuilder.promptSectionProviderIDs(for: .initialRun)
+                == PromptContextSectionProviderRegistry.providerIDs(for: .initialRun)
+        )
+        #expect(
+            AgentPromptBuilder.promptSectionProviderIDs(for: .followUp)
+                == PromptContextSectionProviderRegistry.providerIDs(for: .followUp)
+        )
+    }
+
     @Test("Prompt includes goal")
     func includesGoal() throws {
         let container = try makeContainer()

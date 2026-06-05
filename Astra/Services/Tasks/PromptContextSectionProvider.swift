@@ -25,6 +25,47 @@ enum PromptContextSectionProviderID: String, Sendable, CaseIterable {
     case currentTaskReminder = "current-task-reminder"
 }
 
+enum PromptContextSectionProviderRegistry {
+    static func providerIDs(for mode: PromptAssemblyMode) -> [PromptContextSectionProviderID] {
+        switch mode {
+        case .initialRun:
+            [
+                .agentTeam,
+                .currentTask,
+                .threadState,
+                .workspaceInstructions,
+                .memories,
+                .recentTasks,
+                .workspaceEnvironment,
+                .taskOutputFolder,
+                .taskDetails,
+                .capabilities,
+                .browser,
+                .documentReader,
+                .astraRunProtocol,
+                .currentTaskReminder
+            ]
+        case .followUp:
+            [
+                .followUpIntro,
+                .threadState,
+                .contextSourceIndex,
+                .nativeContinuation,
+                .conversationHistory,
+                .changedFiles,
+                .taskOutputFolder,
+                .followUpContext,
+                .capabilities,
+                .browser,
+                .memories,
+                .astraRunProtocol,
+                .historyLookupRule,
+                .followUpRequest
+            ]
+        }
+    }
+}
+
 struct PromptContextSectionProviderContext {
     let mode: PromptAssemblyMode
     let task: AgentTask

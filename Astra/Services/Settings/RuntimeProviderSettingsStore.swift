@@ -3,23 +3,11 @@ import ASTRACore
 
 enum RuntimeProviderSettingsStore {
     static func executablePathKey(for runtime: AgentRuntimeID) -> String {
-        switch runtime {
-        case .claudeCode:
-            return "claudePath"
-        case .copilotCLI:
-            return "copilotPath"
-        default:
-            return "astra.runtime.\(AppStorageKeys.storageComponent(for: runtime)).executablePath.v1"
-        }
+        AppStorageKeys.runtimeExecutablePathKey(for: runtime)
     }
 
     static func homeDirectoryKey(for runtime: AgentRuntimeID) -> String {
-        switch runtime {
-        case .copilotCLI:
-            return "astra.copilot.homeDirectory.v1"
-        default:
-            return "astra.runtime.\(AppStorageKeys.storageComponent(for: runtime)).homeDirectory.v1"
-        }
+        AppStorageKeys.runtimeHomeDirectoryKey(for: runtime)
     }
 
     static func settings(

@@ -583,6 +583,16 @@ struct AgentRuntimeStreamDiagnosticsTests {
         let fields = AgentRuntimeStreamDiagnostics.unknownEventShapeFields(raw: "not-json")
 
         #expect(fields["raw_length"] == "8")
+        #expect(fields["decode_error"] == "data_corrupted")
+        #expect(fields["top_level_keys"] == nil)
+    }
+
+    @Test("Unknown event shape fields report malformed top-level payload")
+    func unknownEventShapeFieldsReportMalformedTopLevelPayload() {
+        let fields = AgentRuntimeStreamDiagnostics.unknownEventShapeFields(raw: #"["event"]"#)
+
+        #expect(fields["raw_length"] == "9")
+        #expect(fields["decode_error"] == "type_mismatch")
         #expect(fields["top_level_keys"] == nil)
     }
 }
