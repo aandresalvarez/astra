@@ -12,8 +12,7 @@ enum LocalMLXRuntime {
     static let defaultModels = [
         "Qwen/Qwen3-4B-MLX-4bit",
         "Qwen/Qwen3-8B-MLX-4bit",
-        "mlx-community/Llama-3.2-3B-Instruct-4bit",
-        "mlx-community/gemma-4-12B-it-4bit"
+        "mlx-community/Llama-3.2-3B-Instruct-4bit"
     ]
     static let localAgentExecutionCapabilities = AgentRuntimeExecutionCapabilities.astraBrokeredTools
 
@@ -2449,21 +2448,8 @@ struct LocalModelInstallCandidate: Identifiable, Equatable, Sendable {
         )
     }
 
-    static var gemma412BMultimodal4Bit: LocalModelInstallCandidate {
-        LocalModelInstallCandidate(
-            title: "Gemma 4 12B",
-            subtitle: "Multimodal preview for image plus text prompts on 32 GB+ Macs.",
-            reason: "Choose this on higher-memory Apple Silicon when local image understanding matters more than speed.",
-            repository: "mlx-community/gemma-4-12B-it-4bit",
-            localDirectory: LocalMLXRuntime.recommendedModelDirectory(for: "mlx-community/gemma-4-12B-it-4bit"),
-            estimatedSize: "about 9 GB",
-            estimatedBytes: 9_000_000_000,
-            runtimeModel: "mlx-community/gemma-4-12B-it-4bit"
-        )
-    }
-
     static var installCandidates: [LocalModelInstallCandidate] {
-        [.recommended4Bit, .qwen8Bit, .llamaSmall, .gemma412BMultimodal4Bit]
+        [.recommended4Bit, .qwen8Bit, .llamaSmall]
     }
 
     static func recommendedCandidate(for hardware: LocalHardwareProfile) -> LocalModelInstallCandidate {
@@ -3152,6 +3138,14 @@ enum LocalModelCatalog {
             )
         }
 
+        if LocalModelArchitectureSupport.isGemma4Unified(modelType: parsedMetadata.modelType) {
+            return LocalModelValidationReport(
+                state: .blocked,
+                detail: "Selected model folder is \(parsedMetadata.primaryArchitecture), but Gemma 4 Unified MLX folders are not supported by the current Local MLX provider.",
+                remediation: "Use the recommended Qwen MLX model for local text tasks, or choose a Gemma 4 MLX folder that reports model_type 'gemma4' or 'gemma4_text'."
+            )
+        }
+
         if parsedMetadata.hasVisionConfig == true,
            !LocalModelArchitectureSupport.supportsImageInputs(modelType: parsedMetadata.modelType) {
             return LocalModelValidationReport(
@@ -3374,7 +3368,6 @@ enum LocalModelArchitectureSupport {
         "gemma3n",
         "gemma4",
         "gemma4_text",
-        "gemma4_unified",
         "qwen2",
         "qwen3",
         "qwen3_moe",
@@ -3403,7 +3396,11 @@ enum LocalModelArchitectureSupport {
 
     static func supportsImageInputs(modelType: String) -> Bool {
         let normalized = modelType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return normalized == "gemma4" || normalized == "gemma4_unified"
+        return normalized == "gemma4"
+    }
+
+    static func isGemma4Unified(modelType: String) -> Bool {
+        modelType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "gemma4_unified"
     }
 }
 

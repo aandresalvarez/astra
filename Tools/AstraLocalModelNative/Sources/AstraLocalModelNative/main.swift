@@ -114,7 +114,6 @@ struct LocalModelNativeMain {
             )
             configureMemoryLimits(for: request)
             defer { Memory.clearCache() }
-            await registerAstraVLMCompatibilityAliases()
 
             let container = try await MLXLMCommon.loadModelContainer(
                 from: URL(fileURLWithPath: modelDirectory, isDirectory: true),
@@ -193,7 +192,6 @@ struct LocalModelNativeMain {
         let startedAt = Date()
         configureMemoryLimits(for: request)
         defer { Memory.clearCache() }
-        await registerAstraVLMCompatibilityAliases()
         try emit(.init(type: "phase", message: "Loading local MLX model.", phase: "load_model"), to: output)
         try emitMemoryTelemetry(phase: "before_load", request: request, to: output)
         try cancellation.check()
@@ -556,20 +554,6 @@ struct LocalModelNativeMain {
         }
     }
 }
-
-#if arch(arm64)
-private func registerAstraVLMCompatibilityAliases() async {
-    await VLMTypeRegistry.shared.registerModelType("gemma4_unified") { data in
-        try Gemma4(JSONDecoder.json5().decode(Gemma4Configuration.self, from: data))
-    }
-    await VLMProcessorTypeRegistry.shared.registerProcessorType("Gemma4UnifiedProcessor") { data, tokenizer in
-        try Gemma4Processor(
-            JSONDecoder.json5().decode(Gemma4ProcessorConfiguration.self, from: data),
-            tokenizer: tokenizer
-        )
-    }
-}
-#endif
 
 enum LocalModelNativeError: LocalizedError {
     case missingRequestFile

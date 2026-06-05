@@ -699,14 +699,12 @@ public enum LocalModelListScanner {
     private static let knownModelsByDirectoryName: [String: (model: String, displayName: String)] = [
         "Qwen3-4B-MLX-4bit": ("Qwen/Qwen3-4B-MLX-4bit", "Qwen 3 4B"),
         "Qwen3-8B-MLX-4bit": ("Qwen/Qwen3-8B-MLX-4bit", "Qwen 3 8B"),
-        "Llama-3.2-3B-Instruct-4bit": ("mlx-community/Llama-3.2-3B-Instruct-4bit", "Llama 3.2 3B"),
-        "gemma-4-12B-it-4bit": ("mlx-community/gemma-4-12B-it-4bit", "Gemma 4 12B")
+        "Llama-3.2-3B-Instruct-4bit": ("mlx-community/Llama-3.2-3B-Instruct-4bit", "Llama 3.2 3B")
     ]
     private static let curatedModelOrder = [
         "Qwen/Qwen3-4B-MLX-4bit": 0,
         "Qwen/Qwen3-8B-MLX-4bit": 1,
-        "mlx-community/Llama-3.2-3B-Instruct-4bit": 2,
-        "mlx-community/gemma-4-12B-it-4bit": 3
+        "mlx-community/Llama-3.2-3B-Instruct-4bit": 2
     ]
 
     public static func scan(
@@ -830,9 +828,11 @@ public enum LocalModelListScanner {
         let modelType = (object["model_type"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
+        if modelType == "gemma4_unified" {
+            return true
+        }
         if object["vision_config"] is [String: Any],
-           modelType != "gemma4",
-           modelType != "gemma4_unified" {
+           modelType != "gemma4" {
             return true
         }
         return false
