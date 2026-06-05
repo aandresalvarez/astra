@@ -42,6 +42,65 @@ struct PanelLayoutGeometryTests {
         #expect(AppWindowLayout.mainDefaultWidth > PanelLayoutGeometry.compactPanelMutualExclusionWidth)
     }
 
+    @Test("Workspace shelf visibility uses stable persisted item values")
+    func workspaceShelfVisibilityUsesStablePersistedValues() {
+        #expect(AppStorageKeys.activeWorkspaceCanvasItemsByConversation == "astra.workspaceCanvas.activeItemsByConversation.v1")
+        #expect(WorkspaceCanvasItem.plan.rawValue == "plan")
+        #expect(WorkspaceCanvasItem.markdown.rawValue == "markdown")
+        #expect(WorkspaceCanvasItem.browser.rawValue == "browser")
+        #expect(WorkspaceCanvasItem.query.rawValue == "query")
+        #expect(WorkspaceCanvasItemPreference.item(for: "") == nil)
+        #expect(WorkspaceCanvasItemPreference.rawValue(for: nil) == "")
+        #expect(WorkspaceCanvasItemPreference.rawValue(for: .browser) == "browser")
+        #expect(WorkspaceCanvasItemPreference.emptyStorageRawValue == "{}")
+    }
+
+    @Test("Workspace shelf preference changes only for explicit user choices in the current conversation")
+    func workspaceShelfPreferenceChangesOnlyForExplicitUserChoicesInCurrentConversation() {
+        let conversationA = "conversation-a"
+        let conversationB = "conversation-b"
+
+        let withBrowser = WorkspaceCanvasItemPreference.updatedStorageRawValue(
+            currentStorageRawValue: WorkspaceCanvasItemPreference.emptyStorageRawValue,
+            conversationID: conversationA,
+            item: .browser,
+            remember: true
+        )
+
+        #expect(WorkspaceCanvasItemPreference.item(in: withBrowser, for: conversationA) == .browser)
+        #expect(WorkspaceCanvasItemPreference.item(in: withBrowser, for: conversationB) == nil)
+
+        #expect(WorkspaceCanvasItemPreference.updatedStorageRawValue(
+            currentStorageRawValue: withBrowser,
+            conversationID: conversationA,
+            item: nil,
+            remember: false
+        ) == withBrowser)
+
+        let withConversationAClosed = WorkspaceCanvasItemPreference.updatedStorageRawValue(
+            currentStorageRawValue: withBrowser,
+            conversationID: conversationA,
+            item: nil,
+            remember: true
+        )
+        #expect(WorkspaceCanvasItemPreference.item(in: withConversationAClosed, for: conversationA) == nil)
+
+        let withConversationBMarkdown = WorkspaceCanvasItemPreference.updatedStorageRawValue(
+            currentStorageRawValue: withConversationAClosed,
+            conversationID: conversationB,
+            item: .markdown,
+            remember: true
+        )
+        #expect(WorkspaceCanvasItemPreference.item(in: withConversationBMarkdown, for: conversationA) == nil)
+        #expect(WorkspaceCanvasItemPreference.item(in: withConversationBMarkdown, for: conversationB) == .markdown)
+        #expect(WorkspaceCanvasItemPreference.updatedStorageRawValue(
+            currentStorageRawValue: withConversationBMarkdown,
+            conversationID: nil,
+            item: nil,
+            remember: true
+        ) == withConversationBMarkdown)
+    }
+
     // MARK: - isCompactPanelLayout
 
     @Test("isCompactPanelLayout is false for zero or negative widths (layout not measured yet)")
