@@ -63,11 +63,14 @@ enum ControlledBrowserCDPTransport {
         if let string = value as? String {
             return string
         }
-        if let number = value as? NSNumber {
-            return number.stringValue
-        }
         if let bool = value as? Bool {
             return bool ? "true" : "false"
+        }
+        if let number = value as? NSNumber {
+            if CFGetTypeID(number) == CFBooleanGetTypeID() {
+                return number.boolValue ? "true" : "false"
+            }
+            return number.stringValue
         }
         return ""
     }
