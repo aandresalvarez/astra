@@ -33,17 +33,36 @@ struct TaskCompletionPolicyDecision: Sendable, Equatable {
 
     static func block(
         gate: TaskCompletionPolicyGate,
-        stopReason: String,
+        stopReason: TaskRunStopReason,
         userVisibleMessage: String,
         auditFields: [String: String] = [:]
     ) -> TaskCompletionPolicyDecision {
         TaskCompletionPolicyDecision(
             gate: gate,
             canComplete: false,
-            stopReason: stopReason,
+            stopReason: stopReason.rawValue,
             userVisibleMessage: userVisibleMessage,
             auditFields: auditFields
         )
+    }
+
+    var typedStopReason: TaskRunStopReason? {
+        get { stopReason.flatMap(TaskRunStopReason.init(rawValue:)) }
+        set { stopReason = newValue?.rawValue }
+    }
+}
+
+struct TaskCompletionBlockedEventPayload: Codable, Sendable, Equatable {
+    let gate: String
+    let stopReason: String
+    let message: String
+    let auditFields: [String: String]
+
+    init(decision: TaskCompletionPolicyDecision) {
+        gate = decision.gate.rawValue
+        stopReason = decision.stopReason ?? ""
+        message = decision.userVisibleMessage ?? "Task completion blocked by \(decision.gate.rawValue)."
+        auditFields = decision.auditFields
     }
 }
 
@@ -60,7 +79,7 @@ enum TaskCompletionPolicy {
         guard evaluation.outcome.canComplete, evaluation.canComplete else {
             return .block(
                 gate: .validationContract,
-                stopReason: "validation_contract_failed",
+                stopReason: .validationContractFailed,
                 userVisibleMessage: evaluation.summary,
                 auditFields: fields
             )
@@ -83,7 +102,7 @@ enum TaskCompletionPolicy {
         guard result.canComplete else {
             return .block(
                 gate: .deliverableVerification,
-                stopReason: result.level == .noArtifact ? "no_usable_result" : "deliverable_verification_failed",
+                stopReason: result.level == .noArtifact ? .noUsableResult : .deliverableVerificationFailed,
                 userVisibleMessage: result.userVisibleFailureMessage,
                 auditFields: fields
             )
@@ -96,7 +115,7 @@ enum TaskCompletionPolicy {
         decision.gate = .inferredValidation
         decision.auditFields["gate"] = TaskCompletionPolicyGate.inferredValidation.rawValue
         if decision.shouldBlockCompletion {
-            decision.stopReason = "inferred_validation_failed"
+            decision.typedStopReason = .inferredValidationFailed
             decision.userVisibleMessage = "Automatic verification failed: \(evaluation.summary)"
         }
         return decision
@@ -115,7 +134,7 @@ enum TaskCompletionPolicy {
         guard !requiresArtifact || hasArtifact else {
             return .block(
                 gate: .manualArtifactRequirement,
-                stopReason: "no_usable_result",
+                stopReason: .noUsableResult,
                 userVisibleMessage: TaskDeliverableExpectation.missingArtifactMessage(for: task),
                 auditFields: fields
             )

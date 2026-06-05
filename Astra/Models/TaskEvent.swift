@@ -72,7 +72,44 @@ final class TaskEvent {
         }
     }
 
+    static func encodePayload<T: Encodable>(
+        _ payload: T,
+        encoder: JSONEncoder = TaskEventPayloadCodec.makeEncoder()
+    ) -> Result<String, TaskEventPayloadEncodeError> {
+        do {
+            let data = try encoder.encode(payload)
+            guard let json = String(data: data, encoding: .utf8) else {
+                return .failure(.invalidUTF8)
+            }
+            return .success(json)
+        } catch {
+            return .failure(.encodingFailed(error.localizedDescription))
+        }
+    }
+
     static func categoryFor(type: String) -> String {
         TaskEventTypes.category(forRawValue: type).rawValue
+    }
+}
+
+enum TaskEventPayloadEncodeError: Error, Equatable, CustomStringConvertible {
+    case invalidUTF8
+    case encodingFailed(String)
+
+    var description: String {
+        switch self {
+        case .invalidUTF8:
+            "Encoded event payload is not valid UTF-8."
+        case .encodingFailed(let message):
+            "Could not encode event payload: \(message)"
+        }
+    }
+}
+
+enum TaskEventPayloadCodec {
+    static func makeEncoder() -> JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return encoder
     }
 }

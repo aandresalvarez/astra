@@ -143,7 +143,7 @@ enum TaskWorkerHandoffService {
             .map { "\($0.type): \(boundedInline($0.payload, maxCharacters: 260))" }
         let stopReason = run.stopReason.trimmingCharacters(in: .whitespacesAndNewlines)
         return dedupe(
-            (stopReason.isEmpty || stopReason == "completed" ? [] : ["Run stopped: \(stopReason)"]) +
+            (stopReason.isEmpty || run.typedStopReason == .completed ? [] : ["Run stopped: \(stopReason)"]) +
                 planBlockers +
                 eventBlockers,
             limit: 12

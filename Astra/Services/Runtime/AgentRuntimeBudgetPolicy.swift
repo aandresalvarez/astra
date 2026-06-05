@@ -66,7 +66,7 @@ enum AgentRuntimeBudgetPolicy {
 
         run.status = .budgetExceeded
         run.completedAt = Date()
-        run.stopReason = "max_budget_reached"
+        run.typedStopReason = .maxBudgetReached
         task.status = .budgetExceeded
         task.updatedAt = Date()
         task.markUnreadForCurrentStatus(at: task.updatedAt)
