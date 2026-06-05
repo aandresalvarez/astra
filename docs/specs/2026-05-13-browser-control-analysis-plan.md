@@ -409,10 +409,10 @@ Even then, the fallback should propose intent or a plan. Execution should still 
 
 ## Files Likely Touched
 
-- `Astra/Services/ShelfBrowserSession.swift`
-- `Astra/Services/BrowserAutomationScripts.swift`
-- `Astra/Services/ControlledBrowserController.swift`
-- `Astra/Services/ShelfBrowserBridgeRegistry.swift`
+- `Astra/Services/Browser/ShelfBrowserSession.swift`
+- `Astra/Services/Browser/BrowserAutomationScripts.swift`
+- `Astra/Services/Browser/ControlledBrowserController.swift`
+- `Astra/Services/Browser/ShelfBrowserBridgeRegistry.swift`
 - `Tools/AstraBrowserTool/main.swift`
 - `Tests/BrowserToolShimTests.swift`
 - new browser-analysis tests under `Tests/`

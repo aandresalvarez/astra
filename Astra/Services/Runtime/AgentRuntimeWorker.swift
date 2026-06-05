@@ -292,12 +292,16 @@ final class AgentRuntimeWorker {
                 modelContext: modelContext
             )
         )
-        guard contractEvaluation.canComplete else {
+        let decision = TaskCompletionPolicy.decide(validationContract: contractEvaluation)
+        guard decision.canComplete else {
+            let run = task.runs.sorted { $0.startedAt < $1.startedAt }.last
+            run?.status = .failed
+            run?.stopReason = decision.stopReason ?? TaskCompletionPolicyGate.validationContract.rawValue
             pauseApprovedPlanForUser(
                 task: task,
                 modelContext: modelContext,
-                message: contractEvaluation.summary,
-                run: task.runs.sorted { $0.startedAt < $1.startedAt }.last
+                message: decision.userVisibleMessage ?? contractEvaluation.summary,
+                run: run
             )
             return false
         }
@@ -1111,20 +1115,12 @@ final class AgentRuntimeWorker {
             "evidence_count": String(result.evidencePaths.count)
         ], level: result.shouldBlockCompletion ? .warning : .info)
 
-        guard result.shouldBlockCompletion else {
+        let decision = TaskCompletionPolicy.decide(deliverableVerification: result)
+        guard decision.shouldBlockCompletion else {
             return false
         }
 
-        run.status = .failed
-        run.stopReason = result.level == .noArtifact ? "no_usable_result" : "deliverable_verification_failed"
-        task.status = .pendingUser
-        task.completedAt = nil
-        modelContext.insert(TaskEvent(
-            task: task,
-            type: "error",
-            payload: result.userVisibleFailureMessage,
-            run: run
-        ))
+        applyCompletionBlock(decision, task: task, run: run, modelContext: modelContext)
         return true
     }
 
@@ -1153,17 +1149,9 @@ final class AgentRuntimeWorker {
             level: result.canComplete ? .info : .warning
         )
 
-        guard result.canComplete else {
-            run.status = .failed
-            run.stopReason = "inferred_validation_failed"
-            task.status = .pendingUser
-            task.completedAt = nil
-            modelContext.insert(TaskEvent(
-                task: task,
-                type: "error",
-                payload: "Automatic verification failed: \(result.summary)",
-                run: run
-            ))
+        let decision = TaskCompletionPolicy.decide(inferredValidation: result)
+        guard decision.canComplete else {
+            applyCompletionBlock(decision, task: task, run: run, modelContext: modelContext)
             return
         }
     }
@@ -1175,19 +1163,9 @@ final class AgentRuntimeWorker {
         modelContext: ModelContext,
         successPayload: String
     ) -> Bool {
-        if TaskDeliverableExpectation.requiresStandaloneArtifact(task),
-           !TaskDeliverableExpectation.hasArtifact(for: task, run: run) {
-            run.status = .failed
-            run.stopReason = "no_usable_result"
-            task.status = .pendingUser
-            task.completedAt = nil
-            let event = TaskEvent(
-                task: task,
-                type: "error",
-                payload: TaskDeliverableExpectation.missingArtifactMessage(for: task),
-                run: run
-            )
-            modelContext.insert(event)
+        let decision = TaskCompletionPolicy.decideManualCompletion(task: task, run: run)
+        if decision.shouldBlockCompletion {
+            applyCompletionBlock(decision, task: task, run: run, modelContext: modelContext)
             return false
         }
 
@@ -1195,6 +1173,25 @@ final class AgentRuntimeWorker {
         let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.completed, payload: successPayload, run: run)
         modelContext.insert(event)
         return true
+    }
+
+    @MainActor
+    private static func applyCompletionBlock(
+        _ decision: TaskCompletionPolicyDecision,
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext
+    ) {
+        run.status = .failed
+        run.stopReason = decision.stopReason ?? decision.gate.rawValue
+        task.status = .pendingUser
+        task.completedAt = nil
+        modelContext.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.System.error,
+            payload: decision.userVisibleMessage ?? "Task completion blocked by \(decision.gate.rawValue).",
+            run: run
+        ))
     }
 
     @MainActor

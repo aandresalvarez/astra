@@ -165,6 +165,46 @@ struct TaskValidationContract: Codable, Sendable, Equatable, Hashable {
     }
 }
 
+enum TaskValidationAssertionOutcome: String, Codable, Sendable, Equatable, Hashable {
+    case defined
+    case started
+    case passed
+    case failed
+    case skipped
+    case reviewed
+    case unknown
+
+    init(status: String) {
+        self = TaskValidationAssertionOutcome(rawValue: status) ?? .unknown
+    }
+
+    var didPass: Bool {
+        self == .passed
+    }
+}
+
+enum TaskValidationContractOutcome: String, Codable, Sendable, Equatable, Hashable {
+    case notRequired = "not_required"
+    case defined
+    case passed
+    case failed
+    case overridden
+    case unknown
+
+    init(status: String) {
+        self = TaskValidationContractOutcome(rawValue: status) ?? .unknown
+    }
+
+    var canComplete: Bool {
+        switch self {
+        case .notRequired, .passed, .overridden:
+            true
+        case .defined, .failed, .unknown:
+            false
+        }
+    }
+}
+
 enum TaskValidationEventTypes {
     static let contractCreated = TaskEventTypes.Validation.contractCreated.rawValue
     static let contractUpdated = TaskEventTypes.Validation.contractUpdated.rawValue
@@ -273,6 +313,10 @@ struct TaskValidationAssertionEventPayload: Codable, Sendable, Equatable {
         case evidence
         case reason
     }
+
+    var outcome: TaskValidationAssertionOutcome {
+        TaskValidationAssertionOutcome(status: status)
+    }
 }
 
 struct TaskValidationContractEventPayload: Codable, Sendable, Equatable {
@@ -292,5 +336,9 @@ struct TaskValidationContractEventPayload: Codable, Sendable, Equatable {
         case requiredTotal
         case failedRequiredAssertionIDs
         case summary
+    }
+
+    var outcome: TaskValidationContractOutcome {
+        TaskValidationContractOutcome(status: status)
     }
 }

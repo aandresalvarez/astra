@@ -66,8 +66,8 @@ Current event namespaces include:
 
 - `Astra/Models/TaskEvent.swift`
 - `Astra/Models/TaskEventTypes.swift`
-- `Astra/Services/AgentEventRecorder.swift`
+- `Astra/Services/Tasks/AgentEventRecorder.swift`
 - `Astra/Views/TaskThreadSnapshot.swift`
 - `Astra/Views/RunActivityPresentation.swift`
-- `Astra/Services/TaskPlanService.swift`
-- `Astra/Services/ValidationService.swift`
+- `Astra/Services/Tasks/TaskPlanService.swift`
+- `Astra/Services/Validation/ValidationService.swift`

@@ -613,8 +613,8 @@ struct GitStatusParsingTests {
 
     @Test("Git status file identity is stable across refreshes")
     func statusFileIdentityIsStable() {
-        let first = GitStatusFile(relativePath: "Astra/Services/GitService.swift", status: "M", isStaged: false)
-        let second = GitStatusFile(relativePath: "Astra/Services/GitService.swift", status: "M", isStaged: false)
+        let first = GitStatusFile(relativePath: "Astra/Services/Git/GitService.swift", status: "M", isStaged: false)
+        let second = GitStatusFile(relativePath: "Astra/Services/Git/GitService.swift", status: "M", isStaged: false)
         #expect(first.id == second.id)
     }
 

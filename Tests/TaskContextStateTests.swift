@@ -88,7 +88,7 @@ struct TaskContextStateTests {
         run.output = "We decided to avoid vector databases and start with a current-state checkpoint."
         run.completedAt = Date()
         run.appendFileChange(StoredFileChange(from: FileChange(
-            path: "\(root)/Astra/Services/AgentPromptBuilder.swift",
+            path: "\(root)/Astra/Services/Runtime/AgentPromptBuilder.swift",
             changeType: .edit,
             content: nil,
             oldString: nil,
@@ -923,7 +923,7 @@ struct TaskContextStateTests {
           "candidateGoals": [],
           "currentObjective": "Keep old context available",
           "decisions": ["Use current_state as canonical compact memory"],
-          "filesChanged": ["Astra/Services/TaskContextStateManager.swift"],
+          "filesChanged": ["Astra/Services/Persistence/TaskContextStateManager.swift"],
           "mode": "planning",
           "nextLikelyAction": "Continue migration",
           "openQuestions": [],
@@ -935,7 +935,7 @@ struct TaskContextStateTests {
               "ask": "What changes?",
               "blockers": [],
               "completedAt": "2026-05-30T00:00:00.000Z",
-              "filesChanged": ["Astra/Services/TaskContextStateManager.swift"],
+              "filesChanged": ["Astra/Services/Persistence/TaskContextStateManager.swift"],
               "outputFile": "outputs/turn_001.md",
               "runStatus": "completed",
               "summary": "Legacy turn survives migration.",

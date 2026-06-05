@@ -347,7 +347,7 @@ duplicate.
 
 The current owner path is:
 
-- `Astra/Services/TaskDecisionDockPresentation.swift`
+- `Astra/Services/Tasks/TaskDecisionDockPresentation.swift`
 - `Astra/Views/TaskDecisionDockView.swift`
 - `Astra/Views/TaskMainView.swift`
 - `Tests/TaskDecisionDockPresentationTests.swift`

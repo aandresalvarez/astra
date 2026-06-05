@@ -117,7 +117,7 @@ struct GitPullRequestTests {
                   "nodes": [
                     {
                       "isResolved": false,
-                      "path": "Astra/Services/GitService.swift",
+                      "path": "Astra/Services/Git/GitService.swift",
                       "line": 120,
                       "comments": {
                         "nodes": [
@@ -157,7 +157,7 @@ struct GitPullRequestTests {
         #expect(summary.totalCommentCount == 2)
         #expect(summary.unresolvedThreadCount == 1)
         #expect(summary.issueCommentCount == 1)
-        #expect(summary.comments.first?.locationLabel == "Astra/Services/GitService.swift:120")
+        #expect(summary.comments.first?.locationLabel == "Astra/Services/Git/GitService.swift:120")
         #expect(summary.comments.first?.preview.contains("swallow JSON failures") == true)
         #expect(summary.comments.contains { $0.body == "Resolved thread." } == false)
         #expect(summary.isTruncated == false)

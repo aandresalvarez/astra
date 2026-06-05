@@ -233,8 +233,8 @@ V1 should reuse the current data model where possible.
 - `Astra/Views/TaskMainView.swift`
 - `Astra/Views/TaskSidebarView.swift`
 - `Astra/Views/ChatPanelView.swift`
-- `Astra/Services/TaskQueue.swift`
-- `Astra/Services/TaskScheduler.swift`
+- `Astra/Services/Tasks/TaskQueue.swift`
+- `Astra/Services/Tasks/TaskScheduler.swift`
 - `Astra/Services/ClaudeCodeWorker.swift`
 
 ### 6.3 Important implementation constraint

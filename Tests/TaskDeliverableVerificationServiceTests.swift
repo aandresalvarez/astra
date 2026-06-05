@@ -42,6 +42,7 @@ struct TaskDeliverableVerificationServiceTests {
         #expect(result.canComplete)
         #expect(result.status == "passed")
         #expect(result.level == .syntaxVerified)
+        #expect(TaskCompletionPolicy.decide(deliverableVerification: result).canComplete)
         #expect(result.checks.contains { $0.id.hasPrefix("javascript.syntax") && $0.status == .passed })
     }
 
@@ -70,6 +71,9 @@ struct TaskDeliverableVerificationServiceTests {
         #expect(!result.canComplete)
         #expect(result.status == "failed")
         #expect(result.level == .failed)
+        let decision = TaskCompletionPolicy.decide(deliverableVerification: result)
+        #expect(decision.shouldBlockCompletion)
+        #expect(decision.stopReason == "deliverable_verification_failed")
         #expect(result.userVisibleFailureMessage.contains("failed deterministic verification"))
     }
 
@@ -116,6 +120,9 @@ struct TaskDeliverableVerificationServiceTests {
         #expect(!result.canComplete)
         #expect(result.level == .noArtifact)
         #expect(result.status == "failed")
+        let decision = TaskCompletionPolicy.decide(deliverableVerification: result)
+        #expect(decision.shouldBlockCompletion)
+        #expect(decision.stopReason == "no_usable_result")
         #expect(result.checks.contains { $0.id == "artifact.discovery" && $0.status == .failed })
     }
 
@@ -136,6 +143,9 @@ struct TaskDeliverableVerificationServiceTests {
 
         #expect(!result.canComplete)
         #expect(result.level == .failed)
+        let decision = TaskCompletionPolicy.decide(deliverableVerification: result)
+        #expect(decision.shouldBlockCompletion)
+        #expect(decision.stopReason == "deliverable_verification_failed")
         #expect(result.checks.contains { $0.id == "json.syntax" && $0.status == .failed })
     }
 
@@ -156,6 +166,7 @@ struct TaskDeliverableVerificationServiceTests {
         #expect(result.status == "review_needed")
         #expect(result.requiresHumanReview)
         #expect(result.level == .needsHumanReview)
+        #expect(TaskCompletionPolicy.decide(deliverableVerification: result).canComplete)
     }
 
     private func makeFixture(goal: String) throws -> (

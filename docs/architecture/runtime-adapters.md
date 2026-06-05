@@ -1,7 +1,7 @@
 # Runtime Adapter Contract
 
 This note documents the current provider boundary in
-`Astra/Services/AgentRuntimeAdapter.swift`. Runtime adapters are the
+`Astra/Services/Runtime/AgentRuntimeAdapter.swift`. Runtime adapters are the
 provider-specific layer under `AgentRuntimeWorker`; they translate ASTRA's task
 contract into CLI-specific readiness checks, launch plans, stream parsing, event
 recording, and utility prompts.
@@ -58,9 +58,9 @@ An adapter owns:
 
 ## Related Files
 
-- `Astra/Services/AgentRuntimeAdapter.swift`
-- `Astra/Services/AgentRuntimeWorker.swift`
-- `Astra/Services/AgentRuntimeProcessRunner.swift`
-- `Astra/Services/RuntimeReadinessService.swift`
-- `Astra/Services/ClaudeModelAvailabilityService.swift`
-- `Astra/Services/CopilotModelAvailabilityService.swift`
+- `Astra/Services/Runtime/AgentRuntimeAdapter.swift`
+- `Astra/Services/Runtime/AgentRuntimeWorker.swift`
+- `Astra/Services/Runtime/AgentRuntimeProcessRunner.swift`
+- `Astra/Services/Runtime/RuntimeReadinessService.swift`
+- `Astra/Services/Runtime/ClaudeModelAvailabilityService.swift`
+- `Astra/Services/Runtime/CopilotModelAvailabilityService.swift`

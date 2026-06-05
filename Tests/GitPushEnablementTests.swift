@@ -248,7 +248,7 @@ struct GitPushEnablementTests {
             id: "c1",
             author: "copilot",
             body: "GitRepositoryInfo uses a fresh UUID for id.",
-            path: "Astra/Services/GitService.swift",
+            path: "Astra/Services/Git/GitService.swift",
             line: 12,
             url: "https://github.com/coral/astra/pull/95#discussion_r1",
             createdAt: "2026-05-30T11:00:00Z",

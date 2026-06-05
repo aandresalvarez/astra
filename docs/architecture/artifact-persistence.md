@@ -50,11 +50,11 @@ metadata. The current reconciliation owner is
 
 ## Related Files
 
-- `Astra/Services/TaskArtifactPersistenceService.swift`
-- `Astra/Services/AgentRuntimeRunPersistence.swift`
-- `Astra/Services/TaskContextStateManager.swift`
-- `Astra/Services/TaskGeneratedFiles.swift`
-- `Astra/Services/TaskOutputDiscovery.swift`
-- `Astra/Services/TaskDeliverableVerificationService.swift`
+- `Astra/Services/Persistence/TaskArtifactPersistenceService.swift`
+- `Astra/Services/Runtime/AgentRuntimeRunPersistence.swift`
+- `Astra/Services/Persistence/TaskContextStateManager.swift`
+- `Astra/Services/Tasks/TaskGeneratedFiles.swift`
+- `Astra/Services/Persistence/TaskOutputDiscovery.swift`
+- `Astra/Services/Validation/TaskDeliverableVerificationService.swift`
 - `Astra/Models/Artifact.swift`
 - `Astra/Models/TaskRun.swift`

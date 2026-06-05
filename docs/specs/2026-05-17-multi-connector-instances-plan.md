@@ -11,10 +11,10 @@ The mechanism must be **capability-general**. Adding a new capability later shou
 Today, connector records have unique UUIDs and Keychain entries are already scoped per-connector (`KeychainSecretStore.connectorEntityID(for:)`), so storage allows N connectors of the same service type. But the runtime flattens credentials into a single OS environment dictionary:
 
 - [`Connector.allEnvironmentVariables`](../../Astra/Models/Connector.swift#L90-L94) merges credentials + config into one dict per connector.
-- [`TaskCapabilityResolver.resolver`](../../Astra/Services/TaskCapabilityResolver.swift#L34-L39) iterates all live connectors and last-write-wins-merges them into `connEnvVars`.
-- [`SkillResolver.resolvedEnvironmentVariables`](../../Astra/Services/SkillResolver.swift#L103-L122) merges that into the env passed to subprocesses.
+- [`TaskCapabilityResolver.resolver`](../../Astra/Services/Capabilities/TaskCapabilityResolver.swift#L34-L39) iterates all live connectors and last-write-wins-merges them into `connEnvVars`.
+- [`SkillResolver.resolvedEnvironmentVariables`](../../Astra/Services/Capabilities/SkillResolver.swift#L103-L122) merges that into the env passed to subprocesses.
 
-The keys are literal (`REDCAP_API_TOKEN`, `JIRA_API_TOKEN`) declared in [`PluginCatalog`](../../Astra/Services/PluginCatalog.swift#L549). Two REDCap connectors → second one wins silently. The agent's behavior instructions hardcode `$REDCAP_API_TOKEN` ([PluginCatalog.swift:504](../../Astra/Services/PluginCatalog.swift#L504)), so there is no way for the agent to address a specific instance even if both env vars were somehow present.
+The keys are literal (`REDCAP_API_TOKEN`, `JIRA_API_TOKEN`) declared in [`PluginCatalog`](../../Astra/Services/Capabilities/PluginCatalog.swift#L549). Two REDCap connectors → second one wins silently. The agent's behavior instructions hardcode `$REDCAP_API_TOKEN` ([PluginCatalog.swift:504](../../Astra/Services/Capabilities/PluginCatalog.swift#L504)), so there is no way for the agent to address a specific instance even if both env vars were somehow present.
 
 ## Design Principles
 
@@ -153,7 +153,7 @@ No structural change. Add a uniqueness check at save time:
 - `(workspaceID, serviceType, alias)` must be unique.
 - Enforced in the SwiftData save path (no native unique constraint, so this is a guard in whichever service writes connectors — likely `ConnectorsManager` or the place `PluginCatalog` installs them).
 
-### `PluginConnector` / `PluginSkill` ([PluginCatalog.swift](../../Astra/Services/PluginCatalog.swift))
+### `PluginConnector` / `PluginSkill` ([PluginCatalog.swift](../../Astra/Services/Capabilities/PluginCatalog.swift))
 
 Do **not** overload `hint.key`. It is already the UI/storage/Keychain lookup key and should remain logical and stable.
 
@@ -174,7 +174,7 @@ The current runtime can also support existing literal keys (`REDCAP_API_TOKEN`) 
 
 ### Keychain
 
-No change. [`KeychainSecretStore.connectorEntityID(for:)`](../../Astra/Services/KeychainSecretStore.swift#L84) already keys by connector UUID. The credential *key* stored in Keychain remains the logical name without alias expansion (e.g., `API_TOKEN`); the alias only enters the picture when projecting into the env. This keeps Keychain entries renamable-safe.
+No change. [`KeychainSecretStore.connectorEntityID(for:)`](../../Astra/Services/Persistence/KeychainSecretStore.swift#L84) already keys by connector UUID. The credential *key* stored in Keychain remains the logical name without alias expansion (e.g., `API_TOKEN`); the alias only enters the picture when projecting into the env. This keeps Keychain entries renamable-safe.
 
 Open question: do we store the templated key (`{ALIAS}_API_TOKEN`) or the logical key (`API_TOKEN`) in `Connector.credentialKeys`? Recommendation: **logical key only** (`API_TOKEN`), and expand to `<SERVICE>_<ALIAS>_API_TOKEN` only at env-projection time. Decouples storage from naming.
 
@@ -191,7 +191,7 @@ ConnectorRuntimeProjection(connectors: liveConnectors)
 
 ### Env aggregation — `TaskCapabilityResolver.resolver`
 
-Replace the literal merge loop at [TaskCapabilityResolver.swift:34-39](../../Astra/Services/TaskCapabilityResolver.swift#L34-L39):
+Replace the literal merge loop at [TaskCapabilityResolver.swift:34-39](../../Astra/Services/Capabilities/TaskCapabilityResolver.swift#L34-L39):
 
 ```swift
 var connEnvVars: [String: String] = [:]
@@ -203,26 +203,26 @@ for connector in liveConnectors {
 connEnvVars["ASTRA_CONNECTORS"] = ConnectorManifest.json(for: liveConnectors)
 ```
 
-`SkillResolver.resolvedEnvironmentVariables` ([SkillResolver.swift:103](../../Astra/Services/SkillResolver.swift#L103)) needs no structural change — it already takes a flat dict from the resolver. The behavior is identical; only the keys are namespaced.
+`SkillResolver.resolvedEnvironmentVariables` ([SkillResolver.swift:103](../../Astra/Services/Capabilities/SkillResolver.swift#L103)) needs no structural change — it already takes a flat dict from the resolver. The behavior is identical; only the keys are namespaced.
 
 ### Snapshot path
 
-`SkillResolver.snapshotConnectorEnvironmentVariables` ([SkillResolver.swift:129](../../Astra/Services/SkillResolver.swift#L129)) reads from `ConnectorSnapshotConfig.configKeys`. Snapshots need the same templating treatment: store the alias and apply the same prefix on read. This guarantees a detached snapshot of a task still resolves the right env vars after the workspace state has changed.
+`SkillResolver.snapshotConnectorEnvironmentVariables` ([SkillResolver.swift:129](../../Astra/Services/Capabilities/SkillResolver.swift#L129)) reads from `ConnectorSnapshotConfig.configKeys`. Snapshots need the same templating treatment: store the alias and apply the same prefix on read. This guarantees a detached snapshot of a task still resolves the right env vars after the workspace state has changed.
 
 ### Prompt assembly
 
-Find wherever `resolvedBehaviorInstructions` ([SkillResolver.swift:97](../../Astra/Services/SkillResolver.swift#L97)) is assembled into the final agent system prompt. Prepend a `Connectors available in this workspace:` block rendered from the same manifest. One renderer, all capabilities.
+Find wherever `resolvedBehaviorInstructions` ([SkillResolver.swift:97](../../Astra/Services/Capabilities/SkillResolver.swift#L97)) is assembled into the final agent system prompt. Prepend a `Connectors available in this workspace:` block rendered from the same manifest. One renderer, all capabilities.
 
 ## Per-Capability Migration Pattern
 
-For each capability in [PluginCatalog.swift](../../Astra/Services/PluginCatalog.swift):
+For each capability in [PluginCatalog.swift](../../Astra/Services/Capabilities/PluginCatalog.swift):
 
 1. Convert `credentialHints` and `configHints` to logical storage keys where possible (`API_TOKEN`, `API_URL`) and declare env projection separately.
 2. Move per-instance values out of `PluginSkill.environmentKeys`. Truly global env vars (like a feature flag) stay literal on the skill.
 3. Rewrite `behaviorInstructions` to stop hardcoding env var names. Replace strings like *"Use the REDCAP_API_TOKEN environment variable"* with *"Use the token env var for the selected connector — see the connector manifest in the system prompt."*
 4. Keep the curl example, but use a placeholder: *"Replace `$TOKEN` and `$URL` with the env vars for the chosen connector instance."*
 
-Worked example — REDCap, before ([PluginCatalog.swift:504-507](../../Astra/Services/PluginCatalog.swift#L504-L507)):
+Worked example — REDCap, before ([PluginCatalog.swift:504-507](../../Astra/Services/Capabilities/PluginCatalog.swift#L504-L507)):
 
 ```
 AUTHENTICATION
@@ -276,7 +276,7 @@ Name is required and human-readable. Alias is auto-derived and shown read-only i
 
 ### Copy Setup From Another Workspace
 
-[`CapabilitySetupCopier.swift`](../../Astra/Services/CapabilitySetupCopier.swift) already operates per-connector ([CapabilitySetupCopier.swift:78-98](../../Astra/Services/CapabilitySetupCopier.swift#L78-L98)). The change is small: include `alias` in `CapabilitySetupCopySummary`, and resolve alias collisions at install time (e.g., append `_2`).
+[`CapabilitySetupCopier.swift`](../../Astra/Services/Capabilities/CapabilitySetupCopier.swift) already operates per-connector ([CapabilitySetupCopier.swift:78-98](../../Astra/Services/Capabilities/CapabilitySetupCopier.swift#L78-L98)). The change is small: include `alias` in `CapabilitySetupCopySummary`, and resolve alias collisions at install time (e.g., append `_2`).
 
 Security decision: continue copying credential values across workspaces (current behavior). The alias and env var names will change if there is a collision; the credential itself is the same secret.
 
@@ -311,10 +311,10 @@ Some capabilities may genuinely be singleton (e.g., a workspace-wide license key
 
 1. Implement runtime aliases without a persisted schema migration.
 2. Implement `ConnectorRuntimeProjection` with namespaced env vars and single-instance legacy fallback.
-3. Update [`TaskCapabilityResolver.resolver`](../../Astra/Services/TaskCapabilityResolver.swift#L34-L39) to use the projected vars.
+3. Update [`TaskCapabilityResolver.resolver`](../../Astra/Services/Capabilities/TaskCapabilityResolver.swift#L34-L39) to use the projected vars.
 4. Implement `ConnectorManifest.json(for:)` and inject as `ASTRA_CONNECTORS`.
 5. Render the connector list block into the agent system prompt.
-6. Mirror the changes in the snapshot path ([SkillResolver.swift:129](../../Astra/Services/SkillResolver.swift#L129)).
+6. Mirror the changes in the snapshot path ([SkillResolver.swift:129](../../Astra/Services/Capabilities/SkillResolver.swift#L129)).
 7. Implement the single-instance deprecation fallback for one release.
 
 Exit criteria: with one REDCap connector configured, behavior is unchanged from today (because legacy env vars are still emitted). New namespaced env vars are present alongside them. Manifest is populated.
@@ -338,14 +338,14 @@ Exit criteria: a real two-instance REDCap task runs cleanly without manual env v
 - Per-capability instance list in [`ConnectorsManagerView.swift`](../../Astra/Views/ConnectorsManagerView.swift).
 - `Add another …` flow with name + alias field.
 - Alias preview and advanced edit.
-- Update [`CapabilitySetupCopier.swift`](../../Astra/Services/CapabilitySetupCopier.swift) to handle alias.
+- Update [`CapabilitySetupCopier.swift`](../../Astra/Services/Capabilities/CapabilitySetupCopier.swift) to handle alias.
 - Split capability enable from connector-instance creation so installing a package does not upsert/overwrite an existing same-service connector.
 
 Exit criteria: user can add a second REDCap instance from the UI without touching configuration files.
 
 ### Phase 4 — Roll out
 
-Mechanical migration pass over the remaining capabilities in [`PluginCatalog.swift`](../../Astra/Services/PluginCatalog.swift): Jira, GitHub, Slack, Confluence, BigQuery, anything else with credentials. Rewrite each entry's keys as templates and behavior instructions to reference the manifest.
+Mechanical migration pass over the remaining capabilities in [`PluginCatalog.swift`](../../Astra/Services/Capabilities/PluginCatalog.swift): Jira, GitHub, Slack, Confluence, BigQuery, anything else with credentials. Rewrite each entry's keys as templates and behavior instructions to reference the manifest.
 
 Exit criteria: every capability in the catalog supports multi-instance. Single-instance deprecation fallback can be removed in the next release.
 
@@ -361,7 +361,7 @@ Exit criteria: every capability in the catalog supports multi-instance. Single-i
 
 - Cross-workspace connector sharing beyond the existing global-connector mechanism.
 - Per-connector permission scoping (e.g., "this connector is read-only for this task"). Worth doing, separate plan.
-- A general capability authoring UI. Capability definitions stay in [`PluginCatalog.swift`](../../Astra/Services/PluginCatalog.swift) for now.
+- A general capability authoring UI. Capability definitions stay in [`PluginCatalog.swift`](../../Astra/Services/Capabilities/PluginCatalog.swift) for now.
 - Renaming `serviceType` strings. Whatever is there today (`"redcap"`, `"jira"`) becomes the lowercased prefix.
 
 ## Summary
