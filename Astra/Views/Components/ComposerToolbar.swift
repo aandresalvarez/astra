@@ -876,10 +876,20 @@ struct ComposerToolbar: View {
     }
 
     private var runtimeModelCache: RuntimeModelAvailabilityCache {
-        _ = runtimeModelCacheRevision
-        return RuntimeModelAvailabilityCache.appStorage(
+        runtimeSettingsSnapshot.runtimeModelCache
+    }
+
+    private var runtimeSettingsSnapshot: RuntimeSettingsSnapshot {
+        RuntimeSettingsSnapshotStore.runtimeSnapshot(
+            defaultRuntimeID: runtimeID,
+            defaultModel: model,
+            defaultBudget: budget,
+            skipPermissions: skipPermissions,
+            defaultPolicyLevelRaw: policyLevelRaw,
             cachedClaudeModelsJSON: claudeAvailableModels,
-            cachedCopilotModelsJSON: copilotAvailableModels
+            cachedCopilotModelsJSON: copilotAvailableModels,
+            runtimeModelCacheRevision: runtimeModelCacheRevision,
+            providerSnapshot: RuntimeSettingsSnapshotStore.providerSnapshot()
         )
     }
 

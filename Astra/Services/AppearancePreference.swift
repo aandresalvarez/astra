@@ -206,7 +206,7 @@ enum ClaudeProvider: String, CaseIterable, Identifiable, Sendable {
 /// Only one preference key drives the whole app; avoid sprinkling
 /// `colorScheme` overrides in individual views or they'll fight the
 /// global one.
-enum AppearancePreference: String, CaseIterable, Identifiable {
+enum AppearancePreference: String, CaseIterable, Identifiable, Sendable {
     case system
     case light
     case dark

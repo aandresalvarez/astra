@@ -305,16 +305,9 @@ struct TaskMainView: View {
             validationModel: task.model,
             defaultBudget: task.tokenBudget,
             defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
-            providerSettings: providerSettingsForUtilityRuntime,
+            providerSettings: providerSettingsSnapshot.providerSettings,
             cache: runtimeModelCache
         )
-    }
-
-    private var providerSettingsForUtilityRuntime: AgentRuntimeProviderSettings {
-        var settings = RuntimeProviderSettingsStore.settings()
-        settings.setExecutablePath(claudePath, for: .claudeCode)
-        settings.setExecutablePath(copilotPath, for: .copilotCLI)
-        return settings
     }
 
     private func alignTaskModelWithRuntime() {
@@ -333,37 +326,25 @@ struct TaskMainView: View {
     }
 
     private var runtimeAvailabilityConfiguration: RuntimeProviderAvailabilityConfiguration {
-        RuntimeProviderAvailabilityConfiguration(
-            providerSettings: providerSettingsForReadiness,
-            claudeProvider: ClaudeProvider(rawValue: claudeProviderRaw) ?? .anthropic,
+        providerSettingsSnapshot.availabilityConfiguration
+    }
+
+    private var runtimeAvailabilitySignature: String {
+        providerSettingsSnapshot.signature
+    }
+
+    private var providerSettingsSnapshot: ProviderSettingsSnapshot {
+        RuntimeSettingsSnapshotStore.providerSnapshot(
+            claudePath: claudePath,
+            copilotPath: copilotPath,
+            providerSettingsRevision: runtimeProviderSettingsRevision,
+            claudeProviderRaw: claudeProviderRaw,
             vertexProjectID: claudeVertexProjectID,
             vertexRegion: claudeVertexRegion,
             vertexOpusModel: claudeVertexOpusModel,
             vertexSonnetModel: claudeVertexSonnetModel,
             vertexHaikuModel: claudeVertexHaikuModel
         )
-    }
-
-    private var providerSettingsForReadiness: AgentRuntimeProviderSettings {
-        var settings = RuntimeProviderSettingsStore.settings()
-        settings.setExecutablePath(claudePath, for: .claudeCode)
-        settings.setExecutablePath(copilotPath, for: .copilotCLI)
-        return settings
-    }
-
-    private var runtimeAvailabilitySignature: String {
-        [
-            claudePath,
-            copilotPath,
-            String(runtimeProviderSettingsRevision),
-            RuntimeProviderSettingsStore.signature(),
-            claudeProviderRaw,
-            claudeVertexProjectID,
-            claudeVertexRegion,
-            claudeVertexOpusModel,
-            claudeVertexSonnetModel,
-            claudeVertexHaikuModel
-        ].joined(separator: "|")
     }
 
     private var chatStatusDisclosureAnimation: Animation? {

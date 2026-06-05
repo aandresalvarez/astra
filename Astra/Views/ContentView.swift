@@ -332,7 +332,21 @@ struct ContentView: View {
         return AgentUtilityRuntimeConfiguration(
             runtime: runtime,
             model: RuntimeModelAvailability.normalizedModel(preferredModel, for: runtime),
-            providerSettings: currentProviderSettings()
+            providerSettings: providerSettingsSnapshot.providerSettings
+        )
+    }
+
+    private var providerSettingsSnapshot: ProviderSettingsSnapshot {
+        RuntimeSettingsSnapshotStore.providerSnapshot(
+            claudePath: claudePath,
+            copilotPath: copilotPath,
+            providerSettingsRevision: runtimeProviderSettingsRevision,
+            claudeProviderRaw: claudeProviderRaw,
+            vertexProjectID: "",
+            vertexRegion: "",
+            vertexOpusModel: claudeVertexOpusModel,
+            vertexSonnetModel: claudeVertexSonnetModel,
+            vertexHaikuModel: claudeVertexHaikuModel
         )
     }
 
@@ -346,15 +360,8 @@ struct ContentView: View {
 
     private var executionSettingsSignature: String {
         [
-            claudePath,
-            copilotPath,
-            String(runtimeProviderSettingsRevision),
-            RuntimeProviderSettingsStore.signature(),
+            providerSettingsSnapshot.signature,
             defaultRuntimeID,
-            claudeProviderRaw,
-            claudeVertexOpusModel,
-            claudeVertexSonnetModel,
-            claudeVertexHaikuModel,
             String(timeoutSeconds),
             validationModel,
             String(skipPermissions),
@@ -1991,7 +1998,7 @@ struct ContentView: View {
             coordinator: coordinator,
             claudePath: claudePath,
             copilotPath: copilotPath,
-            providerSettings: currentProviderSettings(),
+            providerSettings: providerSettingsSnapshot.providerSettings,
             defaultRuntimeID: defaultRuntimeID,
             validationModel: validationModel,
             isUITestingSeededLaunch: isUITestingSeededLaunch
@@ -2123,7 +2130,7 @@ struct ContentView: View {
         runtime.applySettings(
             claudePath: claudePath,
             copilotPath: copilotPath,
-            providerSettings: RuntimeProviderSettingsStore.settings(),
+            providerSettings: providerSettingsSnapshot.providerSettings,
             defaultRuntimeID: defaultRuntimeID,
             timeoutSeconds: timeoutSeconds,
             validationModel: validationModel,
@@ -2135,7 +2142,7 @@ struct ContentView: View {
 
     private func refreshProviderModelsInBackground() {
         guard !isUITestingSeededLaunch else { return }
-        let providerSettings = currentProviderSettings()
+        let providerSettings = providerSettingsSnapshot.providerSettings
         for runtime in AgentRuntimeAdapterRegistry.runtimeIDs {
             refreshRuntimeModelsInBackground(runtime, providerSettings: providerSettings)
         }
@@ -2151,29 +2158,16 @@ struct ContentView: View {
         )
         guard FileManager.default.isExecutableFile(atPath: resolvedExecutablePath) else { return }
 
-        let signature = RuntimeModelRefreshSignature.make(
+        let signature = providerSettingsSnapshot.modelRefreshSignature(
             runtime: runtime,
             executablePath: resolvedExecutablePath,
-            providerSettings: providerSettings,
-            claudeProviderRaw: claudeProviderRaw,
-            claudeVertexOpusModel: claudeVertexOpusModel,
-            claudeVertexSonnetModel: claudeVertexSonnetModel,
-            claudeVertexHaikuModel: claudeVertexHaikuModel
         )
         guard runtimeModelRefreshTasks[runtime] == nil,
               lastRuntimeModelRefreshSignatures[runtime] != signature else { return }
         lastRuntimeModelRefreshSignatures[runtime] = signature
 
-        let configuration = RuntimeReadinessConfiguration(
-            runtime: runtime,
-            providerSettings: providerSettings,
-            claudeProvider: ClaudeProvider(rawValue: claudeProviderRaw) ?? .anthropic,
-            vertexProjectID: "",
-            vertexRegion: "",
-            vertexOpusModel: claudeVertexOpusModel,
-            vertexSonnetModel: claudeVertexSonnetModel,
-            vertexHaikuModel: claudeVertexHaikuModel
-        )
+        var configuration = providerSettingsSnapshot.readinessConfiguration(for: runtime)
+        configuration.providerSettings = providerSettings
         runtimeModelRefreshTasks[runtime] = Task {
             _ = await AgentRuntimeAdapterRegistry
                 .adapter(for: runtime)
@@ -2182,13 +2176,6 @@ struct ContentView: View {
                 runtimeModelRefreshTasks[runtime] = nil
             }
         }
-    }
-
-    private func currentProviderSettings() -> AgentRuntimeProviderSettings {
-        var settings = RuntimeProviderSettingsStore.settings()
-        settings.setExecutablePath(claudePath, for: .claudeCode)
-        settings.setExecutablePath(copilotPath, for: .copilotCLI)
-        return settings
     }
 
     private func resolvedRuntimeExecutablePath(
