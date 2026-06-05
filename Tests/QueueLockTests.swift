@@ -450,6 +450,43 @@ struct TaskFolderTests {
             (path as NSString).appendingPathComponent("outputs")
         ])
     }
+
+    @Test("codeWorkingDirectory uses injected file-system existence")
+    func codeWorkingDirectoryUsesInjectedFileSystem() {
+        let primary = "/tmp/astra-primary-\(UUID().uuidString.prefix(8))"
+        let pinned = "/tmp/astra-pinned-\(UUID().uuidString.prefix(8))"
+        let workspace = Workspace(name: "Test", primaryPath: primary)
+        let task = makeTask()
+        task.workspace = workspace
+        task.executionRootPath = pinned
+
+        let fileSystem = MockFileSystem()
+        #expect(TaskWorkspaceAccess(task: task, fileSystem: fileSystem).codeWorkingDirectory == primary)
+
+        fileSystem.addExistingPath(pinned)
+        #expect(TaskWorkspaceAccess(task: task, fileSystem: fileSystem).codeWorkingDirectory == pinned)
+    }
+
+    @Test("runtimeAdditionalPaths keeps only injected input directories")
+    func runtimeAdditionalPathsUsesInjectedFileSystemDirectories() {
+        let primary = "/tmp/astra-primary-\(UUID().uuidString.prefix(8))"
+        let extra = "/tmp/astra-extra-\(UUID().uuidString.prefix(8))"
+        let inputDirectory = "/tmp/astra-input-\(UUID().uuidString.prefix(8))"
+        let inputFile = "/tmp/astra-file-\(UUID().uuidString.prefix(8))"
+        let workspace = Workspace(name: "Test", primaryPath: primary, additionalPaths: [extra])
+        let task = makeTask()
+        task.workspace = workspace
+        task.inputs = [inputDirectory, inputFile, inputDirectory]
+
+        let fileSystem = MockFileSystem()
+        fileSystem.addExistingPath(inputDirectory, isDirectory: true)
+        fileSystem.addExistingPath(inputFile, isDirectory: false)
+
+        #expect(TaskWorkspaceAccess(task: task, fileSystem: fileSystem).runtimeAdditionalPaths == [
+            extra,
+            inputDirectory
+        ])
+    }
 }
 
 // MARK: - Isolation Strategy

@@ -10,9 +10,121 @@ private func makeValidationServiceContainer() throws -> ModelContainer {
     return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
 }
 
+private actor StubValidationCommandRunner: ValidationCommandRunning {
+    struct Call: Equatable {
+        let command: String
+        let workingDirectory: String
+        let pathContainsShellSuffix: Bool
+    }
+
+    private var results: [ValidationCommandResult]
+    private var calls: [Call] = []
+
+    init(results: [ValidationCommandResult]) {
+        self.results = results
+    }
+
+    func run(command: String, workingDirectory: String, environment: [String: String]) async -> ValidationCommandResult {
+        calls.append(Call(
+            command: command,
+            workingDirectory: workingDirectory,
+            pathContainsShellSuffix: environment["PATH"]?.contains(RuntimePathResolver.shellPathSuffix) == true
+        ))
+        return results.isEmpty
+            ? ValidationCommandResult(exitCode: 0, stdout: "", stderr: "")
+            : results.removeFirst()
+    }
+
+    func recordedCalls() -> [Call] {
+        calls
+    }
+}
+
 @Suite("Validation service")
 @MainActor
 struct ValidationServiceTests {
+    @Test("runTests uses injected command runner")
+    func runTestsUsesInjectedCommandRunner() async throws {
+        let root = "/tmp/astra-validation-runner-\(UUID().uuidString.prefix(8))"
+        let workspace = Workspace(name: "Validation Runner", primaryPath: root)
+        let task = AgentTask(title: "Validate", goal: "Run injected tests", workspace: workspace)
+        task.testCommand = "swift test --filter Focused"
+        let runner = StubValidationCommandRunner(results: [
+            ValidationCommandResult(exitCode: 0, stdout: "focused pass", stderr: "")
+        ])
+
+        let result = await ValidationService.runTests(task: task, commandRunner: runner)
+
+        if case .passed(let details) = result {
+            #expect(details.contains("focused pass"))
+        } else {
+            Issue.record("Expected injected validation command to pass")
+        }
+        #expect(await runner.recordedCalls() == [
+            StubValidationCommandRunner.Call(
+                command: "swift test --filter Focused",
+                workingDirectory: root,
+                pathContainsShellSuffix: true
+            )
+        ])
+    }
+
+    @Test("validation contract command assertions use injected runner")
+    func validationContractCommandAssertionsUseInjectedRunner() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeValidationServiceContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Validation Runner", primaryPath: root)
+        let task = AgentTask(title: "Validate", goal: "Run command through injected runner", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        let runner = StubValidationCommandRunner(results: [
+            ValidationCommandResult(exitCode: 7, stdout: "stdout detail", stderr: "stderr detail")
+        ])
+        let plan = TaskPlanPayload(
+            title: "Proof",
+            goal: "Run a proof command",
+            steps: [TaskPlanPayloadStep(id: "verify", title: "Verify")],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(
+                    id: "command-runner",
+                    description: "Command exits zero",
+                    method: .command,
+                    command: "swift test --filter Focused"
+                )
+            ])
+        )
+
+        let result = await ValidationService.runContract(
+            task: task,
+            plan: plan,
+            run: run,
+            modelContext: context,
+            commandRunner: runner
+        )
+
+        #expect(result.didRun)
+        #expect(!result.canComplete)
+        #expect(await runner.recordedCalls() == [
+            StubValidationCommandRunner.Call(
+                command: "swift test --filter Focused",
+                workingDirectory: root,
+                pathContainsShellSuffix: true
+            )
+        ])
+        let assertionEvent = try #require(task.events.first { $0.type == TaskValidationEventTypes.assertionFailed })
+        let payload = try JSONDecoder().decode(
+            TaskValidationAssertionEventPayload.self,
+            from: Data(assertionEvent.payload.utf8)
+        )
+        #expect(payload.exitCode == 7)
+        #expect(payload.evidence == "stdout detail\nstderr detail")
+        #expect(payload.reason == "command_failed")
+    }
+
     @Test("validation contract command pass records assertion and contract events")
     func validationContractCommandPasses() async throws {
         let root = try temporaryRoot()
