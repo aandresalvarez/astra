@@ -79,6 +79,17 @@ enum WorkspaceCanvasItemPreferenceStore {
             ?? WorkspaceCanvasItemPreference.emptyStorageRawValue
     }
 
+    @discardableResult
+    static func saveIfChanged(
+        currentRawValue: String,
+        updatedRawValue: String,
+        defaults: UserDefaults = .standard
+    ) -> Bool {
+        guard currentRawValue != updatedRawValue else { return false }
+        save(updatedRawValue, defaults: defaults)
+        return true
+    }
+
     static func save(_ rawValue: String, defaults: UserDefaults = .standard) {
         defaults.set(rawValue, forKey: AppStorageKeys.activeWorkspaceCanvasItemsByConversation)
     }

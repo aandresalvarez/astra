@@ -1111,14 +1111,18 @@ struct ContentView: View {
 
     private func setActiveWorkspaceCanvasItem(_ item: WorkspaceCanvasItem?, remember: Bool) {
         activeWorkspaceCanvasItem = item
+        let currentStorage = rememberedWorkspaceCanvasItemsRaw
         let updatedStorage = WorkspaceCanvasItemPreference.updatedStorageRawValue(
-            currentStorageRawValue: rememberedWorkspaceCanvasItemsRaw,
+            currentStorageRawValue: currentStorage,
             conversationID: selectedWorkspaceCanvasConversationID,
             item: item,
             remember: remember
         )
         rememberedWorkspaceCanvasItemsRaw = updatedStorage
-        WorkspaceCanvasItemPreferenceStore.save(updatedStorage)
+        WorkspaceCanvasItemPreferenceStore.saveIfChanged(
+            currentRawValue: currentStorage,
+            updatedRawValue: updatedStorage
+        )
     }
 
     private func restoreRememberedWorkspaceCanvasItemIfAvailable() {
