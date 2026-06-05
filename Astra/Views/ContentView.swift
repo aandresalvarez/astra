@@ -1620,16 +1620,11 @@ struct ContentView: View {
     }
 
     private func openWorkspaceFromExternalRoute(_ workspace: Workspace) {
-        selectedWorkspace = workspace
-        setSelectedTask(nil)
-        isComposingTask = false
-        presentRightRail()
+        applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.open(workspace: workspace))
     }
 
     private func openTaskFromExternalRoute(_ task: AgentTask) {
-        setSelectedTask(task)
-        isComposingTask = false
-        presentRightRail()
+        applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.open(task: task))
     }
 
     private func moveTaskToDraft(_ task: AgentTask) {
@@ -1653,6 +1648,14 @@ struct ContentView: View {
             selectedWorkspace: selectedWorkspace,
             lastSelectedWorkspaceID: lastSelectedWorkspaceID,
             lastSelectedWorkspacePath: lastSelectedWorkspacePath
+        )
+    }
+
+    private var workspaceSelectionCoordinator: ContentWorkspaceSelectionCoordinator {
+        ContentWorkspaceSelectionCoordinator(
+            selectedTask: selectedTask,
+            selectedWorkspace: selectedWorkspace,
+            isComposingTask: isComposingTask
         )
     }
 
@@ -1781,15 +1784,7 @@ struct ContentView: View {
 
     private func restoreWorkspaceSelection() {
         let restored = sceneCoordinator.restoredWorkspace()
-        if let restored {
-            if selectedWorkspace?.id != restored.id {
-                selectedWorkspace = restored
-            }
-        } else {
-            selectedWorkspace = nil
-            setSelectedTask(nil)
-            isComposingTask = false
-        }
+        applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.restore(workspace: restored))
     }
 
     private func persistWorkspaceSelection() {
@@ -1816,18 +1811,13 @@ struct ContentView: View {
     @discardableResult
     private func createWorkspace(from draft: NewWorkspaceDraft, source: String) -> Bool {
         guard let result = workspaceActionCoordinator.createWorkspace(from: draft, source: source) else { return false }
-        selectedWorkspace = result.workspace
+        applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.create(workspace: result.workspace))
         return true
     }
 
     private func deleteWorkspace(_ ws: Workspace) {
-        if selectedWorkspace?.id == ws.id {
-            selectedWorkspace = nil
-        }
         let next = coordinator.deleteWorkspace(ws, existingWorkspaces: workspaces)
-        if let next {
-            selectedWorkspace = next
-        }
+        applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.delete(workspace: ws, nextWorkspace: next))
     }
 
     private func importWorkspace() {
@@ -1839,8 +1829,21 @@ struct ContentView: View {
             existingWorkspaces: workspaces,
             askDuplicateAction: WorkspaceDuplicateActionPrompt.ask
         )
-        if let selected = result.selectedWorkspace {
-            selectedWorkspace = selected
+        applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.importWorkspace(result.selectedWorkspace))
+    }
+
+    private func applyWorkspaceSelectionUpdate(_ update: ContentWorkspaceSelectionUpdate) {
+        if selectedWorkspace?.id != update.selectedWorkspace?.id {
+            selectedWorkspace = update.selectedWorkspace
+        }
+        if selectedTask?.id != update.selectedTask?.id {
+            setSelectedTask(update.selectedTask)
+        } else {
+            selectedTask = update.selectedTask
+        }
+        isComposingTask = update.isComposingTask
+        if update.shouldPresentRightRail {
+            presentRightRail()
         }
     }
 
