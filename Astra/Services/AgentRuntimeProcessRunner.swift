@@ -24,7 +24,7 @@ final class AgentRuntimeProcessRunner {
 
     @MainActor
     func runRuntimeProcess(
-        adapter: any AgentRuntimeAdapter,
+        adapter: any AgentRuntimeProcessLaunchPlanning & AgentRuntimeProcessEventParsing,
         prompt: String,
         task: AgentTask,
         workspacePath: String,
@@ -97,7 +97,7 @@ final class AgentRuntimeProcessRunner {
 
     @MainActor
     private func runProcess(
-        adapter: any AgentRuntimeAdapter,
+        adapter: any AgentRuntimeProcessEventParsing,
         plan: AgentRuntimeProcessLaunchPlan,
         task: AgentTask,
         permissionManifest: RunPermissionManifest?,

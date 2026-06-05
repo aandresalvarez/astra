@@ -67,27 +67,34 @@ struct AgentRuntimePolicyCapabilities: Equatable, Sendable {
     }
 }
 
-protocol AgentRuntimeAdapter {
+protocol AgentRuntimeDescriptorReadiness {
     var id: AgentRuntimeID { get }
     var descriptor: AgentRuntimeDescriptor { get }
     var readinessCheckID: String { get }
     var availableModelsStorageKey: String { get }
     var modelsCheckedAtStorageKey: String { get }
     var budgetProfile: AgentRuntimeBudgetProfile { get }
-    var recordsStreamTelemetry: Bool { get }
-    var recordsInferredFileChanges: Bool { get }
-    var recordsEstimatedUsageWhenProviderUsageMissing: Bool { get }
     var modelAvailabilityAuthority: RuntimeModelAvailabilityAuthority { get }
 
-    func policyAdapter(runtimeCapabilities: AgentRuntimePolicyCapabilities) -> any ProviderPolicyAdapter
-    func providerConfigOwnership(workspacePath: String) -> PolicyConfigOwnership
-    func existingProviderConfigSummary(workspacePath: String) -> String?
     func readinessReport(
         configuration: RuntimeReadinessConfiguration,
         probes: RuntimeReadinessProbeContext
     ) async -> RuntimeReadinessReport
     func modelAvailabilityCheck(configuration: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck
     func installPlan(detectExecutable: @Sendable (String) -> String) -> RuntimeCLIInstallPlan?
+}
+
+protocol AgentRuntimePolicyRendering {
+    func policyAdapter(runtimeCapabilities: AgentRuntimePolicyCapabilities) -> any ProviderPolicyAdapter
+    func providerConfigOwnership(workspacePath: String) -> PolicyConfigOwnership
+    func existingProviderConfigSummary(workspacePath: String) -> String?
+    func policyCapabilities(executablePath: String) -> AgentRuntimePolicyCapabilities
+}
+
+protocol AgentRuntimeProcessLaunchPlanning {
+    var id: AgentRuntimeID { get }
+    var descriptor: AgentRuntimeDescriptor { get }
+
     func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings
     func sharedLaunchStateKey(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeSharedStateKey?
     func missingExecutableAuditReason() -> String
@@ -103,26 +110,20 @@ protocol AgentRuntimeAdapter {
     ) -> String
     func shouldCheckWorkspaceDirectory(phase: String) -> Bool
     func shouldPrepareIsolation(phase: String) -> Bool
-    func policyCapabilities(executablePath: String) -> AgentRuntimePolicyCapabilities
-    func shouldValidateSuccessfulRun(phase: String) -> Bool
-    func requiresVisibleResultForSuccessfulRun(phase: String) -> Bool
-    func manualCompletionPayload(phase: String) -> String
-    func failurePayloadPrefix(phase: String, exitCode: Int) -> String
-    func timeoutPayload(phase: String, timeoutSeconds: TimeInterval) -> String
-    func maxTurnsPayload(phase: String, task: AgentTask) -> String
-    func shouldClearStaleSessionOnFailure(phase: String, result: AgentProcessResult) -> Bool
-    func performsPostRunFollowUps(phase: String) -> Bool
-    func sessionTurnMessage(
-        task: AgentTask,
-        promptOverride: String?,
-        startPayload: String?,
-        sessionMessage: String?,
-        phase: String
-    ) -> String
     @MainActor
     func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan
+}
+
+protocol AgentRuntimeProcessEventParsing {
     func parseProcessEvents(line: String, parsesJSONLines: Bool) -> [ParsedEvent]
     func blockingProcessPermissionMessage(line: String, parsesJSONLines: Bool) -> String?
+}
+
+protocol AgentRuntimeWorkerEventRecording {
+    var recordsStreamTelemetry: Bool { get }
+    var recordsInferredFileChanges: Bool { get }
+    var recordsEstimatedUsageWhenProviderUsageMissing: Bool { get }
+
     func parseWorkerStreamEvents(line: String, parsesJSONLines: Bool) -> AgentRuntimeStreamEventBatch
     func processWorkerStreamEvent(
         _ event: AgentRuntimeRecordedEvent,
@@ -139,12 +140,36 @@ protocol AgentRuntimeAdapter {
         recordingState: AgentEventRecordingState
     )
     func callbackEvent(from event: AgentRuntimeRecordedEvent) -> ParsedEvent?
+}
+
+protocol AgentUtilityRuntimeAdapter {
     func runUtilityPrompt(
         _ prompt: String,
         workspacePath: String,
         configuration: AgentUtilityRuntimeConfiguration,
         toolMode: AgentUtilityToolMode
     ) async -> AgentUtilityRunResult
+}
+
+protocol AgentRuntimePostRunDiagnostics {
+    var id: AgentRuntimeID { get }
+    var descriptor: AgentRuntimeDescriptor { get }
+
+    func shouldValidateSuccessfulRun(phase: String) -> Bool
+    func requiresVisibleResultForSuccessfulRun(phase: String) -> Bool
+    func manualCompletionPayload(phase: String) -> String
+    func failurePayloadPrefix(phase: String, exitCode: Int) -> String
+    func timeoutPayload(phase: String, timeoutSeconds: TimeInterval) -> String
+    func maxTurnsPayload(phase: String, task: AgentTask) -> String
+    func shouldClearStaleSessionOnFailure(phase: String, result: AgentProcessResult) -> Bool
+    func performsPostRunFollowUps(phase: String) -> Bool
+    func sessionTurnMessage(
+        task: AgentTask,
+        promptOverride: String?,
+        startPayload: String?,
+        sessionMessage: String?,
+        phase: String
+    ) -> String
     @MainActor
     func recordPostProcessEvents(context: AgentRuntimePostProcessContext)
     @MainActor
@@ -157,7 +182,15 @@ protocol AgentRuntimeAdapter {
     )
 }
 
-extension AgentRuntimeAdapter {
+protocol AgentRuntimeAdapter: AgentRuntimeDescriptorReadiness,
+    AgentRuntimePolicyRendering,
+    AgentRuntimeProcessLaunchPlanning,
+    AgentRuntimeProcessEventParsing,
+    AgentRuntimeWorkerEventRecording,
+    AgentUtilityRuntimeAdapter,
+    AgentRuntimePostRunDiagnostics {}
+
+extension AgentRuntimeDescriptorReadiness {
     var availableModelsStorageKey: String {
         AppStorageKeys.runtimeAvailableModelsKey(for: id)
     }
@@ -166,18 +199,14 @@ extension AgentRuntimeAdapter {
         AppStorageKeys.runtimeModelsCheckedAtKey(for: id)
     }
 
-    var recordsStreamTelemetry: Bool { false }
-
-    var recordsInferredFileChanges: Bool { false }
-
-    var recordsEstimatedUsageWhenProviderUsageMissing: Bool { false }
-
     var modelAvailabilityAuthority: RuntimeModelAvailabilityAuthority { .authoritative }
 
     func installPlan(detectExecutable _: @Sendable (String) -> String) -> RuntimeCLIInstallPlan? {
         nil
     }
+}
 
+extension AgentRuntimeProcessLaunchPlanning {
     func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings {
         let configuredPath = configuration.executablePath(for: id)
         return AgentRuntimeLaunchSettings(
@@ -225,11 +254,15 @@ extension AgentRuntimeAdapter {
     func shouldPrepareIsolation(phase: String) -> Bool {
         phase == "run"
     }
+}
 
+extension AgentRuntimePolicyRendering {
     func policyCapabilities(executablePath _: String) -> AgentRuntimePolicyCapabilities {
         .conservative
     }
+}
 
+extension AgentRuntimePostRunDiagnostics {
     func shouldValidateSuccessfulRun(phase: String) -> Bool {
         phase == "run"
     }
@@ -289,7 +322,17 @@ extension AgentRuntimeAdapter {
         exitCode _: Int
     ) {
     }
+}
 
+extension AgentRuntimeWorkerEventRecording {
+    var recordsStreamTelemetry: Bool { false }
+
+    var recordsInferredFileChanges: Bool { false }
+
+    var recordsEstimatedUsageWhenProviderUsageMissing: Bool { false }
+}
+
+extension AgentRuntimeAdapter {
     func detectedExecutable(named binary: String, detectExecutable: @Sendable (String) -> String) -> String? {
         let path = detectExecutable(binary).trimmingCharacters(in: .whitespacesAndNewlines)
         return path.isEmpty ? nil : path
@@ -412,6 +455,34 @@ struct AgentRuntimeAdapterCatalog {
         return adapter
     }
 
+    func descriptorReadiness(for runtime: AgentRuntimeID) -> any AgentRuntimeDescriptorReadiness {
+        adapter(for: runtime)
+    }
+
+    func policyRenderer(for runtime: AgentRuntimeID) -> any AgentRuntimePolicyRendering {
+        adapter(for: runtime)
+    }
+
+    func processLauncher(for runtime: AgentRuntimeID) -> any AgentRuntimeProcessLaunchPlanning {
+        adapter(for: runtime)
+    }
+
+    func processEventParser(for runtime: AgentRuntimeID) -> any AgentRuntimeProcessEventParsing {
+        adapter(for: runtime)
+    }
+
+    func workerEventRecorder(for runtime: AgentRuntimeID) -> any AgentRuntimeWorkerEventRecording {
+        adapter(for: runtime)
+    }
+
+    func utilityRuntime(for runtime: AgentRuntimeID) -> any AgentUtilityRuntimeAdapter {
+        adapter(for: runtime)
+    }
+
+    func postRunDiagnostics(for runtime: AgentRuntimeID) -> any AgentRuntimePostRunDiagnostics {
+        adapter(for: runtime)
+    }
+
     private func fallbackDescriptor(for runtime: AgentRuntimeID) -> AgentRuntimeDescriptor {
         AgentRuntimeDescriptor(
             id: runtime,
@@ -513,6 +584,34 @@ enum AgentRuntimeAdapterRegistry {
 
     static func adapter(for runtime: AgentRuntimeID) -> any AgentRuntimeAdapter {
         liveCatalog.adapter(for: runtime)
+    }
+
+    static func descriptorReadiness(for runtime: AgentRuntimeID) -> any AgentRuntimeDescriptorReadiness {
+        liveCatalog.descriptorReadiness(for: runtime)
+    }
+
+    static func policyRenderer(for runtime: AgentRuntimeID) -> any AgentRuntimePolicyRendering {
+        liveCatalog.policyRenderer(for: runtime)
+    }
+
+    static func processLauncher(for runtime: AgentRuntimeID) -> any AgentRuntimeProcessLaunchPlanning {
+        liveCatalog.processLauncher(for: runtime)
+    }
+
+    static func processEventParser(for runtime: AgentRuntimeID) -> any AgentRuntimeProcessEventParsing {
+        liveCatalog.processEventParser(for: runtime)
+    }
+
+    static func workerEventRecorder(for runtime: AgentRuntimeID) -> any AgentRuntimeWorkerEventRecording {
+        liveCatalog.workerEventRecorder(for: runtime)
+    }
+
+    static func utilityRuntime(for runtime: AgentRuntimeID) -> any AgentUtilityRuntimeAdapter {
+        liveCatalog.utilityRuntime(for: runtime)
+    }
+
+    static func postRunDiagnostics(for runtime: AgentRuntimeID) -> any AgentRuntimePostRunDiagnostics {
+        liveCatalog.postRunDiagnostics(for: runtime)
     }
 }
 
