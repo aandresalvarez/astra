@@ -49,6 +49,41 @@ struct TaskValidationContractEvaluation: Sendable, Equatable {
     )
 }
 
+struct ValidationAssertionExecutionResult: Sendable, Equatable {
+    enum Status: String, Sendable {
+        case passed
+        case failed
+        case skipped
+        case unknown
+    }
+
+    var status: Status
+    var payload: TaskValidationAssertionEventPayload
+
+    init(payload: TaskValidationAssertionEventPayload) {
+        self.payload = payload
+        self.status = Status(rawValue: payload.status) ?? .unknown
+    }
+
+    var didPass: Bool {
+        status == .passed
+    }
+
+    var auditFields: [String: String] {
+        [
+            "result": status.rawValue,
+            "plan_id": payload.planID.uuidString,
+            "assertion_id": payload.assertionID,
+            "assertion_method": payload.method.rawValue,
+            "assertion_scope": payload.scope.rawValue,
+            "required": String(payload.required),
+            "exit_code": payload.exitCode.map(String.init) ?? "none",
+            "path": payload.path ?? "none",
+            "failure_reason": payload.reason ?? "none"
+        ]
+    }
+}
+
 enum ValidationService {
     private static let maximumTextContainsBytes: UInt64 = 2 * 1024 * 1024
     static var textContainsFileSizeProbe: (String) -> UInt64? = defaultFileSize
@@ -196,7 +231,7 @@ enum ValidationService {
                 modelContext: modelContext
             )
 
-            let payload = await evaluate(
+            let assertionResult = await evaluate(
                 assertion: assertion,
                 plan: plan,
                 task: task,
@@ -205,6 +240,7 @@ enum ValidationService {
                 verifierRuntime: verifierRuntime,
                 commandRunner: commandRunner
             )
+            let payload = assertionResult.payload
             finalPayloads.append(payload)
             let eventType = switch payload.status {
             case "passed": TaskValidationEventTypes.assertionPassed
@@ -218,16 +254,15 @@ enum ValidationService {
             case "skipped": AuditEvent.validationAssertionSkipped
             default: AuditEvent.validationAssertionFailed
             }
-            AppLogger.audit(auditEvent, category: "Validation", taskID: task.id, fields: [
-                "plan_id": plan.planID.uuidString,
-                "assertion_id": assertion.id,
-                "assertion_method": assertion.method.rawValue,
-                "assertion_scope": assertion.scope.rawValue,
-                "required": String(assertion.required),
-                "run_id": run?.id.uuidString ?? "none",
-                "exit_code": payload.exitCode.map(String.init) ?? "none",
-                "path": payload.path ?? "none"
-            ], level: payload.status == "failed" && assertion.required ? .warning : .info)
+            var fields = assertionResult.auditFields
+            fields["run_id"] = run?.id.uuidString ?? "none"
+            AppLogger.audit(
+                auditEvent,
+                category: "Validation",
+                taskID: task.id,
+                fields: fields,
+                level: payload.status == "failed" && assertion.required ? .warning : .info
+            )
         }
 
         let requiredResults = finalPayloads.filter(\.required)
@@ -381,20 +416,21 @@ enum ValidationService {
         modelContext: ModelContext,
         verifierRuntime: AgentUtilityRuntimeConfiguration?,
         commandRunner: ValidationCommandRunning
-    ) async -> TaskValidationAssertionEventPayload {
+    ) async -> ValidationAssertionExecutionResult {
+        let payload: TaskValidationAssertionEventPayload
         switch assertion.method {
         case .command:
-            return await evaluateCommand(assertion: assertion, planID: plan.planID, task: task, commandRunner: commandRunner)
+            payload = await evaluateCommand(assertion: assertion, planID: plan.planID, task: task, commandRunner: commandRunner)
         case .artifact:
-            return evaluateArtifact(assertion: assertion, planID: plan.planID, task: task)
+            payload = evaluateArtifact(assertion: assertion, planID: plan.planID, task: task)
         case .manual:
-            return evaluateManual(assertion: assertion, planID: plan.planID, task: task)
+            payload = evaluateManual(assertion: assertion, planID: plan.planID, task: task)
         case .textEvidence:
-            return evaluateTextEvidence(assertion: assertion, planID: plan.planID, task: task, run: run)
+            payload = evaluateTextEvidence(assertion: assertion, planID: plan.planID, task: task, run: run)
         case .textContains:
-            return evaluateTextContains(assertion: assertion, planID: plan.planID, task: task)
+            payload = evaluateTextContains(assertion: assertion, planID: plan.planID, task: task)
         case .verifier:
-            return await evaluateVerifier(
+            payload = await evaluateVerifier(
                 assertion: assertion,
                 plan: plan,
                 task: task,
@@ -403,7 +439,7 @@ enum ValidationService {
                 verifierRuntime: verifierRuntime
             )
         case .browserBehavior:
-            return evaluateBrowserBehavior(
+            payload = evaluateBrowserBehavior(
                 assertion: assertion,
                 planID: plan.planID,
                 task: task,
@@ -411,6 +447,7 @@ enum ValidationService {
                 modelContext: modelContext
             )
         }
+        return ValidationAssertionExecutionResult(payload: payload)
     }
 
     private static func evaluateCommand(

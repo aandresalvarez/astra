@@ -207,6 +207,45 @@ struct TaskContextState: Codable, Sendable, Equatable {
     var updatedAt: String
 }
 
+struct TaskContextStateLoadResult: Equatable, Sendable {
+    enum Status: String, Sendable {
+        case loadedCurrent
+        case migratedLegacy
+        case missingFile
+        case unreadableFile
+        case decodeFailed
+        case unsupportedSchema
+    }
+
+    var status: Status
+    var path: String
+    var state: TaskContextState?
+    var errorDescription: String?
+
+    var didLoad: Bool {
+        state != nil
+    }
+}
+
+struct TaskContextStateSaveResult: Equatable, Sendable {
+    enum Status: String, Sendable {
+        case saved
+        case createDirectoryFailed
+        case encodeFailed
+        case writeJSONFailed
+        case writeMarkdownFailed
+    }
+
+    var status: Status
+    var jsonPath: String
+    var markdownPath: String
+    var errorDescription: String?
+
+    var didSave: Bool {
+        status == .saved
+    }
+}
+
 enum TaskContextStateManager {
     static let jsonFileName = "current_state.json"
     static let markdownFileName = "current_state.md"
@@ -268,19 +307,77 @@ enum TaskContextStateManager {
         return promptContext(for: task)
     }
 
-    static func load(taskFolder: String) -> TaskContextState? {
+    static func loadResult(taskFolder: String) -> TaskContextStateLoadResult {
         let url = URL(fileURLWithPath: taskFolder).appendingPathComponent(jsonFileName)
-        guard let data = try? Data(contentsOf: url) else { return nil }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return TaskContextStateLoadResult(
+                status: .missingFile,
+                path: url.path,
+                state: nil,
+                errorDescription: nil
+            )
+        }
+
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            return TaskContextStateLoadResult(
+                status: .unreadableFile,
+                path: url.path,
+                state: nil,
+                errorDescription: error.localizedDescription
+            )
+        }
+
         let decoder = JSONDecoder()
-        if let decoded = try? decoder.decode(TaskContextState.self, from: data),
-           decoded.schemaVersion == schemaVersion {
-            return decoded
+        do {
+            let decoded = try decoder.decode(TaskContextState.self, from: data)
+            if decoded.schemaVersion == schemaVersion {
+                return TaskContextStateLoadResult(
+                    status: .loadedCurrent,
+                    path: url.path,
+                    state: decoded,
+                    errorDescription: nil
+                )
+            }
+            return TaskContextStateLoadResult(
+                status: .unsupportedSchema,
+                path: url.path,
+                state: nil,
+                errorDescription: "Unsupported Context Capsule schema version \(decoded.schemaVersion)."
+            )
+        } catch {
+            let currentDecodeError = error.localizedDescription
+            do {
+                let legacy = try decoder.decode(LegacyTaskContextState.self, from: data)
+                guard legacy.schemaVersion == 1 else {
+                    return TaskContextStateLoadResult(
+                        status: .unsupportedSchema,
+                        path: url.path,
+                        state: nil,
+                        errorDescription: "Unsupported legacy Context Capsule schema version \(legacy.schemaVersion)."
+                    )
+                }
+                return TaskContextStateLoadResult(
+                    status: .migratedLegacy,
+                    path: url.path,
+                    state: migrateLegacyState(legacy, taskFolder: taskFolder),
+                    errorDescription: nil
+                )
+            } catch {
+                return TaskContextStateLoadResult(
+                    status: .decodeFailed,
+                    path: url.path,
+                    state: nil,
+                    errorDescription: "current: \(currentDecodeError); legacy: \(error.localizedDescription)"
+                )
+            }
         }
-        guard let legacy = try? decoder.decode(LegacyTaskContextState.self, from: data),
-              legacy.schemaVersion == 1 else {
-            return nil
-        }
-        return migrateLegacyState(legacy, taskFolder: taskFolder)
+    }
+
+    static func load(taskFolder: String) -> TaskContextState? {
+        loadResult(taskFolder: taskFolder).state
     }
 
     static func promptContext(for task: AgentTask) -> String? {
@@ -557,34 +654,98 @@ enum TaskContextStateManager {
         state.sourcePointers = sourcePointers(for: task, state: state)
     }
 
+    @discardableResult
+    static func saveState(_ state: TaskContextState, taskFolder: String, taskID: UUID? = nil) -> TaskContextStateSaveResult {
+        let result = saveStateWithoutAudit(state, taskFolder: taskFolder)
+        auditSaveResult(result, state: state, taskID: taskID)
+        return result
+    }
+
     private static func save(_ state: TaskContextState, taskFolder: String, taskID: UUID?) {
+        _ = saveState(state, taskFolder: taskFolder, taskID: taskID)
+    }
+
+    private static func saveStateWithoutAudit(_ state: TaskContextState, taskFolder: String) -> TaskContextStateSaveResult {
+        let folderURL = URL(fileURLWithPath: taskFolder)
+        let jsonURL = folderURL.appendingPathComponent(jsonFileName)
+        let markdownURL = folderURL.appendingPathComponent(markdownFileName)
         do {
             try FileManager.default.createDirectory(atPath: taskFolder, withIntermediateDirectories: true)
+        } catch {
+            return TaskContextStateSaveResult(
+                status: .createDirectoryFailed,
+                jsonPath: jsonURL.path,
+                markdownPath: markdownURL.path,
+                errorDescription: error.localizedDescription
+            )
+        }
+
+        let data: Data
+        do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            let data = try encoder.encode(state)
-            try data.write(to: URL(fileURLWithPath: taskFolder).appendingPathComponent(jsonFileName), options: .atomic)
+            data = try encoder.encode(state)
+        } catch {
+            return TaskContextStateSaveResult(
+                status: .encodeFailed,
+                jsonPath: jsonURL.path,
+                markdownPath: markdownURL.path,
+                errorDescription: error.localizedDescription
+            )
+        }
+
+        do {
+            try data.write(to: jsonURL, options: .atomic)
+        } catch {
+            return TaskContextStateSaveResult(
+                status: .writeJSONFailed,
+                jsonPath: jsonURL.path,
+                markdownPath: markdownURL.path,
+                errorDescription: error.localizedDescription
+            )
+        }
+
+        do {
             try renderMarkdown(state).write(
-                to: URL(fileURLWithPath: taskFolder).appendingPathComponent(markdownFileName),
+                to: markdownURL,
                 atomically: true,
                 encoding: .utf8
             )
-            if let taskID {
-                AppLogger.audit(.contextStateUpdated, category: "Worker", taskID: taskID, fields: [
-                    "mode": state.mode.rawValue,
-                    "turn_count": String(state.turns.count),
-                    "decision_count": String(state.decisions.count),
-                    "blocker_count": String(state.blockers.count),
-                    "file_count": String(state.filesChanged.count)
-                ], level: .debug)
-            }
         } catch {
-            if let taskID {
-                AppLogger.audit(.contextStateUpdated, category: "Worker", taskID: taskID, fields: [
-                    "result": "failed",
-                    "error": error.localizedDescription
-                ], level: .warning)
-            }
+            return TaskContextStateSaveResult(
+                status: .writeMarkdownFailed,
+                jsonPath: jsonURL.path,
+                markdownPath: markdownURL.path,
+                errorDescription: error.localizedDescription
+            )
+        }
+
+        return TaskContextStateSaveResult(
+            status: .saved,
+            jsonPath: jsonURL.path,
+            markdownPath: markdownURL.path,
+            errorDescription: nil
+        )
+    }
+
+    private static func auditSaveResult(_ result: TaskContextStateSaveResult, state: TaskContextState, taskID: UUID?) {
+        guard let taskID else { return }
+        if result.didSave {
+            AppLogger.audit(.contextStateUpdated, category: "Worker", taskID: taskID, fields: [
+                "mode": state.mode.rawValue,
+                "turn_count": String(state.turns.count),
+                "decision_count": String(state.decisions.count),
+                "blocker_count": String(state.blockers.count),
+                "file_count": String(state.filesChanged.count),
+                "result": result.status.rawValue
+            ], level: .debug)
+        } else {
+            AppLogger.audit(.contextStateUpdated, category: "Worker", taskID: taskID, fields: [
+                "result": result.status.rawValue,
+                "json_path": result.jsonPath,
+                "markdown_path": result.markdownPath,
+                "error": result.errorDescription ?? "unknown"
+            ], level: .warning)
         }
     }
 

@@ -2,6 +2,13 @@ import Foundation
 import SwiftData
 
 struct TaskArtifactReconciliationSummary {
+    enum Status: String {
+        case unchanged
+        case artifactsChanged
+        case staleArtifacts
+        case duplicateArtifacts
+    }
+
     var discoveredFiles: [TaskOutputDiscoveredFile]
     var createdArtifacts: [Artifact]
     var normalizedArtifacts: [Artifact]
@@ -11,6 +18,31 @@ struct TaskArtifactReconciliationSummary {
 
     var didChangeArtifactRows: Bool {
         !createdArtifacts.isEmpty || !normalizedArtifacts.isEmpty
+    }
+
+    var status: Status {
+        if !duplicateArtifacts.isEmpty {
+            return .duplicateArtifacts
+        }
+        if !staleArtifacts.isEmpty {
+            return .staleArtifacts
+        }
+        if didChangeArtifactRows {
+            return .artifactsChanged
+        }
+        return .unchanged
+    }
+
+    var auditFields: [String: String] {
+        [
+            "result": status.rawValue,
+            "discovered_file_count": String(discoveredFiles.count),
+            "created_artifact_count": String(createdArtifacts.count),
+            "normalized_artifact_count": String(normalizedArtifacts.count),
+            "duplicate_artifact_count": String(duplicateArtifacts.count),
+            "current_artifact_count": String(currentArtifacts.count),
+            "stale_artifact_count": String(staleArtifacts.count)
+        ]
     }
 }
 
@@ -66,7 +98,7 @@ enum TaskArtifactPersistenceService {
             created.append(artifact)
         }
 
-        return TaskArtifactReconciliationSummary(
+        let summary = TaskArtifactReconciliationSummary(
             discoveredFiles: files,
             createdArtifacts: created,
             normalizedArtifacts: normalizedArtifacts,
@@ -74,6 +106,14 @@ enum TaskArtifactPersistenceService {
             currentArtifacts: task.artifacts.filter { artifactExists($0, fileManager: fileManager) },
             staleArtifacts: task.artifacts.filter { !artifactExists($0, fileManager: fileManager) }
         )
+        AppLogger.audit(
+            .runtimePersistenceSummary,
+            category: "Worker",
+            taskID: task.id,
+            fields: summary.auditFields,
+            level: summary.status == .unchanged ? .debug : .info
+        )
+        return summary
     }
 
     @discardableResult
