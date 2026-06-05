@@ -59,6 +59,26 @@ and `~/Documents/Astra Dev/Workspaces`.
   the task-bound Shelf browser bridge token.
 - Development and production channels must keep app support, workspace roots,
   Keychain namespaces, and update behavior separate.
+- Channel storage boundaries are defined by `AppChannel`: production,
+  development, and beta use separate App Support directories, Documents
+  workspace roots, worktree roots, and Keychain prefixes.
+- Workspace records live in SwiftData. `.astra-workspace.json` is the durable
+  recovery and sharing export, not a credential store. Secrets belong in
+  channel-scoped Keychain records.
+- Workspace support files live under `.astra/`, including
+  `.astra/tasks/<task-id-prefix>/` and `.astra/ssh-connections.json`. Legacy
+  `tasks/<task-id-prefix>/` folders may be migrated into `.astra/tasks`.
+- A workspace's `activeWorkingPath` controls where new chats run. Existing
+  tasks may keep an `executionRootPath` snapshot so later workspace focus
+  changes do not move the thread into a different checkout.
+- `current_state.json`, `current_state.md`, `session_history.md`, diagnostics,
+  turn outputs, and runtime-bin folders are ASTRA-owned task state. Agents may
+  read them for context when prompted, but they must not be treated as
+  user-facing deliverables or writable completion targets.
+- Runtime adapters are a trust boundary for provider output. Provider-reported
+  stream events, file paths, permission prompts, usage, diagnostics, and
+  inferred file changes must still pass ASTRA recording, policy, validation,
+  and artifact reconciliation layers before affecting task completion.
 - Runtime readiness, diagnostics, and logs may receive credential-looking
   provider output and must avoid persisting secret values.
 - Runtime permission manifests may list environment key names, credential
