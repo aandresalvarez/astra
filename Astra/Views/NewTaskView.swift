@@ -191,18 +191,13 @@ struct NewTaskView: View {
         }
         .frame(width: 520, height: 680)
         .onAppear {
-            runtimeID = defaultRuntimeID
-            model = defaultModel
-            let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID)
-            model = RuntimeModelAvailability.normalizedModel(
-                model,
-                for: runtime,
-                cache: runtimeModelCache
-            )
-            tokenBudget = defaultBudget
+            let settings = runtimeSettingsSnapshot
+            runtimeID = settings.defaultRuntime.rawValue
+            model = settings.normalizedDefaultModel
+            tokenBudget = settings.defaultBudget
             policyLevelRaw = AgentPolicyDefaults.effectiveLevel(
                 workspace: workspace,
-                globalDefaultRaw: defaultAgentPolicyLevelRaw
+                globalDefaultRaw: settings.defaultPolicyLevelRaw
             ).userFacingLevel.rawValue
         }
         .onChange(of: claudeAvailableModels) {
@@ -224,9 +219,20 @@ struct NewTaskView: View {
     }
 
     private var runtimeModelCache: RuntimeModelAvailabilityCache {
-        RuntimeModelAvailabilityCache.appStorage(
+        runtimeSettingsSnapshot.runtimeModelCache
+    }
+
+    private var runtimeSettingsSnapshot: RuntimeSettingsSnapshot {
+        RuntimeSettingsSnapshotStore.runtimeSnapshot(
+            defaultRuntimeID: defaultRuntimeID,
+            defaultModel: defaultModel,
+            defaultBudget: defaultBudget,
+            skipPermissions: false,
+            defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
             cachedClaudeModelsJSON: claudeAvailableModels,
-            cachedCopilotModelsJSON: copilotAvailableModels
+            cachedCopilotModelsJSON: copilotAvailableModels,
+            runtimeModelCacheRevision: runtimeModelCacheRevision,
+            providerSnapshot: RuntimeSettingsSnapshotStore.providerSnapshot()
         )
     }
 
