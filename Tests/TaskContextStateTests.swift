@@ -13,6 +13,63 @@ private func makeTaskContextStateContainer() throws -> ModelContainer {
 @Suite("Task context state")
 @MainActor
 struct TaskContextStateTests {
+    @Test("loadResult reports missing current-state file")
+    func loadResultReportsMissingCurrentStateFile() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let result = TaskContextStateManager.loadResult(taskFolder: root)
+
+        #expect(result.status == .missingFile)
+        #expect(result.path.hasSuffix(TaskContextStateManager.jsonFileName))
+        #expect(result.state == nil)
+        #expect(!result.didLoad)
+    }
+
+    @Test("loadResult reports malformed current-state JSON")
+    func loadResultReportsMalformedJSON() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let path = (root as NSString).appendingPathComponent(TaskContextStateManager.jsonFileName)
+        try "{ not json".write(toFile: path, atomically: true, encoding: .utf8)
+
+        let result = TaskContextStateManager.loadResult(taskFolder: root)
+
+        #expect(result.status == .decodeFailed)
+        #expect(result.path == path)
+        #expect(result.state == nil)
+        #expect(result.errorDescription?.contains("current:") == true)
+    }
+
+    @Test("saveState returns structured success and writes both state files")
+    func saveStateReturnsStructuredSuccess() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let result = TaskContextStateManager.saveState(minimalState(), taskFolder: root)
+
+        #expect(result.status == .saved)
+        #expect(result.didSave)
+        #expect(FileManager.default.fileExists(atPath: result.jsonPath))
+        #expect(FileManager.default.fileExists(atPath: result.markdownPath))
+        #expect(TaskContextStateManager.loadResult(taskFolder: root).status == .loadedCurrent)
+    }
+
+    @Test("saveState reports directory creation failures")
+    func saveStateReportsDirectoryCreationFailure() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let filePath = (root as NSString).appendingPathComponent("not-a-directory")
+        try "file".write(toFile: filePath, atomically: true, encoding: .utf8)
+
+        let result = TaskContextStateManager.saveState(minimalState(), taskFolder: filePath)
+
+        #expect(result.status == .createDirectoryFailed)
+        #expect(!result.didSave)
+        #expect(result.jsonPath.hasSuffix("/not-a-directory/\(TaskContextStateManager.jsonFileName)"))
+        #expect(result.errorDescription?.isEmpty == false)
+    }
+
     @Test("recording a run writes canonical JSON and markdown state")
     func recordsCurrentStateFiles() throws {
         let root = try temporaryRoot()
@@ -977,5 +1034,49 @@ struct TaskContextStateTests {
             .appendingPathComponent("astra-context-state-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url.path
+    }
+
+    private func minimalState(schemaVersion: Int = 2) -> TaskContextState {
+        TaskContextState(
+            schemaVersion: schemaVersion,
+            mode: .exploration,
+            startingRequest: "Start",
+            currentObjective: "Current",
+            objective: TaskContextState.Objective(
+                startingRequest: "Start",
+                currentObjective: "Current",
+                approvedGoal: nil,
+                sourcePointers: []
+            ),
+            constraints: [],
+            acceptanceCriteria: [],
+            testCommand: nil,
+            decisions: ["Use structured diagnostics"],
+            decisionFacts: [],
+            rejectedOptions: [],
+            openQuestions: [],
+            candidateGoals: [],
+            approvedGoal: nil,
+            blockers: [],
+            blockerFacts: [],
+            filesChanged: [],
+            changedFiles: [],
+            artifacts: [],
+            verification: TaskContextState.Verification(
+                status: "not_verified",
+                strategy: "manual",
+                command: nil,
+                summary: "No validation has run.",
+                evidence: [],
+                updatedAt: nil
+            ),
+            validationContract: nil,
+            latestHandoff: nil,
+            correctiveWork: nil,
+            sourcePointers: [],
+            nextLikelyAction: nil,
+            turns: [],
+            updatedAt: "2026-06-05T00:00:00Z"
+        )
     }
 }

@@ -30,6 +30,9 @@ struct TaskArtifactPersistenceServiceTests {
         )
 
         let first = TaskArtifactPersistenceService.reconcileTaskOutputArtifacts(for: task, modelContext: context)
+        #expect(first.status == .artifactsChanged)
+        #expect(first.auditFields["result"] == "artifactsChanged")
+        #expect(first.auditFields["created_artifact_count"] == "1")
         #expect(first.createdArtifacts.map(\.path) == [indexPath])
         #expect(first.currentArtifacts.map(\.path).contains(indexPath))
         #expect(first.staleArtifacts.isEmpty)
@@ -37,6 +40,8 @@ struct TaskArtifactPersistenceServiceTests {
         #expect(task.artifacts.filter { $0.path == indexPath }.count == 1)
 
         let second = TaskArtifactPersistenceService.reconcileTaskOutputArtifacts(for: task, modelContext: context)
+        #expect(second.status == .unchanged)
+        #expect(second.auditFields["result"] == "unchanged")
         #expect(second.createdArtifacts.isEmpty)
         #expect(second.currentArtifacts.map(\.path).contains(indexPath))
         #expect(second.duplicateArtifacts.isEmpty)
@@ -63,6 +68,9 @@ struct TaskArtifactPersistenceServiceTests {
         task.artifacts.append(contentsOf: [first, duplicate, stale])
 
         let summary = TaskArtifactPersistenceService.reconcileTaskOutputArtifacts([], for: task, modelContext: context)
+        #expect(summary.status == .duplicateArtifacts)
+        #expect(summary.auditFields["duplicate_artifact_count"] == "1")
+        #expect(summary.auditFields["stale_artifact_count"] == "1")
         #expect(summary.createdArtifacts.isEmpty)
         #expect(summary.currentArtifacts.contains { $0.id == first.id })
         #expect(summary.currentArtifacts.contains { $0.id == duplicate.id })

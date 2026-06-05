@@ -15,6 +15,105 @@ enum WorkspaceConfigManager {
 
     static let currentVersion = 10
 
+    struct WorkspaceConfigExportResult {
+        enum Status: String {
+            case exported
+            case skippedNoConfig
+            case writeFailed
+        }
+
+        var status: Status
+        var workspaceID: String
+        var path: String
+        var errorType: String?
+        var errorDomain: String?
+        var errorCode: Int?
+        var errorDescription: String?
+        var parentExists: Bool
+        var parentWritable: Bool
+
+        var didExport: Bool {
+            status == .exported
+        }
+
+        var auditFields: [String: String] {
+            var fields: [String: String] = [
+                "workspace_id": workspaceID,
+                "config_file": URL(fileURLWithPath: path).lastPathComponent,
+                "path": path,
+                "result": status.rawValue,
+                "parent_exists": String(parentExists),
+                "parent_writable": String(parentWritable)
+            ]
+            if let errorType {
+                fields["error_type"] = errorType
+            }
+            if let errorDomain {
+                fields["error_domain"] = errorDomain
+            }
+            if let errorCode {
+                fields["error_code"] = String(errorCode)
+            }
+            if let errorDescription {
+                fields["error_description"] = errorDescription
+            }
+            return fields
+        }
+    }
+
+    struct WorkspaceConfigLoadResult {
+        enum Status: String {
+            case loaded
+            case unreadableFile
+            case decodeFailed
+        }
+
+        var status: Status
+        var path: String
+        var config: WorkspaceConfig?
+        var errorType: String?
+        var errorDomain: String?
+        var errorCode: Int?
+        var errorDescription: String?
+
+        var didLoad: Bool {
+            config != nil
+        }
+    }
+
+    struct WorkspaceConfigImportResult {
+        enum Status: String {
+            case imported
+        }
+
+        var status: Status
+        var workspace: Workspace
+        var workspaceID: String
+        var skillCount: Int
+        var connectorCount: Int
+        var localToolCount: Int
+        var taskCount: Int
+        var skippedConnectorCount: Int
+        var skippedLocalToolCount: Int
+
+        var didImport: Bool {
+            status == .imported
+        }
+
+        var auditFields: [String: String] {
+            [
+                "result": status.rawValue,
+                "workspace_id": workspaceID,
+                "skill_count": String(skillCount),
+                "connector_count": String(connectorCount),
+                "local_tool_count": String(localToolCount),
+                "task_count": String(taskCount),
+                "skipped_connector_count": String(skippedConnectorCount),
+                "skipped_local_tool_count": String(skippedLocalToolCount)
+            ]
+        }
+    }
+
     struct WorkspaceConfig: Codable {
         var version: Int = WorkspaceConfigManager.currentVersion
         var id: String?
@@ -342,6 +441,32 @@ enum WorkspaceConfigManager {
         try write(config, to: url)
     }
 
+    @discardableResult
+    static func exportToFileResult(workspace: Workspace, url: URL) -> WorkspaceConfigExportResult {
+        guard let config = export(workspace: workspace) else {
+            return exportResult(
+                status: .skippedNoConfig,
+                workspaceID: workspace.id.uuidString,
+                url: url,
+                error: nil
+            )
+        }
+        return writeResult(config, workspaceID: workspace.id.uuidString, to: url)
+    }
+
+    @discardableResult
+    static func exportToFileResult(workspace: Workspace, modelContext: ModelContext, url: URL) -> WorkspaceConfigExportResult {
+        guard let config = export(workspace: workspace, modelContext: modelContext) else {
+            return exportResult(
+                status: .skippedNoConfig,
+                workspaceID: workspace.id.uuidString,
+                url: url,
+                error: nil
+            )
+        }
+        return writeResult(config, workspaceID: workspace.id.uuidString, to: url)
+    }
+
     /// Auto-save config to the workspace's primary path for recovery.
     static func autoExport(workspace: Workspace) {
         let target = autoExportTarget(for: workspace.primaryPath)
@@ -349,11 +474,11 @@ enum WorkspaceConfigManager {
             logAutoExportSkipped(workspace: workspace, reason: target.reason)
             return
         }
-        do {
-            try exportToFile(workspace: workspace, url: url)
-        } catch {
-            var fields = autoExportFailureFields(error: error, workspace: workspace, url: url)
+        let result = exportToFileResult(workspace: workspace, url: url)
+        if result.status == .writeFailed {
+            var fields = result.auditFields
             fields["result"] = "auto_export_failed"
+            fields["diagnostic_result"] = result.status.rawValue
             AppLogger.audit(.workspaceExported, category: "Persistence", fields: fields, level: .error)
         }
     }
@@ -364,11 +489,11 @@ enum WorkspaceConfigManager {
             logAutoExportSkipped(workspace: workspace, reason: target.reason)
             return
         }
-        do {
-            try exportToFile(workspace: workspace, modelContext: modelContext, url: url)
-        } catch {
-            var fields = autoExportFailureFields(error: error, workspace: workspace, url: url)
+        let result = exportToFileResult(workspace: workspace, modelContext: modelContext, url: url)
+        if result.status == .writeFailed {
+            var fields = result.auditFields
             fields["result"] = "auto_export_failed"
+            fields["diagnostic_result"] = result.status.rawValue
             AppLogger.audit(.workspaceExported, category: "Persistence", fields: fields, level: .error)
         }
     }
@@ -404,21 +529,34 @@ enum WorkspaceConfigManager {
         ], level: .debug)
     }
 
-    private static func autoExportFailureFields(error: Error, workspace: Workspace, url: URL) -> [String: String] {
-        let nsError = error as NSError
+    private static func exportResult(
+        status: WorkspaceConfigExportResult.Status,
+        workspaceID: String,
+        url: URL,
+        error: Error?
+    ) -> WorkspaceConfigExportResult {
+        let nsError = error.map { $0 as NSError }
         let parent = url.deletingLastPathComponent()
-        let parentExists = FileManager.default.fileExists(atPath: parent.path)
-        let parentWritable = FileManager.default.isWritableFile(atPath: parent.path)
-        return [
-            "workspace_id": workspace.id.uuidString,
-            "config_file": url.lastPathComponent,
-            "error_type": String(describing: type(of: error)),
-            "error_domain": nsError.domain,
-            "error_code": String(nsError.code),
-            "error_description": nsError.localizedDescription,
-            "parent_exists": String(parentExists),
-            "parent_writable": String(parentWritable)
-        ]
+        return WorkspaceConfigExportResult(
+            status: status,
+            workspaceID: workspaceID,
+            path: url.path,
+            errorType: error.map { String(describing: type(of: $0)) },
+            errorDomain: nsError?.domain,
+            errorCode: nsError?.code,
+            errorDescription: nsError?.localizedDescription,
+            parentExists: FileManager.default.fileExists(atPath: parent.path),
+            parentWritable: FileManager.default.isWritableFile(atPath: parent.path)
+        )
+    }
+
+    private static func writeResult(_ config: WorkspaceConfig, workspaceID: String, to url: URL) -> WorkspaceConfigExportResult {
+        do {
+            try write(config, to: url)
+            return exportResult(status: .exported, workspaceID: workspaceID, url: url, error: nil)
+        } catch {
+            return exportResult(status: .writeFailed, workspaceID: workspaceID, url: url, error: error)
+        }
     }
 
     // MARK: - Import
@@ -430,8 +568,31 @@ enum WorkspaceConfigManager {
         return try decoder.decode(WorkspaceConfig.self, from: data)
     }
 
+    static func loadConfigResult(from url: URL) -> WorkspaceConfigLoadResult {
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            return loadResult(status: .unreadableFile, url: url, config: nil, error: error)
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        do {
+            let config = try decoder.decode(WorkspaceConfig.self, from: data)
+            return loadResult(status: .loaded, url: url, config: config, error: nil)
+        } catch {
+            return loadResult(status: .decodeFailed, url: url, config: nil, error: error)
+        }
+    }
+
     /// Create a new Workspace + Skills + Connectors + Tools + Templates from a config.
     static func importWorkspace(from config: WorkspaceConfig, modelContext: ModelContext) -> Workspace {
+        importWorkspaceResult(from: config, modelContext: modelContext).workspace
+    }
+
+    /// Create a new Workspace + Skills + Connectors + Tools + Templates from a config.
+    static func importWorkspaceResult(from config: WorkspaceConfig, modelContext: ModelContext) -> WorkspaceConfigImportResult {
         let workspace = Workspace(
             name: config.name,
             primaryPath: config.primaryPath,
@@ -470,8 +631,10 @@ enum WorkspaceConfigManager {
 
         var connectorsByID: [String: Connector] = [:]
         var connectorsByName: [String: Connector] = [:]
+        var skippedConnectorCount = 0
         for cc in config.connectors ?? [] {
             guard let connector = reusedGlobalConnector(for: cc, modelContext: modelContext) ?? makeConnector(from: cc) else {
+                skippedConnectorCount += 1
                 continue
             }
             connector.workspace = (connector.isGlobal ? nil : workspace)
@@ -489,8 +652,10 @@ enum WorkspaceConfigManager {
 
         var toolsByID: [String: LocalTool] = [:]
         var toolsByName: [String: LocalTool] = [:]
+        var skippedLocalToolCount = 0
         for tc in config.localTools ?? [] {
             guard let tool = reusedGlobalTool(for: tc, modelContext: modelContext) ?? makeLocalTool(from: tc) else {
+                skippedLocalToolCount += 1
                 continue
             }
             tool.workspace = (tool.isGlobal ? nil : workspace)
@@ -568,10 +733,40 @@ enum WorkspaceConfigManager {
             }
         }
 
-        return workspace
+        let result = WorkspaceConfigImportResult(
+            status: .imported,
+            workspace: workspace,
+            workspaceID: workspace.id.uuidString,
+            skillCount: workspace.skills.count,
+            connectorCount: workspace.connectors.count,
+            localToolCount: workspace.localTools.count,
+            taskCount: workspace.tasks.count,
+            skippedConnectorCount: skippedConnectorCount,
+            skippedLocalToolCount: skippedLocalToolCount
+        )
+        AppLogger.audit(.workspaceImported, category: "Persistence", fields: result.auditFields, level: .info)
+        return result
     }
 
     // MARK: - Export Helpers
+
+    private static func loadResult(
+        status: WorkspaceConfigLoadResult.Status,
+        url: URL,
+        config: WorkspaceConfig?,
+        error: Error?
+    ) -> WorkspaceConfigLoadResult {
+        let nsError = error.map { $0 as NSError }
+        return WorkspaceConfigLoadResult(
+            status: status,
+            path: url.path,
+            config: config,
+            errorType: error.map { String(describing: type(of: $0)) },
+            errorDomain: nsError?.domain,
+            errorCode: nsError?.code,
+            errorDescription: nsError?.localizedDescription
+        )
+    }
 
     private static func write(_ config: WorkspaceConfig, to url: URL) throws {
         let encoder = JSONEncoder()

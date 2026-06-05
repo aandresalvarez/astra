@@ -74,13 +74,15 @@ struct AgentRuntimeLaunchPreflightTests {
         context.insert(workspace)
         context.insert(task)
 
-        let prepared = AgentRuntimeLaunchPreflight.prepareTaskFolderForLaunch(
+        let result = AgentRuntimeLaunchPreflight.prepareTaskFolderForLaunchResult(
             task,
             modelContext: context,
             phase: "run"
         )
 
-        #expect(prepared)
+        #expect(result.status == .taskFolderPrepared)
+        #expect(result.didPass)
+        #expect(result.auditFields["result"] == "taskFolderPrepared")
         #expect(FileManager.default.fileExists(atPath: TaskWorkspaceAccess(task: task).taskFolder))
         #expect(FileManager.default.fileExists(atPath: (TaskWorkspaceAccess(task: task).taskFolder as NSString).appendingPathComponent("outputs")))
         #expect(task.status == .draft)
@@ -210,13 +212,16 @@ struct AgentRuntimeLaunchPreflightTests {
         context.insert(workspace)
         context.insert(task)
 
-        let prepared = AgentRuntimeLaunchPreflight.prepareTaskFolderForLaunch(
+        let result = AgentRuntimeLaunchPreflight.prepareTaskFolderForLaunchResult(
             task,
             modelContext: context,
             phase: "run"
         )
 
-        #expect(!prepared)
+        #expect(result.status == .taskFolderCreateFailed)
+        #expect(!result.didPass)
+        #expect(result.reason == "task_folder_create_failed")
+        #expect(result.auditFields["result"] == "taskFolderCreateFailed")
         #expect(task.status == .failed)
         #expect(task.completedAt != nil)
         #expect(task.unreadAt != nil)
@@ -264,14 +269,17 @@ struct AgentRuntimeLaunchPreflightTests {
         context.insert(task)
         context.insert(run)
 
-        let passed = AgentRuntimeLaunchPreflight.preflightCapabilitiesBeforeLaunch(
+        let result = AgentRuntimeLaunchPreflight.preflightCapabilitiesBeforeLaunchResult(
             task: task,
             run: run,
             modelContext: context,
             phase: "run"
         )
 
-        #expect(!passed)
+        #expect(result.status == .capabilityRuntimeResourcesMissing)
+        #expect(!result.didPass)
+        #expect(result.reason == "capability_runtime_resources_missing")
+        #expect(result.auditFields["diagnostic_result"] == "capabilityRuntimeResourcesMissing")
         #expect(task.status == .failed)
         #expect(run.stopReason == "capability_runtime_resources_missing")
         #expect(task.events.contains { $0.type == "error" && $0.payload.contains("Jira") && $0.payload.contains("connector") })
@@ -331,14 +339,16 @@ struct AgentRuntimeLaunchPreflightTests {
         context.insert(run)
         try context.save()
 
-        let passed = AgentRuntimeLaunchPreflight.preflightCapabilitiesBeforeLaunch(
+        let result = AgentRuntimeLaunchPreflight.preflightCapabilitiesBeforeLaunchResult(
             task: task,
             run: run,
             modelContext: context,
             phase: "resume"
         )
 
-        #expect(passed)
+        #expect(result.status == .capabilityRuntimeResourcesPassed)
+        #expect(result.didPass)
+        #expect(result.auditFields["diagnostic_result"] == "capabilityRuntimeResourcesPassed")
         #expect(task.status == .running)
         #expect(run.status == .running)
         #expect(run.stopReason.isEmpty)

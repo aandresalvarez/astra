@@ -123,6 +123,12 @@ struct ValidationServiceTests {
         #expect(payload.exitCode == 7)
         #expect(payload.evidence == "stdout detail\nstderr detail")
         #expect(payload.reason == "command_failed")
+        let diagnostic = ValidationAssertionExecutionResult(payload: payload)
+        #expect(diagnostic.status == .failed)
+        #expect(!diagnostic.didPass)
+        #expect(diagnostic.auditFields["result"] == "failed")
+        #expect(diagnostic.auditFields["failure_reason"] == "command_failed")
+        #expect(diagnostic.auditFields["exit_code"] == "7")
     }
 
     @Test("validation contract command pass records assertion and contract events")
