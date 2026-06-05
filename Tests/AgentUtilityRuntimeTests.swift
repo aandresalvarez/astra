@@ -5,6 +5,9 @@ import ASTRACore
 
 @Suite("Agent Utility Runtime")
 struct AgentUtilityRuntimeTests {
+    private static let longRunningHelperSleepSeconds = 30
+    private static let fullSuiteUtilityDeadlineSeconds: TimeInterval = 20
+
     @Test("Utility runtime preserves arbitrary provider settings")
     func utilityRuntimePreservesArbitraryProviderSettings() throws {
         let futureRuntime = try #require(AgentRuntimeID(rawValue: "future_cli"))
@@ -363,7 +366,7 @@ struct AgentUtilityRuntimeTests {
         HELP
           exit 0
         fi
-        sleep 10 &
+        sleep \(Self.longRunningHelperSleepSeconds) &
         wait
         """
         try writeExecutableScript(at: fakeCopilot, contents: script)
@@ -383,7 +386,7 @@ struct AgentUtilityRuntimeTests {
         )
         let elapsed = Date().timeIntervalSince(start)
 
-        #expect(elapsed < 8, "Timed-out Copilot utility did not return promptly: \(elapsed)s")
+        #expect(elapsed < Self.fullSuiteUtilityDeadlineSeconds, "Timed-out Copilot utility did not return promptly: \(elapsed)s")
         #expect(result.exitCode == -1)
         #expect(result.error.contains("timed out"))
     }
@@ -407,7 +410,7 @@ struct AgentUtilityRuntimeTests {
         fi
         printf '%s\\n' '{"type":"assistant.message","data":{"content":"Goal plan ready"}}'
         printf '%s\\n' '{"type":"assistant.turn_end"}'
-        sleep 10 &
+        sleep \(Self.longRunningHelperSleepSeconds) &
         wait
         """
         try writeExecutableScript(at: fakeCopilot, contents: script)
@@ -427,7 +430,7 @@ struct AgentUtilityRuntimeTests {
         )
         let elapsed = Date().timeIntervalSince(start)
 
-        #expect(elapsed < 8, "Completed Copilot utility stream waited for wrapper exit: \(elapsed)s")
+        #expect(elapsed < Self.fullSuiteUtilityDeadlineSeconds, "Completed Copilot utility stream waited for wrapper exit: \(elapsed)s")
         #expect(result.exitCode == 0)
         #expect(result.output == "Goal plan ready")
     }
