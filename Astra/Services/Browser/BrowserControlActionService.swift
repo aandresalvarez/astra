@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 enum BrowserControlActionService {
     static func targetIdentifier(
@@ -11,12 +12,12 @@ enum BrowserControlActionService {
         placeholder: String?,
         testID: String?
     ) -> String {
-        if let selector, !selector.isEmpty { return "selector:\(selector.hashValue)" }
-        if let label, !label.isEmpty { return "label:\(label.lowercased().hashValue)" }
+        if let selector, !selector.isEmpty { return "selector:\(stableHash(selector))" }
+        if let label, !label.isEmpty { return "label:\(stableHash(label.lowercased()))" }
         if let role, !role.isEmpty { return "role:\(role.lowercased())" }
-        if let text, !text.isEmpty { return "text:\(text.lowercased().hashValue)" }
-        if let placeholder, !placeholder.isEmpty { return "placeholder:\(placeholder.lowercased().hashValue)" }
-        if let testID, !testID.isEmpty { return "testid:\(testID.lowercased().hashValue)" }
+        if let text, !text.isEmpty { return "text:\(stableHash(text.lowercased()))" }
+        if let placeholder, !placeholder.isEmpty { return "placeholder:\(stableHash(placeholder.lowercased()))" }
+        if let testID, !testID.isEmpty { return "testid:\(stableHash(testID.lowercased()))" }
         return "point:\(x ?? -1),\(y ?? -1)"
     }
 
@@ -83,5 +84,10 @@ enum BrowserControlActionService {
         if let number = value as? NSNumber { return number.intValue }
         if let string = value as? String { return Int(string) }
         return nil
+    }
+
+    private static func stableHash(_ value: String) -> String {
+        let digest = SHA256.hash(data: Data(value.utf8))
+        return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
     }
 }

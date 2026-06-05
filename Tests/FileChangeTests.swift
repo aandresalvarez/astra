@@ -83,4 +83,21 @@ struct FileChangeTests {
         }
         #expect(run.fileChanges.isEmpty)
     }
+
+    @Test("Task run empty file changes JSON decodes as empty changes")
+    func taskRunEmptyFileChangesJSONDecodesAsEmptyChanges() {
+        let task = AgentTask(title: "Decode", goal: "Decode file changes")
+        let run = TaskRun(task: task)
+
+        for payload in ["", "   ", "\n\t"] {
+            run.fileChangesJSON = payload
+            switch run.fileChangesDecodeResult {
+            case .success(let changes):
+                #expect(changes.isEmpty)
+            case .failure(let error):
+                Issue.record("Expected empty payload to decode as no file changes, got \(error)")
+            }
+            #expect(run.fileChanges.isEmpty)
+        }
+    }
 }

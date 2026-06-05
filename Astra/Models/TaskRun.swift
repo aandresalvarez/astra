@@ -58,8 +58,10 @@ final class TaskRun {
     }
 
     var fileChangesDecodeResult: Result<[StoredFileChange], TaskRunFileChangesDecodeError> {
-        guard let data = fileChangesJSON.data(using: .utf8),
-              !data.isEmpty else {
+        if fileChangesJSON.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return .success([])
+        }
+        guard let data = fileChangesJSON.data(using: .utf8) else {
             return .failure(.invalidUTF8)
         }
         do {

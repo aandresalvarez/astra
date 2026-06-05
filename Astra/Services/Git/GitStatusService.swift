@@ -22,9 +22,7 @@ struct GitStatusService {
     func getStagedDiff(at repoPath: String, limit: Int = 8 * 1024) async -> String {
         do {
             let output = try await runGit(repoPath, ["--no-optional-locks", "diff", "--cached"])
-            if output.utf8.count <= limit { return output }
-            let prefix = String(output.prefix(limit))
-            return prefix + "\n...[truncated]"
+            return GitService.limitedContext(output, maxBytes: limit)
         } catch {
             return ""
         }

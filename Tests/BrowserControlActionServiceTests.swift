@@ -53,6 +53,60 @@ struct BrowserControlActionServiceTests {
         #expect(pointTarget == "point:0.25,0.75")
     }
 
+    @Test("target identifier hashes are deterministic and bounded")
+    func targetIdentifierHashesAreDeterministicAndBounded() {
+        let first = BrowserControlActionService.targetIdentifier(
+            selector: "#save",
+            x: nil,
+            y: nil,
+            label: nil,
+            role: nil,
+            text: nil,
+            placeholder: nil,
+            testID: nil
+        )
+        let second = BrowserControlActionService.targetIdentifier(
+            selector: "#save",
+            x: nil,
+            y: nil,
+            label: nil,
+            role: nil,
+            text: nil,
+            placeholder: nil,
+            testID: nil
+        )
+
+        #expect(first == second)
+        #expect(first == "selector:eb065962d402bd0c")
+    }
+
+    @Test("target identifier normalizes text based targets before hashing")
+    func targetIdentifierNormalizesTextBasedTargetsBeforeHashing() {
+        let upper = BrowserControlActionService.targetIdentifier(
+            selector: nil,
+            x: nil,
+            y: nil,
+            label: "Save",
+            role: nil,
+            text: nil,
+            placeholder: nil,
+            testID: nil
+        )
+        let lower = BrowserControlActionService.targetIdentifier(
+            selector: nil,
+            x: nil,
+            y: nil,
+            label: "save",
+            role: nil,
+            text: nil,
+            placeholder: nil,
+            testID: nil
+        )
+
+        #expect(upper == lower)
+        #expect(upper.hasPrefix("label:"))
+    }
+
     @Test("bounds signature normalizes numeric fields")
     func boundsSignatureNormalizesNumericFields() {
         let signature = BrowserControlActionService.boundsSignature([

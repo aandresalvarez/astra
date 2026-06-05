@@ -72,6 +72,22 @@ struct GitStatusServiceTests {
         #expect(diff.hasSuffix("...[truncated]"))
         #expect(diff.utf8.count <= 40)
     }
+
+    @Test("staged diff truncates by bytes without splitting multibyte scalars")
+    func stagedDiffTruncatesByBytesWithoutSplittingMultibyteScalars() async {
+        let probe = GitStatusServiceRunnerProbe(outputs: [
+            "--no-optional-locks diff --cached": "ééééé"
+        ])
+        let service = GitStatusService { repoPath, arguments in
+            await probe.run(repoPath: repoPath, arguments: arguments)
+        }
+
+        let diff = await service.getStagedDiff(at: "/repo", limit: 3)
+        let visiblePrefix = diff.replacingOccurrences(of: "\n...[truncated]", with: "")
+
+        #expect(diff == "é\n...[truncated]")
+        #expect(visiblePrefix.utf8.count <= 3)
+    }
 }
 
 private actor GitStatusServiceRunnerProbe {
