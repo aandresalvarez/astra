@@ -52,97 +52,6 @@ enum WorkspaceCanvasItem: String, Equatable {
     }
 }
 
-struct WorkspaceCanvasItemPreference: Equatable {
-    static let closedRawValue = ""
-    static let emptyStorageRawValue = "{}"
-
-    static func rawValue(for item: WorkspaceCanvasItem?) -> String {
-        item?.rawValue ?? closedRawValue
-    }
-
-    static func item(for rawValue: String) -> WorkspaceCanvasItem? {
-        WorkspaceCanvasItem(rawValue: rawValue)
-    }
-
-    static func rawValue(in storageRawValue: String, for conversationID: String?) -> String {
-        guard let conversationID, !conversationID.isEmpty else { return closedRawValue }
-        return decodedStorage(storageRawValue)[conversationID] ?? closedRawValue
-    }
-
-    static func item(in storageRawValue: String, for conversationID: String?) -> WorkspaceCanvasItem? {
-        item(for: rawValue(in: storageRawValue, for: conversationID))
-    }
-
-    static func updatedStorageRawValue(
-        currentStorageRawValue: String,
-        conversationID: String?,
-        item: WorkspaceCanvasItem?,
-        remember: Bool
-    ) -> String {
-        guard remember, let conversationID, !conversationID.isEmpty else {
-            return currentStorageRawValue
-        }
-
-        var storage = decodedStorage(currentStorageRawValue)
-        if let item {
-            storage[conversationID] = rawValue(for: item)
-        } else {
-            storage.removeValue(forKey: conversationID)
-        }
-        return encodedStorage(storage)
-    }
-
-    static func shouldRestoreRememberedItem(
-        activeItem: WorkspaceCanvasItem?,
-        isRightRailVisible: Bool,
-        rememberedItem: WorkspaceCanvasItem?,
-        canPresentRememberedItem: Bool
-    ) -> Bool {
-        activeItem == nil
-            && !isRightRailVisible
-            && rememberedItem != nil
-            && canPresentRememberedItem
-    }
-
-    private static func decodedStorage(_ rawValue: String) -> [String: String] {
-        guard let data = rawValue.data(using: .utf8),
-              let decoded = try? JSONDecoder().decode([String: String].self, from: data) else {
-            return [:]
-        }
-        return decoded
-    }
-
-    private static func encodedStorage(_ storage: [String: String]) -> String {
-        guard !storage.isEmpty else { return emptyStorageRawValue }
-
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode(storage),
-              let encoded = String(data: data, encoding: .utf8) else {
-            return emptyStorageRawValue
-        }
-        return encoded
-    }
-}
-
-struct GeneratedHTMLDiscoveryState: Equatable {
-    let preferredPath: String
-    let signature: String
-
-    static let empty = GeneratedHTMLDiscoveryState(preferredPath: "", signature: "")
-
-    static func discovered(preferredPath: String, taskID: UUID) -> GeneratedHTMLDiscoveryState {
-        GeneratedHTMLDiscoveryState(
-            preferredPath: preferredPath,
-            signature: TaskGeneratedFiles.htmlPreviewSignature(for: preferredPath, taskID: taskID)
-        )
-    }
-
-    func shouldApplyDiscovery(preferredPath: String, taskID: UUID) -> Bool {
-        signature != TaskGeneratedFiles.htmlPreviewSignature(for: preferredPath, taskID: taskID)
-    }
-}
-
 private enum WorkspaceRightPanel: Equatable {
     case canvas(WorkspaceCanvasItem)
     case context(UUID)
@@ -346,20 +255,20 @@ struct ContentView: View {
     @State private var linkedScheduleWarning: LinkedScheduleWarning?
     @State private var externalRouteNotice = ""
     @State private var runningTaskCount = 0
-    @AppStorage("claudePath") private var claudePath = ""
-    @AppStorage("copilotPath") private var copilotPath = ""
+    @AppStorage(AppStorageKeys.claudePath) private var claudePath = ""
+    @AppStorage(AppStorageKeys.copilotPath) private var copilotPath = ""
     @AppStorage(AppStorageKeys.runtimeProviderSettingsRevision) private var runtimeProviderSettingsRevision = 0
-    @AppStorage("defaultRuntimeID") private var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
-    @AppStorage("defaultModel") private var defaultModel = TaskExecutionDefaults.model
+    @AppStorage(AppStorageKeys.defaultRuntimeID) private var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
+    @AppStorage(AppStorageKeys.defaultModel) private var defaultModel = TaskExecutionDefaults.model
     @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultBudget = TaskExecutionDefaults.tokenBudget
     @AppStorage(AppStorageKeys.claudeProvider) private var claudeProviderRaw = ClaudeProvider.anthropic.rawValue
     @AppStorage(AppStorageKeys.claudeVertexOpusModel) private var claudeVertexOpusModel = ""
     @AppStorage(AppStorageKeys.claudeVertexSonnetModel) private var claudeVertexSonnetModel = ""
     @AppStorage(AppStorageKeys.claudeVertexHaikuModel) private var claudeVertexHaikuModel = ""
-    @AppStorage("timeoutSeconds") private var timeoutSeconds = 600
+    @AppStorage(AppStorageKeys.timeoutSeconds) private var timeoutSeconds = 600
     @AppStorage("appUIScale") private var uiScale: Double = 1.0
-    @AppStorage("validationModel") private var validationModel = "claude-haiku-4-5-20251001"
-    @AppStorage("workspacesRoot") private var workspacesRoot = ""
+    @AppStorage(AppStorageKeys.validationModel) private var validationModel = "claude-haiku-4-5-20251001"
+    @AppStorage(AppStorageKeys.workspacesRoot) private var workspacesRoot = ""
     @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
     @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var defaultAgentPolicyLevelRaw = AgentPolicyLevel.review.rawValue
     @AppStorage(AppStorageKeys.securityGateDefaultedToReview) private var securityGateDefaultedToReview = false
@@ -386,7 +295,7 @@ struct ContentView: View {
     @State private var selectedTaskPreferredMarkdownPath = ""
     @State private var selectedTaskHasQueryShelfContent = false
     @State private var selectedTaskPreferredQueryPath = ""
-    @AppStorage(AppStorageKeys.activeWorkspaceCanvasItemsByConversation) private var rememberedWorkspaceCanvasItemsRaw = WorkspaceCanvasItemPreference.emptyStorageRawValue
+    @State private var rememberedWorkspaceCanvasItemsRaw = WorkspaceCanvasItemPreferenceStore.load()
     /// First-run flag. Flips to true once the user finishes the
     /// onboarding wizard. Exposed via Settings → "Show Onboarding Again"
     /// so users can replay the guide on demand.
@@ -1202,12 +1111,14 @@ struct ContentView: View {
 
     private func setActiveWorkspaceCanvasItem(_ item: WorkspaceCanvasItem?, remember: Bool) {
         activeWorkspaceCanvasItem = item
-        rememberedWorkspaceCanvasItemsRaw = WorkspaceCanvasItemPreference.updatedStorageRawValue(
+        let updatedStorage = WorkspaceCanvasItemPreference.updatedStorageRawValue(
             currentStorageRawValue: rememberedWorkspaceCanvasItemsRaw,
             conversationID: selectedWorkspaceCanvasConversationID,
             item: item,
             remember: remember
         )
+        rememberedWorkspaceCanvasItemsRaw = updatedStorage
+        WorkspaceCanvasItemPreferenceStore.save(updatedStorage)
     }
 
     private func restoreRememberedWorkspaceCanvasItemIfAvailable() {
@@ -1827,16 +1738,11 @@ struct ContentView: View {
     }
 
     private func openWorkspaceFromExternalRoute(_ workspace: Workspace) {
-        selectedWorkspace = workspace
-        setSelectedTask(nil)
-        isComposingTask = false
-        presentRightRail(rememberShelfState: false)
+        applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.open(workspace: workspace))
     }
 
     private func openTaskFromExternalRoute(_ task: AgentTask) {
-        setSelectedTask(task)
-        isComposingTask = false
-        presentRightRail(rememberShelfState: false)
+        applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.open(task: task))
     }
 
     private func moveTaskToDraft(_ task: AgentTask) {
@@ -1860,6 +1766,14 @@ struct ContentView: View {
             selectedWorkspace: selectedWorkspace,
             lastSelectedWorkspaceID: lastSelectedWorkspaceID,
             lastSelectedWorkspacePath: lastSelectedWorkspacePath
+        )
+    }
+
+    private var workspaceSelectionCoordinator: ContentWorkspaceSelectionCoordinator {
+        ContentWorkspaceSelectionCoordinator(
+            selectedTask: selectedTask,
+            selectedWorkspace: selectedWorkspace,
+            isComposingTask: isComposingTask
         )
     }
 
@@ -1988,15 +1902,7 @@ struct ContentView: View {
 
     private func restoreWorkspaceSelection() {
         let restored = sceneCoordinator.restoredWorkspace()
-        if let restored {
-            if selectedWorkspace?.id != restored.id {
-                selectedWorkspace = restored
-            }
-        } else {
-            selectedWorkspace = nil
-            setSelectedTask(nil)
-            isComposingTask = false
-        }
+        applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.restore(workspace: restored))
     }
 
     private func persistWorkspaceSelection() {
@@ -2023,18 +1929,13 @@ struct ContentView: View {
     @discardableResult
     private func createWorkspace(from draft: NewWorkspaceDraft, source: String) -> Bool {
         guard let result = workspaceActionCoordinator.createWorkspace(from: draft, source: source) else { return false }
-        selectedWorkspace = result.workspace
+        applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.create(workspace: result.workspace))
         return true
     }
 
     private func deleteWorkspace(_ ws: Workspace) {
-        if selectedWorkspace?.id == ws.id {
-            selectedWorkspace = nil
-        }
         let next = coordinator.deleteWorkspace(ws, existingWorkspaces: workspaces)
-        if let next {
-            selectedWorkspace = next
-        }
+        applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.delete(workspace: ws, nextWorkspace: next))
     }
 
     private func importWorkspace() {
@@ -2046,8 +1947,23 @@ struct ContentView: View {
             existingWorkspaces: workspaces,
             askDuplicateAction: WorkspaceDuplicateActionPrompt.ask
         )
-        if let selected = result.selectedWorkspace {
-            selectedWorkspace = selected
+        applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.importWorkspace(result.selectedWorkspace))
+    }
+
+    private func applyWorkspaceSelectionUpdate(_ update: ContentWorkspaceSelectionUpdate) {
+        if selectedWorkspace?.id != update.selectedWorkspace?.id {
+            selectedWorkspace = update.selectedWorkspace
+        }
+        if selectedTask?.id != update.selectedTask?.id {
+            setSelectedTask(update.selectedTask)
+        } else {
+            selectedTask = update.selectedTask
+        }
+        isComposingTask = update.isComposingTask
+        if update.shouldPresentRightRail {
+            presentRightRail(
+                rememberShelfState: update.shouldRememberShelfStateWhenPresentingRightRail
+            )
         }
     }
 
@@ -4519,6 +4435,8 @@ struct WorkspaceSetupForm: View {
             return "exit \(code)"
         case .timedOut:
             return "timed out after 10s"
+        case .cancelled:
+            return "cancelled"
         case .launchFailed(let reason):
             return reason
         }

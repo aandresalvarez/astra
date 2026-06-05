@@ -221,6 +221,7 @@ struct TaskContextStateLoadResult: Equatable, Sendable {
     var path: String
     var state: TaskContextState?
     var errorDescription: String?
+    var decodeDiagnostic: StructuredJSONDecodeDiagnostic?
 
     var didLoad: Bool {
         state != nil
@@ -314,7 +315,8 @@ enum TaskContextStateManager {
                 status: .missingFile,
                 path: url.path,
                 state: nil,
-                errorDescription: nil
+                errorDescription: nil,
+                decodeDiagnostic: nil
             )
         }
 
@@ -326,54 +328,61 @@ enum TaskContextStateManager {
                 status: .unreadableFile,
                 path: url.path,
                 state: nil,
-                errorDescription: error.localizedDescription
+                errorDescription: error.localizedDescription,
+                decodeDiagnostic: nil
             )
         }
 
-        let decoder = JSONDecoder()
-        do {
-            let decoded = try decoder.decode(TaskContextState.self, from: data)
+        let currentResult = StructuredJSONDecoder.decode(TaskContextState.self, from: data)
+        if let decoded = currentResult.value {
             if decoded.schemaVersion == schemaVersion {
                 return TaskContextStateLoadResult(
                     status: .loadedCurrent,
                     path: url.path,
                     state: decoded,
-                    errorDescription: nil
+                    errorDescription: nil,
+                    decodeDiagnostic: currentResult.diagnostic
                 )
             }
             return TaskContextStateLoadResult(
                 status: .unsupportedSchema,
                 path: url.path,
                 state: nil,
-                errorDescription: "Unsupported Context Capsule schema version \(decoded.schemaVersion)."
+                errorDescription: "Unsupported Context Capsule schema version \(decoded.schemaVersion).",
+                decodeDiagnostic: currentResult.diagnostic
             )
-        } catch {
-            let currentDecodeError = error.localizedDescription
-            do {
-                let legacy = try decoder.decode(LegacyTaskContextState.self, from: data)
-                guard legacy.schemaVersion == 1 else {
-                    return TaskContextStateLoadResult(
-                        status: .unsupportedSchema,
-                        path: url.path,
-                        state: nil,
-                        errorDescription: "Unsupported legacy Context Capsule schema version \(legacy.schemaVersion)."
-                    )
-                }
+        }
+
+        let legacyResult = StructuredJSONDecoder.decode(LegacyTaskContextState.self, from: data)
+        if let legacy = legacyResult.value {
+            guard legacy.schemaVersion == 1 else {
                 return TaskContextStateLoadResult(
-                    status: .migratedLegacy,
-                    path: url.path,
-                    state: migrateLegacyState(legacy, taskFolder: taskFolder),
-                    errorDescription: nil
-                )
-            } catch {
-                return TaskContextStateLoadResult(
-                    status: .decodeFailed,
+                    status: .unsupportedSchema,
                     path: url.path,
                     state: nil,
-                    errorDescription: "current: \(currentDecodeError); legacy: \(error.localizedDescription)"
+                    errorDescription: "Unsupported legacy Context Capsule schema version \(legacy.schemaVersion).",
+                    decodeDiagnostic: legacyResult.diagnostic
                 )
             }
+            return TaskContextStateLoadResult(
+                status: .migratedLegacy,
+                path: url.path,
+                state: migrateLegacyState(legacy, taskFolder: taskFolder),
+                errorDescription: nil,
+                decodeDiagnostic: legacyResult.diagnostic
+            )
         }
+
+        return TaskContextStateLoadResult(
+            status: .decodeFailed,
+            path: url.path,
+            state: nil,
+            errorDescription: [
+                currentResult.diagnostic.errorDescription.map { "current: \($0)" },
+                legacyResult.diagnostic.errorDescription.map { "legacy: \($0)" }
+            ].compactMap { $0 }.joined(separator: "; "),
+            decodeDiagnostic: currentResult.diagnostic
+        )
     }
 
     static func load(taskFolder: String) -> TaskContextState? {
@@ -392,6 +401,9 @@ enum TaskContextStateManager {
         if let checkpoint = checkpointSummary(for: task) {
             lines.append("Checkpoint:")
             lines.append("- \(boundedInline(checkpoint, maxCharacters: 420))")
+            if let warning = TaskForkManifestService.sourceAvailabilityWarning(for: task) {
+                lines.append("- \(boundedInline(warning, maxCharacters: 240))")
+            }
         }
         if !state.objective.startingRequest.isEmpty {
             lines.append("- Starting request: \(boundedInline(state.objective.startingRequest, maxCharacters: 240))")
@@ -1428,6 +1440,7 @@ enum TaskContextStateManager {
         if let checkpointPointer = checkpointSourcePointer(for: task) {
             pointers.append(checkpointPointer)
         }
+        pointers += TaskForkManifestService.sourcePointers(for: task)
         pointers += state.verification.evidence
         if let validationContract = state.validationContract {
             pointers += validationContract.sourcePointers

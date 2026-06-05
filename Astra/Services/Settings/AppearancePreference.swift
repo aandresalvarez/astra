@@ -10,7 +10,13 @@ enum AppStorageKeys {
     static let hasSeenNewTaskNudge = "astra.hasSeenNewTaskNudge.v1"
     static let showStarredWorkspacesOnly = "astra.sidebar.showStarredWorkspacesOnly.v1"
     static let diagnosticsScope = "astra.diagnostics.scope.v1"
+    static let appUIScale = "appUIScale"
+    static let defaultRuntimeID = "defaultRuntimeID"
+    static let defaultModel = "defaultModel"
     static let defaultAgentPolicyLevel = "astra.policy.defaultLevel.v1"
+    static let workspacesRoot = "workspacesRoot"
+    static let timeoutSeconds = "timeoutSeconds"
+    static let validationModel = "validationModel"
     static let planShelfWidth = "astra.planShelf.width.v1"
     static let browserShelfWidth = "astra.browserShelf.width.v1"
     static let markdownShelfWidth = "astra.markdownShelf.width.v1"
@@ -26,6 +32,8 @@ enum AppStorageKeys {
     static let browserAutoPromoteGoogleWorkspace = "astra.browser.autoPromoteGoogleWorkspace.v1"
     static let defaultTokenBudget = "defaultTokenBudget"
     static let budgetEnforcementMode = "astra.budget.enforcementMode.v1"
+    static let claudePath = "claudePath"
+    static let copilotPath = "copilotPath"
     static let claudeProvider = "astra.claudeProvider.v1"
     static let claudeVertexProjectID = "astra.claudeVertexProjectID.v1"
     static let claudeVertexRegion = "astra.claudeVertexRegion.v1"
@@ -39,6 +47,26 @@ enum AppStorageKeys {
     static let runtimeModelCacheRevision = "astra.runtime.modelCacheRevision.v1"
     static let runtimeProviderSettingsRevision = "astra.runtime.providerSettingsRevision.v1"
     static let roleProfileRevision = "astra.roleProfile.revision.v1"
+
+    static func runtimeExecutablePathKey(for runtime: AgentRuntimeID) -> String {
+        switch runtime {
+        case .claudeCode:
+            return claudePath
+        case .copilotCLI:
+            return copilotPath
+        default:
+            return "astra.runtime.\(storageComponent(for: runtime)).executablePath.v1"
+        }
+    }
+
+    static func runtimeHomeDirectoryKey(for runtime: AgentRuntimeID) -> String {
+        switch runtime {
+        case .copilotCLI:
+            return "astra.copilot.homeDirectory.v1"
+        default:
+            return "astra.runtime.\(storageComponent(for: runtime)).homeDirectory.v1"
+        }
+    }
 
     static func runtimeAvailableModelsKey(for runtime: AgentRuntimeID) -> String {
         switch runtime {

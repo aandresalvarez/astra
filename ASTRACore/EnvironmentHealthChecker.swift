@@ -129,6 +129,8 @@ public struct EnvironmentHealthChecker: Sendable {
             return .unresponsive(detail: reason)
         case .timedOut:
             return .unresponsive(detail: "timed out after \(Int(timeout))s")
+        case .cancelled:
+            return .unresponsive(detail: "cancelled")
         case .exited(let code) where code != 0:
             let tail = liveness.stderr.isEmpty ? liveness.stdout : liveness.stderr
             return .unresponsive(detail: "exit \(code): \(tail.trimmed(max: 120))")

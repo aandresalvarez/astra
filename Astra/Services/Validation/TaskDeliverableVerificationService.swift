@@ -251,20 +251,36 @@ enum TaskDeliverableVerificationService {
             runID: result.runID,
             verifiedAt: result.verifiedAt
         )
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        guard let data = try? encoder.encode(payload),
-              let json = String(data: data, encoding: .utf8) else {
-            return result.summary
-        }
-        return json
+        return TaskEvent.payloadString(
+            payload,
+            fallback: result.summary,
+            encoder: TaskEventPayloadCodec.makeISO8601Encoder()
+        )
     }
 
     static func decode(_ payload: String) -> TaskDeliverableVerificationEventPayload? {
-        guard let data = payload.data(using: .utf8) else { return nil }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(TaskDeliverableVerificationEventPayload.self, from: data)
+        switch decodeResult(payload) {
+        case .success(let decoded):
+            decoded
+        case .failure:
+            nil
+        }
+    }
+
+    static func decodeResult(
+        _ payload: String
+    ) -> Result<TaskDeliverableVerificationEventPayload, TaskEventPayloadDecodeError> {
+        guard let data = payload.data(using: .utf8) else {
+            return .failure(.invalidUTF8)
+        }
+        do {
+            return .success(try TaskEventPayloadCodec.makeISO8601Decoder().decode(
+                TaskDeliverableVerificationEventPayload.self,
+                from: data
+            ))
+        } catch {
+            return .failure(.decodingFailed(error.localizedDescription))
+        }
     }
 
     static func checkJavaScriptSyntaxWithNode(
@@ -457,19 +473,19 @@ enum TaskDeliverableVerificationService {
         ]
             .joined(separator: " ")
             .lowercased()
-        let types = Set(files.map { $0.type.lowercased() })
-        if types.contains("html") || text.contains("web page") || text.contains("webpage") || text.contains("javascript") {
+        let kinds = Set(files.map(\.kind))
+        if kinds.contains(.html) || text.contains("web page") || text.contains("webpage") || text.contains("javascript") {
             return .standaloneWebArtifact
         }
-        if !types.isDisjoint(with: ["md", "markdown", "txt", "pdf", "doc", "docx", "rtf"]) ||
+        if !kinds.isDisjoint(with: ["md", .markdown, .text, .pdf, .doc, .docx, .rtf]) ||
             text.contains("document") || text.contains("report") || text.contains("requirements") {
             return .documentArtifact
         }
-        if !types.isDisjoint(with: ["js", "mjs", "cjs", "ts", "tsx", "jsx", "swift", "py", "rb", "go", "rs"]) ||
+        if !kinds.isDisjoint(with: [.javascript, "mjs", "cjs", .typescript, .tsx, .jsx, .swift, .python, "rb", "go", "rs"]) ||
             text.contains("script") || text.contains("code") {
             return .codeArtifact
         }
-        if !types.isDisjoint(with: ["json", "csv", "tsv", "sql", "yaml", "yml"]) ||
+        if !kinds.isDisjoint(with: [.json, .csv, .tsv, .sql, .yaml, .yml]) ||
             text.contains("data") || text.contains("csv") || text.contains("json") {
             return .dataArtifact
         }

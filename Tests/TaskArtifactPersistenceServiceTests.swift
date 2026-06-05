@@ -33,7 +33,9 @@ struct TaskArtifactPersistenceServiceTests {
         #expect(first.status == .artifactsChanged)
         #expect(first.auditFields["result"] == "artifactsChanged")
         #expect(first.auditFields["created_artifact_count"] == "1")
+        #expect(first.auditFields["normalized_artifact_kind_count"] == "0")
         #expect(first.createdArtifacts.map(\.path) == [indexPath])
+        #expect(first.createdArtifacts.map(\.kind) == [.html])
         #expect(first.currentArtifacts.map(\.path).contains(indexPath))
         #expect(first.staleArtifacts.isEmpty)
         #expect(first.duplicateArtifacts.isEmpty)
@@ -46,6 +48,40 @@ struct TaskArtifactPersistenceServiceTests {
         #expect(second.currentArtifacts.map(\.path).contains(indexPath))
         #expect(second.duplicateArtifacts.isEmpty)
         #expect(task.artifacts.filter { $0.path == indexPath }.count == 1)
+    }
+
+    @Test("reconciliation normalizes artifact kind storage while preserving unknown kinds")
+    func reconciliationNormalizesArtifactKindStorageWhilePreservingUnknownKinds() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskArtifactPersistenceContainer()
+        let context = ModelContext(container)
+        let task = makeTask(root: root, context: context, title: "Normalize Kinds")
+
+        let htmlPath = (root as NSString).appendingPathComponent("index.html")
+        let customPath = (root as NSString).appendingPathComponent("report.custom")
+        try "<html></html>".write(toFile: htmlPath, atomically: true, encoding: .utf8)
+        try "custom".write(toFile: customPath, atomically: true, encoding: .utf8)
+        let html = Artifact(task: task, type: "HTML", path: htmlPath)
+        let unknown = Artifact(task: task, type: "Custom.Report", path: customPath)
+        let blank = Artifact(task: task, type: "   ", path: customPath, version: 2)
+        html.type = "HTML"
+        unknown.type = "Custom.Report"
+        blank.type = "   "
+        context.insert(html)
+        context.insert(unknown)
+        context.insert(blank)
+        task.artifacts.append(contentsOf: [html, unknown, blank])
+
+        let summary = TaskArtifactPersistenceService.reconcileTaskOutputArtifacts([], for: task, modelContext: context)
+
+        #expect(summary.normalizedArtifactKinds.map(\.id).contains(html.id))
+        #expect(summary.normalizedArtifactKinds.map(\.id).contains(unknown.id))
+        #expect(summary.normalizedArtifactKinds.map(\.id).contains(blank.id))
+        #expect(summary.auditFields["normalized_artifact_kind_count"] == "3")
+        #expect(html.kind == .html)
+        #expect(unknown.type == "custom.report")
+        #expect(blank.kind == .file)
     }
 
     @Test("reconciliation reports stale and duplicate artifact rows")
@@ -110,6 +146,8 @@ struct TaskArtifactPersistenceServiceTests {
 
         #expect(write.kind == .write)
         #expect(edit.kind == .edit)
+        #expect(first.kind == .swift)
+        #expect(second.kind == .swift)
         #expect(first.version == 1)
         #expect(second.version == 2)
         #expect(task.artifacts.filter { $0.path == path }.map(\.version).sorted() == [1, 2])

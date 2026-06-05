@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRACore
 
 enum ValidationResult {
     case passed(details: String)
@@ -11,6 +12,10 @@ struct ValidationCommandResult: Equatable, Sendable {
     let exitCode: Int
     let stdout: String
     let stderr: String
+    var launchError: String? = nil
+    var timedOut: Bool = false
+    var cancelled: Bool = false
+    var elapsedTime: TimeInterval = 0
 }
 
 protocol ValidationCommandRunning: Sendable {
@@ -19,19 +24,36 @@ protocol ValidationCommandRunning: Sendable {
 
 struct ShellValidationCommandRunner: ValidationCommandRunning {
     func run(command: String, workingDirectory: String, environment: [String: String]) async -> ValidationCommandResult {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-c", command]
-        process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory)
-        process.environment = environment
+        let result = await ProcessBinaryRunner().run(
+            path: "/bin/zsh",
+            args: ["-c", command],
+            timeout: 300,
+            environment: environment,
+            currentDirectory: workingDirectory
+        )
+        return ValidationCommandResult(
+            exitCode: Int(result.exitCode ?? -1),
+            stdout: result.stdout.trimmingCharacters(in: .whitespacesAndNewlines),
+            stderr: validationStderr(from: result),
+            launchError: result.launchError,
+            timedOut: result.timedOut,
+            cancelled: result.cancelled,
+            elapsedTime: result.elapsedTime
+        )
+    }
 
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        let result = await AsyncProcessRunner.run(process, stdout: stdoutPipe, stderr: stderrPipe)
-        return ValidationCommandResult(exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr)
+    private func validationStderr(from result: RunResult) -> String {
+        let trimmed = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        if result.timedOut {
+            return trimmed.isEmpty ? "Validation command timed out." : trimmed
+        }
+        if let launchError = result.launchError, trimmed.isEmpty {
+            return launchError
+        }
+        if result.cancelled, trimmed.isEmpty {
+            return "Validation command cancelled."
+        }
+        return trimmed
     }
 }
 
@@ -246,7 +268,12 @@ enum ValidationService {
             case "skipped": TaskValidationEventTypes.assertionSkipped
             default: TaskValidationEventTypes.assertionFailed
             }
-            modelContext.insert(TaskEvent(task: task, type: eventType, payload: encode(payload), run: run))
+            modelContext.insert(TaskEvent.structuredPayloadEvent(
+                task: task,
+                type: eventType,
+                payload: payload,
+                run: run
+            ))
 
             let auditEvent = switch payload.status {
             case "passed": AuditEvent.validationAssertionPassed
@@ -284,7 +311,12 @@ enum ValidationService {
         let contractEventType = canComplete
             ? TaskValidationEventTypes.contractPassed
             : TaskValidationEventTypes.contractFailed
-        modelContext.insert(TaskEvent(task: task, type: contractEventType, payload: encode(contractPayload), run: run))
+        modelContext.insert(TaskEvent.structuredPayloadEvent(
+            task: task,
+            type: contractEventType,
+            payload: contractPayload,
+            run: run
+        ))
         if !canComplete {
             recordCorrectiveSteps(
                 failedAssertions: failedRequired,
@@ -398,7 +430,12 @@ enum ValidationService {
             evidence: nil,
             reason: nil
         )
-        modelContext.insert(TaskEvent(task: task, type: type, payload: encode(payload), run: run))
+        modelContext.insert(TaskEvent.structuredPayloadEvent(
+            task: task,
+            type: type,
+            payload: payload,
+            run: run
+        ))
         AppLogger.audit(.validationAssertionStarted, category: "Validation", taskID: task.id, fields: [
             "plan_id": planID.uuidString,
             "assertion_id": assertion.id,
@@ -930,10 +967,10 @@ enum ValidationService {
             summary: "Verifier review started.",
             evidence: nil
         )
-        modelContext.insert(TaskEvent(
+        modelContext.insert(TaskEvent.structuredPayloadEvent(
             task: task,
             type: TaskVerifierEventTypes.started,
-            payload: encode(startedPayload),
+            payload: startedPayload,
             run: run
         ))
         AppLogger.audit(.verifierStarted, category: "Validation", taskID: task.id, fields: [
@@ -1011,10 +1048,10 @@ enum ValidationService {
             evidence: String(result.output.prefix(1000)),
             reason: reason
         )
-        modelContext.insert(TaskEvent(
+        modelContext.insert(TaskEvent.structuredPayloadEvent(
             task: task,
             type: TaskValidationEventTypes.assertionReviewed,
-            payload: encode(assertionPayload),
+            payload: assertionPayload,
             run: run
         ))
         AppLogger.audit(.validationAssertionReviewed, category: "Validation", taskID: task.id, fields: [
@@ -1052,7 +1089,12 @@ enum ValidationService {
             summary: summary,
             evidence: evidence.map { String($0.prefix(1000)) }
         )
-        modelContext.insert(TaskEvent(task: task, type: eventType, payload: encode(payload), run: run))
+        modelContext.insert(TaskEvent.structuredPayloadEvent(
+            task: task,
+            type: eventType,
+            payload: payload,
+            run: run
+        ))
         AppLogger.audit(auditEvent, category: "Validation", taskID: task.id, fields: [
             "plan_id": planID.uuidString,
             "assertion_id": assertionID,
@@ -1168,7 +1210,12 @@ enum ValidationService {
             summary: summary,
             reason: reason
         )
-        modelContext.insert(TaskEvent(task: task, type: type, payload: encode(payload), run: run))
+        modelContext.insert(TaskEvent.structuredPayloadEvent(
+            task: task,
+            type: type,
+            payload: payload,
+            run: run
+        ))
         AppLogger.audit(auditEvent, category: "Validation", taskID: task.id, fields: [
             "plan_id": planID.uuidString,
             "assertion_id": assertionID,
@@ -1472,8 +1519,28 @@ enum ValidationService {
     }
 
     private static func decodeAssertionPayload(_ payload: String) -> TaskValidationAssertionEventPayload? {
-        guard let data = payload.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(TaskValidationAssertionEventPayload.self, from: data)
+        switch decodeAssertionPayloadResult(payload) {
+        case .success(let decoded):
+            decoded
+        case .failure:
+            nil
+        }
+    }
+
+    static func decodeAssertionPayloadResult(
+        _ payload: String
+    ) -> Result<TaskValidationAssertionEventPayload, TaskEventPayloadDecodeError> {
+        guard let data = payload.data(using: .utf8) else {
+            return .failure(.invalidUTF8)
+        }
+        do {
+            return .success(try TaskEventPayloadCodec.makeDecoder().decode(
+                TaskValidationAssertionEventPayload.self,
+                from: data
+            ))
+        } catch {
+            return .failure(.decodingFailed(error.localizedDescription))
+        }
     }
 
     private static func firstNonEmpty(_ values: String?...) -> String {
@@ -1485,13 +1552,7 @@ enum ValidationService {
     }
 
     private static func encode<T: Encodable>(_ payload: T) -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode(payload),
-              let string = String(data: data, encoding: .utf8) else {
-            return "{}"
-        }
-        return string
+        TaskEvent.payloadString(payload)
     }
 
     private static func isoTimestamp(_ date: Date) -> String {

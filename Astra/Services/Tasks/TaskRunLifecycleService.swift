@@ -36,12 +36,12 @@ enum TaskRunInterruptionSource {
         }
     }
 
-    var runStopReason: String {
+    var runStopReason: TaskRunStopReason {
         switch self {
-        case .userAction: return "cancelled"
+        case .userAction: return .cancelled
         case .queueStopped: return "queue_cancelled"
-        case .appRestart: return "app_restarted"
-        case .supersededByNewRun: return "superseded"
+        case .appRestart: return .appRestarted
+        case .supersededByNewRun: return .superseded
         }
     }
 
@@ -202,7 +202,7 @@ enum TaskRunLifecycleService {
         for run in runningRuns {
             run.status = .cancelled
             run.completedAt = finishedAt
-            run.stopReason = source.runStopReason
+            run.typedStopReason = source.runStopReason
             summary.runsUpdated += 1
         }
 

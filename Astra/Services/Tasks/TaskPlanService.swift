@@ -68,7 +68,7 @@ enum TaskPlanService {
     static func parsePlanPayload(from responseText: String) -> TaskPlanPayload? {
         for candidate in jsonCandidates(in: responseText) {
             guard let data = candidate.data(using: .utf8),
-                  let decoded = try? JSONDecoder().decode(TaskPlanPayload.self, from: data),
+                  let decoded = try? TaskEventPayloadCodec.makeDecoder().decode(TaskPlanPayload.self, from: data),
                   let normalized = normalize(decoded) else {
                 continue
             }
@@ -320,7 +320,7 @@ enum TaskPlanService {
             summary: summary,
             reason: reason
         )
-        let event = TaskEvent(task: task, type: type, payload: encodeStepProgressPayload(payload), run: run)
+        let event = TaskEvent.structuredPayloadEvent(task: task, type: type, payload: payload, run: run)
         modelContext.insert(event)
         task.updatedAt = Date()
         auditStepProgress(payload, task: task, run: run)
@@ -331,21 +331,67 @@ enum TaskPlanService {
 
 extension TaskPlanService {
     static func decodePlanPayload(_ payload: String) -> TaskPlanPayload? {
-        guard let data = payload.data(using: .utf8),
-              let decoded = try? JSONDecoder().decode(TaskPlanPayload.self, from: data) else {
+        switch decodePlanPayloadResult(payload) {
+        case .success(let decoded):
+            return normalize(decoded)
+        case .failure:
             return nil
         }
-        return normalize(decoded)
+    }
+
+    static func decodePlanPayloadResult(_ payload: String) -> Result<TaskPlanPayload, TaskEventPayloadDecodeError> {
+        guard let data = payload.data(using: .utf8) else {
+            return .failure(.invalidUTF8)
+        }
+        do {
+            return .success(try TaskEventPayloadCodec.makeDecoder().decode(TaskPlanPayload.self, from: data))
+        } catch {
+            return .failure(.decodingFailed(error.localizedDescription))
+        }
     }
 
     static func decodeStepProgressPayload(_ payload: String) -> TaskPlanProgressPayload? {
-        guard let data = payload.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(TaskPlanProgressPayload.self, from: data)
+        switch decodeStepProgressPayloadResult(payload) {
+        case .success(let decoded):
+            return decoded
+        case .failure:
+            return nil
+        }
+    }
+
+    static func decodeStepProgressPayloadResult(
+        _ payload: String
+    ) -> Result<TaskPlanProgressPayload, TaskEventPayloadDecodeError> {
+        guard let data = payload.data(using: .utf8) else {
+            return .failure(.invalidUTF8)
+        }
+        do {
+            return .success(try TaskEventPayloadCodec.makeDecoder().decode(TaskPlanProgressPayload.self, from: data))
+        } catch {
+            return .failure(.decodingFailed(error.localizedDescription))
+        }
     }
 
     static func decodeLifecyclePayload(_ payload: String) -> TaskPlanLifecyclePayload? {
-        guard let data = payload.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(TaskPlanLifecyclePayload.self, from: data)
+        switch decodeLifecyclePayloadResult(payload) {
+        case .success(let decoded):
+            return decoded
+        case .failure:
+            return nil
+        }
+    }
+
+    static func decodeLifecyclePayloadResult(
+        _ payload: String
+    ) -> Result<TaskPlanLifecyclePayload, TaskEventPayloadDecodeError> {
+        guard let data = payload.data(using: .utf8) else {
+            return .failure(.invalidUTF8)
+        }
+        do {
+            return .success(try TaskEventPayloadCodec.makeDecoder().decode(TaskPlanLifecyclePayload.self, from: data))
+        } catch {
+            return .failure(.decodingFailed(error.localizedDescription))
+        }
     }
 
     static func inferRisk(from text: String) -> TaskPlanPayloadRisk {
@@ -638,7 +684,11 @@ extension TaskPlanService {
         task: AgentTask,
         modelContext: ModelContext
     ) -> TaskEvent {
-        let event = TaskEvent(task: task, type: type, payload: encodePlanPayload(plan))
+        let event = TaskEvent.structuredPayloadEvent(
+            task: task,
+            type: type,
+            payload: normalize(plan) ?? plan
+        )
         modelContext.insert(event)
         recordValidationContractSnapshotIfNeeded(
             plan: plan,
@@ -683,7 +733,11 @@ extension TaskPlanService {
             failedRequiredAssertionIDs: [],
             summary: "\(contract.assertions.count) validation assertion\(contract.assertions.count == 1 ? "" : "s") defined"
         )
-        modelContext.insert(TaskEvent(task: task, type: contractEventType, payload: encode(contractPayload)))
+        modelContext.insert(TaskEvent.structuredPayloadEvent(
+            task: task,
+            type: contractEventType,
+            payload: contractPayload
+        ))
 
         for assertion in contract.assertions {
             let assertionPayload = TaskValidationAssertionEventPayload(
@@ -702,10 +756,10 @@ extension TaskPlanService {
                 evidence: nil,
                 reason: nil
             )
-            modelContext.insert(TaskEvent(
+            modelContext.insert(TaskEvent.structuredPayloadEvent(
                 task: task,
                 type: TaskValidationEventTypes.assertionDefined,
-                payload: encode(assertionPayload)
+                payload: assertionPayload
             ))
         }
 
@@ -724,7 +778,7 @@ extension TaskPlanService {
         modelContext: ModelContext,
         run: TaskRun? = nil
     ) -> TaskEvent {
-        let event = TaskEvent(task: task, type: type, payload: encode(payload), run: run)
+        let event = TaskEvent.structuredPayloadEvent(task: task, type: type, payload: payload, run: run)
         modelContext.insert(event)
         task.updatedAt = Date()
         let state = reconstruct(for: task)
@@ -913,13 +967,7 @@ extension TaskPlanService {
     }
 
     private static func encode<T: Encodable>(_ payload: T) -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode(payload),
-              let string = String(data: data, encoding: .utf8) else {
-            return "{}"
-        }
-        return string
+        TaskEvent.payloadString(payload)
     }
 
     private static func jsonCandidates(in text: String) -> [String] {

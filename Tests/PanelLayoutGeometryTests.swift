@@ -118,6 +118,28 @@ struct PanelLayoutGeometryTests {
         ) == withConversationBMarkdown)
     }
 
+    @Test("Workspace shelf preference store persists the conversation map")
+    func workspaceShelfPreferenceStorePersistsConversationMap() throws {
+        let suiteName = "WorkspaceCanvasItemPreferenceStore.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let storage = WorkspaceCanvasItemPreference.updatedStorageRawValue(
+            currentStorageRawValue: WorkspaceCanvasItemPreference.emptyStorageRawValue,
+            conversationID: "conversation-a",
+            item: .browser,
+            remember: true
+        )
+
+        #expect(WorkspaceCanvasItemPreferenceStore.load(defaults: defaults) == WorkspaceCanvasItemPreference.emptyStorageRawValue)
+
+        WorkspaceCanvasItemPreferenceStore.save(storage, defaults: defaults)
+
+        #expect(WorkspaceCanvasItemPreferenceStore.load(defaults: defaults) == storage)
+    }
+
     @Test("Remembered shelf restore yields to an explicitly visible right rail")
     func rememberedShelfRestoreYieldsToVisibleRightRail() {
         #expect(!WorkspaceCanvasItemPreference.shouldRestoreRememberedItem(

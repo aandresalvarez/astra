@@ -197,11 +197,13 @@ struct TaskMainView: View {
     @State private var isTaskDecisionDetailsExpanded = false
     @State private var cachedPlanStateSnapshot = TaskPlanStateSnapshot.empty
     @State private var pendingPlanStateRefreshTask: Task<Void, Never>?
+    @State private var pendingVerificationPresentationRefreshTask: Task<Void, Never>?
     @State private var cachedVerificationRequest: TaskVerificationLoadRequest?
     @State private var cachedVerificationPresentation: TaskVerificationPresentation?
+    @State private var cachedForkSourceAvailabilityWarning: String?
     @FocusState private var isComposerFocused: Bool
-    @AppStorage("claudePath") private var claudePath = ""
-    @AppStorage("copilotPath") private var copilotPath = ""
+    @AppStorage(AppStorageKeys.claudePath) private var claudePath = ""
+    @AppStorage(AppStorageKeys.copilotPath) private var copilotPath = ""
     @AppStorage(AppStorageKeys.runtimeProviderSettingsRevision) private var runtimeProviderSettingsRevision = 0
     @AppStorage(AppStorageKeys.roleProfileRevision) private var roleProfileRevision = 0
     @AppStorage(AppStorageKeys.claudeProvider) private var claudeProviderRaw = ClaudeProvider.anthropic.rawValue
@@ -479,6 +481,7 @@ struct TaskMainView: View {
             cachedVerificationRequest = nil
             cachedVerificationPresentation = nil
             refreshTaskContextState()
+            refreshForkSourceAvailabilityWarning()
             refreshPlanStateCache()
         }
         .onAppear {
@@ -491,6 +494,7 @@ struct TaskMainView: View {
             cachedVerificationRequest = nil
             cachedVerificationPresentation = nil
             refreshTaskContextState()
+            refreshForkSourceAvailabilityWarning()
             refreshPlanStateCache()
             logRuntimeHealthIfNeeded(reason: "appear")
             installPasteMonitor()
@@ -513,6 +517,7 @@ struct TaskMainView: View {
         .onChange(of: generatedFilesTrigger) { _, _ in
             threadViewModel.refreshGeneratedFiles(folder: TaskWorkspaceAccess(task: task).taskFolder)
             refreshTaskContextState()
+            refreshForkSourceAvailabilityWarning()
         }
         .onChange(of: runtimeHealth.telemetrySignature) { _, _ in
             logRuntimeHealthIfNeeded(reason: "health")
@@ -570,17 +575,26 @@ struct TaskMainView: View {
 
     private func refreshTaskContextState() {
         TaskContextStateManager.refresh(task: task)
-        refreshCachedVerificationPresentationFromCurrentState()
+        refreshForkSourceAvailabilityWarning()
+        scheduleVerificationPresentationRefresh()
     }
 
-    private func refreshCachedVerificationPresentationFromCurrentState() {
+    private func refreshForkSourceAvailabilityWarning() {
+        cachedForkSourceAvailabilityWarning = TaskForkManifestService.sourceAvailabilityWarning(for: task)
+    }
+
+    private func scheduleVerificationPresentationRefresh() {
         guard let request = verificationLoadRequest else {
+            pendingVerificationPresentationRefreshTask?.cancel()
+            pendingVerificationPresentationRefreshTask = nil
             cachedVerificationRequest = nil
             cachedVerificationPresentation = nil
             return
         }
-        cachedVerificationRequest = request
-        cachedVerificationPresentation = TaskVerificationPresentationLoader.presentation(taskFolder: request.taskFolder)
+        pendingVerificationPresentationRefreshTask?.cancel()
+        pendingVerificationPresentationRefreshTask = Task { @MainActor in
+            await refreshVerificationPresentation(for: request)
+        }
     }
 
     private func schedulePlanStateCacheRefresh() {
@@ -1198,11 +1212,18 @@ struct TaskMainView: View {
     @ViewBuilder
     private var chatThreadContentBody: some View {
         if task.isForked {
-            HStack(spacing: 6) {
-                Image(systemName: "arrow.branch")
-                    .font(Stanford.ui(11))
-                Text("Forked from another task at step \(task.forkedAtRunIndex + 1)")
-                    .font(Stanford.caption(12))
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.branch")
+                        .font(Stanford.ui(11))
+                    Text("Forked from another task at step \(task.forkedAtRunIndex + 1)")
+                        .font(Stanford.caption(12))
+                }
+                if let warning = cachedForkSourceAvailabilityWarning {
+                    Text(warning)
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(Stanford.coolGrey)
+                }
             }
             .foregroundStyle(Stanford.plum)
             .padding(.horizontal, 12)
@@ -3584,48 +3605,26 @@ struct TaskMainView: View {
     // MARK: - Composer
 
     private var hasInput: Bool {
-        !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachedFiles.isEmpty
+        TaskComposerCoordinator.hasInput(messageText: messageText, attachedFiles: attachedFiles)
     }
 
     private var showSlashMenu: Bool {
-        let trimmed = messageText.trimmingCharacters(in: .whitespaces)
-        return trimmed.hasPrefix("/") && !trimmed.contains(" ") && trimmed.count < 14
+        TaskComposerCoordinator.shouldShowSlashMenu(messageText: messageText)
     }
 
-    private var slashMenuMatchesRemember: Bool {
-        let trimmed = messageText.trimmingCharacters(in: .whitespaces).lowercased()
-        return "/remember".hasPrefix(trimmed)
-    }
-
-    private var slashMenuMatchesRoutine: Bool {
-        let trimmed = messageText.trimmingCharacters(in: .whitespaces).lowercased()
-        return "/routine".hasPrefix(trimmed) || "/schedule".hasPrefix(trimmed)
-    }
-
-    private var slashMenuMatchesRecap: Bool {
-        let trimmed = messageText.trimmingCharacters(in: .whitespaces).lowercased()
-        return "/recap".hasPrefix(trimmed)
-    }
-
-    private var visibleSlashOptions: [(id: String, command: String)] {
-        var opts: [(id: String, command: String)] = []
-        if slashMenuMatchesRemember { opts.append(("remember", "/remember ")) }
-        if slashMenuMatchesRoutine { opts.append(("routine", "/routine ")) }
-        if slashMenuMatchesRecap { opts.append(("recap", "/recap")) }
-        return opts
+    private var visibleSlashOptions: [TaskComposerSlashOption] {
+        TaskComposerCoordinator.visibleSlashOptions(messageText: messageText)
     }
 
     /// Icon / color / title / subtitle metadata for a slash option id.
-    private static func slashOptionMeta(_ id: String) -> (icon: String, color: Color, title: String, subtitle: String) {
+    private static func slashOptionMeta(_ id: TaskComposerSlashCommandID) -> (icon: String, color: Color, title: String, subtitle: String) {
         switch id {
-        case "remember":
+        case .remember:
             return ("text.badge.checkmark", Stanford.lagunita, "Add Memory", "Save a fact to this workspace's memory")
-        case "routine":
+        case .routine:
             return ("arrow.triangle.2.circlepath", Stanford.poppy, "Create Routine", "Automate this task on a recurring cadence")
-        case "recap":
+        case .recap:
             return ("doc.text", Stanford.paloAltoGreen, "Recap Task", "Summarize progress so you can pause and resume later")
-        default:
-            return ("questionmark", Stanford.coolGrey, id.capitalized, "")
         }
     }
 
@@ -3638,9 +3637,9 @@ struct TaskMainView: View {
 
     /// Commands that take no argument execute immediately on selection.
     /// Commands that take args just fill the composer so the user can type.
-    private func selectSlashOption(_ opt: (id: String, command: String)) {
+    private func selectSlashOption(_ opt: TaskComposerSlashOption) {
         messageText = opt.command
-        if Self.isNoArgSlashCommand(opt.id) {
+        if opt.executesImmediately {
             sendMessage()
         }
     }
@@ -3651,10 +3650,6 @@ struct TaskMainView: View {
             return
         }
         sshConnections = SSHConnectionManager.load(workspacePath: workspace.primaryPath)
-    }
-
-    private static func isNoArgSlashCommand(_ id: String) -> Bool {
-        id == "recap"
     }
 
     private var runtimePermissionState: TaskRuntimePermissionState {
@@ -4403,24 +4398,22 @@ struct TaskMainView: View {
                     onStop: (shouldShowTaskDecisionDock || onCancelTask == nil) ? nil : { onCancelTask?(task) },
                     onModelChange: { task.model = $0 },
                     onRuntimeChange: { runtime in
-                        let previousRuntime = task.runtimeID
-                        let previousModel = task.model
-                        task.runtimeID = runtime
-                        let resolved = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtime)
-                        let resolvedModel = RuntimeModelAvailability.modelForRuntimeSwitch(
+                        let update = TaskComposerCoordinator.runtimeUpdate(
+                            previousRuntime: task.runtimeID,
+                            selectedRuntime: runtime,
                             currentModel: task.model,
-                            to: resolved,
                             cache: runtimeModelCache
                         )
-                        task.model = resolvedModel
+                        task.runtimeID = runtime
+                        task.model = update.resolvedModel
                         task.updatedAt = Date()
                         AppLogger.breadcrumb(action: "task_runtime_changed", category: "UI", taskID: task.id, fields: [
                             "source": "task_composer",
-                            "previous_runtime": previousRuntime ?? "none",
-                            "runtime": runtime,
-                            "previous_model": previousModel,
-                            "model": resolvedModel,
-                            "model_changed": String(previousModel != resolvedModel),
+                            "previous_runtime": update.previousRuntime ?? "none",
+                            "runtime": update.runtime,
+                            "previous_model": update.previousModel,
+                            "model": update.resolvedModel,
+                            "model_changed": String(update.modelChanged),
                             "workspace_id": task.workspace?.id.uuidString ?? "none"
                         ])
                     },
@@ -4969,15 +4962,18 @@ struct TaskMainView: View {
     }
 
     private func sendMessage() {
-        guard !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachedFiles.isEmpty else { return }
+        let sendAction = TaskComposerCoordinator.sendAction(
+            messageText: messageText,
+            attachedFiles: attachedFiles
+        )
+        guard sendAction != .none else { return }
 
         shouldScrollAfterUserMessage = true
 
-        // Intercept /remember command — direct action, no provider call needed
-        let trimmed = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let lower = trimmed.lowercased()
-        if lower.hasPrefix("/remember ") {
-            let memoryText = String(trimmed.dropFirst("/remember ".count)).trimmingCharacters(in: .whitespaces)
+        switch sendAction {
+        case .none:
+            return
+        case .remember(let memoryText):
             if !memoryText.isEmpty {
                 task.workspace?.memories.append(memoryText)
                 let confirmEvent = TaskEvent(task: task, eventType: TaskEventTypes.System.info, payload: "💾 Memory saved: \"\(memoryText)\"")
@@ -4985,36 +4981,25 @@ struct TaskMainView: View {
             }
             messageText = ""
             return
-        }
-
-        // Intercept /recap command — agentic summary, no provider session needed
-        if lower == "/recap" || lower.hasPrefix("/recap ") {
+        case .recap:
             messageText = ""
             generateRecapAgentically()
             return
-        }
-
-        // Intercept /routine and legacy /schedule commands — use agentic handler
-        if lower == "/routine" || lower.hasPrefix("/routine ") || lower == "/schedule" || lower.hasPrefix("/schedule ") {
-            let commandLength = lower.hasPrefix("/routine") ? "/routine ".count : "/schedule ".count
-            let instructions = (lower == "/routine" || lower == "/schedule")
-                ? ""
-                : String(trimmed.dropFirst(commandLength)).trimmingCharacters(in: .whitespaces)
+        case .routine(let instructions):
             messageText = ""
-            if instructions.isEmpty {
-                showScheduleEditor = true
-            } else {
+            if let instructions {
                 createScheduleAgentically(instruction: instructions)
+            } else {
+                showScheduleEditor = true
             }
             return
+        case .message(let msg):
+            sendConversationMessage(msg)
         }
+    }
 
-        var msg = messageText
-        if !attachedFiles.isEmpty {
-            let fileList = attachedFiles.map { "- \($0)" }.joined(separator: "\n")
-            msg += "\n\nAttached files:\n\(fileList)"
-            attachedFiles = []
-        }
+    private func sendConversationMessage(_ msg: String) {
+        if !attachedFiles.isEmpty { attachedFiles = [] }
         messageText = ""
         let traceID = AuditTrace.make(isPlanMode ? "task-plan-chat" : "task-chat")
         AppLogger.breadcrumb(action: isPlanMode ? "task_plan_chat_sent" : "task_chat_sent", category: "UI", taskID: task.id, traceID: traceID, fields: [

@@ -283,7 +283,7 @@ enum AgentRuntimeLaunchPreflight {
         payload: String
     ) {
         run.status = .failed
-        run.stopReason = reason
+        run.typedStopReason = TaskRunStopReason.custom(reason)
         run.completedAt = Date()
         task.status = .failed
         task.updatedAt = Date()

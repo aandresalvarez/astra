@@ -201,6 +201,7 @@ private struct AboutHighlightLabelStyle: LabelStyle {
 public struct ASTRAApp: App {
     public let modelContainer: ModelContainer
     @StateObject private var appUpdateController = AppUpdateController()
+    @StateObject private var appSettings = AppSettingsSnapshotStore()
     @State private var runtime = AppRuntimeController()
 
     public init() {
@@ -445,6 +446,7 @@ public struct ASTRAApp: App {
         WindowGroup(AppChannel.current.displayName) {
             ContentView(appUpdateController: appUpdateController, runtime: runtime)
                 .frame(minWidth: AppWindowLayout.mainMinimumWidth, minHeight: AppWindowLayout.mainMinimumHeight)
+                .environmentObject(appSettings)
                 .tint(Stanford.cardinalRed)
                 .preferredColorScheme(resolvedAppearance.colorScheme)
                 .onOpenURL { url in

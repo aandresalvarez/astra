@@ -21,6 +21,10 @@ let package = Package(
             path: "ASTRACore"
         ),
         .target(
+            name: "ASTRAGitContracts",
+            path: "ASTRAGitContracts"
+        ),
+        .target(
             name: "MailToolSupport",
             path: "Tools/MailToolSupport"
         ),
@@ -48,6 +52,7 @@ let package = Package(
             name: "ASTRA",
             dependencies: [
                 "ASTRACore",
+                "ASTRAGitContracts",
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "Markdown", package: "swift-markdown")
             ],
@@ -68,7 +73,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ASTRATests",
-            dependencies: ["ASTRA", "ASTRACore"],
+            dependencies: ["ASTRA", "ASTRACore", "ASTRAGitContracts"],
             path: "Tests"
         )
     ]

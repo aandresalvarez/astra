@@ -120,6 +120,87 @@ struct ContentSelectionResolverTests {
         #expect(persisted.workspacePath == workspace.primaryPath)
         #expect(cleared == .empty)
     }
+
+    @Test("Workspace selection coordinator opens external workspace routes")
+    @MainActor
+    func workspaceSelectionCoordinatorOpensExternalWorkspaceRoutes() {
+        let staleWorkspace = makeWorkspace(name: "Stale")
+        let task = makeTask(workspace: staleWorkspace)
+        let routedWorkspace = makeWorkspace(name: "Routed")
+        let coordinator = ContentWorkspaceSelectionCoordinator(
+            selectedTask: task,
+            selectedWorkspace: staleWorkspace,
+            isComposingTask: true
+        )
+
+        let update = coordinator.open(workspace: routedWorkspace)
+
+        #expect(update.selectedWorkspace?.id == routedWorkspace.id)
+        #expect(update.selectedTask == nil)
+        #expect(!update.isComposingTask)
+        #expect(update.shouldPresentRightRail)
+        #expect(!update.shouldRememberShelfStateWhenPresentingRightRail)
+    }
+
+    @Test("Workspace selection coordinator opens task routes through the task workspace")
+    @MainActor
+    func workspaceSelectionCoordinatorOpensTaskRoutesThroughTaskWorkspace() {
+        let staleWorkspace = makeWorkspace(name: "Stale")
+        let taskWorkspace = makeWorkspace(name: "Task")
+        let task = makeTask(workspace: taskWorkspace)
+        let coordinator = ContentWorkspaceSelectionCoordinator(
+            selectedTask: nil,
+            selectedWorkspace: staleWorkspace,
+            isComposingTask: true
+        )
+
+        let update = coordinator.open(task: task)
+
+        #expect(update.selectedTask?.id == task.id)
+        #expect(update.selectedWorkspace?.id == taskWorkspace.id)
+        #expect(!update.isComposingTask)
+        #expect(update.shouldPresentRightRail)
+        #expect(!update.shouldRememberShelfStateWhenPresentingRightRail)
+    }
+
+    @Test("Workspace selection coordinator clears selection when no workspace can be restored")
+    @MainActor
+    func workspaceSelectionCoordinatorClearsSelectionWhenNoWorkspaceCanBeRestored() {
+        let workspace = makeWorkspace(name: "Deleted")
+        let task = makeTask(workspace: workspace)
+        let coordinator = ContentWorkspaceSelectionCoordinator(
+            selectedTask: task,
+            selectedWorkspace: workspace,
+            isComposingTask: true
+        )
+
+        let update = coordinator.restore(workspace: nil)
+
+        #expect(update.selectedWorkspace == nil)
+        #expect(update.selectedTask == nil)
+        #expect(!update.isComposingTask)
+        #expect(!update.shouldPresentRightRail)
+    }
+
+    @Test("Workspace selection coordinator clears stale selected task after deleting its workspace")
+    @MainActor
+    func workspaceSelectionCoordinatorClearsStaleTaskAfterDeletingWorkspace() {
+        let deletedWorkspace = makeWorkspace(name: "Deleted")
+        let nextWorkspace = makeWorkspace(name: "Next")
+        let task = makeTask(workspace: deletedWorkspace)
+        let coordinator = ContentWorkspaceSelectionCoordinator(
+            selectedTask: task,
+            selectedWorkspace: deletedWorkspace,
+            isComposingTask: true
+        )
+
+        let update = coordinator.delete(workspace: deletedWorkspace, nextWorkspace: nextWorkspace)
+
+        #expect(update.selectedWorkspace?.id == nextWorkspace.id)
+        #expect(update.selectedTask == nil)
+        #expect(!update.isComposingTask)
+        #expect(!update.shouldPresentRightRail)
+    }
 }
 // MARK: - Content Detail Presentation
 

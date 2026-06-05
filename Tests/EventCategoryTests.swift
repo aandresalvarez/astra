@@ -157,4 +157,25 @@ struct EventCategoryTests {
             }
         }
     }
+
+    @Test("Structured payload factory preserves event type and encodes payload")
+    func structuredPayloadFactoryEncodesPayload() throws {
+        let task = AgentTask(title: "Payload", goal: "Encode structured payload")
+        let payload = ExamplePayload(message: "factory", count: 3)
+
+        let event = TaskEvent.structuredPayloadEvent(
+            task: task,
+            eventType: TaskEventTypes.System.info,
+            payload: payload
+        )
+
+        #expect(event.type == "system.info")
+        #expect(event.category == "system")
+        switch event.decodePayload(as: ExamplePayload.self, expecting: TaskEventTypes.System.info) {
+        case .success(let decoded):
+            #expect(decoded == payload)
+        case .failure(let error):
+            Issue.record("Expected factory payload to decode, got \(error)")
+        }
+    }
 }

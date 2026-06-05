@@ -4,160 +4,6 @@ import SwiftData
 import UniformTypeIdentifiers
 import ASTRACore
 
-enum CatalogFocus: String {
-    case all
-    case skills
-    case connectors
-    case tools
-    case templates
-
-    var title: String {
-        switch self {
-        case .all: "Manage Capabilities"
-        case .skills: "Manage Capabilities"
-        case .connectors: "Manage Capabilities"
-        case .tools: "Manage Capabilities"
-        case .templates: "Manage Capabilities"
-        }
-    }
-
-    var subtitle: String {
-        switch self {
-        case .all: "Approved capabilities for this workspace"
-        case .skills: "Approved capabilities with skills"
-        case .connectors: "Approved capabilities with connectors"
-        case .tools: "Approved capabilities with tools"
-        case .templates: "Approved capabilities with templates"
-        }
-    }
-
-    var searchPlaceholder: String {
-        switch self {
-        case .all: "Search capabilities..."
-        case .skills: "Search skill capabilities..."
-        case .connectors: "Search connector capabilities..."
-        case .tools: "Search tool capabilities..."
-        case .templates: "Search template capabilities..."
-        }
-    }
-
-    var emptyTitle: String {
-        switch self {
-        case .all: "No approved capabilities found"
-        case .skills: "No approved skill capabilities found"
-        case .connectors: "No approved connector capabilities found"
-        case .tools: "No approved tool capabilities found"
-        case .templates: "No approved template capabilities found"
-        }
-    }
-
-    func matches(_ package: PluginPackage) -> Bool {
-        switch self {
-        case .all:
-            true
-        case .skills:
-            !package.skills.isEmpty
-        case .connectors:
-            !package.connectors.isEmpty
-        case .tools:
-            !package.localTools.isEmpty
-        case .templates:
-            !package.templates.isEmpty
-        }
-    }
-}
-
-enum CapabilityManagementPresentation {
-    case modal
-    case embedded
-}
-
-private enum CatalogApprovalFilter: String, CaseIterable, Identifiable {
-    case all
-    case approved
-    case draft
-    case deprecated
-    case blocked
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .all: "Any approval"
-        case .approved: "Approved"
-        case .draft: "Draft"
-        case .deprecated: "Deprecated"
-        case .blocked: "Blocked"
-        }
-    }
-
-    var status: CapabilityApprovalStatus? {
-        switch self {
-        case .all: nil
-        case .approved: .approved
-        case .draft: .draft
-        case .deprecated: .deprecated
-        case .blocked: .blocked
-        }
-    }
-}
-
-private enum CatalogRiskFilter: String, CaseIterable, Identifiable {
-    case all
-    case low
-    case medium
-    case high
-    case restricted
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .all: "Any risk"
-        case .low: "Low risk"
-        case .medium: "Medium risk"
-        case .high: "High risk"
-        case .restricted: "Restricted"
-        }
-    }
-
-    var riskLevel: CapabilityRiskLevel? {
-        switch self {
-        case .all: nil
-        case .low: .low
-        case .medium: .medium
-        case .high: .high
-        case .restricted: .restricted
-        }
-    }
-}
-
-struct CapabilityGalleryLayout {
-    static func columnCount(for presentation: CapabilityManagementPresentation) -> Int {
-        1
-    }
-}
-
-private struct PluginCatalogPresentationState {
-    let focusedPackages: [PluginPackage]
-    let filteredPackages: [PluginPackage]
-    let enabledCount: Int
-    let categoryCounts: [String: Int]
-    let visibleCategories: [String]
-}
-
-enum PluginCatalogSearch {
-    static func matches(_ package: PluginPackage, query: String) -> Bool {
-        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !normalizedQuery.isEmpty else { return true }
-
-        return package.name.lowercased().contains(normalizedQuery) ||
-            package.description.lowercased().contains(normalizedQuery) ||
-            package.contentSummary.lowercased().contains(normalizedQuery) ||
-            package.tags.contains { $0.lowercased().contains(normalizedQuery) }
-    }
-}
-
 private struct CapabilityDetailSection: Identifiable {
     let id: String
     let title: String
@@ -192,17 +38,6 @@ private struct CapabilityImportReview: Identifiable {
     }
 }
 
-enum CapabilityImportPresentation {
-    static func overviewDescription(for package: PluginPackage, contentSummary: String) -> String {
-        let description = package.description.trimmingCharacters(in: .whitespacesAndNewlines)
-        return description.isEmpty ? "No description provided." : description
-    }
-
-    static func shouldShowContentSummary(for package: PluginPackage) -> Bool {
-        !package.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-}
-
 struct PluginCatalogView: View {
     var workspace: Workspace
     var catalog: PluginCatalog
@@ -226,8 +61,8 @@ struct PluginCatalogView: View {
 
     @State private var searchText = ""
     @State private var selectedCategory: String?
-    @State private var selectedApprovalFilter: CatalogApprovalFilter = .all
-    @State private var selectedRiskFilter: CatalogRiskFilter = .all
+    @State private var selectedApprovalFilter: CapabilityCatalogApprovalFilter = .all
+    @State private var selectedRiskFilter: CapabilityCatalogRiskFilter = .all
     @State private var showNeedsAttentionOnly = false
     @State private var showEnabledOnly = false
     @State private var installingPackage: PluginPackage?
@@ -300,55 +135,18 @@ struct PluginCatalogView: View {
                 "category_filter": selectedCategory ?? "none"
             ]
         ) {
-            let inventory = capabilityInventoryPackages
-            let focused = inventory.filter { focus.matches($0) }
-            var categoryCounts: [String: Int] = [:]
-            var visibleCategories: [String] = []
-            for package in focused {
-                categoryCounts[package.category, default: 0] += 1
-                if categoryCounts[package.category] == 1 {
-                    visibleCategories.append(package.category)
-                }
-            }
-
-            var filtered = focused
-            if let selectedCategory {
-                filtered = filtered.filter { $0.category == selectedCategory }
-            }
-            if let status = selectedApprovalFilter.status {
-                filtered = filtered.filter { package in
-                    CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext).governance.approvalStatus == status
-                }
-            }
-            if let riskLevel = selectedRiskFilter.riskLevel {
-                filtered = filtered.filter { package in
-                    CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext).governance.riskLevel == riskLevel
-                }
-            }
-            if showNeedsAttentionOnly {
-                filtered = filtered.filter { package in
-                    let decision = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext)
-                    return !decision.blockers.isEmpty || !decision.warnings.isEmpty || requiresSetupFlow(package)
-                }
-            }
-            if showEnabledOnly {
-                filtered = filtered.filter { packageState($0).isEnabled }
-            }
-            let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            if !query.isEmpty {
-                filtered = filtered.filter { PluginCatalogSearch.matches($0, query: query) }
-            }
-
-            let enabledCount = focused.reduce(0) { count, package in
-                count + (packageState(package).isEnabled ? 1 : 0)
-            }
-
-            return PluginCatalogPresentationState(
-                focusedPackages: focused,
-                filteredPackages: filtered,
-                enabledCount: enabledCount,
-                categoryCounts: categoryCounts,
-                visibleCategories: visibleCategories
+            PluginCatalogPresentation.makeState(
+                packages: capabilityInventoryPackages,
+                focus: focus,
+                selectedCategory: selectedCategory,
+                approvalFilter: selectedApprovalFilter,
+                riskFilter: selectedRiskFilter,
+                showsNeedsAttentionOnly: showNeedsAttentionOnly,
+                showsEnabledOnly: showEnabledOnly,
+                searchText: searchText,
+                policyContext: catalogPolicyContext,
+                isEnabled: { packageState($0).isEnabled },
+                requiresSetup: { requiresSetupFlow($0) }
             )
         }
     }
@@ -740,7 +538,7 @@ struct PluginCatalogView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 Picker("Approval", selection: $selectedApprovalFilter) {
-                    ForEach(CatalogApprovalFilter.allCases) { filter in
+                    ForEach(CapabilityCatalogApprovalFilter.allCases) { filter in
                         Text(filter.label).tag(filter)
                     }
                 }
@@ -749,7 +547,7 @@ struct PluginCatalogView: View {
                 .frame(width: 132)
 
                 Picker("Risk", selection: $selectedRiskFilter) {
-                    ForEach(CatalogRiskFilter.allCases) { filter in
+                    ForEach(CapabilityCatalogRiskFilter.allCases) { filter in
                         Text(filter.label).tag(filter)
                     }
                 }
@@ -1025,14 +823,15 @@ struct PluginCatalogView: View {
             "base_url_override_count": String(baseURLOverrides.count)
         ])
         do {
-            try CapabilityInstaller().install(
+            try CapabilityCatalogActionService().enable(
                 package,
-                into: workspace,
+                workspace: workspace,
                 modelContext: modelContext,
                 credentialInputs: credentialInputs,
                 configInputs: configInputs,
                 baseURLOverrides: baseURLOverrides,
                 policyContext: catalogPolicyContext,
+                source: "configure",
                 traceID: traceID
             )
             onInstall?(package)
@@ -1040,15 +839,6 @@ struct PluginCatalogView: View {
             onCatalogChanged?()
         } catch {
             installError = error.localizedDescription
-            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
-                "source": "configure",
-                "trace_id": traceID,
-                "package_id": package.id,
-                "package_name": package.name,
-                "package_version": package.version,
-                "workspace_id": workspace.id.uuidString,
-                "error_type": String(describing: type(of: error))
-            ], level: .error)
         }
     }
 
@@ -1131,7 +921,7 @@ struct PluginCatalogView: View {
             "workspace_id": workspace.id.uuidString
         ])
         do {
-            let result = try CapabilityPackageCreationService().create(
+            let result = try CapabilityCatalogActionService().create(
                 package,
                 enableHere: enableHere,
                 sourceURL: sourceURL,
@@ -1140,32 +930,22 @@ struct PluginCatalogView: View {
                 policyContext: catalogPolicyContext,
                 traceID: traceID
             )
-            if result.approvalRecord != nil {
+            if result.approvalRecordChanged {
                 approvalRevision += 1
             }
-            if enableHere {
-                onInstall?(result.package)
+            if let installedPackage = result.installedPackage {
+                onInstall?(installedPackage)
             }
             catalog.loadApprovedCapabilities()
             onCatalogChanged?()
         } catch {
             installError = error.localizedDescription
-            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
-                "source": enableHere ? "create_and_enable" : "create_install_only",
-                "trace_id": traceID,
-                "package_id": package.id,
-                "package_name": package.name,
-                "package_version": package.version,
-                "workspace_id": workspace.id.uuidString,
-                "source_json_path": sourceURL?.path ?? "",
-                "error_type": String(describing: type(of: error))
-            ], level: .error)
         }
     }
 
     private func removeCapabilityPackage(_ package: PluginPackage) {
         do {
-            _ = try CapabilityUninstaller().remove(package, modelContext: modelContext)
+            _ = try CapabilityCatalogActionService().remove(package, modelContext: modelContext)
             if activeFocusedPackageID == package.id {
                 closePackageEditor()
             }
@@ -2369,28 +2149,20 @@ struct PluginInstallSheet: View {
             "base_url_override_count": String(baseURLValues.count)
         ])
         do {
-            try CapabilityInstaller().install(
+            try CapabilityCatalogActionService().enable(
                 package,
-                into: workspace,
+                workspace: workspace,
                 modelContext: modelContext,
                 credentialInputs: credentialValues,
                 configInputs: installConfigValues,
                 baseURLOverrides: baseURLValues,
                 policyContext: policyContext,
+                source: "setup_sheet",
                 traceID: traceID
             )
             onInstalled(package)
         } catch {
             installError = error.localizedDescription
-            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
-                "source": "setup_sheet",
-                "trace_id": traceID,
-                "package_id": package.id,
-                "package_name": package.name,
-                "package_version": package.version,
-                "workspace_id": workspace.id.uuidString,
-                "error_type": String(describing: type(of: error))
-            ], level: .error)
         }
     }
 

@@ -4,18 +4,18 @@ import ASTRACore
 
 struct SettingsView: View {
     @ObservedObject var appUpdateController: AppUpdateController
-    @AppStorage("defaultModel") private var defaultModel = TaskExecutionDefaults.model
+    @AppStorage(AppStorageKeys.defaultModel) private var defaultModel = TaskExecutionDefaults.model
     @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultTokenBudget = TaskExecutionDefaults.tokenBudget
     @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var defaultAgentPolicyLevelRaw = AgentPolicyLevel.review.rawValue
     @AppStorage(AppStorageKeys.budgetEnforcementMode) private var budgetEnforcementModeRaw = TaskExecutionDefaults.budgetEnforcementMode.rawValue
-    @AppStorage("defaultRuntimeID") private var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
-    @AppStorage("claudePath") private var claudePath = ""
-    @AppStorage("copilotPath") private var copilotPath = ""
+    @AppStorage(AppStorageKeys.defaultRuntimeID) private var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
+    @AppStorage(AppStorageKeys.claudePath) private var claudePath = ""
+    @AppStorage(AppStorageKeys.copilotPath) private var copilotPath = ""
     @AppStorage(AppStorageKeys.runtimeProviderSettingsRevision) private var runtimeProviderSettingsRevision = 0
     @AppStorage(AppStorageKeys.roleProfileRevision) private var roleProfileRevision = 0
-    @AppStorage("workspacesRoot") private var workspacesRoot = ""
-    @AppStorage("timeoutSeconds") private var timeoutSeconds = 600
-    @AppStorage("validationModel") private var validationModel = "claude-haiku-4-5-20251001"
+    @AppStorage(AppStorageKeys.workspacesRoot) private var workspacesRoot = ""
+    @AppStorage(AppStorageKeys.timeoutSeconds) private var timeoutSeconds = 600
+    @AppStorage(AppStorageKeys.validationModel) private var validationModel = "claude-haiku-4-5-20251001"
     @AppStorage("workerPoolSize") private var workerPoolSize = 3
     @AppStorage(AppLogger.sensitiveModeKey) private var sensitiveMode = true
     @AppStorage(AppStorageKeys.runtimeStreamDebugCapture) private var runtimeStreamDebugCapture = LoggingPreferences.defaultRuntimeStreamDebugCapture

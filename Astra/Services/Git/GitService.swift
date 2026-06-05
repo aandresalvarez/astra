@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAGitContracts
 
 struct GitRepositoryInfo: Identifiable, Hashable {
     var id: String { path }
@@ -12,56 +13,6 @@ struct GitRepositoryInfo: Identifiable, Hashable {
         self.path = WorkspacePathPresentation.standardizedPath(path)
         self.subtitle = subtitle
         self.roleLabel = roleLabel
-    }
-}
-
-struct GitStatusFile: Identifiable, Hashable {
-    let relativePath: String
-    let originalPath: String?
-    let status: String // "M", "A", "D", "?", "R"
-    let isStaged: Bool
-
-    init(relativePath: String, status: String, isStaged: Bool, originalPath: String? = nil) {
-        self.relativePath = relativePath
-        self.originalPath = originalPath
-        self.status = status
-        self.isStaged = isStaged
-    }
-
-    var id: String {
-        [
-            isStaged ? "staged" : "unstaged",
-            status,
-            originalPath ?? "",
-            relativePath
-        ].joined(separator: "|")
-    }
-
-    var displayPath: String {
-        guard let originalPath, !originalPath.isEmpty, originalPath != relativePath else {
-            return relativePath
-        }
-        return "\(originalPath) -> \(relativePath)"
-    }
-
-    var pathspecs: [String] {
-        var paths: [String] = []
-        if let originalPath, !originalPath.isEmpty {
-            paths.append(originalPath)
-        }
-        paths.append(relativePath)
-        var seen: Set<String> = []
-        return paths.filter { seen.insert($0).inserted }
-    }
-
-    var isUntracked: Bool { status == "?" }
-    var isDeleted: Bool { status == "D" }
-    var isRenamed: Bool { status == "R" }
-    var isCopied: Bool { status == "C" }
-    var isConflict: Bool {
-        status == "U"
-            || status.contains("U")
-            || ["AA", "DD"].contains(status)
     }
 }
 
@@ -617,6 +568,12 @@ class GitService: GitRepositoryOperating {
     private let indexLock = NSLock()
     private var _indexBusy = false
 
+    private var statusService: GitStatusService {
+        GitStatusService { [self] repoPath, arguments in
+            try await runGit(at: repoPath, arguments: arguments)
+        }
+    }
+
     /// Acquires a logical lock so only one index-writing batch runs at a time.
     /// Returns false if another batch is already running.
     func acquireIndexGuard() -> Bool {
@@ -908,136 +865,15 @@ class GitService: GitRepositoryOperating {
     }
 
     func getStatusFiles(at repoPath: String) async -> [GitStatusFile] {
-        do {
-            let output = try await runGit(at: repoPath, arguments: ["--no-optional-locks", "status", "--porcelain=v1", "-z"])
-            return GitService.parseStatusPorcelainZ(output)
-        } catch {
-            return []
-        }
+        await statusService.getStatusFiles(at: repoPath)
     }
 
     static func parseStatusPorcelain(_ output: String) -> [GitStatusFile] {
-        var files: [GitStatusFile] = []
-        let lines = output.split(separator: "\n")
-
-        for line in lines {
-            guard line.count >= 3 else { continue }
-            let xIndex = line.index(line.startIndex, offsetBy: 0)
-            let yIndex = line.index(line.startIndex, offsetBy: 1)
-            let x = String(line[xIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
-            let y = String(line[yIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
-
-            let fileStartIndex = line.index(line.startIndex, offsetBy: 3)
-            let rawPath = String(line[fileStartIndex...]).trimmingCharacters(in: .whitespacesAndNewlines)
-            let rename = splitPorcelainRenamePath(rawPath, stagedStatus: x, unstagedStatus: y)
-            let relativePath = rename.current
-
-            if x == "?" && y == "?" {
-                files.append(GitStatusFile(relativePath: relativePath, status: "?", isStaged: false))
-            } else if isConflictStatus(index: x, worktree: y) {
-                files.append(GitStatusFile(
-                    relativePath: relativePath,
-                    status: "\(x)\(y)",
-                    isStaged: false,
-                    originalPath: rename.original
-                ))
-            } else {
-                if !x.isEmpty {
-                    files.append(GitStatusFile(
-                        relativePath: relativePath,
-                        status: x,
-                        isStaged: true,
-                        originalPath: rename.original
-                    ))
-                }
-                if !y.isEmpty {
-                    files.append(GitStatusFile(
-                        relativePath: relativePath,
-                        status: y,
-                        isStaged: false,
-                        originalPath: rename.original
-                    ))
-                }
-            }
-        }
-        return files
+        GitStatusParser.parsePorcelain(output)
     }
 
-    /// Parses `git status --porcelain=v1 -z`. The NUL-delimited form avoids
-    /// quoting ambiguity and reports rename/copy entries as `XY newPath\0oldPath`.
     static func parseStatusPorcelainZ(_ output: String) -> [GitStatusFile] {
-        var files: [GitStatusFile] = []
-        let records = output.split(separator: "\0", omittingEmptySubsequences: true).map(String.init)
-        var index = 0
-        while index < records.count {
-            let record = records[index]
-            guard record.count >= 3 else {
-                index += 1
-                continue
-            }
-
-            let x = String(record[record.startIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
-            let yIndex = record.index(after: record.startIndex)
-            let y = String(record[yIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
-            let pathStart = record.index(record.startIndex, offsetBy: 3)
-            let relativePath = String(record[pathStart...])
-            let originalPath: String? = (x == "R" || x == "C" || y == "R" || y == "C")
-                && index + 1 < records.count
-                ? records[index + 1]
-                : nil
-
-            if x == "?" && y == "?" {
-                files.append(GitStatusFile(relativePath: relativePath, status: "?", isStaged: false))
-            } else if isConflictStatus(index: x, worktree: y) {
-                files.append(GitStatusFile(
-                    relativePath: relativePath,
-                    status: "\(x)\(y)",
-                    isStaged: false,
-                    originalPath: originalPath
-                ))
-            } else {
-                if !x.isEmpty {
-                    files.append(GitStatusFile(
-                        relativePath: relativePath,
-                        status: x,
-                        isStaged: true,
-                        originalPath: originalPath
-                    ))
-                }
-                if !y.isEmpty {
-                    files.append(GitStatusFile(
-                        relativePath: relativePath,
-                        status: y,
-                        isStaged: false,
-                        originalPath: originalPath
-                    ))
-                }
-            }
-
-            if x == "R" || x == "C" || y == "R" || y == "C" {
-                index += 1 // skip original path payload
-            }
-            index += 1
-        }
-        return files
-    }
-
-    private static func splitPorcelainRenamePath(
-        _ rawPath: String,
-        stagedStatus: String,
-        unstagedStatus: String
-    ) -> (current: String, original: String?) {
-        guard stagedStatus == "R" || stagedStatus == "C" || unstagedStatus == "R" || unstagedStatus == "C",
-              let range = rawPath.range(of: " -> ", options: .backwards) else {
-            return (rawPath, nil)
-        }
-        return (String(rawPath[range.upperBound...]), String(rawPath[..<range.lowerBound]))
-    }
-
-    private static func isConflictStatus(index: String, worktree: String) -> Bool {
-        let combined = "\(index)\(worktree)"
-        return combined.contains("U")
-            || ["AA", "DD"].contains(combined)
+        GitStatusParser.parsePorcelainZ(output)
     }
 
     func stageFile(_ file: GitStatusFile, at repoPath: String) async throws {
@@ -1269,13 +1105,14 @@ class GitService: GitRepositoryOperating {
                 label: "gh pr list",
                 currentDirectory: repoPath
             )
-            guard let decoded = GitService.decodeOpenPullRequests(from: output) else {
-                AppLogger.audit(.gitPullRequestLookup, category: "Git", fields: [
+            let decodeResult = GitService.decodeOpenPullRequestsResult(from: output)
+            guard let decoded = decodeResult.value else {
+                AppLogger.audit(.gitPullRequestLookup, category: "Git", fields: Self.invalidJSONAuditFields([
                     "head": trimmedHead,
                     "result": "unavailable",
                     "reason": "invalid_json",
                     "stdout_sample": String(output.prefix(240))
-                ], level: .warning, fieldMaxLength: 240)
+                ], diagnostic: decodeResult.diagnostic), level: .warning, fieldMaxLength: 240)
                 return .unavailable("GitHub CLI returned PR data ASTRA could not read.")
             }
             if let pr = decoded.first(where: { $0.state.uppercased() == "OPEN" }) ?? decoded.first {
@@ -1344,16 +1181,17 @@ class GitService: GitRepositoryOperating {
                 label: "gh api graphql pull request comments",
                 currentDirectory: repoPath
             )
-            guard let summary = GitService.decodePullRequestComments(
+            let decodeResult = GitService.decodePullRequestCommentsResult(
                 from: output,
                 pullRequest: pullRequest
-            ) else {
-                AppLogger.audit(.gitPullRequestComments, category: "Git", fields: [
+            )
+            guard let summary = decodeResult.value else {
+                AppLogger.audit(.gitPullRequestComments, category: "Git", fields: Self.invalidJSONAuditFields([
                     "number": "\(pullRequest.number)",
                     "result": "unavailable",
                     "reason": "invalid_json",
                     "stdout_sample": String(output.prefix(240))
-                ], level: .warning, fieldMaxLength: 240)
+                ], diagnostic: decodeResult.diagnostic), level: .warning, fieldMaxLength: 240)
                 return .unavailable("GitHub CLI returned PR comments ASTRA could not read.")
             }
             AppLogger.audit(.gitPullRequestComments, category: "Git", fields: [
@@ -1405,14 +1243,15 @@ class GitService: GitRepositoryOperating {
                 label: "gh pr view status checks",
                 currentDirectory: repoPath
             )
-            guard let summary = GitService.decodePullRequestChecks(from: output) else {
-                AppLogger.audit(.gitPullRequestLookup, category: "Git", fields: [
+            let decodeResult = GitService.decodePullRequestChecksResult(from: output)
+            guard let summary = decodeResult.value else {
+                AppLogger.audit(.gitPullRequestLookup, category: "Git", fields: Self.invalidJSONAuditFields([
                     "number": "\(pullRequest.number)",
                     "kind": "checks",
                     "result": "unavailable",
                     "reason": "invalid_json",
                     "stdout_sample": String(output.prefix(240))
-                ], level: .warning, fieldMaxLength: 240)
+                ], diagnostic: decodeResult.diagnostic), level: .warning, fieldMaxLength: 240)
                 return .unavailable("GitHub CLI returned PR checks ASTRA could not read.")
             }
             AppLogger.audit(.gitPullRequestLookup, category: "Git", fields: [
@@ -1438,14 +1277,38 @@ class GitService: GitRepositoryOperating {
 
     /// Decodes the first open PR from `gh pr list --json …` array output.
     static func parseOpenPullRequest(from json: String) -> GitHubPullRequestRef? {
-        guard let list = decodeOpenPullRequests(from: json) else { return nil }
+        guard let list = decodeOpenPullRequestsResult(from: json).value else { return nil }
         return list.first { $0.state.uppercased() == "OPEN" } ?? list.first
     }
 
+    static func decodeOpenPullRequestsResult(
+        from json: String
+    ) -> StructuredJSONDecodeResult<[GitHubPullRequestRef]> {
+        StructuredJSONDecoder.decode([GitHubPullRequestRef].self, from: json)
+    }
+
     static func decodeOpenPullRequests(from json: String) -> [GitHubPullRequestRef]? {
-        let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode([GitHubPullRequestRef].self, from: data)
+        decodeOpenPullRequestsResult(from: json).value
+    }
+
+    static func decodePullRequestCommentsResult(
+        from json: String,
+        pullRequest: GitHubPullRequestRef,
+        fetchedAt: Date = Date()
+    ) -> StructuredJSONDecodeResult<GitHubPullRequestCommentSummary> {
+        let responseResult = StructuredJSONDecoder.decode(
+            GitHubPullRequestCommentsGraphQLResponse.self,
+            from: json
+        )
+        return responseResult.map { response in
+            guard response.errors?.isEmpty != false else { return nil }
+            guard let pr = response.data?.repository?.pullRequest else { return nil }
+            return buildPullRequestCommentSummary(
+                pullRequest: pullRequest,
+                responsePullRequest: pr,
+                fetchedAt: fetchedAt
+            )
+        }
     }
 
     static func decodePullRequestComments(
@@ -1453,14 +1316,14 @@ class GitService: GitRepositoryOperating {
         pullRequest: GitHubPullRequestRef,
         fetchedAt: Date = Date()
     ) -> GitHubPullRequestCommentSummary? {
-        let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return nil }
-        guard let response = try? JSONDecoder().decode(GitHubPullRequestCommentsGraphQLResponse.self, from: data) else {
-            return nil
-        }
-        if let errors = response.errors, !errors.isEmpty { return nil }
-        guard let pr = response.data?.repository?.pullRequest else { return nil }
+        decodePullRequestCommentsResult(from: json, pullRequest: pullRequest, fetchedAt: fetchedAt).value
+    }
 
+    private static func buildPullRequestCommentSummary(
+        pullRequest: GitHubPullRequestRef,
+        responsePullRequest pr: GitHubPullRequestCommentsGraphQLResponse.PullRequest,
+        fetchedAt: Date
+    ) -> GitHubPullRequestCommentSummary {
         var comments: [GitHubPullRequestComment] = []
         let unresolvedThreads = pr.reviewThreads.nodes.filter { !$0.isResolved }
         for thread in unresolvedThreads {
@@ -1504,16 +1367,30 @@ class GitService: GitRepositoryOperating {
         )
     }
 
+    static func decodePullRequestChecksResult(
+        from json: String,
+        fetchedAt: Date = Date()
+    ) -> StructuredJSONDecodeResult<GitHubPullRequestCheckSummary> {
+        let decodedResult = StructuredJSONDecoder.decode(
+            GitHubPullRequestChecksViewResponse.self,
+            from: json
+        )
+        return decodedResult.map { decoded in
+            buildPullRequestCheckSummary(from: decoded, fetchedAt: fetchedAt)
+        }
+    }
+
     static func decodePullRequestChecks(
         from json: String,
         fetchedAt: Date = Date()
     ) -> GitHubPullRequestCheckSummary? {
-        let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return nil }
-        guard let decoded = try? JSONDecoder().decode(GitHubPullRequestChecksViewResponse.self, from: data) else {
-            return nil
-        }
+        decodePullRequestChecksResult(from: json, fetchedAt: fetchedAt).value
+    }
 
+    private static func buildPullRequestCheckSummary(
+        from decoded: GitHubPullRequestChecksViewResponse,
+        fetchedAt: Date
+    ) -> GitHubPullRequestCheckSummary {
         var passing = 0
         var pending = 0
         var failing = 0
@@ -1538,6 +1415,23 @@ class GitService: GitRepositoryOperating {
             failingCount: failing,
             fetchedAt: fetchedAt
         )
+    }
+
+    private static func invalidJSONAuditFields(
+        _ fields: [String: String],
+        diagnostic: StructuredJSONDecodeDiagnostic
+    ) -> [String: String] {
+        var merged = fields
+        merged["decode_status"] = diagnostic.status.rawValue
+        merged["decode_type"] = diagnostic.typeName
+        merged["decode_bytes"] = "\(diagnostic.byteCount)"
+        if let codingPath = diagnostic.codingPath {
+            merged["decode_path"] = codingPath
+        }
+        if let errorDescription = diagnostic.errorDescription {
+            merged["decode_error"] = errorDescription
+        }
+        return merged
     }
 
     private static func normalizedCheckState(
@@ -1694,101 +1588,14 @@ class GitService: GitRepositoryOperating {
 
     /// Returns the staged diff (for commit message generation). Truncated to `limit` bytes.
     func getStagedDiff(at repoPath: String, limit: Int = 8 * 1024) async -> String {
-        do {
-            let output = try await runGit(at: repoPath, arguments: ["--no-optional-locks", "diff", "--cached"])
-            if output.utf8.count <= limit { return output }
-            let prefix = String(output.prefix(limit))
-            return prefix + "\n…[truncated]"
-        } catch {
-            return ""
-        }
+        await statusService.getStagedDiff(at: repoPath, limit: limit)
     }
 
     /// Returns a per-file diff for the Repository panel change review UI.
     /// Untracked files have no git diff until staged, so ASTRA synthesizes a
     /// bounded add-style preview from the file content.
     func getFileDiff(at repoPath: String, file: GitStatusFile, limit: Int = 48 * 1024) async -> GitFileDiff {
-        if file.isUntracked && !file.isStaged {
-            return await untrackedFileDiff(at: repoPath, file: file, limit: limit)
-        }
-
-        let args = file.isStaged
-            ? ["--no-optional-locks", "diff", "--cached", "--"] + file.pathspecs
-            : ["--no-optional-locks", "diff", "--"] + file.pathspecs
-        do {
-            let output = try await runGit(at: repoPath, arguments: args)
-            let limited = GitService.limitedContext(output, maxBytes: limit)
-            let trimmed = limited.trimmingCharacters(in: .whitespacesAndNewlines)
-            return GitFileDiff(
-                id: file.id,
-                file: file,
-                kind: file.isStaged ? .staged : .unstaged,
-                diff: limited,
-                isTruncated: trimmed.hasSuffix("...[truncated]"),
-                message: trimmed.isEmpty ? "No textual diff is available for this file." : nil
-            )
-        } catch {
-            return GitFileDiff(
-                id: file.id,
-                file: file,
-                kind: .unavailable,
-                diff: "",
-                isTruncated: false,
-                message: error.localizedDescription
-            )
-        }
-    }
-
-    private func untrackedFileDiff(at repoPath: String, file: GitStatusFile, limit: Int) async -> GitFileDiff {
-        let url = URL(fileURLWithPath: repoPath, isDirectory: true)
-            .appendingPathComponent(file.relativePath)
-            .standardizedFileURL
-        guard let handle = try? FileHandle(forReadingFrom: url) else {
-            return GitFileDiff(
-                id: file.id,
-                file: file,
-                kind: .unavailable,
-                diff: "",
-                isTruncated: false,
-                message: "The untracked file is no longer readable."
-            )
-        }
-        defer { try? handle.close() }
-
-        let data = (try? handle.read(upToCount: max(1, limit))) ?? Data()
-        let fileSize = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? data.count
-        guard let text = String(data: data, encoding: .utf8) else {
-            return GitFileDiff(
-                id: file.id,
-                file: file,
-                kind: .untracked,
-                diff: "",
-                isTruncated: fileSize > data.count,
-                message: "Binary or non-UTF-8 untracked file. Stage it to inspect the binary diff metadata."
-            )
-        }
-
-        let prefixed = text
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { "+\($0)" }
-            .joined(separator: "\n")
-        let header = """
-        diff --git a/\(file.relativePath) b/\(file.relativePath)
-        new file mode 100644
-        --- /dev/null
-        +++ b/\(file.relativePath)
-        @@
-        """
-        let diff = header + "\n" + prefixed
-        let isTruncated = fileSize > data.count
-        return GitFileDiff(
-            id: file.id,
-            file: file,
-            kind: .untracked,
-            diff: isTruncated ? diff + "\n...[truncated]" : diff,
-            isTruncated: isTruncated,
-            message: nil
-        )
+        await statusService.getFileDiff(at: repoPath, file: file, limit: limit)
     }
 
     /// Returns the most recent N commit subjects from HEAD for tone matching.
@@ -1911,31 +1718,7 @@ class GitService: GitRepositoryOperating {
     }
 
     func getDiffStats(at repoPath: String) async -> (additions: Int, deletions: Int) {
-        var additions = 0
-        var deletions = 0
-
-        do {
-            let unstagedOutput = try await runGit(at: repoPath, arguments: ["--no-optional-locks", "diff", "--numstat"])
-            let stagedOutput = try await runGit(at: repoPath, arguments: ["--no-optional-locks", "diff", "--cached", "--numstat"])
-
-            let allLines = unstagedOutput.split(separator: "\n") + stagedOutput.split(separator: "\n")
-            for line in allLines {
-                // Split by spaces or tabs
-                let parts = line.split(separator: " ", omittingEmptySubsequences: true)
-                    .flatMap { $0.split(separator: "\t", omittingEmptySubsequences: true) }
-
-                guard parts.count >= 2 else { continue }
-                if let add = Int(parts[0]) {
-                    additions += add
-                }
-                if let del = Int(parts[1]) {
-                    deletions += del
-                }
-            }
-        } catch {
-            // Graceful fallback
-        }
-        return (additions, deletions)
+        await statusService.getDiffStats(at: repoPath)
     }
 
     // MARK: - Worktrees
