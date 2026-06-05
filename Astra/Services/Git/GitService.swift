@@ -1154,13 +1154,14 @@ class GitService: GitRepositoryOperating {
                 label: "gh pr list",
                 currentDirectory: repoPath
             )
-            guard let decoded = GitService.decodeOpenPullRequests(from: output) else {
-                AppLogger.audit(.gitPullRequestLookup, category: "Git", fields: [
+            let decodeResult = GitService.decodeOpenPullRequestsResult(from: output)
+            guard let decoded = decodeResult.value else {
+                AppLogger.audit(.gitPullRequestLookup, category: "Git", fields: Self.invalidJSONAuditFields([
                     "head": trimmedHead,
                     "result": "unavailable",
                     "reason": "invalid_json",
                     "stdout_sample": String(output.prefix(240))
-                ], level: .warning, fieldMaxLength: 240)
+                ], diagnostic: decodeResult.diagnostic), level: .warning, fieldMaxLength: 240)
                 return .unavailable("GitHub CLI returned PR data ASTRA could not read.")
             }
             if let pr = decoded.first(where: { $0.state.uppercased() == "OPEN" }) ?? decoded.first {
@@ -1229,16 +1230,17 @@ class GitService: GitRepositoryOperating {
                 label: "gh api graphql pull request comments",
                 currentDirectory: repoPath
             )
-            guard let summary = GitService.decodePullRequestComments(
+            let decodeResult = GitService.decodePullRequestCommentsResult(
                 from: output,
                 pullRequest: pullRequest
-            ) else {
-                AppLogger.audit(.gitPullRequestComments, category: "Git", fields: [
+            )
+            guard let summary = decodeResult.value else {
+                AppLogger.audit(.gitPullRequestComments, category: "Git", fields: Self.invalidJSONAuditFields([
                     "number": "\(pullRequest.number)",
                     "result": "unavailable",
                     "reason": "invalid_json",
                     "stdout_sample": String(output.prefix(240))
-                ], level: .warning, fieldMaxLength: 240)
+                ], diagnostic: decodeResult.diagnostic), level: .warning, fieldMaxLength: 240)
                 return .unavailable("GitHub CLI returned PR comments ASTRA could not read.")
             }
             AppLogger.audit(.gitPullRequestComments, category: "Git", fields: [
@@ -1290,14 +1292,15 @@ class GitService: GitRepositoryOperating {
                 label: "gh pr view status checks",
                 currentDirectory: repoPath
             )
-            guard let summary = GitService.decodePullRequestChecks(from: output) else {
-                AppLogger.audit(.gitPullRequestLookup, category: "Git", fields: [
+            let decodeResult = GitService.decodePullRequestChecksResult(from: output)
+            guard let summary = decodeResult.value else {
+                AppLogger.audit(.gitPullRequestLookup, category: "Git", fields: Self.invalidJSONAuditFields([
                     "number": "\(pullRequest.number)",
                     "kind": "checks",
                     "result": "unavailable",
                     "reason": "invalid_json",
                     "stdout_sample": String(output.prefix(240))
-                ], level: .warning, fieldMaxLength: 240)
+                ], diagnostic: decodeResult.diagnostic), level: .warning, fieldMaxLength: 240)
                 return .unavailable("GitHub CLI returned PR checks ASTRA could not read.")
             }
             AppLogger.audit(.gitPullRequestLookup, category: "Git", fields: [
@@ -1323,14 +1326,38 @@ class GitService: GitRepositoryOperating {
 
     /// Decodes the first open PR from `gh pr list --json …` array output.
     static func parseOpenPullRequest(from json: String) -> GitHubPullRequestRef? {
-        guard let list = decodeOpenPullRequests(from: json) else { return nil }
+        guard let list = decodeOpenPullRequestsResult(from: json).value else { return nil }
         return list.first { $0.state.uppercased() == "OPEN" } ?? list.first
     }
 
+    static func decodeOpenPullRequestsResult(
+        from json: String
+    ) -> StructuredJSONDecodeResult<[GitHubPullRequestRef]> {
+        StructuredJSONDecoder.decode([GitHubPullRequestRef].self, from: json)
+    }
+
     static func decodeOpenPullRequests(from json: String) -> [GitHubPullRequestRef]? {
-        let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode([GitHubPullRequestRef].self, from: data)
+        decodeOpenPullRequestsResult(from: json).value
+    }
+
+    static func decodePullRequestCommentsResult(
+        from json: String,
+        pullRequest: GitHubPullRequestRef,
+        fetchedAt: Date = Date()
+    ) -> StructuredJSONDecodeResult<GitHubPullRequestCommentSummary> {
+        let responseResult = StructuredJSONDecoder.decode(
+            GitHubPullRequestCommentsGraphQLResponse.self,
+            from: json
+        )
+        return responseResult.map { response in
+            guard response.errors?.isEmpty != false else { return nil }
+            guard let pr = response.data?.repository?.pullRequest else { return nil }
+            return buildPullRequestCommentSummary(
+                pullRequest: pullRequest,
+                responsePullRequest: pr,
+                fetchedAt: fetchedAt
+            )
+        }
     }
 
     static func decodePullRequestComments(
@@ -1338,14 +1365,14 @@ class GitService: GitRepositoryOperating {
         pullRequest: GitHubPullRequestRef,
         fetchedAt: Date = Date()
     ) -> GitHubPullRequestCommentSummary? {
-        let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return nil }
-        guard let response = try? JSONDecoder().decode(GitHubPullRequestCommentsGraphQLResponse.self, from: data) else {
-            return nil
-        }
-        if let errors = response.errors, !errors.isEmpty { return nil }
-        guard let pr = response.data?.repository?.pullRequest else { return nil }
+        decodePullRequestCommentsResult(from: json, pullRequest: pullRequest, fetchedAt: fetchedAt).value
+    }
 
+    private static func buildPullRequestCommentSummary(
+        pullRequest: GitHubPullRequestRef,
+        responsePullRequest pr: GitHubPullRequestCommentsGraphQLResponse.PullRequest,
+        fetchedAt: Date
+    ) -> GitHubPullRequestCommentSummary {
         var comments: [GitHubPullRequestComment] = []
         let unresolvedThreads = pr.reviewThreads.nodes.filter { !$0.isResolved }
         for thread in unresolvedThreads {
@@ -1389,16 +1416,30 @@ class GitService: GitRepositoryOperating {
         )
     }
 
+    static func decodePullRequestChecksResult(
+        from json: String,
+        fetchedAt: Date = Date()
+    ) -> StructuredJSONDecodeResult<GitHubPullRequestCheckSummary> {
+        let decodedResult = StructuredJSONDecoder.decode(
+            GitHubPullRequestChecksViewResponse.self,
+            from: json
+        )
+        return decodedResult.map { decoded in
+            buildPullRequestCheckSummary(from: decoded, fetchedAt: fetchedAt)
+        }
+    }
+
     static func decodePullRequestChecks(
         from json: String,
         fetchedAt: Date = Date()
     ) -> GitHubPullRequestCheckSummary? {
-        let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return nil }
-        guard let decoded = try? JSONDecoder().decode(GitHubPullRequestChecksViewResponse.self, from: data) else {
-            return nil
-        }
+        decodePullRequestChecksResult(from: json, fetchedAt: fetchedAt).value
+    }
 
+    private static func buildPullRequestCheckSummary(
+        from decoded: GitHubPullRequestChecksViewResponse,
+        fetchedAt: Date
+    ) -> GitHubPullRequestCheckSummary {
         var passing = 0
         var pending = 0
         var failing = 0
@@ -1423,6 +1464,23 @@ class GitService: GitRepositoryOperating {
             failingCount: failing,
             fetchedAt: fetchedAt
         )
+    }
+
+    private static func invalidJSONAuditFields(
+        _ fields: [String: String],
+        diagnostic: StructuredJSONDecodeDiagnostic
+    ) -> [String: String] {
+        var merged = fields
+        merged["decode_status"] = diagnostic.status.rawValue
+        merged["decode_type"] = diagnostic.typeName
+        merged["decode_bytes"] = "\(diagnostic.byteCount)"
+        if let codingPath = diagnostic.codingPath {
+            merged["decode_path"] = codingPath
+        }
+        if let errorDescription = diagnostic.errorDescription {
+            merged["decode_error"] = errorDescription
+        }
+        return merged
     }
 
     private static func normalizedCheckState(

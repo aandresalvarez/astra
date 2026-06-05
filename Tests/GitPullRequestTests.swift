@@ -75,6 +75,24 @@ struct GitPullRequestTests {
         #expect(GitService.parseOpenPullRequest(from: "not json") == nil)
     }
 
+    @Test("decodeOpenPullRequests returns structured diagnostics for malformed payloads")
+    func decodeOpenPullRequestsDiagnostics() {
+        let missingNumber = """
+        [{"url":"https://github.com/example/repo/pull/42","title":"Add login","isDraft":false,"state":"OPEN"}]
+        """
+        let missingNumberResult = GitService.decodeOpenPullRequestsResult(from: missingNumber)
+
+        #expect(missingNumberResult.value == nil)
+        #expect(missingNumberResult.diagnostic.status == .decodeFailed)
+        #expect(missingNumberResult.diagnostic.typeName == "Array<GitHubPullRequestRef>")
+        #expect(missingNumberResult.diagnostic.codingPath?.contains("number") == true)
+        #expect(missingNumberResult.diagnostic.errorDescription?.contains("Missing key number") == true)
+
+        let emptyResult = GitService.decodeOpenPullRequestsResult(from: "")
+        #expect(emptyResult.value == nil)
+        #expect(emptyResult.diagnostic.status == .emptyInput)
+    }
+
     @Test("fromCreatedURL extracts the PR number from a created URL")
     func refFromCreatedURL() {
         let ref = GitHubPullRequestRef.fromCreatedURL("https://github.com/example/repo/pull/123")
@@ -204,6 +222,25 @@ struct GitPullRequestTests {
         #expect(summary.isTruncated == true)
     }
 
+    @Test("decodePullRequestComments returns structured diagnostics for malformed GraphQL payloads")
+    func decodePullRequestCommentsDiagnostics() {
+        let pr = GitHubPullRequestRef(
+            number: 95,
+            url: "https://github.com/coral/astra/pull/95",
+            title: "Repository polish"
+        )
+        let result = GitService.decodePullRequestCommentsResult(
+            from: #"{"data":{"repository":{"pullRequest":{"comments":"not-a-connection"}}}}"#,
+            pullRequest: pr
+        )
+
+        #expect(result.value == nil)
+        #expect(result.diagnostic.status == .decodeFailed)
+        #expect(result.diagnostic.typeName == "GitHubPullRequestCommentsGraphQLResponse")
+        #expect(result.diagnostic.codingPath?.contains("comments") == true)
+        #expect(result.diagnostic.errorDescription?.contains("Type mismatch") == true)
+    }
+
     @Test("decodePullRequestChecks summarizes passing pending and failing checks")
     func decodePullRequestChecksSummarizesStates() throws {
         let json = """
@@ -224,6 +261,17 @@ struct GitPullRequestTests {
         #expect(summary.pendingCount == 1)
         #expect(summary.failingCount == 1)
         #expect(summary.state == .failing)
+    }
+
+    @Test("decodePullRequestChecks returns structured diagnostics for malformed rollups")
+    func decodePullRequestChecksDiagnostics() {
+        let result = GitService.decodePullRequestChecksResult(from: #"{"statusCheckRollup":"bad"}"#)
+
+        #expect(result.value == nil)
+        #expect(result.diagnostic.status == .decodeFailed)
+        #expect(result.diagnostic.typeName == "GitHubPullRequestChecksViewResponse")
+        #expect(result.diagnostic.codingPath == "statusCheckRollup")
+        #expect(result.diagnostic.errorDescription?.contains("Type mismatch") == true)
     }
 
     @Test("webURLFromRemoteURL supports common GitHub remote forms")
