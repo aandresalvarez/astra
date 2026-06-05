@@ -207,6 +207,20 @@ struct ArchitectureFitnessTests {
         ))
     }
 
+    @Test("Plugin catalog view delegates capability side effects to action service")
+    func pluginCatalogViewDelegatesCapabilitySideEffects() throws {
+        let root = try repositoryRoot()
+        let view = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/PluginCatalogView.swift"),
+            encoding: .utf8
+        )
+
+        #expect(!view.contains("CapabilityInstaller("))
+        #expect(!view.contains("CapabilityUninstaller("))
+        #expect(!view.contains("CapabilityPackageCreationService("))
+        #expect(view.contains("CapabilityCatalogActionService("))
+    }
+
     private func declaredTaskEventTypeConstants() throws -> Set<String> {
         let file = try repositoryRoot().appendingPathComponent("Astra/Models/TaskEventTypes.swift")
         let text = try String(contentsOf: file, encoding: .utf8)
