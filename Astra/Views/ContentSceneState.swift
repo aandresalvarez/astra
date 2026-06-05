@@ -66,6 +66,7 @@ struct ContentWorkspaceSelectionUpdate {
     let selectedWorkspace: Workspace?
     let isComposingTask: Bool
     let shouldPresentRightRail: Bool
+    let shouldRememberShelfStateWhenPresentingRightRail: Bool
 }
 
 @MainActor
@@ -80,7 +81,8 @@ struct ContentWorkspaceSelectionCoordinator {
                 selectedTask: nil,
                 selectedWorkspace: nil,
                 isComposingTask: false,
-                shouldPresentRightRail: false
+                shouldPresentRightRail: false,
+                shouldRememberShelfStateWhenPresentingRightRail: true
             )
         }
 
@@ -88,7 +90,8 @@ struct ContentWorkspaceSelectionCoordinator {
             selectedTask: selectedTask,
             selectedWorkspace: restored,
             isComposingTask: isComposingTask,
-            shouldPresentRightRail: false
+            shouldPresentRightRail: false,
+            shouldRememberShelfStateWhenPresentingRightRail: true
         )
     }
 
@@ -97,7 +100,8 @@ struct ContentWorkspaceSelectionCoordinator {
             selectedTask: nil,
             selectedWorkspace: workspace,
             isComposingTask: false,
-            shouldPresentRightRail: true
+            shouldPresentRightRail: true,
+            shouldRememberShelfStateWhenPresentingRightRail: false
         )
     }
 
@@ -106,7 +110,8 @@ struct ContentWorkspaceSelectionCoordinator {
             selectedTask: task,
             selectedWorkspace: task.workspace ?? selectedWorkspace,
             isComposingTask: false,
-            shouldPresentRightRail: true
+            shouldPresentRightRail: true,
+            shouldRememberShelfStateWhenPresentingRightRail: false
         )
     }
 
@@ -115,7 +120,8 @@ struct ContentWorkspaceSelectionCoordinator {
             selectedTask: selectedTask,
             selectedWorkspace: workspace,
             isComposingTask: isComposingTask,
-            shouldPresentRightRail: false
+            shouldPresentRightRail: false,
+            shouldRememberShelfStateWhenPresentingRightRail: true
         )
     }
 
@@ -124,7 +130,8 @@ struct ContentWorkspaceSelectionCoordinator {
             selectedTask: selectedTask,
             selectedWorkspace: workspace ?? selectedWorkspace,
             isComposingTask: isComposingTask,
-            shouldPresentRightRail: false
+            shouldPresentRightRail: false,
+            shouldRememberShelfStateWhenPresentingRightRail: true
         )
     }
 
@@ -136,7 +143,8 @@ struct ContentWorkspaceSelectionCoordinator {
             selectedTask: deletedSelectedTaskWorkspace ? nil : selectedTask,
             selectedWorkspace: deletedCurrentWorkspace ? nextWorkspace : selectedWorkspace,
             isComposingTask: deletedSelectedTaskWorkspace ? false : isComposingTask,
-            shouldPresentRightRail: false
+            shouldPresentRightRail: false,
+            shouldRememberShelfStateWhenPresentingRightRail: true
         )
     }
 }

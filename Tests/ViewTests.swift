@@ -139,6 +139,7 @@ struct ContentSelectionResolverTests {
         #expect(update.selectedTask == nil)
         #expect(!update.isComposingTask)
         #expect(update.shouldPresentRightRail)
+        #expect(!update.shouldRememberShelfStateWhenPresentingRightRail)
     }
 
     @Test("Workspace selection coordinator opens task routes through the task workspace")
@@ -159,6 +160,7 @@ struct ContentSelectionResolverTests {
         #expect(update.selectedWorkspace?.id == taskWorkspace.id)
         #expect(!update.isComposingTask)
         #expect(update.shouldPresentRightRail)
+        #expect(!update.shouldRememberShelfStateWhenPresentingRightRail)
     }
 
     @Test("Workspace selection coordinator clears selection when no workspace can be restored")

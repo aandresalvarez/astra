@@ -6,7 +6,7 @@ final class ShelfBrowserSessionStore: ObservableObject {
     private var sharedSession = ShelfBrowserSession()
     private var taskSessions: [UUID: ShelfBrowserSession] = [:]
 
-    func session(for taskID: UUID?, pinnedToTask: Bool, enabledBrowserAdapters: [String] = []) -> ShelfBrowserSession {
+    func session(for taskID: UUID?, pinnedToTask: Bool, enabledBrowserAdapters: [String]) -> ShelfBrowserSession {
         guard pinnedToTask, let taskID else {
             sharedSession.bindToTask(taskID)
             sharedSession.setEnabledBrowserAdapters(enabledBrowserAdapters)

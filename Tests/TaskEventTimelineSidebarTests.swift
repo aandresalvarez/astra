@@ -407,6 +407,39 @@ struct SidebarGroupingTests {
         #expect(SidebarLeanPresentation.sidebarTaskStatusesShowExceptionsOnly)
         #expect(SidebarLeanPresentation.pinnedPreviewLimit == 5)
     }
+
+    @Test("Sidebar collapses before the expanded rail can clip trailing metadata")
+    func sidebarColumnCollapsesBeforeTrailingMetadataClips() {
+        let readableTitleWidth: CGFloat = 200
+        let workspaceRowFixedChrome =
+            SidebarLeanPresentation.workspaceRowTrailingSlotWidth
+            + 17 // folder icon width
+            + 7 // workspace row icon/title spacing
+            + 8 // horizontal row padding
+
+        #expect(SidebarColumnLayout.expandedMinimumWidth == 310)
+        #expect(SidebarColumnLayout.expandedIdealWidth >= SidebarColumnLayout.expandedMinimumWidth)
+        #expect(SidebarColumnLayout.expandedMaximumWidth >= SidebarColumnLayout.expandedIdealWidth)
+        #expect(SidebarColumnLayout.collapseEdge == .leading)
+        #expect(SidebarColumnLayout.collapseUsesRightPanelMotion)
+        #expect(SidebarColumnLayout.expandedMinimumWidth - workspaceRowFixedChrome >= readableTitleWidth)
+
+        #expect(SidebarColumnLayout.shouldCollapseExpandedSidebar(width: 0) == false)
+        #expect(SidebarColumnLayout.shouldCollapseExpandedSidebar(
+            width: SidebarColumnLayout.expandedMinimumWidth - 0.5
+        ) == true)
+        #expect(SidebarColumnLayout.shouldCollapseExpandedSidebar(
+            width: SidebarColumnLayout.expandedMinimumWidth
+        ) == false)
+        #expect(SidebarColumnLayout.shouldCollapseVisibleSplitWidth(.infinity) == false)
+        #expect(SidebarColumnLayout.shouldCollapseVisibleSplitWidth(.nan) == false)
+        #expect(SidebarColumnLayout.shouldCollapseVisibleSplitWidth(
+            SidebarColumnLayout.expandedMinimumWidth - 1
+        ) == true)
+        #expect(SidebarColumnLayout.shouldCollapseVisibleSplitWidth(
+            SidebarColumnLayout.expandedMinimumWidth
+        ) == false)
+    }
 }
 
 // MARK: - DiffsTabView logic

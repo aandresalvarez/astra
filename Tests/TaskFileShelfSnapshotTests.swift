@@ -596,17 +596,26 @@ extension TaskThreadSnapshotTests {
         #expect(TaskGeneratedFiles.preferredHTMLFile(in: paths) == nil)
     }
 
-    @Test("Generated HTML preview does not replace a user navigated page")
-    func generatedHTMLPreviewDoesNotReplaceUserNavigatedPage() {
-        let root = URL(fileURLWithPath: "/tmp/astra-generated-preview-autoload")
+    @Test("Generated HTML user-open guard does not replace a user navigated page")
+    func generatedHTMLUserOpenGuardDoesNotReplaceUserNavigatedPage() {
+        let root = URL(fileURLWithPath: "/tmp/astra-generated-user-open")
         let index = root.appendingPathComponent("index.html").path
         let about = root.appendingPathComponent("about.html").path
 
-        #expect(TaskGeneratedFiles.shouldAutoLoadHTMLPreview(currentBrowserURL: "", targetPath: index))
-        #expect(TaskGeneratedFiles.shouldAutoLoadHTMLPreview(currentBrowserURL: "about:blank", targetPath: index))
-        #expect(TaskGeneratedFiles.shouldAutoLoadHTMLPreview(currentBrowserURL: URL(fileURLWithPath: index).absoluteString, targetPath: index))
-        #expect(!TaskGeneratedFiles.shouldAutoLoadHTMLPreview(currentBrowserURL: URL(fileURLWithPath: about).absoluteString, targetPath: index))
-        #expect(!TaskGeneratedFiles.shouldAutoLoadHTMLPreview(currentBrowserURL: "https://example.com/current-page", targetPath: index))
+        #expect(TaskGeneratedFiles.shouldLoadGeneratedHTMLOnUserOpen(currentBrowserURL: "", targetPath: index))
+        #expect(TaskGeneratedFiles.shouldLoadGeneratedHTMLOnUserOpen(currentBrowserURL: "about:blank", targetPath: index))
+        #expect(TaskGeneratedFiles.shouldLoadGeneratedHTMLOnUserOpen(
+            currentBrowserURL: URL(fileURLWithPath: index).absoluteString,
+            targetPath: index
+        ))
+        #expect(!TaskGeneratedFiles.shouldLoadGeneratedHTMLOnUserOpen(
+            currentBrowserURL: URL(fileURLWithPath: about).absoluteString,
+            targetPath: index
+        ))
+        #expect(!TaskGeneratedFiles.shouldLoadGeneratedHTMLOnUserOpen(
+            currentBrowserURL: "https://example.com/current-page",
+            targetPath: index
+        ))
     }
 
     @Test("Generated file preview prefers task README Markdown")

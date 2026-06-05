@@ -195,7 +195,7 @@ enum TaskGeneratedFiles {
         return nil
     }
 
-    static func shouldAutoLoadHTMLPreview(currentBrowserURL: String, targetPath: String) -> Bool {
+    static func shouldLoadGeneratedHTMLOnUserOpen(currentBrowserURL: String, targetPath: String) -> Bool {
         let trimmed = currentBrowserURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
               trimmed.lowercased() != "about:blank" else {

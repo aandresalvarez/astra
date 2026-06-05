@@ -5,7 +5,7 @@ import AppKit
 
 /// Layout-level artifacts shown in the docked Shelf column.
 /// Future cases can choose wider sizing for browser or file previews.
-private enum WorkspaceCanvasItem: Equatable {
+enum WorkspaceCanvasItem: String, Equatable {
     case plan
     case markdown
     case browser
@@ -284,18 +284,18 @@ struct ContentView: View {
     @State private var responsiveLayoutWidth: CGFloat = 0
     @State private var didAutoHideSidebarForCompactPanels = false
     @State private var cachedHasCanvasContent = false
-    @State private var generatedHTMLPreviewTask: Task<Void, Never>?
-    @State private var generatedMarkdownPreviewTask: Task<Void, Never>?
+    @State private var generatedHTMLDiscoveryTask: Task<Void, Never>?
     @State private var markdownAvailabilityTask: Task<Void, Never>?
     @State private var queryAvailabilityTask: Task<Void, Never>?
     @State private var runtimeModelRefreshTasks: [AgentRuntimeID: Task<Void, Never>] = [:]
     @State private var lastRuntimeModelRefreshSignatures: [AgentRuntimeID: String] = [:]
-    @State private var lastGeneratedHTMLPreviewSignature = ""
-    @State private var lastGeneratedMarkdownPreviewSignature = ""
+    @State private var lastGeneratedHTMLDiscoverySignature = ""
+    @State private var selectedTaskPreferredHTMLPath = ""
     @State private var selectedTaskHasMarkdownShelfContent = false
     @State private var selectedTaskPreferredMarkdownPath = ""
     @State private var selectedTaskHasQueryShelfContent = false
     @State private var selectedTaskPreferredQueryPath = ""
+    @State private var rememberedWorkspaceCanvasItemsRaw = WorkspaceCanvasItemPreferenceStore.load()
     /// First-run flag. Flips to true once the user finishes the
     /// onboarding wizard. Exposed via Settings → "Show Onboarding Again"
     /// so users can replay the guide on demand.
@@ -497,6 +497,14 @@ struct ContentView: View {
         AstraMotion.rightPanel(reduceMotion: reduceMotion)
     }
 
+    private var sidebarCollapseAnimation: Animation? {
+        SidebarColumnLayout.collapseAnimation(reduceMotion: reduceMotion)
+    }
+
+    private var sidebarCollapseTransition: AnyTransition {
+        SidebarColumnLayout.collapseTransition(reduceMotion: reduceMotion)
+    }
+
     private var rightRailInspectorBinding: Binding<Bool> {
         Binding(
             get: {
@@ -570,7 +578,30 @@ struct ContentView: View {
             onEditSchedule: beginEditingSchedule,
             isSearchActive: $isSearchActive
         )
-        .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 360)
+        .background {
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear {
+                        handleSidebarColumnWidthChanged(proxy.size.width)
+                    }
+                    .onChange(of: proxy.size.width) {
+                        handleSidebarColumnWidthChanged(proxy.size.width)
+                    }
+            }
+            SidebarSplitViewGuard(
+                minimumExpandedWidth: SidebarColumnLayout.expandedMinimumWidth,
+                onCollapse: collapseSidebarForCompressedSplit
+            )
+            .frame(width: 0, height: 0)
+        }
+        .navigationSplitViewColumnWidth(
+            min: SidebarColumnLayout.expandedMinimumWidth,
+            ideal: SidebarColumnLayout.expandedIdealWidth,
+            max: SidebarColumnLayout.expandedMaximumWidth
+        )
+        .clipped()
+        .transition(sidebarCollapseTransition)
+        .animation(sidebarCollapseAnimation, value: splitVisibility)
     }
 
     private var detailArea: some View {
@@ -587,7 +618,7 @@ struct ContentView: View {
             queryUtilityRuntime: queryUtilityRuntime,
             sshReloadTrigger: sshReloadTrigger,
             isRightRailPresented: rightRailInspectorBinding,
-            activeCanvasItem: $activeWorkspaceCanvasItem,
+            activeCanvasItem: workspaceCanvasItemBinding,
             isPlanCanvasVisible: activeWorkspaceCanvasItem == .plan,
             onQuickRun: handleQuickRunTask,
             onTaskCreated: handleTaskCreated,
@@ -698,7 +729,7 @@ struct ContentView: View {
                     return
                 }
                 animatePanelChange {
-                    activeWorkspaceCanvasItem = nil
+                    setActiveWorkspaceCanvasItem(nil, remember: false)
                 }
             }
         }
@@ -934,6 +965,21 @@ struct ContentView: View {
         reconcileCompactPanelLayout(for: width)
     }
 
+    private func handleSidebarColumnWidthChanged(_ width: CGFloat) {
+        guard splitVisibility != .detailOnly else { return }
+        guard SidebarColumnLayout.shouldCollapseExpandedSidebar(width: width) else { return }
+
+        collapseSidebarForCompressedSplit()
+    }
+
+    private func collapseSidebarForCompressedSplit() {
+        guard splitVisibility != .detailOnly else { return }
+
+        withAnimation(sidebarCollapseAnimation) {
+            splitVisibility = .detailOnly
+        }
+    }
+
     private func handleRightSidePanelStateChanged() {
         reconcileCompactPanelLayout()
     }
@@ -941,18 +987,18 @@ struct ContentView: View {
     private func handleSelectedTaskCanvasSignatureChanged() {
         cachedHasCanvasContent = selectedTask.flatMap { TaskPlanService.reconstruct(for: $0).plan } != nil
         if !cachedHasCanvasContent, activeWorkspaceCanvasItem == .plan {
-            activeWorkspaceCanvasItem = nil
+            setActiveWorkspaceCanvasItem(nil, remember: false)
         }
         if selectedTask == nil, !isComposingTask, activeWorkspaceCanvasItem == .browser {
-            activeWorkspaceCanvasItem = nil
+            setActiveWorkspaceCanvasItem(nil, remember: false)
         }
         if selectedTask == nil, !isComposingTask, effectiveWorkspace == nil, activeWorkspaceCanvasItem == .markdown {
-            activeWorkspaceCanvasItem = nil
+            setActiveWorkspaceCanvasItem(nil, remember: false)
         }
         refreshMarkdownShelfAvailabilityForSelectedTask()
         refreshQueryShelfAvailabilityForSelectedTask()
-        previewGeneratedHTMLForSelectedTaskIfNeeded()
-        previewGeneratedMarkdownForSelectedTaskIfNeeded()
+        refreshGeneratedHTMLAvailabilityForSelectedTask()
+        restoreRememberedWorkspaceCanvasItemIfAvailable()
     }
 
     private func reconcileCompactPanelLayout(for width: CGFloat? = nil) {
@@ -1007,7 +1053,7 @@ struct ContentView: View {
 
     private func hideRightSidePanelsForCompactSidebar() {
         animatePanelChange {
-            activeWorkspaceCanvasItem = nil
+            setActiveWorkspaceCanvasItem(nil, remember: false)
             isWorkspaceRightRailVisible = false
         }
     }
@@ -1015,7 +1061,7 @@ struct ContentView: View {
     private func revealSidebarFromCompactLayout() {
         didAutoHideSidebarForCompactPanels = false
         animatePanelChange {
-            activeWorkspaceCanvasItem = nil
+            setActiveWorkspaceCanvasItem(nil, remember: false)
             isWorkspaceRightRailVisible = false
             splitVisibility = .all
         }
@@ -1031,9 +1077,9 @@ struct ContentView: View {
         }
     }
 
-    private func presentRightRail() {
+    private func presentRightRail(rememberShelfState: Bool = true) {
         animatePanelChange {
-            activeWorkspaceCanvasItem = nil
+            setActiveWorkspaceCanvasItem(nil, remember: rememberShelfState)
             isWorkspaceRightRailVisible = true
         }
     }
@@ -1041,7 +1087,94 @@ struct ContentView: View {
     private func presentCanvas(_ item: WorkspaceCanvasItem) {
         animatePanelChange {
             isWorkspaceRightRailVisible = false
-            activeWorkspaceCanvasItem = item
+            setActiveWorkspaceCanvasItem(item, remember: true)
+        }
+    }
+
+    private var workspaceCanvasItemBinding: Binding<WorkspaceCanvasItem?> {
+        Binding(
+            get: { activeWorkspaceCanvasItem },
+            set: { setActiveWorkspaceCanvasItem($0, remember: true) }
+        )
+    }
+
+    private var selectedWorkspaceCanvasConversationID: String? {
+        selectedTask?.id.uuidString
+    }
+
+    private var rememberedWorkspaceCanvasItem: WorkspaceCanvasItem? {
+        WorkspaceCanvasItemPreference.item(
+            in: rememberedWorkspaceCanvasItemsRaw,
+            for: selectedWorkspaceCanvasConversationID
+        )
+    }
+
+    private func setActiveWorkspaceCanvasItem(_ item: WorkspaceCanvasItem?, remember: Bool) {
+        activeWorkspaceCanvasItem = item
+        let currentStorage = rememberedWorkspaceCanvasItemsRaw
+        let updatedStorage = WorkspaceCanvasItemPreference.updatedStorageRawValue(
+            currentStorageRawValue: currentStorage,
+            conversationID: selectedWorkspaceCanvasConversationID,
+            item: item,
+            remember: remember
+        )
+        rememberedWorkspaceCanvasItemsRaw = updatedStorage
+        WorkspaceCanvasItemPreferenceStore.saveIfChanged(
+            currentRawValue: currentStorage,
+            updatedRawValue: updatedStorage
+        )
+    }
+
+    private func restoreRememberedWorkspaceCanvasItemIfAvailable() {
+        let rememberedItem = rememberedWorkspaceCanvasItem
+        guard WorkspaceCanvasItemPreference.shouldRestoreRememberedItem(
+            activeItem: activeWorkspaceCanvasItem,
+            isRightRailVisible: isWorkspaceRightRailVisible,
+            rememberedItem: rememberedItem,
+            canPresentRememberedItem: rememberedItem.map(canPresentWorkspaceCanvasItem) ?? false
+        ), let item = rememberedItem else {
+            return
+        }
+
+        isWorkspaceRightRailVisible = false
+        prepareWorkspaceCanvasItemForPresentation(item, source: "remembered_shelf_restore")
+        setActiveWorkspaceCanvasItem(item, remember: false)
+    }
+
+    private func canPresentWorkspaceCanvasItem(_ item: WorkspaceCanvasItem) -> Bool {
+        switch item {
+        case .plan:
+            return hasOpenTaskThread && hasWorkspaceCanvasContent
+        case .markdown:
+            return effectiveWorkspace != nil || selectedTaskHasMarkdownShelfContent || selectedTask != nil || isComposingTask
+        case .browser:
+            return hasOpenTaskThread
+        case .query:
+            return hasOpenTaskThread && hasQueryShelfAffordance
+        }
+    }
+
+    private func prepareWorkspaceCanvasItemForPresentation(_ item: WorkspaceCanvasItem, source: String) {
+        switch item {
+        case .plan:
+            return
+        case .markdown:
+            currentMarkdownSession.bindToTask(selectedTask?.id)
+            guard !selectedTaskPreferredMarkdownPath.isEmpty else { return }
+            let url = URL(fileURLWithPath: selectedTaskPreferredMarkdownPath)
+            if currentMarkdownSession.fileURL?.path != url.path {
+                currentMarkdownSession.load(url)
+            }
+        case .browser:
+            currentBrowserSession.bindToTask(selectedTask?.id)
+            loadPreferredGeneratedHTMLForBrowserShelfIfNeeded(source: source)
+        case .query:
+            querySession.bindToTask(selectedTask?.id)
+            guard !selectedTaskPreferredQueryPath.isEmpty else { return }
+            let url = URL(fileURLWithPath: selectedTaskPreferredQueryPath)
+            if querySession.selectedDocument?.sourcePath != url.path {
+                querySession.loadFile(url)
+            }
         }
     }
 
@@ -1057,14 +1190,14 @@ struct ContentView: View {
         guard hasWorkspaceCanvasContent else {
             animatePanelChange {
                 if activeWorkspaceCanvasItem == .plan {
-                    activeWorkspaceCanvasItem = nil
+                    setActiveWorkspaceCanvasItem(nil, remember: true)
                 }
             }
             return
         }
         if activeWorkspaceCanvasItem == .plan {
             animatePanelChange {
-                activeWorkspaceCanvasItem = nil
+                setActiveWorkspaceCanvasItem(nil, remember: true)
             }
         } else {
             presentCanvas(.plan)
@@ -1075,9 +1208,10 @@ struct ContentView: View {
         currentBrowserSession.bindToTask(selectedTask?.id)
         if activeWorkspaceCanvasItem == .browser {
             animatePanelChange {
-                activeWorkspaceCanvasItem = nil
+                setActiveWorkspaceCanvasItem(nil, remember: true)
             }
         } else {
+            loadPreferredGeneratedHTMLForBrowserShelfIfNeeded(source: "browser_shelf_open")
             presentCanvas(.browser)
         }
     }
@@ -1089,6 +1223,7 @@ struct ContentView: View {
             session.engine = engine
         }
         browserToolbarEngine = engine
+        loadPreferredGeneratedHTMLForBrowserShelfIfNeeded(source: "browser_shelf_open")
         if activeWorkspaceCanvasItem != .browser {
             presentCanvas(.browser)
         }
@@ -1098,7 +1233,7 @@ struct ContentView: View {
         guard effectiveWorkspace != nil || selectedTaskHasMarkdownShelfContent || selectedTask != nil || isComposingTask else {
             if activeWorkspaceCanvasItem == .markdown {
                 animatePanelChange {
-                    activeWorkspaceCanvasItem = nil
+                    setActiveWorkspaceCanvasItem(nil, remember: true)
                 }
             }
             return
@@ -1112,7 +1247,7 @@ struct ContentView: View {
         }
         if activeWorkspaceCanvasItem == .markdown {
             animatePanelChange {
-                activeWorkspaceCanvasItem = nil
+                setActiveWorkspaceCanvasItem(nil, remember: true)
             }
         } else {
             presentCanvas(.markdown)
@@ -1123,7 +1258,7 @@ struct ContentView: View {
         guard hasQueryShelfAffordance else {
             if activeWorkspaceCanvasItem == .query {
                 animatePanelChange {
-                    activeWorkspaceCanvasItem = nil
+                    setActiveWorkspaceCanvasItem(nil, remember: true)
                 }
             }
             return
@@ -1137,7 +1272,7 @@ struct ContentView: View {
         }
         if activeWorkspaceCanvasItem == .query {
             animatePanelChange {
-                activeWorkspaceCanvasItem = nil
+                setActiveWorkspaceCanvasItem(nil, remember: true)
             }
         } else {
             presentCanvas(.query)
@@ -1184,6 +1319,7 @@ struct ContentView: View {
                     selectedTaskHasMarkdownShelfContent = false
                     closeMarkdownShelfIfUnavailable()
                 }
+                restoreRememberedWorkspaceCanvasItemIfAvailable()
             }
         }
     }
@@ -1238,6 +1374,7 @@ struct ContentView: View {
                     selectedTaskHasQueryShelfContent = false
                     closeQueryShelfIfUnavailable()
                 }
+                restoreRememberedWorkspaceCanvasItemIfAvailable()
             }
         }
     }
@@ -1304,129 +1441,116 @@ struct ContentView: View {
     private func closeMarkdownShelfIfUnavailable() {
         guard activeWorkspaceCanvasItem == .markdown, effectiveWorkspace == nil else { return }
         animatePanelChange {
-            activeWorkspaceCanvasItem = nil
+            setActiveWorkspaceCanvasItem(nil, remember: false)
         }
     }
 
     private func closeQueryShelfIfUnavailable() {
         guard activeWorkspaceCanvasItem == .query, !selectedTaskHasQueryShelfContent else { return }
         animatePanelChange {
-            activeWorkspaceCanvasItem = nil
+            setActiveWorkspaceCanvasItem(nil, remember: false)
         }
     }
 
-    private func previewGeneratedHTMLForSelectedTaskIfNeeded() {
+    private func clearGeneratedHTMLDiscoveryState() {
+        selectedTaskPreferredHTMLPath = GeneratedHTMLDiscoveryState.empty.preferredPath
+        lastGeneratedHTMLDiscoverySignature = GeneratedHTMLDiscoveryState.empty.signature
+    }
+
+    private func refreshGeneratedHTMLAvailabilityForSelectedTask() {
         guard isBrowserPinnedToTask else { return }
         guard let selectedTask else {
-            generatedHTMLPreviewTask?.cancel()
+            generatedHTMLDiscoveryTask?.cancel()
+            clearGeneratedHTMLDiscoveryState()
             return
         }
 
         let taskID = selectedTask.id
         let taskFolder = TaskWorkspaceAccess(task: selectedTask).taskFolder
-        guard !taskFolder.isEmpty else { return }
+        guard !taskFolder.isEmpty else {
+            generatedHTMLDiscoveryTask?.cancel()
+            clearGeneratedHTMLDiscoveryState()
+            return
+        }
 
-        generatedHTMLPreviewTask?.cancel()
-        generatedHTMLPreviewTask = Task {
+        generatedHTMLDiscoveryTask?.cancel()
+        generatedHTMLDiscoveryTask = Task {
             let files = await TaskGeneratedFiles.filesAsync(in: taskFolder)
             guard !Task.isCancelled,
                   let path = TaskGeneratedFiles.preferredHTMLFile(in: files, taskFolder: taskFolder) else {
+                await MainActor.run {
+                    guard !Task.isCancelled,
+                          self.selectedTask?.id == taskID else {
+                        return
+                    }
+                    clearGeneratedHTMLDiscoveryState()
+                }
                 return
             }
 
-            let signature = TaskGeneratedFiles.htmlPreviewSignature(for: path, taskID: taskID)
+            let discoveryState = GeneratedHTMLDiscoveryState.discovered(preferredPath: path, taskID: taskID)
             await MainActor.run {
                 guard !Task.isCancelled,
                       self.selectedTask?.id == taskID,
-                      lastGeneratedHTMLPreviewSignature != signature else {
+                      GeneratedHTMLDiscoveryState(
+                          preferredPath: selectedTaskPreferredHTMLPath,
+                          signature: lastGeneratedHTMLDiscoverySignature
+                      ).shouldApplyDiscovery(preferredPath: path, taskID: taskID) else {
                     return
                 }
 
-                let session = browserSessionStore.session(for: taskID, pinnedToTask: isBrowserPinnedToTask)
-                let shouldLoadPreview = TaskGeneratedFiles.shouldAutoLoadHTMLPreview(
-                    currentBrowserURL: session.currentURL,
-                    targetPath: path
-                )
-                lastGeneratedHTMLPreviewSignature = signature
-                guard shouldLoadPreview else {
-                    logGeneratedHTMLPreview(
-                        taskID: taskID,
-                        event: "auto_preview_skipped",
-                        reason: "browser_has_user_page",
-                        targetPath: path,
-                        currentURL: session.currentURL
-                    )
-                    return
-                }
-
-                session.load(URL(fileURLWithPath: path), source: "generated_html_preview")
-                logGeneratedHTMLPreview(
+                selectedTaskPreferredHTMLPath = discoveryState.preferredPath
+                lastGeneratedHTMLDiscoverySignature = discoveryState.signature
+                logGeneratedHTMLDiscovery(
                     taskID: taskID,
-                    event: "auto_preview_loaded",
-                    reason: "signature_changed",
-                    targetPath: path,
-                    currentURL: session.currentURL
+                    event: "artifact_discovered",
+                    reason: "explicit_open_required",
+                    targetPath: discoveryState.preferredPath
                 )
-                if activeWorkspaceCanvasItem != .browser {
-                    presentCanvas(.browser)
-                }
-                syncBrowserPresentation()
+                restoreRememberedWorkspaceCanvasItemIfAvailable()
             }
         }
     }
 
-    private func logGeneratedHTMLPreview(
+    private func loadPreferredGeneratedHTMLForBrowserShelfIfNeeded(source: String) {
+        guard !selectedTaskPreferredHTMLPath.isEmpty else { return }
+
+        let taskID = selectedTask?.id
+        let session = browserSessionStore.session(
+            for: taskID,
+            pinnedToTask: isBrowserPinnedToTask,
+            enabledBrowserAdapters: enabledBrowserAdapterIDs(for: selectedTask)
+        )
+        guard TaskGeneratedFiles.shouldLoadGeneratedHTMLOnUserOpen(
+            currentBrowserURL: session.currentURL,
+            targetPath: selectedTaskPreferredHTMLPath
+        ) else {
+            return
+        }
+
+        session.load(URL(fileURLWithPath: selectedTaskPreferredHTMLPath), source: source)
+        if let taskID {
+            let discoveryState = GeneratedHTMLDiscoveryState.discovered(
+                preferredPath: selectedTaskPreferredHTMLPath,
+                taskID: taskID
+            )
+            selectedTaskPreferredHTMLPath = discoveryState.preferredPath
+            lastGeneratedHTMLDiscoverySignature = discoveryState.signature
+        }
+        syncBrowserPresentation()
+    }
+
+    private func logGeneratedHTMLDiscovery(
         taskID: UUID,
         event: String,
         reason: String,
-        targetPath: String,
-        currentURL: String
+        targetPath: String
     ) {
         var fields = ShelfBrowserURLLogFields.fields(for: URL(fileURLWithPath: targetPath), prefix: "target")
-        fields.merge(ShelfBrowserURLLogFields.fields(for: currentURL, prefix: "current"), uniquingKeysWith: { current, _ in current })
         fields["event"] = event
         fields["reason"] = reason
         fields["pinned_to_task"] = String(isBrowserPinnedToTask)
         AppLogger.audit(.shelfBrowserPreview, category: "Browser", taskID: taskID, fields: fields)
-    }
-
-    private func previewGeneratedMarkdownForSelectedTaskIfNeeded() {
-        guard isMarkdownPinnedToTask else { return }
-        guard let selectedTask else {
-            generatedMarkdownPreviewTask?.cancel()
-            return
-        }
-
-        let taskID = selectedTask.id
-        let taskFolder = TaskWorkspaceAccess(task: selectedTask).taskFolder
-        guard !taskFolder.isEmpty else { return }
-
-        generatedMarkdownPreviewTask?.cancel()
-        generatedMarkdownPreviewTask = Task {
-            let files = await TaskGeneratedFiles.filesAsync(in: taskFolder)
-            guard !Task.isCancelled,
-                  let path = TaskGeneratedFiles.preferredMarkdownFile(in: files, taskFolder: taskFolder) else {
-                return
-            }
-
-            let signature = TaskGeneratedFiles.markdownPreviewSignature(for: path, taskID: taskID)
-            await MainActor.run {
-                guard !Task.isCancelled,
-                      self.selectedTask?.id == taskID,
-                      lastGeneratedMarkdownPreviewSignature != signature else {
-                    return
-                }
-
-                lastGeneratedMarkdownPreviewSignature = signature
-                selectedTaskPreferredMarkdownPath = path
-                selectedTaskHasMarkdownShelfContent = true
-                let session = markdownSessionStore.session(for: taskID, pinnedToTask: isMarkdownPinnedToTask)
-                session.load(URL(fileURLWithPath: path))
-                if activeWorkspaceCanvasItem != .browser {
-                    presentCanvas(.markdown)
-                }
-            }
-        }
     }
 
     private func openGeneratedFile(_ path: String) {
@@ -1434,10 +1558,16 @@ struct ContentView: View {
         switch TaskGeneratedFiles.shelfDestination(for: path) {
         case .browser?:
             let taskID = selectedTask?.id
-            let session = browserSessionStore.session(for: taskID, pinnedToTask: isBrowserPinnedToTask)
+            let session = browserSessionStore.session(
+                for: taskID,
+                pinnedToTask: isBrowserPinnedToTask,
+                enabledBrowserAdapters: enabledBrowserAdapterIDs(for: selectedTask)
+            )
             session.load(url, source: "generated_file")
             if let taskID {
-                lastGeneratedHTMLPreviewSignature = TaskGeneratedFiles.htmlPreviewSignature(for: path, taskID: taskID)
+                let discoveryState = GeneratedHTMLDiscoveryState.discovered(preferredPath: path, taskID: taskID)
+                selectedTaskPreferredHTMLPath = discoveryState.preferredPath
+                lastGeneratedHTMLDiscoverySignature = discoveryState.signature
             }
             presentCanvas(.browser)
             syncBrowserPresentation()
@@ -1449,9 +1579,6 @@ struct ContentView: View {
             selectedTaskHasMarkdownShelfContent = true
             let session = markdownSessionStore.session(for: taskID, pinnedToTask: isMarkdownPinnedToTask)
             session.load(url)
-            if let taskID {
-                lastGeneratedMarkdownPreviewSignature = TaskGeneratedFiles.markdownPreviewSignature(for: path, taskID: taskID)
-            }
             presentCanvas(.markdown)
             return
 
@@ -1497,7 +1624,7 @@ struct ContentView: View {
         let previousSession = currentBrowserSession
         let previousAddress = previousSession.currentURL
         isBrowserPinnedToTask = pinnedToTask
-        lastGeneratedHTMLPreviewSignature = ""
+        clearGeneratedHTMLDiscoveryState()
 
         let nextSession = currentBrowserSession
         if !previousAddress.isEmpty && nextSession.currentURL.isEmpty {
@@ -1505,9 +1632,7 @@ struct ContentView: View {
         }
 
         syncBrowserPresentation()
-        if pinnedToTask {
-            previewGeneratedHTMLForSelectedTaskIfNeeded()
-        }
+        if pinnedToTask { refreshGeneratedHTMLAvailabilityForSelectedTask() }
     }
 
     private func setMarkdownPinnedToTask(_ pinnedToTask: Bool) {
@@ -1516,22 +1641,19 @@ struct ContentView: View {
         let previousSession = currentMarkdownSession
         let previousURL = previousSession.fileURL
         isMarkdownPinnedToTask = pinnedToTask
-        lastGeneratedMarkdownPreviewSignature = ""
 
         let nextSession = currentMarkdownSession
         if let previousURL, !nextSession.hasFile {
             nextSession.load(previousURL)
         }
 
-        if pinnedToTask {
-            previewGeneratedMarkdownForSelectedTaskIfNeeded()
-        }
+        if pinnedToTask { refreshMarkdownShelfAvailabilityForSelectedTask() }
     }
 
     private func startComposingTask() {
         setSelectedTask(nil)
         isComposingTask = true
-        presentRightRail()
+        presentRightRail(rememberShelfState: false)
     }
 
     private func handleQuickRunTask(_ task: AgentTask) {
@@ -1545,7 +1667,7 @@ struct ContentView: View {
         promoteDraftBrowserSessionIfNeeded(to: task)
         setSelectedTask(task)
         isComposingTask = false
-        presentRightRail()
+        presentRightRail(rememberShelfState: false)
     }
 
     private func promoteDraftBrowserSessionIfNeeded(to task: AgentTask) {
@@ -1575,7 +1697,7 @@ struct ContentView: View {
         }
         if selectedTask?.id == task.id, activeWorkspaceCanvasItem == .plan {
             animatePanelChange {
-                activeWorkspaceCanvasItem = nil
+                setActiveWorkspaceCanvasItem(nil, remember: true)
             }
             return
         }
@@ -1843,7 +1965,9 @@ struct ContentView: View {
         }
         isComposingTask = update.isComposingTask
         if update.shouldPresentRightRail {
-            presentRightRail()
+            presentRightRail(
+                rememberShelfState: update.shouldRememberShelfStateWhenPresentingRightRail
+            )
         }
     }
 
@@ -1851,31 +1975,24 @@ struct ContentView: View {
 
     private func setSelectedTask(_ task: AgentTask?) {
         let previousTaskID = selectedTask?.id
-        let shouldCloseBrowserForTaskChange = isBrowserPinnedToTask
-            && activeWorkspaceCanvasItem == .browser
-            && previousTaskID != nil
-            && previousTaskID != task?.id
+        if previousTaskID != task?.id {
+            setActiveWorkspaceCanvasItem(nil, remember: false)
+        }
         if let taskWorkspace = task?.workspace,
            selectedWorkspace?.id != taskWorkspace.id {
             selectedWorkspace = taskWorkspace
         }
         selectedTask = task
         if previousTaskID != task?.id {
-            lastGeneratedHTMLPreviewSignature = ""
-            lastGeneratedMarkdownPreviewSignature = ""
+            clearGeneratedHTMLDiscoveryState()
             currentBrowserSession.bindToTask(task?.id)
             currentMarkdownSession.bindToTask(task?.id)
             querySession.bindToTask(task?.id)
-            if shouldCloseBrowserForTaskChange {
-                animatePanelChange {
-                    activeWorkspaceCanvasItem = nil
-                }
-            }
             syncBrowserPresentation()
             refreshMarkdownShelfAvailabilityForSelectedTask()
             refreshQueryShelfAvailabilityForSelectedTask()
-            previewGeneratedHTMLForSelectedTaskIfNeeded()
-            previewGeneratedMarkdownForSelectedTaskIfNeeded()
+            refreshGeneratedHTMLAvailabilityForSelectedTask()
+            restoreRememberedWorkspaceCanvasItemIfAvailable()
         }
         if task != nil {
             isComposingTask = false
@@ -2040,6 +2157,10 @@ struct ContentView: View {
         migrateConnectorCredentials()
         migrateSkillSecrets()
         restoreWorkspaceSelection()
+        refreshMarkdownShelfAvailabilityForSelectedTask()
+        refreshQueryShelfAvailabilityForSelectedTask()
+        refreshGeneratedHTMLAvailabilityForSelectedTask()
+        restoreRememberedWorkspaceCanvasItemIfAvailable()
         backfillThreadTitlesIfNeeded()
         refreshProviderModelsInBackground()
         enterUITestComposerIfNeeded()

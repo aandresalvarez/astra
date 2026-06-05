@@ -104,6 +104,36 @@ enum SidebarLeanPresentation {
     static let newTaskHoverFillOpacity = 0.075
 }
 
+enum SidebarColumnLayout {
+    /// The expanded sidebar needs enough room for a workspace name plus the
+    /// fixed trailing count/action slot. Below this, collapse the column instead
+    /// of rendering a clipped navigation rail.
+    static let expandedMinimumWidth: CGFloat = 310
+    static let expandedIdealWidth: CGFloat = 320
+    static let expandedMaximumWidth: CGFloat = 360
+    static let collapseEdge: Edge = .leading
+    static let collapseUsesRightPanelMotion = true
+
+    static func shouldCollapseExpandedSidebar(width: CGFloat) -> Bool {
+        width > 0 && width < expandedMinimumWidth
+    }
+
+    static func shouldCollapseVisibleSplitWidth(
+        _ width: CGFloat,
+        minimumExpandedWidth: CGFloat = expandedMinimumWidth
+    ) -> Bool {
+        width.isFinite && width > 0 && width < minimumExpandedWidth
+    }
+
+    static func collapseAnimation(reduceMotion: Bool) -> Animation? {
+        AstraMotion.rightPanel(reduceMotion: reduceMotion)
+    }
+
+    static func collapseTransition(reduceMotion: Bool) -> AnyTransition {
+        reduceMotion ? .identity : .move(edge: collapseEdge)
+    }
+}
+
 private struct SidebarTopToolbar: View {
     @Binding var isSearchActive: Bool
     let showsWorkspaceActions: Bool
