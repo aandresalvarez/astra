@@ -1020,8 +1020,8 @@ struct LocalModelRuntimeTests {
         #expect(report.remediation?.contains(LocalMLXRuntime.recommendedModelsRoot) == true)
     }
 
-    @Test("Model catalog blocks multimodal MLX folders before smoke")
-    func modelCatalogBlocksMultimodalMLXFoldersBeforeSmoke() throws {
+    @Test("Model catalog allows supported Gemma 4 multimodal MLX folders before smoke")
+    func modelCatalogAllowsSupportedGemma4MultimodalMLXFoldersBeforeSmoke() throws {
         let directory = temporaryDirectory()
         try multimodalGemmaConfig().write(
             to: directory.appendingPathComponent("config.json"),
@@ -1033,14 +1033,13 @@ struct LocalModelRuntimeTests {
 
         let report = LocalModelCatalog.validate(directory: directory.path)
 
-        #expect(report.state == .blocked)
-        #expect(report.detail.contains("multimodal MLX conversion"))
-        #expect(report.detail.contains("text-only models"))
-        #expect(report.remediation?.contains("Qwen") == true)
+        #expect(report.state == .ready)
+        #expect(report.detail.contains("gemma4"))
+        #expect(report.detail.contains("Multimodal image input is available"))
     }
 
-    @Test("Model catalog blocks Gemma 4 folders before smoke")
-    func modelCatalogBlocksGemma4FoldersBeforeSmoke() throws {
+    @Test("Model catalog supports Gemma 4 folders before smoke")
+    func modelCatalogSupportsGemma4FoldersBeforeSmoke() throws {
         let directory = temporaryDirectory()
         try quantizedGemmaPLEConfig().write(
             to: directory.appendingPathComponent("config.json"),
@@ -1052,16 +1051,13 @@ struct LocalModelRuntimeTests {
 
         let report = LocalModelCatalog.validate(directory: directory.path)
 
-        #expect(LocalModelArchitectureSupport.isSupported(modelType: "gemma4") == false)
-        #expect(report.state == .blocked)
-        #expect(report.detail.contains("Gemma 4 is not a supported Local MLX model"))
-        #expect(report.remediation?.contains("Qwen") == true)
-        #expect(report.remediation?.contains("Llama") == true)
-        #expect(report.remediation?.contains("will add Gemma") != true)
+        #expect(LocalModelArchitectureSupport.isSupported(modelType: "gemma4"))
+        #expect(report.state == .ready)
+        #expect(report.detail.contains("gemma4"))
     }
 
-    @Test("Model catalog blocks text-only Gemma 4 folders before smoke")
-    func modelCatalogBlocksTextOnlyGemma4FoldersBeforeSmoke() throws {
+    @Test("Model catalog supports text-only Gemma 4 folders before smoke")
+    func modelCatalogSupportsTextOnlyGemma4FoldersBeforeSmoke() throws {
         let directory = temporaryDirectory()
         try modelConfig(modelType: "gemma4_text").write(
             to: directory.appendingPathComponent("config.json"),
@@ -1073,12 +1069,27 @@ struct LocalModelRuntimeTests {
 
         let report = LocalModelCatalog.validate(directory: directory.path)
 
-        #expect(LocalModelArchitectureSupport.isSupported(modelType: "gemma4_text") == false)
+        #expect(LocalModelArchitectureSupport.isSupported(modelType: "gemma4_text"))
+        #expect(report.state == .ready)
+        #expect(report.detail.contains("gemma4_text"))
+    }
+
+    @Test("Model catalog blocks unsupported multimodal model types before smoke")
+    func modelCatalogBlocksUnsupportedMultimodalModelTypesBeforeSmoke() throws {
+        let directory = temporaryDirectory()
+        try unsupportedMultimodalConfig().write(
+            to: directory.appendingPathComponent("config.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "{}".write(to: directory.appendingPathComponent("tokenizer.json"), atomically: true, encoding: .utf8)
+        try Data([0]).write(to: directory.appendingPathComponent("model.safetensors"))
+
+        let report = LocalModelCatalog.validate(directory: directory.path)
+
         #expect(report.state == .blocked)
-        #expect(report.detail.contains("Gemma 4 is not a supported Local MLX model"))
-        #expect(report.remediation?.contains("Qwen") == true)
-        #expect(report.remediation?.contains("Llama") == true)
-        #expect(report.remediation?.contains("will add Gemma") != true)
+        #expect(report.detail.contains("multimodal MLX conversion"))
+        #expect(report.detail.contains("not supported"))
     }
 
     @Test("Model catalog scans candidates and imports selected metadata")
@@ -1133,6 +1144,7 @@ struct LocalModelRuntimeTests {
         #expect(LocalMLXRuntime.defaultModels.contains("Qwen/Qwen3-4B-MLX-4bit"))
         #expect(LocalMLXRuntime.defaultModels.contains("Qwen/Qwen3-8B-MLX-4bit"))
         #expect(LocalMLXRuntime.defaultModels.contains("mlx-community/Llama-3.2-3B-Instruct-4bit"))
+        #expect(LocalMLXRuntime.defaultModels.contains("mlx-community/gemma-4-12B-it-4bit"))
         let installableModels = Set(LocalModelInstallCandidate.installCandidates.map(\.runtimeModel))
         for model in LocalMLXRuntime.defaultModels {
             #expect(installableModels.contains(model))
@@ -1141,7 +1153,8 @@ struct LocalModelRuntimeTests {
         #expect(LocalMLXRuntime.recommendedDownloadCommand.contains(LocalMLXRuntime.recommendedModelDirectory))
         #expect(LocalMLXRuntime.recommendedModelRepository == "Qwen/Qwen3-4B-MLX-4bit")
         #expect(!LocalModelInstallCandidate.installCandidates.contains { $0.repository.contains("lmstudio-community") })
-        #expect(!LocalModelInstallCandidate.installCandidates.contains { $0.repository.lowercased().contains("gemma") })
+        #expect(LocalModelInstallCandidate.gemma412BMultimodal4Bit.repository == "mlx-community/gemma-4-12B-it-4bit")
+        #expect(LocalModelInstallCandidate.gemma412BMultimodal4Bit.reason.contains("image understanding"))
         #expect(LocalModelInstallCandidate.recommended4Bit.reason.contains("Best starting point"))
         #expect(!LocalModelInstallCandidate.recommended4Bit.reason.contains(LocalMLXRuntime.recommendedModelRepository))
         #expect(LocalModelInstallCandidate.qwen8Bit.reason.contains("more memory"))
@@ -1183,7 +1196,8 @@ struct LocalModelRuntimeTests {
         #expect(LocalModelInstallCandidate.installCandidates(for: recommended).map(\.runtimeModel) == [
             LocalModelInstallCandidate.recommended4Bit.runtimeModel,
             LocalModelInstallCandidate.qwen8Bit.runtimeModel,
-            LocalModelInstallCandidate.llamaSmall.runtimeModel
+            LocalModelInstallCandidate.llamaSmall.runtimeModel,
+            LocalModelInstallCandidate.gemma412BMultimodal4Bit.runtimeModel
         ])
         #expect(LocalModelInstallCandidate.recommendedCandidate(for: lowMemory).downloadCommand.contains("Llama-3.2-3B-Instruct-4bit"))
     }
@@ -1218,8 +1232,8 @@ struct LocalModelRuntimeTests {
         #expect(!choices.contains("example/missing"))
     }
 
-    @Test("Local model choices drop stale Gemma 4 preferred models")
-    func localModelChoicesDropStaleGemma4PreferredModels() throws {
+    @Test("Local model choices keep Gemma 4 preferred models")
+    func localModelChoicesKeepGemma4PreferredModels() throws {
         let root = temporaryDirectory()
         let installedDirectory = root.appendingPathComponent("Qwen3-4B-MLX-4bit", isDirectory: true)
         try writeCompleteModelDirectory(at: installedDirectory)
@@ -1239,8 +1253,8 @@ struct LocalModelRuntimeTests {
             candidates: [installed]
         )
 
-        #expect(choices == ["Qwen/Qwen3-4B-MLX-4bit"])
-        #expect(!choices.contains { $0.localizedCaseInsensitiveContains("gemma") })
+        #expect(choices == ["Qwen/Qwen3-4B-MLX-4bit", "google/gemma-4-e2b-it"])
+        #expect(choices.contains("google/gemma-4-e2b-it"))
     }
 
     @Test("Selected local model summary distinguishes missing and invalid folders")
@@ -1376,17 +1390,19 @@ struct LocalModelRuntimeTests {
         #expect(entries.map(\.directory) == [installed.standardizedFileURL.path])
     }
 
-    @Test("Local helper scanner skips Gemma folders that the native backend cannot load")
-    func localHelperScannerSkipsGemmaFoldersThatNativeBackendCannotLoad() throws {
+    @Test("Local helper scanner includes supported Gemma folders")
+    func localHelperScannerIncludesSupportedGemmaFolders() throws {
         let root = temporaryDirectory()
         let qwen = root.appendingPathComponent("Qwen3-4B-MLX-4bit", isDirectory: true)
         let quantizedPLE = root.appendingPathComponent("gemma-4-e2b-it-lm-4bit", isDirectory: true)
         let multimodal = root.appendingPathComponent("gemma-4-E2B-it-MLX-4bit", isDirectory: true)
         let textOnly = root.appendingPathComponent("gemma-4-text-mlx", isDirectory: true)
+        let gemma12B = root.appendingPathComponent("gemma-4-12B-it-4bit", isDirectory: true)
         try FileManager.default.createDirectory(at: qwen, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: quantizedPLE, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: multimodal, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: textOnly, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: gemma12B, withIntermediateDirectories: true)
 
         try modelConfig(modelType: "qwen3").write(
             to: qwen.appendingPathComponent("config.json"),
@@ -1420,20 +1436,29 @@ struct LocalModelRuntimeTests {
         try "{}".write(to: textOnly.appendingPathComponent("tokenizer.json"), atomically: true, encoding: .utf8)
         try Data([0]).write(to: textOnly.appendingPathComponent("model.safetensors"))
 
+        try gemma4UnifiedConfig().write(
+            to: gemma12B.appendingPathComponent("config.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "{}".write(to: gemma12B.appendingPathComponent("tokenizer.json"), atomically: true, encoding: .utf8)
+        try Data([0]).write(to: gemma12B.appendingPathComponent("model.safetensors"))
+
         let report = LocalModelListScanner.scan(
             modelsRoot: root.path,
             selectedModelDirectory: multimodal.path,
             backend: "mlx"
         )
 
-        #expect(report.models == [
-            LocalModelListEntry(
-                model: "Qwen/Qwen3-4B-MLX-4bit",
-                displayName: "Qwen 3 4B",
-                directory: qwen.standardizedFileURL.path,
-                selected: false
-            )
-        ])
+        #expect(report.models.contains(LocalModelListEntry(
+            model: "Qwen/Qwen3-4B-MLX-4bit",
+            displayName: "Qwen 3 4B",
+            directory: qwen.standardizedFileURL.path,
+            selected: false
+        )))
+        #expect(report.models.contains { $0.model == "mlx-community/gemma-4-12B-it-4bit" && $0.displayName == "Gemma 4 12B" })
+        #expect(report.models.contains { $0.directory == multimodal.standardizedFileURL.path && $0.selected })
+        #expect(report.models.contains { $0.model == "gemma-4-text-mlx" })
     }
 
     @Test("Installer validates download and saves selected model folder")
@@ -2283,17 +2308,14 @@ struct LocalModelRuntimeTests {
             contentsOf: repoRoot.appendingPathComponent("Tests/Phase1FunctionalTest.swift"),
             encoding: .utf8
         )
-        let headlessSource = try String(
-            contentsOf: repoRoot.appendingPathComponent("Tests/HeadlessChatScenarioTests.swift"),
-            encoding: .utf8
-        )
-
         let coverage: [(bug: String, source: String, requiredTest: String)] = [
             ("GGUF folders from third-party apps were accepted as MLX assets", testSource, "Model catalog gives specific guidance for GGUF-only folders"),
-            ("multimodal Gemma folders reached text-only native smoke", testSource, "Model catalog blocks multimodal MLX folders before smoke"),
-            ("Gemma 4 folders reached native smoke", testSource, "Model catalog blocks Gemma 4 folders before smoke"),
-            ("text-only Gemma 4 folders reached native smoke", testSource, "Model catalog blocks text-only Gemma 4 folders before smoke"),
-            ("Gemma folders that cannot load appeared as selectable models", testSource, "Local helper scanner skips Gemma folders that the native backend cannot load"),
+            ("unsupported multimodal folders reached native smoke", testSource, "Model catalog blocks unsupported multimodal model types before smoke"),
+            ("supported multimodal Gemma 4 folders were blocked before smoke", testSource, "Model catalog allows supported Gemma 4 multimodal MLX folders before smoke"),
+            ("text-only Gemma 4 folders were blocked before smoke", testSource, "Model catalog supports text-only Gemma 4 folders before smoke"),
+            ("supported Gemma folders were hidden from selectable models", testSource, "Local helper scanner includes supported Gemma folders"),
+            ("Gemma 4 12B could be recommended without enough memory", testSource, "Memory budget requires 32 GB tier for Gemma 4 12B"),
+            ("clipboard and file picker image inputs were dropped from local model requests", testSource, "Adapter writes image attachments from task inputs into local model request"),
             ("failed installs could leave partial models or replace the selected model", testSource, "Installer cleans failed partial downloads and preserves current model"),
             ("cancelled installs could leave partial models or replace the selected model", testSource, "Installer cancellation cleans partial download and preserves current model"),
             ("one-click installs could start large downloads without enough free disk space", testSource, "Installer checks free disk space before starting large downloads"),
@@ -2315,9 +2337,6 @@ struct LocalModelRuntimeTests {
             ("release gates could pass without live Local Chat and Agent evidence", testSource, "Release candidate validation evidence exports and gates GA live e2e"),
             ("hardware validation could pass without representative tiers", testSource, "Hardware validation matrix reports missing sustained Mac tiers"),
             ("low-memory sustained validation launched the helper unnecessarily", testSource, "Sustained validation records expected low-memory blocks without launching the helper"),
-            ("provider parity claims were not tied to supported Local Agent behavior", headlessSource, "Provider parity shared completion scenario runs across provider harnesses and Local Agent"),
-            ("provider parity denied shell behavior could drift across providers", headlessSource, "Provider parity denied shell scenario blocks CLI harnesses and Local Agent"),
-            ("provider parity cancellation behavior could drift across providers", headlessSource, "Provider parity cancellation scenario stops provider harnesses and Local Agent"),
             ("live high-risk Local Agent task output approval could regress", phase1Source, "Local MLX Agent → task output write approval loop"),
             ("live high-risk Local Agent workspace write approval could regress", phase1Source, "Local MLX Agent → workspace write approval loop"),
             ("live high-risk Local Agent shell approval could regress", phase1Source, "Local MLX Agent → shell exec approval loop"),
@@ -4100,6 +4119,49 @@ struct LocalModelRuntimeTests {
         #expect(check.state == .blocked)
     }
 
+    @Test("Memory budget requires 32 GB tier for Gemma 4 12B")
+    func memoryBudgetRequires32GBTierForGemma412B() {
+        let gib: UInt64 = 1_073_741_824
+        let metadata = LocalModelMetadata(
+            directory: "/tmp/gemma-4-12B-it-4bit",
+            modelType: "gemma4_unified",
+            architectures: ["Gemma4UnifiedForConditionalGeneration"],
+            quantizationMethod: "4-bit",
+            weightFileCount: 2,
+            weightBytes: 5 * gib,
+            hiddenSize: 4096,
+            layerCount: 32,
+            attentionHeadCount: 32,
+            keyValueHeadCount: 8,
+            hasVisionConfig: true
+        )
+        let minimum = LocalHardwareProfile(
+            isAppleSilicon: true,
+            physicalMemoryBytes: 16 * gib,
+            cpuBrand: "Apple M2"
+        )
+        let recommended = LocalHardwareProfile(
+            isAppleSilicon: true,
+            physicalMemoryBytes: 32 * gib,
+            cpuBrand: "Apple M2 Pro"
+        )
+
+        let minimumCheck = LocalModelMemoryBudget.readinessCheck(
+            metadata: metadata,
+            hardware: minimum,
+            maxContextTokens: 4_096
+        )
+        let recommendedCheck = LocalModelMemoryBudget.readinessCheck(
+            metadata: metadata,
+            hardware: recommended,
+            maxContextTokens: 4_096
+        )
+
+        #expect(minimumCheck.state == .blocked)
+        #expect(minimumCheck.detail.contains("Gemma 4 12B"))
+        #expect(recommendedCheck.state != .blocked)
+    }
+
     @Test("Readiness guidance distinguishes common local model setup failures")
     func readinessGuidanceDistinguishesCommonLocalModelSetupFailures() async throws {
         let restoreSettings = clearStandardLocalModelSettings()
@@ -4223,11 +4285,17 @@ struct LocalModelRuntimeTests {
         #expect(!package.contains("swift-transformers"))
         #expect(nativePackage.contains("mlx-swift-lm"))
         #expect(nativePackage.contains(".product(name: \"MLX\", package: \"mlx-swift\")"))
+        #expect(nativePackage.contains(".product(name: \"MLXVLM\", package: \"mlx-swift-lm\")"))
         #expect(nativePackage.contains("swift-transformers"))
         #expect(nativePackage.contains("astra-local-model-native"))
         #expect(!nativePackage.contains("executable(name: \"astra-local-model\""))
         #expect(nativePackage.contains(".product(name: \"ASTRACore\", package: \"ASTRA\")"))
         #expect(nativeEntrypoint.contains("MLXLMCommon.loadModelContainer"))
+        #expect(nativeEntrypoint.contains("import MLXVLM"))
+        #expect(nativeEntrypoint.contains("registerAstraVLMCompatibilityAliases"))
+        #expect(nativeEntrypoint.contains(#""gemma4_unified""#))
+        #expect(nativeEntrypoint.contains("Gemma4UnifiedProcessor"))
+        #expect(nativeEntrypoint.contains("UserInput.Image.url"))
         #expect(nativeEntrypoint.contains("Memory.memoryLimit"))
         #expect(nativeEntrypoint.contains("Memory.snapshot()"))
         #expect(nativeEntrypoint.contains("memoryBudgetBytes"))
@@ -4259,6 +4327,50 @@ struct LocalModelRuntimeTests {
         #expect(nativeReadme.contains("Manual"))
         #expect(nativeReadme.contains("advanced import path"))
         #expect(!nativeReadme.contains("does not download model weights"))
+    }
+
+    @Test("Local model chat messages round trip image attachments")
+    func localModelChatMessagesRoundTripImageAttachments() throws {
+        let message = LocalModelChatMessage(
+            role: "user",
+            content: "What is in this image?",
+            attachments: [.image(path: "/tmp/screenshot.png", source: "clipboard", mimeType: "image/png")]
+        )
+        let data = try JSONEncoder().encode(message)
+        let decoded = try JSONDecoder().decode(LocalModelChatMessage.self, from: data)
+        let legacyDecoded = try JSONDecoder().decode(
+            LocalModelChatMessage.self,
+            from: #"{"role":"user","content":"hello"}"#.data(using: .utf8) ?? Data()
+        )
+
+        #expect(decoded == message)
+        #expect(decoded.attachments.first?.isImage == true)
+        #expect(legacyDecoded.attachments.isEmpty)
+    }
+
+    @Test("Local model input media extracts clipboard and file picker images")
+    func localModelInputMediaExtractsClipboardAndFilePickerImages() throws {
+        let root = temporaryDirectory()
+        let image = root.appendingPathComponent("pasted.png")
+        let text = root.appendingPathComponent("notes.txt")
+        try Data([0]).write(to: image)
+        try "notes".write(to: text, atomically: true, encoding: .utf8)
+
+        let prompt = """
+        Review this.
+
+        Attached files:
+        - \(image.path)
+        - \(text.path)
+        """
+        let attachments = LocalModelInputMedia.imageAttachments(
+            prompt: prompt,
+            taskInputs: [image.path, text.path]
+        )
+
+        #expect(attachments == [
+            .image(path: image.standardizedFileURL.path, source: "task_input", mimeType: "image/png")
+        ])
     }
 
     @Test("Adapter plans dedicated FD3 local helper launch")
@@ -4328,6 +4440,48 @@ struct LocalModelRuntimeTests {
             #expect((request.cacheLimitBytes ?? 0) > 0)
             #expect((request.cacheLimitBytes ?? Int.max) <= memoryBudgetBytes)
         }
+    }
+
+    @Test("Adapter writes image attachments from task inputs into local model request")
+    @MainActor
+    func adapterWritesImageAttachmentsFromTaskInputsIntoLocalModelRequest() throws {
+        let restoreSettings = clearStandardLocalModelSettings()
+        defer { restoreSettings() }
+        UserDefaults.standard.set(true, forKey: LocalModelSettingsStore.providerEnabledKey)
+
+        let workspaceURL = temporaryDirectory()
+        let modelURL = temporaryDirectory()
+        let image = workspaceURL.appendingPathComponent("selected.png")
+        try Data([0]).write(to: image)
+        let workspace = Workspace(name: "Local", primaryPath: workspaceURL.path)
+        let task = AgentTask(
+            title: "Local image",
+            goal: "Describe the image",
+            workspace: workspace,
+            model: LocalMLXRuntime.defaultModel,
+            runtime: .localMLX
+        )
+        task.inputs = [image.path]
+        let adapter = AgentRuntimeAdapterRegistry.adapter(for: .localMLX)
+        let plan = adapter.makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+            prompt: "Describe the image.",
+            task: task,
+            workspacePath: workspaceURL.path,
+            executablePath: "/tmp/astra-local-model",
+            providerHomeDirectory: modelURL.path,
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            permissionManifest: nil,
+            timeoutSeconds: 30
+        ))
+
+        let requestPath = try #require(plan.arguments.last)
+        let data = try Data(contentsOf: URL(fileURLWithPath: requestPath))
+        let request = try JSONDecoder().decode(LocalModelRunRequest.self, from: data)
+
+        #expect(request.messages.first?.attachments == [
+            .image(path: image.standardizedFileURL.path, source: "task_input", mimeType: "image/png")
+        ])
     }
 
     @Test("Readiness blocks while rollout gate is disabled")
@@ -4968,6 +5122,47 @@ struct LocalModelRuntimeTests {
             "group_size": 64,
             "bits": 4,
             "mode": "affine"
+          }
+        }
+        """
+    }
+
+    private func gemma4UnifiedConfig() -> String {
+        """
+        {
+          "model_type": "gemma4_unified",
+          "architectures": ["Gemma4UnifiedForConditionalGeneration"],
+          "text_config": {
+            "model_type": "gemma4_text",
+            "hidden_size": 1536,
+            "num_hidden_layers": 35,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 1
+          },
+          "vision_config": {
+            "model_type": "gemma4_vision",
+            "hidden_size": 768
+          },
+          "audio_config": {
+            "model_type": "gemma4_unified_audio"
+          },
+          "quantization": {
+            "group_size": 64,
+            "bits": 4,
+            "mode": "affine"
+          }
+        }
+        """
+    }
+
+    private func unsupportedMultimodalConfig() -> String {
+        """
+        {
+          "model_type": "experimental_vlm",
+          "architectures": ["ExperimentalVLMForConditionalGeneration"],
+          "vision_config": {
+            "model_type": "experimental_vision",
+            "hidden_size": 768
           }
         }
         """

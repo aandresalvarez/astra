@@ -3453,9 +3453,10 @@ final class LocalAgentInferenceClient {
             .appendingPathComponent(".local-agent")
         try? FileManager.default.createDirectory(atPath: requestDirectory, withIntermediateDirectories: true)
         let requestPath = (requestDirectory as NSString).appendingPathComponent("request-\(UUID().uuidString).json")
+        let requestMessages = LocalModelInputMedia.attachingImages(from: task.inputs, to: messages)
         let request = LocalModelRunRequest(
-            prompt: messages.last?.content ?? "",
-            messages: messages,
+            prompt: requestMessages.last?.content ?? "",
+            messages: requestMessages,
             model: model,
             modelDirectory: modelDirectory.isEmpty ? nil : modelDirectory,
             permissionMode: permissionPolicy.rawValue,

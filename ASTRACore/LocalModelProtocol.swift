@@ -1,12 +1,61 @@
 import Foundation
 
+public struct LocalModelMediaAttachment: Codable, Sendable, Equatable {
+    public var kind: String
+    public var path: String
+    public var source: String?
+    public var mimeType: String?
+
+    public init(
+        kind: String,
+        path: String,
+        source: String? = nil,
+        mimeType: String? = nil
+    ) {
+        self.kind = kind
+        self.path = path
+        self.source = source
+        self.mimeType = mimeType
+    }
+
+    public static func image(path: String, source: String? = nil, mimeType: String? = nil) -> Self {
+        Self(kind: "image", path: path, source: source, mimeType: mimeType)
+    }
+
+    public var isImage: Bool {
+        kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "image"
+    }
+}
+
 public struct LocalModelChatMessage: Codable, Sendable, Equatable {
     public var role: String
     public var content: String
+    public var attachments: [LocalModelMediaAttachment]
 
-    public init(role: String, content: String) {
+    private enum CodingKeys: String, CodingKey {
+        case role
+        case content
+        case attachments
+    }
+
+    public init(
+        role: String,
+        content: String,
+        attachments: [LocalModelMediaAttachment] = []
+    ) {
         self.role = role
         self.content = content
+        self.attachments = attachments
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.role = try container.decode(String.self, forKey: .role)
+        self.content = try container.decode(String.self, forKey: .content)
+        self.attachments = try container.decodeIfPresent(
+            [LocalModelMediaAttachment].self,
+            forKey: .attachments
+        ) ?? []
     }
 }
 
@@ -650,12 +699,14 @@ public enum LocalModelListScanner {
     private static let knownModelsByDirectoryName: [String: (model: String, displayName: String)] = [
         "Qwen3-4B-MLX-4bit": ("Qwen/Qwen3-4B-MLX-4bit", "Qwen 3 4B"),
         "Qwen3-8B-MLX-4bit": ("Qwen/Qwen3-8B-MLX-4bit", "Qwen 3 8B"),
-        "Llama-3.2-3B-Instruct-4bit": ("mlx-community/Llama-3.2-3B-Instruct-4bit", "Llama 3.2 3B")
+        "Llama-3.2-3B-Instruct-4bit": ("mlx-community/Llama-3.2-3B-Instruct-4bit", "Llama 3.2 3B"),
+        "gemma-4-12B-it-4bit": ("mlx-community/gemma-4-12B-it-4bit", "Gemma 4 12B")
     ]
     private static let curatedModelOrder = [
         "Qwen/Qwen3-4B-MLX-4bit": 0,
         "Qwen/Qwen3-8B-MLX-4bit": 1,
-        "mlx-community/Llama-3.2-3B-Instruct-4bit": 2
+        "mlx-community/Llama-3.2-3B-Instruct-4bit": 2,
+        "mlx-community/gemma-4-12B-it-4bit": 3
     ]
 
     public static func scan(
@@ -776,16 +827,15 @@ public enum LocalModelListScanner {
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return false
         }
-        if object["vision_config"] is [String: Any] {
-            return true
-        }
         let modelType = (object["model_type"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
-        guard modelType?.hasPrefix("gemma4") == true else {
-            return false
+        if object["vision_config"] is [String: Any],
+           modelType != "gemma4",
+           modelType != "gemma4_unified" {
+            return true
         }
-        return true
+        return false
     }
 
     private static func standardizedPath(_ path: String?) -> String? {

@@ -12,7 +12,8 @@ enum LocalMLXRuntime {
     static let defaultModels = [
         "Qwen/Qwen3-4B-MLX-4bit",
         "Qwen/Qwen3-8B-MLX-4bit",
-        "mlx-community/Llama-3.2-3B-Instruct-4bit"
+        "mlx-community/Llama-3.2-3B-Instruct-4bit",
+        "mlx-community/gemma-4-12B-it-4bit"
     ]
     static let localAgentExecutionCapabilities = AgentRuntimeExecutionCapabilities.astraBrokeredTools
 
@@ -2448,8 +2449,21 @@ struct LocalModelInstallCandidate: Identifiable, Equatable, Sendable {
         )
     }
 
+    static var gemma412BMultimodal4Bit: LocalModelInstallCandidate {
+        LocalModelInstallCandidate(
+            title: "Gemma 4 12B",
+            subtitle: "Multimodal preview for image plus text prompts on 32 GB+ Macs.",
+            reason: "Choose this on higher-memory Apple Silicon when local image understanding matters more than speed.",
+            repository: "mlx-community/gemma-4-12B-it-4bit",
+            localDirectory: LocalMLXRuntime.recommendedModelDirectory(for: "mlx-community/gemma-4-12B-it-4bit"),
+            estimatedSize: "about 9 GB",
+            estimatedBytes: 9_000_000_000,
+            runtimeModel: "mlx-community/gemma-4-12B-it-4bit"
+        )
+    }
+
     static var installCandidates: [LocalModelInstallCandidate] {
-        [.recommended4Bit, .qwen8Bit, .llamaSmall]
+        [.recommended4Bit, .qwen8Bit, .llamaSmall, .gemma412BMultimodal4Bit]
     }
 
     static func recommendedCandidate(for hardware: LocalHardwareProfile) -> LocalModelInstallCandidate {
@@ -2502,13 +2516,8 @@ enum LocalModelInstallChoices {
         return choices
     }
 
-    private static func isUnsupportedPreferredModel(_ model: String) -> Bool {
-        let normalized = model
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        return normalized.contains("gemma-4")
-            || normalized.contains("gemma4")
-            || normalized.contains("gemma 4")
+    private static func isUnsupportedPreferredModel(_: String) -> Bool {
+        return false
     }
 }
 
@@ -3143,19 +3152,12 @@ enum LocalModelCatalog {
             )
         }
 
-        if parsedMetadata.hasVisionConfig == true {
+        if parsedMetadata.hasVisionConfig == true,
+           !LocalModelArchitectureSupport.supportsImageInputs(modelType: parsedMetadata.modelType) {
             return LocalModelValidationReport(
                 state: .blocked,
-                detail: "Selected model folder is a multimodal MLX conversion, but ASTRA Local MLX currently runs text-only models.",
-                remediation: "Install the recommended Qwen model from Settings or choose another text-only fallback."
-            )
-        }
-
-        if parsedMetadata.normalizedModelType.hasPrefix("gemma4") {
-            return LocalModelValidationReport(
-                state: .blocked,
-                detail: "Selected Gemma 4 folder is installed, but Gemma 4 is not a supported Local MLX model in this ASTRA build.",
-                remediation: "Install the recommended Qwen model from Settings, or choose the smaller Llama fallback for lighter local runs."
+                detail: "Selected model folder is a multimodal MLX conversion, but its model type '\(parsedMetadata.modelType)' is not supported by the current Local MLX provider.",
+                remediation: "Choose a supported Gemma 4 MLX multimodal folder or install the recommended Qwen text model from Settings."
             )
         }
 
@@ -3167,9 +3169,12 @@ enum LocalModelCatalog {
             )
         }
 
+        let mediaDetail = parsedMetadata.hasVisionConfig == true
+            ? " Multimodal image input is available for this model."
+            : ""
         return LocalModelValidationReport(
             state: .ready,
-            detail: "Selected model folder is \(parsedMetadata.modelType) (\(parsedMetadata.primaryArchitecture)) with \(parsedMetadata.weightFileCount) weight file(s), \(formatBytes(parsedMetadata.weightBytes)).",
+            detail: "Selected model folder is \(parsedMetadata.modelType) (\(parsedMetadata.primaryArchitecture)) with \(parsedMetadata.weightFileCount) weight file(s), \(formatBytes(parsedMetadata.weightBytes)).\(mediaDetail)",
             remediation: nil,
             metadata: parsedMetadata
         )
@@ -3367,6 +3372,9 @@ enum LocalModelArchitectureSupport {
         "gemma3",
         "gemma3_text",
         "gemma3n",
+        "gemma4",
+        "gemma4_text",
+        "gemma4_unified",
         "qwen2",
         "qwen3",
         "qwen3_moe",
@@ -3392,6 +3400,22 @@ enum LocalModelArchitectureSupport {
     static func isSupported(modelType: String) -> Bool {
         supportedModelTypes.contains(modelType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
+
+    static func supportsImageInputs(modelType: String) -> Bool {
+        let normalized = modelType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized == "gemma4" || normalized == "gemma4_unified"
+    }
+}
+
+enum LocalModelGemma4Support {
+    static func requires32GBHardware(metadata: LocalModelMetadata) -> Bool {
+        let directory = metadata.directory.lowercased()
+        let architectures = metadata.architectures.joined(separator: " ").lowercased()
+        return metadata.normalizedModelType == "gemma4_unified"
+            || directory.contains("gemma-4-12b")
+            || directory.contains("gemma4-12b")
+            || architectures.contains("gemma4unified")
+    }
 }
 
 enum LocalHardwareTier: String, Equatable, Sendable {
@@ -3410,6 +3434,16 @@ enum LocalModelMemoryBudget {
         maxContextTokens: Int,
         configuredBudgetBytes: UInt64? = nil
     ) -> RuntimeReadinessCheck {
+        if LocalModelGemma4Support.requires32GBHardware(metadata: metadata),
+           hardware.tier != .recommended32GBPlus {
+            return RuntimeReadinessCheck(
+                id: "local-mlx-memory-fit",
+                title: "Model memory fit",
+                detail: "Gemma 4 12B needs the 32 GB+ Local MLX tier for reliable multimodal runs on Apple Silicon.",
+                state: .blocked,
+                remediation: "Use a 32 GB+ Mac for Gemma 4 12B, or choose Qwen 3 4B, Qwen 3 8B, or Llama 3.2 3B on this machine."
+            )
+        }
         let estimate = estimatedResidentBytes(
             metadata: metadata,
             maxContextTokens: maxContextTokens
@@ -3658,6 +3692,98 @@ struct LocalMLXRuntimeAdapterProvider: AgentRuntimeAdapterProvider {
     }
 }
 
+enum LocalModelInputMedia {
+    private static let imageExtensions: Set<String> = [
+        "png", "jpg", "jpeg", "gif", "webp", "tiff", "tif", "bmp", "heic"
+    ]
+
+    static func imageAttachments(
+        prompt: String,
+        taskInputs: [String],
+        fileManager: FileManager = .default
+    ) -> [LocalModelMediaAttachment] {
+        var attachments: [LocalModelMediaAttachment] = []
+        var seen: Set<String> = []
+
+        func append(path rawPath: String, source: String) {
+            let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            let path = (trimmed as NSString).expandingTildeInPath
+            guard isImagePath(path), fileManager.fileExists(atPath: path) else { return }
+            let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+            guard seen.insert(standardized).inserted else { return }
+            attachments.append(.image(
+                path: standardized,
+                source: source,
+                mimeType: mimeType(for: standardized)
+            ))
+        }
+
+        for input in taskInputs {
+            append(path: input, source: "task_input")
+        }
+        for path in attachedFilePaths(in: prompt) {
+            append(path: path, source: "composer_attachment")
+        }
+
+        return attachments
+    }
+
+    static func attachingImages(
+        from inputs: [String],
+        to messages: [LocalModelChatMessage],
+        fileManager: FileManager = .default
+    ) -> [LocalModelChatMessage] {
+        let attachments = imageAttachments(prompt: "", taskInputs: inputs, fileManager: fileManager)
+        guard !attachments.isEmpty,
+              let userIndex = messages.indices.last(where: {
+                  messages[$0].role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "user"
+              }) else {
+            return messages
+        }
+        var updated = messages
+        updated[userIndex].attachments.append(contentsOf: attachments)
+        return updated
+    }
+
+    private static func attachedFilePaths(in prompt: String) -> [String] {
+        prompt
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .compactMap { line -> String? in
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard trimmed.hasPrefix("- ") else { return nil }
+                let path = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard path.hasPrefix("/") || path.hasPrefix("~") else { return nil }
+                return path
+            }
+    }
+
+    private static func isImagePath(_ path: String) -> Bool {
+        imageExtensions.contains(URL(fileURLWithPath: path).pathExtension.lowercased())
+    }
+
+    private static func mimeType(for path: String) -> String? {
+        switch URL(fileURLWithPath: path).pathExtension.lowercased() {
+        case "png":
+            return "image/png"
+        case "jpg", "jpeg":
+            return "image/jpeg"
+        case "gif":
+            return "image/gif"
+        case "webp":
+            return "image/webp"
+        case "tiff", "tif":
+            return "image/tiff"
+        case "bmp":
+            return "image/bmp"
+        case "heic":
+            return "image/heic"
+        default:
+            return nil
+        }
+    }
+}
+
 struct LocalMLXRuntimeAdapter: AgentRuntimeAdapter {
     var id: AgentRuntimeID { descriptor.id }
     let descriptor = AgentRuntimeDescriptor(
@@ -3751,6 +3877,7 @@ struct LocalMLXRuntimeAdapter: AgentRuntimeAdapter {
                 checks.append(await smokeCheck(
                     executable: executable,
                     modelDirectory: modelDirectory,
+                    model: LocalModelSettingsStore.preferredModel(),
                     probes: probes
                 ))
             }
@@ -3801,7 +3928,11 @@ struct LocalMLXRuntimeAdapter: AgentRuntimeAdapter {
             model: model,
             modelDirectory: modelDirectory,
             permissionPolicy: context.executionPolicy.permissionPolicy(default: context.permissionPolicy),
-            directory: runtimeDirectory
+            directory: runtimeDirectory,
+            imageAttachments: LocalModelInputMedia.imageAttachments(
+                prompt: context.prompt,
+                taskInputs: context.task.inputs
+            )
         )
         var environment = taskEnv
         environment["ASTRA_LOCAL_MODEL_PROTOCOL_FD"] = String(LocalMLXRuntime.protocolFileDescriptor)
@@ -4013,6 +4144,7 @@ struct LocalMLXRuntimeAdapter: AgentRuntimeAdapter {
     private func smokeCheck(
         executable: String,
         modelDirectory: String,
+        model: String,
         probes: RuntimeReadinessProbeContext
     ) async -> RuntimeReadinessCheck {
         let result = await probes.run(
@@ -4020,7 +4152,7 @@ struct LocalMLXRuntimeAdapter: AgentRuntimeAdapter {
             args: [
                 "--smoke",
                 "--model-dir", modelDirectory,
-                "--model", LocalMLXRuntime.defaultModel,
+                "--model", model,
                 "--max-context-tokens", String(LocalModelSettingsStore.maxContextTokens()),
                 "--max-output-tokens", "1"
             ],
@@ -4120,13 +4252,14 @@ struct LocalMLXRuntimeAdapter: AgentRuntimeAdapter {
         model: String,
         modelDirectory: String,
         permissionPolicy: PermissionPolicy,
-        directory: String
+        directory: String,
+        imageAttachments: [LocalModelMediaAttachment] = []
     ) -> String {
         try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
         let requestPath = (directory as NSString).appendingPathComponent("request-\(UUID().uuidString).json")
         let request = LocalModelRunRequest(
             prompt: prompt,
-            messages: [LocalModelChatMessage(role: "user", content: prompt)],
+            messages: [LocalModelChatMessage(role: "user", content: prompt, attachments: imageAttachments)],
             model: model,
             modelDirectory: modelDirectory.isEmpty ? nil : modelDirectory,
             permissionMode: permissionPolicy.rawValue,

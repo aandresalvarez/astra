@@ -8,6 +8,7 @@ import MLX
 import MLXHuggingFace
 import MLXLLM
 import MLXLMCommon
+import MLXVLM
 import Tokenizers
 #endif
 
@@ -113,12 +114,13 @@ struct LocalModelNativeMain {
             )
             configureMemoryLimits(for: request)
             defer { Memory.clearCache() }
+            await registerAstraVLMCompatibilityAliases()
 
             let container = try await MLXLMCommon.loadModelContainer(
                 from: URL(fileURLWithPath: modelDirectory, isDirectory: true),
                 using: #huggingFaceTokenizerLoader()
             )
-            let preparedInput = try await container.prepare(input: UserInput(chat: chatMessages(from: request)))
+            let preparedInput = try await container.prepare(input: UserInput(chat: try chatMessages(from: request)))
             let parameters = GenerateParameters(
                 maxTokens: request.maxOutputTokens ?? 1,
                 maxKVSize: request.maxContextTokens,
@@ -191,6 +193,7 @@ struct LocalModelNativeMain {
         let startedAt = Date()
         configureMemoryLimits(for: request)
         defer { Memory.clearCache() }
+        await registerAstraVLMCompatibilityAliases()
         try emit(.init(type: "phase", message: "Loading local MLX model.", phase: "load_model"), to: output)
         try emitMemoryTelemetry(phase: "before_load", request: request, to: output)
         try cancellation.check()
@@ -203,7 +206,7 @@ struct LocalModelNativeMain {
         try emitMemoryTelemetry(phase: "after_load", request: request, to: output)
         try cancellation.check()
 
-        let input = UserInput(chat: chatMessages(from: request))
+        let input = UserInput(chat: try chatMessages(from: request))
         try emit(.init(type: "phase", message: "Preparing local MLX prompt.", phase: "prepare_prompt"), to: output)
         let preparedInput = try await container.prepare(input: input)
         try emitMemoryTelemetry(phase: "after_prepare", request: request, to: output)
@@ -327,21 +330,46 @@ struct LocalModelNativeMain {
         value.isFinite ? value : nil
     }
 
-    private func chatMessages(from request: LocalModelRunRequest) -> [Chat.Message] {
+    private func chatMessages(from request: LocalModelRunRequest) throws -> [Chat.Message] {
         let messages = chatMessagesWithThinkingDisabledIfNeeded(from: request)
-        return messages.map { message in
+        return try messages.map { message in
+            let images = try imageInputs(from: message.attachments)
             switch message.role.lowercased() {
             case "system":
-                return .system(message.content)
+                return .system(message.content, images: images)
             case "assistant":
-                return .assistant(message.content)
+                return .assistant(message.content, images: images)
             case "tool":
                 return .tool(message.content)
             default:
-                return .user(message.content)
+                return .user(message.content, images: images)
             }
         }
     }
+
+    private func imageInputs(from attachments: [LocalModelMediaAttachment]) throws -> [UserInput.Image] {
+        try attachments.compactMap { attachment in
+            guard attachment.isImage else { return nil }
+            let path = attachment.path.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !path.isEmpty else {
+                throw LocalModelNativeError.invalidImageInput("Image attachment path is empty.")
+            }
+            let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+                  !isDirectory.boolValue else {
+                throw LocalModelNativeError.invalidImageInput("Image attachment does not exist: \(url.path)")
+            }
+            guard Self.supportedImageExtensions.contains(url.pathExtension.lowercased()) else {
+                throw LocalModelNativeError.invalidImageInput("Unsupported image attachment type: \(url.lastPathComponent)")
+            }
+            return UserInput.Image.url(url)
+        }
+    }
+
+    private static let supportedImageExtensions: Set<String> = [
+        "png", "jpg", "jpeg", "gif", "webp", "tiff", "tif", "bmp", "heic"
+    ]
 
     private func chatMessagesWithThinkingDisabledIfNeeded(from request: LocalModelRunRequest) -> [LocalModelChatMessage] {
         var messages = request.messages.isEmpty
@@ -529,10 +557,25 @@ struct LocalModelNativeMain {
     }
 }
 
+#if arch(arm64)
+private func registerAstraVLMCompatibilityAliases() async {
+    await VLMTypeRegistry.shared.registerModelType("gemma4_unified") { data in
+        try Gemma4(JSONDecoder.json5().decode(Gemma4Configuration.self, from: data))
+    }
+    await VLMProcessorTypeRegistry.shared.registerProcessorType("Gemma4UnifiedProcessor") { data, tokenizer in
+        try Gemma4Processor(
+            JSONDecoder.json5().decode(Gemma4ProcessorConfiguration.self, from: data),
+            tokenizer: tokenizer
+        )
+    }
+}
+#endif
+
 enum LocalModelNativeError: LocalizedError {
     case missingRequestFile
     case missingModelDirectory
     case unsupportedArchitecture
+    case invalidImageInput(String)
     case memoryBudgetExceeded(activeBytes: Int, budgetBytes: Int)
     case cancelled(reason: String?)
     case protocolChannelClosed
@@ -546,6 +589,8 @@ enum LocalModelNativeError: LocalizedError {
             return "Native MLX inference requires a selected local model directory."
         case .unsupportedArchitecture:
             return "Native MLX inference requires an arm64 Apple Silicon build."
+        case .invalidImageInput(let message):
+            return message
         case .memoryBudgetExceeded(let activeBytes, let budgetBytes):
             return "Native MLX inference exceeded its memory budget: active plus cache memory \(activeBytes) bytes exceeded budget \(budgetBytes) bytes."
         case .cancelled(let reason):
