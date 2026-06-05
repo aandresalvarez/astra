@@ -49,9 +49,9 @@ misspelled event names or mismatched payload schemas compile cleanly.
 
 - `Astra/Models/TaskEvent.swift`
 - `Astra/Models/TaskValidationContract.swift`
-- `Astra/Services/TaskPlanService.swift`
-- `Astra/Services/ValidationService.swift`
-- `Astra/Services/TaskLifecycleCoordinator.swift`
+- `Astra/Services/Tasks/TaskPlanService.swift`
+- `Astra/Services/Validation/ValidationService.swift`
+- `Astra/Services/Tasks/TaskLifecycleCoordinator.swift`
 - `Astra/Views/TaskThreadSnapshot.swift`
 - `Astra/Views/RunActivityPresentation.swift`
 
@@ -94,11 +94,11 @@ uses.
 
 ### Primary Files
 
-- `Astra/Services/TaskArtifactPersistenceService.swift`
-- `Astra/Services/AgentRuntimeRunPersistence.swift`
-- `Astra/Services/TaskContextStateManager.swift`
-- `Astra/Services/TaskGeneratedFiles.swift`
-- `Astra/Services/TaskDeliverableVerificationService.swift`
+- `Astra/Services/Persistence/TaskArtifactPersistenceService.swift`
+- `Astra/Services/Runtime/AgentRuntimeRunPersistence.swift`
+- `Astra/Services/Persistence/TaskContextStateManager.swift`
+- `Astra/Services/Tasks/TaskGeneratedFiles.swift`
+- `Astra/Services/Validation/TaskDeliverableVerificationService.swift`
 - `Astra/Models/Artifact.swift`
 - `Astra/Models/TaskRun.swift`
 
@@ -138,9 +138,9 @@ conflicts and makes UI behavior hard to reason about.
 
 - `Astra/Views/TaskMainView.swift`
 - `Astra/Views/TaskDecisionDockView.swift`
-- `Astra/Services/TaskDecisionDockPresentation.swift`
-- `Astra/Services/MissionControlPresentation.swift`
-- `Astra/Services/TaskPresentationState.swift`
+- `Astra/Services/Tasks/TaskDecisionDockPresentation.swift`
+- `Astra/Services/Tasks/MissionControlPresentation.swift`
+- `Astra/Services/Tasks/TaskPresentationState.swift`
 
 ### Tests
 
@@ -173,11 +173,11 @@ settings propagation. This causes unrelated changes to touch the same file.
 
 - `Astra/Views/ContentView.swift`
 - `Astra/Views/ContentSceneState.swift`
-- `Astra/Services/WorkspaceImportOrchestrator.swift`
-- `Astra/Services/AstraExternalRouteStore.swift`
-- `Astra/Services/ShelfBrowserSession.swift`
-- `Astra/Services/ShelfMarkdownSession.swift`
-- `Astra/Services/ShelfQuerySession.swift`
+- `Astra/Services/Persistence/WorkspaceImportOrchestrator.swift`
+- `Astra/Services/Settings/AstraExternalRouteStore.swift`
+- `Astra/Services/Browser/ShelfBrowserSession.swift`
+- `Astra/Services/Browser/ShelfMarkdownSession.swift`
+- `Astra/Services/Browser/ShelfQuerySession.swift`
 
 ### Tests
 
@@ -214,12 +214,12 @@ telemetry.
 
 ### Primary Files
 
-- `Astra/Services/AgentRuntimeAdapter.swift`
-- `Astra/Services/AgentRuntimeProcessRunner.swift`
-- `Astra/Services/AgentRuntimeWorker.swift`
-- `Astra/Services/ClaudeModelAvailabilityService.swift`
-- `Astra/Services/CopilotModelAvailabilityService.swift`
-- `Astra/Services/RuntimeReadinessService.swift`
+- `Astra/Services/Runtime/AgentRuntimeAdapter.swift`
+- `Astra/Services/Runtime/AgentRuntimeProcessRunner.swift`
+- `Astra/Services/Runtime/AgentRuntimeWorker.swift`
+- `Astra/Services/Runtime/ClaudeModelAvailabilityService.swift`
+- `Astra/Services/Runtime/CopilotModelAvailabilityService.swift`
+- `Astra/Services/Runtime/RuntimeReadinessService.swift`
 
 ### Tests
 
@@ -252,9 +252,9 @@ configuration rules across UI files.
 
 ### Primary Files
 
-- `Astra/Services/AppearancePreference.swift`
-- `Astra/Services/RuntimeProviderSettingsStore.swift`
-- `Astra/Services/AgentRuntimeConfiguration.swift`
+- `Astra/Services/Settings/AppearancePreference.swift`
+- `Astra/Services/Settings/RuntimeProviderSettingsStore.swift`
+- `Astra/Services/Runtime/AgentRuntimeConfiguration.swift`
 - `Astra/Views/SettingsView.swift`
 - `Astra/Views/ContentView.swift`
 - `Astra/Views/TaskMainView.swift`
@@ -290,12 +290,12 @@ inherit UI-thread constraints.
 
 ### Primary Files
 
-- `Astra/Services/AgentRuntimeWorker.swift`
-- `Astra/Services/TaskQueue.swift`
-- `Astra/Services/TaskContextStateManager.swift`
-- `Astra/Services/ValidationService.swift`
-- `Astra/Services/AgentEventRecorder.swift`
-- `Astra/Services/GitService.swift`
+- `Astra/Services/Runtime/AgentRuntimeWorker.swift`
+- `Astra/Services/Tasks/TaskQueue.swift`
+- `Astra/Services/Persistence/TaskContextStateManager.swift`
+- `Astra/Services/Validation/ValidationService.swift`
+- `Astra/Services/Tasks/AgentEventRecorder.swift`
+- `Astra/Services/Git/GitService.swift`
 
 ### Tests
 
@@ -330,12 +330,12 @@ modes.
 
 - `ASTRACore/Protocols.swift`
 - `ASTRACore/BinaryRunner.swift`
-- `Astra/Services/RealFileSystem.swift`
-- `Astra/Services/ValidationService.swift`
-- `Astra/Services/RuntimeReadinessService.swift`
-- `Astra/Services/GitService.swift`
-- `Astra/Services/TaskWorkspaceAccess.swift`
-- `Astra/Services/TaskDeliverableVerificationService.swift`
+- `Astra/Services/Persistence/RealFileSystem.swift`
+- `Astra/Services/Validation/ValidationService.swift`
+- `Astra/Services/Runtime/RuntimeReadinessService.swift`
+- `Astra/Services/Git/GitService.swift`
+- `Astra/Services/Persistence/TaskWorkspaceAccess.swift`
+- `Astra/Services/Validation/TaskDeliverableVerificationService.swift`
 
 ### Tests
 
@@ -368,12 +368,12 @@ explicit failure reasons.
 
 ### Primary Files
 
-- `Astra/Services/TaskContextStateManager.swift`
-- `Astra/Services/WorkspaceConfigManager.swift`
-- `Astra/Services/ValidationService.swift`
-- `Astra/Services/AgentRuntimeLaunchPreflight.swift`
-- `Astra/Services/LogDiagnosticsService.swift`
-- `Astra/Services/Logger.swift`
+- `Astra/Services/Persistence/TaskContextStateManager.swift`
+- `Astra/Services/Persistence/WorkspaceConfigManager.swift`
+- `Astra/Services/Validation/ValidationService.swift`
+- `Astra/Services/Runtime/AgentRuntimeLaunchPreflight.swift`
+- `Astra/Services/Diagnostics/LogDiagnosticsService.swift`
+- `Astra/Services/Diagnostics/Logger.swift`
 
 ### Tests
 
@@ -406,11 +406,11 @@ debug capture, bridge environment, and presentation-facing session state.
 
 ### Primary Files
 
-- `Astra/Services/ShelfBrowserSession.swift`
-- `Astra/Services/ControlledBrowserController.swift`
-- `Astra/Services/ShelfBrowserBridgeRegistry.swift`
-- `Astra/Services/BrowserFailureDebugCapture.swift`
-- `Astra/Services/BrowserKeypressSafety.swift`
+- `Astra/Services/Browser/ShelfBrowserSession.swift`
+- `Astra/Services/Browser/ControlledBrowserController.swift`
+- `Astra/Services/Browser/ShelfBrowserBridgeRegistry.swift`
+- `Astra/Services/Browser/BrowserFailureDebugCapture.swift`
+- `Astra/Services/Browser/BrowserKeypressSafety.swift`
 - `Astra/Views/ShelfBrowserPanelView.swift`
 
 ### Tests
@@ -448,9 +448,9 @@ smaller, testable section providers.
 
 ### Primary Files
 
-- `Astra/Services/AgentPromptBuilder.swift`
-- `Astra/Services/TaskCapabilityResolver.swift`
-- `Astra/Services/TaskContextStateManager.swift`
+- `Astra/Services/Runtime/AgentPromptBuilder.swift`
+- `Astra/Services/Capabilities/TaskCapabilityResolver.swift`
+- `Astra/Services/Persistence/TaskContextStateManager.swift`
 - `Astra/Views/PromptContextPreviewView.swift`
 
 ### Tests
@@ -480,11 +480,11 @@ deliverable verification, and no-usable-result handling.
 
 ### Primary Files
 
-- `Astra/Services/ValidationService.swift`
-- `Astra/Services/TaskDeliverableVerificationService.swift`
-- `Astra/Services/TaskRunLifecycleService.swift`
-- `Astra/Services/AgentRuntimeWorker.swift`
-- `Astra/Services/TaskCorrectiveWorkService.swift`
+- `Astra/Services/Validation/ValidationService.swift`
+- `Astra/Services/Validation/TaskDeliverableVerificationService.swift`
+- `Astra/Services/Tasks/TaskRunLifecycleService.swift`
+- `Astra/Services/Runtime/AgentRuntimeWorker.swift`
+- `Astra/Services/Validation/TaskCorrectiveWorkService.swift`
 - `Astra/Models/TaskValidationContract.swift`
 
 ### Tests
@@ -519,10 +519,10 @@ authoring. This makes the repository panel hard to test without real git state.
 
 ### Primary Files
 
-- `Astra/Services/GitService.swift`
+- `Astra/Services/Git/GitService.swift`
 - `Astra/Views/WorkspaceGitViewModel.swift`
 - `Astra/Views/WorkspaceGitSectionView.swift`
-- `Astra/Services/GitAuthoringService.swift`
+- `Astra/Services/Git/GitAuthoringService.swift`
 
 ### Tests
 

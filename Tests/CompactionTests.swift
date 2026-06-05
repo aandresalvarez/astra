@@ -200,7 +200,7 @@ struct CompactionTests {
                 event = TaskEvent(
                     task: task,
                     type: "tool.result",
-                    payload: "Tests failed in /tmp/Astra/Services/AgentPromptBuilder.swift"
+                    payload: "Tests failed in /tmp/Astra/Services/Runtime/AgentPromptBuilder.swift"
                 )
             default:
                 event = TaskEvent(task: task, type: "agent.response", payload: "event \(index)")
@@ -216,7 +216,7 @@ struct CompactionTests {
         let summary = try #require(remainingEvents.first { $0.type == "activity.compacted" })
         #expect(summary.payload.contains("Compacted detail index:"))
         #expect(summary.payload.contains("swift test --filter PromptContextContinuityTests"))
-        #expect(summary.payload.contains("/tmp/Astra/Services/AgentPromptBuilder.swift"))
+        #expect(summary.payload.contains("/tmp/Astra/Services/Runtime/AgentPromptBuilder.swift"))
         #expect(summary.payload.contains("Tests failed"))
     }
 

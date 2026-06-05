@@ -100,6 +100,7 @@ struct AgentRuntimeAdapterTests {
         let runnerURL = repoRoot
             .appendingPathComponent("Astra")
             .appendingPathComponent("Services")
+            .appendingPathComponent("Runtime")
             .appendingPathComponent("AgentRuntimeProcessRunner.swift")
         let source = try String(contentsOf: runnerURL, encoding: .utf8)
 

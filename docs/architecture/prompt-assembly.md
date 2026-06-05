@@ -57,10 +57,10 @@ verification.
 
 ## Related Files
 
-- `Astra/Services/AgentPromptBuilder.swift`
-- `Astra/Services/TaskContextStateManager.swift`
+- `Astra/Services/Runtime/AgentPromptBuilder.swift`
+- `Astra/Services/Persistence/TaskContextStateManager.swift`
 - `Astra/Views/PromptContextPreviewView.swift`
-- `Astra/Services/AgentRuntimeWorker.swift`
+- `Astra/Services/Runtime/AgentRuntimeWorker.swift`
 - `Tests/AgentRuntimeWorkerTests.swift`
 - `Tests/TaskContextStateTests.swift`
 - `Tests/PromptContextPreviewPresentationTests.swift`

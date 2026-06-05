@@ -107,6 +107,7 @@ struct ValidationServiceTests {
         )
 
         #expect(result.didRun)
+        #expect(result.outcome == .failed)
         #expect(!result.canComplete)
         #expect(await runner.recordedCalls() == [
             StubValidationCommandRunner.Call(
@@ -124,6 +125,7 @@ struct ValidationServiceTests {
         #expect(payload.evidence == "stdout detail\nstderr detail")
         #expect(payload.reason == "command_failed")
         let diagnostic = ValidationAssertionExecutionResult(payload: payload)
+        #expect(diagnostic.outcome == .failed)
         #expect(diagnostic.status == .failed)
         #expect(!diagnostic.didPass)
         #expect(diagnostic.auditFields["result"] == "failed")
@@ -165,6 +167,7 @@ struct ValidationServiceTests {
         )
 
         #expect(result.didRun)
+        #expect(result.outcome == .passed)
         #expect(result.canComplete)
         #expect(task.events.contains { $0.type == TaskValidationEventTypes.assertionStarted })
         #expect(task.events.contains { $0.type == TaskValidationEventTypes.assertionPassed })
@@ -205,10 +208,17 @@ struct ValidationServiceTests {
         )
 
         #expect(result.didRun)
+        #expect(result.outcome == .failed)
         #expect(!result.canComplete)
         #expect(result.failedRequiredAssertionIDs == ["command-fails"])
         #expect(task.events.contains { $0.type == TaskValidationEventTypes.assertionFailed })
         #expect(task.events.contains { $0.type == TaskValidationEventTypes.contractFailed })
+        let contractEvent = try #require(task.events.first { $0.type == TaskValidationEventTypes.contractFailed })
+        let contractPayload = try JSONDecoder().decode(
+            TaskValidationContractEventPayload.self,
+            from: Data(contractEvent.payload.utf8)
+        )
+        #expect(contractPayload.outcome == .failed)
         let correctiveEvent = try #require(task.events.first { $0.type == TaskCorrectiveEventTypes.stepCreated })
         #expect(correctiveEvent.payload.contains("command-fails"))
         #expect(correctiveEvent.payload.contains("Fix the work until this command exits 0"))

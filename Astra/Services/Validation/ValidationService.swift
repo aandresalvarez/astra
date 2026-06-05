@@ -37,12 +37,14 @@ struct ShellValidationCommandRunner: ValidationCommandRunning {
 
 struct TaskValidationContractEvaluation: Sendable, Equatable {
     var didRun: Bool
+    var outcome: TaskValidationContractOutcome
     var canComplete: Bool
     var summary: String
     var failedRequiredAssertionIDs: [String]
 
     static let notRequired = TaskValidationContractEvaluation(
         didRun: false,
+        outcome: .notRequired,
         canComplete: true,
         summary: "No validation contract required.",
         failedRequiredAssertionIDs: []
@@ -50,28 +52,25 @@ struct TaskValidationContractEvaluation: Sendable, Equatable {
 }
 
 struct ValidationAssertionExecutionResult: Sendable, Equatable {
-    enum Status: String, Sendable {
-        case passed
-        case failed
-        case skipped
-        case unknown
-    }
-
-    var status: Status
+    var outcome: TaskValidationAssertionOutcome
     var payload: TaskValidationAssertionEventPayload
 
     init(payload: TaskValidationAssertionEventPayload) {
         self.payload = payload
-        self.status = Status(rawValue: payload.status) ?? .unknown
+        self.outcome = payload.outcome
+    }
+
+    var status: TaskValidationAssertionOutcome {
+        outcome
     }
 
     var didPass: Bool {
-        status == .passed
+        outcome.didPass
     }
 
     var auditFields: [String: String] {
         [
-            "result": status.rawValue,
+            "result": outcome.rawValue,
             "plan_id": payload.planID.uuidString,
             "assertion_id": payload.assertionID,
             "assertion_method": payload.method.rawValue,
@@ -276,7 +275,7 @@ enum ValidationService {
         let contractPayload = TaskValidationContractEventPayload(
             version: 1,
             planID: plan.planID,
-            status: canComplete ? "passed" : "failed",
+            status: canComplete ? TaskValidationContractOutcome.passed.rawValue : TaskValidationContractOutcome.failed.rawValue,
             requiredPassed: requiredPassed,
             requiredTotal: requiredResults.count,
             failedRequiredAssertionIDs: failedRequired.map(\.assertionID),
@@ -312,6 +311,7 @@ enum ValidationService {
 
         return TaskValidationContractEvaluation(
             didRun: true,
+            outcome: contractPayload.outcome,
             canComplete: canComplete,
             summary: summary,
             failedRequiredAssertionIDs: failedRequired.map(\.assertionID)

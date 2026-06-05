@@ -65,12 +65,12 @@ the task folder or workspace.
 
 ## Related Files
 
-- `Astra/Services/AgentRuntimeWorker.swift`
-- `Astra/Services/ValidationService.swift`
-- `Astra/Services/TaskDeliverableVerificationService.swift`
-- `Astra/Services/TaskInferredValidationService.swift`
-- `Astra/Services/PendingTaskReviewPolicy.swift`
-- `Astra/Services/TaskRunLifecycleService.swift`
-- `Astra/Services/TaskPlanService.swift`
+- `Astra/Services/Runtime/AgentRuntimeWorker.swift`
+- `Astra/Services/Validation/ValidationService.swift`
+- `Astra/Services/Validation/TaskDeliverableVerificationService.swift`
+- `Astra/Services/Validation/TaskInferredValidationService.swift`
+- `Astra/Services/Tasks/PendingTaskReviewPolicy.swift`
+- `Astra/Services/Tasks/TaskRunLifecycleService.swift`
+- `Astra/Services/Tasks/TaskPlanService.swift`
 - `Astra/Models/AgentTask.swift`
 - `Astra/Models/TaskRun.swift`

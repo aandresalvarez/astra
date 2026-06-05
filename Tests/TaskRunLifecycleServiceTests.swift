@@ -145,6 +145,9 @@ struct TaskRunLifecycleServiceTests {
 
         #expect(TaskDeliverableExpectation.requiresStandaloneArtifact(task))
         #expect(!TaskDeliverableExpectation.hasArtifact(for: task, run: run))
+        let blockedDecision = TaskCompletionPolicy.decideManualCompletion(task: task, run: run)
+        #expect(blockedDecision.shouldBlockCompletion)
+        #expect(blockedDecision.stopReason == "no_usable_result")
 
         try "<html></html>".write(
             toFile: (taskFolder as NSString).appendingPathComponent("index.html"),
@@ -152,6 +155,7 @@ struct TaskRunLifecycleServiceTests {
             encoding: .utf8
         )
         #expect(TaskDeliverableExpectation.hasArtifact(for: task, run: run))
+        #expect(TaskCompletionPolicy.decideManualCompletion(task: task, run: run).canComplete)
     }
 
     @Test("Misspelled HTML slide deck request still requires artifact")
