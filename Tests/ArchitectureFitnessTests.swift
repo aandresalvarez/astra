@@ -253,6 +253,57 @@ struct ArchitectureFitnessTests {
         #expect(!railView.contains("struct CapabilityRailPackagePresentation"))
     }
 
+    @Test("Large owner files stay within current debt budgets")
+    func largeOwnerFilesStayWithinCurrentDebtBudgets() throws {
+        let root = try repositoryRoot()
+        let lineBudgets = [
+            "Astra/Views/TaskMainView.swift": 6_900,
+            "Astra/Services/Browser/ShelfBrowserSession.swift": 5_900,
+            "Astra/Views/ContentView.swift": 5_000,
+            "Astra/Views/WorkspaceRightRailView.swift": 3_500,
+            "Astra/Views/ChatPanelView.swift": 3_200,
+            "Astra/Services/Runtime/AgentRuntimeAdapter.swift": 2_900,
+            "Astra/Views/PluginCatalogView.swift": 2_900,
+            "Astra/Views/ShelfMarkdownPanelView.swift": 2_850,
+            "Astra/Views/WorkspaceGitSectionView.swift": 2_650,
+            "Astra/Views/ConfigureView.swift": 2_550,
+            "Astra/Services/Diagnostics/LogDiagnosticsService.swift": 2_550,
+            "Astra/Views/TaskSidebarView.swift": 2_450,
+            "Astra/Views/ShelfQueryPanelView.swift": 2_350,
+            "Astra/Services/Persistence/TaskContextStateManager.swift": 2_250,
+            "Astra/Services/Runtime/AgentPromptBuilder.swift": 2_250,
+            "Astra/Views/OnboardingWizardView.swift": 2_250,
+            "Astra/Services/Runtime/AgentProcessSupport.swift": 2_100,
+            "Astra/Services/Browser/BrowserAnalysis.swift": 2_100,
+            "Astra/Services/Git/GitService.swift": 2_100,
+            "Astra/Services/Runtime/AgentRuntimeWorker.swift": 2_100,
+            "Astra/Services/Browser/ControlledBrowserController.swift": 2_050,
+            "Astra/Views/ShelfBrowserPanelView.swift": 2_050
+        ]
+
+        let violations = try lineBudgets.compactMap { relativePath, budget -> String? in
+            let count = try lineCount(for: root.appendingPathComponent(relativePath))
+            return count > budget ? "\(relativePath): \(count) > \(budget)" : nil
+        }
+
+        #expect(
+            violations.isEmpty,
+            "Large owner files should shrink or move behind focused boundaries instead of growing: \(violations.sorted())"
+        )
+    }
+
+    @Test("Direct AppStorage usage does not grow")
+    func directAppStorageUsageDoesNotGrow() throws {
+        let root = try repositoryRoot()
+        let count = try occurrenceCount(
+            pattern: "@AppStorage",
+            files: swiftFiles(under: root.appendingPathComponent("Astra")) +
+                swiftFiles(under: root.appendingPathComponent("ASTRACore"))
+        )
+
+        #expect(count <= 125, "Prefer settings snapshots or stores over new direct @AppStorage reads. Current count: \(count)")
+    }
+
     private func declaredTaskEventTypeConstants() throws -> Set<String> {
         let file = try repositoryRoot().appendingPathComponent("Astra/Models/TaskEventTypes.swift")
         let text = try String(contentsOf: file, encoding: .utf8)
@@ -300,6 +351,18 @@ struct ArchitectureFitnessTests {
         let path = url.standardizedFileURL.path
         guard path.hasPrefix(rootPath + "/") else { return path }
         return String(path.dropFirst(rootPath.count + 1))
+    }
+
+    private func lineCount(for file: URL) throws -> Int {
+        let text = try String(contentsOf: file, encoding: .utf8)
+        return text.split(separator: "\n", omittingEmptySubsequences: false).count
+    }
+
+    private func occurrenceCount(pattern: String, files: [URL]) throws -> Int {
+        try files.reduce(0) { total, file in
+            let text = try String(contentsOf: file, encoding: .utf8)
+            return total + text.components(separatedBy: pattern).count - 1
+        }
     }
 }
 

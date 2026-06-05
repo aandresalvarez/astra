@@ -45,29 +45,58 @@ These counts are not targets by themselves. They identify where repeated
 change pressure still lives.
 
 - Large source files:
-  - `Astra/Views/TaskMainView.swift`: 6,774 lines.
-  - `Astra/Services/Browser/ShelfBrowserSession.swift`: 6,346 lines.
-  - `Astra/Views/ContentView.swift`: 4,806 lines.
-  - `Astra/Views/WorkspaceRightRailView.swift`: 3,505 lines.
+  - `Astra/Views/TaskMainView.swift`: 6,743 lines.
+  - `Astra/Services/Browser/ShelfBrowserSession.swift`: 5,676 lines.
+  - `Astra/Views/ContentView.swift`: 4,811 lines.
+  - `Astra/Views/WorkspaceRightRailView.swift`: 3,332 lines.
   - `Astra/Views/ChatPanelView.swift`: 3,053 lines.
-  - `Astra/Views/PluginCatalogView.swift`: 2,951 lines.
-  - `Astra/Services/Runtime/AgentRuntimeAdapter.swift`: 2,772 lines.
-  - `Astra/Services/Runtime/AgentPromptBuilder.swift`: 2,180 lines.
-  - `Astra/Services/Git/GitService.swift`: 2,170 lines.
-  - `Astra/Services/Persistence/TaskContextStateManager.swift`: 2,129 lines.
-  - `Astra/Services/Runtime/AgentRuntimeWorker.swift`: 1,969 lines.
-  - `Astra/Services/Validation/ValidationService.swift`: 1,500 lines.
+  - `Astra/Services/Runtime/AgentRuntimeAdapter.swift`: 2,776 lines.
+  - `Astra/Views/PluginCatalogView.swift`: 2,723 lines.
+  - `Astra/Views/ShelfMarkdownPanelView.swift`: 2,715 lines.
+  - `Astra/Views/WorkspaceGitSectionView.swift`: 2,504 lines.
+  - `Astra/Views/ConfigureView.swift`: 2,414 lines.
+  - `Astra/Services/Diagnostics/LogDiagnosticsService.swift`: 2,392 lines.
+  - `Astra/Views/TaskSidebarView.swift`: 2,300 lines.
+  - `Astra/Views/ShelfQueryPanelView.swift`: 2,239 lines.
+  - `Astra/Services/Persistence/TaskContextStateManager.swift`: 2,138 lines.
+  - `Astra/Services/Runtime/AgentPromptBuilder.swift`: 2,125 lines.
+  - `Astra/Views/OnboardingWizardView.swift`: 2,122 lines.
+  - `Astra/Services/Runtime/AgentProcessSupport.swift`: 1,981 lines.
+  - `Astra/Services/Runtime/AgentRuntimeWorker.swift`: 1,971 lines.
+  - `Astra/Services/Browser/BrowserAnalysis.swift`: 1,963 lines.
+  - `Astra/Services/Git/GitService.swift`: 1,953 lines.
+  - `Astra/Services/Browser/ControlledBrowserController.swift`: 1,926 lines.
+  - `Astra/Views/ShelfBrowserPanelView.swift`: 1,923 lines.
 - Repeated source patterns:
-  - `@AppStorage`: 137 source occurrences.
+  - `@AppStorage`: 125 source occurrences.
   - `FileManager.default`: 182 source occurrences.
-  - `try?`: 461 source occurrences.
-  - `JSONSerialization`: 74 source occurrences.
-  - `Process()`: 20 source occurrences.
-  - `@MainActor`: 262 source occurrences.
+  - `try?`: 447 source occurrences.
+  - `JSONSerialization`: 73 source occurrences.
+  - `Process()`: 19 source occurrences.
+  - `@MainActor`: 267 source occurrences.
 - Package boundary:
   - `Package.swift` still builds most app code as one `ASTRA` target. The new
     service folders improve ownership but do not enforce dependencies at compile
     time.
+
+### Automated Drift Guardrails
+
+`ArchitectureFitnessTests` now protects the highest-value architecture
+invariants without requiring every remaining debt item to be fixed in one PR:
+
+- `Astra/Services` may only contain known subsystem folders and no direct Swift
+  files.
+- Prompt section provider IDs must stay unique and explicit for initial and
+  follow-up prompt assembly modes.
+- Typed task-event constants must remain explicitly categorized.
+- Raw stop-reason assignments must stay inside runtime, completion, and
+  persistence boundaries.
+- Git status parsing must stay behind the `ASTRAGitContracts` SwiftPM boundary.
+- Capability side effects must stay out of `PluginCatalogView`.
+- Workspace rail and catalog import presentation contracts must stay outside
+  their large SwiftUI owner files.
+- Current large owner files and direct `@AppStorage` usage have realistic
+  budgets so new work shrinks or extracts instead of quietly growing them.
 
 ## Guiding Rules
 
