@@ -82,10 +82,15 @@ final class WorkspaceGitViewModel: ObservableObject {
     private var workspace: Workspace?
     private var selectedTask: AgentTask?
     private var refreshTimer: Timer?
+    private let git: GitRepositoryOperating
 
-    var authoringServiceFactory: (() -> AgentGitAuthoringService)?
+    var authoringServiceFactory: (() -> any GitCommitMessageGenerating & GitPullRequestGenerating)?
 
-    private func makeAuthoringService() -> AgentGitAuthoringService {
+    init(git: GitRepositoryOperating = GitService.shared) {
+        self.git = git
+    }
+
+    private func makeAuthoringService() -> any GitCommitMessageGenerating & GitPullRequestGenerating {
         if let factory = authoringServiceFactory { return factory() }
         let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(
             rawValue: UserDefaults.standard.string(forKey: "defaultRuntimeID")
@@ -133,7 +138,7 @@ final class WorkspaceGitViewModel: ObservableObject {
 
     func scanRepositories() async {
         guard let workspace = workspace else { return }
-        let repos = await GitService.shared.scanForGitRepositories(
+        let repos = await git.scanForGitRepositories(
             primaryPath: workspace.primaryPath,
             additionalPaths: workspace.additionalPaths
         )
@@ -257,22 +262,22 @@ final class WorkspaceGitViewModel: ObservableObject {
     func refreshRepoDetails(force: Bool = false) async {
         guard let path = workingPath, let rootPath = rootRepoPath else { return }
         if !force {
-            guard GitService.shared.acquireIndexGuard() else {
+            guard git.acquireIndexGuard() else {
                 AppLogger.debug("Git refresh skipped — another refresh in progress", category: "Git")
                 return
             }
         }
-        defer { if !force { GitService.shared.releaseIndexGuard() } }
+        defer { if !force { git.releaseIndexGuard() } }
 
-        async let branch = GitService.shared.getCurrentBranch(at: path)
-        async let localBranches = GitService.shared.getLocalBranches(at: path)
-        async let files = GitService.shared.getStatusFiles(at: path)
-        async let diffStats = GitService.shared.getDiffStats(at: path)
-        async let upstream = GitService.shared.hasUpstream(at: path)
-        async let aheadBehind = GitService.shared.getAheadBehind(at: path)
-        async let remote = GitService.shared.hasRemote(at: path)
-        async let unpushed = GitService.shared.getUnpushedCommitCount(at: path)
-        async let trees = GitService.shared.listWorktrees(at: rootPath)
+        async let branch = git.getCurrentBranch(at: path)
+        async let localBranches = git.getLocalBranches(at: path)
+        async let files = git.getStatusFiles(at: path)
+        async let diffStats = git.getDiffStats(at: path)
+        async let upstream = git.hasUpstream(at: path)
+        async let aheadBehind = git.getAheadBehind(at: path)
+        async let remote = git.hasRemote(at: path)
+        async let unpushed = git.getUnpushedCommitCount(at: path)
+        async let trees = git.listWorktrees(at: rootPath)
 
         self.currentBranch = await branch
         self.branches = await localBranches
@@ -329,7 +334,7 @@ final class WorkspaceGitViewModel: ObservableObject {
         prLookupAt = Date()
 
         Task {
-            let result = await GitService.shared.lookupOpenPullRequest(repoPath: path, head: branch)
+            let result = await git.lookupOpenPullRequest(repoPath: path, head: branch)
             if self.currentBranch == branch {
                 switch result {
                 case let .found(pr):
@@ -370,7 +375,7 @@ final class WorkspaceGitViewModel: ObservableObject {
         isRefreshingPullRequestComments = true
 
         Task {
-            let result = await GitService.shared.lookupPullRequestComments(
+            let result = await git.lookupPullRequestComments(
                 repoPath: repoPath,
                 pullRequest: pr
             )
@@ -423,7 +428,7 @@ final class WorkspaceGitViewModel: ObservableObject {
         isRefreshingPullRequestChecks = true
 
         Task {
-            let result = await GitService.shared.lookupPullRequestChecks(repoPath: repoPath, pullRequest: pr)
+            let result = await git.lookupPullRequestChecks(repoPath: repoPath, pullRequest: pr)
             guard self.currentBranch == branch,
                   self.openPullRequest?.number == pr.number,
                   self.workingPath == repoPath else {
@@ -667,8 +672,8 @@ final class WorkspaceGitViewModel: ObservableObject {
         isSyncing = true
         Task {
             do {
-                let exists = await GitService.shared.localBranchExists(cleanBranch, at: rootPath)
-                let createdPath = try await GitService.shared.addWorktree(
+                let exists = await git.localBranchExists(cleanBranch, at: rootPath)
+                let createdPath = try await git.addWorktree(
                     repoPath: rootPath,
                     branch: cleanBranch,
                     createBranch: !exists,
@@ -711,7 +716,7 @@ final class WorkspaceGitViewModel: ObservableObject {
         isSyncing = true
         Task {
             do {
-                try await GitService.shared.removeWorktree(
+                try await git.removeWorktree(
                     repoPath: rootPath,
                     worktreePath: worktree.path,
                     force: force
@@ -837,7 +842,7 @@ final class WorkspaceGitViewModel: ObservableObject {
         AppLogger.audit(.gitCheckout, category: "Git", fields: ["branch": branch])
         Task {
             do {
-                try await GitService.shared.checkoutBranch(branch, at: path)
+                try await git.checkoutBranch(branch, at: path)
                 self.errorMessage = nil
                 await refreshRepoDetails(force: true)
             } catch {
@@ -852,7 +857,7 @@ final class WorkspaceGitViewModel: ObservableObject {
         AppLogger.audit(.gitBranchCreated, category: "Git", fields: ["branch": newBranchName, "from": currentBranch])
         Task {
             do {
-                try await GitService.shared.createBranch(newBranchName, from: currentBranch, at: path)
+                try await git.createBranch(newBranchName, from: currentBranch, at: path)
                 self.newBranchName = ""
                 self.showNewBranchPopover = false
                 self.errorMessage = nil
@@ -898,7 +903,7 @@ final class WorkspaceGitViewModel: ObservableObject {
             "repo": path
         ], level: .info)
         Task {
-            let diff = await GitService.shared.getFileDiff(at: path, file: file)
+            let diff = await git.getFileDiff(at: path, file: file)
             await MainActor.run {
                 self.selectedFileDiff = diff
                 self.isLoadingFileDiff = false
@@ -916,7 +921,7 @@ final class WorkspaceGitViewModel: ObservableObject {
         AppLogger.audit(.gitStageFile, category: "Git", fields: ["file": file.relativePath])
         Task {
             do {
-                try await GitService.shared.stageFile(file, at: path)
+                try await git.stageFile(file, at: path)
                 await refreshRepoDetails(force: true)
             } catch {
                 AppLogger.error("Stage failed for \(file.relativePath): \(error.localizedDescription)", category: "Git")
@@ -930,7 +935,7 @@ final class WorkspaceGitViewModel: ObservableObject {
         AppLogger.audit(.gitStageFile, category: "Git", fields: ["scope": "all"])
         Task {
             do {
-                try await GitService.shared.stageAll(at: path)
+                try await git.stageAll(at: path)
                 await refreshRepoDetails(force: true)
             } catch {
                 AppLogger.error("Stage all failed: \(error.localizedDescription)", category: "Git")
@@ -944,7 +949,7 @@ final class WorkspaceGitViewModel: ObservableObject {
         AppLogger.audit(.gitUnstageFile, category: "Git", fields: ["file": file.relativePath])
         Task {
             do {
-                try await GitService.shared.unstageFile(file, at: path)
+                try await git.unstageFile(file, at: path)
                 await refreshRepoDetails(force: true)
             } catch {
                 AppLogger.error("Unstage failed for \(file.relativePath): \(error.localizedDescription)", category: "Git")
@@ -958,7 +963,7 @@ final class WorkspaceGitViewModel: ObservableObject {
         AppLogger.audit(.gitUnstageFile, category: "Git", fields: ["scope": "all"])
         Task {
             do {
-                try await GitService.shared.unstageAll(at: path)
+                try await git.unstageAll(at: path)
                 await refreshRepoDetails(force: true)
             } catch {
                 AppLogger.error("Unstage all failed: \(error.localizedDescription)", category: "Git")
@@ -976,7 +981,7 @@ final class WorkspaceGitViewModel: ObservableObject {
         ])
         Task {
             do {
-                try await GitService.shared.applyDiffPatchToIndex(patch, at: path, reverse: reverse)
+                try await git.applyDiffPatchToIndex(patch, at: path, reverse: reverse)
                 self.clearSelectedFileDiff()
                 await refreshRepoDetails(force: true)
             } catch {
@@ -993,7 +998,7 @@ final class WorkspaceGitViewModel: ObservableObject {
         AppLogger.audit(.gitCommit, category: "Git")
         Task {
             do {
-                try await GitService.shared.commit(message: commitMessage, at: path)
+                try await git.commit(message: commitMessage, at: path)
                 self.commitMessage = ""
                 self.errorMessage = nil
                 await refreshRepoDetails(force: true)
@@ -1019,7 +1024,7 @@ final class WorkspaceGitViewModel: ObservableObject {
     /// sheet and the standalone push action behave identically.
     private func performPush(repoPath: String) async throws {
         if hasUpstream {
-            try await GitService.shared.push(at: repoPath)
+            try await git.push(at: repoPath)
         } else {
             let branch = currentBranch.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !branch.isEmpty, branch != "unknown" else {
@@ -1027,8 +1032,8 @@ final class WorkspaceGitViewModel: ObservableObject {
                     NSLocalizedDescriptionKey: "Cannot determine the current branch to publish."
                 ])
             }
-            let remote = await GitService.shared.getDefaultRemote(at: repoPath) ?? "origin"
-            try await GitService.shared.pushSetUpstream(branch: branch, remote: remote, at: repoPath)
+            let remote = await git.getDefaultRemote(at: repoPath) ?? "origin"
+            try await git.pushSetUpstream(branch: branch, remote: remote, at: repoPath)
         }
     }
 
@@ -1038,7 +1043,7 @@ final class WorkspaceGitViewModel: ObservableObject {
         Task {
             do {
                 if includeUnstaged {
-                    try await GitService.shared.stageAll(at: path)
+                    try await git.stageAll(at: path)
                     await refreshRepoDetails(force: true)
                 }
 
@@ -1053,8 +1058,8 @@ final class WorkspaceGitViewModel: ObservableObject {
                 if finalMessage.isEmpty {
                     AppLogger.info("Auto-generating commit message", category: "Git")
                     isSuggestingCommit = true
-                    let diff = await GitService.shared.getStagedDiff(at: path)
-                    let recent = await GitService.shared.getRecentCommitSubjects(at: path)
+                    let diff = await git.getStagedDiff(at: path)
+                    let recent = await git.getRecentCommitSubjects(at: path)
                     let suggestion = try await makeAuthoringService().suggestCommitMessage(
                         repoPath: path,
                         diff: diff,
@@ -1065,7 +1070,7 @@ final class WorkspaceGitViewModel: ObservableObject {
                 }
 
                 AppLogger.audit(.gitCommit, category: "Git")
-                try await GitService.shared.commit(message: finalMessage, at: path)
+                try await git.commit(message: finalMessage, at: path)
                 self.commitMessage = ""
                 await refreshRepoDetails(force: true)
 
@@ -1127,11 +1132,11 @@ final class WorkspaceGitViewModel: ObservableObject {
             do {
                 if behind > 0 {
                     AppLogger.audit(.gitPull, category: "Git", fields: ["behind": "\(behind)"])
-                    try await GitService.shared.pullRebase(at: path)
+                    try await git.pullRebase(at: path)
                 }
                 if ahead > 0 || behind == 0 {
                     AppLogger.audit(.gitPush, category: "Git", fields: ["ahead": "\(ahead)"])
-                    try await GitService.shared.push(at: path)
+                    try await git.push(at: path)
                 }
                 self.errorMessage = nil
                 await refreshRepoDetails(force: true)
@@ -1155,8 +1160,8 @@ final class WorkspaceGitViewModel: ObservableObject {
         isSuggestingCommit = true
         defer { isSuggestingCommit = false }
         do {
-            let diff = await GitService.shared.getStagedDiff(at: path)
-            let recent = await GitService.shared.getRecentCommitSubjects(at: path)
+            let diff = await git.getStagedDiff(at: path)
+            let recent = await git.getRecentCommitSubjects(at: path)
             let suggestion = try await makeAuthoringService().suggestCommitMessage(
                 repoPath: path,
                 diff: diff,
@@ -1174,10 +1179,10 @@ final class WorkspaceGitViewModel: ObservableObject {
         guard let snapshot = makePullRequestActionSnapshot() else { return }
         isSuggestingPR = true
         defer { isSuggestingPR = false }
-        let remote = await GitService.shared.getDefaultRemote(at: snapshot.path)
-        let base = await GitService.shared.getDefaultBaseBranch(at: snapshot.path, remote: remote)
-        let log = await GitService.shared.getBranchLog(at: snapshot.path, base: base, branch: snapshot.branch)
-        let diffStat = await GitService.shared.getBranchDiffStat(at: snapshot.path, base: base, branch: snapshot.branch)
+        let remote = await git.getDefaultRemote(at: snapshot.path)
+        let base = await git.getDefaultBaseBranch(at: snapshot.path, remote: remote)
+        let log = await git.getBranchLog(at: snapshot.path, base: base, branch: snapshot.branch)
+        let diffStat = await git.getBranchDiffStat(at: snapshot.path, base: base, branch: snapshot.branch)
         guard isCurrentPullRequestActionSnapshot(snapshot) else {
             AppLogger.audit(.gitAuthoringFailed, category: "Git", fields: [
                 "operation": "pull_request",
@@ -1236,15 +1241,15 @@ final class WorkspaceGitViewModel: ObservableObject {
         guard let snapshot = makePullRequestActionSnapshot() else { return }
         isSuggestingPR = true
         Task {
-            let remote = await GitService.shared.getDefaultRemote(at: snapshot.path)
-            let base = await GitService.shared.getDefaultBaseBranch(at: snapshot.path, remote: remote)
+            let remote = await git.getDefaultRemote(at: snapshot.path)
+            let base = await git.getDefaultBaseBranch(at: snapshot.path, remote: remote)
             guard self.isCurrentPullRequestActionSnapshot(snapshot) else {
                 self.errorMessage = "Branch changed before creating the pull request. Try again."
                 self.isSuggestingPR = false
                 return
             }
             do {
-                let url = try await GitService.shared.createPullRequest(
+                let url = try await git.createPullRequest(
                     repoPath: snapshot.path,
                     base: base,
                     head: snapshot.branch,
@@ -1292,10 +1297,10 @@ final class WorkspaceGitViewModel: ObservableObject {
         }
         guard let snapshot = makePullRequestActionSnapshot() else { return }
         Task {
-            let remote = await GitService.shared.getDefaultRemote(at: snapshot.path)
-            let base = await GitService.shared.getDefaultBaseBranch(at: snapshot.path, remote: remote)
-            let baseBranch = GitService.normalizeBaseBranch(base)
-            guard let baseURL = await GitService.shared.getRemoteURL(at: snapshot.path, remote: remote) else {
+            let remote = await git.getDefaultRemote(at: snapshot.path)
+            let base = await git.getDefaultBaseBranch(at: snapshot.path, remote: remote)
+            let baseBranch = git.normalizeBaseBranch(base)
+            guard let baseURL = await git.getRemoteURL(at: snapshot.path, remote: remote) else {
                 self.errorMessage = "Could not detect the GitHub remote URL to create a pull request."
                 return
             }
