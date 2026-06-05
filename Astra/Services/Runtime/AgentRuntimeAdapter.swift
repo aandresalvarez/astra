@@ -869,6 +869,8 @@ struct RuntimeReadinessProbeContext {
             return "Could not launch: \(RuntimeReadinessRedactor.redacted(reason))"
         case .timedOut:
             return "Timed out after \(Int(timeout))s."
+        case .cancelled:
+            return "Cancelled."
         case .exited(let code):
             let evidence = result.stderr.isEmpty ? result.stdout : result.stderr
             let trimmed = RuntimeReadinessRedactor.redacted(evidence)
@@ -2744,6 +2746,8 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             return "Could not launch live Antigravity check: \(RuntimeReadinessRedactor.redacted(reason))"
         case .timedOut:
             return "Timed out after \(Int(timeoutSeconds))s during live Antigravity check."
+        case .cancelled:
+            return "Live Antigravity check was cancelled."
         case .exited(let code):
             let evidence = result.stderr.isEmpty ? result.stdout : result.stderr
             let sanitized = RuntimeReadinessRedactor.redacted(evidence)

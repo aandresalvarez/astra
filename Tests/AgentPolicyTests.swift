@@ -393,6 +393,32 @@ struct AgentPolicyTests {
         #expect(Set(executionPolicy.permissionGrantsOverride ?? []) == Set(structuredGrants))
     }
 
+    @Test("Broker approval payload uses typed event payload encoding")
+    func brokerApprovalPayloadUsesTypedEventPayloadEncoding() throws {
+        let request = PermissionRequest.shell(
+            command: "curl https://redcap.stanford.edu/api",
+            toolName: "Bash"
+        )
+        let grants = PermissionBroker.approvalGrants(for: request)
+        let payload = PermissionBroker.approvalPayload(
+            providerID: .claudeCode,
+            request: request,
+            reason: "Network check requires approval.",
+            grants: grants
+        )
+        let encoded = TaskEvent.payloadString(
+            payload,
+            fallback: payload.displayMessage,
+            encoder: TaskEventPayloadCodec.makeUnescapedEncoder()
+        )
+        let decoded = try #require(PermissionApprovalEventPayload.decoded(from: encoded))
+
+        #expect(decoded.providerID == .claudeCode)
+        #expect(decoded.request == request)
+        #expect(decoded.displayMessage.contains("https://redcap.stanford.edu/api"))
+        #expect(PermissionBroker.structuredApprovalGrants(from: encoded) == grants)
+    }
+
     @Test("Broker repairs stale structured shell grants from the typed request")
     func brokerRepairsStaleStructuredShellGrantsFromTypedRequest() throws {
         let request = PermissionRequest.shell(

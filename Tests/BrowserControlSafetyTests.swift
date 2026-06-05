@@ -5,10 +5,12 @@ import Testing
 @Suite("Browser Control Safety")
 struct BrowserControlSafetyTests {
     @Test("Drive open default timeout covers slow Google Drive search results")
-    @MainActor
     func driveOpenDefaultTimeoutCoversSlowGoogleDriveSearchResults() {
-        #expect(ShelfBrowserSession.googleDriveOpenDefaultTimeoutSeconds >= 20)
-        #expect(ShelfBrowserSession.googleDriveOpenMaximumTimeoutSeconds >= ShelfBrowserSession.googleDriveOpenDefaultTimeoutSeconds)
+        #expect(GoogleWorkspaceBrowserService.googleDriveOpenDefaultTimeoutSeconds >= 20)
+        #expect(
+            GoogleWorkspaceBrowserService.googleDriveOpenMaximumTimeoutSeconds
+                >= GoogleWorkspaceBrowserService.googleDriveOpenDefaultTimeoutSeconds
+        )
     }
 
     @Test("Google Docs select-all delete sequence is blocked")
@@ -54,26 +56,24 @@ struct BrowserControlSafetyTests {
     }
 
     @Test("Google Docs full-document clipboard requires controlled when auto-promote is disabled")
-    @MainActor
     func googleDocsFullDocumentClipboardRequiresControlledWhenAutoPromoteDisabled() {
-        #expect(ShelfBrowserSession.googleDocsFullDocumentClipboardRequiresControlled(
+        #expect(GoogleWorkspaceBrowserService.googleDocsFullDocumentClipboardRequiresControlled(
             engine: .embedded,
             autoPromoteGoogleWorkspace: false
         ))
-        #expect(!ShelfBrowserSession.googleDocsFullDocumentClipboardRequiresControlled(
+        #expect(!GoogleWorkspaceBrowserService.googleDocsFullDocumentClipboardRequiresControlled(
             engine: .embedded,
             autoPromoteGoogleWorkspace: true
         ))
-        #expect(!ShelfBrowserSession.googleDocsFullDocumentClipboardRequiresControlled(
+        #expect(!GoogleWorkspaceBrowserService.googleDocsFullDocumentClipboardRequiresControlled(
             engine: .controlled,
             autoPromoteGoogleWorkspace: false
         ))
     }
 
     @Test("Drive open verifier rejects wrong Google editor title")
-    @MainActor
     func driveOpenVerifierRejectsWrongGoogleEditorTitle() {
-        let opened = ShelfBrowserSession.isOpenedDriveTarget(
+        let opened = GoogleWorkspaceBrowserService.isOpenedDriveTarget(
             urlString: "https://docs.google.com/presentation/d/abc/edit",
             title: "Death Data Integration - Google Slides",
             name: "Alvaro1 t",
@@ -84,9 +84,8 @@ struct BrowserControlSafetyTests {
     }
 
     @Test("Drive open verifier accepts matching Google editor title")
-    @MainActor
     func driveOpenVerifierAcceptsMatchingGoogleEditorTitle() {
-        let opened = ShelfBrowserSession.isOpenedDriveTarget(
+        let opened = GoogleWorkspaceBrowserService.isOpenedDriveTarget(
             urlString: "https://docs.google.com/document/d/abc/edit",
             title: "Alvaro1 t - Google Docs",
             name: "Alvaro1 t",
@@ -97,9 +96,8 @@ struct BrowserControlSafetyTests {
     }
 
     @Test("Drive open candidates ignore query-only controls")
-    @MainActor
     func driveOpenCandidatesIgnoreQueryOnlyControls() {
-        let candidates = ShelfBrowserSession.googleDriveOpenCandidates(
+        let candidates = GoogleWorkspaceBrowserService.googleDriveOpenCandidates(
             controls: [
                 [
                     "label": "Advanced search",
@@ -136,9 +134,8 @@ struct BrowserControlSafetyTests {
     }
 
     @Test("Drive open candidates accept exact Drive file controls")
-    @MainActor
     func driveOpenCandidatesAcceptExactDriveFileControls() {
-        let candidates = ShelfBrowserSession.googleDriveOpenCandidates(
+        let candidates = GoogleWorkspaceBrowserService.googleDriveOpenCandidates(
             controls: [
                 [
                     "label": "Alvaro1 t",
@@ -168,9 +165,8 @@ struct BrowserControlSafetyTests {
     }
 
     @Test("Drive open candidates accept search rows with modified time metadata")
-    @MainActor
     func driveOpenCandidatesAcceptSearchRowsWithModifiedTimeMetadata() {
-        let candidates = ShelfBrowserSession.googleDriveOpenCandidates(
+        let candidates = GoogleWorkspaceBrowserService.googleDriveOpenCandidates(
             controls: [
                 [
                     "label": "Alvaro1 t 12:48 PM More actions (Alt+A)",
@@ -198,9 +194,8 @@ struct BrowserControlSafetyTests {
     }
 
     @Test("Drive open candidates accept rows with owner and location metadata")
-    @MainActor
     func driveOpenCandidatesAcceptRowsWithOwnerAndLocationMetadata() {
-        let candidates = ShelfBrowserSession.googleDriveOpenCandidates(
+        let candidates = GoogleWorkspaceBrowserService.googleDriveOpenCandidates(
             controls: [
                 [
                     "label": "Alvaro1 t 12:48 PM Me My Drive Google Docs More actions",
@@ -220,15 +215,23 @@ struct BrowserControlSafetyTests {
     }
 
     @Test("Drive search URL encodes the requested file name")
-    @MainActor
     func driveSearchURLEncodesRequestedFileName() throws {
-        let url = ShelfBrowserSession.googleDriveSearchURL(for: "Alvaro1 t")
+        let url = GoogleWorkspaceBrowserService.googleDriveSearchURL(for: "Alvaro1 t")
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
 
         #expect(components.scheme == "https")
         #expect(components.host == "drive.google.com")
         #expect(components.path == "/drive/search")
         #expect(components.queryItems?.first(where: { $0.name == "q" })?.value == "Alvaro1 t")
+    }
+
+    @Test("Google Docs verification query trims explicit text and truncates fallback")
+    func googleDocsVerificationQueryTrimsExplicitTextAndTruncatesFallback() {
+        #expect(GoogleWorkspaceBrowserService.googleDocsVerificationQuery(explicit: "  exact match  ", text: "ignored") == "exact match")
+        #expect(GoogleWorkspaceBrowserService.googleDocsVerificationQuery(explicit: nil, text: "  alpha\n beta\tgamma  ") == "alpha beta gamma")
+
+        let longText = String(repeating: "word ", count: 30)
+        #expect(GoogleWorkspaceBrowserService.googleDocsVerificationQuery(explicit: nil, text: longText)?.count == 80)
     }
 
     @Test("Click-control exact matching rejects unrelated Outlook controls")

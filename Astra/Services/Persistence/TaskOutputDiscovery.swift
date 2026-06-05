@@ -5,6 +5,10 @@ struct TaskOutputDiscoveredFile: Hashable {
     var relativePath: String
     var type: String
     var modifiedAt: Date?
+
+    var kind: ArtifactKind {
+        ArtifactKind(rawValue: type)
+    }
 }
 
 enum TaskOutputDiscovery {
@@ -88,16 +92,8 @@ enum TaskOutputDiscovery {
         return TaskOutputDiscoveredFile(
             path: standardizedPath,
             relativePath: relative,
-            type: artifactType(for: standardizedPath),
+            type: ArtifactKind.forPath(standardizedPath).rawValue,
             modifiedAt: attrs?[.modificationDate] as? Date
         )
-    }
-
-    private static func artifactType(for path: String) -> String {
-        if TaskGeneratedFiles.isHTMLFile(path) { return "html" }
-        if TaskGeneratedFiles.isMarkdownFile(path) { return "markdown" }
-        if TaskGeneratedFiles.isSQLFile(path) { return "sql" }
-        let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
-        return ext.isEmpty ? "file" : ext
     }
 }

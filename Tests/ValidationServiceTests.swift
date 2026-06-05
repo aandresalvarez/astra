@@ -43,6 +43,50 @@ private actor StubValidationCommandRunner: ValidationCommandRunning {
 @Suite("Validation service")
 @MainActor
 struct ValidationServiceTests {
+    @Test("shell validation runner uses shared process runner current directory")
+    nonisolated func shellValidationRunnerUsesCurrentDirectory() async throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-validation-cwd-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try "validation cwd".write(
+            to: directory.appendingPathComponent("marker.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let result = await ShellValidationCommandRunner().run(
+            command: "cat marker.txt",
+            workingDirectory: directory.path,
+            environment: ProcessInfo.processInfo.environment
+        )
+
+        #expect(result.exitCode == 0)
+        #expect(result.stdout == "validation cwd")
+        #expect(result.stderr.isEmpty)
+        #expect(!result.timedOut)
+        #expect(!result.cancelled)
+        #expect(result.elapsedTime >= 0)
+    }
+
+    @Test("shell validation runner surfaces launch failures through the shared process contract")
+    nonisolated func shellValidationRunnerSurfacesMissingWorkingDirectory() async {
+        let missingDirectory = NSTemporaryDirectory() + "astra-validation-missing-\(UUID().uuidString)"
+
+        let result = await ShellValidationCommandRunner().run(
+            command: "echo should-not-run",
+            workingDirectory: missingDirectory,
+            environment: ProcessInfo.processInfo.environment
+        )
+
+        #expect(result.exitCode == -1)
+        #expect(result.launchError?.isEmpty == false)
+        #expect(!result.stderr.isEmpty)
+        #expect(!result.timedOut)
+        #expect(!result.cancelled)
+        #expect(result.elapsedTime >= 0)
+    }
+
     @Test("runTests uses injected command runner")
     func runTestsUsesInjectedCommandRunner() async throws {
         let root = "/tmp/astra-validation-runner-\(UUID().uuidString.prefix(8))"

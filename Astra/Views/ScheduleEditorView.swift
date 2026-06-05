@@ -6,6 +6,7 @@ import ASTRACore
 struct ScheduleEditorView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var appSettings: AppSettingsSnapshotStore
 
     let workspace: Workspace
     var schedule: TaskSchedule?
@@ -24,12 +25,6 @@ struct ScheduleEditorView: View {
     var prefillDayOfWeek: Int?
     var prefillIntervalSeconds: Int?
     var prefillSourceTaskID: UUID?
-
-    @AppStorage("defaultRuntimeID") private var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
-    @AppStorage("defaultModel") private var defaultModel = TaskExecutionDefaults.model
-    @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
-    @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
-    @AppStorage(AppStorageKeys.runtimeModelCacheRevision) private var runtimeModelCacheRevision = 0
 
     @State private var name = ""
     @State private var routineDescription = ""
@@ -484,7 +479,8 @@ struct ScheduleEditorView: View {
                 resultMode = s.resultMode
             } else {
                 // Apply prefill values (Convert to Routine flow)
-                runtimeID = prefillRuntimeID ?? defaultRuntimeID
+                let settings = runtimeSettingsSnapshot
+                runtimeID = prefillRuntimeID ?? settings.defaultRuntime.rawValue
                 if let n = prefillName { name = n }
                 if let g = prefillGoal { goal = g }
                 if let m = prefillModel {
@@ -492,7 +488,7 @@ struct ScheduleEditorView: View {
                 } else {
                     let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID)
                     model = RuntimeModelAvailability.normalizedModel(
-                        defaultModel,
+                        settings.defaultModel,
                         for: runtime,
                         cache: runtimeModelCache
                     )
@@ -507,13 +503,7 @@ struct ScheduleEditorView: View {
             }
             alignModelWithRuntime()
         }
-        .onChange(of: claudeAvailableModels) {
-            alignModelWithRuntime()
-        }
-        .onChange(of: copilotAvailableModels) {
-            alignModelWithRuntime()
-        }
-        .onChange(of: runtimeModelCacheRevision) {
+        .onChange(of: appSettings.runtimeSettings.modelCacheSignature) {
             alignModelWithRuntime()
         }
     }
@@ -546,10 +536,11 @@ struct ScheduleEditorView: View {
     }
 
     private var runtimeModelCache: RuntimeModelAvailabilityCache {
-        RuntimeModelAvailabilityCache.appStorage(
-            cachedClaudeModelsJSON: claudeAvailableModels,
-            cachedCopilotModelsJSON: copilotAvailableModels
-        )
+        runtimeSettingsSnapshot.runtimeModelCache
+    }
+
+    private var runtimeSettingsSnapshot: RuntimeSettingsSnapshot {
+        appSettings.runtimeSettings
     }
 
     private var modelSelectionControl: some View {

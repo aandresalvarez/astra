@@ -45,6 +45,27 @@ enum PermissionBroker {
         providerDetail: String? = nil,
         grants: [PermissionGrant]
     ) -> String {
+        let payload = approvalPayload(
+            providerID: providerID,
+            request: request,
+            reason: reason,
+            providerDetail: providerDetail,
+            grants: grants
+        )
+        return TaskEvent.payloadString(
+            payload,
+            fallback: payload.displayMessage,
+            encoder: TaskEventPayloadCodec.makeUnescapedEncoder()
+        )
+    }
+
+    static func approvalPayload(
+        providerID: AgentRuntimeID,
+        request: PermissionRequest,
+        reason: String,
+        providerDetail: String? = nil,
+        grants: [PermissionGrant]
+    ) -> PermissionApprovalEventPayload {
         let grants = sanitizeGrants(grants)
         let message = approvalMessage(
             providerID: providerID,
@@ -54,7 +75,7 @@ enum PermissionBroker {
             grants: grants
         )
         let decision = PermissionDecision.askUser(message: message, grants: grants)
-        let payload = PermissionApprovalEventPayload(
+        return PermissionApprovalEventPayload(
             brokerVersion: brokerVersion,
             providerID: providerID,
             request: request,
@@ -62,7 +83,6 @@ enum PermissionBroker {
             grants: grants,
             displayMessage: message
         )
-        return payload.encodedString() ?? message
     }
 
     static func displayMessage(from payload: String) -> String {

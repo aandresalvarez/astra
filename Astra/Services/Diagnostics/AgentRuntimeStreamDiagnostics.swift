@@ -130,24 +130,96 @@ enum AgentRuntimeStreamDiagnostics {
     }
 
     static func unknownEventShapeFields(raw: String) -> [String: String] {
-        guard let data = raw.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return ["raw_length": String(raw.count)]
+        guard let data = raw.data(using: .utf8) else {
+            return [
+                "raw_length": String(raw.count),
+                "decode_error": "utf8_encoding_failed"
+            ]
+        }
+
+        let shape: UnknownStreamEventShape
+        do {
+            shape = try JSONDecoder().decode(UnknownStreamEventShape.self, from: data)
+        } catch {
+            return [
+                "raw_length": String(raw.count),
+                "decode_error": decodeErrorSummary(error)
+            ]
         }
 
         var fields: [String: String] = [
             "raw_length": String(raw.count),
-            "top_level_keys": object.keys.sorted().joined(separator: ",")
+            "top_level_keys": shape.topLevelKeys.joined(separator: ",")
         ]
-        if let dataObject = object["data"] as? [String: Any] {
-            fields["data_keys"] = dataObject.keys.sorted().joined(separator: ",")
+        if !shape.dataKeys.isEmpty {
+            fields["data_keys"] = shape.dataKeys.joined(separator: ",")
         }
-        if let payloadObject = object["payload"] as? [String: Any] {
-            fields["payload_keys"] = payloadObject.keys.sorted().joined(separator: ",")
+        if !shape.payloadKeys.isEmpty {
+            fields["payload_keys"] = shape.payloadKeys.joined(separator: ",")
         }
-        if let type = object["type"] as? String {
+        if let type = shape.type {
             fields["type_field"] = type
         }
         return fields
+    }
+
+    private struct UnknownStreamEventShape: Decodable {
+        let topLevelKeys: [String]
+        let dataKeys: [String]
+        let payloadKeys: [String]
+        let type: String?
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+            topLevelKeys = container.allKeys.map(\.stringValue).sorted()
+            dataKeys = Self.nestedKeys(named: "data", in: container)
+            payloadKeys = Self.nestedKeys(named: "payload", in: container)
+            type = try container.decodeIfPresent(String.self, forKey: DynamicCodingKey("type"))
+        }
+
+        private static func nestedKeys(
+            named name: String,
+            in container: KeyedDecodingContainer<DynamicCodingKey>
+        ) -> [String] {
+            let key = DynamicCodingKey(name)
+            guard let nested = try? container.nestedContainer(keyedBy: DynamicCodingKey.self, forKey: key) else {
+                return []
+            }
+            return nested.allKeys.map(\.stringValue).sorted()
+        }
+    }
+
+    private struct DynamicCodingKey: CodingKey {
+        let stringValue: String
+        let intValue: Int?
+
+        init(_ stringValue: String) {
+            self.stringValue = stringValue
+            self.intValue = nil
+        }
+
+        init?(stringValue: String) {
+            self.init(stringValue)
+        }
+
+        init?(intValue: Int) {
+            self.stringValue = String(intValue)
+            self.intValue = intValue
+        }
+    }
+
+    private static func decodeErrorSummary(_ error: Error) -> String {
+        switch error {
+        case DecodingError.dataCorrupted:
+            "data_corrupted"
+        case DecodingError.typeMismatch:
+            "type_mismatch"
+        case DecodingError.valueNotFound:
+            "value_not_found"
+        case DecodingError.keyNotFound:
+            "key_not_found"
+        default:
+            "decode_failed"
+        }
     }
 }

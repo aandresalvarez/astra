@@ -39,6 +39,29 @@ struct TaskContextStateTests {
         #expect(result.path == path)
         #expect(result.state == nil)
         #expect(result.errorDescription?.contains("current:") == true)
+        #expect(result.decodeDiagnostic?.status == .decodeFailed)
+        #expect(result.decodeDiagnostic?.typeName == "TaskContextState")
+        #expect(result.decodeDiagnostic?.errorDescription?.isEmpty == false)
+    }
+
+    @Test("loadResult reports structured current-state coding path diagnostics")
+    func loadResultReportsStructuredCodingPathDiagnostics() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let path = (root as NSString).appendingPathComponent(TaskContextStateManager.jsonFileName)
+        let encoded = try JSONEncoder().encode(minimalState())
+        var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object["updatedAt"] = 42
+        let malformed = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+        try malformed.write(to: URL(fileURLWithPath: path))
+
+        let result = TaskContextStateManager.loadResult(taskFolder: root)
+
+        #expect(result.status == .decodeFailed)
+        #expect(result.state == nil)
+        #expect(result.decodeDiagnostic?.status == .decodeFailed)
+        #expect(result.decodeDiagnostic?.codingPath == "updatedAt")
+        #expect(result.errorDescription?.contains("current:") == true)
     }
 
     @Test("saveState returns structured success and writes both state files")

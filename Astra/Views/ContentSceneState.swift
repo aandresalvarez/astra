@@ -61,6 +61,86 @@ enum ContentDetailPresentation: Equatable {
     }
 }
 
+struct ContentWorkspaceSelectionUpdate {
+    let selectedTask: AgentTask?
+    let selectedWorkspace: Workspace?
+    let isComposingTask: Bool
+    let shouldPresentRightRail: Bool
+}
+
+@MainActor
+struct ContentWorkspaceSelectionCoordinator {
+    let selectedTask: AgentTask?
+    let selectedWorkspace: Workspace?
+    let isComposingTask: Bool
+
+    func restore(workspace restored: Workspace?) -> ContentWorkspaceSelectionUpdate {
+        guard let restored else {
+            return ContentWorkspaceSelectionUpdate(
+                selectedTask: nil,
+                selectedWorkspace: nil,
+                isComposingTask: false,
+                shouldPresentRightRail: false
+            )
+        }
+
+        return ContentWorkspaceSelectionUpdate(
+            selectedTask: selectedTask,
+            selectedWorkspace: restored,
+            isComposingTask: isComposingTask,
+            shouldPresentRightRail: false
+        )
+    }
+
+    func open(workspace: Workspace) -> ContentWorkspaceSelectionUpdate {
+        ContentWorkspaceSelectionUpdate(
+            selectedTask: nil,
+            selectedWorkspace: workspace,
+            isComposingTask: false,
+            shouldPresentRightRail: true
+        )
+    }
+
+    func open(task: AgentTask) -> ContentWorkspaceSelectionUpdate {
+        ContentWorkspaceSelectionUpdate(
+            selectedTask: task,
+            selectedWorkspace: task.workspace ?? selectedWorkspace,
+            isComposingTask: false,
+            shouldPresentRightRail: true
+        )
+    }
+
+    func create(workspace: Workspace) -> ContentWorkspaceSelectionUpdate {
+        ContentWorkspaceSelectionUpdate(
+            selectedTask: selectedTask,
+            selectedWorkspace: workspace,
+            isComposingTask: isComposingTask,
+            shouldPresentRightRail: false
+        )
+    }
+
+    func importWorkspace(_ workspace: Workspace?) -> ContentWorkspaceSelectionUpdate {
+        ContentWorkspaceSelectionUpdate(
+            selectedTask: selectedTask,
+            selectedWorkspace: workspace ?? selectedWorkspace,
+            isComposingTask: isComposingTask,
+            shouldPresentRightRail: false
+        )
+    }
+
+    func delete(workspace deleted: Workspace, nextWorkspace: Workspace?) -> ContentWorkspaceSelectionUpdate {
+        let deletedCurrentWorkspace = selectedWorkspace?.id == deleted.id
+        let deletedSelectedTaskWorkspace = selectedTask?.workspace?.id == deleted.id
+
+        return ContentWorkspaceSelectionUpdate(
+            selectedTask: deletedSelectedTaskWorkspace ? nil : selectedTask,
+            selectedWorkspace: deletedCurrentWorkspace ? nextWorkspace : selectedWorkspace,
+            isComposingTask: deletedSelectedTaskWorkspace ? false : isComposingTask,
+            shouldPresentRightRail: false
+        )
+    }
+}
+
 @MainActor
 struct ContentSceneCoordinator {
     let workspaces: [Workspace]

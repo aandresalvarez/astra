@@ -231,6 +231,39 @@ struct TaskPlanServiceTests {
         #expect(state.plan?.steps[1].status == .pending)
     }
 
+    @Test("Plan payload decoders expose diagnostic failures")
+    func planPayloadDecodersExposeDiagnosticFailures() {
+        switch TaskPlanService.decodePlanPayloadResult("not-json") {
+        case .success:
+            Issue.record("Expected invalid plan payload to fail")
+        case .failure(let error):
+            guard case .decodingFailed = error else {
+                Issue.record("Expected plan decoding failure, got \(error)")
+                return
+            }
+        }
+
+        switch TaskPlanService.decodeStepProgressPayloadResult("{}") {
+        case .success:
+            Issue.record("Expected incomplete step progress payload to fail")
+        case .failure(let error):
+            guard case .decodingFailed = error else {
+                Issue.record("Expected step progress decoding failure, got \(error)")
+                return
+            }
+        }
+
+        switch TaskPlanService.decodeLifecyclePayloadResult("{}") {
+        case .success:
+            Issue.record("Expected incomplete lifecycle payload to fail")
+        case .failure(let error):
+            guard case .decodingFailed = error else {
+                Issue.record("Expected lifecycle decoding failure, got \(error)")
+                return
+            }
+        }
+    }
+
     @Test("Blocked permission reason enriches step tools for retry")
     func blockedPermissionReasonEnrichesStepToolsForRetry() throws {
         let task = AgentTask(title: "Plan task", goal: "Create HTML")

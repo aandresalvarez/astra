@@ -81,7 +81,7 @@ enum SessionScanner {
             run.tokensUsed = session.totalTokens
             run.exitCode = 0
             run.output = session.userMessages.joined(separator: "\n---\n")
-            run.stopReason = "completed"
+            run.typedStopReason = .completed
             modelContext.insert(run)
 
             // Create conversation events from user messages

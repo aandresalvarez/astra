@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import ASTRACore
 
 struct ProviderSettingsSnapshot: Equatable, Sendable {
@@ -156,8 +157,9 @@ enum RuntimeSettingsSnapshotStore {
 
     static func runtimeSnapshot(defaults: UserDefaults = .standard) -> RuntimeSettingsSnapshot {
         runtimeSnapshot(
-            defaultRuntimeID: defaults.string(forKey: "defaultRuntimeID") ?? TaskExecutionDefaults.runtime.rawValue,
-            defaultModel: defaults.string(forKey: "defaultModel") ?? TaskExecutionDefaults.model,
+            defaultRuntimeID: defaults.string(forKey: AppStorageKeys.defaultRuntimeID)
+                ?? TaskExecutionDefaults.runtime.rawValue,
+            defaultModel: defaults.string(forKey: AppStorageKeys.defaultModel) ?? TaskExecutionDefaults.model,
             defaultBudget: defaults.object(forKey: AppStorageKeys.defaultTokenBudget) == nil
                 ? TaskExecutionDefaults.tokenBudget
                 : defaults.integer(forKey: AppStorageKeys.defaultTokenBudget),
@@ -204,10 +206,64 @@ enum RuntimeSettingsSnapshotStore {
     static func appUIPreferences(defaults: UserDefaults = .standard) -> AppUIPreferencesSnapshot {
         AppUIPreferencesSnapshot(
             appearance: AppearancePreference(rawValue: defaults.string(forKey: AppearancePreference.storageKey) ?? "") ?? .system,
-            uiScale: defaults.object(forKey: "appUIScale") == nil ? 1.0 : defaults.double(forKey: "appUIScale"),
-            workspacesRoot: defaults.string(forKey: "workspacesRoot") ?? "",
-            timeoutSeconds: defaults.object(forKey: "timeoutSeconds") == nil ? 600 : defaults.integer(forKey: "timeoutSeconds"),
-            validationModel: defaults.string(forKey: "validationModel") ?? "claude-haiku-4-5-20251001"
+            uiScale: defaults.object(forKey: AppStorageKeys.appUIScale) == nil
+                ? 1.0
+                : defaults.double(forKey: AppStorageKeys.appUIScale),
+            workspacesRoot: defaults.string(forKey: AppStorageKeys.workspacesRoot) ?? "",
+            timeoutSeconds: defaults.object(forKey: AppStorageKeys.timeoutSeconds) == nil
+                ? 600
+                : defaults.integer(forKey: AppStorageKeys.timeoutSeconds),
+            validationModel: defaults.string(forKey: AppStorageKeys.validationModel) ?? "claude-haiku-4-5-20251001"
         )
+    }
+}
+
+@MainActor
+final class AppSettingsSnapshotStore: ObservableObject {
+    @Published private(set) var runtimeSettings: RuntimeSettingsSnapshot
+    @Published private(set) var providerSettings: ProviderSettingsSnapshot
+    @Published private(set) var uiPreferences: AppUIPreferencesSnapshot
+
+    private let defaults: UserDefaults
+    private let notificationCenter: NotificationCenter
+    private var defaultsObserver: NSObjectProtocol?
+
+    init(
+        defaults: UserDefaults = .standard,
+        notificationCenter: NotificationCenter = .default,
+        observesDefaultsChanges: Bool = true
+    ) {
+        self.defaults = defaults
+        self.notificationCenter = notificationCenter
+
+        let runtimeSettings = RuntimeSettingsSnapshotStore.runtimeSnapshot(defaults: defaults)
+        self.runtimeSettings = runtimeSettings
+        self.providerSettings = runtimeSettings.providerSnapshot
+        self.uiPreferences = RuntimeSettingsSnapshotStore.appUIPreferences(defaults: defaults)
+
+        if observesDefaultsChanges {
+            defaultsObserver = notificationCenter.addObserver(
+                forName: UserDefaults.didChangeNotification,
+                object: defaults,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    self?.refresh()
+                }
+            }
+        }
+    }
+
+    deinit {
+        if let defaultsObserver {
+            notificationCenter.removeObserver(defaultsObserver)
+        }
+    }
+
+    func refresh() {
+        let runtimeSettings = RuntimeSettingsSnapshotStore.runtimeSnapshot(defaults: defaults)
+        self.runtimeSettings = runtimeSettings
+        self.providerSettings = runtimeSettings.providerSnapshot
+        self.uiPreferences = RuntimeSettingsSnapshotStore.appUIPreferences(defaults: defaults)
     }
 }

@@ -195,12 +195,16 @@ struct AgentRuntimeLaunchPreflightTests {
         #expect(!FileManager.default.fileExists(atPath: (root as NSString).appendingPathComponent("docs")))
         #expect(!FileManager.default.fileExists(atPath: (taskFolder as NSString).appendingPathComponent("docs")))
         let event = try #require(task.events.first { $0.type == "astra.artifact_preflight" })
-        let data = try #require(event.payload.data(using: .utf8))
-        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        let rejectedPaths = try #require(object["rejectedPaths"] as? [String])
-        let skippedPaths = try #require(object["skippedPaths"] as? [String])
-        #expect(rejectedPaths.contains("../escape/result.md"))
-        #expect(skippedPaths.contains("docs/workspace.md"))
+        switch event.decodePayload(
+            as: TaskArtifactPreflightEventPayload.self,
+            expecting: TaskEventTypes.System.astraArtifactPreflight
+        ) {
+        case .success(let payload):
+            #expect(payload.rejectedPaths.contains("../escape/result.md"))
+            #expect(payload.skippedPaths.contains("docs/workspace.md"))
+        case .failure(let error):
+            Issue.record("Expected typed artifact preflight payload, got \(error)")
+        }
     }
 
     @Test("Prepare task folder failure marks task failed before provider launch")
@@ -583,6 +587,16 @@ struct AgentRuntimeStreamDiagnosticsTests {
         let fields = AgentRuntimeStreamDiagnostics.unknownEventShapeFields(raw: "not-json")
 
         #expect(fields["raw_length"] == "8")
+        #expect(fields["decode_error"] == "data_corrupted")
+        #expect(fields["top_level_keys"] == nil)
+    }
+
+    @Test("Unknown event shape fields report malformed top-level payload")
+    func unknownEventShapeFieldsReportMalformedTopLevelPayload() {
+        let fields = AgentRuntimeStreamDiagnostics.unknownEventShapeFields(raw: #"["event"]"#)
+
+        #expect(fields["raw_length"] == "9")
+        #expect(fields["decode_error"] == "type_mismatch")
         #expect(fields["top_level_keys"] == nil)
     }
 }

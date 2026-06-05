@@ -67,4 +67,52 @@ struct BrowserFlightRecorderTests {
         #expect(snapshot["finalURL"] as? String == "https://docs.google.com/document/d/1/edit")
         #expect(recent.last?["goalSatisfied"] as? Bool == true)
     }
+
+    @Test("Diagnostics state owns flight timeline and last debug capture")
+    func diagnosticsStateOwnsFlightTimelineAndLastDebugCapture() throws {
+        var diagnostics = BrowserDiagnosticsSessionState()
+        let before = BrowserFlightPageSnapshot(
+            url: "https://example.com/start?token=secret",
+            title: "Start",
+            pageType: "web"
+        )
+        let after = BrowserFlightPageSnapshot(
+            url: "https://example.com/end?token=secret",
+            title: "End",
+            pageType: "web"
+        )
+        let request = BrowserBridgeRequest(
+            method: "POST",
+            path: "/click",
+            headers: [:],
+            queryItems: [:],
+            body: Data("{\"selector\":\"#private\"}".utf8)
+        )
+        let capture: [String: Any] = ["enabled": false, "reason": "debug_capture_disabled"]
+
+        diagnostics.rememberDebugCapture(capture)
+        let entry = diagnostics.recordFlightStep(
+            request: request,
+            statusCode: 500,
+            before: before,
+            after: after,
+            duration: 0.25,
+            result: ["ok": false, "error": "target_obscured"],
+            lastBrowserTraceID: "trace_1",
+            debugCapture: capture
+        )
+        let trace = diagnostics.traceResponse(lastBrowserTrace: ["id": "trace_1"])
+        let flight = try #require(trace["flight"] as? [String: Any])
+        let lastDebugCapture = try #require(trace["lastDebugCapture"] as? [String: Any])
+
+        #expect(entry["error"] as? String == "target_obscured")
+        #expect(entry["browserTraceID"] as? String == "trace_1")
+        #expect(diagnostics.lastFailure == "target_obscured")
+        #expect(flight["totalSteps"] as? Int == 1)
+        #expect(lastDebugCapture["reason"] as? String == "debug_capture_disabled")
+
+        diagnostics.reset()
+        #expect(diagnostics.flightSnapshot["totalSteps"] as? Int == 0)
+        #expect(diagnostics.lastDebugCapture == nil)
+    }
 }
