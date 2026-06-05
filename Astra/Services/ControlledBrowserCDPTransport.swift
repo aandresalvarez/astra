@@ -1,7 +1,7 @@
 import Foundation
 
 enum ControlledBrowserCDPTransport {
-    nonisolated static func sendWebSocketMessage(
+    static func sendWebSocketMessage(
         _ message: URLSessionWebSocketTask.Message,
         on task: URLSessionWebSocketTask,
         timeout: TimeInterval,
@@ -26,7 +26,7 @@ enum ControlledBrowserCDPTransport {
         }
     }
 
-    nonisolated static func receiveWebSocketMessage(
+    static func receiveWebSocketMessage(
         from task: URLSessionWebSocketTask,
         timeout: TimeInterval,
         operationName: String
@@ -46,7 +46,7 @@ enum ControlledBrowserCDPTransport {
         }
     }
 
-    nonisolated static func responseID(from object: [String: Any]) -> Int? {
+    static func responseID(from object: [String: Any]) -> Int? {
         if let id = object["id"] as? Int {
             return id
         }
@@ -59,7 +59,7 @@ enum ControlledBrowserCDPTransport {
         return nil
     }
 
-    nonisolated static func stringValue(_ value: Any?) -> String {
+    static func stringValue(_ value: Any?) -> String {
         if let string = value as? String {
             return string
         }
