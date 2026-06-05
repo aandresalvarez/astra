@@ -2,8 +2,30 @@ import Foundation
 import SwiftData
 import ASTRACore
 
-@MainActor
+struct AgentRuntimeBudgetSnapshot: Equatable, Sendable {
+    let effectiveTokenBudget: Int
+    let tokensUsed: Int
+
+    init(effectiveTokenBudget: Int, tokensUsed: Int) {
+        self.effectiveTokenBudget = effectiveTokenBudget
+        self.tokensUsed = tokensUsed
+    }
+
+    @MainActor
+    init(task: AgentTask) {
+        self.init(
+            effectiveTokenBudget: AgentRuntimeProcessRunner.effectiveTokenBudget(for: task),
+            tokensUsed: task.tokensUsed
+        )
+    }
+
+    var hasReportedTokensAboveBudget: Bool {
+        effectiveTokenBudget != Int.max && tokensUsed > effectiveTokenBudget
+    }
+}
+
 enum AgentRuntimeBudgetPolicy {
+    @MainActor
     static func enforcePromptBudgetIfNeeded(
         prompt: String,
         task: AgentTask,
@@ -62,13 +84,27 @@ enum AgentRuntimeBudgetPolicy {
 
     static func shouldTreatAsBudgetExceeded(
         result: AgentProcessResult,
-        task: AgentTask,
+        budget: AgentRuntimeBudgetSnapshot,
         budgetEnforcementMode: BudgetEnforcementMode
     ) -> Bool {
         result.budgetExceeded ||
-            (budgetEnforcementMode == .hardStop && hasReportedTokensAboveBudget(task: task))
+            (budgetEnforcementMode == .hardStop && hasReportedTokensAboveBudget(budget: budget))
     }
 
+    @MainActor
+    static func shouldTreatAsBudgetExceeded(
+        result: AgentProcessResult,
+        task: AgentTask,
+        budgetEnforcementMode: BudgetEnforcementMode
+    ) -> Bool {
+        shouldTreatAsBudgetExceeded(
+            result: result,
+            budget: AgentRuntimeBudgetSnapshot(task: task),
+            budgetEnforcementMode: budgetEnforcementMode
+        )
+    }
+
+    @MainActor
     static func recordFinalBudgetWarningIfNeeded(
         result: AgentProcessResult,
         task: AgentTask,
@@ -104,8 +140,12 @@ enum AgentRuntimeBudgetPolicy {
         ], level: .warning)
     }
 
+    static func hasReportedTokensAboveBudget(budget: AgentRuntimeBudgetSnapshot) -> Bool {
+        budget.hasReportedTokensAboveBudget
+    }
+
+    @MainActor
     static func hasReportedTokensAboveBudget(task: AgentTask) -> Bool {
-        let tokenBudget = AgentRuntimeProcessRunner.effectiveTokenBudget(for: task)
-        return tokenBudget != Int.max && task.tokensUsed > tokenBudget
+        hasReportedTokensAboveBudget(budget: AgentRuntimeBudgetSnapshot(task: task))
     }
 }
