@@ -1,7 +1,57 @@
 import Foundation
 
-enum GitStatusParser {
-    static func parsePorcelain(_ output: String) -> [GitStatusFile] {
+public struct GitStatusFile: Identifiable, Hashable, Sendable {
+    public let relativePath: String
+    public let originalPath: String?
+    public let status: String
+    public let isStaged: Bool
+
+    public init(relativePath: String, status: String, isStaged: Bool, originalPath: String? = nil) {
+        self.relativePath = relativePath
+        self.originalPath = originalPath
+        self.status = status
+        self.isStaged = isStaged
+    }
+
+    public var id: String {
+        [
+            isStaged ? "staged" : "unstaged",
+            status,
+            originalPath ?? "",
+            relativePath
+        ].joined(separator: "|")
+    }
+
+    public var displayPath: String {
+        guard let originalPath, !originalPath.isEmpty, originalPath != relativePath else {
+            return relativePath
+        }
+        return "\(originalPath) -> \(relativePath)"
+    }
+
+    public var pathspecs: [String] {
+        var paths: [String] = []
+        if let originalPath, !originalPath.isEmpty {
+            paths.append(originalPath)
+        }
+        paths.append(relativePath)
+        var seen: Set<String> = []
+        return paths.filter { seen.insert($0).inserted }
+    }
+
+    public var isUntracked: Bool { status == "?" }
+    public var isDeleted: Bool { status == "D" }
+    public var isRenamed: Bool { status == "R" }
+    public var isCopied: Bool { status == "C" }
+    public var isConflict: Bool {
+        status == "U"
+            || status.contains("U")
+            || ["AA", "DD"].contains(status)
+    }
+}
+
+public enum GitStatusParser {
+    public static func parsePorcelain(_ output: String) -> [GitStatusFile] {
         var files: [GitStatusFile] = []
         let lines = output.split(separator: "\n")
 
@@ -50,7 +100,7 @@ enum GitStatusParser {
 
     /// Parses `git status --porcelain=v1 -z`. The NUL-delimited form avoids
     /// quoting ambiguity and reports rename/copy entries as `XY newPath\0oldPath`.
-    static func parsePorcelainZ(_ output: String) -> [GitStatusFile] {
+    public static func parsePorcelainZ(_ output: String) -> [GitStatusFile] {
         var files: [GitStatusFile] = []
         let records = output.split(separator: "\0", omittingEmptySubsequences: true).map(String.init)
         var index = 0
@@ -100,7 +150,7 @@ enum GitStatusParser {
             }
 
             if x == "R" || x == "C" || y == "R" || y == "C" {
-                index += 1 // skip original path payload
+                index += 1
             }
             index += 1
         }

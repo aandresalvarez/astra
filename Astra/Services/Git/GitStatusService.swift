@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAGitContracts
 
 struct GitStatusService {
     typealias GitRunner = (_ repoPath: String, _ arguments: [String]) async throws -> String

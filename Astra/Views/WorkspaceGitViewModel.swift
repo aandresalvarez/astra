@@ -3,6 +3,7 @@ import SwiftUI
 import Combine
 import SwiftData
 import ASTRACore
+import ASTRAGitContracts
 
 @MainActor
 final class WorkspaceGitViewModel: ObservableObject {

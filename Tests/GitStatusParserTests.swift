@@ -1,5 +1,6 @@
 import Testing
 @testable import ASTRA
+import ASTRAGitContracts
 
 @Suite("Git Status Parser")
 struct GitStatusParserTests {

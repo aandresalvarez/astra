@@ -192,6 +192,21 @@ struct ArchitectureFitnessTests {
         #expect(matches.isEmpty, "New raw stop reason assignments should stay behind runtime/completion/persistence boundaries: \(matches)")
     }
 
+    @Test("Git status parsing lives behind its SwiftPM contract target")
+    func gitStatusParsingLivesBehindContractTarget() throws {
+        let root = try repositoryRoot()
+        let package = try String(contentsOf: root.appendingPathComponent("Package.swift"), encoding: .utf8)
+
+        #expect(package.contains(#"name: "ASTRAGitContracts""#))
+        #expect(package.contains(#""ASTRAGitContracts","#))
+        #expect(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent("ASTRAGitContracts/GitStatusContracts.swift").path
+        ))
+        #expect(!FileManager.default.fileExists(
+            atPath: root.appendingPathComponent("Astra/Services/Git/GitStatusParser.swift").path
+        ))
+    }
+
     private func declaredTaskEventTypeConstants() throws -> Set<String> {
         let file = try repositoryRoot().appendingPathComponent("Astra/Models/TaskEventTypes.swift")
         let text = try String(contentsOf: file, encoding: .utf8)

@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAGitContracts
 
 struct GitRepositoryInfo: Identifiable, Hashable {
     var id: String { path }
@@ -12,56 +13,6 @@ struct GitRepositoryInfo: Identifiable, Hashable {
         self.path = WorkspacePathPresentation.standardizedPath(path)
         self.subtitle = subtitle
         self.roleLabel = roleLabel
-    }
-}
-
-struct GitStatusFile: Identifiable, Hashable {
-    let relativePath: String
-    let originalPath: String?
-    let status: String // "M", "A", "D", "?", "R"
-    let isStaged: Bool
-
-    init(relativePath: String, status: String, isStaged: Bool, originalPath: String? = nil) {
-        self.relativePath = relativePath
-        self.originalPath = originalPath
-        self.status = status
-        self.isStaged = isStaged
-    }
-
-    var id: String {
-        [
-            isStaged ? "staged" : "unstaged",
-            status,
-            originalPath ?? "",
-            relativePath
-        ].joined(separator: "|")
-    }
-
-    var displayPath: String {
-        guard let originalPath, !originalPath.isEmpty, originalPath != relativePath else {
-            return relativePath
-        }
-        return "\(originalPath) -> \(relativePath)"
-    }
-
-    var pathspecs: [String] {
-        var paths: [String] = []
-        if let originalPath, !originalPath.isEmpty {
-            paths.append(originalPath)
-        }
-        paths.append(relativePath)
-        var seen: Set<String> = []
-        return paths.filter { seen.insert($0).inserted }
-    }
-
-    var isUntracked: Bool { status == "?" }
-    var isDeleted: Bool { status == "D" }
-    var isRenamed: Bool { status == "R" }
-    var isCopied: Bool { status == "C" }
-    var isConflict: Bool {
-        status == "U"
-            || status.contains("U")
-            || ["AA", "DD"].contains(status)
     }
 }
 

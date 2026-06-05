@@ -3,6 +3,7 @@ import SwiftData
 import Testing
 @testable import ASTRA
 import ASTRACore
+import ASTRAGitContracts
 
 /// Regression coverage for pushing/publishing from the Repository panel.
 ///

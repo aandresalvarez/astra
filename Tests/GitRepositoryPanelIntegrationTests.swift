@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import ASTRA
+import ASTRAGitContracts
 
 @Suite("Git Repository Panel Integration")
 struct GitRepositoryPanelIntegrationTests {
