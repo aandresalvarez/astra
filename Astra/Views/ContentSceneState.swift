@@ -1,5 +1,12 @@
 import Foundation
 
+struct ContentWorkspaceSelectionPersistence: Equatable {
+    let workspaceID: String
+    let workspacePath: String
+
+    static let empty = ContentWorkspaceSelectionPersistence(workspaceID: "", workspacePath: "")
+}
+
 enum ContentSelectionResolver {
     static func effectiveWorkspace(selectedTask: AgentTask?, selectedWorkspace: Workspace?) -> Workspace? {
         selectedTask?.workspace ?? selectedWorkspace
@@ -51,5 +58,56 @@ enum ContentDetailPresentation: Equatable {
         }
 
         return .workspaceHome
+    }
+}
+
+@MainActor
+struct ContentSceneCoordinator {
+    let workspaces: [Workspace]
+    let selectedTask: AgentTask?
+    let selectedWorkspace: Workspace?
+    let lastSelectedWorkspaceID: String
+    let lastSelectedWorkspacePath: String
+
+    var effectiveWorkspace: Workspace? {
+        ContentSelectionResolver.effectiveWorkspace(
+            selectedTask: selectedTask,
+            selectedWorkspace: selectedWorkspace
+        )
+    }
+
+    var effectiveWorkspaceID: UUID? {
+        effectiveWorkspace?.id
+    }
+
+    var workspaceSelectionSignature: String {
+        workspaces
+            .map { "\($0.id.uuidString)|\($0.primaryPath)" }
+            .joined(separator: ",")
+    }
+
+    func restoredWorkspace() -> Workspace? {
+        ContentWorkspaceSelectionResolver.restoredWorkspace(
+            workspaces: workspaces,
+            currentSelection: selectedWorkspace,
+            lastSelectedWorkspaceID: lastSelectedWorkspaceID,
+            lastSelectedWorkspacePath: lastSelectedWorkspacePath
+        )
+    }
+
+    func persistence(for workspace: Workspace?) -> ContentWorkspaceSelectionPersistence {
+        guard let workspace else { return .empty }
+        return ContentWorkspaceSelectionPersistence(
+            workspaceID: workspace.id.uuidString,
+            workspacePath: workspace.primaryPath
+        )
+    }
+
+    func presentation(isComposingTask: Bool) -> ContentDetailPresentation {
+        ContentDetailPresentation.resolve(
+            selectedTask: selectedTask,
+            effectiveWorkspace: effectiveWorkspace,
+            isComposingTask: isComposingTask
+        )
     }
 }
