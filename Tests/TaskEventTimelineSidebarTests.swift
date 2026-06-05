@@ -403,9 +403,11 @@ struct SidebarGroupingTests {
         #expect(SidebarLeanPresentation.sidebarTaskTitlesUsePrefixPrimaryPresentation)
         #expect(SidebarLeanPresentation.workspaceStarsMoveToTrailingEdge)
         #expect(SidebarLeanPresentation.workspaceMetadataAndActionsShareTrailingSlot)
-        #expect(SidebarLeanPresentation.selectedWorkspaceChildrenUseGuide)
+        #expect(!SidebarLeanPresentation.selectedWorkspaceChildrenUseGuide)
         #expect(SidebarLeanPresentation.sidebarTaskStatusesShowExceptionsOnly)
         #expect(SidebarLeanPresentation.pinnedPreviewLimit == 5)
+        #expect(SidebarLeanPresentation.childTaskListLeadingPadding == 0)
+        #expect(SidebarLeanPresentation.childTaskContentLeadingPadding == 0)
     }
 
     @Test("Sidebar collapses before the expanded rail can clip trailing metadata")

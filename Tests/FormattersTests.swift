@@ -96,15 +96,25 @@ struct FormattersTests {
         #expect(presentations.allSatisfy { !$0.displayTitle.contains("…") })
     }
 
-    @Test("sidebarTaskTitlePresentation never mid-ellipsizes ordinary prose")
-    func sidebarTaskTitlePresentationDoesNotMidEllipsizeProse() {
+    @Test("sidebarTaskTitlePresentation keeps ordinary prose readable")
+    func sidebarTaskTitlePresentationKeepsOrdinaryProseReadable() {
         let output = Formatters.sidebarTaskTitlePresentation(
             "Create component smoke file",
             maxDisplayCharacters: 18
         )
 
-        #expect(output.primary == "component … file")
-        #expect(!output.primary.contains("co…"))
-        #expect(!output.primary.contains("sm…"))
+        #expect(output.primary == "component smoke file")
+        #expect(!output.primary.contains(" … "))
+    }
+
+    @Test("sidebarTaskTitlePresentation collapses exact repeated title halves")
+    func sidebarTaskTitlePresentationCollapsesRepeatedTitleHalves() {
+        let output = Formatters.sidebarTaskTitlePresentation(
+            "Build 3D Rubik's cube solverBuild 3D Rubik's cube solver"
+        )
+
+        #expect(output.prefix == "Build")
+        #expect(output.primary == "3D Rubik's cube solver")
+        #expect(output.fullTitle == "Build 3D Rubik's cube solverBuild 3D Rubik's cube solver")
     }
 }

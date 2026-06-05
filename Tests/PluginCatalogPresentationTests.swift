@@ -122,6 +122,63 @@ struct PluginCatalogPresentationTests {
         #expect(state.enabledCount == 0)
     }
 
+    @Test("state groups filtered packages by capability management status")
+    func stateGroupsFilteredPackagesByManagementStatus() {
+        let needsSetup = makePresentationPackage(
+            id: "jira",
+            name: "Jira",
+            category: "Integrations",
+            governance: .builtInApproved(riskLevel: .high)
+        )
+        let enabled = makePresentationPackage(
+            id: "mail",
+            name: "Mail",
+            category: "Integrations",
+            governance: .localDraft()
+        )
+        let available = makePresentationPackage(
+            id: "security",
+            name: "Security",
+            category: "Security",
+            governance: .builtInApproved(riskLevel: .medium)
+        )
+        let blocked = makePresentationPackage(
+            id: "blocked",
+            name: "Blocked",
+            category: "Security",
+            governance: CapabilityGovernance(
+                approvalStatus: .blocked,
+                riskLevel: .restricted,
+                visibility: .adminOnly,
+                requiresAdminApproval: true,
+                requiresExplicitUserConsent: true,
+                policyNotes: ""
+            )
+        )
+
+        let state = PluginCatalogPresentation.makeState(
+            packages: [needsSetup, enabled, available, blocked],
+            focus: .all,
+            selectedCategory: nil,
+            approvalFilter: .all,
+            riskFilter: .all,
+            showsNeedsAttentionOnly: false,
+            showsEnabledOnly: false,
+            searchText: "",
+            policyContext: CapabilityCatalogPolicyContext(isAdmin: true),
+            isEnabled: { $0.id == "mail" },
+            requiresSetup: { $0.id == "jira" }
+        )
+
+        #expect(state.groupedPackages.map(\.kind) == [.needsSetup, .enabled, .available, .blocked])
+        #expect(state.groupedPackages.map { $0.packages.map(\.id) } == [
+            ["jira"],
+            ["mail"],
+            ["security"],
+            ["blocked"]
+        ])
+    }
+
     @Test("import overview preserves package description and hides duplicate content summary")
     func importOverviewPreservesPackageDescriptionAndHidesDuplicateContentSummary() {
         let package = makePresentationPackage(
@@ -145,6 +202,38 @@ struct PluginCatalogPresentationTests {
 
         #expect(CapabilityImportPresentation.overviewDescription(for: package, contentSummary: "A skill") == "No description provided.")
         #expect(!CapabilityImportPresentation.shouldShowContentSummary(for: package))
+    }
+
+    @Test("setup presentation makes connector fields readable while preserving keys")
+    func setupPresentationMakesConnectorFieldsReadableWhilePreservingKeys() {
+        let connector = PluginConnector(
+            name: "Jira",
+            serviceType: "jira",
+            icon: "list.clipboard",
+            description: "Tickets",
+            baseURL: "https://yourcompany.atlassian.net",
+            authMethod: "api_key",
+            credentialHints: [],
+            configHints: [],
+            notes: ""
+        )
+        let credential = PluginConnector.CredentialHint(
+            key: "JIRA_API_TOKEN",
+            hint: "Atlassian API token"
+        )
+        let config = PluginConnector.ConfigHint(
+            key: "JIRA_PROJECTS",
+            hint: "Comma-separated project keys",
+            isList: true
+        )
+
+        #expect(CapabilitySetupPresentation.fieldLabel(for: "JIRA_EMAIL") == "Email")
+        #expect(CapabilitySetupPresentation.fieldLabel(for: "JIRA_API_TOKEN") == "API token")
+        #expect(CapabilitySetupPresentation.fieldHelper(for: "JIRA_API_TOKEN") == "JIRA_API_TOKEN")
+        #expect(CapabilitySetupPresentation.baseURLLabel(for: connector) == "Jira site URL")
+        #expect(CapabilitySetupPresentation.authMethodLabel("api_key") == "API key")
+        #expect(CapabilitySetupPresentation.credentialPlaceholder(for: credential) == "Paste API token")
+        #expect(CapabilitySetupPresentation.configPlaceholder(for: config) == "ENG, OPS")
     }
 }
 

@@ -92,12 +92,11 @@ enum SidebarLeanPresentation {
     static let sidebarTaskTitlesUsePrefixPrimaryPresentation = true
     static let workspaceStarsMoveToTrailingEdge = true
     static let workspaceMetadataAndActionsShareTrailingSlot = true
-    static let selectedWorkspaceChildrenUseGuide = true
+    static let selectedWorkspaceChildrenUseGuide = false
     static let sidebarTaskStatusesShowExceptionsOnly = true
     static let pinnedPreviewLimit = 5
-    static let childTaskContentLeadingPadding: CGFloat = 2
-    static let childGuideLeadingPadding: CGFloat = 17
-    static let childGuideWidth: CGFloat = 1
+    static let childTaskListLeadingPadding: CGFloat = 0
+    static let childTaskContentLeadingPadding: CGFloat = 0
     static let workspaceRowTrailingSlotWidth: CGFloat = 58
     static let newTaskVerticalPadding: CGFloat = 7
     static let newTaskRestFillOpacity = 0.045
@@ -961,9 +960,10 @@ struct TaskSidebarView: View {
     /// the tasks lives inside the row's view tree, where transitions
     /// behave like they do everywhere else.
     ///
-    /// Child task rows keep their text indented, but the row surface itself
-    /// spans the same width as the parent workspace row. This keeps hover and
-    /// selection chrome from shrinking to the nested content width.
+    /// Child task rows keep a compact workspace-relative indent, but avoid the
+    /// permanent guide rail that used to consume title width and dominate the
+    /// scan path. The row surface still spans the same width as the parent
+    /// workspace row so hover and selection chrome stay stable.
     @ViewBuilder
     private func workspaceListRow(for workspace: Workspace, using taskIndex: SidebarTaskIndex) -> some View {
         let isExpanded = isWorkspaceExpanded(workspace, using: taskIndex)
@@ -1004,16 +1004,9 @@ struct TaskSidebarView: View {
                         }
                     }
                 }
-                .padding(.leading, SidebarLeanPresentation.childGuideLeadingPadding + 8)
+                .padding(.leading, SidebarLeanPresentation.childTaskListLeadingPadding)
                 .padding(.top, 2)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .overlay(alignment: .leading) {
-                    Rectangle()
-                        .fill(Stanford.lagunita.opacity(0.18))
-                        .frame(width: SidebarLeanPresentation.childGuideWidth)
-                        .padding(.leading, SidebarLeanPresentation.childGuideLeadingPadding)
-                        .padding(.vertical, 6)
-                }
                 // Pure opacity in both directions. Earlier `.move(edge:
                 // .top)` slid tasks vertically as the container's height
                 // changed, so the rows visually crossed through the
