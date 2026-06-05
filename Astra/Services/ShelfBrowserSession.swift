@@ -2374,8 +2374,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         action: String,
         allowDangerous: Bool
     ) async throws -> BrowserPreflightExecution {
-        guard let analysisID = Self.normalized(analysisID),
-              let controlID = Self.normalized(controlID) else {
+        guard let analysisID = ShelfBrowserCommandNormalization.normalized(analysisID),
+              let controlID = ShelfBrowserCommandNormalization.normalized(controlID) else {
             return BrowserPreflightExecution(
                 ok: false,
                 cachedControl: nil,
@@ -4204,7 +4204,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     }
 
     private func openGoogleDriveCandidate(_ control: [String: Any]) async throws -> [String: Any] {
-        let selector = Self.normalized(control["selector"] as? String)
+        let selector = ShelfBrowserCommandNormalization.normalized(control["selector"] as? String)
         let bounds = control["bounds"] as? [String: Any]
         let x = Self.doubleValue(bounds?["centerX"])
         let y = Self.doubleValue(bounds?["centerY"])
@@ -4384,7 +4384,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     }
 
     private static func googleDriveOpenCandidateKey(_ control: [String: Any]) -> String {
-        if let selector = normalized(control["selector"] as? String) {
+        if let selector = ShelfBrowserCommandNormalization.normalized(control["selector"] as? String) {
             return "selector:\(selector)"
         }
         let bounds = control["bounds"] as? [String: Any]
@@ -4401,7 +4401,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             "nameLength": (control["name"] as? String ?? "").count,
             "role": control["role"] as? String ?? "",
             "tag": control["tag"] as? String ?? "",
-            "hasSelector": normalized(control["selector"] as? String) != nil,
+            "hasSelector": ShelfBrowserCommandNormalization.normalized(control["selector"] as? String) != nil,
             "centerX": Int(doubleValue(bounds["centerX"]) ?? -1),
             "centerY": Int(doubleValue(bounds["centerY"]) ?? -1)
         ]
@@ -5249,8 +5249,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         let setAnalysisID = command.setAnalysisID ?? command.analysisID
         let setControlID = command.setControlID ?? command.controlID
         if let set = command.set,
-           Self.normalized(setAnalysisID) != nil,
-           Self.normalized(setControlID) != nil {
+           ShelfBrowserCommandNormalization.normalized(setAnalysisID) != nil,
+           ShelfBrowserCommandNormalization.normalized(setControlID) != nil {
             let resolved = try await resolvePreflight(
                 analysisID: setAnalysisID,
                 controlID: setControlID,
@@ -5300,8 +5300,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
         let clickAnalysisID = command.clickAnalysisID ?? command.analysisID
         let clickControlID = command.clickControlID ?? command.controlID
-        if Self.normalized(clickAnalysisID) != nil,
-           Self.normalized(clickControlID) != nil {
+        if ShelfBrowserCommandNormalization.normalized(clickAnalysisID) != nil,
+           ShelfBrowserCommandNormalization.normalized(clickControlID) != nil {
             let resolved = try await resolvePreflight(
                 analysisID: clickAnalysisID,
                 controlID: clickControlID,
@@ -6343,287 +6343,4 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         }
     }
 
-    private struct NavigateCommand: Decodable {
-        let url: String
-    }
-
-    private struct ClickCommand: Decodable {
-        let analysisID: String?
-        let controlID: String?
-        let selector: String?
-        let label: String?
-        let role: String?
-        let text: String?
-        let placeholder: String?
-        let testID: String?
-        let x: Double?
-        let y: Double?
-        let allowDangerous: Bool?
-
-        var normalizedSelector: String? {
-            let trimmed = selector?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            return trimmed.isEmpty ? nil : trimmed
-        }
-
-        var normalizedLabel: String? { ShelfBrowserSession.normalized(label) }
-        var normalizedRole: String? { ShelfBrowserSession.normalized(role) }
-        var normalizedText: String? { ShelfBrowserSession.normalized(text) }
-        var normalizedPlaceholder: String? { ShelfBrowserSession.normalized(placeholder) }
-        var normalizedTestID: String? { ShelfBrowserSession.normalized(testID) }
-        var hasAnalysisControl: Bool {
-            ShelfBrowserSession.normalized(analysisID) != nil && ShelfBrowserSession.normalized(controlID) != nil
-        }
-    }
-
-    private struct TypeCommand: Decodable {
-        let analysisID: String?
-        let controlID: String?
-        let selector: String?
-        let text: String
-        let clear: Bool?
-        let label: String?
-        let role: String?
-        let placeholder: String?
-        let testID: String?
-        let allowDangerous: Bool?
-
-        var normalizedSelector: String? { ShelfBrowserSession.normalized(selector) }
-        var normalizedLabel: String? { ShelfBrowserSession.normalized(label) }
-        var normalizedRole: String? { ShelfBrowserSession.normalized(role) }
-        var normalizedPlaceholder: String? { ShelfBrowserSession.normalized(placeholder) }
-        var normalizedTestID: String? { ShelfBrowserSession.normalized(testID) }
-        var hasAnalysisControl: Bool {
-            ShelfBrowserSession.normalized(analysisID) != nil && ShelfBrowserSession.normalized(controlID) != nil
-        }
-    }
-
-    private struct ReplaceTextCommand: Decodable {
-        let analysisID: String?
-        let controlID: String?
-        let find: String
-        let replacement: String
-        let selector: String?
-        let all: Bool?
-        let allowDangerous: Bool?
-
-        var normalizedSelector: String? {
-            ShelfBrowserSession.normalized(selector)
-        }
-        var hasAnalysisControl: Bool {
-            ShelfBrowserSession.normalized(analysisID) != nil && ShelfBrowserSession.normalized(controlID) != nil
-        }
-    }
-
-    private struct ClickControlCommand: Decodable {
-        let analysisID: String?
-        let controlID: String?
-        let label: String?
-        let role: String?
-        let allowDangerous: Bool?
-
-        var normalizedLabel: String? {
-            ShelfBrowserSession.normalized(label)
-        }
-
-        var hasAnalysisControl: Bool {
-            ShelfBrowserSession.normalized(analysisID) != nil && ShelfBrowserSession.normalized(controlID) != nil
-        }
-    }
-
-    private struct BrowserPreflightCommand: Decodable {
-        let analysisID: String?
-        let controlID: String?
-        let action: String
-        let allowDangerous: Bool?
-    }
-
-    private struct BrowserPreflightExecution {
-        let ok: Bool
-        let cachedControl: BrowserControl?
-        let currentControl: BrowserControl?
-        let currentControlRef: BrowserControlRef?
-        let resolutionStrategy: String
-        let response: [String: Any]
-    }
-
-    private struct BrowserControlActionTarget {
-        let selector: String?
-        let x: Double?
-        let y: Double?
-        let label: String?
-        let role: String?
-        let placeholder: String?
-        let testID: String?
-        let source: String
-        let usedSelector: Bool
-    }
-
-    private struct VerifyTextCommand: Decodable {
-        let text: String
-        let absent: Bool?
-    }
-
-    private struct WaitSavedCommand: Decodable {
-        let timeoutSeconds: Double?
-        let intervalMilliseconds: Int?
-    }
-
-    private struct GoogleFindReplaceCommand: Decodable {
-        let find: String
-        let replacement: String
-        let all: Bool?
-    }
-
-    private struct GoogleDocsFindCommand: Decodable {
-        let query: String
-        let closeFindBar: Bool?
-    }
-
-    private struct GoogleDocsInsertCommand: Decodable {
-        let text: String
-        let verifyText: String?
-        let waitSaved: Bool?
-
-        var normalizedVerifyText: String? {
-            ShelfBrowserSession.normalized(verifyText)
-        }
-    }
-
-    private struct GoogleDocsReplaceDocumentCommand: Decodable {
-        let text: String
-        let verifyText: String?
-
-        var normalizedVerifyText: String? {
-            ShelfBrowserSession.normalized(verifyText)
-        }
-    }
-
-    private struct GoogleDriveOpenCommand: Decodable {
-        let name: String
-        let timeoutSeconds: Double?
-        let intervalMilliseconds: Int?
-
-        var normalizedName: String {
-            name.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-    }
-
-    private struct ActCommand: Decodable {
-        let analysisID: String?
-        let controlID: String?
-        let setAnalysisID: String?
-        let setControlID: String?
-        let clickAnalysisID: String?
-        let clickControlID: String?
-        let find: String?
-        let set: String?
-        let role: String?
-        let click: String?
-        let clickRole: String?
-        let allowDangerous: Bool?
-        let waitSaved: Bool?
-        let verify: String?
-        let absent: String?
-        let timeoutSeconds: Double?
-        let intervalMilliseconds: Int?
-    }
-
-    private struct KeypressCommand: Decodable {
-        let key: String
-        let modifiers: [String]?
-    }
-
-    private struct TextCommand: Decodable {
-        let text: String
-    }
-
-    private struct PageReadCommand: Decodable {
-        let format: String?
-        let limit: Int?
-        let chunkSize: Int?
-    }
-
-    private struct WaitTextCommand: Decodable {
-        let text: String
-        let timeoutSeconds: Double?
-        let intervalMilliseconds: Int?
-    }
-
-    private struct WaitSelectorCommand: Decodable {
-        let selector: String
-        let timeoutSeconds: Double?
-        let intervalMilliseconds: Int?
-    }
-
-    private struct BatchCommand: Decodable {
-        let actions: [BatchActionCommand]
-        let snapshotMode: String?
-        let snapshotQuery: String?
-        let snapshotLimit: Int?
-    }
-
-    private struct BatchActionCommand: Decodable {
-        let action: String
-        let analysisID: String?
-        let controlID: String?
-        let url: String?
-        let selector: String?
-        let label: String?
-        let role: String?
-        let placeholder: String?
-        let testID: String?
-        let x: Double?
-        let y: Double?
-        let allowDangerous: Bool?
-        let name: String?
-        let text: String?
-        let find: String?
-        let replacement: String?
-        let set: String?
-        let click: String?
-        let clickRole: String?
-        let waitSaved: Bool?
-        let verify: String?
-        let absentText: String?
-        let all: Bool?
-        let absent: Bool?
-        let clear: Bool?
-        let key: String?
-        let modifiers: [String]?
-        let timeoutSeconds: Double?
-        let intervalMilliseconds: Int?
-        let mode: String?
-        let format: String?
-        let query: String?
-        let limit: Int?
-        let chunkSize: Int?
-        let closeFindBar: Bool?
-        let full: Bool?
-        let debug: Bool?
-        let v2: Bool?
-        let version: String?
-        let analysisVersion: String?
-        let preflightAction: String?
-
-        var normalizedAction: String {
-            action.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        }
-
-        var normalizedSelector: String? {
-            ShelfBrowserSession.normalized(selector)
-        }
-
-        var normalizedLabel: String? { ShelfBrowserSession.normalized(label) }
-        var normalizedRole: String? { ShelfBrowserSession.normalized(role) }
-        var normalizedPlaceholder: String? { ShelfBrowserSession.normalized(placeholder) }
-        var normalizedTestID: String? { ShelfBrowserSession.normalized(testID) }
-        var hasAnalysisControl: Bool {
-            ShelfBrowserSession.normalized(analysisID) != nil && ShelfBrowserSession.normalized(controlID) != nil
-        }
-    }
-
-    nonisolated private static func normalized(_ value: String?) -> String? {
-        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmed.isEmpty ? nil : trimmed
-    }
 }

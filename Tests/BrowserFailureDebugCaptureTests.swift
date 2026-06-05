@@ -194,4 +194,13 @@ struct BrowserFailureDebugCaptureTests {
         let navigationEvents = try #require(compact["navigationEvents"] as? [[String: Any]])
         #expect(navigationEvents.first?["url"] as? String == "https://example.com/next")
     }
+
+    @Test("Controlled CDP transport matches numeric and string response IDs")
+    func controlledCDPTransportMatchesDevToolsResponseIDs() {
+        #expect(ControlledBrowserCDPTransport.responseID(from: ["id": 42]) == 42)
+        #expect(ControlledBrowserCDPTransport.responseID(from: ["id": NSNumber(value: 43)]) == 43)
+        #expect(ControlledBrowserCDPTransport.responseID(from: ["id": "44"]) == 44)
+        #expect(ControlledBrowserCDPTransport.responseID(from: ["id": "not-a-number"]) == nil)
+        #expect(ControlledBrowserCDPTransport.responseID(from: ["method": "Runtime.consoleAPICalled"]) == nil)
+    }
 }
