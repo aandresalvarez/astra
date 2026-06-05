@@ -1021,7 +1021,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     includeResults: Self.boolQueryValue(request.queryValue("run")) ?? true
                 ))
             case .snapshot:
-                let mode = SnapshotMode(rawValue: request.queryValue("mode") ?? "full") ?? .full
+                let mode = BrowserSnapshotMode(rawValue: request.queryValue("mode") ?? "full") ?? .full
                 let query = request.queryValue("query")
                 let limit = request.queryValue("limit").flatMap(Int.init)
                 let json = try await snapshot(mode: mode, query: query, limit: limit)
@@ -1763,7 +1763,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         try Self.jsonObject(from: try await rawSnapshotJSON())
     }
 
-    private func snapshot(mode: SnapshotMode = .full, query: String? = nil, limit: Int? = nil) async throws -> String {
+    private func snapshot(mode: BrowserSnapshotMode = .full, query: String? = nil, limit: Int? = nil) async throws -> String {
         let started = Date()
         do {
             let json = try await rawSnapshotJSON()
@@ -1772,7 +1772,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             if mode == .full && (query ?? "").isEmpty && limit == nil {
                 result = json
             } else {
-                result = try Self.compactSnapshot(json: json, mode: mode, query: query, limit: limit)
+                result = try BrowserPageSnapshotService.compactSnapshot(json: json, mode: mode, query: query, limit: limit)
             }
             let annotated = try annotateBrowserLoopHint(
                 json: result,
@@ -3361,7 +3361,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     private func logBrowserSnapshot(
         phase: String,
-        mode: SnapshotMode,
+        mode: BrowserSnapshotMode,
         query: String?,
         limit: Int?,
         resultJSON: String? = nil,
@@ -5632,7 +5632,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
             case "snapshot":
                 let json = try await snapshot(
-                    mode: SnapshotMode(rawValue: action.mode ?? "summary") ?? .summary,
+                    mode: BrowserSnapshotMode(rawValue: action.mode ?? "summary") ?? .summary,
                     query: action.query,
                     limit: action.limit
                 )
@@ -5652,7 +5652,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         }
         if let snapshotMode = command.snapshotMode {
             let snapshotJSON = try await snapshot(
-                mode: SnapshotMode(rawValue: snapshotMode) ?? .summary,
+                mode: BrowserSnapshotMode(rawValue: snapshotMode) ?? .summary,
                 query: command.snapshotQuery,
                 limit: command.snapshotLimit
             )
@@ -5673,60 +5673,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 } else {
                     continuation.resume(returning: #"{"ok":true}"#)
                 }
-            }
-        }
-    }
-
-    private static func compactSnapshot(json: String, mode: SnapshotMode, query: String?, limit: Int?) throws -> String {
-        let object = try jsonObject(from: json)
-        let queryText = query?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let controls = object["controls"] as? [[String: Any]] ?? []
-        let filteredControls = filteredControls(controls, query: queryText)
-
-        var compact: [String: Any] = [
-            "ok": boolValue(object["ok"]),
-            "url": object["url"] as? String ?? "",
-            "title": object["title"] as? String ?? ""
-        ]
-
-        if let viewport = object["viewport"] {
-            compact["viewport"] = viewport
-        }
-        if let focused = object["focusedElement"] {
-            compact["focusedElement"] = focused
-        }
-
-        switch mode {
-        case .full:
-            return json
-        case .text:
-            let text = object["text"] as? String ?? ""
-            compact["text"] = String(text.prefix(max(0, limit ?? 1_500)))
-            if let queryText, !queryText.isEmpty {
-                compact["matches"] = textMatches(in: text, query: queryText, limit: limit ?? 8)
-            }
-        case .controls:
-            compact["controlCount"] = controls.count
-            compact["controls"] = Array(filteredControls.prefix(max(1, limit ?? 40)))
-        case .summary:
-            let text = object["text"] as? String ?? ""
-            compact["text"] = String(text.prefix(max(0, limit ?? 1_200)))
-            compact["controlCount"] = controls.count
-            compact["controls"] = Array(filteredControls.prefix(20))
-            if let queryText, !queryText.isEmpty {
-                compact["matches"] = textMatches(in: text, query: queryText, limit: 5)
-            }
-        }
-
-        return try jsonString(compact)
-    }
-
-    private static func filteredControls(_ controls: [[String: Any]], query: String?) -> [[String: Any]] {
-        guard let query, !query.isEmpty else { return controls }
-        let lowerQuery = query.lowercased()
-        return controls.filter { control in
-            ["selector", "label", "value", "role", "type", "href"].contains { key in
-                (control[key] as? String)?.lowercased().contains(lowerQuery) == true
             }
         }
     }
@@ -5844,23 +5790,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         if boolValue(control["actionable"]) { score += 10 }
         if !boolValue(control["disabled"]) { score += 5 }
         return score
-    }
-
-    private static func textMatches(in text: String, query: String, limit: Int) -> [[String: Any]] {
-        guard !query.isEmpty else { return [] }
-        var matches: [[String: Any]] = []
-        var searchStart = text.startIndex
-        while matches.count < max(1, limit),
-              let range = text.range(of: query, options: [.caseInsensitive], range: searchStart..<text.endIndex) {
-            let lowerBound = text.index(range.lowerBound, offsetBy: -120, limitedBy: text.startIndex) ?? text.startIndex
-            let upperBound = text.index(range.upperBound, offsetBy: 120, limitedBy: text.endIndex) ?? text.endIndex
-            matches.append([
-                "index": text.distance(from: text.startIndex, to: range.lowerBound),
-                "snippet": String(text[lowerBound..<upperBound])
-            ])
-            searchStart = range.upperBound
-        }
-        return matches
     }
 
     static func isOpenedDriveTarget(urlString: String, title: String, name: String, startURL: String?) -> Bool {
@@ -6098,13 +6027,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         if ["1", "true", "yes", "y"].contains(value) { return true }
         if ["0", "false", "no", "n"].contains(value) { return false }
         return nil
-    }
-
-    private enum SnapshotMode: String {
-        case full
-        case summary
-        case text
-        case controls
     }
 
     private struct EmbeddedPageReadRequest {
