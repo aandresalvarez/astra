@@ -145,10 +145,13 @@ enum TaskForkManifestService {
 
     static func sourceAvailabilityWarning(for task: AgentTask, fileManager: FileManager = .default) -> String? {
         guard let manifest = load(for: task, fileManager: fileManager) else { return nil }
-        if !manifest.sourceTaskFolder.isEmpty,
-           !fileManager.fileExists(atPath: manifest.sourceTaskFolder) {
-            return "Checkpoint files are unavailable; using saved task history."
-        }
+        return sourceAvailabilityWarning(for: manifest, fileManager: fileManager)
+    }
+
+    static func sourceAvailabilityWarning(
+        for manifest: TaskForkManifest,
+        fileManager: FileManager = .default
+    ) -> String? {
         let references = manifest.sourceOutputFiles + manifest.sourceArtifacts
         let missing = references.contains { ref in
             if let local = ref.localCopyPath, fileManager.fileExists(atPath: local) {
@@ -156,7 +159,13 @@ enum TaskForkManifestService {
             }
             return !fileManager.fileExists(atPath: ref.sourcePath)
         }
-        return missing ? "Some checkpoint files are unavailable; using saved task history for missing files." : nil
+        guard missing else { return nil }
+
+        if !manifest.sourceTaskFolder.isEmpty,
+           !fileManager.fileExists(atPath: manifest.sourceTaskFolder) {
+            return "Checkpoint files are unavailable; using saved task history."
+        }
+        return "Some checkpoint files are unavailable; using saved task history for missing files."
     }
 
     @discardableResult

@@ -211,7 +211,9 @@ struct AgentTaskForkServiceTests {
 
         let sourceFolder = try TaskWorkspaceAccess(task: source).ensureTaskFolder()
         let artifactPath = (sourceFolder as NSString).appendingPathComponent("report.md")
+        let secondArtifactPath = (sourceFolder as NSString).appendingPathComponent("notes.md")
         try "checkpoint report".write(toFile: artifactPath, atomically: true, encoding: .utf8)
+        try "checkpoint notes".write(toFile: secondArtifactPath, atomically: true, encoding: .utf8)
 
         let run = TaskRun(task: source)
         run.startedAt = Date(timeIntervalSince1970: 100)
@@ -221,12 +223,20 @@ struct AgentTaskForkServiceTests {
         let artifact = Artifact(task: source, type: "markdown", path: artifactPath)
         artifact.createdAt = Date(timeIntervalSince1970: 105)
         context.insert(artifact)
+        let secondArtifact = Artifact(task: source, type: "markdown", path: secondArtifactPath)
+        secondArtifact.createdAt = Date(timeIntervalSince1970: 106)
+        context.insert(secondArtifact)
 
         let forked = AgentTask.fork(from: source, upToRun: run, in: context)
         try context.save()
 
         #expect(TaskForkManifestService.sourceAvailabilityWarning(for: forked) == nil)
+        let localCopy = try #require(try TaskForkManifestService.materializeSourceFile(sourcePath: artifactPath, for: forked))
+        let secondLocalCopy = try #require(try TaskForkManifestService.materializeSourceFile(sourcePath: secondArtifactPath, for: forked))
         try FileManager.default.removeItem(atPath: sourceFolder)
+        #expect(TaskForkManifestService.sourceAvailabilityWarning(for: forked) == nil)
+        #expect(FileManager.default.fileExists(atPath: localCopy))
+        try FileManager.default.removeItem(atPath: secondLocalCopy)
         let warning = try #require(TaskForkManifestService.sourceAvailabilityWarning(for: forked))
         #expect(warning.contains("Checkpoint files are unavailable"))
 

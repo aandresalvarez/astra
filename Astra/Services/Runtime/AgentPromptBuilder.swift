@@ -1534,7 +1534,7 @@ enum AgentPromptBuilder {
                 lines.append("- Fork manifest: \(forkManifestPath)")
                 lines.append("  - Source task: \(forkManifest.sourceTaskID.uuidString)")
                 lines.append("  - Checkpoint run: \(forkManifest.checkpointRunID.uuidString)")
-                if let warning = TaskForkManifestService.sourceAvailabilityWarning(for: task) {
+                if let warning = TaskForkManifestService.sourceAvailabilityWarning(for: forkManifest) {
                     lines.append("  - Warning: \(warning)")
                 }
                 pointers.append(sourcePointer(label: "fork manifest", target: forkManifestPath))
