@@ -244,7 +244,7 @@ final class AppSettingsSnapshotStore: ObservableObject {
         if observesDefaultsChanges {
             defaultsObserver = notificationCenter.addObserver(
                 forName: UserDefaults.didChangeNotification,
-                object: nil,
+                object: defaults,
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor in

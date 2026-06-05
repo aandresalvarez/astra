@@ -10,7 +10,7 @@ struct TaskRunStopReason: RawRepresentable, Codable, Sendable, Hashable, Express
     }
 
     init(stringLiteral value: StringLiteralType) {
-        self.rawValue = value
+        self.rawValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     static func custom(_ rawValue: String) -> TaskRunStopReason? {

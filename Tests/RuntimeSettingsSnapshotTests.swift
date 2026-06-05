@@ -170,6 +170,36 @@ struct RuntimeSettingsSnapshotTests {
         #expect(store.runtimeSettings.modelCacheSignature.contains("12|"))
     }
 
+    @MainActor
+    @Test("App settings store observes only its injected defaults instance")
+    func appSettingsStoreObservesOnlyItsInjectedDefaultsInstance() async {
+        let (defaults, suiteName) = makeDefaults()
+        let (otherDefaults, otherSuiteName) = makeDefaults()
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            otherDefaults.removePersistentDomain(forName: otherSuiteName)
+        }
+        let notificationCenter = NotificationCenter()
+        let store = AppSettingsSnapshotStore(
+            defaults: defaults,
+            notificationCenter: notificationCenter,
+            observesDefaultsChanges: true
+        )
+
+        defaults.set(AgentRuntimeID.claudeCode.rawValue, forKey: AppStorageKeys.defaultRuntimeID)
+        store.refresh()
+        #expect(store.runtimeSettings.defaultRuntime == .claudeCode)
+
+        defaults.set(AgentRuntimeID.copilotCLI.rawValue, forKey: AppStorageKeys.defaultRuntimeID)
+        notificationCenter.post(name: UserDefaults.didChangeNotification, object: otherDefaults)
+        await Task.yield()
+        #expect(store.runtimeSettings.defaultRuntime == .claudeCode)
+
+        notificationCenter.post(name: UserDefaults.didChangeNotification, object: defaults)
+        await Task.yield()
+        #expect(store.runtimeSettings.defaultRuntime == .copilotCLI)
+    }
+
     @Test("UI preference snapshot applies stable defaults")
     func uiPreferenceSnapshotAppliesStableDefaults() {
         let (defaults, suiteName) = makeDefaults()

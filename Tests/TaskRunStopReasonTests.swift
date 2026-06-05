@@ -46,4 +46,12 @@ struct TaskRunStopReasonTests {
         #expect(PendingTaskReviewPolicy.stopReasonIsPolicyBlocked(.policyViolation))
         #expect(!PendingTaskReviewPolicy.stopReasonIsPolicyBlocked(.completed))
     }
+
+    @Test("String literal stop reasons apply the same trimming normalization")
+    func stringLiteralStopReasonsApplySameTrimmingNormalization() {
+        let literal: TaskRunStopReason = "  no_usable_result\n"
+
+        #expect(literal.rawValue == TaskRunStopReason.noUsableResult.rawValue)
+        #expect(TaskRunStopReason(rawValue: "  no_usable_result\n") == literal)
+    }
 }

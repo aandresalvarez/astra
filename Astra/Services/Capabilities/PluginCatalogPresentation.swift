@@ -156,7 +156,7 @@ enum PluginCatalogSearch {
 }
 
 enum CapabilityImportPresentation {
-    static func overviewDescription(for package: PluginPackage, contentSummary: String) -> String {
+    static func overviewDescription(for package: PluginPackage, contentSummary _: String) -> String {
         let description = package.description.trimmingCharacters(in: .whitespacesAndNewlines)
         return description.isEmpty ? "No description provided." : description
     }
