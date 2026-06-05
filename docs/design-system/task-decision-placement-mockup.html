@@ -1,0 +1,766 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ASTRA Task Decision Placement Mockup</title>
+  <style>
+    :root {
+      --bg: #f7f7f5;
+      --panel: #ffffff;
+      --ink: #242424;
+      --muted: #777777;
+      --hairline: #deded8;
+      --soft: #f0f1ef;
+      --teal: #126f5b;
+      --teal-soft: #e6f3ef;
+      --amber: #ed8b00;
+      --amber-soft: #fff4df;
+      --red: #c9362b;
+      --red-soft: #fae7e3;
+      --blue: #007c92;
+      --shadow: 0 18px 50px rgba(24, 24, 24, 0.08);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+    }
+
+    button {
+      font: inherit;
+    }
+
+    .shell {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 280px minmax(560px, 1fr) 340px;
+    }
+
+    .sidebar,
+    .right-rail {
+      padding: 18px;
+      background: #fbfbfa;
+      border-color: var(--hairline);
+    }
+
+    .sidebar {
+      border-right: 1px solid var(--hairline);
+    }
+
+    .right-rail {
+      border-left: 1px solid var(--hairline);
+    }
+
+    .workspace-label {
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+
+    .task-row {
+      padding: 10px 12px;
+      border-radius: 8px;
+      margin-bottom: 8px;
+      color: var(--muted);
+    }
+
+    .task-row.active {
+      color: var(--ink);
+      background: var(--soft);
+      font-weight: 650;
+    }
+
+    .main {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+    }
+
+    .topbar {
+      height: 54px;
+      display: flex;
+      align-items: center;
+      padding: 0 24px;
+      border-bottom: 1px solid var(--hairline);
+      background: rgba(255, 255, 255, 0.82);
+      backdrop-filter: blur(12px);
+      position: sticky;
+      top: 0;
+      z-index: 5;
+    }
+
+    .topbar-title {
+      font-size: 15px;
+      font-weight: 700;
+    }
+
+    .conversation {
+      padding: 28px 40px 24px;
+      overflow: auto;
+    }
+
+    .message {
+      max-width: 940px;
+      margin: 0 auto 18px;
+    }
+
+    .bubble {
+      display: inline-block;
+      border: 1px solid var(--hairline);
+      background: var(--panel);
+      border-radius: 12px;
+      padding: 12px 16px;
+      line-height: 1.5;
+    }
+
+    .assistant-output {
+      max-width: 980px;
+      margin: 0 auto;
+      font-size: 16px;
+      line-height: 1.65;
+    }
+
+    .artifact-card {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      width: fit-content;
+      max-width: 100%;
+      margin: 14px 0;
+      padding: 10px 12px;
+      border: 1px solid rgba(0, 124, 146, 0.26);
+      border-radius: 8px;
+      background: #f1fbfb;
+      color: var(--blue);
+      font-weight: 700;
+    }
+
+    .turn-meta {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: #9b9b96;
+      font-size: 13px;
+      margin-top: 12px;
+    }
+
+    .run-details-shell {
+      max-width: 980px;
+      margin: 10px auto 0;
+      border: 1px solid var(--hairline);
+      border-radius: 10px;
+      background: var(--panel);
+      overflow: hidden;
+    }
+
+    .run-summary {
+      width: 100%;
+      border: 0;
+      background: transparent;
+      display: grid;
+      grid-template-columns: 24px 1fr auto;
+      align-items: center;
+      gap: 10px;
+      padding: 11px 14px;
+      text-align: left;
+      cursor: pointer;
+      color: var(--muted);
+    }
+
+    .run-summary strong {
+      color: var(--ink);
+      font-size: 14px;
+    }
+
+    .run-summary small {
+      display: block;
+      margin-top: 2px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .run-body {
+      display: none;
+      padding: 12px 14px 14px 44px;
+      border-top: 1px solid var(--hairline);
+      background: #fcfcfb;
+    }
+
+    .run-details-shell.open .run-body {
+      display: block;
+    }
+
+    .run-section {
+      border: 1px solid var(--hairline);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 10px;
+      background: var(--panel);
+    }
+
+    .run-section h3 {
+      margin: 0 0 10px;
+      font-size: 13px;
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .tool-row,
+    .stat-row {
+      display: grid;
+      grid-template-columns: 160px 1fr;
+      gap: 12px;
+      padding: 7px 0;
+      font-size: 13px;
+      border-top: 1px solid #eeeeea;
+    }
+
+    .tool-row:first-of-type,
+    .stat-row:first-of-type {
+      border-top: 0;
+    }
+
+    .tool-row .name {
+      color: var(--ink);
+      font-weight: 650;
+    }
+
+    .tool-row .detail,
+    .stat-row .detail {
+      color: var(--muted);
+      overflow-wrap: anywhere;
+    }
+
+    .debug-note {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 8px;
+    }
+
+    .decision-area {
+      padding: 8px 12px 10px;
+      border-top: 1px solid var(--hairline);
+      background: rgba(255, 255, 255, 0.94);
+      position: sticky;
+      bottom: 0;
+      z-index: 8;
+    }
+
+    .decision-dock {
+      max-width: 1120px;
+      margin: 0 auto;
+      border: 1px solid var(--hairline);
+      border-radius: 10px;
+      background: var(--panel);
+      box-shadow: 0 10px 30px rgba(20, 20, 16, 0.09);
+      container-type: inline-size;
+      overflow: hidden;
+    }
+
+    .decision-content {
+      display: grid;
+      grid-template-columns: 3px minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      min-height: 54px;
+      padding: 8px 10px 8px 0;
+    }
+
+    .status-rail {
+      align-self: stretch;
+      background: var(--amber);
+    }
+
+    .decision-copy {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding-left: 10px;
+      min-width: 0;
+    }
+
+    .verdict {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 14px;
+      font-weight: 750;
+      margin-bottom: 0;
+      white-space: nowrap;
+      flex: none;
+      position: relative;
+    }
+
+    .verdict-icon {
+      width: 20px;
+      height: 20px;
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      font-size: 12px;
+      background: var(--amber-soft);
+      color: var(--amber);
+      flex: none;
+    }
+
+    .decision-copy p {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      padding: 0;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    .verdict[data-tooltip]::after {
+      content: attr(data-tooltip);
+      position: absolute;
+      left: 0;
+      bottom: calc(100% + 10px);
+      z-index: 20;
+      width: max-content;
+      max-width: 320px;
+      padding: 7px 9px;
+      border: 1px solid var(--hairline);
+      border-radius: 8px;
+      background: #1f211f;
+      color: white;
+      box-shadow: 0 10px 24px rgba(20, 20, 16, 0.18);
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1.35;
+      white-space: normal;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(4px);
+      transition: opacity 120ms ease, transform 120ms ease;
+    }
+
+    .verdict:hover::after,
+    .verdict:focus-visible::after {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .utility-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 9px;
+      margin-top: 0;
+      min-width: 0;
+      flex: 0 1 auto;
+    }
+
+    .utility-row:empty {
+      display: none;
+    }
+
+    .text-action {
+      border: 0;
+      padding: 0;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .decision-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding-right: 2px;
+      min-width: max-content;
+      white-space: nowrap;
+    }
+
+    .button {
+      border: 1px solid var(--hairline);
+      border-radius: 7px;
+      padding: 6px 10px;
+      background: var(--panel);
+      color: var(--ink);
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .button.primary {
+      border-color: var(--amber);
+      background: var(--amber);
+      color: white;
+    }
+
+    .button.quiet {
+      border-color: transparent;
+      color: var(--muted);
+      background: transparent;
+    }
+
+    .composer {
+      border-top: 1px solid var(--hairline);
+      padding: 9px 12px;
+      color: #a0a09a;
+      font-size: 15px;
+    }
+
+    .rail-card {
+      border: 1px solid var(--hairline);
+      border-radius: 10px;
+      background: var(--panel);
+      padding: 14px;
+      margin-bottom: 14px;
+    }
+
+    .rail-card h2 {
+      font-size: 14px;
+      margin: 0 0 8px;
+    }
+
+    .rail-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .state-picker {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .state-picker button {
+      border: 1px solid var(--hairline);
+      background: var(--panel);
+      border-radius: 999px;
+      padding: 6px 10px;
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .state-picker button.active {
+      background: var(--teal);
+      border-color: var(--teal);
+      color: white;
+    }
+
+    .mapping-list {
+      padding-left: 18px;
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    body.ready .status-rail { background: var(--teal); }
+    body.ready .verdict-icon { background: var(--teal-soft); color: var(--teal); }
+    body.ready .button.primary { background: var(--teal); border-color: var(--teal); }
+
+    body.blocked .status-rail { background: var(--red); }
+    body.blocked .verdict-icon { background: var(--red-soft); color: var(--red); }
+    body.blocked .button.primary { background: var(--red); border-color: var(--red); }
+
+    @container (max-width: 680px) {
+      .decision-content {
+        grid-template-columns: 3px 1fr;
+        align-items: center;
+      }
+      .decision-actions {
+        grid-column: 2;
+        justify-content: flex-end;
+        padding-left: 10px;
+      }
+    }
+
+    @media (max-width: 1180px) {
+      .shell {
+        grid-template-columns: 220px minmax(420px, 1fr);
+      }
+      .right-rail {
+        display: none;
+      }
+    }
+
+    @media (max-width: 780px) {
+      .shell {
+        grid-template-columns: 1fr;
+      }
+      .sidebar {
+        display: none;
+      }
+      .conversation {
+        padding: 20px;
+      }
+      .decision-content {
+        grid-template-columns: 3px 1fr;
+      }
+      .decision-copy {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+      }
+      .utility-row {
+        flex-wrap: wrap;
+      }
+      .decision-actions {
+        grid-column: 2;
+        padding-left: 10px;
+        justify-content: flex-start;
+        flex-wrap: wrap;
+      }
+    }
+  </style>
+</head>
+<body class="partial">
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="workspace-label">Workspace</div>
+      <div class="task-row active">Create Rubik's cube page</div>
+      <div class="task-row">Masterball solver</div>
+      <div class="task-row">Foundation homepage</div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar-title">Create Rubik's cube page</div>
+      </header>
+
+      <section class="conversation" aria-label="Conversation">
+        <div class="message" style="text-align: right;">
+          <div class="bubble">build a rubis cube solved in 3d in a javascript page</div>
+        </div>
+
+        <div class="assistant-output">
+          <p>
+            The page is ready at <strong>.astra/tasks/B089804D/index.html</strong>.
+            How to view: open the file in a browser. Controls: drag to orbit and press R
+            to toggle auto-rotate.
+          </p>
+
+          <div class="artifact-card">
+            <span>index.html</span>
+            <span>Open</span>
+          </div>
+
+          <div class="turn-meta">
+            <span>Run finished</span>
+            <span>2 tool calls</span>
+            <span>Worked for 21 sec</span>
+          </div>
+        </div>
+
+        <section class="run-details-shell" id="runDetails">
+          <button class="run-summary" type="button" aria-expanded="false" onclick="toggleRunDetails()">
+            <span id="runChevron">></span>
+            <span>
+              <strong>Run details</strong>
+              <small>Execution evidence for this provider attempt</small>
+            </span>
+            <span>Policy, tools, stats</span>
+          </button>
+
+          <div class="run-body">
+            <div class="run-section">
+              <h3>Tool activity</h3>
+              <div class="tool-row">
+                <div class="name">view</div>
+                <div class="detail">/Users/alvaro1/Documents/Astra Dev/Workspaces/astra-work/.astra/tasks/B089804D/index.html</div>
+              </div>
+              <div class="debug-note">
+                Provider support tools such as report_intent are hidden by default. Show them only in debug mode.
+              </div>
+            </div>
+
+            <div class="run-section">
+              <h3>Policy</h3>
+              <div class="tool-row">
+                <div class="name">Ask policy</div>
+                <div class="detail">Task approval</div>
+              </div>
+            </div>
+
+            <div class="run-section">
+              <h3>Technical output</h3>
+              <div class="tool-row">
+                <div class="name">Tool result</div>
+                <div class="detail">HTML content preview hidden. Open raw output for debugging.</div>
+              </div>
+            </div>
+
+            <div class="run-section">
+              <h3>Stats</h3>
+              <div class="stat-row">
+                <div>Tokens</div>
+                <div class="detail">43.2k</div>
+              </div>
+              <div class="stat-row">
+                <div>Duration</div>
+                <div class="detail">21s</div>
+              </div>
+              <div class="stat-row">
+                <div>Exit code</div>
+                <div class="detail">0</div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="decision-area" aria-label="Task decision">
+        <div class="decision-dock">
+          <div class="decision-content">
+            <div class="status-rail"></div>
+            <div class="decision-copy">
+              <div
+                class="verdict"
+                id="verdict"
+                tabindex="0"
+                title="Found index.html; expected artifact check failed."
+                data-tooltip="Found index.html; expected artifact check failed."
+                aria-describedby="verdictCopy"
+              >
+                <span class="verdict-icon" id="verdictIcon">!</span>
+                <span id="verdictTitle">Partial result found</span>
+              </div>
+              <p id="verdictCopy">
+                Found index.html; expected artifact check failed.
+              </p>
+              <div class="utility-row" id="utilityRow">
+                <button class="text-action">Add verification</button>
+              </div>
+            </div>
+            <div class="decision-actions" id="decisionActions">
+              <button class="button quiet">Close anyway</button>
+              <button class="button">Revise</button>
+              <button class="button primary">Retry</button>
+            </div>
+          </div>
+          <div class="composer">Ask a follow-up question...</div>
+        </div>
+      </section>
+    </main>
+
+    <aside class="right-rail">
+      <div class="rail-card">
+        <h2>Placement rule</h2>
+        <p>Conversation carries meaning. Run details carry execution evidence. The dock carries only the current decision.</p>
+      </div>
+      <div class="rail-card">
+        <h2>Try states</h2>
+        <p>Switch the dock state without moving run diagnostics into the conversation.</p>
+        <div class="state-picker">
+          <button class="active" data-state="partial" onclick="setState('partial')">Partial</button>
+          <button data-state="ready" onclick="setState('ready')">Ready</button>
+          <button data-state="missing" onclick="setState('missing')">No artifact</button>
+          <button data-state="blocked" onclick="setState('blocked')">Blocked</button>
+        </div>
+      </div>
+      <div class="rail-card">
+        <h2>Mapping</h2>
+        <ul class="mapping-list">
+          <li>Agent prose stays in the thread.</li>
+          <li>Tool rows stay in run details.</li>
+          <li>Raw output is debug-only.</li>
+          <li>Retry, close, approve stay in the dock.</li>
+        </ul>
+      </div>
+    </aside>
+  </div>
+
+  <script>
+    const states = {
+      partial: {
+        bodyClass: "partial",
+        icon: "!",
+        title: "Partial result found",
+        copy: "Found index.html; expected artifact check failed.",
+        utilities: ["Add verification"],
+        actions: ["Close anyway", "Revise", "Retry"],
+        primary: "Retry"
+      },
+      ready: {
+        bodyClass: "ready",
+        icon: "✓",
+        title: "Result ready for review",
+        copy: "ASTRA found index.html and the artifact check passed.",
+        utilities: [],
+        actions: ["Send back", "Close task"],
+        primary: "Close task"
+      },
+      missing: {
+        bodyClass: "partial",
+        icon: "!",
+        title: "No usable result",
+        copy: "The run finished, but ASTRA did not find a user-facing artifact.",
+        utilities: [],
+        actions: ["Close anyway", "Revise", "Retry"],
+        primary: "Retry"
+      },
+      blocked: {
+        bodyClass: "blocked",
+        icon: "x",
+        title: "Blocked by policy",
+        copy: "The provider was stopped before it could create a result.",
+        utilities: [],
+        actions: ["Abandon", "Revise request"],
+        primary: "Revise request"
+      }
+    };
+
+    function toggleRunDetails() {
+      const shell = document.getElementById("runDetails");
+      const isOpen = shell.classList.toggle("open");
+      shell.querySelector("button").setAttribute("aria-expanded", isOpen ? "true" : "false");
+      document.getElementById("runChevron").textContent = isOpen ? "v" : ">";
+    }
+
+    function setState(key) {
+      const state = states[key];
+      document.body.className = state.bodyClass;
+      const verdict = document.getElementById("verdict");
+      document.getElementById("verdictIcon").textContent = state.icon;
+      document.getElementById("verdictTitle").textContent = state.title;
+      document.getElementById("verdictCopy").textContent = state.copy;
+      verdict.setAttribute("data-tooltip", state.copy);
+      verdict.setAttribute("title", state.copy);
+
+      const utilityRow = document.getElementById("utilityRow");
+      utilityRow.innerHTML = "";
+      state.utilities.forEach((label) => {
+        const button = document.createElement("button");
+        button.className = "text-action";
+        button.textContent = label;
+        utilityRow.appendChild(button);
+      });
+
+      const actions = document.getElementById("decisionActions");
+      actions.innerHTML = "";
+      state.actions.forEach((label) => {
+        const button = document.createElement("button");
+        button.className = "button" + (label === state.primary ? " primary" : "") + (label === "Abandon" || label === "Close anyway" ? " quiet" : "");
+        button.textContent = label;
+        actions.appendChild(button);
+      });
+
+      document.querySelectorAll(".state-picker button").forEach((button) => {
+        button.classList.toggle("active", button.dataset.state === key);
+      });
+    }
+  </script>
+</body>
+</html>

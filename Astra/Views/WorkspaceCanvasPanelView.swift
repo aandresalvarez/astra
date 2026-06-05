@@ -19,6 +19,14 @@ enum PlanShelfPresentation {
     ) -> Bool {
         usesRowDividers && rowIndex < groupCount - 1
     }
+
+    static func validationContractSummary(for plan: TaskPlan) -> String? {
+        guard let contract = plan.validationContract, !contract.assertions.isEmpty else { return nil }
+        let requiredCount = contract.assertions.filter(\.required).count
+        let optionalCount = contract.assertions.count - requiredCount
+        let optionalSuffix = optionalCount > 0 ? ", \(optionalCount) optional" : ""
+        return "\(requiredCount) required proof\(requiredCount == 1 ? "" : "s")\(optionalSuffix)"
+    }
 }
 
 enum PlanShelfStepGroupKind: String, CaseIterable, Identifiable, Equatable {
@@ -124,7 +132,19 @@ struct WorkspaceCanvasPanelView: View {
                 $0.doneSignal
             ].joined(separator: ":")
         }.joined(separator: "|")
-        return "\(plan.planID.uuidString):\(plan.title):\(plan.goal):\(planState.lifecycleStatus.rawValue):\(stepSummary)"
+        let contractSummary = plan.validationContract?.assertions.map {
+            [
+                $0.id,
+                $0.scope.rawValue,
+                $0.stepID ?? "",
+                $0.method.rawValue,
+                String($0.required),
+                $0.description,
+                $0.command ?? "",
+                $0.path ?? ""
+            ].joined(separator: ":")
+        }.joined(separator: "|") ?? "none"
+        return "\(plan.planID.uuidString):\(plan.title):\(plan.goal):\(planState.lifecycleStatus.rawValue):\(stepSummary):\(contractSummary)"
     }
 
     private var isTaskRunning: Bool {
@@ -230,6 +250,7 @@ struct WorkspaceCanvasPanelView: View {
                     if let approvalNoticeText {
                         approvalNotice(text: approvalNoticeText)
                     }
+                    validationContractSection
                     stepList
                     if canEditPlan {
                         addStepButton
@@ -328,6 +349,11 @@ struct WorkspaceCanvasPanelView: View {
             if let draft = currentDraft {
                 Label(stepCountLabel(for: draft.steps.count), systemImage: "list.number")
                     .labelStyle(.titleAndIcon)
+                if let contractSummary = PlanShelfPresentation.validationContractSummary(for: draft) {
+                    metaSeparator
+                    Label(contractSummary, systemImage: "checkmark.seal")
+                        .labelStyle(.titleAndIcon)
+                }
             }
             metaSeparator
             permissionModePill
@@ -415,6 +441,64 @@ struct WorkspaceCanvasPanelView: View {
             Spacer(minLength: 0)
         }
         .padding(.vertical, 2)
+    }
+
+    @ViewBuilder
+    private var validationContractSection: some View {
+        if let contract = currentDraft?.validationContract, !contract.assertions.isEmpty {
+            VStack(alignment: .leading, spacing: 7) {
+                Label("Validation Contract", systemImage: "checkmark.seal")
+                    .font(Stanford.caption(11).weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                ForEach(contract.assertions.prefix(6)) { assertion in
+                    HStack(alignment: .top, spacing: 7) {
+                        Image(systemName: assertion.required ? "checkmark.circle.fill" : "circle")
+                            .font(Stanford.ui(10, weight: .semibold))
+                            .foregroundStyle(assertion.required ? Stanford.paloAltoGreen : .secondary)
+                            .frame(width: 14, height: 14)
+                            .padding(.top, 1)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(assertion.description)
+                                .font(Stanford.caption(12).weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .lineLimit(2)
+                            Text(validationAssertionMeta(assertion))
+                                .font(Stanford.caption(11))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                }
+
+                if contract.assertions.count > 6 {
+                    Text("+ \(contract.assertions.count - 6) more validation assertions")
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 21)
+                }
+            }
+            .padding(.vertical, 2)
+        }
+    }
+
+    private func validationAssertionMeta(_ assertion: TaskValidationAssertion) -> String {
+        var parts = [
+            assertion.required ? "Required" : "Optional",
+            assertion.method.displayName
+        ]
+        if assertion.scope == .step, let stepID = assertion.stepID {
+            parts.append("Step \(stepID)")
+        } else {
+            parts.append("Plan")
+        }
+        if let command = assertion.command, !command.isEmpty {
+            parts.append(command)
+        } else if let path = assertion.path, !path.isEmpty {
+            parts.append(path)
+        }
+        return parts.joined(separator: " · ")
     }
 
     private var stepList: some View {
@@ -1114,7 +1198,14 @@ struct WorkspaceCanvasPanelView: View {
             ))
         }
         guard !steps.isEmpty else { return nil }
-        return TaskPlan(version: plan.version, planID: plan.planID, title: title, goal: goal, steps: steps)
+        return TaskPlan(
+            version: plan.version,
+            planID: plan.planID,
+            title: title,
+            goal: goal,
+            steps: steps,
+            validationContract: plan.validationContract
+        )
     }
 
     private func isStepEditable(_ step: TaskPlanStep) -> Bool {

@@ -1,0 +1,2146 @@
+import Darwin
+import Foundation
+import ASTRACore
+
+protocol AgentRuntimeProcessControl: AnyObject {
+    var isRunning: Bool { get }
+    var terminationStatus: Int32 { get }
+    func requestCancellation(reason: String)
+    func terminate()
+}
+
+extension AgentRuntimeProcessControl {
+    func requestCancellation(reason _: String) {
+        terminate()
+    }
+}
+
+extension Process: AgentRuntimeProcessControl {}
+
+final class AgentRuntimeProcessControlBox: @unchecked Sendable {
+    private let process: AgentRuntimeProcessControl
+
+    init(_ process: AgentRuntimeProcessControl) {
+        self.process = process
+    }
+
+    var isRunning: Bool { process.isRunning }
+
+    func terminate() {
+        process.terminate()
+    }
+
+    func requestCancellation(reason: String) {
+        process.requestCancellation(reason: reason)
+    }
+}
+
+struct AgentExecutionScopedProcessError: LocalizedError {
+    let operation: String
+    let code: Int32
+
+    var errorDescription: String? {
+        "\(operation) failed: \(String(cString: strerror(code)))"
+    }
+}
+
+/// Launches a provider in its own process group so cancellation can clean up
+/// tool subprocesses that the provider starts or backgrounds.
+final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProcessControl {
+    private let executablePath: String
+    private let arguments: [String]
+    private let currentDirectory: String
+    private let environment: [String: String]
+    private let dedicatedEventFileDescriptor: Int32?
+    private let dedicatedControlFileDescriptor: Int32?
+    private let lock = NSLock()
+
+    private var processID: pid_t = 0
+    private var processGroupID: pid_t = 0
+    private var running = false
+    private var status: Int32 = 0
+    private var controlWriteClosed = false
+
+    let stdoutPipe = Pipe()
+    let stderrPipe = Pipe()
+    private let eventPipe: Pipe?
+    private let controlPipe: Pipe?
+    var terminationHandler: ((AgentExecutionScopedProcess) -> Void)?
+
+    var stdoutFileHandle: FileHandle { stdoutPipe.fileHandleForReading }
+    var stderrFileHandle: FileHandle { stderrPipe.fileHandleForReading }
+    var eventFileHandle: FileHandle { eventPipe?.fileHandleForReading ?? stdoutFileHandle }
+    var usesDedicatedEventStream: Bool { eventPipe != nil }
+    var usesDedicatedControlStream: Bool { controlPipe != nil }
+
+    var isRunning: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return running
+    }
+
+    var terminationStatus: Int32 {
+        lock.lock()
+        defer { lock.unlock() }
+        return status
+    }
+
+    init(
+        executablePath: String,
+        arguments: [String],
+        currentDirectory: String,
+        environment: [String: String],
+        dedicatedEventFileDescriptor: Int32? = nil,
+        dedicatedControlFileDescriptor: Int32? = nil
+    ) {
+        self.executablePath = executablePath
+        self.arguments = arguments
+        self.currentDirectory = currentDirectory
+        self.environment = environment
+        self.dedicatedEventFileDescriptor = dedicatedEventFileDescriptor
+        self.dedicatedControlFileDescriptor = dedicatedControlFileDescriptor
+        self.eventPipe = dedicatedEventFileDescriptor.map { _ in Pipe() }
+        self.controlPipe = dedicatedControlFileDescriptor.map { _ in Pipe() }
+    }
+
+    func run() throws {
+        var actions: posix_spawn_file_actions_t? = nil
+        var attr: posix_spawnattr_t? = nil
+        var childPID = pid_t(0)
+
+        guard posix_spawn_file_actions_init(&actions) == 0 else {
+            throw AgentExecutionScopedProcessError(operation: "posix_spawn_file_actions_init", code: errno)
+        }
+        defer { posix_spawn_file_actions_destroy(&actions) }
+
+        guard posix_spawnattr_init(&attr) == 0 else {
+            throw AgentExecutionScopedProcessError(operation: "posix_spawnattr_init", code: errno)
+        }
+        defer { posix_spawnattr_destroy(&attr) }
+
+        try check(posix_spawn_file_actions_adddup2(&actions, stdoutPipe.fileHandleForWriting.fileDescriptor, STDOUT_FILENO),
+                  operation: "posix_spawn_file_actions_adddup2(stdout)")
+        try check(posix_spawn_file_actions_adddup2(&actions, stderrPipe.fileHandleForWriting.fileDescriptor, STDERR_FILENO),
+                  operation: "posix_spawn_file_actions_adddup2(stderr)")
+        if let eventPipe, let dedicatedEventFileDescriptor {
+            try check(posix_spawn_file_actions_adddup2(
+                &actions,
+                eventPipe.fileHandleForWriting.fileDescriptor,
+                dedicatedEventFileDescriptor
+            ), operation: "posix_spawn_file_actions_adddup2(event)")
+            try addClose(
+                eventPipe.fileHandleForReading.fileDescriptor,
+                to: &actions,
+                operation: "posix_spawn_file_actions_addclose(event_read)"
+            )
+            if eventPipe.fileHandleForWriting.fileDescriptor != dedicatedEventFileDescriptor {
+                try check(posix_spawn_file_actions_addclose(&actions, eventPipe.fileHandleForWriting.fileDescriptor),
+                          operation: "posix_spawn_file_actions_addclose(event_write)")
+            }
+        }
+        if let controlPipe, let dedicatedControlFileDescriptor {
+            try check(posix_spawn_file_actions_adddup2(
+                &actions,
+                controlPipe.fileHandleForReading.fileDescriptor,
+                dedicatedControlFileDescriptor
+            ), operation: "posix_spawn_file_actions_adddup2(control)")
+            try addClose(
+                controlPipe.fileHandleForWriting.fileDescriptor,
+                to: &actions,
+                operation: "posix_spawn_file_actions_addclose(control_write)"
+            )
+            if controlPipe.fileHandleForReading.fileDescriptor != dedicatedControlFileDescriptor {
+                try check(posix_spawn_file_actions_addclose(&actions, controlPipe.fileHandleForReading.fileDescriptor),
+                          operation: "posix_spawn_file_actions_addclose(control_read)")
+            }
+        }
+        try addClose(
+            stdoutPipe.fileHandleForReading.fileDescriptor,
+            to: &actions,
+            operation: "posix_spawn_file_actions_addclose(stdout_read)"
+        )
+        try addClose(
+            stderrPipe.fileHandleForReading.fileDescriptor,
+            to: &actions,
+            operation: "posix_spawn_file_actions_addclose(stderr_read)"
+        )
+        try addWorkingDirectory(to: &actions)
+
+        let flags = Int16(POSIX_SPAWN_SETPGROUP)
+        try check(posix_spawnattr_setflags(&attr, flags), operation: "posix_spawnattr_setflags")
+        try check(posix_spawnattr_setpgroup(&attr, 0), operation: "posix_spawnattr_setpgroup")
+
+        var argv = makeCStringArray([executablePath] + arguments)
+        var envp = makeCStringArray(environment.map { "\($0.key)=\($0.value)" }.sorted())
+        defer {
+            freeCStringArray(argv)
+            freeCStringArray(envp)
+        }
+
+        let spawnResult = executablePath.withCString { executable in
+            argv.withUnsafeMutableBufferPointer { argvBuffer in
+                envp.withUnsafeMutableBufferPointer { envBuffer in
+                    posix_spawn(
+                        &childPID,
+                        executable,
+                        &actions,
+                        &attr,
+                        argvBuffer.baseAddress,
+                        envBuffer.baseAddress
+                    )
+                }
+            }
+        }
+        try check(spawnResult, operation: "posix_spawn")
+
+        stdoutPipe.fileHandleForWriting.closeFile()
+        stderrPipe.fileHandleForWriting.closeFile()
+        eventPipe?.fileHandleForWriting.closeFile()
+        controlPipe?.fileHandleForReading.closeFile()
+        disableSIGPIPE(on: controlPipe?.fileHandleForWriting.fileDescriptor)
+
+        lock.lock()
+        processID = childPID
+        processGroupID = childPID
+        running = true
+        lock.unlock()
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            self?.reapProcess(pid: childPID)
+        }
+    }
+
+    func requestCancellation(reason: String) {
+        let ids = currentIDs()
+        guard ids.isRunning else { return }
+        guard let controlPipe else {
+            terminate()
+            return
+        }
+
+        let wroteControlMessage: Bool
+        do {
+            let message = LocalModelControlMessage.cancel(reason: reason)
+            let data = try JSONEncoder().encode(message)
+            wroteControlMessage = writeControlData(data + Data([0x0a]), to: controlPipe.fileHandleForWriting)
+        } catch {
+            wroteControlMessage = false
+        }
+
+        if !wroteControlMessage {
+            terminate()
+            return
+        }
+
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .seconds(2)) { [weak self] in
+            guard let self else { return }
+            let latest = self.currentIDs()
+            guard latest.isRunning else { return }
+            self.terminate()
+        }
+    }
+
+    func terminate() {
+        let ids = currentIDs()
+        guard ids.isRunning else { return }
+
+        if ids.processGroupID > 0 && ids.processGroupID != getpgrp() {
+            kill(-ids.processGroupID, SIGTERM)
+        } else if ids.processID > 0 {
+            kill(ids.processID, SIGTERM)
+        }
+
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .seconds(3)) { [weak self] in
+            guard let self else { return }
+            let latest = self.currentIDs()
+            guard latest.isRunning else { return }
+            if latest.processGroupID > 0 && latest.processGroupID != getpgrp() {
+                kill(-latest.processGroupID, SIGKILL)
+            } else if latest.processID > 0 {
+                kill(latest.processID, SIGKILL)
+            }
+        }
+    }
+
+    private func writeControlData(_ data: Data, to handle: FileHandle) -> Bool {
+        lock.lock()
+        if controlWriteClosed {
+            lock.unlock()
+            return false
+        }
+        lock.unlock()
+
+        let didWrite = writeAll(data, to: handle.fileDescriptor)
+        closeControlWriteIfNeeded()
+        return didWrite
+    }
+
+    private func closeControlWriteIfNeeded() {
+        guard let controlPipe else { return }
+        lock.lock()
+        guard !controlWriteClosed else {
+            lock.unlock()
+            return
+        }
+        controlWriteClosed = true
+        lock.unlock()
+        controlPipe.fileHandleForWriting.closeFile()
+    }
+
+    private func addWorkingDirectory(to actions: inout posix_spawn_file_actions_t?) throws {
+        let result = currentDirectory.withCString { path in
+            if #available(macOS 26.0, *) {
+                return posix_spawn_file_actions_addchdir(&actions, path)
+            } else {
+                return posix_spawn_file_actions_addchdir_np(&actions, path)
+            }
+        }
+        try check(result, operation: "posix_spawn_file_actions_addchdir")
+    }
+
+    private func addClose(
+        _ fileDescriptor: Int32,
+        to actions: inout posix_spawn_file_actions_t?,
+        operation: String
+    ) throws {
+        if fileDescriptor == dedicatedEventFileDescriptor || fileDescriptor == dedicatedControlFileDescriptor {
+            return
+        }
+        try check(posix_spawn_file_actions_addclose(&actions, fileDescriptor), operation: operation)
+    }
+
+    private func disableSIGPIPE(on fileDescriptor: Int32?) {
+        guard let fileDescriptor else { return }
+        _ = fcntl(fileDescriptor, F_SETNOSIGPIPE, 1)
+    }
+
+    private func writeAll(_ data: Data, to fileDescriptor: Int32) -> Bool {
+        guard !data.isEmpty else { return true }
+        disableSIGPIPE(on: fileDescriptor)
+        return data.withUnsafeBytes { rawBuffer in
+            guard let baseAddress = rawBuffer.baseAddress else { return true }
+            var offset = 0
+            while offset < data.count {
+                let written = Darwin.write(fileDescriptor, baseAddress.advanced(by: offset), data.count - offset)
+                if written > 0 {
+                    offset += written
+                    continue
+                }
+                if written == -1 && errno == EINTR {
+                    continue
+                }
+                return false
+            }
+            return true
+        }
+    }
+
+    private func reapProcess(pid: pid_t) {
+        var waitStatus: Int32 = 0
+        var result: pid_t
+        repeat {
+            result = waitpid(pid, &waitStatus, 0)
+        } while result == -1 && errno == EINTR
+
+        let exitStatus: Int32
+        if result == pid {
+            exitStatus = Self.exitCode(from: waitStatus)
+        } else {
+            exitStatus = -1
+        }
+
+        cleanupResidualProcessGroup()
+        closeControlWriteIfNeeded()
+
+        lock.lock()
+        status = exitStatus
+        running = false
+        lock.unlock()
+
+        terminationHandler?(self)
+    }
+
+    private func cleanupResidualProcessGroup() {
+        let ids = currentIDs()
+        guard ids.processGroupID > 0,
+              ids.processGroupID != getpgrp() else {
+            return
+        }
+
+        if kill(-ids.processGroupID, SIGTERM) == 0 {
+            usleep(200_000)
+        }
+        kill(-ids.processGroupID, SIGKILL)
+    }
+
+    private func currentIDs() -> (processID: pid_t, processGroupID: pid_t, isRunning: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (processID, processGroupID, running)
+    }
+
+    private func check(_ result: Int32, operation: String) throws {
+        guard result == 0 else {
+            throw AgentExecutionScopedProcessError(operation: operation, code: result)
+        }
+    }
+
+    private static func exitCode(from waitStatus: Int32) -> Int32 {
+        let signal = waitStatus & 0x7f
+        if signal == 0 {
+            return (waitStatus >> 8) & 0xff
+        }
+        return 128 + signal
+    }
+
+    private func makeCStringArray(_ strings: [String]) -> [UnsafeMutablePointer<CChar>?] {
+        strings.map { strdup($0) } + [nil]
+    }
+
+    private func freeCStringArray(_ array: [UnsafeMutablePointer<CChar>?]) {
+        for pointer in array {
+            if let pointer {
+                free(pointer)
+            }
+        }
+    }
+}
+
+final class AgentLockedBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value = ""
+
+    var value: String {
+        get { lock.lock(); defer { lock.unlock() }; return _value }
+        set { lock.lock(); defer { lock.unlock() }; _value = newValue }
+    }
+
+    func append(_ string: String) {
+        lock.lock()
+        _value += string
+        lock.unlock()
+    }
+
+    func appendAndDrainLines(_ string: String) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+
+        _value += string
+        var lines: [String] = []
+        while let newlineIndex = _value.firstIndex(of: "\n") {
+            let line = String(_value[_value.startIndex..<newlineIndex])
+            lines.append(line)
+            _value = String(_value[_value.index(after: newlineIndex)...])
+        }
+        return lines
+    }
+
+    func appendAndProcessLines(_ string: String, _ processLine: (String) -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        _value += string
+        while let newlineIndex = _value.firstIndex(of: "\n") {
+            let line = String(_value[_value.startIndex..<newlineIndex])
+            _value = String(_value[_value.index(after: newlineIndex)...])
+            processLine(line)
+        }
+    }
+
+    func drainRemaining() -> String {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let remaining = _value
+        _value = ""
+        return remaining
+    }
+}
+
+struct AgentRuntimeStreamDebugSnapshot: Sendable {
+    let rawLineCount: Int
+    let jsonLineCount: Int
+    let plainTextLineCount: Int
+    let parsedEventCount: Int
+    let emittedEventCount: Int
+    let stdoutBytes: Int
+    let stderrBytes: Int
+    let durationMs: Int
+    let firstLineLatencyMs: Int?
+    let lastLineOffsetMs: Int?
+    let eventTypeCounts: [String: Int]
+    let rawSamples: [String]
+    let unknownJSONShapes: [String]
+    let stderrTail: String?
+
+    var fields: [String: String] {
+        var fields: [String: String] = [
+            "raw_lines": String(rawLineCount),
+            "json_lines": String(jsonLineCount),
+            "plain_text_lines": String(plainTextLineCount),
+            "parsed_events": String(parsedEventCount),
+            "emitted_events": String(emittedEventCount),
+            "stdout_bytes": String(stdoutBytes),
+            "stderr_bytes": String(stderrBytes),
+            "duration_ms": String(durationMs),
+            "raw_samples": String(rawSamples.count),
+            "unknown_json_shapes": String(unknownJSONShapes.count),
+            "stderr_tail_chars": String(stderrTail?.count ?? 0),
+            "event_types": eventTypeCounts
+                .sorted { $0.key < $1.key }
+                .map { "\($0.key):\($0.value)" }
+                .joined(separator: ",")
+        ]
+        if let firstLineLatencyMs {
+            fields["first_line_latency_ms"] = String(firstLineLatencyMs)
+        }
+        if let lastLineOffsetMs {
+            fields["last_line_offset_ms"] = String(lastLineOffsetMs)
+        }
+        return fields
+    }
+}
+
+final class AgentRuntimeStreamDebugCapture: @unchecked Sendable {
+    static let environmentKey = "ASTRA_STREAM_DEBUG"
+
+    private let lock = NSLock()
+    private let startedAt = Date()
+    private let maxRawSamples: Int
+    private let maxUnknownJSONShapes: Int
+    private let maxSampleLength: Int
+    private let maxStderrTailLength: Int
+
+    private var rawLineCount = 0
+    private var jsonLineCount = 0
+    private var plainTextLineCount = 0
+    private var parsedEventCount = 0
+    private var emittedEventCount = 0
+    private var stdoutBytes = 0
+    private var stderrBytes = 0
+    private var firstLineAt: Date?
+    private var lastLineAt: Date?
+    private var eventTypeCounts: [String: Int] = [:]
+    private var rawSamples: [String] = []
+    private var unknownJSONShapes: [String] = []
+    private var stderrTail = ""
+
+    init(
+        maxRawSamples: Int = 4,
+        maxUnknownJSONShapes: Int = 4,
+        maxSampleLength: Int = 500,
+        maxStderrTailLength: Int = 2_000
+    ) {
+        self.maxRawSamples = maxRawSamples
+        self.maxUnknownJSONShapes = maxUnknownJSONShapes
+        self.maxSampleLength = maxSampleLength
+        self.maxStderrTailLength = maxStderrTailLength
+    }
+
+    static var isEnabled: Bool {
+        isEnabled(environment: ProcessInfo.processInfo.environment)
+    }
+
+    static func isEnabled(environment: [String: String], defaults: UserDefaults = .standard) -> Bool {
+        guard let value = environment[environmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !value.isEmpty else {
+            return LoggingPreferences.runtimeStreamDebugCaptureEnabled(in: defaults)
+        }
+        return !["0", "false", "no", "off"].contains(value)
+    }
+
+    static func makeIfEnabled() -> AgentRuntimeStreamDebugCapture? {
+        isEnabled ? AgentRuntimeStreamDebugCapture() : nil
+    }
+
+    func recordLine(_ line: String, parsesJSONLines: Bool) {
+        let now = Date()
+        lock.lock()
+        rawLineCount += 1
+        if parsesJSONLines {
+            jsonLineCount += 1
+        } else {
+            plainTextLineCount += 1
+        }
+        stdoutBytes += line.utf8.count
+        if firstLineAt == nil {
+            firstLineAt = now
+        }
+        lastLineAt = now
+        if rawSamples.count < maxRawSamples {
+            rawSamples.append(Self.truncated(line, limit: maxSampleLength))
+        }
+        lock.unlock()
+    }
+
+    func recordParsed(_ events: [ParsedEvent], rawLine: String) {
+        lock.lock()
+        parsedEventCount += events.count
+        for event in events {
+            let type = Self.eventType(event)
+            eventTypeCounts[type, default: 0] += 1
+            if case .unknown(let unknownType) = event {
+                appendUnknownJSONShape(raw: rawLine, eventType: unknownType)
+            }
+        }
+        if events.isEmpty {
+            appendUnknownJSONShape(raw: rawLine, eventType: nil)
+        }
+        lock.unlock()
+    }
+
+    func recordParsed(_ events: [AgentEvent], rawLine: String) {
+        lock.lock()
+        parsedEventCount += events.count
+        for event in events {
+            let type = Self.eventType(event)
+            eventTypeCounts[type, default: 0] += 1
+            if case .unknown(_, let unknownType, let raw) = event {
+                appendUnknownJSONShape(raw: raw.isEmpty ? rawLine : raw, eventType: unknownType)
+            }
+        }
+        if events.isEmpty {
+            appendUnknownJSONShape(raw: rawLine, eventType: nil)
+        }
+        lock.unlock()
+    }
+
+    func recordEmitted(_ events: [ParsedEvent]) {
+        lock.lock()
+        emittedEventCount += events.count
+        lock.unlock()
+    }
+
+    func recordEmitted(_ events: [AgentEvent]) {
+        lock.lock()
+        emittedEventCount += events.count
+        lock.unlock()
+    }
+
+    func recordStderr(_ stderr: String?) {
+        guard let stderr, !stderr.isEmpty else { return }
+        lock.lock()
+        stderrBytes += stderr.utf8.count
+        stderrTail += stderr
+        if stderrTail.count > maxStderrTailLength {
+            stderrTail = String(stderrTail.suffix(maxStderrTailLength))
+        }
+        lock.unlock()
+    }
+
+    func snapshot() -> AgentRuntimeStreamDebugSnapshot {
+        let finishedAt = Date()
+        lock.lock()
+        defer { lock.unlock() }
+        return AgentRuntimeStreamDebugSnapshot(
+            rawLineCount: rawLineCount,
+            jsonLineCount: jsonLineCount,
+            plainTextLineCount: plainTextLineCount,
+            parsedEventCount: parsedEventCount,
+            emittedEventCount: emittedEventCount,
+            stdoutBytes: stdoutBytes,
+            stderrBytes: stderrBytes,
+            durationMs: Self.milliseconds(from: startedAt, to: finishedAt),
+            firstLineLatencyMs: firstLineAt.map { Self.milliseconds(from: startedAt, to: $0) },
+            lastLineOffsetMs: lastLineAt.map { Self.milliseconds(from: startedAt, to: $0) },
+            eventTypeCounts: eventTypeCounts,
+            rawSamples: rawSamples,
+            unknownJSONShapes: unknownJSONShapes,
+            stderrTail: stderrTail.isEmpty ? nil : stderrTail
+        )
+    }
+
+    private func appendUnknownJSONShape(raw: String, eventType: String?) {
+        guard unknownJSONShapes.count < maxUnknownJSONShapes,
+              let shape = Self.jsonShape(raw: raw, eventType: eventType),
+              !unknownJSONShapes.contains(shape) else {
+            return
+        }
+        unknownJSONShapes.append(shape)
+    }
+
+    private static func jsonShape(raw: String, eventType: String?) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.first == "{",
+              let data = trimmed.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+
+        let type = eventType
+            ?? firstString(in: object, keys: ["type", "event", "kind", "sessionUpdate", "name"])
+            ?? "unknown"
+        var parts = [
+            "type=\(type)",
+            "keys=\(object.keys.sorted().joined(separator: ","))"
+        ]
+        for key in ["data", "payload", "message", "content", "delta"] {
+            if let nested = object[key] as? [String: Any] {
+                parts.append("\(key)_keys=\(nested.keys.sorted().joined(separator: ","))")
+            }
+        }
+        return truncated(parts.joined(separator: " "), limit: 500)
+    }
+
+    private static func firstString(in object: [String: Any], keys: [String]) -> String? {
+        for key in keys {
+            if let value = object[key] as? String, !value.isEmpty {
+                return value
+            }
+        }
+        for key in ["data", "payload", "message"] {
+            if let nested = object[key] as? [String: Any],
+               let value = firstString(in: nested, keys: keys) {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private static func eventType(_ event: ParsedEvent) -> String {
+        switch event {
+        case .systemInit: "system_init"
+        case .thinking: "thinking"
+        case .text: "text"
+        case .toolUse: "tool_use"
+        case .toolResult: "tool_result"
+        case .usage: "usage"
+        case .result: "result"
+        case .teammateStarted: "teammate_started"
+        case .teammateCompleted: "teammate_completed"
+        case .teamCreated: "team_created"
+        case .teamDeleted: "team_deleted"
+        case .teamMessage: "team_message"
+        case .permissionDenied: "permission_denied"
+        case .astraProtocol: "astra_protocol"
+        case .unknown(let type): "unknown:\(type)"
+        }
+    }
+
+    private static func eventType(_ event: AgentEvent) -> String {
+        switch event {
+        case .started: "started"
+        case .thinking: "thinking"
+        case .text: "text"
+        case .toolUse: "tool_use"
+        case .toolResult: "tool_result"
+        case .fileChange: "file_change"
+        case .permissionRequested: "permission_requested"
+        case .stats: "stats"
+        case .diagnostic(let kind, _): "diagnostic:\(kind)"
+        case .astraProtocol: "astra_protocol"
+        case .completed: "completed"
+        case .failed: "failed"
+        case .unknown(_, let type, _): "unknown:\(type)"
+        }
+    }
+
+    private static func milliseconds(from start: Date, to end: Date) -> Int {
+        max(0, Int(end.timeIntervalSince(start) * 1_000))
+    }
+
+    private static func truncated(_ text: String, limit: Int) -> String {
+        guard text.count > limit else { return text }
+        return String(text.prefix(limit)) + " [truncated]"
+    }
+}
+
+struct AgentRuntimeStreamTelemetrySnapshot: Sendable {
+    let rawLineCount: Int
+    let jsonLineCount: Int
+    let plainTextLineCount: Int
+    let parsedEventCount: Int
+    let emittedEventCount: Int
+    let textEventCount: Int
+    let thinkingEventCount: Int
+    let toolUseEventCount: Int
+    let toolResultEventCount: Int
+    let statsEventCount: Int
+    let completedEventCount: Int
+    let failedEventCount: Int
+    let unknownEventCount: Int
+    let unknownTypeCounts: [String: Int]
+    let unknownSamples: [(type: String, sample: String)]
+
+    var fields: [String: String] {
+        [
+            "raw_lines": String(rawLineCount),
+            "json_lines": String(jsonLineCount),
+            "plain_text_lines": String(plainTextLineCount),
+            "parsed_events": String(parsedEventCount),
+            "emitted_events": String(emittedEventCount),
+            "text_events": String(textEventCount),
+            "thinking_events": String(thinkingEventCount),
+            "tool_use_events": String(toolUseEventCount),
+            "tool_result_events": String(toolResultEventCount),
+            "stats_events": String(statsEventCount),
+            "completed_events": String(completedEventCount),
+            "failed_events": String(failedEventCount),
+            "unknown_events": String(unknownEventCount),
+            "unknown_types": unknownTypeCounts
+                .sorted { $0.key < $1.key }
+                .map { "\($0.key):\($0.value)" }
+                .joined(separator: ",")
+        ]
+    }
+}
+
+final class AgentRuntimeStreamTelemetry: @unchecked Sendable {
+    private let lock = NSLock()
+    private let maxUnknownSamples: Int
+
+    private var rawLineCount = 0
+    private var jsonLineCount = 0
+    private var plainTextLineCount = 0
+    private var parsedEventCount = 0
+    private var emittedEventCount = 0
+    private var textEventCount = 0
+    private var thinkingEventCount = 0
+    private var toolUseEventCount = 0
+    private var toolResultEventCount = 0
+    private var statsEventCount = 0
+    private var completedEventCount = 0
+    private var failedEventCount = 0
+    private var unknownEventCount = 0
+    private var unknownTypeCounts: [String: Int] = [:]
+    private var unknownSamples: [(type: String, sample: String)] = []
+
+    init(maxUnknownSamples: Int = 3) {
+        self.maxUnknownSamples = maxUnknownSamples
+    }
+
+    func recordRawLine(parsesJSONLines: Bool) {
+        lock.lock()
+        rawLineCount += 1
+        if parsesJSONLines {
+            jsonLineCount += 1
+        } else {
+            plainTextLineCount += 1
+        }
+        lock.unlock()
+    }
+
+    func recordParsed(_ events: [AgentEvent]) {
+        lock.lock()
+        parsedEventCount += events.count
+        for event in events {
+            record(event)
+        }
+        lock.unlock()
+    }
+
+    func recordEmitted(_ events: [AgentEvent]) {
+        lock.lock()
+        emittedEventCount += events.count
+        lock.unlock()
+    }
+
+    func snapshot() -> AgentRuntimeStreamTelemetrySnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return AgentRuntimeStreamTelemetrySnapshot(
+            rawLineCount: rawLineCount,
+            jsonLineCount: jsonLineCount,
+            plainTextLineCount: plainTextLineCount,
+            parsedEventCount: parsedEventCount,
+            emittedEventCount: emittedEventCount,
+            textEventCount: textEventCount,
+            thinkingEventCount: thinkingEventCount,
+            toolUseEventCount: toolUseEventCount,
+            toolResultEventCount: toolResultEventCount,
+            statsEventCount: statsEventCount,
+            completedEventCount: completedEventCount,
+            failedEventCount: failedEventCount,
+            unknownEventCount: unknownEventCount,
+            unknownTypeCounts: unknownTypeCounts,
+            unknownSamples: unknownSamples
+        )
+    }
+
+    private func record(_ event: AgentEvent) {
+        switch event {
+        case .started:
+            break
+        case .thinking:
+            thinkingEventCount += 1
+        case .text:
+            textEventCount += 1
+        case .toolUse:
+            toolUseEventCount += 1
+        case .toolResult:
+            toolResultEventCount += 1
+        case .fileChange:
+            break
+        case .permissionRequested:
+            break
+        case .stats:
+            statsEventCount += 1
+        case .diagnostic:
+            break
+        case .astraProtocol:
+            break
+        case .completed:
+            completedEventCount += 1
+        case .failed:
+            failedEventCount += 1
+        case .unknown(_, let type, let raw):
+            unknownEventCount += 1
+            unknownTypeCounts[type, default: 0] += 1
+            if unknownSamples.count < maxUnknownSamples,
+               !unknownSamples.contains(where: { $0.type == type }) {
+                unknownSamples.append((type: type, sample: raw))
+            }
+        }
+    }
+}
+
+final class AgentRuntimeEventPipelineBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pipeline: AgentRuntimeEventPipeline
+
+    init(supportsAstraRunProtocol: Bool, stripsReasoningTags: Bool = false) {
+        pipeline = AgentRuntimeEventPipeline(
+            supportsAstraRunProtocol: supportsAstraRunProtocol,
+            stripsReasoningTags: stripsReasoningTags
+        )
+    }
+
+    func process(_ event: ParsedEvent) -> [ParsedEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        return pipeline.process(event)
+    }
+
+    func process(_ event: AgentEvent) -> [AgentEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        return pipeline.process(event)
+    }
+
+    func flushParsedEvents() -> [ParsedEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        return pipeline.flushParsedEvents()
+    }
+
+    func flushAgentEvents() -> [AgentEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        return pipeline.flushAgentEvents()
+    }
+}
+
+struct AgentProcessResult {
+    let exitCode: Int
+    let error: String?
+    let providerVersion: String?
+    let policyViolation: Bool
+    let policyViolationMessage: String?
+    let policyApprovalRequired: Bool
+    let policyApprovalMessage: String?
+    let runtimeStopReason: String?
+    let runtimeStopMessage: String?
+    let budgetExceeded: Bool
+    let budgetWarning: Bool
+    let finalReportedBudgetExceededAfterCompletion: Bool
+    let timedOut: Bool
+    let repetitionKilled: Bool
+    let maxTurnsExceeded: Bool
+
+    init(
+        exitCode: Int,
+        error: String? = nil,
+        providerVersion: String? = nil,
+        policyViolation: Bool = false,
+        policyViolationMessage: String? = nil,
+        policyApprovalRequired: Bool = false,
+        policyApprovalMessage: String? = nil,
+        runtimeStopReason: String? = nil,
+        runtimeStopMessage: String? = nil,
+        budgetExceeded: Bool = false,
+        budgetWarning: Bool = false,
+        finalReportedBudgetExceededAfterCompletion: Bool = false,
+        timedOut: Bool = false,
+        repetitionKilled: Bool = false,
+        maxTurnsExceeded: Bool = false
+    ) {
+        self.exitCode = exitCode
+        self.error = error
+        self.providerVersion = providerVersion
+        self.policyViolation = policyViolation
+        self.policyViolationMessage = policyViolationMessage
+        self.policyApprovalRequired = policyApprovalRequired
+        self.policyApprovalMessage = policyApprovalMessage
+        self.runtimeStopReason = runtimeStopReason
+        self.runtimeStopMessage = runtimeStopMessage
+        self.budgetExceeded = budgetExceeded
+        self.budgetWarning = budgetWarning
+        self.finalReportedBudgetExceededAfterCompletion = finalReportedBudgetExceededAfterCompletion
+        self.timedOut = timedOut
+        self.repetitionKilled = repetitionKilled
+        self.maxTurnsExceeded = maxTurnsExceeded
+    }
+
+    var runtimeStopped: Bool {
+        runtimeStopReason?.isEmpty == false
+    }
+}
+
+/// Encapsulates budget enforcement, repetition circuit breaker, and idle timeout
+/// for agent runtime processes.
+nonisolated final class AgentProcessMonitor: @unchecked Sendable {
+    private struct ToolUseContext {
+        let id: String
+        let name: String
+        let summary: String?
+    }
+
+    enum RuntimeProgressKind: String {
+        case lifecycleMetadata = "lifecycle_metadata"
+        case providerLiveness = "provider_liveness"
+        case visibleProgress = "visible_progress"
+        case actionableProgress = "actionable_progress"
+        case accounting = "accounting"
+        case terminal = "terminal"
+        case diagnostic = "diagnostic"
+    }
+
+    let tokenBudget: Int
+    let budgetEnforcementMode: BudgetEnforcementMode
+    let maxTurns: Int
+    let maxRepetitions: Int
+    let idleTimeoutSeconds: TimeInterval
+    let noSemanticProgressTimeoutSeconds: TimeInterval
+    let taskID: UUID
+    let policyGuard: AgentRuntimePolicyGuard?
+
+    private let lock = NSLock()
+
+    private var _estimatedTokens: Int = 0
+    private var _turnCount: Int = 0
+    private var _budgetExceeded: Bool = false
+    private var _budgetWarning: Bool = false
+    private var _finalReportedBudgetExceededAfterCompletion: Bool = false
+    private var _maxTurnsExceeded: Bool = false
+    private var _timedOut: Bool = false
+    private var _repetitionKilled: Bool = false
+    private var _policyViolation: Bool = false
+    private var _policyViolationMessage: String?
+    private var _policyApprovalRequired: Bool = false
+    private var _policyApprovalMessage: String?
+    private var _runtimeStopReason: String?
+    private var _runtimeStopMessage: String?
+    private var _sawAstraComplete: Bool = false
+
+    private var browserToolUseIDs: Set<String> = []
+    private var browserShellIDs: Set<String> = []
+    private var toolUseContextsByID: [String: ToolUseContext] = [:]
+    private var recentToolUseContexts: [ToolUseContext] = []
+    private var sawGoogleDocsVisiblePageRead = false
+    private var ignoredGoogleDocsFullReadRequirementAfterVisibleRead = false
+    private var lastEventSignature: String = ""
+    private var repetitionCount: Int = 0
+    private var lastActivityTime = Date()
+    private var lastAnyActivityTime = Date()
+    private var hasSeenAnyActivity = false
+    private var hasSeenProviderLivenessActivity = false
+    private var hasSeenProgressActivity = false
+    private var watchdogRunning = false
+
+    var estimatedTokens: Int { lock.lock(); defer { lock.unlock() }; return _estimatedTokens }
+    var turnCount: Int { lock.lock(); defer { lock.unlock() }; return _turnCount }
+    var budgetExceeded: Bool { lock.lock(); defer { lock.unlock() }; return _budgetExceeded }
+    var budgetWarning: Bool { lock.lock(); defer { lock.unlock() }; return _budgetWarning }
+    var finalReportedBudgetExceededAfterCompletion: Bool { lock.lock(); defer { lock.unlock() }; return _finalReportedBudgetExceededAfterCompletion }
+    var maxTurnsExceeded: Bool { lock.lock(); defer { lock.unlock() }; return _maxTurnsExceeded }
+    var timedOut: Bool { lock.lock(); defer { lock.unlock() }; return _timedOut }
+    var repetitionKilled: Bool { lock.lock(); defer { lock.unlock() }; return _repetitionKilled }
+    var policyViolation: Bool { lock.lock(); defer { lock.unlock() }; return _policyViolation }
+    var policyViolationMessage: String? { lock.lock(); defer { lock.unlock() }; return _policyViolationMessage }
+    var policyApprovalRequired: Bool { lock.lock(); defer { lock.unlock() }; return _policyApprovalRequired }
+    var policyApprovalMessage: String? { lock.lock(); defer { lock.unlock() }; return _policyApprovalMessage }
+    var runtimeStopReason: String? { lock.lock(); defer { lock.unlock() }; return _runtimeStopReason }
+    var runtimeStopMessage: String? { lock.lock(); defer { lock.unlock() }; return _runtimeStopMessage }
+    var runtimeStopped: Bool { lock.lock(); defer { lock.unlock() }; return _runtimeStopReason?.isEmpty == false }
+
+    init(
+        tokenBudget: Int,
+        budgetEnforcementMode: BudgetEnforcementMode = .hardStop,
+        maxTurns: Int = 0,
+        maxRepetitions: Int = 8,
+        idleTimeoutSeconds: TimeInterval = 600,
+        noSemanticProgressTimeoutSeconds: TimeInterval? = nil,
+        taskID: UUID = UUID(),
+        policyGuard: AgentRuntimePolicyGuard? = nil
+    ) {
+        self.tokenBudget = tokenBudget
+        self.budgetEnforcementMode = budgetEnforcementMode
+        self.maxTurns = maxTurns
+        self.maxRepetitions = maxRepetitions
+        self.idleTimeoutSeconds = idleTimeoutSeconds
+        self.noSemanticProgressTimeoutSeconds = noSemanticProgressTimeoutSeconds ?? min(idleTimeoutSeconds, 180)
+        self.taskID = taskID
+        self.policyGuard = policyGuard
+    }
+
+    static func estimatedTokenCount(for text: String) -> Int {
+        guard !text.isEmpty else { return 0 }
+        return max(1, text.count / 4)
+    }
+
+    func processEvent(_ parsed: ParsedEvent, process: AgentRuntimeProcessControl?) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let now = Date()
+        lastAnyActivityTime = now
+        hasSeenAnyActivity = true
+        let progressKind = Self.progressKind(for: parsed)
+        if Self.refreshesRuntimeActivity(progressKind) {
+            lastActivityTime = now
+            hasSeenProgressActivity = true
+        } else if progressKind == .providerLiveness || progressKind == .accounting {
+            hasSeenProviderLivenessActivity = true
+        }
+
+        if case .astraProtocol(.valid(.complete)) = parsed {
+            _sawAstraComplete = true
+            return false
+        }
+
+        if case .astraProtocol = parsed {
+            return false
+        }
+
+        if case .toolUse(let name, let id, let input) = parsed {
+            rememberToolUse(name: name, id: id, input: input)
+            if !id.isEmpty {
+                let isBrowserTool = Self.isBrowserToolUse(name: name, input: input)
+                let isBrowserShellContinuation = Self.browserShellIDs(fromToolInput: input).contains { browserShellIDs.contains($0) }
+                if isBrowserTool || isBrowserShellContinuation {
+                    browserToolUseIDs.insert(id)
+                }
+            }
+        }
+
+        if let violation = policyGuard?.violation(for: parsed) {
+            return recordPolicyViolation(violation, process: process)
+        }
+
+        if case .permissionDenied(let tool, let reason) = parsed,
+           Self.isProviderPermissionDenial(reason) {
+            return recordProviderPermissionDenial(
+                toolID: nil,
+                explicitToolName: tool,
+                detail: reason,
+                process: process
+            )
+        }
+
+        if case .toolResult(let toolID, let content) = parsed {
+            if Self.isProviderPermissionDenial(content) {
+                return recordProviderPermissionDenial(
+                    toolID: toolID,
+                    explicitToolName: nil,
+                    detail: content,
+                    process: process
+                )
+            }
+            let isKnownBrowserTool = !toolID.isEmpty && browserToolUseIDs.contains(toolID)
+            if isKnownBrowserTool {
+                for shellID in Self.browserShellIDs(fromToolResult: content) {
+                    browserShellIDs.insert(shellID)
+                }
+            }
+            if Self.isSuccessfulGoogleDocsVisiblePageRead(content) {
+                sawGoogleDocsVisiblePageRead = true
+            }
+            if let stop = Self.browserTerminalStop(content: content, isKnownBrowserTool: isKnownBrowserTool) {
+                if stop.reason == "google_docs_controlled_browser_required",
+                   sawGoogleDocsVisiblePageRead,
+                   !ignoredGoogleDocsFullReadRequirementAfterVisibleRead {
+                    ignoredGoogleDocsFullReadRequirementAfterVisibleRead = true
+                    AppLogger.audit(.workerBlocked, category: "Worker", taskID: taskID, fields: [
+                        "reason": stop.reason,
+                        "source": "browser_terminal_error_ignored_after_visible_page_read",
+                        "message": "A Google Docs visible-page read already succeeded, so ASTRA allowed the runtime to continue and summarize the partial content."
+                    ], level: .warning)
+                    return false
+                }
+                return recordRuntimeStop(reason: stop.reason, message: stop.message, process: process)
+            }
+        }
+
+        if case .result = parsed {
+            _turnCount += 1
+            if maxTurns > 0 && _turnCount >= maxTurns {
+                AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: taskID, fields: [
+                    "reason": "max_turns_reached",
+                    "turns": String(_turnCount),
+                    "max_turns": String(maxTurns)
+                ], level: .error)
+                _maxTurnsExceeded = true
+                process?.terminate()
+                return true
+            }
+        }
+
+        if let signature = Self.repetitionSignature(parsed) {
+            if signature == lastEventSignature {
+                repetitionCount += 1
+                if repetitionCount >= maxRepetitions {
+                    AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: taskID, fields: [
+                        "reason": "repetition_detected",
+                        "event_kind": Self.progressKind(for: parsed).rawValue,
+                        "event_signature": LogSanitizer.sanitize(signature, maxLength: 240),
+                        "repetition_count": String(repetitionCount),
+                        "semantic_activity_age_seconds": String(Int(now.timeIntervalSince(lastActivityTime)))
+                    ], level: .error, fieldMaxLength: 260)
+                    _repetitionKilled = true
+                    process?.terminate()
+                    return true
+                }
+            } else {
+                lastEventSignature = signature
+                repetitionCount = 1
+            }
+        }
+
+        if case .usage(let totalInput, let totalOutput) = parsed {
+            let totalTokens = totalInput + totalOutput
+            if totalTokens > tokenBudget {
+                if budgetEnforcementMode == .warning {
+                    return recordBudgetWarning(
+                        reason: "stream_usage_budget_exceeded",
+                        fields: [
+                            "reported_tokens": String(totalTokens),
+                            "token_budget": String(tokenBudget)
+                        ],
+                        process: process
+                    )
+                }
+                return recordBudgetOverage(
+                    reason: "stream_usage_budget_exceeded",
+                    fields: [
+                        "reported_tokens": String(totalTokens),
+                        "token_budget": String(tokenBudget)
+                    ],
+                    process: process
+                )
+            }
+        } else if case .result(_, _, let totalInput, let totalOutput, _, _, let isError) = parsed {
+            let totalTokens = totalInput + totalOutput
+            if totalTokens > tokenBudget {
+                if budgetEnforcementMode == .warning {
+                    return recordBudgetWarning(
+                        reason: "reported_budget_exceeded",
+                        fields: [
+                            "reported_tokens": String(totalTokens),
+                            "token_budget": String(tokenBudget)
+                        ],
+                        process: process
+                    )
+                } else if _sawAstraComplete && !isError {
+                    _finalReportedBudgetExceededAfterCompletion = true
+                    return false
+                }
+                return recordBudgetOverage(
+                    reason: "reported_budget_exceeded",
+                    fields: [
+                        "reported_tokens": String(totalTokens),
+                        "token_budget": String(tokenBudget)
+                    ],
+                    process: process
+                )
+            }
+        }
+
+        switch parsed {
+        case .text(let text):
+            _estimatedTokens += Self.estimatedTokenCount(for: text)
+        case .thinking(let text):
+            _estimatedTokens += Self.estimatedTokenCount(for: text)
+        case .toolUse:
+            _estimatedTokens += 100
+        case .toolResult:
+            _estimatedTokens += 200
+        case .usage:
+            break
+        case .teamMessage(_, _, let content):
+            _estimatedTokens += max(50, content.count / 4)
+        case .teammateStarted, .teammateCompleted, .teamCreated, .teamDeleted:
+            _estimatedTokens += 50
+        case .permissionDenied:
+            _estimatedTokens += 50
+        case .astraProtocol:
+            break
+        case .systemInit, .unknown:
+            _estimatedTokens += 20
+        case .result:
+            break
+        }
+
+        if _estimatedTokens > tokenBudget {
+            let fields = [
+                "estimated_tokens": String(_estimatedTokens),
+                "token_budget": String(tokenBudget)
+            ]
+            if budgetEnforcementMode == .warning {
+                return recordBudgetWarning(
+                    reason: "estimated_budget_exceeded",
+                    fields: fields,
+                    process: process
+                )
+            }
+            return recordBudgetOverage(
+                reason: "estimated_budget_exceeded",
+                fields: fields,
+                process: process
+            )
+        }
+
+        return false
+    }
+
+    private func rememberToolUse(name: String, id: String, input: [String: Any]?) {
+        let context = ToolUseContext(
+            id: id,
+            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+            summary: Self.toolUseSummary(name: name, input: input)
+        )
+        if !id.isEmpty {
+            toolUseContextsByID[id] = context
+        }
+        recentToolUseContexts.append(context)
+        if recentToolUseContexts.count > 8 {
+            recentToolUseContexts.removeFirst(recentToolUseContexts.count - 8)
+        }
+    }
+
+    private static func toolUseSummary(name _: String, input: [String: Any]?) -> String? {
+        guard let input else { return nil }
+        if let command = commandString(in: input) {
+            return command
+        }
+        if let summary = input["summary"] as? String {
+            if let parsedCommand = commandString(fromJSONString: summary) {
+                return parsedCommand
+            }
+            let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : String(trimmed.prefix(500))
+        }
+        return String(valueSignature(input).prefix(500))
+    }
+
+    private static func commandString(in dictionary: [String: Any]) -> String? {
+        for key in ["command", "cmd"] {
+            if let value = dictionary[key] as? String {
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { return trimmed }
+            }
+        }
+        for key in ["input", "arguments", "args", "data", "payload"] {
+            if let nested = dictionary[key] as? [String: Any],
+               let command = commandString(in: nested) {
+                return command
+            }
+        }
+        return nil
+    }
+
+    private static func commandString(fromJSONString value: String) -> String? {
+        guard let data = value.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return commandString(in: object)
+    }
+
+    private func toolContext(for toolID: String?) -> ToolUseContext? {
+        if let toolID, !toolID.isEmpty, let context = toolUseContextsByID[toolID] {
+            return context
+        }
+        return recentToolUseContexts.last
+    }
+
+    private static func isBrowserToolUse(name: String, input: [String: Any]?) -> Bool {
+        let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalizedName == "astra-browser" || normalizedName.contains("astra-browser") {
+            return true
+        }
+        guard let input else { return false }
+        return inputContainsAstraBrowser(input)
+    }
+
+    private static func inputContainsAstraBrowser(_ value: Any) -> Bool {
+        if let string = value as? String {
+            return string.lowercased().contains("astra-browser")
+        }
+        if let dictionary = value as? [String: Any] {
+            return dictionary.values.contains(where: inputContainsAstraBrowser)
+        }
+        if let array = value as? [Any] {
+            return array.contains(where: inputContainsAstraBrowser)
+        }
+        return false
+    }
+
+    private static func browserShellIDs(fromToolInput input: [String: Any]?) -> Set<String> {
+        guard let input else { return [] }
+        return browserShellIDs(fromInputValue: input)
+    }
+
+    private static func browserShellIDs(fromInputValue value: Any) -> Set<String> {
+        var ids: Set<String> = []
+        if let dictionary = value as? [String: Any] {
+            for (key, nested) in dictionary {
+                let normalizedKey = key.lowercased().replacingOccurrences(of: "_", with: "")
+                if normalizedKey == "shellid", let shellID = browserShellID(fromValue: nested) {
+                    ids.insert(shellID)
+                }
+                ids.formUnion(browserShellIDs(fromInputValue: nested))
+            }
+        } else if let array = value as? [Any] {
+            for nested in array {
+                ids.formUnion(browserShellIDs(fromInputValue: nested))
+            }
+        }
+        return ids
+    }
+
+    private static func browserShellID(fromValue value: Any) -> String? {
+        if let string = value as? String {
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        if let int = value as? Int {
+            return String(int)
+        }
+        if let int64 = value as? Int64 {
+            return String(int64)
+        }
+        if let double = value as? Double, double.rounded(.towardZero) == double {
+            return String(Int(double))
+        }
+        return nil
+    }
+
+    private static func browserShellIDs(fromToolResult content: String) -> Set<String> {
+        let nsRange = NSRange(content.startIndex..<content.endIndex, in: content)
+        let pattern = #"\bshellId\b\s*[:=]\s*["']?([A-Za-z0-9_-]+)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        var ids: Set<String> = []
+        for match in regex.matches(in: content, range: nsRange) {
+            guard match.numberOfRanges > 1,
+                  let range = Range(match.range(at: 1), in: content) else {
+                continue
+            }
+            ids.insert(String(content[range]))
+        }
+        return ids
+    }
+
+    private static func isSuccessfulGoogleDocsVisiblePageRead(_ content: String) -> Bool {
+        let lower = content.lowercased()
+        guard lower.contains("googledocsmode"),
+              lower.contains("visible_page"),
+              lower.contains("partialsummaryallowed"),
+              lower.contains(#""ok""#),
+              !lower.contains(#""ok" : false"#),
+              !lower.contains(#""ok":false"#) else {
+            return false
+        }
+        return true
+    }
+
+    private static func browserTerminalStop(content: String, isKnownBrowserTool: Bool) -> (reason: String, message: String)? {
+        let code = isKnownBrowserTool
+            ? browserTerminalStopCode(inRawContent: content)
+            : browserTerminalStopCode(inStructuredContent: content)
+        guard let code else { return nil }
+
+        switch code {
+        case "drive_file_name_mismatch":
+            return (
+                code,
+                "ASTRA stopped browser control because Google Drive opened a different file than the requested name. It did not continue into read or edit actions on the wrong file."
+            )
+        case "drive_file_not_opened":
+            return (
+                code,
+                "ASTRA stopped browser control because the Google Drive open helper could not open the requested file. It did not fall back to generic row clicks or editor probing."
+            )
+        case "google_docs_browser_copy_unavailable":
+            return (
+                code,
+                "ASTRA stopped browser control because it could not safely copy/read the Google Docs content from the browser. It did not fall back to manual probing or destructive editor shortcuts."
+            )
+        case "google_docs_controlled_browser_required":
+            return (
+                code,
+                "ASTRA stopped browser control because full-document Google Docs read/replace requires Controlled mode. Embedded WebKit cannot verify a fresh clipboard copy from the Docs editor iframe, so ASTRA did not select or replace document content."
+            )
+        case "google_docs_safe_edit_unavailable":
+            return (
+                code,
+                "ASTRA stopped browser control because the safe Google Docs browser read/replace helper is unavailable. It did not fall back to manual select-all/delete. Use the controlled browser, handle the document manually, or retry with a narrower non-destructive edit."
+            )
+        case "google_docs_safe_edit_verification_failed":
+            return (
+                code,
+                "ASTRA stopped browser control because the Google Docs safe edit path could not verify the final document content. It did not fall back to manual select-all/delete."
+            )
+        case "controlled_browser_unavailable":
+            return (
+                code,
+                "ASTRA stopped browser control because Google Drive/Docs automation requires controlled Chromium, but controlled browser was unavailable. Fix controlled browser setup or permissions before retrying."
+            )
+        case "unauthorized_browser_bridge_request":
+            return (
+                code,
+                "ASTRA stopped browser control because the astra-browser command could not authenticate to the Shelf browser bridge. Restart or reattach the Shelf browser, then retry."
+            )
+        case "browser_action_budget_exceeded":
+            return (
+                code,
+                "ASTRA stopped browser control because the browser action budget was exceeded. Inspect the browser logs or start a new task with a more specific browser strategy before retrying."
+            )
+        case "dangerous_keypress_sequence":
+            return (
+                code,
+                "ASTRA stopped browser control because the browser bridge blocked a destructive keyboard sequence in an editor. Use a safe site-specific helper or explicit non-destructive edit path instead."
+            )
+        default:
+            return nil
+        }
+    }
+
+    private static let browserTerminalStopCodes = [
+        "google_docs_controlled_browser_required",
+        "google_docs_browser_copy_unavailable",
+        "drive_file_name_mismatch",
+        "drive_file_not_opened",
+        "google_docs_safe_edit_unavailable",
+        "google_docs_safe_edit_verification_failed",
+        "controlled_browser_unavailable",
+        "unauthorized_browser_bridge_request",
+        "browser_action_budget_exceeded",
+        "dangerous_keypress_sequence"
+    ]
+
+    private static func browserTerminalStopCode(inRawContent content: String) -> String? {
+        let lower = content.lowercased()
+        return browserTerminalStopCodes.first { lower.contains($0) }
+    }
+
+    private static func browserTerminalStopCode(inStructuredContent content: String) -> String? {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let object = jsonObject(fromExactContent: trimmed),
+           let code = browserTerminalStopCode(inJSONObject: object) {
+            return code
+        }
+        for line in trimmed.split(whereSeparator: \.isNewline) {
+            let line = String(line).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let object = jsonObject(fromExactContent: line),
+                  let code = browserTerminalStopCode(inJSONObject: object) else {
+                continue
+            }
+            return code
+        }
+        return nil
+    }
+
+    private static func jsonObject(fromExactContent content: String) -> [String: Any]? {
+        guard content.hasPrefix("{"), content.hasSuffix("}"),
+              let data = content.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return object
+    }
+
+    private static func browserTerminalStopCode(inJSONObject object: [String: Any]) -> String? {
+        if looksLikeStructuredBrowserResponse(object) {
+            for key in ["error", "stopReason"] {
+                if let code = browserTerminalStopCode(fromExactValue: object[key]) {
+                    return code
+                }
+            }
+        }
+
+        for key in ["content", "output", "stdout"] {
+            guard let string = object[key] as? String,
+                  let nested = jsonObject(fromExactContent: string.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  let code = browserTerminalStopCode(inJSONObject: nested) else {
+                continue
+            }
+            return code
+        }
+
+        for key in ["result", "response", "data"] {
+            if let nested = object[key] as? [String: Any],
+               let code = browserTerminalStopCode(inJSONObject: nested) {
+                return code
+            }
+        }
+
+        return nil
+    }
+
+    private static func looksLikeStructuredBrowserResponse(_ object: [String: Any]) -> Bool {
+        object["ok"] != nil
+            || object["browserTrace"] != nil
+            || object["debugCapture"] != nil
+            || object["requiredEngine"] != nil
+            || object["selectedEngine"] != nil
+            || (object["source"] as? String)?.lowercased().contains("browser") == true
+    }
+
+    private static func browserTerminalStopCode(fromExactValue value: Any?) -> String? {
+        guard let string = value as? String else { return nil }
+        let normalized = string.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return browserTerminalStopCodes.contains(normalized) ? normalized : nil
+    }
+
+    private static func isProviderPermissionDenial(_ content: String) -> Bool {
+        let lower = content.lowercased()
+        return lower.contains("permission denied and could not request permission from user")
+            || lower.contains("this command requires approval")
+            || lower.contains("command requires approval")
+            || (lower.contains("allow access to these paths") && lower.contains("(y/n)"))
+    }
+
+    private func recordProviderPermissionDenial(
+        toolID: String?,
+        explicitToolName: String?,
+        detail: String,
+        process: AgentRuntimeProcessControl?
+    ) -> Bool {
+        guard !_policyViolation,
+              !_policyApprovalRequired,
+              _runtimeStopReason == nil else {
+            return false
+        }
+
+        let context = toolContext(for: toolID)
+        let toolName = Self.nonEmpty(explicitToolName?.trimmingCharacters(in: .whitespacesAndNewlines))
+            ?? Self.nonEmpty(context?.name)
+            ?? "ToolApproval"
+        let providerName = policyGuard?.providerID.displayName ?? "The provider"
+        let providerDetail = LogSanitizer.sanitize(detail, maxLength: 360)
+        let requestText = context?.summary
+            .map { "\nRecent request: \(LogSanitizer.sanitize($0, maxLength: 500))" }
+            ?? ""
+        let providerID = policyGuard?.providerID ?? .claudeCode
+        let permissionRequest = Self.providerPermissionRequest(toolName: toolName, context: context)
+        let policyProbeViolation = Self.shouldPolicyProbeProviderPermission(toolName: toolName, context: context)
+            ? policyGuard?.violation(for: Self.providerPermissionPolicyProbe(toolName: toolName, toolID: toolID, context: context))
+            : nil
+        if let policyProbeViolation, !policyProbeViolation.requiresApproval {
+            return recordPolicyViolation(policyProbeViolation, process: process)
+        }
+        let approvalGrants = PermissionBroker.approvalGrants(
+            for: policyProbeViolation?.permissionRequest ?? permissionRequest
+        )
+
+        if policyGuard?.usesBroadProviderPermissions == true {
+            let message = """
+            \(providerName) denied a tool request even though ASTRA launched it with broad provider permissions (`--allow-all` / `--allow-all-tools`). This is a provider-side, account, organization, or CLI policy denial, not an ASTRA permission that another approval can expand.
+            Tool: \(toolName).\(requestText)
+            Provider detail: \(providerDetail)
+            """
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: taskID, fields: [
+                "reason": "provider_permission_denied_broad_permissions",
+                "tool": toolName,
+                "tool_id": toolID ?? "unknown",
+                "detail": providerDetail
+            ], level: .error, fieldMaxLength: 360)
+            _runtimeStopReason = "provider_permission_denied_broad_permissions"
+            _runtimeStopMessage = message
+        } else if approvalGrants.isEmpty {
+            let message = """
+            \(providerName) requested a native permission prompt that ASTRA cannot safely approve in the non-interactive runtime.
+            Tool: \(toolName).\(requestText)
+            Provider detail: \(providerDetail)
+
+            ASTRA stopped this run instead of offering an approval because this provider request does not map to a scoped runtime permission that can be applied on retry. Review the workspace paths or policy settings, then retry with the needed access already in scope.
+            """
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: taskID, fields: [
+                "reason": "provider_permission_unresumable",
+                "tool": toolName,
+                "tool_id": toolID ?? "unknown",
+                "detail": providerDetail
+            ], level: .error, fieldMaxLength: 360)
+            _runtimeStopReason = "provider_permission_unresumable"
+            _runtimeStopMessage = message
+        } else if policyGuard?.hasAppliedApprovalGrants(approvalGrants) == true {
+            let providerGrantSummary = PermissionBroker.providerGrantStrings(
+                for: approvalGrants,
+                runtime: providerID
+            ).joined(separator: ",")
+            let message = """
+            \(providerName) denied the tool request after ASTRA had already applied the scoped approval for this run.
+            Tool: \(toolName).\(requestText)
+            Applied grant: \(providerGrantSummary.isEmpty ? "the requested runtime permission" : providerGrantSummary)
+            Provider detail: \(providerDetail)
+
+            ASTRA stopped instead of asking for the same approval again. This usually means the provider CLI, account policy, or organization policy rejected the request after ASTRA allowed the scoped operation.
+            """
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: taskID, fields: [
+                "reason": "provider_permission_denied_after_approval",
+                "tool": toolName,
+                "tool_id": toolID ?? "unknown",
+                "approval_grant": providerGrantSummary.isEmpty ? "none" : providerGrantSummary,
+                "detail": providerDetail
+            ], level: .error, fieldMaxLength: 360)
+            _runtimeStopReason = "provider_permission_denied_after_approval"
+            _runtimeStopMessage = message
+        } else {
+            let message = PermissionBroker.approvalPayloadString(
+                providerID: providerID,
+                request: permissionRequest,
+                reason: "\(providerName) reported a tool permission prompt that ASTRA cannot answer inside the non-interactive runtime.",
+                providerDetail: providerDetail,
+                grants: approvalGrants
+            )
+            let providerGrantSummary = PermissionBroker.providerGrantStrings(
+                for: approvalGrants,
+                runtime: providerID
+            ).joined(separator: ",")
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: taskID, fields: [
+                "reason": "provider_permission_approval_required",
+                "tool": toolName,
+                "tool_id": toolID ?? "unknown",
+                "approval_grant": providerGrantSummary.isEmpty ? "none" : providerGrantSummary,
+                "detail": providerDetail
+            ], level: .warning, fieldMaxLength: 360)
+            _policyApprovalRequired = true
+            _policyApprovalMessage = message
+        }
+
+        process?.terminate()
+        return true
+    }
+
+    private static func providerPermissionRequest(toolName: String, context: ToolUseContext?) -> PermissionRequest {
+        let contextToolName = context?.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveToolName = nonEmpty(contextToolName) ?? toolName
+        let contextSummary = context.flatMap { nonEmpty($0.summary) }
+        if isShellToolName(effectiveToolName) || isShellToolName(toolName) {
+            let command = providerPermissionCommandHint(toolName: effectiveToolName, context: context)
+                ?? providerPermissionCommandHint(toolName: toolName, context: context)
+            if let command {
+                return .shell(command: command, toolName: effectiveToolName)
+            }
+        }
+        return PermissionBroker.providerNativePromptRequest(
+            toolName: effectiveToolName,
+            context: contextSummary
+        )
+    }
+
+    private static func providerPermissionPolicyProbe(
+        toolName: String,
+        toolID: String?,
+        context: ToolUseContext?
+    ) -> ParsedEvent {
+        let contextToolName = context?.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveToolName = nonEmpty(contextToolName) ?? toolName
+        let isShell = isShellToolName(effectiveToolName) || isShellToolName(toolName)
+        let probeToolName = isShell ? "Bash" : effectiveToolName
+        var input: [String: Any] = [:]
+        if isShell,
+           let command = providerPermissionCommandHint(toolName: effectiveToolName, context: context)
+            ?? providerPermissionCommandHint(toolName: toolName, context: context) {
+            input["command"] = command
+            input["summary"] = command
+        } else if let summary = nonEmpty(context?.summary) {
+            input["summary"] = summary
+        }
+        return .toolUse(name: probeToolName, id: toolID ?? "", input: input.isEmpty ? nil : input)
+    }
+
+    private static func shouldPolicyProbeProviderPermission(toolName: String, context: ToolUseContext?) -> Bool {
+        let contextToolName = context?.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveToolName = nonEmpty(contextToolName) ?? toolName
+        if isShellToolName(effectiveToolName) || isShellToolName(toolName) {
+            return true
+        }
+        switch effectiveToolName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "read", "view", "write", "create", "edit", "multiedit", "multi_edit", "apply_patch", "webfetch", "websearch":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func providerPermissionCommandHint(toolName: String, context: ToolUseContext?) -> String? {
+        if let summary = nonEmpty(context?.summary) {
+            if let command = commandHintFromJSONSummary(summary) {
+                return command
+            }
+            return summary
+        }
+        return AgentRuntimePolicyGuard.commandHintFromShellPermissionToolName(toolName)
+    }
+
+    private static func commandHintFromJSONSummary(_ summary: String) -> String? {
+        guard let object = jsonObject(fromExactContent: summary) else { return nil }
+        for key in ["command", "cmd"] {
+            if let value = object[key] as? String,
+               let command = nonEmpty(value) {
+                return command
+            }
+        }
+        return nil
+    }
+
+    private static func isShellToolName(_ toolName: String) -> Bool {
+        let normalized = toolName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized == "bash"
+            || normalized == "shell"
+            || normalized.hasPrefix("shell(")
+            || normalized.hasPrefix("bash(")
+    }
+
+    private static func canonicalProviderToolName(_ toolName: String) -> String {
+        switch toolName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "read", "view": return "Read"
+        case "grep": return "Grep"
+        case "glob": return "Glob"
+        case "write": return "Write"
+        case "edit": return "Edit"
+        case "multiedit", "multi_edit": return "MultiEdit"
+        case "bash", "shell": return "Bash"
+        case "webfetch": return "WebFetch"
+        case "websearch": return "WebSearch"
+        case "agent": return "Agent"
+        default: return toolName.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func recordPolicyViolation(_ violation: AgentRuntimePolicyViolation, process: AgentRuntimeProcessControl?) -> Bool {
+        guard !_policyViolation, !_policyApprovalRequired else { return false }
+        let redactedDetail = violation.detail.map { LogSanitizer.sanitize($0, maxLength: 240) }
+        let reason = violation.requiresApproval ? "runtime_policy_approval_required" : "runtime_policy_violation"
+        AppLogger.audit(.workerBlocked, category: "Worker", taskID: taskID, fields: [
+            "reason": reason,
+            "violation_category": violation.violationCategory,
+            "tool": violation.toolName ?? "unknown",
+            "message": violation.reason,
+            "approval_grant": PermissionBroker.providerGrantStrings(
+                for: violation.approvalGrants,
+                runtime: policyGuard?.providerID ?? .claudeCode
+            ).joined(separator: ","),
+            "detail": redactedDetail ?? "none"
+        ], level: violation.requiresApproval ? .warning : .error)
+        if violation.requiresApproval {
+            let providerID = policyGuard?.providerID ?? .claudeCode
+            let request = violation.permissionRequest
+                ?? PermissionBroker.providerNativePromptRequest(
+                    toolName: violation.toolName ?? "ToolApproval",
+                    context: redactedDetail
+                )
+            let grants = violation.approvalGrants.isEmpty
+                ? PermissionBroker.approvalGrants(for: request)
+                : violation.approvalGrants
+            guard !grants.isEmpty else {
+                _runtimeStopReason = "permission_unresumable"
+                _runtimeStopMessage = """
+                ASTRA stopped this run because the requested action requires approval but does not map to a scoped runtime permission that can be replayed safely.
+                Tool: \(violation.toolName ?? "unknown").
+                \(redactedDetail.map { "Detail: \($0)" } ?? "")
+                """
+                process?.terminate()
+                return true
+            }
+            let message = PermissionBroker.approvalPayloadString(
+                providerID: providerID,
+                request: request,
+                reason: violation.reason,
+                grants: grants
+            )
+            _policyApprovalRequired = true
+            _policyApprovalMessage = message
+        } else {
+            let message = AgentRuntimePolicyViolation(
+                reason: violation.reason,
+                toolName: violation.toolName,
+                detail: redactedDetail,
+                violationCategory: violation.violationCategory,
+                requiresApproval: violation.requiresApproval,
+                permissionRequest: violation.permissionRequest,
+                approvalGrants: violation.approvalGrants
+            ).userMessage
+            _policyViolation = true
+            _policyViolationMessage = message
+        }
+        process?.terminate()
+        return true
+    }
+
+    private func recordRuntimeStop(reason: String, message: String, process: AgentRuntimeProcessControl?) -> Bool {
+        guard _runtimeStopReason == nil else { return false }
+        AppLogger.audit(.workerBlocked, category: "Worker", taskID: taskID, fields: [
+            "reason": reason,
+            "source": "browser_terminal_error",
+            "message": message
+        ], level: .error, fieldMaxLength: 260)
+        _runtimeStopReason = reason
+        _runtimeStopMessage = message
+        process?.terminate()
+        return true
+    }
+
+    private func recordBudgetOverage(reason: String, fields: [String: String], process: AgentRuntimeProcessControl?) -> Bool {
+        var auditFields = fields
+        auditFields["reason"] = reason
+        auditFields["enforcement"] = BudgetEnforcementMode.hardStop.rawValue
+        AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: taskID, fields: auditFields, level: .error)
+        _budgetExceeded = true
+        process?.terminate()
+        return true
+    }
+
+    private func recordBudgetWarning(reason: String, fields: [String: String], process _: AgentRuntimeProcessControl?) -> Bool {
+        guard !_budgetWarning else { return false }
+        var auditFields = fields
+        auditFields["reason"] = reason
+        auditFields["enforcement"] = BudgetEnforcementMode.warning.rawValue
+        AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: taskID, fields: auditFields, level: .warning)
+        _budgetWarning = true
+        return false
+    }
+
+    func recordActivity() {
+        lock.lock()
+        let now = Date()
+        lastActivityTime = now
+        lastAnyActivityTime = now
+        hasSeenAnyActivity = true
+        hasSeenProviderLivenessActivity = true
+        hasSeenProgressActivity = true
+        lock.unlock()
+    }
+
+    func startWatchdog(process: AgentRuntimeProcessControl) {
+        lock.lock()
+        guard !watchdogRunning else { lock.unlock(); return }
+        watchdogRunning = true
+        lock.unlock()
+
+        let processBox = AgentRuntimeProcessControlBox(process)
+        let checkInterval: TimeInterval = 30
+        DispatchQueue.global().async { [weak self] in
+            while true {
+                Thread.sleep(forTimeInterval: checkInterval)
+                guard let self, processBox.isRunning else { return }
+
+                if self.evaluateWatchdogTimeout(terminate: { processBox.terminate() }) {
+                    return
+                }
+            }
+        }
+    }
+
+    @discardableResult
+    func evaluateWatchdogTimeoutForTesting(process: AgentRuntimeProcessControl? = nil) -> Bool {
+        evaluateWatchdogTimeout(terminate: { process?.terminate() })
+    }
+
+    @discardableResult
+    private func evaluateWatchdogTimeout(terminate: () -> Void) -> Bool {
+        lock.lock()
+        let now = Date()
+        let idleDuration = now.timeIntervalSince(lastActivityTime)
+        let anyIdleDuration = now.timeIntervalSince(lastAnyActivityTime)
+        let hasMetadataOnlyActivity = hasSeenAnyActivity
+            && !hasSeenProviderLivenessActivity
+            && !hasSeenProgressActivity
+        let hasProviderLivenessOnlyActivity = hasSeenProviderLivenessActivity
+            && !hasSeenProgressActivity
+        lock.unlock()
+
+        if hasMetadataOnlyActivity && idleDuration >= noSemanticProgressTimeoutSeconds {
+            let reason = "provider_no_semantic_progress"
+            let message = """
+            ASTRA stopped the provider because it emitted startup or lifecycle metadata but never produced semantic progress such as text, tool use, tool output, usage, or a result.
+            Metadata-only activity continued for \(Int(idleDuration)) seconds; the last provider event was \(Int(anyIdleDuration)) seconds ago.
+            """
+            AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: [
+                "reason": reason,
+                "semantic_idle_seconds": String(Int(idleDuration)),
+                "last_event_age_seconds": String(Int(anyIdleDuration)),
+                "limit_seconds": String(Int(noSemanticProgressTimeoutSeconds))
+            ], level: .error)
+            lock.lock()
+            if _runtimeStopReason == nil {
+                _runtimeStopReason = reason
+                _runtimeStopMessage = message
+            }
+            lock.unlock()
+            terminate()
+            return true
+        }
+
+        if hasProviderLivenessOnlyActivity && idleDuration >= noSemanticProgressTimeoutSeconds {
+            let reason = "provider_no_actionable_progress"
+            let message = """
+            ASTRA stopped the provider because it streamed provider-side liveness such as partial thinking or accounting, but never produced visible text, tool use, tool output, a file change, or a result.
+            Liveness-only activity continued for \(Int(idleDuration)) seconds; the last provider event was \(Int(anyIdleDuration)) seconds ago.
+            """
+            AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: [
+                "reason": reason,
+                "actionable_idle_seconds": String(Int(idleDuration)),
+                "last_event_age_seconds": String(Int(anyIdleDuration)),
+                "limit_seconds": String(Int(noSemanticProgressTimeoutSeconds))
+            ], level: .error)
+            lock.lock()
+            if _runtimeStopReason == nil {
+                _runtimeStopReason = reason
+                _runtimeStopMessage = message
+            }
+            lock.unlock()
+            terminate()
+            return true
+        }
+
+        if idleDuration >= idleTimeoutSeconds {
+            AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: [
+                "idle_seconds": String(Int(idleDuration)),
+                "limit_seconds": String(Int(idleTimeoutSeconds))
+            ], level: .error)
+            lock.lock()
+            _timedOut = true
+            lock.unlock()
+            terminate()
+            return true
+        }
+
+        return false
+    }
+
+    static func progressKind(for parsed: ParsedEvent) -> RuntimeProgressKind {
+        switch parsed {
+        case .systemInit:
+            return .lifecycleMetadata
+        case .unknown:
+            return .diagnostic
+        case .usage:
+            return .accounting
+        case .result:
+            return .terminal
+        case .astraProtocol:
+            return .terminal
+        case .text(let text):
+            return nonEmpty(text) == nil ? .diagnostic : .visibleProgress
+        case .thinking(let text):
+            return nonEmpty(text) == nil ? .diagnostic : .providerLiveness
+        case .toolResult(_, let content):
+            return nonEmpty(content) == nil ? .diagnostic : .actionableProgress
+        case .toolUse, .teammateStarted, .teammateCompleted, .teamCreated, .teamDeleted, .teamMessage, .permissionDenied:
+            return .actionableProgress
+        }
+    }
+
+    static func repetitionSignature(_ parsed: ParsedEvent) -> String? {
+        switch parsed {
+        case .text(let text):
+            return nonEmpty(text).map { textSignature(prefix: "text", text: $0) }
+        case .thinking(let text):
+            return nonEmpty(text).map { textSignature(prefix: "think", text: $0) }
+        case .toolUse(let name, _, let input):
+            return "tool:\(name):\(inputSignature(input))"
+        case .toolResult(_, let content):
+            return nonEmpty(content).map { textSignature(prefix: "tool.result", text: $0) }
+        case .teammateStarted(_, let name, let prompt):
+            return "teammate.start:\(name):\(textSignature(prefix: "prompt", text: prompt))"
+        case .teammateCompleted(_, let name):
+            return "teammate.done:\(name)"
+        case .teamCreated(let name, let description):
+            return "team.created:\(name):\(textSignature(prefix: "description", text: description))"
+        case .teamDeleted(let name):
+            return "team.deleted:\(name)"
+        case .teamMessage(let from, let to, let content):
+            return nonEmpty(content).map { textSignature(prefix: "team.msg:\(from)->\(to)", text: $0) }
+        case .permissionDenied(let tool, let reason):
+            return "perm.denied:\(tool):\(textSignature(prefix: "reason", text: reason))"
+        case .usage, .result, .systemInit, .astraProtocol, .unknown:
+            return nil
+        }
+    }
+
+    private static func refreshesRuntimeActivity(_ parsed: ParsedEvent) -> Bool {
+        refreshesRuntimeActivity(progressKind(for: parsed))
+    }
+
+    private static func refreshesRuntimeActivity(_ progressKind: RuntimeProgressKind) -> Bool {
+        switch progressKind {
+        case .visibleProgress, .actionableProgress, .terminal:
+            return true
+        case .lifecycleMetadata, .providerLiveness, .accounting, .diagnostic:
+            return false
+        }
+    }
+
+    static func eventSignature(_ parsed: ParsedEvent) -> String {
+        switch parsed {
+        case .text(let t): return textSignature(prefix: "text", text: t)
+        case .thinking(let t): return textSignature(prefix: "think", text: t)
+        case .toolUse(let name, let id, let input):
+            return "tool:\(name):\(id):\(inputSignature(input))"
+        case .toolResult(let id, let content):
+            return "\(textSignature(prefix: "tool.result:\(id)", text: content))"
+        case .usage(let input, let output): return "usage:\(input):\(output)"
+        case .result(let t, _, _, _, _, _, _): return textSignature(prefix: "result", text: t ?? "")
+        case .systemInit: return "init"
+        case .teammateStarted(_, let name, _): return "teammate.start:\(name)"
+        case .teammateCompleted(_, let name): return "teammate.done:\(name)"
+        case .teamCreated(let name, _): return "team.created:\(name)"
+        case .teamDeleted(let name): return "team.deleted:\(name)"
+        case .teamMessage(let from, let to, let content): return textSignature(prefix: "team.msg:\(from)->\(to)", text: content)
+        case .permissionDenied(let tool, _): return "perm.denied:\(tool)"
+        case .astraProtocol: return "astra.protocol"
+        case .unknown(let type): return "unknown:\(type)"
+        }
+    }
+
+    private static func textSignature(prefix: String, text: String) -> String {
+        "\(prefix):\(text.count):\(text.prefix(80))"
+    }
+
+    private static func nonEmpty(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func inputSignature(_ input: [String: Any]?) -> String {
+        guard let input else { return "" }
+        return valueSignature(input)
+    }
+
+    private static func valueSignature(_ value: Any?) -> String {
+        if let string = value as? String {
+            return "s:\(string.count):\(string.prefix(80))"
+        }
+        if let dictionary = value as? [String: Any] {
+            let joined = dictionary.keys.sorted().map { key in
+                "\(key)=\(valueSignature(dictionary[key]))"
+            }.joined(separator: ";")
+            return "d:\(joined.count):\(joined.prefix(120))"
+        }
+        if let array = value as? [Any] {
+            let joined = array.map(valueSignature).joined(separator: ",")
+            return "a:\(joined.count):\(joined.prefix(120))"
+        }
+        let description = String(describing: value ?? "")
+        return "v:\(description.count):\(description.prefix(80))"
+    }
+}

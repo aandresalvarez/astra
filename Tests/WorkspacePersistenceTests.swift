@@ -214,6 +214,39 @@ struct WorkspacePersistenceTests {
         #expect(imported.tasks.first?.isDone == false)
     }
 
+    @Test("active worktree focus travels with the workspace and re-validates on import")
+    @MainActor
+    func activeWorkingPathRoundTrips() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+
+        let root = "/tmp/astra_active_path_\(UUID().uuidString)"
+        let worktree = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-active-wt-\(UUID().uuidString)", isDirectory: true).path
+        try FileManager.default.createDirectory(atPath: worktree, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: worktree) }
+
+        let workspace = try makeRichWorkspace(in: context, root: root)
+        workspace.activeWorkingPath = worktree
+
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        #expect(config.activeWorkingPath == worktree)
+
+        // Worktree present on this machine → focus is restored.
+        let presentContainer = try makeWorkspacePersistenceContainer()
+        let present = WorkspaceConfigManager.importWorkspace(from: config, modelContext: presentContainer.mainContext)
+        #expect(present.activeWorkingPath == worktree)
+        #expect(present.isUsingWorktree == true)
+
+        // Worktree absent (different machine) → focus resets to root.
+        var staleConfig = config
+        staleConfig.activeWorkingPath = "/gone/\(UUID().uuidString)"
+        let absentContainer = try makeWorkspacePersistenceContainer()
+        let absent = WorkspaceConfigManager.importWorkspace(from: staleConfig, modelContext: absentContainer.mainContext)
+        #expect(absent.activeWorkingPath == nil)
+        #expect(absent.isUsingWorktree == false)
+    }
+
     @Test("import skips unsafe local tool definitions from workspace config")
     @MainActor
     func importSkipsUnsafeLocalToolDefinitions() throws {
@@ -541,6 +574,100 @@ struct WorkspacePersistenceTests {
 
         #expect(target.reason == "ready")
         #expect(target.url?.path == root.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName).path)
+    }
+
+    @Test("workspace export result reports write diagnostics")
+    @MainActor
+    func workspaceExportResultReportsWriteDiagnostics() throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_export_result_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Export Result", primaryPath: root.path)
+        context.insert(workspace)
+
+        let target = root
+            .appendingPathComponent("missing", isDirectory: true)
+            .appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
+        let result = WorkspaceConfigManager.exportToFileResult(
+            workspace: workspace,
+            modelContext: context,
+            url: target
+        )
+
+        #expect(result.status == .writeFailed)
+        #expect(!result.didExport)
+        #expect(result.path == target.path)
+        #expect(result.parentExists == false)
+        #expect(result.auditFields["result"] == "writeFailed")
+        #expect(result.auditFields["error_domain"] != nil)
+    }
+
+    @Test("workspace load result separates unreadable and decode failures")
+    func workspaceLoadResultReportsDecodeFailure() throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_load_result_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
+        try "{ not json".write(to: url, atomically: true, encoding: .utf8)
+
+        let result = WorkspaceConfigManager.loadConfigResult(from: url)
+
+        #expect(result.status == .decodeFailed)
+        #expect(!result.didLoad)
+        #expect(result.path == url.path)
+        #expect(result.errorDescription?.isEmpty == false)
+    }
+
+    @Test("workspace import result reports imported and skipped resource counts")
+    @MainActor
+    func workspaceImportResultReportsCounts() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        var config = minimalWorkspaceConfig(
+            name: "Import Result",
+            path: "/tmp/astra_import_result_\(UUID().uuidString)",
+            skillID: UUID().uuidString
+        )
+        config.skills[0].name = "Project Skill"
+        config.connectors = [
+            WorkspaceConfigManager.ConnectorConfig(
+                id: UUID().uuidString,
+                name: "Unsafe API",
+                serviceType: "custom",
+                icon: "link",
+                description: "",
+                baseURL: "http://example.com",
+                authMethod: "bearer",
+                credentialKeys: ["TOKEN"],
+                configKeys: [],
+                configValues: [],
+                notes: ""
+            )
+        ]
+        config.localTools = [
+            WorkspaceConfigManager.LocalToolConfig(
+                id: UUID().uuidString,
+                name: "Unsafe Tool",
+                description: "",
+                icon: "terminal",
+                toolType: "command",
+                command: "bad command",
+                arguments: ""
+            )
+        ]
+
+        let result = WorkspaceConfigManager.importWorkspaceResult(from: config, modelContext: context)
+
+        #expect(result.status == .imported)
+        #expect(result.didImport)
+        #expect(result.skillCount == 1)
+        #expect(result.connectorCount == 0)
+        #expect(result.localToolCount == 0)
+        #expect(result.skippedConnectorCount == 1)
+        #expect(result.skippedLocalToolCount == 1)
+        #expect(result.auditFields["skipped_connector_count"] == "1")
     }
 
     @Test("auto-export skip launch flags are recognized")

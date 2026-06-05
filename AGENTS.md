@@ -3,6 +3,23 @@
 This repo is a SwiftPM macOS app. Follow these rules when working as a coding
 agent in this checkout.
 
+## Architecture Principles
+
+- Treat durable ASTRA domain state as the source of truth. SwiftData models,
+  task events, run records, and task-folder state such as `current_state.json`
+  should own persisted behavior; derive UI, prompt, provider, and generated-file
+  views from those owners through services or policies.
+- Avoid creating a second mutable owner for the same behavior. Derived caches
+  and presentation state are acceptable only when their source, refresh path, and
+  invalidation behavior are clear and testable.
+- Prefer explicit event- and service-driven workflows over hidden background
+  behavior. Workflow-changing task, run, plan, validation, permission, and
+  artifact transitions should be recorded through typed services and durable
+  events, with logging and regression coverage.
+- Use background scans, timers, and view lifecycle tasks only for observable,
+  idempotent refresh work. They should not silently change domain state without
+  an explicit service boundary, error handling, and tests.
+
 ## App Channels
 
 ASTRA has separate development and production identities. Keep them separate.

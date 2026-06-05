@@ -72,6 +72,31 @@ struct AsyncProcessRunnerTests {
         #expect(result.exitCode == 0)
     }
 
+    @Test("runAsync timeout terminates wrapper child processes")
+    func timeoutTerminatesWrapperChildProcesses() async {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "sleep 10 & wait"]
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        let start = Date()
+        let result = await AsyncProcessRunner.run(
+            process,
+            stdout: stdoutPipe,
+            stderr: stderrPipe,
+            timeoutSeconds: 0.2
+        )
+        let elapsed = Date().timeIntervalSince(start)
+
+        #expect(elapsed < 8, "Timed-out wrapper process did not return promptly: \(elapsed)s")
+        #expect(result.exitCode == -1)
+        #expect(result.stderr.contains("timed out"))
+    }
+
     @Test("ProcessBinaryRunner terminates a child process when cancelled")
     func processBinaryRunnerTerminatesChildProcessWhenCancelled() async {
         let runner = ProcessBinaryRunner()

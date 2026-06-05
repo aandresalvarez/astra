@@ -12,6 +12,7 @@ struct SettingsView: View {
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
     @AppStorage(AppStorageKeys.runtimeProviderSettingsRevision) private var runtimeProviderSettingsRevision = 0
+    @AppStorage(AppStorageKeys.roleProfileRevision) private var roleProfileRevision = 0
     @AppStorage("workspacesRoot") private var workspacesRoot = ""
     @AppStorage("timeoutSeconds") private var timeoutSeconds = 600
     @AppStorage("validationModel") private var validationModel = "claude-haiku-4-5-20251001"
@@ -58,6 +59,7 @@ struct SettingsView: View {
     @State private var providerHomeDirectoryDrafts: [AgentRuntimeID: String] = [:]
     @State private var detectedProviderPaths: [AgentRuntimeID: String] = [:]
     @State private var expandedProviderRuntime: AgentRuntimeID?
+    @State private var roleProfileDrafts: [TaskRoleID: TaskRoleProfile] = [:]
     @State private var readinessReport: RuntimeReadinessReport?
     @State private var isCheckingReadiness = false
     @State private var readinessCheckedAt: Date?
@@ -87,6 +89,11 @@ struct SettingsView: View {
             runtimeSettingsTab
                 .tabItem {
                     Label("Runtime", systemImage: "cpu")
+                }
+
+            roleProfilesSettingsTab
+                .tabItem {
+                    Label("Roles", systemImage: "person.2")
                 }
 
             permissionsSettingsTab
@@ -134,6 +141,7 @@ struct SettingsView: View {
         }
         .onAppear {
             loadProviderPathDrafts()
+            loadRoleProfileDrafts()
             detectClaudeCLI()
             detectCopilotCLI()
             if expandedProviderRuntime == nil {
@@ -158,6 +166,9 @@ struct SettingsView: View {
             loadProviderPathDrafts()
             readinessReport = nil
             readinessCheckedAt = nil
+        }
+        .onChange(of: roleProfileRevision) {
+            loadRoleProfileDrafts()
         }
         .onChange(of: logRetentionDays) {
             AppLogger.rotateIfNeeded()
@@ -1188,6 +1199,101 @@ struct SettingsView: View {
         .formStyle(.grouped)
     }
 
+    private var roleProfilesSettingsTab: some View {
+        Form {
+            Section("Mission Roles") {
+                ForEach(TaskRoleID.allCases) { role in
+                    roleProfileRow(role)
+                }
+            }
+
+            Section("How ASTRA Uses These") {
+                Text("Planner, verifier, browser tester, and summarizer profiles choose internal utility runs. Worker remains task-specific, but its defaults seed new task settings. Verifier defaults prefer a different configured provider when one is available.")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func roleProfileRow(_ role: TaskRoleID) -> some View {
+        let profile = roleProfileDraft(for: role)
+        let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: profile.runtimeID)
+        let source = TaskRoleProfileStore.selection(
+            for: role,
+            defaultRuntimeID: defaultRuntimeID,
+            defaultModel: defaultModel,
+            validationModel: validationModel,
+            defaultBudget: defaultTokenBudget,
+            defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
+            providerSettings: providerSettingsForReadiness,
+            cache: runtimeModelCache
+        ).source
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: role.symbolName)
+                    .font(Stanford.ui(15, weight: .semibold))
+                    .foregroundStyle(Stanford.lagunita)
+                    .frame(width: 22)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(role.label)
+                        .font(Stanford.body(14).weight(.semibold))
+                    Text(role.detail)
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Text(source == "role_profile" ? "Custom" : "Default")
+                    .font(Stanford.caption(11).weight(.medium))
+                    .foregroundStyle(source == "role_profile" ? Stanford.paloAltoGreen : .secondary)
+            }
+
+            Picker("Provider", selection: roleRuntimeBinding(for: role)) {
+                ForEach(AgentRuntimeAdapterRegistry.runtimeIDs) { runtime in
+                    Text(runtime.displayName).tag(runtime.rawValue)
+                }
+            }
+
+            roleModelSelectionRow(
+                title: "Model",
+                role: role,
+                runtime: runtime,
+                selection: roleModelBinding(for: role)
+            )
+
+            HStack {
+                Picker("Budget", selection: roleBudgetBinding(for: role)) {
+                    ForEach(budgetPresets, id: \.self) { budget in
+                        Text(budget == 0 ? "Unlimited" : "\(budget / 1000)k tokens").tag(budget)
+                    }
+                }
+                Picker("Policy", selection: rolePolicyBinding(for: role)) {
+                    ForEach(AgentPolicyLevel.primaryCases) { level in
+                        Text(level.displayName).tag(level.rawValue)
+                    }
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button("Reset") {
+                    TaskRoleProfileStore.clearProfile(role: role)
+                    loadRoleProfileDrafts()
+                }
+                Button("Save") {
+                    TaskRoleProfileStore.setProfile(roleProfileDraft(for: role))
+                    loadRoleProfileDrafts()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(.vertical, 6)
+    }
+
     private var defaultsSettingsTab: some View {
         Form {
             Section("Defaults") {
@@ -1275,7 +1381,7 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
 
                 Toggle("Browser Debug Capture", isOn: $browserDebugCapture)
-                Text("When enabled, browser-control tasks receive ASTRA_BROWSER_DEBUG_CAPTURE=1. Failed browser actions persist a per-task browser-flight JSONL entry with a compact tree, console/navigation/network summaries, and a screenshot thumbnail, which may include visible page content.")
+                Text("When enabled, browser-control tasks receive ASTRA_BROWSER_DEBUG_CAPTURE=1. Failed browser actions persist a per-task browser-flight JSONL entry with a compact tree, console/navigation/network summaries, and a screenshot thumbnail that may contain visible page content. Controlled Chromium uses probed CDP event streams; embedded WebKit uses page instrumentation.")
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
 
@@ -1696,6 +1802,134 @@ struct SettingsView: View {
             .buttonStyle(.borderless)
             .accessibilityLabel("Choose \(title)")
         }
+    }
+
+    private func roleModelSelectionRow(
+        title: String,
+        role: TaskRoleID,
+        runtime: AgentRuntimeID,
+        selection: Binding<String>
+    ) -> some View {
+        let models = RuntimeModelAvailability.models(for: runtime, cache: runtimeModelCache)
+        return HStack(alignment: .center, spacing: 12) {
+            Text(title)
+            Spacer()
+            TextField("Model ID", text: selection, prompt: Text("Type or choose a model"))
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing)
+                .frame(minWidth: 260, maxWidth: 360)
+                .textSelection(.enabled)
+            Menu {
+                ForEach(models, id: \.self) { model in
+                    Button {
+                        roleModelBinding(for: role).wrappedValue = model
+                    } label: {
+                        HStack {
+                            Text(model)
+                            if selection.wrappedValue == model {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(Stanford.ui(12).weight(.semibold))
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Choose \(title)")
+        }
+    }
+
+    private func loadRoleProfileDrafts() {
+        roleProfileDrafts = Dictionary(
+            uniqueKeysWithValues: TaskRoleID.allCases.map { role in
+                let selection = TaskRoleProfileStore.selection(
+                    for: role,
+                    defaultRuntimeID: defaultRuntimeID,
+                    defaultModel: defaultModel,
+                    validationModel: validationModel,
+                    defaultBudget: defaultTokenBudget,
+                    defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
+                    providerSettings: providerSettingsForReadiness,
+                    cache: runtimeModelCache
+                )
+                return (role, selection.profile)
+            }
+        )
+    }
+
+    private func roleProfileDraft(for role: TaskRoleID) -> TaskRoleProfile {
+        if let draft = roleProfileDrafts[role] {
+            return draft
+        }
+        return TaskRoleProfileStore.selection(
+            for: role,
+            defaultRuntimeID: defaultRuntimeID,
+            defaultModel: defaultModel,
+            validationModel: validationModel,
+            defaultBudget: defaultTokenBudget,
+            defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
+            providerSettings: providerSettingsForReadiness,
+            cache: runtimeModelCache
+        ).profile
+    }
+
+    private func updateRoleProfileDraft(_ role: TaskRoleID, mutate: (inout TaskRoleProfile) -> Void) {
+        var draft = roleProfileDraft(for: role)
+        mutate(&draft)
+        roleProfileDrafts[role] = draft
+    }
+
+    private func roleRuntimeBinding(for role: TaskRoleID) -> Binding<String> {
+        Binding(
+            get: { roleProfileDraft(for: role).runtimeID },
+            set: { runtimeID in
+                updateRoleProfileDraft(role) { draft in
+                    let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID)
+                    draft.runtimeID = runtime.rawValue
+                    draft.model = RuntimeModelAvailability.modelForRuntimeSwitch(
+                        currentModel: draft.model,
+                        to: runtime,
+                        cache: runtimeModelCache
+                    )
+                }
+            }
+        )
+    }
+
+    private func roleModelBinding(for role: TaskRoleID) -> Binding<String> {
+        Binding(
+            get: { roleProfileDraft(for: role).model },
+            set: { model in
+                updateRoleProfileDraft(role) { draft in
+                    draft.model = model
+                }
+            }
+        )
+    }
+
+    private func roleBudgetBinding(for role: TaskRoleID) -> Binding<Int> {
+        Binding(
+            get: { roleProfileDraft(for: role).tokenBudget },
+            set: { budget in
+                updateRoleProfileDraft(role) { draft in
+                    draft.tokenBudget = budget
+                }
+            }
+        )
+    }
+
+    private func rolePolicyBinding(for role: TaskRoleID) -> Binding<String> {
+        Binding(
+            get: { roleProfileDraft(for: role).policyLevelRaw },
+            set: { policy in
+                updateRoleProfileDraft(role) { draft in
+                    draft.policyLevelRaw = AgentPolicyLevel.normalized(policy).userFacingLevel.rawValue
+                }
+            }
+        )
     }
 
     private var readinessSummary: some View {

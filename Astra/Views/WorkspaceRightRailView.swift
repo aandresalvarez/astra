@@ -37,16 +37,50 @@ private enum WorkspaceSetupItem: Hashable {
     case routines
 }
 
+enum WorkspaceRightRailPresentation {
+    static let primarySectionOrder = [
+        "Repository",
+        WorkspaceSetupChecklistPresentation.sectionTitle,
+        CapabilityRailSectionPresentation.sectionTitle
+    ]
+
+    static let headerIconFontSize: CGFloat = 15
+    static let headerIconFrame: CGFloat = 22
+    static let headerTitleFontSize: CGFloat = 16
+    static let headerSubtitleFontSize: CGFloat = 12
+}
+
 enum CapabilityRailLayout {
-    static let compactRowMinHeight: CGFloat = 64
-    static let regularRowMinHeight: CGFloat = 68
-    static let summaryRowMinHeight: CGFloat = 72
-    static let setupRowMinHeight: CGFloat = 64
+    static let compactContentPadding: CGFloat = 16
+    static let regularContentPadding: CGFloat = 14
+    static let compactPanelSpacing: CGFloat = 14
+    static let regularPanelSpacing: CGFloat = 12
+    static let compactSectionPadding: CGFloat = 18
+    static let regularSectionPadding: CGFloat = 16
+    static let compactSectionContentSpacing: CGFloat = 10
+    static let regularSectionContentSpacing: CGFloat = 8
+    static let compactGroupSpacing: CGFloat = 14
+    static let regularGroupSpacing: CGFloat = 12
+    static let sectionTitleFontSize: CGFloat = 15
+    static let sectionActionFontSize: CGFloat = 13
+    static let sectionActionSubtitleFontSize: CGFloat = 10
+    static let groupHeadingFontSize: CGFloat = 12
+    static let leadingIconFontSize: CGFloat = 16
+    static let leadingIconFrame: CGFloat = 30
+    static let leadingIconSpacing: CGFloat = 12
+    static let rowTitleFontSize: CGFloat = 14
+    static let rowSubtitleFontSize: CGFloat = 12
+    static let rowActionFontSize: CGFloat = 12
+    static let rowChevronFontSize: CGFloat = 11
+    static let compactRowMinHeight: CGFloat = 60
+    static let regularRowMinHeight: CGFloat = 56
+    static let summaryRowMinHeight: CGFloat = 58
+    static let setupRowMinHeight: CGFloat = 56
     static let usesNestedGroupChrome = false
-    static let titleLineHeight: CGFloat = 20
-    static let subtitleLineHeight: CGFloat = 17
+    static let titleLineHeight: CGFloat = 18
+    static let subtitleLineHeight: CGFloat = 15
     static let titleSubtitleSpacing: CGFloat = 3
-    static let textVerticalBreathingRoom: CGFloat = 14
+    static let textVerticalBreathingRoom: CGFloat = 12
 
     static var minimumTwoLineRowHeight: CGFloat {
         titleLineHeight + subtitleLineHeight + titleSubtitleSpacing + textVerticalBreathingRoom
@@ -61,7 +95,7 @@ enum CapabilityRailLayout {
     }
 
     static func dividerLeadingPadding(isCompact _: Bool) -> CGFloat {
-        40
+        leadingIconFrame
     }
 
     static func dividerTrailingPadding(isCompact _: Bool) -> CGFloat {
@@ -72,7 +106,7 @@ enum CapabilityRailLayout {
 enum CapabilityRailSectionPresentation {
     static let sectionTitle = "Capabilities"
     static let addActionTitle = "Add"
-    static let addActionSubtitle = "Browse library"
+    static let addActionSubtitle = ""
     static let addActionHelp = "Browse capability library"
     static let addActionShowsPlusIcon = false
     static let showsAvailableToAddCount = false
@@ -106,11 +140,15 @@ enum WorkspaceSetupChecklistPresentation {
     static let sectionTitle = "Workspace setup"
     static let missingGroupTitle = "Needs setup"
     static let configuredGroupTitle = "Configured"
+    static let configuredSummaryTitle = "Configured items"
+    static let configuredSummaryActionTitle = "Show all"
+    static let configuredSummaryIcon = "checkmark.circle"
     static let supportsInlineExpansion = true
     static let supportsInlineEditing = true
     static let supportsMemoryRemoval = true
     static let supportsFolderRemoval = true
     static let usesCapabilitySummaryRowPattern = true
+    static let collapsesConfiguredRowsByDefault = true
     static let showsPerRowStatusInCollapsedState = false
     static let collapsedDisclosureIcon = "chevron.right"
     static let expandedDisclosureIcon = "chevron.down"
@@ -130,6 +168,18 @@ enum WorkspaceSetupChecklistPresentation {
 
     static func summary(configured: Int, total: Int) -> String {
         configured == 0 ? "Empty" : "\(configured) of \(total) configured"
+    }
+
+    static func configuredPreview(_ names: [String], limit: Int = 3) -> String {
+        let cleanNames = names
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !cleanNames.isEmpty else { return "No configured items" }
+
+        let visible = cleanNames.prefix(limit)
+        let remaining = cleanNames.count - visible.count
+        let prefix = visible.joined(separator: ", ")
+        return remaining > 0 ? "\(prefix) +\(remaining)" : prefix
     }
 
     static func overflowSummary(
@@ -166,6 +216,7 @@ enum WorkspaceContextIconography {
 
 struct WorkspaceRightRailView: View {
     let workspace: Workspace
+    var selectedTask: AgentTask?
     let onConfigure: () -> Void
     let onEditWorkspace: () -> Void
     var onNewSchedule: (() -> Void)?
@@ -173,6 +224,8 @@ struct WorkspaceRightRailView: View {
     var onManageCapabilities: (() -> Void)?
     var onOpenConfigureTab: ((ConfigureTab, UUID?) -> Void)?
     var onOpenCapabilityPackage: ((String) -> Void)?
+    var onTaskCreated: ((AgentTask) -> Void)?
+    var onOpenWorkspaceFile: ((String) -> Void)?
     var onNewSSHConnection: (() -> Void)?
     var onEditSSHConnection: ((SSHConnection) -> Void)?
     var sshReloadTrigger: Int = 0
@@ -200,6 +253,7 @@ struct WorkspaceRightRailView: View {
     @State private var isConnectorsExpanded = false
     @State private var isToolsExpanded = false
     @State private var isTemplatesExpanded = false
+    @State private var isConfiguredWorkspaceSetupExpanded = false
     @State private var newMemoryText = ""
     @State private var isMemoryComposerVisible = false
     @State private var expandedWorkspaceSetupItems: Set<WorkspaceSetupItem> = []
@@ -208,6 +262,7 @@ struct WorkspaceRightRailView: View {
     @State private var scrollMetrics = RightRailScrollMetrics()
     @State private var isReadyCapabilitiesExpanded = false
     @State private var isDraftCapabilitiesExpanded = false
+    @State private var hasGitRepositories = false
 
     private static let shortDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -309,7 +364,7 @@ struct WorkspaceRightRailView: View {
     }
 
     private var contentPadding: CGFloat {
-        isCompact ? 16 : Stanford.railContentPadding
+        isCompact ? CapabilityRailLayout.compactContentPadding : CapabilityRailLayout.regularContentPadding
     }
 
     private var contentListSpacing: CGFloat {
@@ -317,15 +372,15 @@ struct WorkspaceRightRailView: View {
     }
 
     private var capabilityGroupSpacing: CGFloat {
-        isCompact ? 16 : 18
+        isCompact ? CapabilityRailLayout.compactGroupSpacing : CapabilityRailLayout.regularGroupSpacing
     }
 
     private var panelSpacing: CGFloat {
-        isCompact ? 16 : Stanford.railPanelSpacing
+        isCompact ? CapabilityRailLayout.compactPanelSpacing : CapabilityRailLayout.regularPanelSpacing
     }
 
     private var sectionContentSpacing: CGFloat {
-        isCompact ? 14 : Stanford.railSectionContentSpacing
+        isCompact ? CapabilityRailLayout.compactSectionContentSpacing : CapabilityRailLayout.regularSectionContentSpacing
     }
 
     private var disclosureAnimation: Animation? {
@@ -356,18 +411,18 @@ struct WorkspaceRightRailView: View {
     // MARK: - Workspace Identity Anchor
 
     private var header: some View {
-        HStack(alignment: .center, spacing: 14) {
+        HStack(alignment: .center, spacing: 10) {
             Image(systemName: WorkspaceContextIconography.headerIcon)
-                .font(Stanford.ui(18, weight: .medium))
+                .font(Stanford.ui(WorkspaceRightRailPresentation.headerIconFontSize, weight: .medium))
                 .foregroundStyle(.secondary)
-                .frame(width: 28, height: 28)
+                .frame(width: WorkspaceRightRailPresentation.headerIconFrame, height: WorkspaceRightRailPresentation.headerIconFrame)
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text("Workspace Context")
-                    .font(Stanford.ui(18, weight: .semibold))
+                    .font(Stanford.ui(WorkspaceRightRailPresentation.headerTitleFontSize, weight: .semibold))
                     .lineLimit(1)
                 Text(workspace.name)
-                    .font(Stanford.caption(13))
+                    .font(Stanford.caption(WorkspaceRightRailPresentation.headerSubtitleFontSize))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -387,9 +442,9 @@ struct WorkspaceRightRailView: View {
                 .accessibilityLabel("Close Workspace Context")
             }
         }
-        .padding(.top, isCompact ? 14 : 16)
-        .padding(.horizontal, isCompact ? 18 : 20)
-        .padding(.bottom, isCompact ? 14 : 16)
+        .padding(.top, isCompact ? 14 : 12)
+        .padding(.horizontal, isCompact ? 18 : 16)
+        .padding(.bottom, isCompact ? 14 : 10)
     }
 
     // MARK: - Unified Configure Panel
@@ -398,11 +453,23 @@ struct WorkspaceRightRailView: View {
         let snapshot = capabilityRailSnapshot
 
         return VStack(alignment: .leading, spacing: panelSpacing) {
-            capabilityHealthPanel(snapshot)
+            if hasGitRepositories {
+                floatingContextSection {
+                    WorkspaceGitSectionView(
+                        workspace: workspace,
+                        selectedTask: selectedTask,
+                        isCompact: isCompact,
+                        onTaskCreated: onTaskCreated,
+                        onOpenWorkspaceFile: onOpenWorkspaceFile
+                    )
+                }
+            }
 
             floatingContextSection {
                 workspaceSetupChecklistPanel
             }
+
+            capabilityHealthPanel(snapshot)
 
         }
         .tint(Stanford.lagunita)
@@ -410,8 +477,15 @@ struct WorkspaceRightRailView: View {
             loadSSHConnections()
             refreshApprovedCapabilities()
             applyConfigureDefaults()
+            checkGitRepositories()
         }
-        .onChange(of: workspace.primaryPath) { loadSSHConnections() }
+        .onChange(of: workspace.primaryPath) {
+            loadSSHConnections()
+            checkGitRepositories()
+        }
+        .onChange(of: workspace.additionalPaths) {
+            checkGitRepositories()
+        }
         .onChange(of: sshReloadTrigger) {
             loadSSHConnections()
             if !sshConnections.isEmpty {
@@ -434,7 +508,7 @@ struct WorkspaceRightRailView: View {
         let shape = RoundedRectangle(cornerRadius: Stanford.railCompactCardCornerRadius, style: .continuous)
 
         return content()
-            .padding(isCompact ? 18 : 20)
+            .padding(isCompact ? CapabilityRailLayout.compactSectionPadding : CapabilityRailLayout.regularSectionPadding)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(shape.fill(floatingSectionFill))
             .overlay {
@@ -471,14 +545,14 @@ struct WorkspaceRightRailView: View {
     ) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Text(title)
-                .font(Stanford.ui(17, weight: .semibold))
+                .font(Stanford.ui(CapabilityRailLayout.sectionTitleFontSize, weight: .semibold))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
                 .layoutPriority(1)
 
             if let summary {
                 Text(summary)
-                    .font(Stanford.caption(12).weight(.medium))
+                    .font(Stanford.caption(11).weight(.medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .padding(.horizontal, 8)
@@ -498,13 +572,15 @@ struct WorkspaceRightRailView: View {
             Button(action: onManageCapabilities) {
                 VStack(alignment: .trailing, spacing: 1) {
                     Text(CapabilityRailSectionPresentation.addActionTitle)
-                        .font(Stanford.ui(15, weight: .semibold))
+                        .font(Stanford.ui(CapabilityRailLayout.sectionActionFontSize, weight: .semibold))
                         .lineLimit(1)
 
-                    Text(CapabilityRailSectionPresentation.addActionSubtitle)
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    if !CapabilityRailSectionPresentation.addActionSubtitle.isEmpty {
+                        Text(CapabilityRailSectionPresentation.addActionSubtitle)
+                            .font(Stanford.caption(CapabilityRailLayout.sectionActionSubtitleFontSize))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
                 .foregroundStyle(Stanford.lagunita)
             }
@@ -735,7 +811,7 @@ struct WorkspaceRightRailView: View {
             }
 
             Text(title)
-                .font(Stanford.caption(13).weight(.semibold))
+                .font(Stanford.caption(CapabilityRailLayout.groupHeadingFontSize).weight(.semibold))
                 .foregroundStyle(capabilityGroupHeaderForeground(style))
 
             Spacer(minLength: 0)
@@ -1507,10 +1583,41 @@ struct WorkspaceRightRailView: View {
                 }
 
                 if workspaceSetupConfiguredCount > 0 {
-                    workspaceSetupGroup(WorkspaceSetupChecklistPresentation.configuredGroupTitle) {
-                        workspaceSetupRows(for: .configured)
-                    }
+                    workspaceSetupConfiguredGroup
                 }
+            }
+        }
+    }
+
+    private var workspaceSetupConfiguredGroup: some View {
+        workspaceSetupGroup(WorkspaceSetupChecklistPresentation.configuredGroupTitle) {
+            if isConfiguredWorkspaceSetupExpanded {
+                workspaceSetupRows(for: .configured)
+                Button {
+                    withAnimation(disclosureAnimation) {
+                        isConfiguredWorkspaceSetupExpanded = false
+                    }
+                } label: {
+                    Text("Hide")
+                        .font(Stanford.caption(11).weight(.medium))
+                        .foregroundStyle(Stanford.lagunita)
+                        .padding(.leading, CapabilityRailLayout.dividerLeadingPadding(isCompact: isCompact))
+                        .padding(.vertical, 2)
+                }
+                .buttonStyle(.plain)
+            } else {
+                CapabilitySummaryRow(
+                    icon: WorkspaceSetupChecklistPresentation.configuredSummaryIcon,
+                    iconColor: Stanford.lagunita,
+                    title: WorkspaceSetupChecklistPresentation.configuredSummaryTitle,
+                    subtitle: workspaceSetupConfiguredPreview,
+                    actionTitle: WorkspaceSetupChecklistPresentation.configuredSummaryActionTitle,
+                    action: {
+                        withAnimation(disclosureAnimation) {
+                            isConfiguredWorkspaceSetupExpanded = true
+                        }
+                    }
+                )
             }
         }
     }
@@ -1549,6 +1656,27 @@ struct WorkspaceRightRailView: View {
         if workspaceSetupState(for: .remoteAccess) == state { items.append(.remoteAccess) }
         if !workspace.schedules.isEmpty, state == .configured { items.append(.routines) }
         return items
+    }
+
+    private var workspaceSetupConfiguredPreview: String {
+        WorkspaceSetupChecklistPresentation.configuredPreview(
+            workspaceSetupRowItems(for: .configured).map(workspaceSetupTitle(for:))
+        )
+    }
+
+    private func workspaceSetupTitle(for item: WorkspaceSetupItem) -> String {
+        switch item {
+        case .instructions:
+            return "Instructions"
+        case .memory:
+            return "Memory"
+        case .folders:
+            return "Folders"
+        case .remoteAccess:
+            return "Remote access"
+        case .routines:
+            return "Routines"
+        }
     }
 
     private func workspaceSetupState(for item: WorkspaceSetupItem) -> WorkspaceSetupChecklistPresentation.State {
@@ -1669,20 +1797,20 @@ struct WorkspaceRightRailView: View {
                 Button {
                     toggleWorkspaceSetupItem(item)
                 } label: {
-                    HStack(alignment: .center, spacing: 14) {
+                    HStack(alignment: .center, spacing: CapabilityRailLayout.leadingIconSpacing) {
                         Image(systemName: icon)
-                            .font(Stanford.ui(20, weight: .medium))
+                            .font(Stanford.ui(CapabilityRailLayout.leadingIconFontSize, weight: .medium))
                             .foregroundStyle(setupChecklistIconColor(for: state))
-                            .frame(width: 40)
+                            .frame(width: CapabilityRailLayout.leadingIconFrame)
 
-                        VStack(alignment: .leading, spacing: 5) {
+                        VStack(alignment: .leading, spacing: CapabilityRailLayout.titleSubtitleSpacing) {
                             Text(title)
-                                .font(Stanford.ui(16, weight: .semibold))
+                                .font(Stanford.ui(CapabilityRailLayout.rowTitleFontSize, weight: .semibold))
                                 .foregroundStyle(.primary)
                                 .lineLimit(1)
 
                             Text(subtitle)
-                                .font(Stanford.caption(13))
+                                .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize))
                                 .foregroundStyle(.secondary)
                                 .lineLimit(2)
                                 .truncationMode(.tail)
@@ -1699,7 +1827,7 @@ struct WorkspaceRightRailView: View {
                 if let actionTitle, let action {
                     Button(action: action) {
                         Text(actionTitle)
-                            .font(Stanford.caption(13).weight(.medium))
+                            .font(Stanford.caption(CapabilityRailLayout.rowActionFontSize).weight(.medium))
                             .foregroundStyle(Stanford.lagunita)
                             .lineLimit(1)
                             .fixedSize(horizontal: true, vertical: false)
@@ -1714,9 +1842,9 @@ struct WorkspaceRightRailView: View {
                     Image(systemName: isExpanded
                         ? WorkspaceSetupChecklistPresentation.expandedDisclosureIcon
                         : WorkspaceSetupChecklistPresentation.collapsedDisclosureIcon)
-                        .font(Stanford.ui(13, weight: .semibold))
+                        .font(Stanford.ui(CapabilityRailLayout.rowChevronFontSize, weight: .semibold))
                         .foregroundStyle(.secondary)
-                        .frame(width: 14, height: 24)
+                        .frame(width: 12, height: 22)
                 }
                 .buttonStyle(.plain)
             }
@@ -1810,17 +1938,18 @@ struct WorkspaceRightRailView: View {
             if workspaceFolderCount == 0 {
                 setupEmptyDetail("No workspace folder selected.")
             } else {
-                let primary = workspace.primaryPath.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !primary.isEmpty {
-                    setupFolderRow(title: "Primary", path: primary)
-                }
-
-                ForEach(Array(workspace.additionalPaths.enumerated()), id: \.offset) { index, path in
+                let descriptors = WorkspacePathPresentation.descriptors(
+                    primaryPath: workspace.primaryPath,
+                    additionalPaths: workspace.additionalPaths
+                )
+                ForEach(descriptors) { descriptor in
+                    let canRemove = descriptor.role == .additional
                     setupFolderRow(
-                        title: "Path",
-                        path: path,
-                        canRemove: true,
-                        removeAction: { removeAdditionalPath(at: index) }
+                        title: descriptor.title,
+                        roleLabel: descriptor.roleLabel,
+                        path: descriptor.path,
+                        canRemove: canRemove,
+                        removeAction: canRemove ? { removeAdditionalPath(at: descriptor.index - 1) } : nil
                     )
                 }
             }
@@ -1955,16 +2084,25 @@ struct WorkspaceRightRailView: View {
 
     private func setupFolderRow(
         title: String,
+        roleLabel: String,
         path: String,
         canRemove: Bool = false,
         removeAction: (() -> Void)? = nil
     ) -> some View {
         HStack(alignment: .center, spacing: 7) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(Stanford.caption(10).weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    Text(title)
+                        .font(Stanford.caption(10).weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    Text(roleLabel)
+                        .font(Stanford.caption(9).weight(.medium))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
 
                 Text(compactPath(path))
                     .font(Stanford.mono(10))
@@ -2366,12 +2504,33 @@ struct WorkspaceRightRailView: View {
         sshConnections = SSHConnectionManager.load(workspacePath: workspace.primaryPath)
     }
 
+    private func checkGitRepositories() {
+        let inputs = WorkspaceGitRepositoryScanInputs(
+            primaryPath: workspace.primaryPath,
+            additionalPaths: workspace.additionalPaths
+        )
+        Task {
+            let repos = await GitService.shared.scanForGitRepositories(
+                primaryPath: inputs.primaryPath,
+                additionalPaths: inputs.additionalPaths
+            )
+            await MainActor.run {
+                guard inputs.matches(
+                    primaryPath: workspace.primaryPath,
+                    additionalPaths: workspace.additionalPaths
+                ) else { return }
+                self.hasGitRepositories = !repos.isEmpty
+            }
+        }
+    }
+
     private func applyConfigureDefaults() {
         isAccessCollapsed = sshConnections.isEmpty && workspace.additionalPaths.isEmpty
         isSchedulesSectionCollapsed = workspace.schedules.isEmpty
         isContextCollapsed = false
         isToolsExpanded = false
         isTemplatesExpanded = false
+        isConfiguredWorkspaceSetupExpanded = false
         isMemoryComposerVisible = false
         expandedWorkspaceSetupItems = []
     }
@@ -2812,20 +2971,20 @@ private struct CapabilitySummaryRow: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(alignment: .center, spacing: 14) {
+            HStack(alignment: .center, spacing: CapabilityRailLayout.leadingIconSpacing) {
                 Image(systemName: icon)
-                    .font(Stanford.ui(20, weight: .medium))
+                    .font(Stanford.ui(CapabilityRailLayout.leadingIconFontSize, weight: .medium))
                     .foregroundStyle(iconColor)
-                    .frame(width: 40)
+                    .frame(width: CapabilityRailLayout.leadingIconFrame)
 
-                VStack(alignment: .leading, spacing: 5) {
+                VStack(alignment: .leading, spacing: CapabilityRailLayout.titleSubtitleSpacing) {
                     Text(title)
-                        .font(Stanford.ui(16, weight: .semibold))
+                        .font(Stanford.ui(CapabilityRailLayout.rowTitleFontSize, weight: .semibold))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
 
                     Text(subtitle)
-                        .font(Stanford.caption(13))
+                        .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize))
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                         .truncationMode(.tail)
@@ -2836,7 +2995,7 @@ private struct CapabilitySummaryRow: View {
 
                 if let actionTitle {
                     Text(actionTitle)
-                        .font(Stanford.caption(13).weight(.medium))
+                        .font(Stanford.caption(CapabilityRailLayout.rowActionFontSize).weight(.medium))
                         .foregroundStyle(Stanford.lagunita)
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
@@ -2844,7 +3003,7 @@ private struct CapabilitySummaryRow: View {
                 }
 
                 Image(systemName: "chevron.right")
-                    .font(Stanford.ui(13, weight: .semibold))
+                    .font(Stanford.ui(CapabilityRailLayout.rowChevronFontSize, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, minHeight: CapabilityRailLayout.summaryRowMinHeight, alignment: .leading)
@@ -3034,16 +3193,16 @@ private struct CapabilityRailRow: View {
 
     var body: some View {
         Button(action: onOpen) {
-            HStack(spacing: 14) {
+            HStack(spacing: CapabilityRailLayout.leadingIconSpacing) {
                 Image(systemName: icon)
-                    .font(Stanford.ui(17, weight: .medium))
+                    .font(Stanford.ui(CapabilityRailLayout.leadingIconFontSize, weight: .medium))
                     .foregroundStyle(isEnabled ? color : .secondary)
-                    .frame(width: 34)
+                    .frame(width: CapabilityRailLayout.leadingIconFrame)
 
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: CapabilityRailLayout.titleSubtitleSpacing) {
                     HStack(spacing: 5) {
                         Text(title.isEmpty ? "Untitled Capability" : title)
-                            .font(Stanford.ui(16, weight: .semibold))
+                            .font(Stanford.ui(CapabilityRailLayout.rowTitleFontSize, weight: .semibold))
                             .foregroundStyle(.primary)
                             .lineLimit(1)
                             .layoutPriority(1)
@@ -3058,7 +3217,7 @@ private struct CapabilityRailRow: View {
                     }
 
                     Text(subtitle.isEmpty ? "No details" : subtitle)
-                        .font(Stanford.caption(13))
+                        .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.tail)
@@ -3067,7 +3226,7 @@ private struct CapabilityRailRow: View {
                 Spacer(minLength: 0)
 
                 Image(systemName: "chevron.right")
-                    .font(Stanford.ui(13, weight: .semibold))
+                    .font(Stanford.ui(CapabilityRailLayout.rowChevronFontSize, weight: .semibold))
                     .foregroundStyle(Color.secondary.opacity(0.65))
             }
             .contentShape(Rectangle())
@@ -3088,12 +3247,12 @@ private struct CapabilityStatusBadge: View {
 
     var body: some View {
         Text(title)
-            .font(Stanford.caption(12).weight(.medium))
+            .font(Stanford.caption(11).weight(.medium))
             .foregroundStyle(color)
             .lineLimit(1)
             .minimumScaleFactor(0.75)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 3)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
             .background(color.opacity(0.07))
             .clipShape(Capsule())
     }
@@ -3319,6 +3478,15 @@ private struct EmptyRailState: View {
 
     private var emptyStateStroke: Color {
         Color.primary.opacity(colorScheme == .dark ? 0.055 : 0.075)
+    }
+}
+
+struct WorkspaceGitRepositoryScanInputs: Equatable {
+    let primaryPath: String
+    let additionalPaths: [String]
+
+    func matches(primaryPath: String, additionalPaths: [String]) -> Bool {
+        self.primaryPath == primaryPath && self.additionalPaths == additionalPaths
     }
 }
 

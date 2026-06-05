@@ -413,6 +413,58 @@ else
   /usr/bin/codesign --force --deep --entitlements "$ENTITLEMENTS" --sign - "$APP_BUNDLE"
 fi
 
+verify_app_bundle() {
+  local errors=0
+
+  if [[ ! -x "$APP_BINARY" ]]; then
+    echo "FAIL: executable missing: $APP_BINARY" >&2
+    errors=$((errors + 1))
+  fi
+
+  if [[ ! -f "$INFO_PLIST" ]]; then
+    echo "FAIL: Info.plist missing: $INFO_PLIST" >&2
+    errors=$((errors + 1))
+  fi
+
+  if [[ ! -d "$APP_FRAMEWORKS/Sparkle.framework" ]]; then
+    echo "FAIL: Sparkle.framework missing from $APP_FRAMEWORKS" >&2
+    errors=$((errors + 1))
+  fi
+
+  if [[ ! -f "$APP_FRAMEWORKS/Sparkle.framework/Versions/B/Sparkle" ]]; then
+    echo "FAIL: Sparkle dynamic library missing inside Sparkle.framework" >&2
+    errors=$((errors + 1))
+  fi
+
+  local linked_libs
+  linked_libs="$(/usr/bin/otool -L "$APP_BINARY" 2>/dev/null)" || true
+  if echo "$linked_libs" | grep -q '@rpath/Sparkle.framework'; then
+    if ! /usr/bin/otool -l "$APP_BINARY" 2>/dev/null | grep -q '@executable_path/../Frameworks'; then
+      echo "FAIL: binary links Sparkle via @rpath but missing @executable_path/../Frameworks rpath" >&2
+      errors=$((errors + 1))
+    fi
+  fi
+
+  if ! /usr/bin/codesign --verify --deep --strict "$APP_BUNDLE" 2>/dev/null; then
+    echo "FAIL: code signature verification failed for $APP_BUNDLE" >&2
+    errors=$((errors + 1))
+  fi
+
+  for tool_product in "${TOOL_PRODUCTS[@]}"; do
+    if [[ ! -x "$BUNDLED_TOOLS_DIR/$tool_product" ]]; then
+      echo "FAIL: bundled tool missing: $BUNDLED_TOOLS_DIR/$tool_product" >&2
+      errors=$((errors + 1))
+    fi
+  done
+
+  if [[ "$errors" -gt 0 ]]; then
+    echo "App bundle verification failed with $errors error(s)." >&2
+    exit 3
+  fi
+}
+
+verify_app_bundle
+
 open_app() {
   /usr/bin/open -n "$APP_BUNDLE"
 }
@@ -437,8 +489,13 @@ case "$MODE" in
     ;;
   --verify|verify)
     open_app
-    sleep 1
-    pgrep -x "$APP_NAME" >/dev/null
+    sleep 2
+    if ! pgrep -x "$APP_NAME" >/dev/null; then
+      echo "FAIL: $APP_NAME did not stay running after launch." >&2
+      echo "Check Console.app or 'log show --last 10s' for crash details." >&2
+      exit 4
+    fi
+    echo "OK: $APP_NAME is running (pid $(pgrep -x "$APP_NAME"))."
     ;;
   *)
     echo "usage: $0 [bundle|run|--debug|--logs|--telemetry|--verify]" >&2

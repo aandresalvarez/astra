@@ -12,6 +12,106 @@ private func makeRuntimeIntegrityContainer() throws -> ModelContainer {
 @Suite("CapabilityRuntimeIntegrityServiceTests")
 @MainActor
 struct CapabilityRuntimeIntegrityServiceTests {
+    @Test("provider launch scope ignores irrelevant enabled package resources")
+    func providerLaunchScopeIgnoresIrrelevantEnabledPackageResources() throws {
+        let container = try makeRuntimeIntegrityContainer()
+        let context = container.mainContext
+        let jiraPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+
+        let workspace = Workspace(name: "Artifact With Jira Enabled", primaryPath: "/tmp/artifact-jira-enabled")
+        workspace.enabledCapabilityIDs = [jiraPackage.id]
+        context.insert(workspace)
+        let task = AgentTask(
+            title: "Create an HTML demo",
+            goal: "create a standalone HTML and JavaScript page for a puzzle",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let scopedIssues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [jiraPackage],
+            checkExecutables: false,
+            scope: .providerLaunch(contextText: task.goal)
+        )
+        let fullInventoryIssues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [jiraPackage],
+            checkExecutables: false
+        )
+
+        #expect(scopedIssues.isEmpty)
+        #expect(!fullInventoryIssues.isEmpty)
+    }
+
+    @Test("provider launch scope still blocks relevant enabled package resources")
+    func providerLaunchScopeStillBlocksRelevantEnabledPackageResources() throws {
+        let container = try makeRuntimeIntegrityContainer()
+        let context = container.mainContext
+        let jiraPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+
+        let workspace = Workspace(name: "Relevant Jira Enabled", primaryPath: "/tmp/relevant-jira-enabled")
+        workspace.enabledCapabilityIDs = [jiraPackage.id]
+        context.insert(workspace)
+        let task = AgentTask(
+            title: "Use Jira",
+            goal: "List Jira tickets for STAR",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [jiraPackage],
+            checkExecutables: false,
+            scope: .providerLaunch(contextText: task.goal)
+        )
+
+        #expect(issues.contains { $0.source == .enabledPackage && $0.resourceKind == .connector })
+        #expect(issues.contains { $0.source == .enabledPackage && $0.resourceKind == .skill })
+    }
+
+    @Test("provider launch audit separates configured and scoped capabilities")
+    func providerLaunchAuditSeparatesConfiguredAndScopedCapabilities() throws {
+        let container = try makeRuntimeIntegrityContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Audit Scope", primaryPath: "/tmp/audit-scope")
+        context.insert(workspace)
+
+        let mailSkill = Skill(
+            name: "Stanford Graph Mail Agent",
+            skillDescription: "Read Stanford email through Microsoft Graph",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use the mail bridge."
+        )
+        mailSkill.workspace = workspace
+        context.insert(mailSkill)
+
+        let task = AgentTask(
+            title: "Create a JavaScript page",
+            goal: "create a standalone HTML and JavaScript page",
+            workspace: workspace
+        )
+        task.skills = [mailSkill]
+        context.insert(task)
+        try context.save()
+
+        let fields = CapabilityAudit.taskContextFields(
+            source: "test",
+            task: task,
+            scope: .providerLaunch(contextText: task.goal)
+        )
+
+        #expect(fields["capability_scope"] == "provider_launch")
+        #expect(fields["scope_pruned"] == "true")
+        #expect(fields["configured_skill_count"] == "1")
+        #expect(fields["resolved_skill_count"] == "0")
+        #expect(fields["configured_skill_names"] == "Stanford Graph Mail Agent")
+        #expect(fields["scope_excluded_skill_names"] == "Stanford Graph Mail Agent")
+    }
+
     @Test("enabled package denied by catalog policy blocks runtime activation")
     func enabledPackageDeniedByCatalogPolicyBlocksRuntimeActivation() throws {
         let container = try makeRuntimeIntegrityContainer()

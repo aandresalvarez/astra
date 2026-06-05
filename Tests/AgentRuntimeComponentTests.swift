@@ -74,17 +74,133 @@ struct AgentRuntimeLaunchPreflightTests {
         context.insert(workspace)
         context.insert(task)
 
-        let prepared = AgentRuntimeLaunchPreflight.prepareTaskFolderForLaunch(
+        let result = AgentRuntimeLaunchPreflight.prepareTaskFolderForLaunchResult(
             task,
             modelContext: context,
             phase: "run"
         )
 
-        #expect(prepared)
+        #expect(result.status == .taskFolderPrepared)
+        #expect(result.didPass)
+        #expect(result.auditFields["result"] == "taskFolderPrepared")
         #expect(FileManager.default.fileExists(atPath: TaskWorkspaceAccess(task: task).taskFolder))
         #expect(FileManager.default.fileExists(atPath: (TaskWorkspaceAccess(task: task).taskFolder as NSString).appendingPathComponent("outputs")))
         #expect(task.status == .draft)
         #expect(task.unreadAt == nil)
+    }
+
+    @Test("Artifact preflight prepares task-output parents from structured, validation, and legacy paths")
+    func artifactPreflightPreparesTaskOutputParents() throws {
+        let root = NSTemporaryDirectory() + "runtime-artifact-preflight-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Preflight", primaryPath: root)
+        let task = AgentTask(title: "Task", goal: "Goal", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        let plan = TaskPlanPayload(
+            title: "Nested artifacts",
+            goal: "Write files",
+            steps: [
+                TaskPlanPayloadStep(
+                    id: "requirements",
+                    title: "Gather requirements",
+                    detail: "Create content/content.md and assets/ placeholders.",
+                    likelyTools: ["Write"],
+                    doneSignal: "docs/requirements.md created",
+                    outputs: [
+                        TaskPlanStepOutput(kind: .file, scope: .taskOutput, path: "docs/requirements.md")
+                    ]
+                )
+            ],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(
+                    id: "homepage",
+                    description: "Homepage exists",
+                    method: .artifact,
+                    path: "public/index.html"
+                ),
+                TaskValidationAssertion(
+                    id: "about-text",
+                    description: "About page names Med13",
+                    method: .textContains,
+                    path: "pages/about/index.html",
+                    evidenceQuery: "Med13"
+                )
+            ])
+        )
+
+        let prepared = TaskExecutionArtifactPreparer.prepareTaskOutputArtifacts(
+            task: task,
+            plan: plan,
+            step: plan.steps.first,
+            modelContext: context,
+            phase: "approved_plan"
+        )
+
+        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
+        #expect(prepared)
+        #expect(FileManager.default.fileExists(atPath: (taskFolder as NSString).appendingPathComponent("docs")))
+        #expect(FileManager.default.fileExists(atPath: (taskFolder as NSString).appendingPathComponent("content")))
+        #expect(FileManager.default.fileExists(atPath: (taskFolder as NSString).appendingPathComponent("assets")))
+        #expect(FileManager.default.fileExists(atPath: (taskFolder as NSString).appendingPathComponent("public")))
+        #expect(FileManager.default.fileExists(atPath: (taskFolder as NSString).appendingPathComponent("pages/about")))
+        #expect(!FileManager.default.fileExists(atPath: (taskFolder as NSString).appendingPathComponent("docs/requirements.md")))
+        #expect(task.events.contains { $0.type == "astra.artifact_preflight" && $0.payload.contains("preparedDirectories") })
+    }
+
+    @Test("Artifact preflight rejects unsafe task-output paths without creating outside directories")
+    func artifactPreflightRejectsUnsafeTaskOutputPaths() throws {
+        let root = NSTemporaryDirectory() + "runtime-artifact-preflight-reject-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Preflight", primaryPath: root)
+        let task = AgentTask(title: "Task", goal: "Goal", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        let plan = TaskPlanPayload(
+            title: "Unsafe artifacts",
+            goal: "Write files",
+            steps: [
+                TaskPlanPayloadStep(
+                    id: "unsafe",
+                    title: "Unsafe",
+                    outputs: [
+                        TaskPlanStepOutput(kind: .file, scope: .taskOutput, path: "../escape/result.md"),
+                        TaskPlanStepOutput(kind: .file, scope: .workspace, path: "docs/workspace.md")
+                    ]
+                )
+            ]
+        )
+
+        let prepared = TaskExecutionArtifactPreparer.prepareTaskOutputArtifacts(
+            task: task,
+            plan: plan,
+            step: plan.steps.first,
+            modelContext: context,
+            phase: "approved_plan"
+        )
+
+        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
+        #expect(prepared)
+        #expect(!FileManager.default.fileExists(atPath: (root as NSString).appendingPathComponent("escape")))
+        #expect(!FileManager.default.fileExists(atPath: (root as NSString).appendingPathComponent("docs")))
+        #expect(!FileManager.default.fileExists(atPath: (taskFolder as NSString).appendingPathComponent("docs")))
+        let event = try #require(task.events.first { $0.type == "astra.artifact_preflight" })
+        let data = try #require(event.payload.data(using: .utf8))
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let rejectedPaths = try #require(object["rejectedPaths"] as? [String])
+        let skippedPaths = try #require(object["skippedPaths"] as? [String])
+        #expect(rejectedPaths.contains("../escape/result.md"))
+        #expect(skippedPaths.contains("docs/workspace.md"))
     }
 
     @Test("Prepare task folder failure marks task failed before provider launch")
@@ -96,13 +212,16 @@ struct AgentRuntimeLaunchPreflightTests {
         context.insert(workspace)
         context.insert(task)
 
-        let prepared = AgentRuntimeLaunchPreflight.prepareTaskFolderForLaunch(
+        let result = AgentRuntimeLaunchPreflight.prepareTaskFolderForLaunchResult(
             task,
             modelContext: context,
             phase: "run"
         )
 
-        #expect(!prepared)
+        #expect(result.status == .taskFolderCreateFailed)
+        #expect(!result.didPass)
+        #expect(result.reason == "task_folder_create_failed")
+        #expect(result.auditFields["result"] == "taskFolderCreateFailed")
         #expect(task.status == .failed)
         #expect(task.completedAt != nil)
         #expect(task.unreadAt != nil)
@@ -150,14 +269,17 @@ struct AgentRuntimeLaunchPreflightTests {
         context.insert(task)
         context.insert(run)
 
-        let passed = AgentRuntimeLaunchPreflight.preflightCapabilitiesBeforeLaunch(
+        let result = AgentRuntimeLaunchPreflight.preflightCapabilitiesBeforeLaunchResult(
             task: task,
             run: run,
             modelContext: context,
             phase: "run"
         )
 
-        #expect(!passed)
+        #expect(result.status == .capabilityRuntimeResourcesMissing)
+        #expect(!result.didPass)
+        #expect(result.reason == "capability_runtime_resources_missing")
+        #expect(result.auditFields["diagnostic_result"] == "capabilityRuntimeResourcesMissing")
         #expect(task.status == .failed)
         #expect(run.stopReason == "capability_runtime_resources_missing")
         #expect(task.events.contains { $0.type == "error" && $0.payload.contains("Jira") && $0.payload.contains("connector") })
@@ -217,14 +339,16 @@ struct AgentRuntimeLaunchPreflightTests {
         context.insert(run)
         try context.save()
 
-        let passed = AgentRuntimeLaunchPreflight.preflightCapabilitiesBeforeLaunch(
+        let result = AgentRuntimeLaunchPreflight.preflightCapabilitiesBeforeLaunchResult(
             task: task,
             run: run,
             modelContext: context,
             phase: "resume"
         )
 
-        #expect(passed)
+        #expect(result.status == .capabilityRuntimeResourcesPassed)
+        #expect(result.didPass)
+        #expect(result.auditFields["diagnostic_result"] == "capabilityRuntimeResourcesPassed")
         #expect(task.status == .running)
         #expect(run.status == .running)
         #expect(run.stopReason.isEmpty)

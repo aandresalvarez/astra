@@ -62,6 +62,12 @@ final class AgentTask {
     var isPinned: Bool
     var isDone: Bool
     var unreadAt: Date?
+    /// The code root this thread is pinned to for its entire life, captured at
+    /// creation time. `nil` means resolve from the workspace as before. A
+    /// non-nil value is the absolute path of a git worktree, so resuming this
+    /// thread always lands in the same checkout regardless of how the
+    /// workspace's active location later changes.
+    var executionRootPath: String?
     var createdAt: Date
     var updatedAt: Date
     var completedAt: Date?
@@ -117,6 +123,10 @@ final class AgentTask {
         self.isPinned = false
         self.isDone = false
         self.unreadAt = nil
+        // Pin the thread to the workspace's active code location at creation so
+        // it always runs in the same checkout/repository, even if the workspace
+        // later switches its default.
+        self.executionRootPath = workspace?.isUsingWorktree == true ? workspace?.activeWorkingPath : nil
         self.createdAt = Date()
         self.updatedAt = Date()
     }
@@ -140,6 +150,10 @@ final class AgentTask {
     }
 
     var isForked: Bool { forkedFromID != nil }
+
+    var hasProviderSession: Bool {
+        sessionId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
 
     static func fork(from source: AgentTask, upToRun targetRun: TaskRun, in context: ModelContext) -> AgentTask {
         AgentTaskForkService.fork(from: source, upToRun: targetRun, in: context)

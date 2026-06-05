@@ -313,6 +313,83 @@ struct RuntimeReadinessServiceTests {
         ])
     }
 
+    @Test("Antigravity diagnostic readiness blocks when live check exits zero without output")
+    func antigravityDiagnosticReadinessBlocksOnEmptySuccessfulLiveCheck() async {
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/opt/agy --version",
+            result: RunResult(outcome: .exited(code: 0), stdout: "1.0.2\n", stderr: "")
+        )
+        await runner.setResponse(
+            forKey: "/opt/agy --print Reply with ASTRA_READY only. --print-timeout 30s --sandbox",
+            result: RunResult(outcome: .exited(code: 0), stdout: "", stderr: "")
+        )
+
+        let service = RuntimeReadinessService(
+            runner: runner,
+            detectExecutable: { binary in binary == "agy" ? "/opt/agy" : "" },
+            isExecutable: { $0 == "/opt/agy" }
+        )
+
+        let report = await service.check(configuration: RuntimeReadinessConfiguration(
+            runtime: .antigravityCLI,
+            claudePath: "",
+            copilotPath: "",
+            claudeProvider: .anthropic,
+            vertexProjectID: "",
+            vertexRegion: "",
+            vertexOpusModel: "",
+            vertexSonnetModel: "",
+            vertexHaikuModel: ""
+        ))
+
+        #expect(report.state == .blocked)
+        let account = report.checks.first { $0.id == "antigravity-account" }
+        #expect(account?.state == .blocked)
+        #expect(account?.detail.contains("produced no ASTRA_READY output") == true)
+        #expect(account?.remediation?.contains("agy --print") == true)
+    }
+
+    @Test("Antigravity diagnostic readiness requires an exact ready line")
+    func antigravityDiagnosticReadinessRequiresExactReadyLine() async {
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/opt/agy --version",
+            result: RunResult(outcome: .exited(code: 0), stdout: "1.0.2\n", stderr: "")
+        )
+        await runner.setResponse(
+            forKey: "/opt/agy --print Reply with ASTRA_READY only. --print-timeout 30s --sandbox",
+            result: RunResult(
+                outcome: .exited(code: 0),
+                stdout: "diagnostic: did not print ASTRA_READY\n",
+                stderr: ""
+            )
+        )
+
+        let service = RuntimeReadinessService(
+            runner: runner,
+            detectExecutable: { binary in binary == "agy" ? "/opt/agy" : "" },
+            isExecutable: { $0 == "/opt/agy" }
+        )
+
+        let report = await service.check(configuration: RuntimeReadinessConfiguration(
+            runtime: .antigravityCLI,
+            claudePath: "",
+            copilotPath: "",
+            claudeProvider: .anthropic,
+            vertexProjectID: "",
+            vertexRegion: "",
+            vertexOpusModel: "",
+            vertexSonnetModel: "",
+            vertexHaikuModel: ""
+        ))
+
+        #expect(report.state == .blocked)
+        let account = report.checks.first { $0.id == "antigravity-account" }
+        #expect(account?.state == .blocked)
+        #expect(account?.detail.contains("did not print ASTRA_READY") == true)
+    }
+
     @Test("Antigravity diagnostic readiness blocks on live auth failure without leaking credentials")
     func antigravityDiagnosticReadinessBlocksOnLiveAuthFailure() async {
         let runner = StubBinaryRunner()
@@ -403,6 +480,52 @@ struct RuntimeReadinessServiceTests {
         #expect(await runner.recordedCalls() == [
             StubBinaryRunner.Call(path: "/opt/agy", args: ["--version"])
         ])
+    }
+
+    @Test("states covers all registered runtimes even when all CLIs are missing")
+    func statesCoversAllRegisteredRuntimes() async {
+        // All CLIs absent — states must still carry an entry per runtime (all blocked).
+        // This verifies the invariant that callers rely on: if states.count ==
+        // AgentRuntimeAdapterRegistry.runtimeIDs.count the result is complete, not partial.
+        let service = RuntimeProviderAvailabilityService(
+            readinessService: RuntimeReadinessService(
+                runner: StubBinaryRunner(),
+                detectExecutable: { _ in "" },
+                isExecutable: { _ in false }
+            )
+        )
+
+        let states = await service.states(configuration: RuntimeProviderAvailabilityConfiguration(
+            claudePath: "",
+            copilotPath: "",
+            claudeProvider: .anthropic,
+            vertexProjectID: "",
+            vertexRegion: "",
+            vertexOpusModel: "",
+            vertexSonnetModel: "",
+            vertexHaikuModel: ""
+        ))
+
+        #expect(states.count == AgentRuntimeAdapterRegistry.runtimeIDs.count)
+        #expect(states.values.allSatisfy { $0 == .blocked })
+    }
+
+    @Test("readyRuntimes with partial states excludes providers missing from the dict")
+    func readyRuntimesWithPartialStatesExcludesMissingProviders() {
+        // Simulates what happens when withTaskGroup's for-await exits early after task
+        // cancellation: only the checks that completed before cancellation appear in the dict.
+        let partialStates: [AgentRuntimeID: RuntimeReadinessState] = [
+            .claudeCode: .ready
+            // copilotCLI and antigravityCLI absent — as if the task was cancelled before
+            // their subprocess checks returned.
+        ]
+
+        let ready = RuntimeProviderAvailabilityService.readyRuntimes(from: partialStates)
+        #expect(ready == [.claudeCode])
+
+        // The count-based guard in refreshRuntimeAvailability detects this as a partial result
+        // and rejects it, preventing the incomplete list from reaching runtimeReadinessStates.
+        #expect(partialStates.count != AgentRuntimeAdapterRegistry.runtimeIDs.count)
     }
 
     @Test("Provider availability exposes only ready runtimes")

@@ -18,6 +18,112 @@ struct TaskPlanServiceTests {
         #expect(plan.goal == "Ship plan mode")
         #expect(plan.steps.count == 1)
         #expect(plan.steps[0].likelyTools == ["Read"])
+        #expect(plan.validationContract == nil)
+    }
+
+    @Test("Structured ASTRA_PLAN payload parses validation contract assertions")
+    func structuredPlanParsesValidationContract() throws {
+        let planID = UUID(uuidString: "6E5D41A5-67DE-43F3-B9FB-3DA6D58D4F87")!
+        let text = """
+        ASTRA_PLAN {"version":1,"planID":"\(planID.uuidString)","title":"Plan mode","goal":"Ship plan mode","steps":[{"id":"step-1","title":"Inspect code","status":"pending","risk":"low","likelyTools":["Read"],"doneSignal":"Context gathered"}],"validationContract":{"version":1,"assertions":[{"id":"tests-pass","scope":"plan","description":"Focused tests pass","method":"command","required":true,"command":"swift test --filter TaskPlanServiceTests"},{"id":"artifact-exists","scope":"step","stepID":"step-1","description":"Report artifact exists","method":"artifact","required":false,"path":"outputs/report.md"}]}}
+        """
+
+        let plan = try #require(TaskPlanService.parsePlanPayload(from: text))
+        let contract = try #require(plan.validationContract)
+
+        #expect(contract.assertions.count == 2)
+        #expect(contract.assertions[0].id == "tests-pass")
+        #expect(contract.assertions[0].method == .command)
+        #expect(contract.assertions[0].required)
+        #expect(contract.assertions[0].command == "swift test --filter TaskPlanServiceTests")
+        #expect(contract.assertions[1].scope == .step)
+        #expect(contract.assertions[1].stepID == "step-1")
+        #expect(contract.assertions[1].method == .artifact)
+
+        let encoded = TaskPlanService.encodePlanPayload(plan)
+        #expect(encoded.contains("\"validationContract\""))
+        #expect(encoded.contains("\"assertionID\"") == false)
+
+        let roundTrip = try #require(TaskPlanService.decodePlanPayload(encoded))
+        #expect(roundTrip.validationContract == contract)
+    }
+
+    @Test("Structured ASTRA_PLAN payload parses step outputs")
+    func structuredPlanParsesStepOutputs() throws {
+        let planID = UUID(uuidString: "6E5D41A5-67DE-43F3-B9FB-3DA6D58D4F87")!
+        let text = """
+        ASTRA_PLAN {"version":1,"planID":"\(planID.uuidString)","title":"Artifact plan","goal":"Write nested artifacts","steps":[{"id":"requirements","title":"Write requirements","status":"pending","risk":"low","likelyTools":["Write"],"doneSignal":"docs/requirements.md exists","outputs":[{"kind":"file","scope":"task_output","path":"docs/requirements.md","required":true,"prepareParentDirectories":true},{"kind":"directory","scope":"task_output","path":"assets/","required":false}]}]}
+        """
+
+        let plan = try #require(TaskPlanService.parsePlanPayload(from: text))
+        let outputs = plan.steps[0].outputs
+
+        #expect(outputs.count == 2)
+        #expect(outputs[0].kind == .file)
+        #expect(outputs[0].scope == .taskOutput)
+        #expect(outputs[0].path == "docs/requirements.md")
+        #expect(outputs[0].prepareParentDirectories)
+        #expect(outputs[0].source == "step:requirements")
+        #expect(outputs[1].kind == .directory)
+        #expect(outputs[1].path == "assets/")
+
+        let encoded = TaskPlanService.encodePlanPayload(plan)
+        #expect(encoded.contains("\"outputs\""))
+        let roundTrip = try #require(TaskPlanService.decodePlanPayload(encoded))
+        #expect(roundTrip.steps[0].outputs == outputs)
+    }
+
+    @Test("Structured ASTRA_PLAN payload parses verifier validation assertions")
+    func structuredPlanParsesVerifierValidationAssertion() throws {
+        let planID = UUID(uuidString: "6E5D41A5-67DE-43F3-B9FB-3DA6D58D4F87")!
+        let text = """
+        ASTRA_PLAN {"version":1,"planID":"\(planID.uuidString)","title":"Verifier plan","goal":"Review independently","steps":[{"id":"review","title":"Review","status":"pending","risk":"low","likelyTools":["Read"],"doneSignal":"Verifier passes"}],"validationContract":{"version":1,"assertions":[{"id":"verifier-review","scope":"plan","description":"Independent verifier approves the result","method":"verifier","required":true}]}}
+        """
+
+        let plan = try #require(TaskPlanService.parsePlanPayload(from: text))
+        let assertion = try #require(plan.validationContract?.assertions.first)
+        #expect(assertion.method == .verifier)
+        #expect(assertion.description == "Independent verifier approves the result")
+    }
+
+    @Test("Structured ASTRA_PLAN payload parses browser behavior validation assertions")
+    func structuredPlanParsesBrowserBehaviorValidationAssertion() throws {
+        let planID = UUID(uuidString: "6E5D41A5-67DE-43F3-B9FB-3DA6D58D4F87")!
+        let text = """
+        ASTRA_PLAN {"version":1,"planID":"\(planID.uuidString)","title":"Browser plan","goal":"Validate browser output","steps":[{"id":"browser","title":"Browser","status":"pending","risk":"low","likelyTools":["Read"],"doneSignal":"Behavior passes"}],"validationContract":{"version":1,"assertions":[{"id":"browser-visible","scope":"plan","description":"Checkout Ready is visible","method":"browser_behavior","required":true,"path":"index.html","evidenceQuery":"Checkout Ready"}]}}
+        """
+
+        let plan = try #require(TaskPlanService.parsePlanPayload(from: text))
+        let assertion = try #require(plan.validationContract?.assertions.first)
+        #expect(assertion.method == .browserBehavior)
+        #expect(assertion.path == "index.html")
+        #expect(assertion.evidenceQuery == "Checkout Ready")
+    }
+
+    @Test("Structured ASTRA_PLAN payload parses text contains validation assertions")
+    func structuredPlanParsesTextContainsValidationAssertion() throws {
+        let planID = UUID(uuidString: "6E5D41A5-67DE-43F3-B9FB-3DA6D58D4F87")!
+        let text = """
+        ASTRA_PLAN {"version":1,"planID":"\(planID.uuidString)","title":"Text plan","goal":"Validate artifact text","steps":[{"id":"write","title":"Write page","status":"pending","risk":"low","likelyTools":["Write"],"doneSignal":"Page exists"}],"validationContract":{"version":1,"assertions":[{"id":"page-text","scope":"plan","description":"Page names Med13","method":"file_contains","required":true,"path":"index.html","evidenceQuery":"Med13 Foundation"}]}}
+        """
+
+        let plan = try #require(TaskPlanService.parsePlanPayload(from: text))
+        let assertion = try #require(plan.validationContract?.assertions.first)
+        #expect(assertion.method == .textContains)
+        #expect(assertion.path == "index.html")
+        #expect(assertion.evidenceQuery == "Med13 Foundation")
+    }
+
+    @Test("Invalid validation contract assertions are dropped without rejecting old plan payload")
+    func invalidValidationContractAssertionsAreDropped() throws {
+        let text = """
+        ASTRA_PLAN {"version":1,"planID":"6E5D41A5-67DE-43F3-B9FB-3DA6D58D4F87","title":"Plan","goal":"Do work","steps":[{"id":"step-1","title":"Do it","status":"pending"}],"validationContract":{"version":1,"assertions":[{"id":"bad-step","scope":"step","stepID":"missing","description":"Missing step","method":"command","required":true,"command":"true"}]}}
+        """
+
+        let plan = try #require(TaskPlanService.parsePlanPayload(from: text))
+
+        #expect(plan.steps.count == 1)
+        #expect(plan.validationContract == nil)
     }
 
     @Test("Visible planning text strips ASTRA_PLAN marker while preserving prose")
@@ -261,6 +367,31 @@ struct TaskPlanServiceTests {
         let after = TaskPlanStateCacheSignature(task: task)
 
         #expect(after != before)
+    }
+
+    @Test("Plan state snapshot refreshes only when signature changes")
+    func planStateSnapshotRefreshesOnlyWhenSignatureChanges() {
+        let task = AgentTask(title: "Plan task", goal: "Do work")
+        let cached = TaskPlanStateSnapshot.build(for: task)
+
+        #expect(TaskPlanStateSnapshot.refreshed(for: task, cached: cached) == nil)
+
+        let plan = TaskPlanPayload(
+            title: "Plan",
+            goal: "Do work",
+            steps: [TaskPlanPayloadStep(id: "step-1", title: "Inspect")]
+        )
+        task.events.append(TaskEvent(
+            task: task,
+            type: TaskPlanEventTypes.created,
+            payload: TaskPlanService.encodePlanPayload(plan)
+        ))
+
+        let refreshed = TaskPlanStateSnapshot.refreshed(for: task, cached: cached)
+
+        #expect(refreshed?.signature != cached.signature)
+        #expect(refreshed?.state.plan?.title == "Plan")
+        #expect(refreshed?.state.plan?.steps.map(\.id) == ["step-1"])
     }
 
     @Test("Plan cache signature ignores unrelated event insertion positions")

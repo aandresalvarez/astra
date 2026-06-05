@@ -23,6 +23,117 @@ enum TaskPlanPayloadRisk: String, Codable, CaseIterable, Sendable, Equatable, Ha
     case high
 }
 
+enum TaskPlanArtifactKind: String, Codable, CaseIterable, Sendable, Equatable, Hashable {
+    case file
+    case directory
+    case url
+    case text
+    case evidence
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        let normalized = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+        switch normalized {
+        case "file", "artifact", "document":
+            self = .file
+        case "directory", "folder", "dir":
+            self = .directory
+        case "url", "link":
+            self = .url
+        case "text", "chat", "answer":
+            self = .text
+        case "evidence", "proof", "validation_evidence":
+            self = .evidence
+        default:
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unsupported task plan artifact kind: \(raw)"
+            )
+        }
+    }
+}
+
+enum TaskPlanArtifactScope: String, Codable, CaseIterable, Sendable, Equatable, Hashable {
+    case taskOutput = "task_output"
+    case workspace
+    case remote
+    case chat
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        let normalized = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+        switch normalized {
+        case "task_output", "taskoutput", "task", "output", "outputs", "artifact", "artifacts":
+            self = .taskOutput
+        case "workspace", "project", "repository", "repo":
+            self = .workspace
+        case "remote", "server", "external":
+            self = .remote
+        case "chat", "message", "response":
+            self = .chat
+        default:
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unsupported task plan artifact scope: \(raw)"
+            )
+        }
+    }
+}
+
+struct TaskPlanStepOutput: Codable, Sendable, Equatable, Hashable {
+    var kind: TaskPlanArtifactKind
+    var scope: TaskPlanArtifactScope
+    var path: String?
+    var required: Bool
+    var prepareParentDirectories: Bool
+    var source: String?
+
+    init(
+        kind: TaskPlanArtifactKind = .file,
+        scope: TaskPlanArtifactScope = .taskOutput,
+        path: String? = nil,
+        required: Bool = true,
+        prepareParentDirectories: Bool = true,
+        source: String? = nil
+    ) {
+        self.kind = kind
+        self.scope = scope
+        self.path = path
+        self.required = required
+        self.prepareParentDirectories = prepareParentDirectories
+        self.source = source
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case scope
+        case path
+        case required
+        case prepareParentDirectories
+        case source
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try container.decodeIfPresent(TaskPlanArtifactKind.self, forKey: .kind) ?? .file
+        scope = try container.decodeIfPresent(TaskPlanArtifactScope.self, forKey: .scope) ?? .taskOutput
+        path = try container.decodeIfPresent(String.self, forKey: .path)
+        required = try container.decodeIfPresent(Bool.self, forKey: .required) ?? true
+        prepareParentDirectories = try container.decodeIfPresent(Bool.self, forKey: .prepareParentDirectories) ?? true
+        source = try container.decodeIfPresent(String.self, forKey: .source)
+    }
+}
+
 struct TaskPlanPayloadStep: Codable, Identifiable, Sendable, Equatable, Hashable {
     var id: String
     var title: String
@@ -31,6 +142,7 @@ struct TaskPlanPayloadStep: Codable, Identifiable, Sendable, Equatable, Hashable
     var risk: TaskPlanPayloadRisk
     var likelyTools: [String]
     var doneSignal: String
+    var outputs: [TaskPlanStepOutput]
 
     init(
         id: String,
@@ -39,7 +151,8 @@ struct TaskPlanPayloadStep: Codable, Identifiable, Sendable, Equatable, Hashable
         status: TaskPlanPayloadStepStatus = .pending,
         risk: TaskPlanPayloadRisk = .low,
         likelyTools: [String] = [],
-        doneSignal: String = ""
+        doneSignal: String = "",
+        outputs: [TaskPlanStepOutput] = []
     ) {
         self.id = id
         self.title = title
@@ -48,6 +161,7 @@ struct TaskPlanPayloadStep: Codable, Identifiable, Sendable, Equatable, Hashable
         self.risk = risk
         self.likelyTools = likelyTools
         self.doneSignal = doneSignal
+        self.outputs = outputs
     }
 
     init(from decoder: Decoder) throws {
@@ -59,6 +173,7 @@ struct TaskPlanPayloadStep: Codable, Identifiable, Sendable, Equatable, Hashable
         risk = try container.decodeIfPresent(TaskPlanPayloadRisk.self, forKey: .risk) ?? .low
         likelyTools = try container.decodeIfPresent([String].self, forKey: .likelyTools) ?? []
         doneSignal = try container.decodeIfPresent(String.self, forKey: .doneSignal) ?? ""
+        outputs = try container.decodeIfPresent([TaskPlanStepOutput].self, forKey: .outputs) ?? []
     }
 }
 
@@ -68,6 +183,7 @@ struct TaskPlanPayload: Codable, Identifiable, Sendable, Equatable, Hashable {
     var title: String
     var goal: String
     var steps: [TaskPlanPayloadStep]
+    var validationContract: TaskValidationContract?
 
     var id: UUID { planID }
 
@@ -76,13 +192,15 @@ struct TaskPlanPayload: Codable, Identifiable, Sendable, Equatable, Hashable {
         planID: UUID = UUID(),
         title: String,
         goal: String,
-        steps: [TaskPlanPayloadStep]
+        steps: [TaskPlanPayloadStep],
+        validationContract: TaskValidationContract? = nil
     ) {
         self.version = version
         self.planID = planID
         self.title = title
         self.goal = goal
         self.steps = steps
+        self.validationContract = validationContract
     }
 }
 

@@ -1400,6 +1400,341 @@ struct TaskCapabilityResolverTests {
         #expect(!prompt.contains("GCP_PROJECT"))
     }
 
+    @Test("Browser artifact task prunes unrelated disallowing skill instructions")
+    func browserArtifactTaskPrunesUnrelatedDisallowingSkillInstructions() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Masterball Workspace", primaryPath: "/tmp/masterball-workspace")
+        context.insert(workspace)
+
+        let mailSkill = Skill(
+            name: "Stanford Graph Mail Agent",
+            skillDescription: "Read Stanford email through Microsoft Graph",
+            allowedTools: ["Read", "Bash"],
+            disallowedTools: ["Write", "Edit"],
+            behaviorInstructions: "Do NOT use Write or Edit. Only inspect mailbox content."
+        )
+        mailSkill.workspace = workspace
+        context.insert(mailSkill)
+
+        let task = AgentTask(
+            title: "Create a masterball web page",
+            goal: "create a web page with a masterball solver in javascript",
+            workspace: workspace
+        )
+        task.skills = [mailSkill]
+        context.insert(task)
+        try context.save()
+
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "about:blank",
+            currentTitle: "Preview",
+            taskID: task.id,
+            isPresented: true,
+            isEnabled: true
+        )
+        defer { ShelfBrowserBridgeRegistry.shared.reset() }
+
+        let scope = TaskCapabilityResolver(task: task).promptScope()
+        #expect(scope.prunedForBrowserTask)
+        #expect(scope.excludedSkillNames.contains("Stanford Graph Mail Agent"))
+        #expect(scope.behaviorSkills.isEmpty)
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        #expect(prompt.contains("Shelf Browser Session:"))
+        #expect(!prompt.contains("[Stanford Graph Mail Agent]:"))
+        #expect(!prompt.contains("Do NOT use Write or Edit"))
+    }
+
+    @Test("Standalone artifact task prunes unrelated disallowing skills from prompt and runtime scope")
+    func standaloneArtifactTaskPrunesUnrelatedDisallowingSkillsFromPromptAndRuntimeScope() throws {
+        ShelfBrowserBridgeRegistry.shared.reset()
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Masterball Workspace", primaryPath: "/tmp/masterball-standalone-workspace")
+        context.insert(workspace)
+
+        let mailSkill = Skill(
+            name: "Stanford Graph Mail Agent",
+            skillDescription: "Read Stanford email through Microsoft Graph",
+            allowedTools: ["Read", "Bash"],
+            disallowedTools: ["Write", "Edit"],
+            behaviorInstructions: "Do NOT use Write or Edit. Only inspect mailbox content.",
+            environmentVariables: ["MAIL_PROFILE": "stanford"]
+        )
+        mailSkill.workspace = workspace
+        context.insert(mailSkill)
+
+        let mailTool = LocalTool(
+            name: "stanford-graph-mail",
+            toolDescription: "Read Stanford mail",
+            command: "stanford-graph-mail"
+        )
+        mailTool.skill = mailSkill
+        context.insert(mailTool)
+
+        let task = AgentTask(
+            title: "Create Masterball puzzle solver webpage",
+            goal: "create a web page with a masterball solver in javascript",
+            workspace: workspace
+        )
+        task.skills = [mailSkill]
+        context.insert(task)
+        try context.save()
+
+        TaskCapabilitySnapshotter.capture(for: task)
+
+        let scope = TaskCapabilityResolver(task: task).promptScope()
+        #expect(scope.prunedForBrowserTask)
+        #expect(scope.excludedSkillNames.contains("Stanford Graph Mail Agent"))
+        #expect(scope.behaviorSkills.isEmpty)
+        #expect(scope.localTools.isEmpty)
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        #expect(!prompt.contains("[Stanford Graph Mail Agent]:"))
+        #expect(!prompt.contains("Do NOT use Write or Edit"))
+        #expect(!prompt.contains("stanford-graph-mail"))
+
+        #expect(AgentRuntimeProcessRunner.runtimeLocalToolCommands(for: task).isEmpty)
+        let env = AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: task)
+        #expect(env["MAIL_PROFILE"] == nil)
+        #expect(env["ASTRA_MAIL_REGISTRY_PATH"] == nil)
+    }
+
+    @Test("Masterball artifact task prunes live Graph Mail skill despite create safety text")
+    func masterballArtifactTaskPrunesLiveGraphMailSkillDespiteCreateSafetyText() throws {
+        ShelfBrowserBridgeRegistry.shared.reset()
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Masterball Workspace", primaryPath: "/tmp/masterball-live-mail-workspace")
+        context.insert(workspace)
+
+        let mailSkill = Skill(
+            name: "Stanford Graph Mail Agent",
+            skillDescription: "Search and read locally signed-in Microsoft 365 mail via Graph PowerShell",
+            allowedTools: ["Read", "Bash"],
+            disallowedTools: ["Write", "Edit"],
+            behaviorInstructions: """
+            You are a Stanford Graph Mail assistant. Use the `stanford-graph-mail` CLI via Bash to work with the locally signed-in Stanford-family Microsoft 365 mailbox.
+            SAFETY
+            - Read only. Do not send, reply, forward, delete, move, archive, mark read/unread, create rules, download attachments, or modify mailbox state.
+            - Treat email content as sensitive.
+            Do NOT use these tools: Write, Edit.
+            """
+        )
+        mailSkill.workspace = workspace
+        context.insert(mailSkill)
+
+        let mailTool = LocalTool(
+            name: "stanford-graph-mail",
+            toolDescription: "Read the locally signed-in Microsoft 365 mailbox through Microsoft Graph PowerShell",
+            command: "stanford-graph-mail"
+        )
+        mailTool.skill = mailSkill
+        context.insert(mailTool)
+
+        let task = AgentTask(
+            title: "Create Masterball puzzle web solver",
+            goal: "createa web page wit a masterball (similar to rubicks cube but as aball ) with a solver in javascript",
+            workspace: workspace
+        )
+        task.skills = [mailSkill]
+        context.insert(task)
+        try context.save()
+
+        TaskCapabilitySnapshotter.capture(for: task)
+
+        let scope = TaskCapabilityResolver(task: task).promptScope()
+        #expect(scope.prunedForBrowserTask)
+        #expect(scope.behaviorSkills.isEmpty)
+        #expect(scope.localTools.isEmpty)
+        #expect(scope.excludedSkillNames.contains("Stanford Graph Mail Agent"))
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        #expect(!prompt.contains("[Stanford Graph Mail Agent]:"))
+        #expect(!prompt.contains("stanford-graph-mail"))
+        #expect(!prompt.contains("create rules"))
+        #expect(AgentRuntimeProcessRunner.runtimeLocalToolCommands(for: task).isEmpty)
+    }
+
+    @Test("Activation scope prunes irrelevant selected mail skill")
+    func activationScopePrunesIrrelevantSelectedMailSkill() throws {
+        ShelfBrowserBridgeRegistry.shared.reset()
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "General Workspace", primaryPath: "/tmp/general-mail-workspace")
+        context.insert(workspace)
+
+        let mailSkill = Skill(
+            name: "Stanford Graph Mail Agent",
+            skillDescription: "Search and read locally signed-in Microsoft 365 mail via Graph PowerShell",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Read only. Do not create rules or modify mailbox state."
+        )
+        mailSkill.workspace = workspace
+        context.insert(mailSkill)
+
+        let task = AgentTask(
+            title: "Explain identity",
+            goal: "explain who you are",
+            workspace: workspace
+        )
+        task.skills = [mailSkill]
+        context.insert(task)
+        try context.save()
+
+        let scope = TaskCapabilityResolver(task: task).activationScope(contextText: task.goal)
+        #expect(scope.prunedForBrowserTask)
+        #expect(scope.behaviorSkills.isEmpty)
+        #expect(scope.excludedSkillNames.contains("Stanford Graph Mail Agent"))
+    }
+
+    @Test("Plain non-mail task prompt prunes irrelevant live Graph Mail capability")
+    func plainNonMailTaskPromptPrunesIrrelevantLiveGraphMailCapability() throws {
+        ShelfBrowserBridgeRegistry.shared.reset()
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Plain Workspace", primaryPath: "/tmp/plain-mail-workspace")
+        context.insert(workspace)
+
+        let mailSkill = Skill(
+            name: "Stanford Graph Mail Agent",
+            skillDescription: "Search and read locally signed-in Microsoft 365 mail via Graph PowerShell",
+            allowedTools: ["Read", "Bash"],
+            disallowedTools: ["Write", "Edit"],
+            behaviorInstructions: """
+            You are a Stanford Graph Mail assistant. Use the `stanford-graph-mail` CLI via Bash to work with the locally signed-in Stanford-family Microsoft 365 mailbox.
+            SAFETY
+            - Read only. Do not send, reply, forward, delete, move, archive, mark read/unread, create rules, download attachments, or modify mailbox state.
+            - Treat email content as sensitive.
+            Do NOT use these tools: Write, Edit.
+            """
+        )
+        mailSkill.workspace = workspace
+        context.insert(mailSkill)
+
+        let mailTool = LocalTool(
+            name: "stanford-graph-mail",
+            toolDescription: "Read the locally signed-in Microsoft 365 mailbox through Microsoft Graph PowerShell",
+            command: "stanford-graph-mail"
+        )
+        mailTool.skill = mailSkill
+        context.insert(mailTool)
+
+        let task = AgentTask(
+            title: "Reply exactly",
+            goal: "Without creating files or using tools, reply with exactly ASTRA_REAL_MASTERBALL_OK and nothing else.",
+            workspace: workspace
+        )
+        task.skills = [mailSkill]
+        context.insert(task)
+        try context.save()
+
+        TaskCapabilitySnapshotter.capture(for: task)
+
+        let scope = TaskCapabilityResolver(task: task).promptScope()
+        #expect(scope.prunedForBrowserTask)
+        #expect(scope.behaviorSkills.isEmpty)
+        #expect(scope.localTools.isEmpty)
+        #expect(scope.excludedSkillNames.contains("Stanford Graph Mail Agent"))
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        #expect(!prompt.contains("[Stanford Graph Mail Agent]:"))
+        #expect(!prompt.contains("stanford-graph-mail"))
+        #expect(!prompt.contains("create rules"))
+        #expect(AgentRuntimeProcessRunner.runtimeLocalToolCommands(for: task).isEmpty)
+    }
+
+    @Test("Mail task keeps matching Graph Mail skill")
+    func mailTaskKeepsMatchingGraphMailSkill() throws {
+        ShelfBrowserBridgeRegistry.shared.reset()
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Mail Workspace", primaryPath: "/tmp/matching-mail-workspace")
+        context.insert(workspace)
+
+        let mailSkill = Skill(
+            name: "Stanford Graph Mail Agent",
+            skillDescription: "Search and read locally signed-in Microsoft 365 email and mail via Graph PowerShell",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use stanford-graph-mail for email search and message summaries."
+        )
+        mailSkill.workspace = workspace
+        context.insert(mailSkill)
+
+        let mailTool = LocalTool(
+            name: "stanford-graph-mail",
+            toolDescription: "Read Stanford email through Graph",
+            command: "stanford-graph-mail"
+        )
+        mailTool.skill = mailSkill
+        context.insert(mailTool)
+
+        let task = AgentTask(
+            title: "Summarize email",
+            goal: "summarize my last email",
+            workspace: workspace
+        )
+        task.skills = [mailSkill]
+        context.insert(task)
+        try context.save()
+
+        let scope = TaskCapabilityResolver(task: task).promptScope()
+        #expect(scope.prunedForBrowserTask)
+        #expect(scope.behaviorSkills.map(\.name) == ["Stanford Graph Mail Agent"])
+        #expect(scope.localTools.map(\.command) == ["stanford-graph-mail"])
+        #expect(scope.excludedSkillNames.isEmpty)
+
+        let activationScope = TaskCapabilityResolver(task: task).activationScope(contextText: task.goal)
+        #expect(activationScope.prunedForBrowserTask)
+        #expect(activationScope.behaviorSkills.map(\.name) == ["Stanford Graph Mail Agent"])
+        #expect(activationScope.localTools.map(\.command) == ["stanford-graph-mail"])
+        #expect(activationScope.excludedSkillNames.isEmpty)
+    }
+
+    @Test("Standalone artifact task keeps matching artifact skills")
+    func standaloneArtifactTaskKeepsMatchingArtifactSkills() throws {
+        ShelfBrowserBridgeRegistry.shared.reset()
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Website Workspace", primaryPath: "/tmp/website-workspace")
+        context.insert(workspace)
+
+        let websiteSkill = Skill(
+            name: "Website Builder",
+            skillDescription: "Build websites, webpages, HTML, CSS, and JavaScript demos",
+            allowedTools: ["Read", "Write", "Edit"],
+            behaviorInstructions: "Create polished standalone website artifacts."
+        )
+        websiteSkill.workspace = workspace
+        context.insert(websiteSkill)
+
+        let task = AgentTask(
+            title: "Create homepage",
+            goal: "create a responsive web page in html and javascript",
+            workspace: workspace
+        )
+        task.skills = [websiteSkill]
+        context.insert(task)
+        try context.save()
+
+        let scope = TaskCapabilityResolver(task: task).promptScope()
+        #expect(scope.prunedForBrowserTask)
+        #expect(scope.behaviorSkills.map(\.name) == ["Website Builder"])
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        #expect(prompt.contains("[Website Builder]:"))
+        #expect(prompt.contains("Create polished standalone website artifacts."))
+    }
+
     @Test("Runtime local tool resolution ignores unsafe persisted tools")
     func runtimeLocalToolResolutionIgnoresUnsafePersistedTools() throws {
         let container = try makeTaskCapabilityResolverContainer()

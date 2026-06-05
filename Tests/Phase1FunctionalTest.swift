@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import Network
 @testable import ASTRA
 import ASTRACore
 import SwiftData
@@ -39,6 +40,91 @@ private func workspaceFileListing(at workspacePath: String) -> String {
     }
     let files = enumerator.compactMap { $0 as? String }.prefix(80)
     return files.isEmpty ? "<empty>" : files.joined(separator: ", ")
+}
+
+final class PathRoutingHTTPTestServer {
+    struct Route {
+        var requestContains: String
+        var responseBody: String
+        var statusCode: Int = 200
+    }
+
+    enum ServerError: Error {
+        case startupTimedOut
+        case missingPort
+    }
+
+    private let routes: [Route]
+    private let queue = DispatchQueue(label: "astra.tests.path-routing-http")
+    private var listener: NWListener?
+
+    init(routes: [Route]) {
+        self.routes = routes
+    }
+
+    func start() throws -> UInt16 {
+        let listener = try NWListener(using: .tcp, on: .any)
+        let ready = DispatchSemaphore(value: 0)
+        var startupError: Error?
+
+        listener.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                ready.signal()
+            case .failed(let error):
+                startupError = error
+                ready.signal()
+            default:
+                break
+            }
+        }
+        listener.newConnectionHandler = { [routes, queue] connection in
+            connection.start(queue: queue)
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { data, _, _, _ in
+                let requestText = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+                let route = routes.first { requestText.contains($0.requestContains) }
+                    ?? Route(
+                        requestContains: "",
+                        responseBody: #"{"error":{"message":"missing test route"}}"#,
+                        statusCode: 404
+                    )
+                queue.async {
+                    let bodyData = Data(route.responseBody.utf8)
+                    let header = """
+                    HTTP/1.1 \(route.statusCode) OK\r
+                    Content-Type: application/json\r
+                    Content-Length: \(bodyData.count)\r
+                    Connection: close\r
+                    \r
+
+                    """
+                    var responseData = Data(header.utf8)
+                    responseData.append(bodyData)
+                    connection.send(content: responseData, completion: .contentProcessed { _ in
+                        connection.cancel()
+                    })
+                }
+            }
+        }
+
+        listener.start(queue: queue)
+        self.listener = listener
+        guard ready.wait(timeout: .now() + 5) == .success else {
+            throw ServerError.startupTimedOut
+        }
+        if let startupError {
+            throw startupError
+        }
+        guard let port = listener.port?.rawValue else {
+            throw ServerError.missingPort
+        }
+        return port
+    }
+
+    func stop() {
+        listener?.cancel()
+        listener = nil
+    }
 }
 
 private func releaseCandidateValidationSample(

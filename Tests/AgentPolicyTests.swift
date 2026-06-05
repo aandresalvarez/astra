@@ -223,7 +223,12 @@ struct AgentPolicyTests {
         #expect(render.policyLevel == .review)
         #expect(render.permissionMode == PermissionPolicy.restricted.rawValue)
         #expect(render.allowedTools.contains("Read"))
+        #expect(!render.allowedTools.contains("Write"))
         #expect(render.askFirstTools.contains("Bash"))
+        #expect(render.settingsSummary.contains("allow=3 ask=6"))
+        #expect(render.generatedConfigPreview.contains("Write(*)"))
+        #expect(render.generatedConfigPreview.contains("Edit(*)"))
+        #expect(render.generatedConfigPreview.contains("Bash(*)"))
         #expect(!render.usesBroadProviderPermissions)
         #expect(render.diagnostics.contains { $0.id == "claude.shell-deny-provider-native-gap" })
     }
@@ -267,9 +272,49 @@ struct AgentPolicyTests {
             context: policyRenderContext(runtime: .copilotCLI, features: adapter.supportedFeatures)
         )
 
-        #expect(render.allowedTools == ["read"])
+        #expect(render.allowedTools == ["glob", "grep", "view"])
         #expect(render.generatedConfigPreview.contains("--allow-tool"))
         #expect(render.enforcementTiers.contains(.astraBrokered))
+    }
+
+    @Test("Copilot support tools are separate from task allow policy")
+    func copilotSupportToolsAreSeparateFromTaskAllowPolicy() {
+        let capabilities = CopilotCLICapabilities(helpText: """
+        --allow-tool
+        --output-format
+        --stream
+        --no-ask-user
+        """)
+        let adapter = CopilotPolicyAdapter(capabilities: AgentRuntimePolicyCapabilities(copilotCLI: capabilities))
+        let render = adapter.render(
+            policy: .preset(.review),
+            context: policyRenderContext(runtime: .copilotCLI, features: adapter.supportedFeatures)
+        )
+        let supportToolNames = render.runtimeSupportTools.map(\.name)
+
+        #expect(supportToolNames == ["fetch_copilot_cli_documentation", "report_intent"])
+        #expect(render.allowedTools == ["glob", "grep", "view"])
+        #expect(!render.allowedTools.contains("fetch_copilot_cli_documentation"))
+        #expect(!render.allowedTools.contains("report_intent"))
+        #expect(!render.generatedConfigPreview.contains("fetch_copilot_cli_documentation"))
+        #expect(!render.generatedConfigPreview.contains("report_intent"))
+    }
+
+    @Test("Observed policy events decode old JSON without input keys")
+    func observedPolicyEventsDecodeOldJSONWithoutInputKeys() throws {
+        let json = """
+        {
+          "id": "00000000-0000-0000-0000-000000000001",
+          "kind": "tool_use",
+          "toolName": "report_intent",
+          "summary": "provider intent"
+        }
+        """
+
+        let decoded = try JSONDecoder().decode(PolicyObservedEvent.self, from: Data(json.utf8))
+
+        #expect(decoded.inputKeys.isEmpty)
+        #expect(decoded.toolName == "report_intent")
     }
 
     @Test("Provider adapters render typed one-run grants")
@@ -894,7 +939,7 @@ struct RunPermissionManifestTests {
         let container = try makeAgentPolicyContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Manifest", primaryPath: "/tmp/manifest-workspace")
-        let task = AgentTask(title: "Manifest", goal: "Persist manifest", workspace: workspace)
+        let task = AgentTask(title: "Manifest", goal: "Use the Env Skill to persist manifest", workspace: workspace)
         let skill = Skill(
             name: "Env Skill",
             allowedTools: ["Read"],
@@ -929,6 +974,106 @@ struct RunPermissionManifestTests {
         #expect(manifestEvent != nil)
         #expect(manifestEvent?.payload.contains("PLAIN_ENV") == true)
         #expect(manifestEvent?.payload.contains("value-that-must-not-be-logged") == false)
+    }
+
+    @Test("Preflight manifest persists Copilot runtime support tools separately")
+    func preflightManifestPersistsCopilotRuntimeSupportToolsSeparately() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Support Tools", primaryPath: "/tmp/support-tools-workspace")
+        let task = AgentTask(title: "Support Tools", goal: "Who are you?", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .copilotCLI,
+            model: "gpt-5",
+            workspacePath: workspace.primaryPath,
+            phase: "test",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            providerCapabilities: AgentRuntimePolicyCapabilities(
+                copilotCLI: CopilotCLICapabilities(helpText: """
+                --allow-tool
+                --output-format
+                --stream
+                --no-ask-user
+                """)
+            ),
+            modelContext: context
+        )
+        try context.save()
+
+        let supportToolNames = manifest.providerRender.runtimeSupportTools.map(\.name)
+        let events = try context.fetch(FetchDescriptor<TaskEvent>())
+        let manifestEvent = events.first { $0.type == AgentPolicyManifestService.preflightEventType }
+
+        #expect(supportToolNames == ["fetch_copilot_cli_documentation", "report_intent"])
+        #expect(!manifest.providerRender.allowedTools.contains("fetch_copilot_cli_documentation"))
+        #expect(!manifest.providerRender.allowedTools.contains("report_intent"))
+        #expect(manifest.approvalsGranted.isEmpty)
+        #expect(manifest.approvalGrants.isEmpty)
+        #expect(manifestEvent?.payload.contains("\"runtimeSupportTools\"") == true)
+        #expect(manifestEvent?.payload.contains("\"fetch_copilot_cli_documentation\"") == true)
+    }
+
+    @Test("Old manifest JSON without runtime support tools decodes")
+    func oldManifestJSONWithoutRuntimeSupportToolsDecodes() throws {
+        let render = ProviderPolicyRender(
+            providerID: .copilotCLI,
+            adapterVersion: 1,
+            policyLevel: .review,
+            configOwnership: .generated,
+            permissionMode: PermissionPolicy.restricted.rawValue,
+            allowedTools: ["read"],
+            runtimeSupportTools: CopilotPolicyAdapter().runtimeSupportTools,
+            askFirstTools: [],
+            deniedTools: [],
+            allowedShellPatterns: [],
+            askFirstShellPatterns: [],
+            deniedShellPatterns: [],
+            allowedURLPatterns: [],
+            deniedURLPatterns: [],
+            cliArgumentsSummary: [],
+            settingsSummary: "test",
+            generatedConfigPreview: "",
+            enforcementTiers: [.providerNative, .astraBrokered],
+            diagnostics: [],
+            usesBroadProviderPermissions: false
+        )
+        let manifest = RunPermissionManifest(
+            taskID: UUID(),
+            runID: UUID(),
+            phase: "test",
+            providerID: .copilotCLI,
+            providerVersion: nil,
+            model: "gpt-5",
+            policyLevel: .review,
+            policyScope: .builtInDefault,
+            providerRender: render,
+            workspacePath: "/tmp/support-tools-workspace",
+            additionalPaths: [],
+            environmentKeyNames: [],
+            credentialLabels: [],
+            approvalsGranted: [],
+            approvalGrants: []
+        )
+        let encoded = try JSONEncoder().encode(manifest)
+        var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        var providerRender = try #require(object["providerRender"] as? [String: Any])
+        providerRender.removeValue(forKey: "runtimeSupportTools")
+        object["providerRender"] = providerRender
+        let oldData = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try JSONDecoder().decode(RunPermissionManifest.self, from: oldData)
+
+        #expect(decoded.providerRender.runtimeSupportTools.isEmpty)
+        #expect(decoded.providerRender.allowedTools == ["read"])
     }
 
     @Test("Preflight manifest replays task-scoped broker grants through the active provider adapter")
@@ -1060,6 +1205,63 @@ struct RunPermissionManifestTests {
 
         #expect(manifest.policyLevel == .build)
         #expect(manifest.providerRender.allowedTools.contains("Bash(astra-browser *)"))
+    }
+
+    @Test("Preflight manifest excludes pruned artifact task capabilities")
+    func preflightManifestExcludesPrunedArtifactTaskCapabilities() throws {
+        ShelfBrowserBridgeRegistry.shared.reset()
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Artifact Policy", primaryPath: "/tmp/artifact-policy-workspace")
+        let skill = Skill(
+            name: "Stanford Graph Mail Agent",
+            skillDescription: "Read Stanford email through Microsoft Graph",
+            allowedTools: ["Read", "Bash"],
+            disallowedTools: ["Write", "Edit"],
+            behaviorInstructions: "Do NOT use Write or Edit.",
+            environmentVariables: ["MAIL_PROFILE": "stanford"]
+        )
+        skill.workspace = workspace
+        let tool = LocalTool(
+            name: "stanford-graph-mail",
+            toolDescription: "Read Stanford mail",
+            command: "stanford-graph-mail"
+        )
+        tool.skill = skill
+        let task = AgentTask(
+            title: "Create Masterball puzzle solver webpage",
+            goal: "create a web page with a masterball solver in javascript",
+            workspace: workspace
+        )
+        task.skills = [skill]
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(skill)
+        context.insert(tool)
+        context.insert(task)
+        context.insert(run)
+        try context.save()
+
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .claudeCode,
+            model: "claude-sonnet-4-6",
+            workspacePath: workspace.primaryPath,
+            phase: "test",
+            permissionPolicy: .restricted,
+            executionPolicy: AgentRuntimeExecutionPolicy(
+                permissionPolicyOverride: nil,
+                allowedToolsOverride: ["Bash"],
+                permissionGrantsOverride: nil
+            ),
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            modelContext: context
+        )
+
+        #expect(manifest.environmentKeyNames.isEmpty)
+        #expect(!manifest.providerRender.allowedTools.contains("Bash(stanford-graph-mail *)"))
+        #expect(!manifest.providerRender.generatedConfigPreview.contains("stanford-graph-mail"))
     }
 
     @Test("Preflight manifest includes catalog-approved MCP servers")

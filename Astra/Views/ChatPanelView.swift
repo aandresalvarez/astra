@@ -387,6 +387,7 @@ struct ChatPanelView: View {
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
     @AppStorage(AppStorageKeys.runtimeProviderSettingsRevision) private var runtimeProviderSettingsRevision = 0
+    @AppStorage(AppStorageKeys.roleProfileRevision) private var roleProfileRevision = 0
     @AppStorage(AppStorageKeys.claudeProvider) private var claudeProviderRaw = ClaudeProvider.anthropic.rawValue
     @AppStorage(AppStorageKeys.claudeVertexProjectID) private var claudeVertexProjectID = ""
     @AppStorage(AppStorageKeys.claudeVertexRegion) private var claudeVertexRegion = ""
@@ -442,15 +443,11 @@ struct ChatPanelView: View {
     }
 
     private var defaultRuntime: AgentRuntimeID {
-        AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
+        runtimeSettingsSnapshot.defaultRuntime
     }
 
     private var normalizedDefaultModel: String {
-        RuntimeModelAvailability.normalizedModel(
-            defaultModel,
-            for: defaultRuntime,
-            cache: runtimeModelCache
-        )
+        runtimeSettingsSnapshot.normalizedDefaultModel
     }
 
     private var currentAgentPolicyLevel: AgentPolicyLevel {
@@ -458,18 +455,29 @@ struct ChatPanelView: View {
     }
 
     private var planningUtilityRuntime: AgentUtilityRuntimeConfiguration {
-        return AgentUtilityRuntimeConfiguration(
-            runtime: defaultRuntime,
-            model: normalizedDefaultModel,
-            providerSettings: providerSettingsForUtilityRuntime
-        )
+        _ = roleProfileRevision
+        return TaskRoleProfileStore.utilityRuntime(
+            for: .planner,
+            defaultRuntimeID: defaultRuntime.rawValue,
+            defaultModel: normalizedDefaultModel,
+            defaultBudget: defaultBudget,
+            defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
+            providerSettings: providerSettingsSnapshot.providerSettings,
+            cache: runtimeModelCache
+        ).configuration
     }
 
-    private var providerSettingsForUtilityRuntime: AgentRuntimeProviderSettings {
-        var settings = RuntimeProviderSettingsStore.settings()
-        settings.setExecutablePath(claudePath, for: .claudeCode)
-        settings.setExecutablePath(copilotPath, for: .copilotCLI)
-        return settings
+    private var workerRoleSelection: TaskRoleProfileSelection {
+        _ = roleProfileRevision
+        return TaskRoleProfileStore.selection(
+            for: .worker,
+            defaultRuntimeID: defaultRuntime.rawValue,
+            defaultModel: normalizedDefaultModel,
+            defaultBudget: defaultBudget,
+            defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
+            providerSettings: providerSettingsSnapshot.providerSettings,
+            cache: runtimeModelCache
+        )
     }
 
     private func alignDefaultModelWithRuntime() {
@@ -481,45 +489,43 @@ struct ChatPanelView: View {
     }
 
     private var runtimeModelCache: RuntimeModelAvailabilityCache {
-        _ = runtimeModelCacheRevision
-        return RuntimeModelAvailabilityCache.appStorage(
+        runtimeSettingsSnapshot.runtimeModelCache
+    }
+
+    private var runtimeSettingsSnapshot: RuntimeSettingsSnapshot {
+        RuntimeSettingsSnapshotStore.runtimeSnapshot(
+            defaultRuntimeID: defaultRuntimeID,
+            defaultModel: defaultModel,
+            defaultBudget: defaultBudget,
+            skipPermissions: skipPermissions,
+            defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
             cachedClaudeModelsJSON: claudeAvailableModels,
-            cachedCopilotModelsJSON: copilotAvailableModels
+            cachedCopilotModelsJSON: copilotAvailableModels,
+            runtimeModelCacheRevision: runtimeModelCacheRevision,
+            providerSnapshot: providerSettingsSnapshot
         )
     }
 
     private var runtimeAvailabilityConfiguration: RuntimeProviderAvailabilityConfiguration {
-        RuntimeProviderAvailabilityConfiguration(
-            providerSettings: providerSettingsForReadiness,
-            claudeProvider: ClaudeProvider(rawValue: claudeProviderRaw) ?? .anthropic,
+        providerSettingsSnapshot.availabilityConfiguration
+    }
+
+    private var runtimeAvailabilitySignature: String {
+        providerSettingsSnapshot.signature
+    }
+
+    private var providerSettingsSnapshot: ProviderSettingsSnapshot {
+        RuntimeSettingsSnapshotStore.providerSnapshot(
+            claudePath: claudePath,
+            copilotPath: copilotPath,
+            providerSettingsRevision: runtimeProviderSettingsRevision,
+            claudeProviderRaw: claudeProviderRaw,
             vertexProjectID: claudeVertexProjectID,
             vertexRegion: claudeVertexRegion,
             vertexOpusModel: claudeVertexOpusModel,
             vertexSonnetModel: claudeVertexSonnetModel,
             vertexHaikuModel: claudeVertexHaikuModel
         )
-    }
-
-    private var providerSettingsForReadiness: AgentRuntimeProviderSettings {
-        var settings = RuntimeProviderSettingsStore.settings()
-        settings.setExecutablePath(claudePath, for: .claudeCode)
-        settings.setExecutablePath(copilotPath, for: .copilotCLI)
-        return settings
-    }
-
-    private var runtimeAvailabilitySignature: String {
-        [
-            claudePath,
-            copilotPath,
-            String(runtimeProviderSettingsRevision),
-            RuntimeProviderSettingsStore.signature(),
-            claudeProviderRaw,
-            claudeVertexProjectID,
-            claudeVertexRegion,
-            claudeVertexOpusModel,
-            claudeVertexSonnetModel,
-            claudeVertexHaikuModel
-        ].joined(separator: "|")
     }
 
     private var showSlashMenu: Bool {
@@ -890,6 +896,16 @@ struct ChatPanelView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
 
+                if Self.shouldShowApprovePlanInlineAction(in: msg.content, hasPendingPlan: pendingPlan != nil) {
+                    ChatInlineActionButton(
+                        title: "Approve Plan",
+                        icon: "checkmark.circle.fill",
+                        help: "Approve the candidate goal and create the draft task.",
+                        action: approvePendingPlan
+                    )
+                    .padding(.top, 2)
+                }
+
                 // Action icons + timestamp
                 HStack(spacing: 14) {
                     Button {
@@ -928,6 +944,33 @@ struct ChatPanelView: View {
                     Label("Copy", systemImage: "doc.on.doc")
                 }
             }
+        }
+    }
+
+    private struct ChatInlineActionButton: View {
+        let title: String
+        let icon: String
+        let help: String
+        let action: () -> Void
+
+        var body: some View {
+            Button(action: action) {
+                Label(title, systemImage: icon)
+                    .font(Stanford.caption(11).weight(.semibold))
+                    .lineLimit(1)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Stanford.lagunita)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Stanford.lagunita.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(Stanford.lagunita.opacity(0.16), lineWidth: 1)
+            )
+            .help(help)
+            .accessibilityLabel(title)
         }
     }
 
@@ -1066,6 +1109,11 @@ struct ChatPanelView: View {
             return "checkmark.circle.fill"
         }
         return "sparkles"
+    }
+
+    static func shouldShowApprovePlanInlineAction(in content: String, hasPendingPlan: Bool) -> Bool {
+        guard hasPendingPlan else { return false }
+        return content.range(of: "approve plan", options: [.caseInsensitive, .diacriticInsensitive]) != nil
     }
 
     // MARK: - Composer
@@ -1245,6 +1293,11 @@ struct ChatPanelView: View {
         let states = await RuntimeProviderAvailabilityService().states(
             configuration: runtimeAvailabilityConfiguration
         )
+        // Skip partial results from a mid-flight task cancellation: SwiftUI's .task(id:) cancels
+        // the running task when the signature changes, causing withTaskGroup's for-await loop to
+        // exit early with fewer entries than registered runtimes. Writing partial states would
+        // drop providers from the menu until the replacement task completes.
+        guard states.count == AgentRuntimeAdapterRegistry.runtimeIDs.count else { return }
         runtimeReadinessStates = states
         alignDefaultRuntimeWithAvailability()
     }
@@ -1281,7 +1334,7 @@ struct ChatPanelView: View {
     }
 
     private func baseNewTaskSkillContext() -> String {
-        var skillCtx = selectedSkills.map { skill in
+        var skillCtx = scopedSelectedSkills(forTaskText: messageText, inputs: attachedFiles).map { skill in
             var desc = "## Skill: \(skill.name)\nInstructions:\n\(skill.behaviorInstructions)"
             if !skill.connectors.isEmpty {
                 desc += "\nConnectors: \(skill.connectorSummary)"
@@ -1299,11 +1352,13 @@ struct ChatPanelView: View {
         }.joined(separator: "\n\n")
 
         if let wsObj = workspace, !wsObj.additionalPaths.isEmpty {
-            let pathList = wsObj.additionalPaths.map { path -> String in
-                let name = (path as NSString).lastPathComponent
-                return "- \(name): \(path)"
+            let pathList = WorkspacePathPresentation.descriptors(
+                primaryPath: wsObj.primaryPath,
+                additionalPaths: wsObj.additionalPaths
+            ).map { descriptor -> String in
+                "- \(descriptor.roleLabel) \(descriptor.title): \(descriptor.path)"
             }.joined(separator: "\n")
-            skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + "Additional workspace folders (configured by user):\n\(pathList)\n\nThese folders are part of this workspace. When the user refers to any of these folder names, they mean these paths. You can browse and read files in them."
+            skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + "Workspace folders (configured by user):\n\(pathList)\n\nThese folders are part of this workspace. When the user refers to any of these folder names, they mean these paths. You can browse and read files in them."
         }
 
         if !attachedFiles.isEmpty {
@@ -1312,6 +1367,22 @@ struct ChatPanelView: View {
         }
 
         return skillCtx
+    }
+
+    private func scopedSelectedSkills(forTaskText taskText: String, inputs: [String] = []) -> [Skill] {
+        let trimmed = taskText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !selectedSkills.isEmpty else { return selectedSkills }
+
+        let probe = AgentTask(
+            title: String(trimmed.prefix(60)),
+            goal: trimmed,
+            workspace: workspace
+        )
+        probe.inputs = inputs
+        probe.skills = selectedSkills
+        return TaskCapabilityResolver(task: probe)
+            .activationScope(contextText: trimmed)
+            .behaviorSkills
     }
 
     private func submitComposer() {
@@ -1401,6 +1472,19 @@ struct ChatPanelView: View {
         if shouldUseGoalMode {
             skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + newTaskPlanInstructions()
         }
+        if shouldUseGoalMode, let planningDraft {
+            let selection = TaskRoleProfileStore.selection(
+                for: .planner,
+                task: planningDraft,
+                defaultRuntimeID: defaultRuntime.rawValue,
+                defaultModel: normalizedDefaultModel,
+                defaultBudget: defaultBudget,
+                defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
+                providerSettings: providerSettingsSnapshot.providerSettings,
+                cache: runtimeModelCache
+            )
+            TaskRoleProfileStore.recordSelected(selection, task: planningDraft, modelContext: modelContext)
+        }
 
         AppLogger.breadcrumb(action: "new_task_chat_sent", category: "UI", traceID: traceID, fields: [
             "source": shouldUseGoalMode ? "new_task_plan_chat" : "new_task_chat",
@@ -1445,34 +1529,37 @@ struct ChatPanelView: View {
         let input = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty else { return }
         let traceID = AuditTrace.make("quick-run")
-        let runtime = defaultRuntime
-        let model = normalizedDefaultModel
+        let workerSelection = workerRoleSelection
+        let runtime = workerSelection.profile.runtime
+        let model = workerSelection.profile.model
         AppLogger.breadcrumb(action: "quick_run_clicked", category: "UI", traceID: traceID, fields: [
             "source": "quick_run",
             "runtime": runtime.rawValue,
             "model": model,
             "workspace_id": workspace?.id.uuidString ?? "none",
-            "selected_skill_count": String(selectedSkills.count),
+            "selected_skill_count": String(scopedSelectedSkills(forTaskText: input, inputs: attachedFiles).count),
             "message_length": String(input.count)
         ])
 
+        let taskSkills = scopedSelectedSkills(forTaskText: input, inputs: attachedFiles)
         let task = AgentTask(
             title: String(input.prefix(60)),
             goal: input,
             workspace: workspace,
-            tokenBudget: defaultBudget,
+            tokenBudget: workerSelection.profile.tokenBudget,
             model: model,
             runtime: runtime
         )
         task.status = .queued
         task.inputs = attachedFiles
-        task.skills = selectedSkills
+        task.skills = taskSkills
         TaskCapabilitySnapshotter.capture(for: task)
         task.useAgentTeam = useAgentTeam
         task.teamSize = teamSize
 
         modelContext.insert(task)
-        recordPolicySelection(on: task, source: "quick_run")
+        TaskRoleProfileStore.recordSelected(workerSelection, task: task, modelContext: modelContext)
+        recordPolicySelection(on: task, level: workerSelection.profile.policyLevel, source: "quick_run")
         saveConversationAsEvents(on: task)
         promoteDraft(to: task)
         messageText = ""
@@ -1515,6 +1602,19 @@ struct ChatPanelView: View {
         var skillContext = baseNewTaskSkillContext()
         skillContext += (skillContext.isEmpty ? "" : "\n\n") + newTaskPlanInstructions()
         logChatCapabilityContext(source: "new_task_plan_generation", traceID: traceID)
+        if let planningDraft = draftTask ?? saveDraft() {
+            let selection = TaskRoleProfileStore.selection(
+                for: .planner,
+                task: planningDraft,
+                defaultRuntimeID: defaultRuntime.rawValue,
+                defaultModel: normalizedDefaultModel,
+                defaultBudget: defaultBudget,
+                defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
+                providerSettings: providerSettingsSnapshot.providerSettings,
+                cache: runtimeModelCache
+            )
+            TaskRoleProfileStore.recordSelected(selection, task: planningDraft, modelContext: modelContext)
+        }
 
         Task {
             let result = await SpecEngine.chat(
@@ -1610,23 +1710,25 @@ struct ChatPanelView: View {
     private func createTaskFromSpec() {
         guard let spec = extractedSpec else { return }
         let traceID = AuditTrace.make("conversation-spec")
-        let runtime = defaultRuntime
-        let model = normalizedDefaultModel
+        let workerSelection = workerRoleSelection
+        let runtime = workerSelection.profile.runtime
+        let model = workerSelection.profile.model
         AppLogger.breadcrumb(action: "create_task_from_spec_clicked", category: "UI", traceID: traceID, fields: [
             "source": "conversation_spec",
             "runtime": runtime.rawValue,
             "model": model,
             "workspace_id": workspace?.id.uuidString ?? "none",
-            "selected_skill_count": String(selectedSkills.count),
+            "selected_skill_count": String(scopedSelectedSkills(forTaskText: spec.goal, inputs: spec.inputs + attachedFiles).count),
             "inputs_count": String(spec.inputs.count + attachedFiles.count),
             "criteria_count": String(spec.acceptanceCriteria.count)
         ])
 
+        let taskSkills = scopedSelectedSkills(forTaskText: spec.goal, inputs: spec.inputs + attachedFiles)
         let task = AgentTask(
             title: spec.title,
             goal: spec.goal,
             workspace: workspace,
-            tokenBudget: defaultBudget,
+            tokenBudget: workerSelection.profile.tokenBudget,
             model: model,
             runtime: runtime
         )
@@ -1634,14 +1736,15 @@ struct ChatPanelView: View {
         task.inputs = spec.inputs + attachedFiles
         task.constraints = spec.constraints
         task.acceptanceCriteria = spec.acceptanceCriteria
-        task.skills = selectedSkills
+        task.skills = taskSkills
         TaskCapabilitySnapshotter.capture(for: task)
         task.chainedGoal = chainedGoal
         task.useAgentTeam = useAgentTeam
         task.teamSize = teamSize
 
         modelContext.insert(task)
-        recordPolicySelection(on: task, source: "conversation_spec")
+        TaskRoleProfileStore.recordSelected(workerSelection, task: task, modelContext: modelContext)
+        recordPolicySelection(on: task, level: workerSelection.profile.policyLevel, source: "conversation_spec")
 
         // Persist conversation history as events so it survives draft→queued→draft transitions
         saveConversationAsEvents(on: task)
@@ -2382,45 +2485,51 @@ struct ChatPanelView: View {
               let json = String(data: data, encoding: .utf8) else { return draftTask }
 
         if let draft = draftTask {
-            let runtime = defaultRuntime
-            let model = normalizedDefaultModel
+            let workerSelection = workerRoleSelection
+            let runtime = workerSelection.profile.runtime
+            let model = workerSelection.profile.model
             // Update existing draft
             draft.draftMessages = json
             draft.title = String(messages.first?.content.prefix(60) ?? "Draft")
             draft.goal = messages.first?.content ?? draft.goal
-            draft.tokenBudget = defaultBudget
+            draft.tokenBudget = workerSelection.profile.tokenBudget
             draft.model = model
             draft.runtimeID = runtime.rawValue
             draft.inputs = attachedFiles
-            draft.skills = selectedSkills
+            draft.skills = scopedSelectedSkills(forTaskText: draft.goal, inputs: attachedFiles)
             TaskCapabilitySnapshotter.capture(for: draft)
             draft.useAgentTeam = useAgentTeam
             draft.teamSize = teamSize
-            recordPolicySelectionIfChanged(on: draft, source: "draft_updated")
+            if TaskPolicyStore.latestSelectedLevel(for: draft) != workerSelection.profile.policyLevel {
+                recordPolicySelection(on: draft, level: workerSelection.profile.policyLevel, source: "draft_updated")
+            }
+            TaskRoleProfileStore.recordSelected(workerSelection, task: draft, modelContext: modelContext)
             draft.updatedAt = Date()
             return draft
         } else {
-            let runtime = defaultRuntime
-            let model = normalizedDefaultModel
+            let workerSelection = workerRoleSelection
+            let runtime = workerSelection.profile.runtime
+            let model = workerSelection.profile.model
             // Create new draft
             let title = String(messages.first?.content.prefix(60) ?? "Draft")
             let draft = AgentTask(
                 title: title,
                 goal: messages.first?.content ?? "",
                 workspace: workspace,
-                tokenBudget: defaultBudget,
+                tokenBudget: workerSelection.profile.tokenBudget,
                 model: model,
                 runtime: runtime
             )
             draft.status = .draft
             draft.draftMessages = json
             draft.inputs = attachedFiles
-            draft.skills = selectedSkills
+            draft.skills = scopedSelectedSkills(forTaskText: draft.goal, inputs: attachedFiles)
             TaskCapabilitySnapshotter.capture(for: draft)
             draft.useAgentTeam = useAgentTeam
             draft.teamSize = teamSize
             modelContext.insert(draft)
-            recordPolicySelection(on: draft, source: "draft_created")
+            TaskRoleProfileStore.recordSelected(workerSelection, task: draft, modelContext: modelContext)
+            recordPolicySelection(on: draft, level: workerSelection.profile.policyLevel, source: "draft_created")
             draftTask = draft
             return draft
         }
@@ -2491,9 +2600,9 @@ struct ChatPanelView: View {
         The visible primary action is "Define Goal" while exploring. The user's confirmation button is named "Approve Plan" once a candidate goal exists. Do not tell the user to click "Create Task" in Goal Mode; when the draft is acceptable, tell them to click "Approve Plan".
 
         When you can propose a useful starting plan, include exactly one structured plan line before any prose or clarification questions, using this prefix:
-        ASTRA_PLAN {"version":1,"planID":"UUID","title":"Short title","goal":"Brief goal summary","steps":[{"id":"stable-step-id","title":"Step title","detail":"What to do","status":"pending","risk":"low","likelyTools":["Read"],"doneSignal":"How ASTRA knows this step is done"}]}
+        ASTRA_PLAN {"version":1,"planID":"UUID","title":"Short title","goal":"Brief goal summary","steps":[{"id":"stable-step-id","title":"Step title","detail":"What to do","status":"pending","risk":"low","likelyTools":["Read"],"doneSignal":"How ASTRA knows this step is done","outputs":[{"kind":"file","scope":"task_output","path":"relative/path.ext","required":true,"prepareParentDirectories":true}]}],"validationContract":{"version":1,"assertions":[{"id":"artifact-exists","scope":"plan","description":"Generated artifact exists","method":"artifact","required":true,"path":"relative/path.ext"},{"id":"artifact-text","scope":"plan","description":"Generated artifact contains expected text","method":"text_contains","required":true,"path":"relative/path.ext","evidenceQuery":"Expected visible text"}]}}
 
-        Step risk must be low, medium, or high. Step status must be pending. Include every likely permission needed for each step: Read for inspection, Grep for search, Write for creating files, Edit for changing existing files, and Bash for tests/builds/scripts. If a step creates an HTML/CSS/JS/file artifact, include Write in likelyTools. Include a done signal for each step. After the ASTRA_PLAN line, keep prose brief: summarize assumptions and ask only the most important clarification questions before approval. Ask only clarifying questions, without ASTRA_PLAN, if there is not enough information to define a responsible goal.
+        Step risk must be low, medium, or high. Step status must be pending. Include every likely permission needed for each step: Read for inspection, Grep for search, Write for creating files, Edit for changing existing files, and Bash for tests/builds/scripts. If a step creates an HTML/CSS/JS/file artifact, include Write in likelyTools and add an outputs entry with kind file, scope task_output, and the relative path. Use task_output for generated task artifacts; use workspace only when the user explicitly asks to modify the project/repository. Include a done signal for each step. Include validationContract assertions when the task has verifiable proof, such as commands that must exit 0, artifacts that must exist, file text that must be present, manual approvals, structured text evidence, browser-visible behavior in a generated artifact, or independent verifier review. Use method values command, artifact, text_contains, manual, text_evidence, browser_behavior, or verifier. For generated files, prefer artifact plus text_contains assertions instead of shell commands; set path to the generated artifact path and evidenceQuery to the expected text. For browser_behavior, set path to the generated HTML/artifact path and evidenceQuery to the expected visible text. Command assertions must be a single allowlisted command and must not use shell composition such as &&, ||, semicolons, pipes, or redirects. Use scope plan for final proof and scope step with stepID for step-specific proof. After the ASTRA_PLAN line, keep prose brief: summarize assumptions and ask only the most important clarification questions before approval. Ask only clarifying questions, without ASTRA_PLAN, if there is not enough information to define a responsible goal.
         """
     }
 

@@ -1,0 +1,785 @@
+import Foundation
+import SwiftData
+import ASTRACore
+
+@Observable @MainActor
+final class TaskLifecycleCoordinator {
+    let modelContext: ModelContext
+    let taskQueue: TaskQueue
+
+    init(modelContext: ModelContext, taskQueue: TaskQueue) {
+        self.modelContext = modelContext
+        self.taskQueue = taskQueue
+    }
+
+    /// Canonical follow-up message sent when the user resumes a previously
+    /// session-backed task. Kept as a named constant so the resume contract is
+    /// traceable and independently testable.
+    static let resumeContinuationMessage = "Continue where you left off. Complete the original goal."
+
+    // MARK: - Task Lifecycle
+
+    func runQueue() {
+        if taskQueue.isProcessing {
+            taskQueue.cancelAll()
+            let summary = TaskRunLifecycleService.cancelAllRunningTasks(modelContext: modelContext)
+            AppLogger.audit(.taskCancelled, category: "UI", fields: [
+                "source": "queue_toggle",
+                "running_runs_cancelled": String(summary.runsUpdated),
+                "tasks_cancelled": String(summary.tasksUpdated)
+            ])
+            return
+        }
+        Task {
+            await taskQueue.processQueue(modelContext: modelContext)
+        }
+    }
+
+    func runSingleTask(_ task: AgentTask) {
+        AppLogger.audit(.taskStarted, category: "UI", taskID: task.id, fields: [
+            "source": "manual_run"
+        ])
+        Task {
+            await taskQueue.executeTask(task, modelContext: modelContext)
+            AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
+                "status": task.status.rawValue
+            ])
+        }
+    }
+
+    func cancelTask(_ task: AgentTask) {
+        taskQueue.cancel(task: task)
+        let summary = TaskRunLifecycleService.cancelTask(
+            task,
+            modelContext: modelContext,
+            source: .userAction
+        )
+        AppLogger.audit(.taskCancelled, category: "UI", taskID: task.id, fields: [
+            "source": "user_action",
+            "running_runs_cancelled": String(summary.runsUpdated),
+            "events_inserted": String(summary.eventsInserted)
+        ])
+        TaskRunLifecycleService.persist(summary: summary, modelContext: modelContext)
+    }
+
+    func retryTask(_ task: AgentTask) {
+        AppLogger.audit(.taskRetried, category: "UI", taskID: task.id)
+        let interruptionSummary = TaskRunLifecycleService.cancelTask(
+            task,
+            modelContext: modelContext,
+            source: .supersededByNewRun
+        )
+        task.status = .queued
+        task.tokensUsed = 0
+        task.costUSD = 0
+        task.updatedAt = Date()
+        task.completedAt = nil
+        task.markRead()
+        let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.retried, payload: "Task re-queued for retry.")
+        modelContext.insert(event)
+        if interruptionSummary.runsUpdated > 0 {
+            AppLogger.audit(.taskInterrupted, category: "UI", taskID: task.id, fields: [
+                "source": TaskRunInterruptionSource.supersededByNewRun.auditSource,
+                "running_runs_cancelled": String(interruptionSummary.runsUpdated),
+                "next_status": task.status.rawValue
+            ], level: .warning)
+        }
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+        runSingleTask(task)
+    }
+
+    func resumeTask(_ task: AgentTask) {
+        guard task.hasProviderSession else {
+            AppLogger.audit(.workerSessionCleared, category: "UI", taskID: task.id, fields: [
+                "reason": "missing_session_id"
+            ], level: .warning)
+            return
+        }
+        AppLogger.audit(.taskResumed, category: "UI", taskID: task.id)
+        task.status = .running
+        task.updatedAt = Date()
+        task.completedAt = nil
+        task.markRead()
+        let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.resumed, payload: "Resuming previous session — continuing where the agent left off.")
+        modelContext.insert(event)
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+        Task {
+            await taskQueue.continueSession(task: task, message: Self.resumeContinuationMessage, modelContext: modelContext)
+            AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
+                "status": task.status.rawValue,
+                "source": "resume"
+            ])
+        }
+    }
+
+    @discardableResult
+    func approveTask(_ task: AgentTask) -> Task<Void, Never>? {
+        if task.status == .pendingUser,
+           hasOpenRuntimePermissionApprovalRequest(task) {
+            return approveRuntimePermissionAndContinue(task)
+        }
+
+        if let latestRun = dismissibleLatestRun(for: task) {
+            dismissWithoutMarkingCompleted(task, latestRun: latestRun)
+            return nil
+        }
+
+        let recordedValidationOverride = recordValidationOverrideIfNeeded(for: task)
+        AppLogger.audit(.taskApproved, category: "UI", taskID: task.id, fields: [
+            "approval_type": recordedValidationOverride ? "validation_override" : "completion"
+        ])
+        task.status = .completed
+        task.updatedAt = Date()
+        task.completedAt = Date()
+        task.markRead()
+        let event = TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.Task.approved,
+            payload: recordedValidationOverride
+                ? "Task approved by user despite a failed required validation contract."
+                : "Task approved by user."
+        )
+        modelContext.insert(event)
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+        return nil
+    }
+
+    private func recordValidationOverrideIfNeeded(for task: AgentTask) -> Bool {
+        guard let failedContract = latestFailedValidationContract(for: task) else { return false }
+        let payload = TaskValidationContractEventPayload(
+            version: 1,
+            planID: failedContract.planID,
+            status: "overridden",
+            requiredPassed: failedContract.requiredPassed,
+            requiredTotal: failedContract.requiredTotal,
+            failedRequiredAssertionIDs: failedContract.failedRequiredAssertionIDs,
+            summary: "User closed the task despite failed required validation assertions."
+        )
+        modelContext.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.Validation.contractOverridden,
+            payload: Self.encode(payload)
+        ))
+        return true
+    }
+
+    private func latestFailedValidationContract(for task: AgentTask) -> TaskValidationContractEventPayload? {
+        let currentPlanID = TaskPlanService.reconstruct(for: task).plan?.planID
+        let contractEvents = task.events.compactMap { event -> (event: TaskEvent, payload: TaskValidationContractEventPayload)? in
+            guard [TaskValidationEventTypes.contractPassed,
+                   TaskValidationEventTypes.contractFailed,
+                   TaskValidationEventTypes.contractOverridden].contains(event.type),
+                  let payload = Self.decodeContractPayload(event.payload),
+                  currentPlanID.map({ $0 == payload.planID }) ?? true else {
+                return nil
+            }
+            return (event, payload)
+        }
+        guard let latest = contractEvents.sorted(by: { $0.event.timestamp > $1.event.timestamp }).first,
+              latest.event.type == TaskValidationEventTypes.contractFailed else {
+            return nil
+        }
+        return latest.payload
+    }
+
+    private func dismissibleLatestRun(for task: AgentTask) -> TaskRun? {
+        guard task.status == .pendingUser else { return nil }
+        guard !hasOpenRuntimePermissionApprovalRequest(task) else { return nil }
+
+        let latestRun = task.runs.max(by: { $0.startedAt < $1.startedAt })
+        guard PendingTaskReviewPolicy.dismissalReason(for: task, latestRun: latestRun) != nil else {
+            return nil
+        }
+        return latestRun
+    }
+
+    private func dismissWithoutMarkingCompleted(_ task: AgentTask, latestRun: TaskRun) {
+        AppLogger.audit(.taskApproved, category: "UI", taskID: task.id, fields: [
+            "approval_type": "dismiss_without_completion"
+        ])
+        task.isDone = true
+        task.updatedAt = Date()
+        task.completedAt = nil
+        task.markRead()
+        let event = TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.Task.dismissed,
+            payload: "Task dismissed by user without marking it completed.",
+            run: latestRun
+        )
+        modelContext.insert(event)
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+    }
+
+    @discardableResult
+    func approveSimilarRuntimePermissionForTask(_ task: AgentTask) -> Task<Void, Never>? {
+        guard task.status == .pendingUser,
+              hasOpenRuntimePermissionApprovalRequest(task) else {
+            return approveTask(task)
+        }
+
+        let runtime = task.resolvedRuntimeID
+        let latestGrants = Self.latestRuntimePermissionGrants(for: task)
+        let taskScopedGrants = TaskRuntimePermissionGrants.record(
+            grants: latestGrants,
+            providerID: runtime,
+            task: task,
+            modelContext: modelContext,
+            source: "approve_similar"
+        )
+        guard !taskScopedGrants.isEmpty else {
+            return approveRuntimePermissionAndContinue(task)
+        }
+
+        AppLogger.audit(.taskApproved, category: "UI", taskID: task.id, fields: [
+            "approval_type": "runtime_permission",
+            "approval_scope": "task",
+            "runtime": runtime.rawValue,
+            "grant_count": String(taskScopedGrants.count)
+        ])
+        task.status = .running
+        task.updatedAt = Date()
+        task.completedAt = nil
+        task.markRead()
+        let event = TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.Task.approved,
+            payload: "Runtime permission approved by user for similar requests in this task. Continuing with task-scoped provider permissions."
+        )
+        modelContext.insert(event)
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+
+        let resumeMessage = PermissionBroker.resumeMessage(
+            providerID: runtime,
+            grants: taskScopedGrants,
+            fallback: Self.latestRequestedPermissionTool(for: task)
+                .flatMap { PermissionBroker.permissionGrant(fromProviderString: $0)?.displayName },
+            scopeDescription: "task-scoped runtime permission for similar requests in this task"
+        )
+        return Task {
+            await taskQueue.continueSession(
+                task: task,
+                message: resumeMessage,
+                modelContext: modelContext,
+                executionPolicy: .default
+            )
+            AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
+                "status": task.status.rawValue,
+                "source": "runtime_permission_task_approval"
+            ])
+        }
+    }
+
+    private func approveRuntimePermissionAndContinue(_ task: AgentTask) -> Task<Void, Never> {
+        AppLogger.audit(.taskApproved, category: "UI", taskID: task.id, fields: [
+            "approval_type": "runtime_permission",
+            "runtime": task.resolvedRuntimeID.rawValue
+        ])
+        task.status = .running
+        task.updatedAt = Date()
+        task.completedAt = nil
+        task.markRead()
+        let event = TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.Task.approved,
+            payload: "Runtime permission approved by user. Continuing with one-time expanded provider permissions."
+        )
+        modelContext.insert(event)
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+
+        let runtime = task.resolvedRuntimeID
+        let approvedGrants = Self.approvedRuntimePermissionGrants(for: task)
+        let executionPolicy = PermissionBroker.executionPolicy(forRuntime: runtime, grants: approvedGrants)
+        let resumeMessage = Self.runtimePermissionApprovalResumeMessage(for: task, grants: approvedGrants)
+        return Task {
+            await taskQueue.continueSession(
+                task: task,
+                message: resumeMessage,
+                modelContext: modelContext,
+                executionPolicy: executionPolicy
+            )
+            AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
+                "status": task.status.rawValue,
+                "source": "runtime_permission_approval"
+            ])
+        }
+    }
+
+    private static func runtimePermissionApprovalResumeMessage(
+        for task: AgentTask,
+        grants: [PermissionGrant]
+    ) -> String {
+        PermissionBroker.resumeMessage(
+            providerID: task.resolvedRuntimeID,
+            grants: grants,
+            fallback: latestRequestedPermissionTool(for: task)
+                .flatMap { PermissionBroker.permissionGrant(fromProviderString: $0)?.displayName }
+        )
+    }
+
+    private static func approvedRuntimePermissionGrants(for task: AgentTask) -> [PermissionGrant] {
+        latestRuntimePermissionGrants(for: task)
+    }
+
+    private static func latestRuntimePermissionGrants(for task: AgentTask) -> [PermissionGrant] {
+        let events = permissionRequestEvents(for: task)
+            .sorted { $0.timestamp < $1.timestamp }
+            .reversed()
+        for event in events {
+            let structured = PermissionBroker.structuredApprovalGrants(from: event.payload)
+            if !structured.isEmpty { return structured }
+            let legacy = PermissionBroker.legacyApprovalGrants(from: event.payload)
+            if !legacy.isEmpty { return legacy }
+        }
+        if let requestedTool = latestRequestedPermissionTool(for: task),
+           let grant = PermissionBroker.permissionGrant(fromProviderString: requestedTool) {
+            return [grant]
+        }
+        return []
+    }
+
+    private static func latestRequestedPermissionTool(for task: AgentTask) -> String? {
+        permissionRequestEvents(for: task)
+            .sorted { $0.timestamp < $1.timestamp }
+            .reversed()
+            .compactMap { permissionToolName(from: $0.payload) }
+            .first
+    }
+
+    private static func permissionRequestEvents(for task: AgentTask) -> [TaskEvent] {
+        task.events
+            .filter { $0.type == "permission.denied" || $0.type == "permission.approval.requested" }
+    }
+
+    private static func permissionToolName(from payload: String) -> String? {
+        if let decoded = PermissionApprovalEventPayload.decoded(from: payload) {
+            switch decoded.request {
+            case .tool(let name, _), .providerNativePrompt(let name, _):
+                return name
+            case .shell(_, let toolName):
+                return toolName ?? "Bash"
+            case .fileWrite(_, let toolName):
+                return toolName ?? "Write"
+            case .network(_, let toolName):
+                return toolName ?? "WebFetch"
+            case .credential(let label):
+                return label
+            }
+        }
+        let patterns = [
+            #"Permission (?:denied|requested) for tool: ([^.\n]+)"#,
+            #""tool"\s*:\s*"([^"]+)""#,
+            #""toolName"\s*:\s*"([^"]+)""#
+        ]
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let match = regex.firstMatch(in: payload, range: NSRange(payload.startIndex..., in: payload)),
+                  let range = Range(match.range(at: 1), in: payload) else {
+                continue
+            }
+            let value = String(payload[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private func hasOpenRuntimePermissionApprovalRequest(_ task: AgentTask) -> Bool {
+        let latestRequest = task.events
+            .filter { $0.type == "permission.approval.requested" }
+            .max { $0.timestamp < $1.timestamp }
+        guard let latestRequest else { return false }
+
+        let latestApproval = task.events
+            .filter { $0.type == "task.approved" }
+            .max { $0.timestamp < $1.timestamp }
+        return latestApproval.map { latestRequest.timestamp > $0.timestamp } ?? true
+    }
+
+    func deleteTask(_ task: AgentTask) -> Workspace? {
+        AppLogger.audit(.taskDeleted, category: "UI", taskID: task.id)
+        let workspace = task.workspace
+        modelContext.delete(task)
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        return workspace
+    }
+
+    func setDoneState(_ task: AgentTask, to isDone: Bool) {
+        task.isDone = isDone
+        task.updatedAt = Date()
+        task.markRead()
+        do {
+            try modelContext.save()
+        } catch {
+            AppLogger.audit(.taskFailed, category: "UI", taskID: task.id, fields: [
+                "operation": "apply_done_state",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+        }
+    }
+
+    func activeSameThreadSchedules(for task: AgentTask) -> [TaskSchedule] {
+        task.workspace?.schedules
+            .filter { $0.isEnabled && $0.resultMode == .sameThread && $0.sourceTaskID == task.id }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending } ?? []
+    }
+
+    func pauseSchedules(_ schedules: [TaskSchedule]) {
+        for schedule in schedules {
+            schedule.isEnabled = false
+            schedule.updatedAt = Date()
+        }
+    }
+
+    // MARK: - Workspace Lifecycle
+
+    func createWorkspace(name: String, rootPath: String) -> Workspace {
+        let workspaceName = Workspace.displayName(name: name, primaryPath: rootPath)
+        let folderName = workspaceName
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: "-")
+            .lowercased()
+
+        let folderPath = (rootPath as NSString).appendingPathComponent(folderName)
+
+        do {
+            try PathValidator.validate(folderPath)
+            try FileManager.default.createDirectory(
+                atPath: folderPath, withIntermediateDirectories: true)
+        } catch {
+            AppLogger.audit(.workspaceRecoveryFailed, category: "UI", fields: [
+                "operation": "create_workspace_folder",
+                "path": folderPath,
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+        }
+
+        let ws = Workspace(name: workspaceName, primaryPath: folderPath)
+        modelContext.insert(ws)
+        seedSkills(for: ws)
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: ws, modelContext: modelContext)
+        return ws
+    }
+
+    func deleteWorkspace(_ ws: Workspace, existingWorkspaces: [Workspace]) -> Workspace? {
+        let configPath = WorkspaceFileLayout.workspaceConfigFile(for: ws.primaryPath)
+        try? FileManager.default.removeItem(atPath: configPath)
+
+        for connector in ws.connectors {
+            connector.cleanupKeychain()
+        }
+        for skill in ws.skills {
+            skill.cleanupKeychain()
+            for connector in skill.connectors {
+                connector.cleanupKeychain()
+            }
+        }
+        modelContext.delete(ws)
+
+        let next = existingWorkspaces.first(where: { $0.id != ws.id })
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: next, modelContext: modelContext)
+        return next
+    }
+
+    func importFromConfig(at url: URL, existingWorkspaces: [Workspace],
+                          askDuplicateAction: (String, Int) -> DuplicateAction) -> Workspace? {
+        do {
+            var config = try WorkspaceConfigManager.loadConfig(from: url)
+            config.primaryPath = url.deletingLastPathComponent().standardizedFileURL.path
+            let configID = config.id
+            if let existing = existingWorkspaces.first(where: { workspace in
+                (configID != nil && workspace.id.uuidString == configID) || workspace.primaryPath == config.primaryPath
+            }) {
+                let action = askDuplicateAction(config.name, existing.tasks.count)
+                switch action {
+                case .skip:
+                    return nil
+                case .replace:
+                    if (config.tasks ?? []).isEmpty && !existing.tasks.isEmpty {
+                        if let freshExport = WorkspaceConfigManager.export(workspace: existing, modelContext: modelContext) {
+                            config.tasks = freshExport.tasks
+                        }
+                    }
+                    modelContext.delete(existing)
+                    return WorkspaceConfigManager.importWorkspace(from: config, modelContext: modelContext)
+                case .duplicate:
+                    var dupConfig = config
+                    dupConfig.name = config.name + " (Imported)"
+                    if (dupConfig.tasks ?? []).isEmpty && !existing.tasks.isEmpty {
+                        if let freshExport = WorkspaceConfigManager.export(workspace: existing, modelContext: modelContext) {
+                            dupConfig.tasks = freshExport.tasks
+                        }
+                    }
+                    return WorkspaceConfigManager.importWorkspace(from: dupConfig, modelContext: modelContext)
+                }
+            }
+            return WorkspaceConfigManager.importWorkspace(from: config, modelContext: modelContext)
+        } catch {
+            AppLogger.audit(.workspaceRecoveryFailed, category: "App", fields: [
+                "operation": "import_config",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+            return nil
+        }
+    }
+
+    func createWorkspaceFromFolder(_ url: URL, existingWorkspaces: [Workspace],
+                                   askDuplicateAction: (String, Int) -> DuplicateAction) -> Workspace? {
+        let name = url.lastPathComponent
+            .replacingOccurrences(of: "-", with: " ")
+            .replacingOccurrences(of: "_", with: " ")
+            .capitalized
+        if let existing = existingWorkspaces.first(where: { $0.name == name || $0.primaryPath == url.path }) {
+            let action = askDuplicateAction(name, existing.tasks.count)
+            switch action {
+            case .skip:
+                return nil
+            case .replace:
+                if var exportedConfig = WorkspaceConfigManager.export(workspace: existing, modelContext: modelContext) {
+                    exportedConfig.name = name
+                    exportedConfig.primaryPath = url.path
+                    modelContext.delete(existing)
+                    return WorkspaceConfigManager.importWorkspace(from: exportedConfig, modelContext: modelContext)
+                }
+                modelContext.delete(existing)
+                return insertWorkspaceFromFolder(name: name, path: url.path)
+            case .duplicate:
+                return insertWorkspaceFromFolder(name: name + " (Imported)", path: url.path)
+            }
+        }
+        return insertWorkspaceFromFolder(name: name, path: url.path)
+    }
+
+    func insertWorkspaceFromFolder(name: String, path: String) -> Workspace {
+        let ws = Workspace(name: name, primaryPath: path)
+        modelContext.insert(ws)
+        for (sName, sIcon, sAllowed, sBlocked, sBehavior) in [
+            ("Read-Only", "eye", ["Read", "Glob", "Grep"], ["Write", "Edit", "Bash"],
+             "Do not create, modify, or delete any files."),
+            ("Safe Bash", "terminal", Skill.defaultAllowed, [String](),
+             "Never run rm, sudo, curl, pip install, npm install, or any destructive/network commands."),
+            ("Test Runner", "checkmark.seal", ["Read", "Bash", "Glob", "Grep"], ["Write", "Edit"],
+             "Use Bash only to run test commands. Do not modify source code.")
+        ] as [(String, String, [String], [String], String)] {
+            let skill = Skill(name: sName, icon: sIcon, allowedTools: sAllowed,
+                              disallowedTools: sBlocked, behaviorInstructions: sBehavior)
+            skill.workspace = ws
+            modelContext.insert(skill)
+        }
+        return ws
+    }
+
+    func importSessionsIfNeeded(for workspace: Workspace) {
+        guard workspace.tasks.isEmpty else { return }
+        let sessions = SessionScanner.discoverSessions(workspacePath: workspace.primaryPath)
+        guard !sessions.isEmpty else { return }
+        let count = SessionScanner.importSessions(sessions, into: workspace, modelContext: modelContext)
+        AppLogger.audit(.workspaceImported, category: "App", fields: [
+            "previous_thread_count": String(count),
+            "workspace_id": workspace.id.uuidString
+        ])
+    }
+
+    func backfillGeneratedThreadTitles(
+        claudePath: String,
+        copilotPath: String = "",
+        providerSettings: AgentRuntimeProviderSettings = AgentRuntimeProviderSettings(),
+        defaultRuntimeID: String = TaskExecutionDefaults.runtime.rawValue,
+        model: String = "claude-haiku-4-5-20251001",
+        limit: Int = 40
+    ) {
+        let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
+        var resolvedSettings = providerSettings
+        if resolvedSettings.executablePath(for: .claudeCode).isEmpty {
+            resolvedSettings.setExecutablePath(claudePath.isEmpty ? SpecEngine.detectedClaudePath : claudePath,
+                                               for: .claudeCode)
+        }
+        if resolvedSettings.executablePath(for: .copilotCLI).isEmpty {
+            resolvedSettings.setExecutablePath(copilotPath.isEmpty ? CopilotCLIRuntime.detectPath() : copilotPath,
+                                               for: .copilotCLI)
+        }
+        if resolvedSettings.homeDirectory(for: .copilotCLI).isEmpty {
+            resolvedSettings.setHomeDirectory(CopilotCLIRuntime.channelHome(), for: .copilotCLI)
+        }
+        let utilityRuntime = AgentUtilityRuntimeConfiguration(
+            runtime: runtime,
+            model: RuntimeModelAvailability.normalizedModel(model, for: runtime),
+            providerSettings: resolvedSettings
+        )
+        let executablePath = utilityRuntime.executablePath(for: runtime)
+        guard FileManager.default.isExecutableFile(atPath: executablePath) else {
+            AppLogger.audit(.taskStats, category: "UI", fields: [
+                "operation": "thread_title_backfill",
+                "result": "missing_utility_runtime",
+                "runtime": runtime.rawValue,
+                "executable_path": executablePath
+            ], level: .warning)
+            return
+        }
+
+        let descriptor = FetchDescriptor<AgentTask>(
+            sortBy: [SortDescriptor(\AgentTask.updatedAt, order: .reverse)]
+        )
+        let tasks = (try? modelContext.fetch(descriptor)) ?? []
+        let candidates = Array(tasks.filter(Self.shouldBackfillGeneratedTitle).prefix(limit))
+        guard !candidates.isEmpty else { return }
+
+        AppLogger.audit(.taskStats, category: "UI", fields: [
+            "operation": "thread_title_backfill",
+            "candidate_count": String(candidates.count)
+        ], level: .info)
+
+        Task { @MainActor in
+            var renamed = 0
+            for task in candidates {
+                guard let workspace = task.workspace else { continue }
+                let originalTitle = task.title
+                let originalUpdatedAt = task.updatedAt
+
+                guard let generated = await SpecEngine.generateTitle(
+                    goal: task.goal,
+                    workspacePath: workspace.primaryPath,
+                    utilityRuntime: utilityRuntime
+                ),
+                Self.isUsableGeneratedTitle(generated),
+                generated.caseInsensitiveCompare(originalTitle) != .orderedSame else {
+                    continue
+                }
+
+                task.title = generated
+                task.updatedAt = originalUpdatedAt
+                renamed += 1
+                WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+            }
+
+            AppLogger.audit(.taskStats, category: "UI", fields: [
+                "operation": "thread_title_backfill",
+                "candidate_count": String(candidates.count),
+                "renamed_count": String(renamed)
+            ], level: .info)
+        }
+    }
+
+    private static func shouldBackfillGeneratedTitle(_ task: AgentTask) -> Bool {
+        guard task.status != .running else { return false }
+
+        let title = task.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let goal = task.goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, !goal.isEmpty else { return false }
+
+        let fallbackTitle = fallbackTitle(from: goal)
+        let goalPrefix = String(goal.prefix(60)).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard title == fallbackTitle || title == goalPrefix else { return false }
+
+        if task.hasProviderSession { return true }
+        if title.hasSuffix("...") { return true }
+        if title.count > 45 { return true }
+
+        let lowercased = title.lowercased()
+        return ["what ", "how ", "why ", "please ", "can you ", "could you "].contains {
+            lowercased.hasPrefix($0)
+        } || title.contains("?")
+    }
+
+    private static func fallbackTitle(from goal: String) -> String {
+        let firstLine = goal.components(separatedBy: "\n").first ?? goal
+        let cleaned = firstLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.count <= 60 { return cleaned }
+
+        let prefix = String(cleaned.prefix(57))
+        if let lastSpace = prefix.lastIndex(of: " ") {
+            return String(prefix[prefix.startIndex..<lastSpace]) + "..."
+        }
+        return prefix + "..."
+    }
+
+    private static func isUsableGeneratedTitle(_ title: String) -> Bool {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 4, trimmed.count <= 80 else { return false }
+        guard !trimmed.contains("\n") else { return false }
+        return true
+    }
+
+    private static func decodeContractPayload(_ payload: String) -> TaskValidationContractEventPayload? {
+        guard let data = payload.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(TaskValidationContractEventPayload.self, from: data)
+    }
+
+    private static func encode<T: Encodable>(_ payload: T) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(payload),
+              let string = String(data: data, encoding: .utf8) else {
+            return "{}"
+        }
+        return string
+    }
+
+    // MARK: - Migration
+
+    func migrateConnectorCredentials(workspaces: [Workspace]) {
+        for ws in workspaces {
+            for connector in ws.connectors {
+                connector.migrateToKeychain()
+            }
+        }
+    }
+
+    func migrateSkillSecrets(skills: [Skill]) {
+        for skill in skills {
+            skill.migrateSecretsToKeychain()
+        }
+    }
+
+    // MARK: - Seeding
+
+    func seedSkills(for workspace: Workspace) {
+        let readOnly = Skill(
+            name: "Read-Only",
+            allowedTools: ["Read", "Glob", "Grep"],
+            disallowedTools: ["Write", "Edit", "Bash"],
+            behaviorInstructions: "You must not create, modify, or delete any files. Only read and analyze."
+        )
+        readOnly.icon = "eye"
+        readOnly.skillDescription = "Restricts agent to read-only file access"
+        readOnly.workspace = workspace
+
+        let testRunner = Skill(
+            name: "Test Runner",
+            allowedTools: Skill.defaultAllowed,
+            disallowedTools: [],
+            behaviorInstructions: "Use Bash only to run test commands (e.g. swift test, pytest, npm test). Do not use Bash for other purposes."
+        )
+        testRunner.icon = "checkmark.seal"
+        testRunner.skillDescription = "Allows all tools but limits Bash to test commands"
+        testRunner.workspace = workspace
+
+        let safeBash = Skill(
+            name: "Safe Bash",
+            allowedTools: Skill.defaultAllowed,
+            disallowedTools: [],
+            behaviorInstructions: "Never run rm, sudo, curl, pip install, npm install, or any destructive/network commands in Bash."
+        )
+        safeBash.icon = "terminal"
+        safeBash.skillDescription = "Allows all tools but restricts dangerous Bash commands"
+        safeBash.workspace = workspace
+
+        for skill in [readOnly, testRunner, safeBash] {
+            modelContext.insert(skill)
+        }
+        do {
+            try modelContext.save()
+        } catch {
+            AppLogger.audit(.skillToolPermissionChanged, category: "UI", fields: [
+                "operation": "seed_skills",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+        }
+    }
+
+    enum DuplicateAction {
+        case skip, replace, duplicate
+    }
+}

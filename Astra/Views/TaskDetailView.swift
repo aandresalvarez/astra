@@ -37,7 +37,7 @@ struct TaskDetailView: View {
                                 try? modelContext.save()
                             }
                         } label: {
-                            Text(task.isDone ? "Reopen" : "Done")
+                            Text(task.isDone ? "Reopen" : "Close")
                                 .font(Stanford.body(15).weight(.medium))
                                 .padding(.horizontal, 18)
                                 .padding(.vertical, 10)
@@ -375,7 +375,7 @@ struct ArtifactsTabView: View {
                     name: URL(fileURLWithPath: change.path).lastPathComponent,
                     isDirectory: false,
                     size: exists ? (try? FileManager.default.attributesOfItem(atPath: change.path)[.size] as? Int64) ?? 0 : 0,
-                    source: change.changeType == "Write" ? "created" : "changed"
+                    source: change.kind == .write ? "created" : "changed"
                 ))
             }
         }
@@ -682,8 +682,8 @@ struct DiffsTabView: View {
                 // File list
                 List(changes, selection: $selectedChange) { change in
                     HStack {
-                        Image(systemName: change.changeType == "Write" ? "doc.badge.plus" : "pencil")
-                            .foregroundStyle(change.changeType == "Write" ? Stanford.paloAltoGreen : Stanford.poppy)
+                        Image(systemName: change.kind == .write ? "doc.badge.plus" : "pencil")
+                            .foregroundStyle(change.kind == .write ? Stanford.paloAltoGreen : Stanford.poppy)
                         VStack(alignment: .leading) {
                             Text(URL(fileURLWithPath: change.path).lastPathComponent)
                                 .font(Stanford.body(15))
@@ -704,7 +704,7 @@ struct DiffsTabView: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 12) {
                             HStack {
-                                Label(change.changeType, systemImage: change.changeType == "Write" ? "doc.badge.plus" : "pencil")
+                                Label(change.changeType, systemImage: change.kind == .write ? "doc.badge.plus" : "pencil")
                                     .font(Stanford.ui(15, weight: .semibold))
                                 Spacer()
                                 Text(change.timestamp, style: .time)
@@ -716,7 +716,7 @@ struct DiffsTabView: View {
                                 .font(Stanford.caption(12))
                                 .foregroundStyle(.secondary)
 
-                            if change.changeType == "Write" {
+                            if change.kind == .write {
                                 if let content = change.content {
                                     Text("New file content:")
                                         .font(Stanford.caption(12))
@@ -1188,13 +1188,13 @@ struct FilesTabView: View {
     private func diffContent(_ change: StoredFileChange) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Label(change.changeType, systemImage: change.changeType == "Write" ? "doc.badge.plus" : "pencil")
+                Label(change.changeType, systemImage: change.kind == .write ? "doc.badge.plus" : "pencil")
                     .font(Stanford.caption(12).weight(.medium))
-                    .foregroundStyle(change.changeType == "Write" ? Stanford.paloAltoGreen : Stanford.poppy)
+                    .foregroundStyle(change.kind == .write ? Stanford.paloAltoGreen : Stanford.poppy)
                 Spacer()
             }
 
-            if change.changeType == "Write" {
+            if change.kind == .write {
                 if let content = change.content {
                     ScrollView(.horizontal, showsIndicators: true) {
                         Text(content)
@@ -1293,7 +1293,7 @@ struct FilesTabView: View {
     private func fileIcon(for file: ArtifactFile) -> String {
         if file.isDirectory { return "folder.fill" }
         if file.change != nil {
-            return file.change?.changeType == "Write" ? "doc.badge.plus" : "pencil"
+            return file.change?.kind == .write ? "doc.badge.plus" : "pencil"
         }
         let ext = URL(fileURLWithPath: file.path).pathExtension.lowercased()
         switch ext {

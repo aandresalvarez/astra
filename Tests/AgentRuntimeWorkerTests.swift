@@ -186,6 +186,36 @@ struct TaskDeliverableExpectationTests {
         #expect(!TaskDeliverableExpectation.requiresStandaloneArtifact(task))
     }
 
+    @Test("Artifact detector ignores creative wording that only contains creat substring")
+    func artifactDetectorIgnoresCreativeSubstring() {
+        let task = AgentTask(
+            title: "Creative slides review",
+            goal: "Give creative feedback on javascript slides and presentation structure."
+        )
+
+        #expect(!TaskDeliverableExpectation.requiresStandaloneArtifact(task))
+    }
+
+    @Test("Artifact detector keeps standalone creat typo")
+    func artifactDetectorKeepsStandaloneCreatTypo() {
+        let task = AgentTask(
+            title: "creat HTML slides",
+            goal: "creat a html slide deck about agents"
+        )
+
+        #expect(TaskDeliverableExpectation.requiresStandaloneArtifact(task))
+    }
+
+    @Test("Artifact detector keeps joined create article typo")
+    func artifactDetectorKeepsJoinedCreateArticleTypo() {
+        let task = AgentTask(
+            title: "Create Masterball puzzle web solver",
+            goal: "createa web page wit a masterball similar to rubicks cube but as aball with a solver in javascript"
+        )
+
+        #expect(TaskDeliverableExpectation.requiresStandaloneArtifact(task))
+    }
+
     @Test("Artifact scan finds shallow task output files")
     func artifactScanFindsShallowTaskOutputFiles() throws {
         let container = try makeContainer()
@@ -208,6 +238,84 @@ struct TaskDeliverableExpectationTests {
         )
 
         #expect(TaskDeliverableExpectation.hasArtifact(for: task, run: run))
+    }
+
+    @Test("Artifact detector ignores provider diagnostic file changes")
+    func artifactDetectorIgnoresProviderDiagnosticFileChanges() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspacePath = NSTemporaryDirectory() + "deliverable-diagnostics-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: workspacePath) }
+        try FileManager.default.createDirectory(atPath: workspacePath, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Deliverable Diagnostics", primaryPath: workspacePath)
+        let task = AgentTask(title: "Create HTML", goal: "create an html file", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let diagnostics = URL(fileURLWithPath: taskFolder).appendingPathComponent("diagnostics", isDirectory: true)
+        try FileManager.default.createDirectory(at: diagnostics, withIntermediateDirectories: true)
+        let logURL = diagnostics.appendingPathComponent("antigravity-12345678.log")
+        try "RESOURCE_EXHAUSTED".write(to: logURL, atomically: true, encoding: .utf8)
+
+        run.appendFileChange(StoredFileChange(from: FileChange(
+            path: "diagnostics/antigravity-12345678.log",
+            changeType: .write,
+            content: "Provider diagnostic log",
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        )))
+        run.appendFileChange(StoredFileChange(from: FileChange(
+            path: logURL.path,
+            changeType: .write,
+            content: "Provider diagnostic log",
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        )))
+        run.appendFileChange(StoredFileChange(from: FileChange(
+            path: (workspacePath as NSString).appendingPathComponent("cache/projects.json"),
+            changeType: .write,
+            content: "Provider cache",
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        )))
+
+        #expect(!TaskDeliverableExpectation.hasArtifact(for: task, run: run))
+        #expect(!TaskDeliverableExpectation.hasRunScopedArtifact(for: task, run: run))
+    }
+
+    @Test("Artifact detector counts workspace scoped deliverable file changes")
+    func artifactDetectorCountsWorkspaceScopedDeliverableFileChanges() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspacePath = NSTemporaryDirectory() + "deliverable-workspace-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: workspacePath) }
+        try FileManager.default.createDirectory(atPath: workspacePath, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Workspace Deliverable", primaryPath: workspacePath)
+        let task = AgentTask(title: "Create report", goal: "write report.md in the workspace", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let reportPath = (workspacePath as NSString).appendingPathComponent("report.md")
+        run.appendFileChange(StoredFileChange(from: FileChange(
+            path: reportPath,
+            changeType: .write,
+            content: "Report",
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        )))
+
+        #expect(TaskDeliverableExpectation.hasArtifact(for: task, run: run))
+        #expect(TaskDeliverableExpectation.hasRunScopedArtifact(for: task, run: run))
     }
 
     @Test("Artifact scan respects explicit entry and depth caps")
@@ -238,6 +346,47 @@ struct TaskDeliverableExpectationTests {
         #expect(!TaskDeliverableExpectation.hasArtifact(for: task, run: run, scanEntryLimit: 0))
         #expect(!TaskDeliverableExpectation.hasArtifact(for: task, run: run, scanDepthLimit: 0))
         #expect(TaskDeliverableExpectation.hasArtifact(for: task, run: run, scanDepthLimit: 3))
+    }
+}
+
+@Suite("Agent File Change Detector")
+@MainActor
+struct AgentFileChangeDetectorTests {
+    @Test("Inferred file changes ignore provider cache files")
+    func inferredFileChangesIgnoreProviderCacheFiles() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspacePath = NSTemporaryDirectory() + "file-change-runtime-cache-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: workspacePath) }
+        try FileManager.default.createDirectory(atPath: workspacePath, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "File Change Detector", primaryPath: workspacePath)
+        let task = AgentTask(title: "Summarize", goal: "Summarize the repo", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        try context.save()
+
+        let runStart = Date().addingTimeInterval(-1)
+        let cache = URL(fileURLWithPath: workspacePath).appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        try "{}".write(to: cache.appendingPathComponent("projects.json"), atomically: true, encoding: .utf8)
+        let report = URL(fileURLWithPath: workspacePath).appendingPathComponent("report.md")
+        try "# Report".write(to: report, atomically: true, encoding: .utf8)
+
+        AgentFileChangeDetector.appendInferredFileChanges(
+            to: run,
+            task: task,
+            modelContext: context,
+            workspacePath: workspacePath,
+            beforeGitStatus: [],
+            beforeDirtyFingerprints: [:],
+            runStart: runStart
+        )
+
+        #expect(run.fileChanges.map(\.path) == [report.path])
+        #expect(task.artifacts.map(\.path) == [report.path])
     }
 }
 
@@ -299,6 +448,52 @@ struct CompactionSwiftDataTests {
 @MainActor
 struct BuildPromptTests {
 
+    @Test("Initial prompt uses typed section providers in stable order")
+    func initialPromptSectionProvidersAreStable() {
+        let providers = AgentPromptBuilder.promptSectionProviderIDs(for: .initialRun)
+
+        #expect(providers == [
+            .agentTeam,
+            .currentTask,
+            .threadState,
+            .workspaceInstructions,
+            .memories,
+            .recentTasks,
+            .workspaceEnvironment,
+            .taskOutputFolder,
+            .taskDetails,
+            .capabilities,
+            .browser,
+            .documentReader,
+            .astraRunProtocol,
+            .currentTaskReminder
+        ])
+        #expect(Set(providers).count == providers.count)
+    }
+
+    @Test("Follow-up prompt uses typed section providers in stable order")
+    func followUpPromptSectionProvidersAreStable() {
+        let providers = AgentPromptBuilder.promptSectionProviderIDs(for: .followUp)
+
+        #expect(providers == [
+            .followUpIntro,
+            .threadState,
+            .contextSourceIndex,
+            .nativeContinuation,
+            .conversationHistory,
+            .changedFiles,
+            .taskOutputFolder,
+            .followUpContext,
+            .capabilities,
+            .browser,
+            .memories,
+            .astraRunProtocol,
+            .historyLookupRule,
+            .followUpRequest
+        ])
+        #expect(Set(providers).count == providers.count)
+    }
+
     @Test("Prompt includes goal")
     func includesGoal() throws {
         let container = try makeContainer()
@@ -338,12 +533,48 @@ struct BuildPromptTests {
             #expect(prompt.contains("Task Output Folder:"))
             #expect(prompt.contains("create them in this task output folder by default"))
             #expect(prompt.contains("Only write to workspace or project files when the user explicitly names that target path"))
+            #expect(prompt.contains("ASTRA owns state/history files in this folder"))
+            #expect(prompt.contains("outputs/turn_*.md"))
+            #expect(prompt.contains("do not create, edit, overwrite, or use them as deliverables"))
             #expect(prompt.contains("For informational tasks, summaries, reviews, lookups, and status checks, return the useful answer in chat"))
+            #expect(prompt.contains("Artifact first-action requirement:"))
+            #expect(prompt.contains("Your first provider-visible action should be to create or update a useful baseline deliverable"))
+            #expect(prompt.contains("Artifact delivery contract:"))
+            #expect(prompt.contains("Create the first useful deliverable promptly"))
+            #expect(prompt.contains("preferably as index.html"))
+            #expect(prompt.contains("Do not spend an extended period perfecting design, puzzle mechanics, algorithms, or research before writing the initial artifact"))
+            #expect(prompt.contains("If a tool permission is needed to create the artifact, request that tool permission instead of continuing hidden planning"))
+            if let actionRange = prompt.range(of: "Artifact first-action requirement:") {
+                #expect(prompt.distance(from: prompt.startIndex, to: actionRange.lowerBound) < 1_200)
+            } else {
+                Issue.record("Expected artifact first-action requirement near prompt start")
+            }
         }
     }
 
-    @Test("Prompt makes current task explicit before context and at end")
-    func currentTaskIsExplicitBeforeContextAndAtEnd() throws {
+    @Test("Prompt omits artifact delivery contract for informational tasks")
+    func promptOmitsArtifactDeliveryContractForInformationalTasks() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Test", primaryPath: "/tmp/prompt-informational")
+        ctx.insert(ws)
+        let task = AgentTask(
+            title: "Explain JavaScript",
+            goal: "explain how javascript modules work",
+            workspace: ws
+        )
+        ctx.insert(task)
+        try ctx.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(prompt.contains("Task Output Folder:"))
+        #expect(!prompt.contains("Artifact delivery contract:"))
+        #expect(!prompt.contains("Create the first useful deliverable promptly"))
+    }
+
+    @Test("Prompt keeps current task explicit before context and at current-goal section end")
+    func currentTaskIsExplicitBeforeContextAndAtCurrentGoalSectionEnd() throws {
         let container = try makeContainer()
         let ctx = container.mainContext
         let ws = Workspace(name: "Test", primaryPath: "/tmp/prompt-current-task")
@@ -369,13 +600,15 @@ struct BuildPromptTests {
 
         let worker = AgentRuntimeWorker()
         let prompt = worker.buildPrompt(for: task)
+        let manifest = AgentPromptBuilder.buildPromptAssembly(for: task)
+        let currentGoalSection = try #require(manifest.sections.first { $0.kind == .currentGoal })
 
         #expect(prompt.hasPrefix("Current Task:\nopen the doccument called  'Alvaro1 t' and translate all text to Spanish"))
         #expect(prompt.contains("Recent tasks in this workspace (for context):"))
         let currentTaskIndex = try #require(prompt.range(of: "Current Task:")?.lowerBound)
         let recentTasksIndex = try #require(prompt.range(of: "Recent tasks in this workspace")?.lowerBound)
         #expect(currentTaskIndex < recentTasksIndex)
-        #expect(prompt.hasSuffix("Current Task Reminder: complete this task now: open the doccument called  'Alvaro1 t' and translate all text to Spanish"))
+        #expect(currentGoalSection.includedTextPreview.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("Current Task Reminder: complete this task now: open the doccument called  'Alvaro1 t' and translate all text to Spanish"))
     }
 
     @Test("Prompt includes workspace instructions")
@@ -407,7 +640,10 @@ struct BuildPromptTests {
 
         let worker = AgentRuntimeWorker()
         let prompt = worker.buildPrompt(for: task)
-        #expect(prompt.contains("YOUR MEMORIES"))
+        #expect(prompt.contains("Workspace Memory Retrieval:"))
+        #expect(prompt.contains("workspace-saved memories. Task-local state is Context Capsule v2/current_state"))
+        #expect(prompt.contains("User preferences:"))
+        #expect(prompt.contains("Workspace conventions:"))
         #expect(prompt.contains("User prefers tabs over spaces"))
         #expect(prompt.contains("Project uses SwiftData"))
     }
@@ -430,6 +666,37 @@ struct BuildPromptTests {
         #expect(prompt.contains("No external dependencies"))
         #expect(prompt.contains("Acceptance Criteria:"))
         #expect(prompt.contains("All tests pass"))
+    }
+
+    @Test("Approved plan prompt includes validation contract")
+    func approvedPlanPromptIncludesValidationContract() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Test", primaryPath: "/tmp/prompt-plan-contract")
+        ctx.insert(ws)
+        let task = AgentTask(title: "T", goal: "G", workspace: ws)
+        ctx.insert(task)
+        let plan = TaskPlanPayload(
+            title: "Proof plan",
+            goal: "G",
+            steps: [TaskPlanPayloadStep(id: "verify", title: "Verify", likelyTools: ["Bash"])],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(
+                    id: "proof-command",
+                    description: "Focused test passes",
+                    method: .command,
+                    command: "swift test --filter ProofTests"
+                )
+            ])
+        )
+        try ctx.save()
+
+        let prompt = AgentPromptBuilder.buildApprovedPlanExecutionPrompt(for: task, plan: plan)
+
+        #expect(prompt.contains("validationContract"))
+        #expect(prompt.contains("proof-command"))
+        #expect(prompt.contains("Focused test passes"))
+        #expect(prompt.contains("treat it as the required proof rubric"))
     }
 
     @Test("Prompt includes agent team block when enabled")
@@ -520,6 +787,397 @@ struct BuildPromptTests {
         #expect(prompt.contains("User's follow-up request:\nrevise the draft"))
     }
 
+    @Test("Follow-up prompt includes context source index for just-in-time retrieval")
+    func followUpPromptIncludesContextSourceIndexForRetrieval() throws {
+        let root = NSTemporaryDirectory() + "prompt-followup-source-index-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Source Index", primaryPath: root)
+        ctx.insert(ws)
+        let task = AgentTask(title: "Index", goal: "Keep exact retrieval pointers", workspace: ws)
+        ctx.insert(task)
+
+        let run = TaskRun(task: task)
+        run.status = .completed
+        run.output = "Created a source index test artifact."
+        run.completedAt = Date()
+        let changedPath = (root as NSString).appendingPathComponent("Sources/Changed.swift")
+        run.appendFileChange(StoredFileChange(from: FileChange(
+            path: changedPath,
+            changeType: .edit,
+            content: nil,
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        )))
+        ctx.insert(run)
+        try ctx.save()
+
+        AgentRuntimeRunPersistence.recordSessionTurn(
+            task: task,
+            run: run,
+            message: "Create retrieval evidence"
+        )
+
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let generatedPath = (folder as NSString).appendingPathComponent("review-notes.md")
+        try "Review notes".write(toFile: generatedPath, atomically: true, encoding: .utf8)
+        let artifact = Artifact(task: task, type: "markdown", path: generatedPath)
+        ctx.insert(artifact)
+        try ctx.save()
+
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
+            message: "What changed before?",
+            task: task
+        )
+
+        #expect(prompt.contains("Context Source Index:"))
+        #expect(prompt.contains("Use this index for just-in-time retrieval"))
+        #expect(prompt.contains("Read exact files/history/artifacts before relying on omitted details"))
+        #expect(prompt.contains(TaskContextStateManager.jsonFileName))
+        #expect(prompt.contains(TaskContextStateManager.markdownFileName))
+        #expect(prompt.contains("session_history.md"))
+        #expect(prompt.contains("outputs/turn_001.md"))
+        #expect(prompt.contains(generatedPath))
+        #expect(prompt.contains(changedPath))
+        #expect(prompt.contains("Artifacts:"))
+    }
+
+    @Test("Follow-up transcript budget preserves latest transcript and points to omitted sources")
+    func followUpTranscriptBudgetPreservesLatestTranscriptAndSources() throws {
+        let root = NSTemporaryDirectory() + "prompt-followup-budget-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Budget", primaryPath: root)
+        ctx.insert(ws)
+        let task = AgentTask(title: "Budget", goal: "Keep compact state ahead of long history", workspace: ws)
+        ctx.insert(task)
+        try ctx.save()
+
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let longOutput = """
+        TRANSCRIPT_PREFIX_MARKER
+        \(String(repeating: "budget filler text. ", count: 350))
+        TRANSCRIPT_OMITTED_TAIL_MARKER
+        """
+        SessionHistoryManager.recordTurn(
+            taskFolder: folder,
+            taskTitle: task.title,
+            turnMessage: "Record a long answer",
+            output: longOutput,
+            tokensUsed: 0,
+            costUSD: 0,
+            fileChanges: []
+        )
+
+        var budget = PromptContextBudgetProfile.standard
+        budget.recentTranscriptTokens = 500
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
+            message: "continue with deterministic context",
+            task: task,
+            budgetProfile: budget
+        )
+
+        #expect(prompt.contains("Context Capsule v2:"))
+        #expect(prompt.contains("Current objective: Keep compact state ahead of long history"))
+        #expect(prompt.contains("User's follow-up request:\ncontinue with deterministic context"))
+        #expect(prompt.contains("ASTRA context budget: recent transcript"))
+        #expect(prompt.contains("Use these source pointers for omitted detail"))
+        #expect(prompt.contains("outputs/turn_001.md"))
+        #expect(prompt.contains("TRANSCRIPT_OMITTED_TAIL_MARKER"))
+        #expect(!prompt.contains("TRANSCRIPT_PREFIX_MARKER"))
+    }
+
+    @Test("Follow-up prompt marks native continuation as optional and keeps ASTRA state authoritative")
+    func followUpPromptMarksNativeContinuationAsOptional() throws {
+        let root = NSTemporaryDirectory() + "prompt-native-continuation-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Native", primaryPath: root)
+        ctx.insert(ws)
+        let task = AgentTask(
+            title: "Native",
+            goal: "Continue with compact state",
+            workspace: ws,
+            runtime: .claudeCode
+        )
+        task.sessionId = "claude-session-1"
+        ctx.insert(task)
+        try ctx.save()
+
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
+            message: "continue with the authoritative capsule",
+            task: task
+        )
+
+        #expect(prompt.contains("Native Continuation Policy:"))
+        #expect(prompt.contains("provider-native session for continuity"))
+        #expect(prompt.contains("Context Capsule v2 and Context Source Index above remain authoritative"))
+        #expect(prompt.contains("User's follow-up request:\ncontinue with the authoritative capsule"))
+        let manifest = AgentPromptBuilder.buildFreshFollowUpPromptAssembly(
+            message: "continue with the authoritative capsule",
+            task: task
+        )
+        let nativeSection = try #require(manifest.sections.first {
+            $0.includedTextPreview.contains("Native Continuation Policy:")
+        })
+        #expect(nativeSection.sourcePointers.contains {
+            $0.label == "provider native session" && $0.target.contains("session prefix claude-s")
+        })
+
+        task.runtimeID = AgentRuntimeID.copilotCLI.rawValue
+        let copilotPrompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
+            message: "continue with rebuilt context only",
+            task: task
+        )
+        #expect(copilotPrompt.contains("Native Continuation Policy:") == false)
+    }
+
+    @Test("Memory budget keeps compact preference and source pointer")
+    func memoryBudgetKeepsCompactPreferenceAndSourcePointer() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Memory Budget", primaryPath: "/tmp/prompt-memory-budget")
+        ws.memories = [
+            "MEMORY_PRIORITY_MARKER: prefer regression tests for prompt changes",
+            String(repeating: "verbose memory detail ", count: 300) + "MEMORY_OMITTED_TAIL_MARKER"
+        ]
+        ctx.insert(ws)
+        let task = AgentTask(title: "T", goal: "Use remembered preferences", workspace: ws)
+        ctx.insert(task)
+        try ctx.save()
+
+        var budget = PromptContextBudgetProfile.standard
+        budget.memoriesTokens = 150
+        let prompt = AgentPromptBuilder.buildPrompt(for: task, budgetProfile: budget)
+
+        #expect(prompt.contains("Goal: Use remembered preferences"))
+        #expect(prompt.contains("MEMORY_PRIORITY_MARKER"))
+        #expect(prompt.contains("ASTRA context budget: memories"))
+        #expect(prompt.contains("workspace saved memories"))
+        #expect(!prompt.contains("MEMORY_OMITTED_TAIL_MARKER"))
+    }
+
+    @Test("Workspace memories are namespaced and relevance ranked apart from task state")
+    func workspaceMemoriesAreNamespacedAndRelevanceRanked() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Memory Separation", primaryPath: "/tmp/prompt-memory-separation")
+        ws.memories = [
+            "User prefers regression tests for bugs",
+            "Project uses SwiftData migrations",
+            "Claude provider runs through Vertex",
+            "Repo build verification uses swift test",
+            "Always run git diff --check before handoff",
+            "Runtime budget warnings should stay visible",
+            "Project branch prefix is alvaro/",
+            "RELEVANT_NATIVE_MARKER: Claude provider native continuation still sends rebuilt prompt",
+            "IRRELEVANT_OMITTED_MARKER: generic note with no task overlap",
+            "SECOND_IRRELEVANT_OMITTED_MARKER: another generic note"
+        ]
+        ctx.insert(ws)
+        let task = AgentTask(
+            title: "Native",
+            goal: "Debug workspace memory retrieval for Claude provider native continuation",
+            workspace: ws,
+            runtime: .claudeCode
+        )
+        ctx.insert(task)
+        try ctx.save()
+
+        let manifest = AgentPromptBuilder.buildPromptAssembly(for: task)
+        let prompt = manifest.prompt
+        let memorySection = try #require(manifest.sections.first { $0.kind == .memories })
+
+        #expect(prompt.contains("Workspace Memory Retrieval:"))
+        #expect(prompt.contains("Retrieval: namespace- and relevance-ranked"))
+        #expect(!prompt.contains("complete memory inventory requested"))
+        #expect(prompt.contains("Use Context Capsule v2/current_state for task objective"))
+        #expect(prompt.contains("User preferences:"))
+        #expect(prompt.contains("Workspace conventions:"))
+        #expect(prompt.contains("Provider and runtime facts:"))
+        #expect(prompt.contains("RELEVANT_NATIVE_MARKER"))
+        #expect(prompt.contains("Omitted 2 lower-relevance workspace memories"))
+        #expect(!prompt.contains("IRRELEVANT_OMITTED_MARKER"))
+        #expect(!prompt.contains("SECOND_IRRELEVANT_OMITTED_MARKER"))
+        #expect(memorySection.sourcePointers.contains {
+            $0.label == "workspace memory namespace" && $0.target == "Memory Separation#providerRuntime"
+        })
+        #expect(memorySection.sourcePointers.contains {
+            $0.label == "omitted workspace memories" && $0.target.contains("omitted 2")
+        })
+    }
+
+    @Test("Prompt assembly manifest matches prompt and reports section budgets")
+    func promptAssemblyManifestMatchesPromptAndReportsSectionBudgets() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Manifest Budget", primaryPath: "/tmp/prompt-manifest-budget")
+        ws.memories = [
+            "MANIFEST_MEMORY_PRIORITY: keep source pointers with compact state",
+            String(repeating: "verbose manifest memory detail ", count: 280) + "MANIFEST_MEMORY_OMITTED_TAIL"
+        ]
+        ctx.insert(ws)
+        let task = AgentTask(title: "T", goal: "Expose what will be sent", workspace: ws)
+        ctx.insert(task)
+        try ctx.save()
+
+        var budget = PromptContextBudgetProfile.standard
+        budget.memoriesTokens = 120
+
+        let manifest = AgentPromptBuilder.buildPromptAssembly(for: task, budgetProfile: budget)
+        let prompt = AgentPromptBuilder.buildPrompt(for: task, budgetProfile: budget)
+        let memorySection = try #require(manifest.sections.first { $0.kind == .memories })
+
+        #expect(manifest.mode == .initialRun)
+        #expect(manifest.prompt == prompt)
+        #expect(manifest.estimatedPromptTokens > 0)
+        #expect(manifest.promptCharacterCount == prompt.count)
+        #expect(memorySection.tokenBudget == 120)
+        #expect(memorySection.isTruncated)
+        #expect(memorySection.estimatedOriginalTokens > memorySection.estimatedIncludedTokens)
+        #expect(memorySection.includedTextPreview.contains("ASTRA context budget: memories"))
+        #expect(memorySection.includedTextPreview.contains("MANIFEST_MEMORY_PRIORITY"))
+        #expect(memorySection.sourcePointers.contains { $0.label == "workspace saved memories" })
+        #expect(manifest.truncatedSectionCount >= 1)
+        #expect(!manifest.prompt.contains("MANIFEST_MEMORY_OMITTED_TAIL"))
+    }
+
+    @Test("Prompt assembly merges repeated blocks into unique budget sections")
+    func promptAssemblyMergesRepeatedBlocksIntoUniqueBudgetSections() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let task = AgentTask(
+            title: "Merged sections",
+            goal: String(repeating: "Keep one canonical current goal section. ", count: 80)
+        )
+        ctx.insert(task)
+        try ctx.save()
+
+        var budget = PromptContextBudgetProfile.standard
+        budget.currentGoalTokens = 160
+
+        let initialManifest = AgentPromptBuilder.buildPromptAssembly(for: task, budgetProfile: budget)
+        let initialKinds = initialManifest.sections.map(\.kind)
+        let initialUniqueKinds = Set(initialKinds)
+        let initialGoalSection = try #require(initialManifest.sections.first { $0.kind == .currentGoal })
+
+        #expect(initialKinds.count == initialUniqueKinds.count)
+        #expect(initialKinds.filter { $0 == .currentGoal }.count == 1)
+        #expect(initialGoalSection.tokenBudget == 160)
+        #expect(initialGoalSection.isTruncated)
+        #expect(initialGoalSection.includedTextPreview.contains("Current Task:"))
+        #expect(initialGoalSection.includedTextPreview.contains("ASTRA context budget: current goal"))
+        #expect(initialGoalSection.sourcePointers.count == 1)
+
+        let followUpManifest = AgentPromptBuilder.buildFreshFollowUpPromptAssembly(
+            message: "continue with the merged section budget",
+            task: task,
+            budgetProfile: budget
+        )
+        let followUpKinds = followUpManifest.sections.map(\.kind)
+        let followUpGoalSection = try #require(followUpManifest.sections.first { $0.kind == .currentGoal })
+
+        #expect(followUpKinds.count == Set(followUpKinds).count)
+        #expect(followUpKinds.filter { $0 == .currentGoal }.count == 1)
+        #expect(followUpGoalSection.includedTextPreview.contains("User's follow-up request:"))
+        #expect(followUpGoalSection.includedTextPreview.contains("continue with the merged section budget"))
+    }
+
+    @Test("Prompt emits duplicate capability behavior once")
+    func promptEmitsDuplicateCapabilityBehaviorOnce() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Duplicate Capability", primaryPath: "/tmp/duplicate-capability")
+        ctx.insert(ws)
+        let behavior = "Use GitHub CLI for GitHub work."
+        let first = Skill(name: "GitHub Agent", allowedTools: ["Read", "Bash"], behaviorInstructions: behavior)
+        let second = Skill(name: "GitHub Agent", allowedTools: ["Read", "Bash"], behaviorInstructions: behavior)
+        first.workspace = ws
+        second.workspace = ws
+        ctx.insert(first)
+        ctx.insert(second)
+        let task = AgentTask(title: "T", goal: "List GitHub pull requests", workspace: ws)
+        task.skills = [first, second]
+        ctx.insert(task)
+        try ctx.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(prompt.components(separatedBy: "[GitHub Agent]:").count - 1 == 1)
+        #expect(prompt.contains("Use GitHub CLI for GitHub work."))
+    }
+
+    @Test("Copied preview case has no pending prompt and prunes irrelevant duplicate capability behavior")
+    func copiedPreviewCaseHasNoPendingPromptAndPrunesIrrelevantDuplicateCapabilityBehavior() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Copied Preview", primaryPath: "/tmp/copied-preview")
+        ctx.insert(ws)
+        let behavior = "Use GitHub CLI for GitHub work."
+        let first = Skill(name: "GitHub Agent", allowedTools: ["Read", "Bash"], behaviorInstructions: behavior)
+        let second = Skill(name: "GitHub Agent", allowedTools: ["Read", "Bash"], behaviorInstructions: behavior)
+        first.workspace = ws
+        second.workspace = ws
+        ctx.insert(first)
+        ctx.insert(second)
+        let task = AgentTask(
+            title: "cognition eval smoke",
+            goal: "Create a scratch file named cognition-eval-smoke.md with one sentence saying: Local cognition evaluation dashboard test passed.",
+            workspace: ws
+        )
+        task.id = UUID(uuidString: "14DE8D76-E82B-4603-8A96-46771CF02B61")!
+        task.status = .completed
+        task.sessionId = "provider-session"
+        task.skills = [first, second]
+        ctx.insert(task)
+        try ctx.save()
+
+        let request = PromptContextPreviewPresentation.request(
+            taskStatus: task.status,
+            hasProviderSession: task.hasProviderSession,
+            messageText: "  ",
+            attachedFiles: []
+        )
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(request.kind == .unavailable)
+        #expect(request.unavailableReason?.contains("No provider prompt is pending") == true)
+        #expect(prompt.components(separatedBy: "[GitHub Agent]:").count - 1 == 0)
+        #expect(!prompt.contains("Use GitHub CLI for GitHub work."))
+        #expect(prompt.contains("cognition-eval-smoke.md"))
+        #expect(prompt.contains("/tmp/copied-preview/.astra/tasks/14DE8D76/current_state.json"))
+    }
+
+    @Test("Follow-up prompt assembly manifest reports follow-up mode and sources")
+    func followUpPromptAssemblyManifestReportsFollowUpModeAndSources() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let task = AgentTask(title: "Follow", goal: "Keep current state")
+        ctx.insert(task)
+        try ctx.save()
+
+        let manifest = AgentPromptBuilder.buildFreshFollowUpPromptAssembly(
+            message: "continue with manifest metadata",
+            task: task
+        )
+        let requestSection = try #require(manifest.sections.last { $0.kind == .currentGoal })
+
+        #expect(manifest.mode == .followUp)
+        #expect(manifest.prompt.contains("User's follow-up request:\ncontinue with manifest metadata"))
+        #expect(requestSection.includedTextPreview.contains("continue with manifest metadata"))
+        #expect(requestSection.sourcePointers.contains { $0.label == "current follow-up request" })
+    }
+
     @Test("Follow-up prompt ignores stale copied fork runs")
     func followUpPromptIgnoresStaleCopiedForkRuns() throws {
         let container = try makeContainer()
@@ -602,8 +1260,7 @@ struct BuildPromptTests {
         let prompt = AgentPromptBuilder.buildPrompt(for: task)
 
         #expect(prompt.contains("Shelf Browser Session:"))
-        #expect(prompt.contains("Available CLI/Script Tools"))
-        #expect(prompt.contains("Shelf Browser Control: `astra-browser`"))
+        #expect(prompt.contains("Use the provider-neutral `astra-browser` command"))
         #expect(prompt.contains("ASTRA_BROWSER_URL"))
         #expect(prompt.contains(task.id.uuidString))
         #expect(prompt.contains("https://outlook.office.com/mail/"))
@@ -730,6 +1387,41 @@ struct BuildPromptTests {
         #expect(prompt.contains("ASTRA_BROWSER_URL"))
         #expect(prompt.contains("http://127.0.0.1:47831/"))
         #expect(ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id)["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+    }
+
+    @Test("Standalone artifact prompt omits hidden empty Shelf browser bridge")
+    func standaloneArtifactPromptOmitsHiddenEmptyShelfBrowserBridge() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Test", primaryPath: "/tmp/prompt-browser-artifact-hidden-empty")
+        ctx.insert(ws)
+        let task = AgentTask(
+            title: "Create Masterball puzzle web solver",
+            goal: "createa web page wit a masterball (similar to rubicks cube but as aball ) with a solver in javascript",
+            workspace: ws
+        )
+        ctx.insert(task)
+        try ctx.save()
+
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: nil,
+            currentTitle: nil,
+            taskID: task.id,
+            isPresented: false,
+            isEnabled: true
+        )
+        defer { ShelfBrowserBridgeRegistry.shared.reset() }
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        let environment = AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: task)
+        let scope = TaskCapabilityResolver(task: task).promptScope()
+
+        #expect(ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id)["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+        #expect(!prompt.contains("Shelf Browser Session:"))
+        #expect(!prompt.contains("ASTRA_BROWSER_URL"))
+        #expect(environment["ASTRA_BROWSER_URL"] == nil)
+        #expect(!scope.localTools.contains { $0.command == "astra-browser" })
     }
 
     @Test("Prompt hides Shelf browser bridge when disabled")
@@ -875,10 +1567,27 @@ struct ControlledBrowserTests {
     func defaultCandidatesCoverCommonChromiumBrowsers() {
         let names = Set(ControlledBrowserCandidate.defaultCandidates.map(\.name))
 
+        #expect(names.contains("Google Chrome for Testing"))
         #expect(names.contains("Google Chrome"))
         #expect(names.contains("Microsoft Edge"))
         #expect(names.contains("Brave Browser"))
         #expect(names.contains("Chromium"))
+    }
+
+    @Test("controlled browser executable environment override wins")
+    func controlledBrowserExecutableEnvironmentOverrideWins() throws {
+        let executable = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-controlled-browser-\(UUID().uuidString)")
+        FileManager.default.createFile(atPath: executable.path, contents: Data("#!/bin/sh\n".utf8))
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        defer { try? FileManager.default.removeItem(at: executable) }
+
+        let candidate = ControlledBrowserCandidate.firstAvailable(environment: [
+            ControlledBrowserCandidate.executablePathEnvironmentKey: executable.path,
+            ControlledBrowserCandidate.browserNameEnvironmentKey: "Pinned Chrome for Testing"
+        ])
+
+        #expect(candidate == ControlledBrowserCandidate(name: "Pinned Chrome for Testing", executablePath: executable.path))
     }
 
     @Test("controlled browser handoff preserves embedded page URL")

@@ -153,7 +153,7 @@ public enum CopilotStreamEventParser {
         if isToolUse(normalized, object: object) {
             let name = toolName(in: object)
             let id = toolID(in: object)
-            return [.toolUse(name: name, id: id, inputSummary: inputSummary(in: object))]
+            return [.toolUse(name: name, id: id, inputSummary: inputSummary(in: object, toolName: name))]
         }
 
         if isToolResult(normalized, object: object) {
@@ -249,27 +249,39 @@ public enum CopilotStreamEventParser {
             || hasAnyKey(in: object, keys: ["toolResult"])
     }
 
-    private static func inputSummary(in object: [String: Any]) -> String? {
-        if let command = firstStringIncludingPayload(in: object, keys: ["command", "cmd"]) {
-            return command
-        }
-        if let command = argumentStringIncludingPayload(in: object, keys: ["command", "cmd"]) {
-            return command
-        }
-        if let path = argumentStringIncludingPayload(in: object, keys: ["file_path", "path", "target_path"]) {
-            return path
-        }
-        if let url = argumentStringIncludingPayload(in: object, keys: ["url", "uri"]) {
-            return url
+    private static func inputSummary(in object: [String: Any], toolName: String?) -> String? {
+        if shouldPreferActionSummary(for: toolName) {
+            if let command = firstStringIncludingPayload(in: object, keys: ["command", "cmd"]) {
+                return command
+            }
+            if let command = argumentStringIncludingPayload(in: object, keys: ["command", "cmd"]) {
+                return command
+            }
+            if let path = argumentStringIncludingPayload(in: object, keys: ["file_path", "path", "target_path"]) {
+                return path
+            }
+            if let url = argumentStringIncludingPayload(in: object, keys: ["url", "uri"]) {
+                return url
+            }
         }
         if let input = object["input"] ?? object["arguments"] ?? object["args"] {
-            return stableJSONString(input)
+            return stableInputSummary(input)
         }
         if let payload = payloadObject(in: object),
            let input = payload["input"] ?? payload["arguments"] ?? payload["args"] {
-            return stableJSONString(input)
+            return stableInputSummary(input)
         }
         return nil
+    }
+
+    private static func shouldPreferActionSummary(for toolName: String?) -> Bool {
+        let normalized = toolName?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        return [
+            "bash", "shell",
+            "read", "view", "grep", "glob",
+            "write", "create", "edit", "multiedit", "multi_edit", "apply_patch",
+            "webfetch", "websearch"
+        ].contains(normalized)
     }
 
     private static func textValue(in object: [String: Any]) -> String? {
@@ -639,6 +651,14 @@ public enum CopilotStreamEventParser {
             return nil
         }
         return string
+    }
+
+    private static func stableInputSummary(_ value: Any) -> String? {
+        if let string = value as? String {
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        return stableJSONString(value)
     }
 
     private static func jsonDictionary(from text: String) -> [String: Any]? {

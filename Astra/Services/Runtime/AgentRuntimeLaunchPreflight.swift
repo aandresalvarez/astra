@@ -1,0 +1,298 @@
+import Foundation
+import SwiftData
+
+struct AgentRuntimeLaunchPreflightResult: Sendable, Equatable {
+    enum Status: String, Sendable {
+        case taskFolderPrepared
+        case taskFolderCreateFailed
+        case capabilityRuntimeResourcesPassed
+        case capabilityRuntimeResourcesMissing
+        case connectorPreflightPassed
+        case connectorPreflightFailed
+    }
+
+    var status: Status
+    var phase: String
+    var reason: String?
+    var detail: String?
+    var auditFields: [String: String]
+
+    var didPass: Bool {
+        switch status {
+        case .taskFolderPrepared, .capabilityRuntimeResourcesPassed, .connectorPreflightPassed:
+            return true
+        case .taskFolderCreateFailed, .capabilityRuntimeResourcesMissing, .connectorPreflightFailed:
+            return false
+        }
+    }
+}
+
+@MainActor
+enum AgentRuntimeLaunchPreflight {
+    static func prepareTaskFolderForLaunchResult(
+        _ task: AgentTask,
+        modelContext: ModelContext,
+        phase: String
+    ) -> AgentRuntimeLaunchPreflightResult {
+        do {
+            let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+            let fields = [
+                "event": "task_folder_prepared",
+                "phase": phase,
+                "folder_available": String(!folder.isEmpty),
+                "result": AgentRuntimeLaunchPreflightResult.Status.taskFolderPrepared.rawValue
+            ]
+            AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: fields, level: .debug)
+            return AgentRuntimeLaunchPreflightResult(
+                status: .taskFolderPrepared,
+                phase: phase,
+                reason: nil,
+                detail: folder,
+                auditFields: fields
+            )
+        } catch {
+            let reason = "task_folder_create_failed"
+            let fields = [
+                "reason": reason,
+                "phase": phase,
+                "error_type": String(describing: type(of: error)),
+                "error_description": error.localizedDescription,
+                "result": AgentRuntimeLaunchPreflightResult.Status.taskFolderCreateFailed.rawValue
+            ]
+            AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: fields, level: .error)
+            task.status = .failed
+            let now = Date()
+            task.updatedAt = now
+            task.completedAt = now
+            task.markUnreadForCurrentStatus(at: now)
+            modelContext.insert(TaskEvent(
+                task: task,
+                type: "error",
+                payload: "ASTRA could not create this task's output folder before launching the agent: \(error.localizedDescription)"
+            ))
+            try? modelContext.save()
+            return AgentRuntimeLaunchPreflightResult(
+                status: .taskFolderCreateFailed,
+                phase: phase,
+                reason: reason,
+                detail: error.localizedDescription,
+                auditFields: fields
+            )
+        }
+    }
+
+    static func prepareTaskFolderForLaunch(
+        _ task: AgentTask,
+        modelContext: ModelContext,
+        phase: String
+    ) -> Bool {
+        prepareTaskFolderForLaunchResult(task, modelContext: modelContext, phase: phase).didPass
+    }
+
+    static func preflightConnectorsBeforeLaunchResult(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String,
+        contextText: String
+    ) async -> AgentRuntimeLaunchPreflightResult {
+        let capabilityResult = preflightCapabilitiesBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: phase,
+            contextText: contextText
+        )
+        guard capabilityResult.didPass else {
+            return capabilityResult
+        }
+
+        let fullContext = [
+            task.goal,
+            task.title,
+            contextText
+        ].joined(separator: "\n")
+        let connectors = ConnectorPreflightService.connectorsRequiringPreflight(
+            from: TaskCapabilityResolver(task: task).promptScope(contextText: contextText).connectors,
+            contextText: fullContext
+        )
+        let traceID = AuditTrace.make("connector-preflight")
+        var preflightFields = CapabilityAudit.taskContextFields(
+            source: "connector_preflight_candidates",
+            task: task,
+            scope: .providerLaunch(contextText: contextText)
+        )
+        preflightFields["trace_id"] = traceID
+        preflightFields["phase"] = phase
+        preflightFields["preflight_connector_count"] = String(connectors.count)
+        AppLogger.audit(.capabilityChatContext, category: "Worker", taskID: task.id, fields: preflightFields, level: .debug, fieldMaxLength: 240)
+
+        guard let issue = await ConnectorPreflightService.firstBlockingIssue(
+            connectors: connectors,
+            contextText: fullContext,
+            workspaceID: task.workspace?.id,
+            traceID: traceID
+        ) else {
+            let resultFields = [
+                "source": "task_preflight",
+                "trace_id": traceID,
+                "phase": phase,
+                "workspace_id": task.workspace?.id.uuidString ?? "none",
+                "result": "preflight_passed",
+                "diagnostic_result": AgentRuntimeLaunchPreflightResult.Status.connectorPreflightPassed.rawValue,
+                "connector_count": String(connectors.count),
+                "connector_names": CapabilityAudit.compactNames(connectors.map(\.name))
+            ]
+            if !connectors.isEmpty {
+                AppLogger.audit(.connectorTested, category: "Worker", taskID: task.id, fields: resultFields, level: .info, fieldMaxLength: 240)
+            }
+            return AgentRuntimeLaunchPreflightResult(
+                status: .connectorPreflightPassed,
+                phase: phase,
+                reason: nil,
+                detail: nil,
+                auditFields: resultFields
+            )
+        }
+
+        var fields = issue.auditFields
+        fields["trace_id"] = traceID
+        fields["phase"] = phase
+        fields["diagnostic_result"] = AgentRuntimeLaunchPreflightResult.Status.connectorPreflightFailed.rawValue
+        AppLogger.audit(.connectorTested, category: "Worker", taskID: task.id, fields: fields, level: .error)
+
+        let message = """
+        \(issue.connectorName) connector check failed before the agent ran:
+
+        \(issue.message)
+
+        Fix this connector in Manage Capabilities, then retry the task. ASTRA stopped here so the agent does not guess about Jira permissions from partial API results.
+        """
+        finishPreLaunchFailure(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            reason: "connector_preflight_failed",
+            payload: message
+        )
+        return AgentRuntimeLaunchPreflightResult(
+            status: .connectorPreflightFailed,
+            phase: phase,
+            reason: "connector_preflight_failed",
+            detail: issue.message,
+            auditFields: fields
+        )
+    }
+
+    static func preflightConnectorsBeforeLaunch(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String,
+        contextText: String
+    ) async -> Bool {
+        await preflightConnectorsBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: phase,
+            contextText: contextText
+        ).didPass
+    }
+
+    static func preflightCapabilitiesBeforeLaunchResult(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String,
+        contextText: String = ""
+    ) -> AgentRuntimeLaunchPreflightResult {
+        let policyContext = task.workspace.map {
+            CapabilityCatalogPolicyContext.workspaceUser(
+                workspace: $0,
+                approvalRecords: CapabilityApprovalStore().records()
+            )
+        }
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            policyContext: policyContext,
+            scope: .providerLaunch(contextText: contextText)
+        )
+        var fields = CapabilityAudit.taskContextFields(
+            source: "capability_runtime_integrity",
+            task: task,
+            scope: .providerLaunch(contextText: contextText)
+        )
+        fields["phase"] = phase
+        fields["result"] = issues.isEmpty ? "passed" : "missing_resources"
+        for (key, value) in CapabilityRuntimeIntegrityService.summaryFields(for: issues) {
+            fields[key] = value
+        }
+
+        guard !issues.isEmpty else {
+            fields["diagnostic_result"] = AgentRuntimeLaunchPreflightResult.Status.capabilityRuntimeResourcesPassed.rawValue
+            AppLogger.audit(.capabilityRuntimeIntegrity, category: "Worker", taskID: task.id, fields: fields, level: .debug, fieldMaxLength: 240)
+            return AgentRuntimeLaunchPreflightResult(
+                status: .capabilityRuntimeResourcesPassed,
+                phase: phase,
+                reason: nil,
+                detail: nil,
+                auditFields: fields
+            )
+        }
+
+        fields["diagnostic_result"] = AgentRuntimeLaunchPreflightResult.Status.capabilityRuntimeResourcesMissing.rawValue
+        AppLogger.audit(.capabilityRuntimeIntegrity, category: "Worker", taskID: task.id, fields: fields, level: .error, fieldMaxLength: 240)
+        finishPreLaunchFailure(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            reason: "capability_runtime_resources_missing",
+            payload: CapabilityRuntimeIntegrityService.userMessage(for: issues)
+        )
+        return AgentRuntimeLaunchPreflightResult(
+            status: .capabilityRuntimeResourcesMissing,
+            phase: phase,
+            reason: "capability_runtime_resources_missing",
+            detail: CapabilityRuntimeIntegrityService.userMessage(for: issues),
+            auditFields: fields
+        )
+    }
+
+    static func preflightCapabilitiesBeforeLaunch(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String,
+        contextText: String = ""
+    ) -> Bool {
+        preflightCapabilitiesBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: phase,
+            contextText: contextText
+        ).didPass
+    }
+
+    static func finishPreLaunchFailure(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        reason: String,
+        payload: String
+    ) {
+        run.status = .failed
+        run.stopReason = reason
+        run.completedAt = Date()
+        task.status = .failed
+        task.updatedAt = Date()
+        task.markUnreadForCurrentStatus(at: task.updatedAt)
+        let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: payload, run: run)
+        modelContext.insert(event)
+        AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
+            "reason": reason
+        ], level: .error)
+        try? modelContext.save()
+    }
+}

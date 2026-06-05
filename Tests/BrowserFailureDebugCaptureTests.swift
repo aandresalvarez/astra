@@ -136,4 +136,81 @@ struct BrowserFailureDebugCaptureTests {
         let networkEvents = try #require(compact["networkEvents"] as? [[String: Any]])
         #expect(networkEvents.first?["url"] as? String == "https://example.com/api")
     }
+
+    @Test("Controlled CDP diagnostics classify event streams without injected JS")
+    func controlledCDPDiagnosticsClassifyEventStreams() throws {
+        let diagnostics = ControlledBrowserCDPDiagnosticsFormatter.diagnosticsObject(
+            url: "https://example.com/page?token=secret#frag",
+            title: "Example",
+            events: [
+                [
+                    "method": "Runtime.consoleAPICalled",
+                    "params": [
+                        "type": "error",
+                        "args": [["value": "Failed loading https://example.com/api?token=secret#frag"]]
+                    ]
+                ],
+                [
+                    "method": "Network.responseReceived",
+                    "params": [
+                        "type": "Fetch",
+                        "response": [
+                            "url": "https://example.com/api?token=secret#frag",
+                            "status": 503
+                        ]
+                    ]
+                ],
+                [
+                    "method": "Page.frameNavigated",
+                    "params": [
+                        "frame": ["url": "https://example.com/next?token=secret#frag"]
+                    ]
+                ]
+            ],
+            capabilities: ControlledBrowserCDPCapabilityReport(
+                browser: "Chrome/126",
+                protocolVersion: "1.3",
+                domains: ["Runtime": true, "Network": true, "Page": true, "Input": true],
+                errors: [:]
+            )
+        )
+
+        #expect(diagnostics["captureMode"] as? String == "cdp_event_stream")
+
+        let compact = BrowserFailureDebugCapture.compactDebugEvents(from: diagnostics)
+        #expect(compact["captureMode"] as? String == "cdp_event_stream")
+        let capabilities = try #require(compact["capabilities"] as? [String: Any])
+        let domains = try #require(capabilities["domains"] as? [String: Bool])
+        #expect(domains["Runtime"] == true)
+        #expect(domains["Input"] == true)
+
+        let consoleEvents = try #require(compact["consoleEvents"] as? [[String: Any]])
+        let consoleMessage = try #require(consoleEvents.first?["message"] as? [String: Any])
+        #expect((consoleMessage["preview"] as? String)?.contains("token=secret") == false)
+
+        let networkEvents = try #require(compact["networkEvents"] as? [[String: Any]])
+        #expect(networkEvents.first?["url"] as? String == "https://example.com/api")
+
+        let navigationEvents = try #require(compact["navigationEvents"] as? [[String: Any]])
+        #expect(navigationEvents.first?["url"] as? String == "https://example.com/next")
+    }
+
+    @Test("Controlled CDP transport matches numeric and string response IDs")
+    func controlledCDPTransportMatchesDevToolsResponseIDs() {
+        #expect(ControlledBrowserCDPTransport.responseID(from: ["id": 42]) == 42)
+        #expect(ControlledBrowserCDPTransport.responseID(from: ["id": NSNumber(value: 43)]) == 43)
+        #expect(ControlledBrowserCDPTransport.responseID(from: ["id": "44"]) == 44)
+        #expect(ControlledBrowserCDPTransport.responseID(from: ["id": "not-a-number"]) == nil)
+        #expect(ControlledBrowserCDPTransport.responseID(from: ["method": "Runtime.consoleAPICalled"]) == nil)
+    }
+
+    @Test("Controlled CDP transport stringifies JSON booleans as boolean text")
+    func controlledCDPTransportStringifiesJSONBooleansAsBooleanText() throws {
+        let data = Data(#"{"enabled":true,"disabled":false,"count":2}"#.utf8)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        #expect(ControlledBrowserCDPTransport.stringValue(object["enabled"]) == "true")
+        #expect(ControlledBrowserCDPTransport.stringValue(object["disabled"]) == "false")
+        #expect(ControlledBrowserCDPTransport.stringValue(object["count"]) == "2")
+    }
 }

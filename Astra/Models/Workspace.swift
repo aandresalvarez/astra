@@ -18,6 +18,11 @@ final class Workspace: Identifiable {
     var installedPluginIDs: [String] = []
     var installedPluginVersions: [String] = []
     var isStarred: Bool = false
+    /// The code location new chats default to. `nil` means the primary path; a
+    /// non-nil value is the absolute path of the active configured repository or
+    /// a git worktree. Existing threads are never moved by this value: they keep
+    /// their own `executionRootPath` snapshot.
+    var activeWorkingPath: String?
     var createdAt: Date
     var updatedAt: Date
 
@@ -54,8 +59,26 @@ final class Workspace: Identifiable {
         self.instructions = instructions
         self.lastUsedSkillNames = []
         self.isStarred = false
+        self.activeWorkingPath = nil
         self.createdAt = Date()
         self.updatedAt = Date()
+    }
+
+    /// The directory new chats and the Repository panel currently operate in:
+    /// the active repository/worktree when one is selected, otherwise primary.
+    var resolvedWorkingPath: String {
+        if let active = activeWorkingPath,
+           !active.isEmpty,
+           FileManager.default.fileExists(atPath: active) {
+            return active
+        }
+        return primaryPath
+    }
+
+    /// True when the workspace is focused on a non-primary code location.
+    var isUsingWorktree: Bool {
+        guard let active = activeWorkingPath, !active.isEmpty else { return false }
+        return active != primaryPath
     }
 
     func installedVersion(of pluginID: String) -> String? {

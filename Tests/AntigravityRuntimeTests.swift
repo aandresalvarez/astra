@@ -71,6 +71,70 @@ struct AntigravityCLIRuntimeTests {
         #expect(plan.arguments.contains("--sandbox") == false)
     }
 
+    @Test("Command includes diagnostic log when configured")
+    func commandIncludesDiagnosticLogWhenConfigured() {
+        let plan = AntigravityCLIRuntime.buildCommand(
+            executablePath: "/bin/agy",
+            prompt: "hello",
+            workspacePath: "/workspace",
+            additionalPaths: [],
+            permissionPolicy: .restricted,
+            timeoutSeconds: 30,
+            taskEnvironment: [:],
+            diagnosticLogPath: "/workspace/.astra/tasks/TASK/diagnostics/antigravity-run.log"
+        )
+
+        #expect(plan.arguments.contains("--log-file"))
+        #expect(plan.arguments.contains("/workspace/.astra/tasks/TASK/diagnostics/antigravity-run.log"))
+        #expect(plan.diagnosticLogPath == "/workspace/.astra/tasks/TASK/diagnostics/antigravity-run.log")
+    }
+
+    @Test("Diagnostic summary classifies hidden Antigravity failures")
+    func diagnosticSummaryClassifiesHiddenFailures() throws {
+        let log = """
+        W0531 server_oauth.go:99] Account ineligible: Your current account is not eligible for Antigravity.
+        E0531 log.go:398] RESOURCE_EXHAUSTED (code 429): You have exhausted your capacity on this model. Your quota will reset after 91h11m50s.
+        E0531 discovery.go:383] Failed to load JSON config file /Users/alvaro1/.gemini/config/mcp_config.json: unexpected end of JSON input
+        """
+
+        let summary = try #require(AntigravityCLIRuntime.diagnosticSummary(
+            logText: log,
+            logPath: "/tmp/antigravity.log"
+        ))
+
+        #expect(summary.primaryCode == "quota_exhausted")
+        #expect(summary.findings.contains("account_ineligible"))
+        #expect(summary.findings.contains("malformed_mcp_config"))
+        #expect(!summary.findings.contains("auth_required"))
+        #expect(summary.message.contains("quota is exhausted"))
+        #expect(summary.message.contains("Quota will reset after 91h11m50s"))
+        #expect(summary.message.contains("Additional findings"))
+        #expect(summary.auditFields["provider_diagnostic_log"] == "/tmp/antigravity.log")
+    }
+
+    @Test("Diagnostic summary ignores quotaProject and successful silent auth noise")
+    func diagnosticSummaryIgnoresQuotaProjectAndSuccessfulSilentAuthNoise() throws {
+        let log = """
+        I0531 server_oauth.go:212] applyAuthResult: email=alvaro@example.com, authMethod=consumer, quotaProject=
+        E0531 log.go:398] Failed to poll ListExperiments: error getting token source: You are not logged into Antigravity.
+        I0531 auth.go:114] ChainedAuth: authenticated via keyring (effective: keyring)
+        I0531 server_oauth.go:217] OAuth: authenticated successfully as alvaro@example.com
+        I0531 printmode.go:166] Print mode: silent auth succeeded
+        E0531 log.go:398] RESOURCE_EXHAUSTED (code 429): You have exhausted your capacity on this model. Your quota will reset after 90h59m32s.
+        """
+
+        let summary = try #require(AntigravityCLIRuntime.diagnosticSummary(
+            logText: log,
+            logPath: "/tmp/antigravity.log"
+        ))
+
+        #expect(summary.primaryCode == "quota_exhausted")
+        #expect(summary.findings == ["quota_exhausted"])
+        #expect(summary.evidence.contains("RESOURCE_EXHAUSTED"))
+        #expect(!summary.evidence.contains("quotaProject"))
+        #expect(summary.message.contains("Quota will reset after 90h59m32s"))
+    }
+
     @Test("Plain text parser keeps assistant text and surfaces permission prompts")
     func plainTextParserKeepsTextAndPermissionPrompts() {
         let textEvents = AntigravityCLIRuntime.parsePlainTextAgentEvents(

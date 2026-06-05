@@ -98,6 +98,61 @@ struct ProcessMonitorTests_ThreadSafety {
     }
 }
 
+// MARK: - Runtime snapshot work
+
+@Suite("Runtime Snapshot Background Work")
+struct RuntimeSnapshotBackgroundWorkTests {
+    @Test("Budget classification uses Sendable snapshots off the main actor")
+    func budgetClassificationUsesSendableSnapshotsOffMainActor() async {
+        let exceeded = await Task.detached {
+            let result = AgentProcessResult(exitCode: 0)
+            let snapshot = AgentRuntimeBudgetSnapshot(effectiveTokenBudget: 10, tokensUsed: 11)
+            return AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
+                result: result,
+                budget: snapshot,
+                budgetEnforcementMode: .hardStop
+            )
+        }.value
+
+        let warningOnly = await Task.detached {
+            let result = AgentProcessResult(exitCode: 0)
+            let snapshot = AgentRuntimeBudgetSnapshot(effectiveTokenBudget: 10, tokensUsed: 11)
+            return AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
+                result: result,
+                budget: snapshot,
+                budgetEnforcementMode: .warning
+            )
+        }.value
+
+        #expect(exceeded)
+        #expect(!warningOnly)
+    }
+
+    @Test("Event payload presentation formats text off the main actor")
+    func eventPayloadPresentationFormatsTextOffMainActor() async {
+        let formatted = await Task.detached {
+            let payload = AgentEventRecordingPresentation.toolUsePayload(
+                name: "Bash",
+                input: ["command": "git status --short"]
+            )
+            let append = AgentEventRecordingPresentation.responseTextToAppend(
+                "hello world",
+                after: "hello"
+            )
+            let tool = AgentEventRecordingPresentation.normalizedPermissionTool("  ")
+            let reason = AgentEventRecordingPresentation.permissionReasonSummary(
+                "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen"
+            )
+            return (payload, append, tool, reason)
+        }.value
+
+        #expect(formatted.0 == "Using tool: Bash: git status --short")
+        #expect(formatted.1 == " world")
+        #expect(formatted.2 == "unknown")
+        #expect(formatted.3 == "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen")
+    }
+}
+
 // MARK: - Phase 2C: TaskQueue cancellation
 
 @Suite("TaskQueue Cancellation")

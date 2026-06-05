@@ -44,7 +44,7 @@ struct RuntimeModelAvailabilityTests {
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
         RuntimeModelAvailability.persistAvailableModels(
-            ["Gemini 3.5 Flash", "Claude Sonnet 4.6 (Thinking)"],
+            ["Antigravity Test Suggested", "Antigravity Test Alternate"],
             for: .antigravityCLI,
             defaults: defaults,
             checkedAt: Date(timeIntervalSince1970: 11),
@@ -56,7 +56,7 @@ struct RuntimeModelAvailabilityTests {
 
         #expect(resolution.resolvedModel == custom)
         #expect(resolution.reason == "unknown_custom_model_preserved")
-        #expect(RuntimeModelAvailability.normalizedModel("gpt-5.2", for: .antigravityCLI, defaults: defaults) == "Gemini 3.5 Flash")
+        #expect(RuntimeModelAvailability.normalizedModel("gpt-5.2", for: .antigravityCLI, defaults: defaults) == "Antigravity Test Suggested")
     }
 
     @Test("Legacy provider model cache remains authoritative")

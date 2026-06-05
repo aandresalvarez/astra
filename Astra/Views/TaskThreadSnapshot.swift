@@ -58,6 +58,12 @@ struct TaskRunSnapshot: Identifiable, Hashable, Sendable {
     let fileChanges: [StoredFileChange]
     let stopReason: String
 
+    var completedWithoutUserFacingResult: Bool {
+        status == .completed &&
+            output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            fileChanges.isEmpty
+    }
+
     init(input: TaskRunSnapshotInput) {
         id = input.id
         status = input.status
@@ -143,8 +149,8 @@ struct TaskThreadSnapshotInput: Sendable {
     let totalRunCount: Int
     let omittedRunCount: Int
 
-    init(task: AgentTask) {
-        let window = TaskThreadSnapshotWindow(events: task.events, runs: task.runs)
+    init(task: AgentTask, maxRuns: Int = 50) {
+        let window = TaskThreadSnapshotWindow(events: task.events, runs: task.runs, maxRuns: maxRuns)
         self.init(
             goal: task.goal,
             createdAt: task.createdAt,
@@ -192,7 +198,7 @@ struct TaskThreadSnapshotInput: Sendable {
 }
 
 private struct TaskThreadSnapshotWindow {
-    private static let maxRuns = 80
+    private static let defaultMaxRuns = 50
     private static let maxEvents = 1_200
     private static let maxToolResultsPerRun = 12
     private static let runlessToolResultID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
@@ -204,12 +210,12 @@ private struct TaskThreadSnapshotWindow {
     let totalRunCount: Int
     let omittedRunCount: Int
 
-    init(events allEvents: [TaskEvent], runs allRuns: [TaskRun]) {
+    init(events allEvents: [TaskEvent], runs allRuns: [TaskRun], maxRuns: Int = defaultMaxRuns) {
         totalEventCount = allEvents.count
         totalRunCount = allRuns.count
 
         let sortedRuns = allRuns.sorted { $0.startedAt < $1.startedAt }
-        runs = Array(sortedRuns.suffix(Self.maxRuns))
+        runs = Array(sortedRuns.suffix(maxRuns))
         let keptRunIDs = Set(runs.map(\.id))
 
         let sortedEvents = allEvents.sorted { $0.timestamp < $1.timestamp }
@@ -495,6 +501,7 @@ struct TaskThreadSnapshot: Sendable {
     private let activityByRunID: [UUID: TaskRunActivity]
     private let protocolByRunID: [UUID: TaskRunProtocolState]
     private let outputPresentationByRunID: [UUID: TaskRunOutputPresentation]
+    private let activityPresentationByRunID: [UUID: RunActivityPresentation]
 
     static let empty = TaskThreadSnapshot(
         goal: "",
@@ -648,9 +655,28 @@ struct TaskThreadSnapshot: Sendable {
         activityByRunID = activity
         protocolByRunID = protocolStatesByRunID
         latestAgentPlanItems = latestPlanItems
-        outputPresentationByRunID = sortedRuns.reduce(into: [UUID: TaskRunOutputPresentation]()) { result, run in
+        let outputPresByRunID = sortedRuns.reduce(into: [UUID: TaskRunOutputPresentation]()) { result, run in
             result[run.id] = TaskRunOutputPresentation(run: run, events: eventsByRunID[run.id] ?? [])
         }
+        outputPresentationByRunID = outputPresByRunID
+
+        var activityPresentations: [UUID: RunActivityPresentation] = [:]
+        for run in sortedRuns {
+            let act = activity[run.id] ?? .empty
+            let outputPres = outputPresByRunID[run.id] ?? .empty
+
+            let displayNotices = run.hasVPNWarning ? act.notices.filter { $0.type != "error" } : act.notices
+            let actionableNotices = displayNotices.filter { TaskRunNoticePresentationRules.shouldShowInline($0, for: run) }
+
+            activityPresentations[run.id] = RunActivityPresentation(
+                run: run,
+                activity: act,
+                notices: displayNotices,
+                suppressedNoticeIDs: Set(actionableNotices.map(\.id)),
+                progressMessages: outputPres.progressMessages
+            )
+        }
+        activityPresentationByRunID = activityPresentations
 
         conversationItems = Self.makeConversationItems(
             goal: goal,
@@ -660,6 +686,14 @@ struct TaskThreadSnapshot: Sendable {
             activityByRunID: activity,
             protocolByRunID: protocolStatesByRunID
         )
+    }
+
+    func activityPresentation(for run: TaskRunSnapshot) -> RunActivityPresentation {
+        activityPresentationByRunID[run.id] ?? .empty
+    }
+
+    func activityPresentation(for run: TaskRun) -> RunActivityPresentation {
+        activityPresentationByRunID[run.id] ?? .empty
     }
 
     func activity(for run: TaskRunSnapshot) -> TaskRunActivity {
@@ -871,6 +905,7 @@ struct TaskThreadSnapshot: Sendable {
         !run.output.isEmpty
             || activity.hasVisibleActivity
             || protocolByRunID[run.id]?.hasCompletion == true
+            || run.completedWithoutUserFacingResult
     }
 
     private static func protocolTodoItems(
@@ -938,6 +973,7 @@ struct TaskGeneratedFilesTrigger: Equatable {
     let taskFolder: String
     let latestRunID: UUID?
     let latestRunFileChangesLength: Int
+    let artifactSignature: [String]
     let status: TaskStatus
 
     init(task: AgentTask, latestRun: TaskRunSnapshot?) {
@@ -945,6 +981,9 @@ struct TaskGeneratedFilesTrigger: Equatable {
         taskFolder = TaskWorkspaceAccess(task: task).taskFolder
         latestRunID = latestRun?.id
         latestRunFileChangesLength = latestRun?.fileChangesJSONLength ?? 0
+        artifactSignature = task.artifacts
+            .map { "\($0.path)#\($0.version)#\($0.isStale)" }
+            .sorted()
         status = task.status
     }
 }

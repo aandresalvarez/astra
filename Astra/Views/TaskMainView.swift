@@ -8,6 +8,10 @@ enum TaskComposerPresentation {
     static let usesForcedExpandedInputHeight = false
     static let decisionRowUsesNestedChrome = false
     static let decisionRowUsesNestedStroke = false
+    static let decisionDetailsUsePopover = true
+    static let decisionActionsUseOverflowMenu = false
+    static let decisionUtilitiesStayLeftAligned = true
+    static let decisionSummaryVisibleInCompactRow = false
     static let decisionDockHorizontalPadding: CGFloat = 14
     static let decisionDockTopPadding: CGFloat = 12
     static let decisionDockBottomPadding: CGFloat = 8
@@ -49,9 +53,90 @@ private struct ChatBottomPositionPreferenceKey: PreferenceKey {
     }
 }
 
+private struct ChatTopPositionPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = -.infinity
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 private enum RunNoticeProminence {
     case actionable
     case detail
+}
+
+/// Streaming agent text rendered as plain `Text` while the run is live. Isolated
+/// into its own `View` so SwiftUI can diff this subtree independently from the
+/// rest of the agent bubble — the bubble re-evaluates often as bucketed snapshot
+/// updates flow in, but only this view's body actually depends on `displayText`.
+private struct StreamingAgentTextView: View {
+    let displayText: String
+
+    var body: some View {
+        Text(MarkdownTextView.normalizedStreamingText(displayText))
+            .font(Stanford.chatBody())
+            .foregroundStyle(Stanford.readingText)
+            .textSelection(.enabled)
+            .lineSpacing(Stanford.chatBodyLineSpacing)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Completed agent markdown body. Equatable on its inputs so SwiftUI skips the
+/// expensive `MarkdownTextView` parse when neither the text nor the callback
+/// identity has changed.
+private struct CompletedAgentMarkdownView: View, Equatable {
+    let displayText: String
+    let onSuggestedNextStep: ((String) -> Void)?
+
+    var body: some View {
+        MarkdownTextView(
+            text: displayText,
+            maxContentWidth: Stanford.chatParagraphMaxWidth,
+            onSuggestedNextStep: onSuggestedNextStep
+        )
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .textSelection(.enabled)
+    }
+
+    static func == (lhs: CompletedAgentMarkdownView, rhs: CompletedAgentMarkdownView) -> Bool {
+        lhs.displayText == rhs.displayText
+            && ((lhs.onSuggestedNextStep == nil) == (rhs.onSuggestedNextStep == nil))
+    }
+}
+
+/// Generated-files attachment list rendered for a finished agent turn. Pulled
+/// into its own struct so the parent bubble does not re-evaluate this `ForEach`
+/// each time unrelated bubble state changes.
+private struct AgentGeneratedFilesListView: View {
+    let paths: [String]
+    let onOpen: ((String) -> Void)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(paths, id: \.self) { path in
+                Button {
+                    if let onOpen {
+                        onOpen(path)
+                    } else {
+                        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: Formatters.fileIcon(for: path))
+                            .font(Stanford.ui(11))
+                        Text(URL(fileURLWithPath: path).lastPathComponent)
+                            .font(Stanford.caption(12))
+                            .underline()
+                    }
+                    .foregroundStyle(Stanford.lagunita)
+                }
+                .buttonStyle(.plain)
+                .help(TaskGeneratedFiles.shelfDestination(for: path)?.title ?? "Open file")
+            }
+        }
+    }
 }
 
 /// Unified main view: compact status bar + chat-style activity thread + composer
@@ -81,6 +166,8 @@ struct TaskMainView: View {
     @State private var slashSelectedIndex = 0
     @State private var isDragOver = false
     @State private var showDiffsSheet = false
+    @State private var showContextPreview = false
+    @State private var showCheckpointBrowser = false
     @State private var expandedRunActivity: Set<UUID> = []
     @State private var expandedRunNetworkDetails: Set<UUID> = []
     @State private var expandedRunPolicyManifests: Set<UUID> = []
@@ -99,19 +186,24 @@ struct TaskMainView: View {
     @State private var hasUnseenChatActivity = false
     @State private var shouldScrollAfterUserMessage = false
     @State private var pendingInitialChatScrollTaskID: UUID?
+    @State private var isExpandingWindow = false
+    @State private var expansionAnchorItemID: String?
     @State private var runtimeHealthNow = Date()
     @State private var lastLoggedRuntimeHealthSignature: String?
     @State private var isPlanMode = false
     @State private var isPlanning = false
     @State private var isAgentPlanExpanded = false
     @State private var isThreadStatusExpanded = false
-    @State private var cachedPlanState = TaskPlanState.empty
-    @State private var cachedPlanStateSignature = TaskPlanStateCacheSignature.empty
+    @State private var isTaskDecisionDetailsExpanded = false
+    @State private var cachedPlanStateSnapshot = TaskPlanStateSnapshot.empty
     @State private var pendingPlanStateRefreshTask: Task<Void, Never>?
+    @State private var cachedVerificationRequest: TaskVerificationLoadRequest?
+    @State private var cachedVerificationPresentation: TaskVerificationPresentation?
     @FocusState private var isComposerFocused: Bool
     @AppStorage("claudePath") private var claudePath = ""
     @AppStorage("copilotPath") private var copilotPath = ""
     @AppStorage(AppStorageKeys.runtimeProviderSettingsRevision) private var runtimeProviderSettingsRevision = 0
+    @AppStorage(AppStorageKeys.roleProfileRevision) private var roleProfileRevision = 0
     @AppStorage(AppStorageKeys.claudeProvider) private var claudeProviderRaw = ClaudeProvider.anthropic.rawValue
     @AppStorage(AppStorageKeys.claudeVertexProjectID) private var claudeVertexProjectID = ""
     @AppStorage(AppStorageKeys.claudeVertexRegion) private var claudeVertexRegion = ""
@@ -170,7 +262,7 @@ struct TaskMainView: View {
     }
 
     private var planStateCacheRefreshTrigger: TaskPlanStateCacheSignature {
-        TaskPlanStateCacheSignature(task: task)
+        TaskPlanStateSnapshot.signature(for: task)
     }
 
     private var runtimeHealth: TaskRuntimeHealth {
@@ -182,7 +274,7 @@ struct TaskMainView: View {
     }
 
     private var currentPlanState: TaskPlanState {
-        cachedPlanState
+        cachedPlanStateSnapshot.state
     }
 
     private var executableApprovedPlan: TaskPlanPayload? {
@@ -203,25 +295,19 @@ struct TaskMainView: View {
         }
     }
 
-    private var taskUtilityRuntime: AgentUtilityRuntimeConfiguration {
-        let runtime = task.resolvedRuntimeID
-        let model = RuntimeModelAvailability.normalizedModel(
-            task.model,
-            for: runtime,
+    private func utilityRuntime(for role: TaskRoleID) -> (configuration: AgentUtilityRuntimeConfiguration, selection: TaskRoleProfileSelection) {
+        _ = roleProfileRevision
+        return TaskRoleProfileStore.utilityRuntime(
+            for: role,
+            task: task,
+            defaultRuntimeID: task.resolvedRuntimeID.rawValue,
+            defaultModel: task.model,
+            validationModel: task.model,
+            defaultBudget: task.tokenBudget,
+            defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
+            providerSettings: providerSettingsSnapshot.providerSettings,
             cache: runtimeModelCache
         )
-        return AgentUtilityRuntimeConfiguration(
-            runtime: runtime,
-            model: model,
-            providerSettings: providerSettingsForUtilityRuntime
-        )
-    }
-
-    private var providerSettingsForUtilityRuntime: AgentRuntimeProviderSettings {
-        var settings = RuntimeProviderSettingsStore.settings()
-        settings.setExecutablePath(claudePath, for: .claudeCode)
-        settings.setExecutablePath(copilotPath, for: .copilotCLI)
-        return settings
     }
 
     private func alignTaskModelWithRuntime() {
@@ -240,37 +326,25 @@ struct TaskMainView: View {
     }
 
     private var runtimeAvailabilityConfiguration: RuntimeProviderAvailabilityConfiguration {
-        RuntimeProviderAvailabilityConfiguration(
-            providerSettings: providerSettingsForReadiness,
-            claudeProvider: ClaudeProvider(rawValue: claudeProviderRaw) ?? .anthropic,
+        providerSettingsSnapshot.availabilityConfiguration
+    }
+
+    private var runtimeAvailabilitySignature: String {
+        providerSettingsSnapshot.signature
+    }
+
+    private var providerSettingsSnapshot: ProviderSettingsSnapshot {
+        RuntimeSettingsSnapshotStore.providerSnapshot(
+            claudePath: claudePath,
+            copilotPath: copilotPath,
+            providerSettingsRevision: runtimeProviderSettingsRevision,
+            claudeProviderRaw: claudeProviderRaw,
             vertexProjectID: claudeVertexProjectID,
             vertexRegion: claudeVertexRegion,
             vertexOpusModel: claudeVertexOpusModel,
             vertexSonnetModel: claudeVertexSonnetModel,
             vertexHaikuModel: claudeVertexHaikuModel
         )
-    }
-
-    private var providerSettingsForReadiness: AgentRuntimeProviderSettings {
-        var settings = RuntimeProviderSettingsStore.settings()
-        settings.setExecutablePath(claudePath, for: .claudeCode)
-        settings.setExecutablePath(copilotPath, for: .copilotCLI)
-        return settings
-    }
-
-    private var runtimeAvailabilitySignature: String {
-        [
-            claudePath,
-            copilotPath,
-            String(runtimeProviderSettingsRevision),
-            RuntimeProviderSettingsStore.signature(),
-            claudeProviderRaw,
-            claudeVertexProjectID,
-            claudeVertexRegion,
-            claudeVertexOpusModel,
-            claudeVertexSonnetModel,
-            claudeVertexHaikuModel
-        ].joined(separator: "|")
     }
 
     private var chatStatusDisclosureAnimation: Animation? {
@@ -331,17 +405,31 @@ struct TaskMainView: View {
             }
         }
         .environment(\.openURL, OpenURLAction { url in
-            guard url.isFileURL,
-                  TaskGeneratedFiles.shelfDestination(for: url.path) != nil,
+            guard let route = TaskGeneratedFileOpenRouter.route(
+                fileURL: url,
+                canOpenInShelf: onOpenGeneratedFile != nil
+            ),
+                  case let .shelf(path) = route,
                   let onOpenGeneratedFile else {
                 return .systemAction
             }
-            onOpenGeneratedFile(url.path)
+            onOpenGeneratedFile(path)
             return .handled
         })
         .sheet(isPresented: $showDiffsSheet) {
             DiffsTabView(task: task)
                 .frame(minWidth: 700, minHeight: 500)
+        }
+        .sheet(isPresented: $showContextPreview) {
+            let request = contextPreviewRequest
+            if let manifest = contextPreviewManifest(for: request) {
+                PromptContextPreviewSheet(manifest: manifest)
+                    .frame(minWidth: 700, minHeight: 600)
+            } else {
+                PromptContextPreviewUnavailableSheet(
+                    reason: request.unavailableReason ?? "No provider prompt is pending."
+                )
+            }
         }
         .sheet(isPresented: $showScheduleEditor) {
             if let ws = task.workspace {
@@ -358,23 +446,39 @@ struct TaskMainView: View {
                 )
             }
         }
+        .sheet(isPresented: $showCheckpointBrowser) {
+            TaskCheckpointBrowserSheet(
+                task: task,
+                snapshot: currentThreadSnapshot,
+                onRestore: forkTask(from:)
+            )
+            .frame(minWidth: 780, minHeight: 540)
+        }
         .task(id: runtimeAvailabilitySignature) {
             await refreshRuntimeAvailability()
         }
         .task(id: planStateCacheRefreshTrigger) {
             refreshPlanStateCache()
         }
+        .task(id: verificationLoadRequest) {
+            await refreshVerificationPresentation(for: verificationLoadRequest)
+        }
         .onChange(of: task.id) {
             isChatAtBottom = true
             hasUnseenChatActivity = false
             shouldScrollAfterUserMessage = true
             pendingInitialChatScrollTaskID = task.id
+            isExpandingWindow = false
+            expansionAnchorItemID = nil
             runtimeHealthNow = Date()
             lastLoggedRuntimeHealthSignature = nil
             threadViewModel.reset(for: task)
             loadSSHConnections()
             alignTaskAfterRuntimeAvailabilityRefresh()
             initializeTaskPolicySelection()
+            cachedVerificationRequest = nil
+            cachedVerificationPresentation = nil
+            refreshTaskContextState()
             refreshPlanStateCache()
         }
         .onAppear {
@@ -384,6 +488,9 @@ struct TaskMainView: View {
             pendingInitialChatScrollTaskID = task.id
             threadViewModel.reset(for: task)
             loadSSHConnections()
+            cachedVerificationRequest = nil
+            cachedVerificationPresentation = nil
+            refreshTaskContextState()
             refreshPlanStateCache()
             logRuntimeHealthIfNeeded(reason: "appear")
             installPasteMonitor()
@@ -405,6 +512,7 @@ struct TaskMainView: View {
         }
         .onChange(of: generatedFilesTrigger) { _, _ in
             threadViewModel.refreshGeneratedFiles(folder: TaskWorkspaceAccess(task: task).taskFolder)
+            refreshTaskContextState()
         }
         .onChange(of: runtimeHealth.telemetrySignature) { _, _ in
             logRuntimeHealthIfNeeded(reason: "health")
@@ -444,15 +552,35 @@ struct TaskMainView: View {
         let states = await RuntimeProviderAvailabilityService().states(
             configuration: runtimeAvailabilityConfiguration
         )
+        // Skip partial results from a mid-flight task cancellation: SwiftUI's .task(id:) cancels
+        // the running task when the signature changes, causing withTaskGroup's for-await loop to
+        // exit early with fewer entries than registered runtimes. Writing partial states would
+        // drop providers from the menu until the replacement task completes.
+        guard states.count == AgentRuntimeAdapterRegistry.runtimeIDs.count else { return }
         runtimeReadinessStates = states
         alignTaskAfterRuntimeAvailabilityRefresh()
     }
 
     private func refreshPlanStateCache() {
-        let signature = TaskPlanStateCacheSignature(task: task)
-        guard cachedPlanStateSignature != signature else { return }
-        cachedPlanState = TaskPlanService.reconstruct(for: task)
-        cachedPlanStateSignature = signature
+        guard let snapshot = TaskPlanStateSnapshot.refreshed(for: task, cached: cachedPlanStateSnapshot) else {
+            return
+        }
+        cachedPlanStateSnapshot = snapshot
+    }
+
+    private func refreshTaskContextState() {
+        TaskContextStateManager.refresh(task: task)
+        refreshCachedVerificationPresentationFromCurrentState()
+    }
+
+    private func refreshCachedVerificationPresentationFromCurrentState() {
+        guard let request = verificationLoadRequest else {
+            cachedVerificationRequest = nil
+            cachedVerificationPresentation = nil
+            return
+        }
+        cachedVerificationRequest = request
+        cachedVerificationPresentation = TaskVerificationPresentationLoader.presentation(taskFolder: request.taskFolder)
     }
 
     private func schedulePlanStateCacheRefresh() {
@@ -552,25 +680,41 @@ struct TaskMainView: View {
     }
 
     private var headerTextShelfFileItems: [TaskFileItem] {
-        headerFileItems.filter { $0.destination == .files }
+        TaskGeneratedFileOpenRouter.textShelfItems(headerFileItems)
+    }
+
+    private var canOpenHeaderTextShelfItems: Bool {
+        TaskGeneratedFileOpenRouter.canOpenTextShelfItems(
+            headerFileItems,
+            canOpenInShelf: onOpenGeneratedFile != nil
+        )
     }
 
     private func openHeaderFileItem(_ item: TaskFileItem) {
         isShowingFilesPopover = false
-        if item.destination != nil, let onOpenGeneratedFile {
-            onOpenGeneratedFile(item.path)
-        } else {
-            NSWorkspace.shared.open(URL(fileURLWithPath: item.path))
-        }
+        openGeneratedFile(path: item.path, destination: item.destination)
     }
 
     private func openHeaderTextFilesInShelf() {
-        guard let onOpenGeneratedFile else { return }
+        guard canOpenHeaderTextShelfItems,
+              let onOpenGeneratedFile else { return }
         let items = headerTextShelfFileItems
-        guard !items.isEmpty else { return }
         isShowingFilesPopover = false
         for item in items {
             onOpenGeneratedFile(item.path)
+        }
+    }
+
+    private func openGeneratedFile(path: String, destination: TaskGeneratedFileShelfDestination?) {
+        switch TaskGeneratedFileOpenRouter.route(
+            path: path,
+            destination: destination,
+            canOpenInShelf: onOpenGeneratedFile != nil
+        ) {
+        case let .shelf(path):
+            onOpenGeneratedFile?(path)
+        case let .system(path):
+            NSWorkspace.shared.open(URL(fileURLWithPath: path))
         }
     }
 
@@ -681,8 +825,8 @@ struct TaskMainView: View {
                         .font(Stanford.caption(12).weight(.medium))
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(headerTextShelfFileItems.isEmpty || onOpenGeneratedFile == nil ? .secondary : Stanford.lagunita)
-                .disabled(headerTextShelfFileItems.isEmpty || onOpenGeneratedFile == nil)
+                .foregroundStyle(canOpenHeaderTextShelfItems ? Stanford.lagunita : .secondary)
+                .disabled(!canOpenHeaderTextShelfItems)
                 .help("Open all text files in the Files shelf")
 
                 Spacer()
@@ -710,6 +854,30 @@ struct TaskMainView: View {
     @ViewBuilder
     private var mainContent: some View {
         summaryContent
+    }
+
+    private var contextPreviewRequest: PromptContextPreviewRequest {
+        PromptContextPreviewPresentation.request(
+            taskStatus: task.status,
+            hasProviderSession: task.hasProviderSession,
+            messageText: messageText,
+            attachedFiles: attachedFiles
+        )
+    }
+
+    private func contextPreviewManifest(for request: PromptContextPreviewRequest) -> PromptAssemblyManifest? {
+        switch request.kind {
+        case .initialRun:
+            return AgentPromptBuilder.buildPromptAssembly(for: task)
+        case .followUp:
+            guard let followUpMessage = request.followUpMessage else { return nil }
+            return AgentPromptBuilder.buildFreshFollowUpPromptAssembly(
+                message: followUpMessage,
+                task: task
+            )
+        case .unavailable:
+            return nil
+        }
     }
 
     /// Snapshot the conversation at routine creation time.
@@ -810,6 +978,43 @@ struct TaskMainView: View {
         return scheduleStatusMessage?.text
     }
 
+    private var currentVerificationPresentation: TaskVerificationPresentation? {
+        guard cachedVerificationRequest == verificationLoadRequest else { return nil }
+        return cachedVerificationPresentation
+    }
+
+    private var missionControlSnapshot: TaskMissionControlSnapshot {
+        TaskMissionControlSnapshot.build(
+            task: task,
+            planState: currentPlanState,
+            isFinished: isFinished
+        )
+    }
+
+    private var missionControlPresentation: MissionControlPresentation? {
+        missionControlSnapshot.presentation
+    }
+
+    private var verificationLoadRequest: TaskVerificationLoadRequest? {
+        missionControlSnapshot.verificationLoadRequest
+    }
+
+    @MainActor
+    private func refreshVerificationPresentation(for request: TaskVerificationLoadRequest?) async {
+        guard let request else {
+            cachedVerificationRequest = nil
+            cachedVerificationPresentation = nil
+            return
+        }
+        let presentation = await TaskVerificationPresentationLoader.presentation(
+            isFinished: true,
+            taskFolder: request.taskFolder
+        )
+        guard verificationLoadRequest == request else { return }
+        cachedVerificationRequest = request
+        cachedVerificationPresentation = presentation
+    }
+
     private func setScheduleStatusMessage(_ message: String, for taskID: UUID? = nil) {
         scheduleStatusMessage = TaskScopedStatusMessage(taskID: taskID ?? task.id, text: message)
     }
@@ -819,6 +1024,55 @@ struct TaskMainView: View {
         if scheduleStatusMessage?.taskID == scopedTaskID {
             scheduleStatusMessage = nil
         }
+    }
+
+    private func approveMissionCorrection(_ correctiveStepID: String) {
+        TaskCorrectiveWorkService.approveStep(
+            task: task,
+            correctiveStepID: correctiveStepID,
+            modelContext: modelContext
+        )
+        MissionControlPresentation.recordAction(
+            TaskMissionActionEventTypes.approved,
+            task: task,
+            correctiveStepID: correctiveStepID,
+            modelContext: modelContext
+        )
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+    }
+
+    private func dismissMissionCorrection(_ correctiveStepID: String) {
+        let reason = "Dismissed from Mission Control."
+        TaskCorrectiveWorkService.dismissStep(
+            task: task,
+            correctiveStepID: correctiveStepID,
+            reason: reason,
+            modelContext: modelContext
+        )
+        MissionControlPresentation.recordAction(
+            TaskMissionActionEventTypes.dismissed,
+            task: task,
+            correctiveStepID: correctiveStepID,
+            reason: reason,
+            modelContext: modelContext
+        )
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+    }
+
+    private func createMissionCorrectionTask(_ correctiveStepID: String) {
+        let child = TaskCorrectiveWorkService.createCorrectiveTask(
+            from: task,
+            correctiveStepID: correctiveStepID,
+            modelContext: modelContext
+        )
+        MissionControlPresentation.recordAction(
+            TaskMissionActionEventTypes.correctionCreated,
+            task: task,
+            correctiveStepID: correctiveStepID,
+            correctiveTaskID: child?.id,
+            modelContext: modelContext
+        )
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
     }
 
     private var moreMenu: some View {
@@ -858,6 +1112,19 @@ struct TaskMainView: View {
 
             Section {
                 Button {
+                    showContextPreview = true
+                } label: {
+                    Label("Context Preview", systemImage: "doc.text.magnifyingglass")
+                }
+
+                Button {
+                    showCheckpointBrowser = true
+                } label: {
+                    Label("Checkpoints", systemImage: "clock.arrow.circlepath")
+                }
+                .disabled(currentThreadSnapshot.sortedRuns.isEmpty)
+
+                Button {
                     showScheduleEditor = true
                 } label: {
                     Label("Convert to Routine", systemImage: "arrow.triangle.2.circlepath")
@@ -882,6 +1149,10 @@ struct TaskMainView: View {
             GeometryReader { viewport in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
+                        Color.clear
+                            .frame(height: 1)
+                            .id("chatTop")
+                            .background(chatTopPositionReader())
                         chatThreadContent
                         Color.clear
                             .frame(height: 1)
@@ -899,6 +1170,9 @@ struct TaskMainView: View {
                 }
                 .onPreferenceChange(ChatBottomPositionPreferenceKey.self) { bottomMinY in
                     updateChatBottomState(bottomMinY: bottomMinY, viewportHeight: viewport.size.height)
+                }
+                .onPreferenceChange(ChatTopPositionPreferenceKey.self) { topMinY in
+                    handleChatTopPositionChange(topMinY: topMinY)
                 }
                 .onAppear {
                     scrollChatToBottom(proxy, animated: false)
@@ -935,7 +1209,7 @@ struct TaskMainView: View {
             .padding(.vertical, 6)
             .background(Stanford.plum.opacity(0.08))
             .clipShape(RoundedRectangle(cornerRadius: 6))
-            .padding(.horizontal, 14)
+                .padding(.horizontal, 14)
         }
 
         if !currentThreadSnapshot.latestAgentPlanItems.isEmpty {
@@ -943,12 +1217,28 @@ struct TaskMainView: View {
                 .padding(.horizontal, 14)
         }
 
+        if currentThreadSnapshot.omittedRunCount > 0 {
+            HStack(spacing: 6) {
+                Rectangle()
+                    .fill(Stanford.sandstone.opacity(0.36))
+                    .frame(height: 1)
+                    .frame(maxWidth: 40)
+                Text("Earlier activity")
+                    .font(Stanford.chatMeta(11))
+                    .foregroundStyle(Stanford.coolGrey.opacity(0.6))
+                Rectangle()
+                    .fill(Stanford.sandstone.opacity(0.36))
+                    .frame(height: 1)
+                    .frame(maxWidth: .infinity)
+            }
+            .padding(.horizontal, 14)
+        }
+
         ForEach(currentThreadSnapshot.conversationItems) { item in
             conversationItemView(item)
                 .id(item.id)
         }
 
-        threadStatusDisclosure
     }
 
     @ViewBuilder
@@ -973,7 +1263,7 @@ struct TaskMainView: View {
                             .font(Stanford.ui(12))
                             .frame(width: 14)
 
-                        Text("Task status")
+                        Text("Task state")
                             .font(Stanford.chatSection())
                         Text(summary)
                             .font(Stanford.chatMeta())
@@ -1009,7 +1299,7 @@ struct TaskMainView: View {
                     .stroke(Color.primary.opacity(0.06), lineWidth: 1)
             )
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("Task status. \(summary)")
+            .accessibilityLabel("Task state. \(summary)")
             .transition(chatStatusBlockTransition)
         }
     }
@@ -1073,6 +1363,15 @@ struct TaskMainView: View {
                     dismissAction: { clearScheduleStatusMessage() }
                 )
             }
+
+            if let verification = currentVerificationPresentation {
+                threadStatusDetailRow(
+                    title: verification.title,
+                    detail: verification.detail,
+                    icon: verification.systemImage,
+                    color: verificationColor(for: verification.tone)
+                )
+            }
         }
         .padding(.top, 2)
     }
@@ -1095,9 +1394,7 @@ struct TaskMainView: View {
               run.status == .running else {
             return false
         }
-        let activity = currentThreadSnapshot.activity(for: run)
-        let notices = runNoticesToDisplay(activity.notices, for: run)
-        let presentation = RunActivityPresentation(run: run, activity: activity, notices: notices)
+        let presentation = currentThreadSnapshot.activityPresentation(for: run)
         return shouldShowRunActivityDisclosure(presentation)
     }
 
@@ -1109,6 +1406,7 @@ struct TaskMainView: View {
         if isGeneratingRecap { count += 1 }
         if recapStatusMessage != nil { count += 1 }
         if currentScheduleStatusMessage != nil { count += 1 }
+        if currentVerificationPresentation != nil { count += 1 }
         return count
     }
 
@@ -1153,6 +1451,9 @@ struct TaskMainView: View {
         if currentScheduleStatusMessage != nil {
             parts.append(isScheduleStatusError ? "Routine needs attention" : "Routine created")
         }
+        if let verification = currentVerificationPresentation {
+            parts.append(verification.summary)
+        }
         return parts
     }
 
@@ -1160,23 +1461,47 @@ struct TaskMainView: View {
         if runtimeHealth.isAttentionState ||
             shouldShowPendingApprovalStatus ||
             recapStatusMessage != nil ||
-            isScheduleStatusError {
+            isScheduleStatusError ||
+            currentVerificationPresentation?.tone == .failed ||
+            currentVerificationPresentation?.tone == .attention {
             return Stanford.poppy
+        }
+        if currentVerificationPresentation?.tone == .verified {
+            return Stanford.paloAltoGreen
         }
         return Stanford.lagunita
     }
 
     private var threadStatusIcon: String {
-        if runtimeHealth.isAttentionState || recapStatusMessage != nil || isScheduleStatusError {
+        if runtimeHealth.isAttentionState ||
+            recapStatusMessage != nil ||
+            isScheduleStatusError ||
+            currentVerificationPresentation?.tone == .failed {
             return "exclamationmark.triangle"
         }
         if shouldShowPendingApprovalStatus {
             return "person.crop.circle.badge.questionmark"
         }
+        if let verification = currentVerificationPresentation {
+            return verification.systemImage
+        }
         if task.status == .running {
             return "dot.radiowaves.left.and.right"
         }
         return "list.bullet.rectangle"
+    }
+
+    private func verificationColor(for tone: TaskVerificationTone) -> Color {
+        switch tone {
+        case .verified:
+            return Stanford.paloAltoGreen
+        case .attention:
+            return Stanford.poppy
+        case .failed:
+            return Stanford.failed
+        case .neutral:
+            return Stanford.coolGrey
+        }
     }
 
     private func threadStatusDetailRow(
@@ -1296,6 +1621,24 @@ struct TaskMainView: View {
         }
     }
 
+    private func chatTopPositionReader() -> some View {
+        GeometryReader { proxy in
+            Color.clear.preference(
+                key: ChatTopPositionPreferenceKey.self,
+                value: proxy.frame(in: .named("task-chat-scroll")).minY
+            )
+        }
+    }
+
+    private func handleChatTopPositionChange(topMinY: CGFloat) {
+        guard topMinY > -300 else { return }
+        guard currentThreadSnapshot.omittedRunCount > 0 else { return }
+        guard !isExpandingWindow else { return }
+        isExpandingWindow = true
+        expansionAnchorItemID = currentThreadSnapshot.conversationItems.first?.id
+        threadViewModel.expandWindow(for: task)
+    }
+
     @ViewBuilder
     private func newActivityPill(proxy: ScrollViewProxy) -> some View {
         if hasUnseenChatActivity && !isChatAtBottom {
@@ -1338,6 +1681,15 @@ struct TaskMainView: View {
         proxy: ScrollViewProxy
     ) {
         guard oldSignature != newSignature else { return }
+
+        if let anchorID = expansionAnchorItemID {
+            expansionAnchorItemID = nil
+            isExpandingWindow = false
+            DispatchQueue.main.async {
+                proxy.scrollTo(anchorID, anchor: .top)
+            }
+            return
+        }
 
         if pendingInitialChatScrollTaskID == task.id {
             scrollChatToBottomAfterLayout(proxy, animated: false)
@@ -1556,61 +1908,35 @@ struct TaskMainView: View {
         let outputPresentation = currentThreadSnapshot.outputPresentation(for: run)
         let displayNotices = runNoticesToDisplay(activity.notices, for: run)
         let actionableNotices = displayNotices.filter { isActionableRunNotice($0, for: run) }
-        let runActivityPresentation = RunActivityPresentation(
-            run: run,
-            activity: activity,
-            notices: displayNotices,
-            suppressedNoticeIDs: Set(actionableNotices.map(\.id)),
-            progressMessages: outputPresentation.progressMessages
-        )
+        let runActivityPresentation = currentThreadSnapshot.activityPresentation(for: run)
         let hasUserFacingOutput = outputPresentation.hasDisplayText && !run.hasVPNWarning
+        let showsGeneratedFiles = run.id == latestRun?.id && run.status != .running && !threadViewModel.generatedFilePaths.isEmpty
         let copyText = outputPresentation.hasDisplayText ? outputPresentation.displayText : (protocolState.completionSummary ?? "")
         let showResponseActions = run.status != .running
 
         return VStack(alignment: .leading, spacing: 8) {
             if hasUserFacingOutput {
                 if run.status == .running {
-                    Text(MarkdownTextView.markdownAttributed(MarkdownTextView.normalizedStreamingText(outputPresentation.displayText)))
-                        .font(Stanford.chatBody())
-                        .foregroundStyle(Stanford.readingText)
-                        .textSelection(.enabled)
-                        .lineSpacing(Stanford.chatBodyLineSpacing)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    StreamingAgentTextView(displayText: outputPresentation.displayText)
                 } else {
-                    MarkdownTextView(
-                        text: outputPresentation.displayText,
-                        maxContentWidth: Stanford.chatParagraphMaxWidth,
+                    CompletedAgentMarkdownView(
+                        displayText: outputPresentation.displayText,
                         onSuggestedNextStep: pursueSuggestedNextStep
                     )
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
+                    .equatable()
                 }
             }
 
+            if run.completedWithoutUserFacingResult && !showsGeneratedFiles && !protocolState.hasCompletion {
+                completedEmptyRunNotice()
+            }
+
             // Generated files belong with the finished turn, not the live progress row.
-            if run.id == latestRun?.id && run.status != .running && !threadViewModel.generatedFilePaths.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(threadViewModel.generatedFilePaths, id: \.self) { path in
-                        Button {
-                            if let onOpenGeneratedFile {
-                                onOpenGeneratedFile(path)
-                            } else {
-                                NSWorkspace.shared.open(URL(fileURLWithPath: path))
-                            }
-                        } label: {
-                            HStack(spacing: 5) {
-                                Image(systemName: Formatters.fileIcon(for: path))
-                                    .font(Stanford.ui(11))
-                                Text(URL(fileURLWithPath: path).lastPathComponent)
-                                    .font(Stanford.caption(12))
-                                    .underline()
-                            }
-                            .foregroundStyle(Stanford.lagunita)
-                        }
-                        .buttonStyle(.plain)
-                        .help(TaskGeneratedFiles.shelfDestination(for: path)?.title ?? "Open file")
-                    }
-                }
+            if showsGeneratedFiles {
+                AgentGeneratedFilesListView(
+                    paths: threadViewModel.generatedFilePaths,
+                    onOpen: onOpenGeneratedFile
+                )
             }
 
             if protocolState.hasCompletion {
@@ -1691,6 +2017,27 @@ struct TaskMainView: View {
         .accessibilityLabel("Agent response")
     }
 
+    private func completedEmptyRunNotice() -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(Stanford.ui(12))
+                .foregroundStyle(Stanford.poppy)
+                .frame(width: 14)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Provider returned no result")
+                    .font(Stanford.chatSection())
+                    .foregroundStyle(Stanford.poppy)
+                Text("The run finished without text output or a visible generated file. Retry this task or switch providers.")
+                    .font(Stanford.chatSection())
+                    .foregroundStyle(Stanford.readingText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 1)
+    }
+
     @ViewBuilder
     private func runFooterSummaryLabel(
         run: TaskRunSnapshot,
@@ -1761,7 +2108,7 @@ struct TaskMainView: View {
             return "Stopped"
         }
         switch run.status {
-        case .completed: return "Completed"
+        case .completed: return TaskPresentationState.reviewPresentation(status: .completed, isClosed: false).runOutcomeLabel
         case .failed: return "Failed"
         case .cancelled: return "Cancelled"
         case .budgetExceeded: return "Over budget"
@@ -3039,10 +3386,64 @@ struct TaskMainView: View {
         currentThreadSnapshot.latestRun
     }
 
-    private var composerTaskStatusOverride: ComposerTaskStatusPresentation? {
-        guard let run = latestRun else { return nil }
+    private var taskReviewPresentation: TaskReviewPresentation {
+        TaskPresentationState.reviewPresentation(status: task.status, isClosed: task.isDone)
+    }
 
-        if run.runtimeID == AgentRuntimeID.localMLX.rawValue,
+    private var taskDecisionDockPresentation: TaskDecisionDockPresentation? {
+        TaskDecisionDockContextBuilder.build(TaskDecisionDockContextBuilder.Input(
+            status: task.status,
+            isClosed: task.isDone,
+            review: taskReviewPresentation,
+            mission: missionControlPresentation,
+            verification: currentVerificationPresentation,
+            pendingReviewState: pendingTaskReviewState,
+            runtimePermission: runtimePermissionState,
+            executableApprovedPlan: executableApprovedPlan,
+            skipPermissions: skipPermissions,
+            canOpenPlan: onOpenPlan != nil,
+            isPlanCanvasVisible: isPlanCanvasVisible,
+            canRunApprovedPlan: taskQueue != nil,
+            latestRunHasNoUsableResult: latestRunHasNoUsableResult,
+            completedTaskNeedsArtifactAttention: completedTaskNeedsArtifactAttention,
+            canCancel: onCancelTask != nil,
+            canRun: onRunTask != nil,
+            canApprove: onApproveTask != nil,
+            canRetry: onRetryTask != nil,
+            canResume: task.hasProviderSession && onResumeTask != nil,
+            canToggleDone: canToggleTaskDoneFromDecisionDock,
+            hasProviderSession: task.hasProviderSession,
+            failureReason: failureReason,
+            artifactPaths: taskDecisionArtifactPaths,
+            extraDetails: taskDecisionExtraDetails
+        ))
+    }
+
+    private var taskDecisionArtifactPaths: [String] {
+        TaskDecisionDockContextBuilder.artifactPaths(
+            generatedFilePaths: threadViewModel.generatedFilePaths,
+            storedArtifactPaths: task.artifacts.filter { !$0.isStale }.map(\.path)
+        )
+    }
+
+    private var taskDecisionExtraDetails: [TaskDecisionDockDetail] {
+        TaskDecisionDockContextBuilder.extraDetails(TaskDecisionDockContextBuilder.ExtraDetailsInput(
+            status: task.status,
+            runtimeHealth: runtimeHealth,
+            shouldShowPendingApprovalStatus: shouldShowPendingApprovalStatus,
+            hasRuntimePermissionRequest: hasOpenRuntimePermissionApprovalRequest,
+            pendingApprovalStatusDetail: pendingApprovalStatusDetail,
+            isCreatingScheduleForCurrentTask: isCreatingScheduleForCurrentTask,
+            isGeneratingRecap: isGeneratingRecap,
+            recapStatusMessage: recapStatusMessage,
+            currentScheduleStatusMessage: currentScheduleStatusMessage,
+            isScheduleStatusError: isScheduleStatusError
+        ))
+    }
+
+    private var composerTaskStatusOverride: ComposerTaskStatusPresentation? {
+        if let run = latestRun,
+           run.runtimeID == AgentRuntimeID.localMLX.rawValue,
            let presentation = ComposerToolbarPresentation.localMLXTaskStatusOverride(
                taskStatus: task.status,
                runStatus: run.status,
@@ -3051,29 +3452,55 @@ struct TaskMainView: View {
             return presentation
         }
 
-        guard task.status == .failed else { return nil }
-        let activity = currentThreadSnapshot.activity(for: run)
-        let notices = runNoticesToDisplay(activity.notices, for: run)
+        if task.status == .failed, let run = latestRun {
+            let activity = currentThreadSnapshot.activity(for: run)
+            let notices = runNoticesToDisplay(activity.notices, for: run)
 
-        if runStoppedByPolicy(run, notices: notices) {
-            return ComposerTaskStatusPresentation(
-                label: "Blocked",
-                icon: "shield.slash",
-                color: Stanford.poppy,
-                help: "ASTRA stopped this run because the requested action is outside the current policy."
-            )
+            if runStoppedByPolicy(run, notices: notices) {
+                return ComposerTaskStatusPresentation(
+                    label: "Blocked",
+                    icon: "shield.slash",
+                    color: Stanford.poppy,
+                    help: "ASTRA stopped this run because the requested action is outside the current policy."
+                )
+            }
+
+            if runStoppedBySystem(run, notices: notices) {
+                return ComposerTaskStatusPresentation(
+                    label: "Stopped",
+                    icon: "octagon",
+                    color: Stanford.poppy,
+                    help: "ASTRA stopped this run before the agent could safely continue. Fix the setup or retry with a narrower request."
+                )
+            }
         }
 
-        if runStoppedBySystem(run, notices: notices) {
-            return ComposerTaskStatusPresentation(
-                label: "Stopped",
-                icon: "octagon",
-                color: Stanford.poppy,
-                help: "ASTRA stopped this run before the agent could safely continue. Fix the setup or retry with a narrower request."
-            )
-        }
+        return composerTaskStatusPresentation(from: taskReviewPresentation)
+    }
 
-        return nil
+    private func composerTaskStatusPresentation(from review: TaskReviewPresentation) -> ComposerTaskStatusPresentation? {
+        guard let label = review.composerLabel,
+              let icon = review.composerIcon,
+              let help = review.composerHelp else { return nil }
+        return ComposerTaskStatusPresentation(
+            label: label,
+            icon: icon,
+            color: reviewColor(for: review.tone),
+            help: help
+        )
+    }
+
+    private func reviewColor(for tone: TaskReviewTone) -> Color {
+        switch tone {
+        case .quiet:
+            return Stanford.coolGrey
+        case .attention:
+            return Stanford.poppy
+        case .failed:
+            return Stanford.failed
+        case .closed:
+            return Stanford.paloAltoGreen
+        }
     }
 
     private var isFinished: Bool {
@@ -3089,8 +3516,8 @@ struct TaskMainView: View {
         if let run = latestRun {
             let fileChanges = currentThreadSnapshot.activity(for: run).fileChanges
             let fileCount = fileChanges.count
-            let writeCount = fileChanges.filter { $0.changeType == "Write" }.count
-            let editCount = fileChanges.filter { $0.changeType == "Edit" }.count
+            let writeCount = fileChanges.filter { $0.kind == .write }.count
+            let editCount = fileChanges.filter { $0.kind == .edit }.count
 
             VStack(alignment: .leading, spacing: 6) {
                 if task.status == .pendingUser {
@@ -3098,14 +3525,14 @@ struct TaskMainView: View {
                         .font(Stanford.body(14))
                         .foregroundStyle(Stanford.poppy)
                 } else if task.status == .completed {
-                    Label("Task completed successfully.", systemImage: "checkmark.seal")
+                    Label("Run finished.", systemImage: "checkmark.seal")
                         .font(Stanford.body(14))
                         .foregroundStyle(Stanford.paloAltoGreen)
                 } else if task.status == .failed {
                     Label(failureReason, systemImage: "exclamationmark.triangle")
                         .font(Stanford.body(14))
                         .foregroundStyle(Stanford.failed)
-                    if task.sessionId != nil {
+                    if task.hasProviderSession {
                         Text("**Resume** to continue or **Retry** to start over.")
                             .font(Stanford.caption(12))
                             .foregroundStyle(Stanford.coolGrey)
@@ -3114,7 +3541,7 @@ struct TaskMainView: View {
                     Label("Budget exhausted (\(Formatters.formatTokens(task.tokensUsed))/\(Formatters.formatTokens(task.tokenBudget))).", systemImage: "exclamationmark.triangle")
                         .font(Stanford.body(14))
                         .foregroundStyle(Stanford.failed)
-                    if task.sessionId != nil {
+                    if task.hasProviderSession {
                         Text("**Resume** with a higher budget or **Retry** fresh.")
                             .font(Stanford.caption(12))
                             .foregroundStyle(Stanford.coolGrey)
@@ -3161,11 +3588,11 @@ struct TaskMainView: View {
 
     private var resultTitle: String {
         switch task.status {
-        case .completed: return "Task Completed"
-        case .pendingUser: return "Awaiting Your Review"
-        case .failed: return "Task Failed"
-        case .budgetExceeded: return "Budget Exceeded"
-        case .cancelled: return "Task Cancelled"
+        case .completed: return TaskPresentationState.reviewPresentation(status: task.status, isClosed: task.isDone).runOutcomeLabel
+        case .pendingUser: return TaskPresentationState.reviewPresentation(status: task.status, isClosed: task.isDone).runOutcomeLabel
+        case .failed: return TaskPresentationState.reviewPresentation(status: task.status, isClosed: task.isDone).runOutcomeLabel
+        case .budgetExceeded: return TaskPresentationState.reviewPresentation(status: task.status, isClosed: task.isDone).runOutcomeLabel
+        case .cancelled: return TaskPresentationState.reviewPresentation(status: task.status, isClosed: task.isDone).runOutcomeLabel
         default: return "Result"
         }
     }
@@ -3277,55 +3704,38 @@ struct TaskMainView: View {
         id == "recap"
     }
 
-    private var hasOpenRuntimePermissionApprovalRequest: Bool {
-        let latestRequest = sortedEvents
-            .filter { $0.type == "permission.approval.requested" }
-            .max { $0.timestamp < $1.timestamp }
-        guard let latestRequest else { return false }
+    private var runtimePermissionState: TaskRuntimePermissionState {
+        TaskRuntimePermissionState.build(events: sortedEvents.map {
+            TaskRuntimePermissionState.Event(
+                type: $0.type,
+                payload: $0.payload,
+                timestamp: $0.timestamp
+            )
+        })
+    }
 
-        let latestApproval = sortedEvents
-            .filter { $0.type == "task.approved" }
-            .max { $0.timestamp < $1.timestamp }
-        return latestApproval.map { latestRequest.timestamp > $0.timestamp } ?? true
+    private var hasOpenRuntimePermissionApprovalRequest: Bool {
+        runtimePermissionState.hasOpenApprovalRequest
     }
 
     private var latestRuntimePermissionRequestPayload: String? {
-        sortedEvents
-            .filter { $0.type == "permission.approval.requested" }
-            .max { $0.timestamp < $1.timestamp }?
-            .payload
+        runtimePermissionState.latestRequestPayload
     }
 
     private var pendingRuntimePermissionDecision: RuntimePermissionDecisionPresentation? {
-        latestRuntimePermissionRequestPayload.map(RuntimePermissionDecisionPresentation.init(payload:))
+        runtimePermissionState.decision
     }
 
     private var latestRuntimePermissionTaskScopedGrants: [PermissionGrant] {
-        guard let payload = latestRuntimePermissionRequestPayload else { return [] }
-        let structured = PermissionBroker.structuredApprovalGrants(from: payload)
-        let grants = structured.isEmpty ? PermissionBroker.legacyApprovalGrants(from: payload) : structured
-        return PermissionBroker.taskScopedApprovalGrants(for: grants)
+        runtimePermissionState.taskScopedGrants
     }
 
     private var canApproveSimilarRuntimePermissionForTask: Bool {
-        hasOpenRuntimePermissionApprovalRequest && !latestRuntimePermissionTaskScopedGrants.isEmpty
+        runtimePermissionState.canApproveSimilarForTask
     }
 
     private var shouldShowTaskDecisionDock: Bool {
-        switch task.status {
-        case .running:
-            return onCancelTask != nil
-        case .pendingUser:
-            return true
-        case .queued:
-            return executableApprovedPlan != nil || onRunTask != nil || canToggleTaskDoneFromDecisionDock
-        case .failed, .budgetExceeded:
-            return executableApprovedPlan != nil || onResumeTask != nil || onRetryTask != nil || canToggleTaskDoneFromDecisionDock
-        case .completed, .cancelled:
-            return executableApprovedPlan != nil || canToggleTaskDoneFromDecisionDock
-        case .draft:
-            return executableApprovedPlan != nil
-        }
+        taskDecisionDockPresentation != nil
     }
 
     private var latestRunHasNoUsableResult: Bool {
@@ -3334,9 +3744,20 @@ struct TaskMainView: View {
     }
 
     private var pendingTaskDismissalReason: PendingTaskDismissalReason? {
-        guard !hasOpenRuntimePermissionApprovalRequest else { return nil }
-        return PendingTaskReviewPolicy.dismissalReason(
+        pendingTaskReviewState.dismissalReason
+    }
+
+    private var pendingTaskReviewState: PendingTaskReviewState {
+        guard !hasOpenRuntimePermissionApprovalRequest else { return .none }
+        return PendingTaskReviewPolicy.reviewState(
             for: task,
+            latestRun: latestRunModel
+        )
+    }
+
+    private var completedTaskNeedsArtifactAttention: Bool {
+        PendingTaskReviewPolicy.completedTaskNeedsArtifactAttention(
+            task: task,
             latestRun: latestRunModel
         )
     }
@@ -3401,37 +3822,51 @@ struct TaskMainView: View {
 
     @ViewBuilder
     private var taskDecisionDock: some View {
-        if task.status == .running, let onCancel = onCancelTask {
-            taskDecisionSurface(
-                icon: "stop.circle.fill",
-                color: Stanford.cardinalRed,
-                title: "Task running",
-                detail: "The agent is working. Stop it here if you need to change direction."
-            ) {
-                Button {
-                    onCancel(task)
-                } label: {
-                    Label("Stop", systemImage: "stop.fill")
-                        .labelStyle(.titleAndIcon)
-                }
-                .buttonStyle(StanfordButtonStyle(isPrimary: true, color: Stanford.cardinalRed))
-                .controlSize(.small)
-                .keyboardShortcut(.escape, modifiers: [])
-                .accessibilityIdentifier("CancelTaskButton")
-                .accessibilityLabel("Stop task")
+        if let presentation = taskDecisionDockPresentation {
+            TaskDecisionDockView(
+                presentation: presentation,
+                isExpanded: $isTaskDecisionDetailsExpanded,
+                onAction: handleTaskDecisionDockAction
+            )
+            .onAppear {
+                isTaskDecisionDetailsExpanded = false
             }
-        } else if task.status == .pendingUser, hasOpenRuntimePermissionApprovalRequest {
-            pendingReviewDecisionDock
-        } else if let plan = executableApprovedPlan {
-            planDecisionDock(plan)
-        } else if task.status == .pendingUser {
-            pendingReviewDecisionDock
-        } else if task.status == .failed || task.status == .budgetExceeded {
-            failedDecisionDock
-        } else if task.status == .queued {
-            queuedDecisionDock
-        } else if task.status == .completed || task.status == .cancelled {
-            doneStateDecisionDock
+            .onChange(of: presentation.id) { _, _ in
+                isTaskDecisionDetailsExpanded = false
+            }
+        }
+    }
+
+    private func handleTaskDecisionDockAction(_ action: TaskDecisionDockAction) {
+        switch action.kind {
+        case .stop:
+            onCancelTask?(task)
+        case .allowOnce, .approveResult, .dismissReview:
+            onApproveTask?(task)
+        case .allowSimilar:
+            approveSimilarRuntimePermissionForTask()
+        case .approveCorrection:
+            if let id = action.payload { approveMissionCorrection(id) }
+        case .createCorrectionTask:
+            if let id = action.payload { createMissionCorrectionTask(id) }
+        case .dismissCorrection:
+            if let id = action.payload { dismissMissionCorrection(id) }
+        case .openPlan:
+            onOpenPlan?(task)
+        case .runApprovedPlan:
+            guard let plan = executableApprovedPlan else { return }
+            runApprovedPlan(plan, mode: skipPermissions ? .fullPlan : .nextStep)
+        case .runTask:
+            onRunTask?(task)
+        case .retry:
+            onRetryTask?(task)
+        case .resume:
+            onResumeTask?(task)
+        case .openArtifact:
+            guard let path = action.payload else { return }
+            openGeneratedFile(path: path, destination: TaskGeneratedFiles.shelfDestination(for: path))
+        case .closeTask, .closeAnyway, .closeWithoutRunningPlan, .reopenTask:
+            toggleTaskDoneFromDecisionDock()
         }
     }
 
@@ -3485,18 +3920,21 @@ struct TaskMainView: View {
                     .accessibilityLabel(pendingDecisionPrimaryLabel)
                 }
 
-                taskDecisionOverflowMenu(doneLabelOverride: latestRunHasNoUsableResult ? "Mark done anyway" : nil)
+                taskDecisionOverflowMenu(doneLabelOverride: latestRunHasNoUsableResult ? TaskPresentationState.closeAnywayActionTitle : nil)
             }
         }
     }
 
     private func approveSimilarRuntimePermissionForTask() {
-        guard let taskQueue else {
+        let action = TaskRuntimePermissionActionHandler.approveSimilarRuntimePermissionForTask(
+            task,
+            modelContext: modelContext,
+            taskQueue: taskQueue,
+            canApproveSimilarForTask: canApproveSimilarRuntimePermissionForTask
+        )
+        if action == .approveOnce {
             onApproveTask?(task)
-            return
         }
-        let coordinator = TaskLifecycleCoordinator(modelContext: modelContext, taskQueue: taskQueue)
-        coordinator.approveSimilarRuntimePermissionForTask(task)
     }
 
     private func planDecisionDock(_ plan: TaskPlanPayload) -> some View {
@@ -3544,7 +3982,7 @@ struct TaskMainView: View {
                 .disabled(taskQueue == nil)
                 .accessibilityIdentifier(skipPermissions ? "RunRemainingPlanButton" : "ApproveNextPlanStepButton")
 
-                taskDecisionOverflowMenu(doneLabelOverride: "Mark done without running plan")
+                taskDecisionOverflowMenu(doneLabelOverride: TaskPresentationState.closeWithoutRunningPlanActionTitle)
             }
         }
     }
@@ -3576,7 +4014,7 @@ struct TaskMainView: View {
     }
 
     private var failedDecisionDock: some View {
-        let canResume = task.sessionId != nil && onResumeTask != nil
+        let canResume = task.hasProviderSession && onResumeTask != nil
         let isBudgetExceeded = task.status == .budgetExceeded
         let title = isBudgetExceeded ? "Budget exceeded" : "Run stopped"
         let detail = isBudgetExceeded
@@ -3604,7 +4042,7 @@ struct TaskMainView: View {
                     .accessibilityLabel("Retry task")
                 }
 
-                if task.sessionId != nil, let onResume = onResumeTask {
+                if task.hasProviderSession, let onResume = onResumeTask {
                     Button {
                         onResume(task)
                     } label: {
@@ -3623,18 +4061,46 @@ struct TaskMainView: View {
     }
 
     private var doneStateDecisionDock: some View {
-        let title = task.isDone ? "Task marked done" : "Review complete?"
-        let detail = task.isDone
-            ? "Reopen it here if you need to continue with this task."
-            : "Mark this task done when the current result no longer needs action."
+        let review = taskReviewPresentation
 
         return taskDecisionSurface(
             icon: task.isDone ? "arrow.uturn.backward.circle.fill" : "checkmark.circle.fill",
             color: task.isDone ? Stanford.lagunita : Stanford.paloAltoGreen,
-            title: title,
-            detail: detail
+            title: review.decisionTitle,
+            detail: review.decisionDetail
         ) {
             taskDoneToggleButton(isPrimary: true)
+        }
+    }
+
+    private var completedNoUsableResultDecisionDock: some View {
+        taskDecisionSurface(
+            icon: "doc.badge.exclamationmark",
+            color: Stanford.poppy,
+            title: "No usable result",
+            detail: "This finished run did not create the expected artifact. Retry or close it anyway.",
+            detailLineLimit: 2
+        ) {
+            VStack(alignment: .trailing, spacing: 8) {
+                if let onRetry = onRetryTask {
+                    Button("Retry") {
+                        onRetry(task)
+                    }
+                    .buttonStyle(StanfordButtonStyle(isPrimary: true, color: Stanford.poppy))
+                    .controlSize(.small)
+                    .accessibilityLabel("Retry task")
+                }
+
+                Button {
+                    toggleTaskDoneFromDecisionDock()
+                } label: {
+                    Label(TaskPresentationState.closeAnywayActionTitle, systemImage: taskDoneToggleIcon)
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(StanfordButtonStyle(isPrimary: onRetryTask == nil, color: taskDoneToggleColor))
+                .controlSize(.small)
+                .accessibilityLabel(TaskPresentationState.closeAnywayActionTitle)
+            }
         }
     }
 
@@ -3820,7 +4286,7 @@ struct TaskMainView: View {
     }
 
     private var taskDoneToggleTitle: String {
-        task.isDone ? "Reopen task" : "Mark task done"
+        task.isDone ? TaskPresentationState.reopenTaskActionTitle : TaskPresentationState.closeTaskActionTitle
     }
 
     private var taskDoneToggleIcon: String {
@@ -3850,7 +4316,7 @@ struct TaskMainView: View {
                 Button {
                     toggleTaskDoneFromDecisionDock()
                 } label: {
-                    Label(task.isDone ? "Reopen task" : (doneLabelOverride ?? "Mark task done"),
+                    Label(task.isDone ? TaskPresentationState.reopenTaskActionTitle : (doneLabelOverride ?? TaskPresentationState.closeTaskActionTitle),
                           systemImage: taskDoneToggleIcon)
                 }
             } label: {
@@ -4299,13 +4765,15 @@ struct TaskMainView: View {
             \(String(conversationSnapshot.prefix(12000)))
             """)
         ]
+        let roleRuntime = utilityRuntime(for: .summarizer)
+        TaskRoleProfileStore.recordSelected(roleRuntime.selection, task: task, modelContext: modelContext)
 
         Task {
             let result = await SpecEngine.chat(
                 messages: messages,
                 workspacePath: workspacePath,
                 skillContext: systemPrompt,
-                utilityRuntime: taskUtilityRuntime
+                utilityRuntime: roleRuntime.configuration
             )
 
             await MainActor.run {
@@ -4317,7 +4785,7 @@ struct TaskMainView: View {
                         recapStatusMessage = "Recap came back empty. Try again."
                         return
                     }
-                    let event = TaskEvent(task: task, type: "recap.result", payload: trimmed)
+                    let event = TaskEvent(task: task, eventType: TaskEventTypes.System.recapResult, payload: trimmed)
                     modelContext.insert(event)
                     // Force a save so the inverse relationship (task.events) fires
                     // observation immediately — otherwise the bubble can lag behind
@@ -4398,13 +4866,15 @@ struct TaskMainView: View {
             Create a routine: \(instruction)
             """)
         ]
+        let roleRuntime = utilityRuntime(for: .summarizer)
+        TaskRoleProfileStore.recordSelected(roleRuntime.selection, task: task, modelContext: modelContext)
 
         Task {
             let result = await SpecEngine.chat(
                 messages: messages,
                 workspacePath: workspacePath,
                 skillContext: systemPrompt,
-                utilityRuntime: taskUtilityRuntime
+                utilityRuntime: roleRuntime.configuration
             )
 
             await MainActor.run {
@@ -4557,7 +5027,7 @@ struct TaskMainView: View {
             let memoryText = String(trimmed.dropFirst("/remember ".count)).trimmingCharacters(in: .whitespaces)
             if !memoryText.isEmpty {
                 task.workspace?.memories.append(memoryText)
-                let confirmEvent = TaskEvent(task: task, type: "system.info", payload: "💾 Memory saved: \"\(memoryText)\"")
+                let confirmEvent = TaskEvent(task: task, eventType: TaskEventTypes.System.info, payload: "💾 Memory saved: \"\(memoryText)\"")
                 modelContext.insert(confirmEvent)
             }
             messageText = ""
@@ -4611,9 +5081,9 @@ struct TaskMainView: View {
         if task.status == .queued {
             task.status = .draft
             task.updatedAt = Date()
-            let systemEvent = TaskEvent(task: task, type: "task.started", payload: "Moved back to draft for editing.")
+            let systemEvent = TaskEvent(task: task, eventType: TaskEventTypes.Task.started, payload: "Moved back to draft for editing.")
             modelContext.insert(systemEvent)
-            let userEvent = TaskEvent(task: task, type: "user.message", payload: msg)
+            let userEvent = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: msg)
             modelContext.insert(userEvent)
             AppLogger.audit(.taskRetried, category: "UI", taskID: task.id, fields: [
                 "status": "draft",
@@ -4643,7 +5113,7 @@ struct TaskMainView: View {
                 await taskQueue.continueSession(task: task, message: msg, modelContext: modelContext) { _ in }
             }
         } else {
-            let event = TaskEvent(task: task, type: "user.message", payload: msg)
+            let event = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: msg)
             modelContext.insert(event)
         }
     }
@@ -4663,13 +5133,15 @@ struct TaskMainView: View {
         let skillContext = planModeSkillContext()
         isPlanning = true
         logTaskCapabilityContext(source: "task_plan_chat", traceID: traceID)
+        let roleRuntime = utilityRuntime(for: .planner)
+        TaskRoleProfileStore.recordSelected(roleRuntime.selection, task: task, modelContext: modelContext)
 
         Task {
             let result = await SpecEngine.chat(
                 messages: history,
                 workspacePath: workspacePath,
                 skillContext: skillContext,
-                utilityRuntime: taskUtilityRuntime
+                utilityRuntime: roleRuntime.configuration
             )
 
             await MainActor.run {
@@ -4785,9 +5257,9 @@ struct TaskMainView: View {
         The user confirms the plan through ASTRA's Plan controls. The confirmation button is named "Approve Plan"; do not tell them to click "Create Task" in Goal Mode.
 
         Return concise planning prose, then include exactly one structured plan line using this prefix:
-        ASTRA_PLAN {"version":1,"planID":"UUID","title":"Short title","goal":"Brief goal summary","steps":[{"id":"stable-step-id","title":"Step title","detail":"What to do","status":"pending","risk":"low","likelyTools":["Read"],"doneSignal":"How ASTRA knows this step is done"}]}
+        ASTRA_PLAN {"version":1,"planID":"UUID","title":"Short title","goal":"Brief goal summary","steps":[{"id":"stable-step-id","title":"Step title","detail":"What to do","status":"pending","risk":"low","likelyTools":["Read"],"doneSignal":"How ASTRA knows this step is done","outputs":[{"kind":"file","scope":"task_output","path":"relative/path.ext","required":true,"prepareParentDirectories":true}]}],"validationContract":{"version":1,"assertions":[{"id":"artifact-exists","scope":"plan","description":"Generated artifact exists","method":"artifact","required":true,"path":"relative/path.ext"},{"id":"artifact-text","scope":"plan","description":"Generated artifact contains expected text","method":"text_contains","required":true,"path":"relative/path.ext","evidenceQuery":"Expected visible text"}]}}
 
-        Step risk must be low, medium, or high. Step status must be pending. Include every likely permission needed for each step: Read for inspection, Grep for search, Write for creating files, Edit for changing existing files, and Bash for tests/builds/scripts. If a step creates an HTML/CSS/JS/file artifact, include Write in likelyTools. Include a done signal for each step. The user must confirm from the Plan panel before execution starts.
+        Step risk must be low, medium, or high. Step status must be pending. Include every likely permission needed for each step: Read for inspection, Grep for search, Write for creating files, Edit for changing existing files, and Bash for tests/builds/scripts. If a step creates an HTML/CSS/JS/file artifact, include Write in likelyTools and add an outputs entry with kind file, scope task_output, and the relative path. Use task_output for generated task artifacts; use workspace only when the user explicitly asks to modify the project/repository. Include a done signal for each step. Include validationContract assertions when the task has verifiable proof, such as commands that must exit 0, artifacts that must exist, file text that must be present, manual approvals, structured text evidence, browser-visible behavior in a generated artifact, or independent verifier review. Use method values command, artifact, text_contains, manual, text_evidence, browser_behavior, or verifier. For generated files, prefer artifact plus text_contains assertions instead of shell commands; set path to the generated artifact path and evidenceQuery to the expected text. For browser_behavior, set path to the generated HTML/artifact path and evidenceQuery to the expected visible text. Command assertions must be a single allowlisted command and must not use shell composition such as &&, ||, semicolons, pipes, or redirects. Use scope plan for final proof and scope step with stepID for step-specific proof. The user must confirm from the Plan panel before execution starts.
         """
 
         let capabilityContext = taskCapabilitySkillContext()
@@ -4799,9 +5271,10 @@ struct TaskMainView: View {
 
     private func taskCapabilitySkillContext() -> String {
         let resolver = TaskCapabilityResolver(task: task)
-        let skills = resolver.allBehaviorSkills
-        let connectors = resolver.allConnectors
-        let localTools = resolver.allLocalTools
+        let scope = resolver.promptScope()
+        let skills = scope.behaviorSkills
+        let connectors = scope.connectors
+        let localTools = scope.localTools
 
         var sections: [String] = []
         if !skills.isEmpty {
@@ -4829,6 +5302,9 @@ struct TaskMainView: View {
         if !localTools.isEmpty {
             let toolList = localTools.map { "- \($0.name) (\($0.toolType))" }.joined(separator: "\n")
             sections.append("Enabled local tools for this task:\n\(toolList)")
+        }
+        if scope.prunedForBrowserTask, !scope.excludedSkillNames.isEmpty {
+            sections.append("Configured capabilities excluded from this provider task scope:\n\(scope.excludedSkillNames.map { "- \($0)" }.joined(separator: "\n"))")
         }
         return sections.joined(separator: "\n\n")
     }
@@ -4951,7 +5427,7 @@ struct MarkdownTextView: View {
             ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
                 markdownBlockView(
                     block,
-                    suggestedNextStep: suggestedNextStepText(for: block, at: index)
+                    suggestedNextActions: suggestedNextActions(for: block, at: index)
                 )
                     .frame(maxWidth: maxWidth(for: block), alignment: .leading)
                     .padding(.top, topSpacing(for: block, previous: index > 0 ? blocks[index - 1] : nil))
@@ -4967,7 +5443,7 @@ struct MarkdownTextView: View {
     }
 
     @ViewBuilder
-    private func markdownBlockView(_ block: MarkdownBlock, suggestedNextStep: String? = nil) -> some View {
+    private func markdownBlockView(_ block: MarkdownBlock, suggestedNextActions: [SuggestedNextAction] = []) -> some View {
         switch block.kind {
         case .codeBlock(let lang):
             codeBlockView(lang: lang, code: block.content)
@@ -5000,11 +5476,11 @@ struct MarkdownTextView: View {
                         .lineSpacing(Stanford.chatCompactLineSpacing)
                 }
 
-                if let suggestedNextStep,
+                if let suggestedNextStep = suggestedNextActions.first,
                    let onSuggestedNextStep,
                    !skippedSuggestionIDs.contains(block.id) {
                     SuggestedNextStepControls(
-                        onPursue: { onSuggestedNextStep(suggestedNextStep) },
+                        onPursue: { onSuggestedNextStep(suggestedNextStep.composerText) },
                         onSkip: { skippedSuggestionIDs.insert(block.id) }
                     )
                     .padding(.leading, 32 + CGFloat(depth) * 18)
@@ -5054,11 +5530,23 @@ struct MarkdownTextView: View {
             Color.clear.frame(height: 2)
 
         case .text:
-            Text(Self.markdownAttributed(block.content))
-                .font(Stanford.chatBody())
-                .foregroundStyle(Stanford.readingText)
-                .textSelection(.enabled)
-                .lineSpacing(Stanford.chatBodyLineSpacing)
+            VStack(alignment: .leading, spacing: 7) {
+                Text(Self.markdownAttributed(block.content))
+                    .font(Stanford.chatBody())
+                    .foregroundStyle(Stanford.readingText)
+                    .textSelection(.enabled)
+                    .lineSpacing(Stanford.chatBodyLineSpacing)
+
+                if !suggestedNextActions.isEmpty,
+                   let onSuggestedNextStep,
+                   !skippedSuggestionIDs.contains(block.id) {
+                    SuggestedNextActionChips(
+                        actions: suggestedNextActions,
+                        onPursue: { action in onSuggestedNextStep(action.composerText) },
+                        onSkip: { skippedSuggestionIDs.insert(block.id) }
+                    )
+                }
+            }
         }
     }
 
@@ -5102,19 +5590,36 @@ struct MarkdownTextView: View {
         }
     }
 
-    private func suggestedNextStepText(for block: MarkdownBlock, at index: Int) -> String? {
-        guard onSuggestedNextStep != nil,
-              case .listItem(let depth, _) = block.kind,
-              depth == 0,
-              isInsideSuggestedNextStepsSection(index: index) else {
-            return nil
-        }
-        let plain = Self.plainMarkdownText(block.content)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return plain.isEmpty ? nil : plain
+    private func suggestedNextActions(for block: MarkdownBlock, at index: Int) -> [SuggestedNextAction] {
+        guard onSuggestedNextStep != nil else { return [] }
+        return Self.suggestedNextActions(for: block, at: index, in: blocks)
     }
 
-    private func isInsideSuggestedNextStepsSection(index: Int) -> Bool {
+    static func suggestedNextActions(in blocks: [MarkdownBlock]) -> [SuggestedNextAction] {
+        blocks.enumerated().flatMap { index, block in
+            suggestedNextActions(for: block, at: index, in: blocks)
+        }
+    }
+
+    static func suggestedNextActions(for block: MarkdownBlock, at index: Int, in blocks: [MarkdownBlock]) -> [SuggestedNextAction] {
+        switch block.kind {
+        case .listItem(let depth, _):
+            guard depth == 0,
+                  isInsideSuggestedNextStepsSection(index: index, blocks: blocks),
+                  let title = normalizedSuggestedAction(block.content) else {
+                return []
+            }
+            return [SuggestedNextAction(title: title)]
+
+        case .text:
+            return inlineSuggestedNextActions(from: block.content)
+
+        default:
+            return []
+        }
+    }
+
+    private static func isInsideSuggestedNextStepsSection(index: Int, blocks: [MarkdownBlock]) -> Bool {
         guard index > 0 else { return false }
         for priorIndex in stride(from: index - 1, through: 0, by: -1) {
             let prior = blocks[priorIndex]
@@ -5127,6 +5632,77 @@ struct MarkdownTextView: View {
         return false
     }
 
+    private static func inlineSuggestedNextActions(from content: String) -> [SuggestedNextAction] {
+        let plain = plainMarkdownText(content)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let remainder = inlineSuggestionRemainder(from: plain) else { return [] }
+
+        var seen = Set<String>()
+        var actions: [SuggestedNextAction] = []
+        for candidate in splitInlineSuggestionRemainder(remainder) {
+            guard let title = normalizedSuggestedAction(candidate) else { continue }
+            let key = title.lowercased()
+            guard seen.insert(key).inserted else { continue }
+            actions.append(SuggestedNextAction(title: title))
+            if actions.count == 4 { break }
+        }
+        return actions
+    }
+
+    private static func inlineSuggestionRemainder(from text: String) -> String? {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowercase = normalized.lowercased()
+        for prefix in ["next suggestion:", "next suggestions:"] where lowercase.hasPrefix(prefix) {
+            let start = normalized.index(normalized.startIndex, offsetBy: prefix.count)
+            let remainder = normalized[start...].trimmingCharacters(in: .whitespacesAndNewlines)
+            return remainder.isEmpty ? nil : remainder
+        }
+        return nil
+    }
+
+    private static func splitInlineSuggestionRemainder(_ text: String) -> [String] {
+        var normalized = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ";", with: ",")
+
+        while let last = normalized.last, [".", "!", "?"].contains(last) {
+            normalized.removeLast()
+            normalized = normalized.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        let commaParts = normalized
+            .split(separator: ",")
+            .map { String($0) }
+
+        if commaParts.count > 1 {
+            return commaParts
+        }
+
+        return [normalized]
+    }
+
+    private static func normalizedSuggestedAction(_ text: String) -> String? {
+        var value = plainMarkdownText(text)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+
+        for conjunction in ["and ", "or "] {
+            if value.lowercased().hasPrefix(conjunction) {
+                value = String(value.dropFirst(conjunction.count))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+
+        value = value.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(.init(charactersIn: ".;:,")))
+
+        guard value.count >= 3,
+              value.count <= 140,
+              value.rangeOfCharacter(from: .alphanumerics) != nil else {
+            return nil
+        }
+        return value
+    }
+
     private final class MarkdownBlockCacheEntry {
         let blocks: [MarkdownBlock]
 
@@ -5137,7 +5713,7 @@ struct MarkdownTextView: View {
 
     private static let parseCache: NSCache<NSString, MarkdownBlockCacheEntry> = {
         let cache = NSCache<NSString, MarkdownBlockCacheEntry>()
-        cache.countLimit = 200
+        cache.countLimit = 500
         return cache
     }()
 
@@ -5458,6 +6034,18 @@ struct MarkdownTextView: View {
         let id = UUID()
         let kind: BlockKind
         let content: String
+    }
+
+    struct SuggestedNextAction: Identifiable, Equatable {
+        let id: String
+        let title: String
+        let composerText: String
+
+        init(title: String) {
+            self.title = title
+            self.composerText = title
+            self.id = title.lowercased()
+        }
     }
 
     static func parse(_ text: String) -> [MarkdownBlock] {
@@ -5996,6 +6584,70 @@ private struct SuggestedNextStepControls: View {
             .help("Hide this suggestion")
         }
         .textSelection(.disabled)
+    }
+}
+
+private struct SuggestedNextActionChips: View {
+    let actions: [MarkdownTextView.SuggestedNextAction]
+    let onPursue: (MarkdownTextView.SuggestedNextAction) -> Void
+    let onSkip: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 6) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 6) {
+                    ForEach(actions) { action in
+                        actionButton(action)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(actions) { action in
+                        actionButton(action)
+                            .frame(maxWidth: 340, alignment: .leading)
+                    }
+                }
+            }
+
+            Button(action: onSkip) {
+                Image(systemName: "xmark")
+                    .font(Stanford.caption(10).weight(.semibold))
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Stanford.coolGrey.opacity(0.78))
+            .help("Hide these suggestions")
+            .accessibilityLabel("Hide suggested actions")
+        }
+        .textSelection(.disabled)
+    }
+
+    private func actionButton(_ action: MarkdownTextView.SuggestedNextAction) -> some View {
+        Button {
+            onPursue(action)
+        } label: {
+            Label {
+                Text(action.title)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            } icon: {
+                Image(systemName: "arrow.right.circle")
+            }
+            .font(Stanford.caption(11).weight(.semibold))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(Stanford.lagunita)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Stanford.lagunita.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(Stanford.lagunita.opacity(0.16), lineWidth: 1)
+        )
+        .help("Move \"\(action.title)\" into the composer")
+        .accessibilityLabel("Pursue suggestion: \(action.title)")
     }
 }
 

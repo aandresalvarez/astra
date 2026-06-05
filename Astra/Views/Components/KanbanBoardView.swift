@@ -18,6 +18,15 @@ enum KanbanCategory: String, CaseIterable, Identifiable, Hashable {
 
     var id: String { rawValue }
 
+    var displayTitle: String {
+        switch self {
+        case .done:
+            return TaskPresentationState.closedColumnTitle
+        case .drafts, .queued, .running, .review:
+            return rawValue
+        }
+    }
+
     var icon: String {
         switch self {
         case .drafts: return "pencil.circle.fill"
@@ -96,7 +105,7 @@ enum KanbanCategory: String, CaseIterable, Identifiable, Hashable {
         case .queued: return "Queued column. Waiting for an agent."
         case .running: return "Running column. Agent-owned; cards move here automatically."
         case .review: return "Review column. Tasks waiting for your attention — either a pending question or an untriaged outcome."
-        case .done: return "Done column. Archived tasks."
+        case .done: return "Closed column. Archived tasks."
         }
     }
 }
@@ -213,6 +222,8 @@ enum KanbanBoardPresentation {
     static let taskCardsReserveTopMetadataRow = false
     static let visibleTrashIsQuietUntilDrag = true
     static let reviewCardsUseLeadingAccentOnly = true
+    static let taskCardsDeduplicateRepeatedTitles = true
+    static let taskCardsExposeOutcomeMetadata = true
     static let columnBaseFillOpacity: Double = 0.012
     static let persistentColumnFillOpacity: Double = 0.016
     static let columnStrokeOpacity: Double = 0.045
@@ -546,7 +557,7 @@ struct KanbanBoardView: View {
         case .review:
             // Review keeps the card's current status (pendingUser, completed,
             // failed, cancelled, budgetExceeded) and just clears the archive
-            // flag. Practically this means: dropping a Done card into Review
+            // flag. Practically this means: dropping a Closed card into Review
             // un-archives it; dropping an active card in here is rejected by
             // the filter and handled as a no-op.
             nextDone = false
@@ -985,7 +996,7 @@ struct KanbanColumnView: View {
         case .review:
             return "Send to Review"
         case .done:
-            return "Mark Done"
+            return TaskPresentationState.closeTaskActionTitle
         }
     }
 
@@ -1005,7 +1016,7 @@ struct KanbanColumnView: View {
         case .review:
             return "Nothing to review"
         case .done:
-            return "Drop reviewed work here"
+            return "Drop closed work here"
         }
     }
 
@@ -1197,7 +1208,7 @@ struct KanbanColumnView: View {
     private func moveActionTitle(for category: KanbanCategory) -> String {
         switch category {
         case .done:
-            return "Mark Done"
+            return TaskPresentationState.closeTaskActionTitle
         case .drafts:
             return "Move to Drafts"
         case .queued:
@@ -1300,7 +1311,7 @@ struct KanbanColumnView: View {
             onCollapseEmptyState()
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(category.rawValue), \(tasks.count) \(tasks.count == 1 ? "task" : "tasks")")
+        .accessibilityLabel("\(category.displayTitle), \(tasks.count) \(tasks.count == 1 ? "task" : "tasks")")
         .accessibilityHint(category.accessibilityDescription)
     }
 
@@ -1403,7 +1414,7 @@ private struct KanbanColumnHeaderChip: View {
                 .fill(category.color)
                 .frame(width: 6, height: 6)
 
-            Text(category.rawValue)
+            Text(category.displayTitle)
                 .font(Stanford.caption(12).weight(.semibold))
                 .foregroundStyle(.primary)
 
@@ -1414,7 +1425,7 @@ private struct KanbanColumnHeaderChip: View {
         }
         .padding(.vertical, 2)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(category.rawValue), \(count) \(count == 1 ? "task" : "tasks")")
+        .accessibilityLabel("\(category.displayTitle), \(count) \(count == 1 ? "task" : "tasks")")
     }
 }
 
@@ -1530,7 +1541,7 @@ struct CollapsedKanbanLanesView: View {
                         Circle()
                             .fill(category.color)
                             .frame(width: 6, height: 6)
-                        Text(category.rawValue)
+                        Text(category.displayTitle)
                             .font(Stanford.caption(11).weight(.medium))
                             .foregroundStyle(.secondary)
                     }
@@ -1546,8 +1557,8 @@ struct CollapsedKanbanLanesView: View {
                     )
                 }
                 .buttonStyle(.plain)
-                .help("Expand \(category.rawValue)")
-                .accessibilityLabel("\(category.rawValue), 0 tasks")
+                .help("Expand \(category.displayTitle)")
+                .accessibilityLabel("\(category.displayTitle), 0 tasks")
                 .accessibilityHint("Expand empty column")
             }
         }
@@ -1569,7 +1580,7 @@ struct KanbanTaskCardView: View {
         return count == 1 ? "1 message" : "\(count) messages"
     }
 
-    /// Outcome metadata for the Review / Done lanes. The visual signal is the
+    /// Outcome metadata for the Review / Closed lanes. The visual signal is the
     /// card's leading accent bar; this label remains available for VoiceOver.
     private struct OutcomeState {
         let label: String
@@ -1577,30 +1588,32 @@ struct KanbanTaskCardView: View {
     }
 
     private var outcomeState: OutcomeState? {
+        guard let label = Self.outcomeLabel(for: task.status) else { return nil }
+
         switch task.status {
         case .pendingUser:
             return OutcomeState(
-                label: "Needs answer",
+                label: label,
                 color: Stanford.pendingUser
             )
         case .completed:
             return OutcomeState(
-                label: "Agent done",
+                label: label,
                 color: Stanford.completed
             )
         case .failed:
             return OutcomeState(
-                label: "Failed",
+                label: label,
                 color: Stanford.failed
             )
         case .cancelled:
             return OutcomeState(
-                label: "Cancelled",
+                label: label,
                 color: Stanford.cancelled
             )
         case .budgetExceeded:
             return OutcomeState(
-                label: "Budget",
+                label: label,
                 color: Stanford.failed
             )
         case .draft, .queued, .running:
@@ -1637,28 +1650,42 @@ struct KanbanTaskCardView: View {
     }
 
     private var displayTitle: String {
+        Self.displayTitle(for: task.title, titleBadge: titleBadge)
+    }
+
+    static func displayTitle(for title: String, titleBadge: String? = nil) -> String {
         let base: String
-        if let titleBadge, let badgeRange = task.title.range(of: titleBadge) {
-            var stripped = task.title
+        if let titleBadge, let badgeRange = title.range(of: titleBadge) {
+            var stripped = title
             stripped.removeSubrange(badgeRange)
             base = stripped.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
         } else {
-            base = task.title
+            base = title
         }
-        return Self.shortenIdentifierTokens(base)
+        return Self.shortenIdentifierTokens(Self.deduplicatedRepeatedTitle(base))
+    }
+
+    static func deduplicatedRepeatedTitle(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count.isMultiple(of: 2), !trimmed.isEmpty else { return trimmed }
+
+        let midpoint = trimmed.index(trimmed.startIndex, offsetBy: trimmed.count / 2)
+        let firstHalf = String(trimmed[..<midpoint])
+        let secondHalf = String(trimmed[midpoint...])
+
+        guard firstHalf == secondHalf else { return trimmed }
+        return firstHalf.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var metadataLine: String? {
-        var parts: [String] = []
-        if let titleBadge {
-            parts.append(titleBadge)
-        }
-        if showDetails {
-            parts.append(threadMessageLabel)
-        }
-        if showDetails || category == .review || category == .done {
-            parts.append(Formatters.relativeShort(task.updatedAt))
-        }
+        let parts = Self.metadataParts(
+            titleBadge: titleBadge,
+            showDetails: showDetails,
+            category: category,
+            status: task.status,
+            threadMessageLabel: threadMessageLabel,
+            relativeUpdatedAt: Formatters.relativeShort(task.updatedAt)
+        )
         guard !parts.isEmpty else { return nil }
         return parts.joined(separator: " · ")
     }
@@ -1676,6 +1703,47 @@ struct KanbanTaskCardView: View {
             maxTokenLength: maxTokenLength,
             keepEachSide: keepEachSide
         )
+    }
+
+    static func outcomeLabel(for status: TaskStatus) -> String? {
+        switch status {
+        case .pendingUser:
+            return "Needs input"
+        case .completed:
+            return "Run finished"
+        case .failed:
+            return "Run failed"
+        case .cancelled:
+            return "Cancelled"
+        case .budgetExceeded:
+            return "Budget hit"
+        case .draft, .queued, .running:
+            return nil
+        }
+    }
+
+    static func metadataParts(
+        titleBadge: String?,
+        showDetails: Bool,
+        category: KanbanCategory,
+        status: TaskStatus,
+        threadMessageLabel: String,
+        relativeUpdatedAt: String
+    ) -> [String] {
+        var parts: [String] = []
+        if (category == .review || category == .done), let outcome = outcomeLabel(for: status) {
+            parts.append(outcome)
+        }
+        if let titleBadge {
+            parts.append(titleBadge)
+        }
+        if showDetails {
+            parts.append(threadMessageLabel)
+        }
+        if showDetails || category == .review || category == .done {
+            parts.append(relativeUpdatedAt)
+        }
+        return parts
     }
 
     @ViewBuilder
@@ -1745,7 +1813,7 @@ struct KanbanTaskCardView: View {
                 RunningPulseBar()
             }
         }
-        // Done cards are archived — drop contrast so they recede visually
+        // Closed cards are archived — drop contrast so they recede visually
         // and a glance at the board clearly distinguishes "active work" from
         // "already filed."
         .opacity(category == .done && !isDragPreview ? 0.72 : 1)
@@ -1765,7 +1833,7 @@ struct KanbanTaskCardView: View {
     }
 
     /// Card title size per lane. Review gets a slight bump (the column is
-    /// wider and typically holds output worth reading); Done is smaller to
+    /// wider and typically holds output worth reading); Closed is smaller to
     /// reinforce that those cards are archived.
     private var titleFontSize: CGFloat {
         switch category {
@@ -1779,14 +1847,14 @@ struct KanbanTaskCardView: View {
     /// outcome (when present), badge identifier, and the task title so the
     /// status is not encoded only by colour / column position.
     private var accessibilityLabelText: String {
-        var parts: [String] = ["\(category.rawValue) task"]
+        var parts: [String] = ["\(category.displayTitle) task"]
         if let state = outcomeState, showsOutcomeAccent {
             parts.append(state.label)
         }
         if let badge = titleBadge {
             parts.append("identifier \(badge)")
         }
-        parts.append(task.title)
+        parts.append(displayTitle)
         return parts.joined(separator: ", ")
     }
 }

@@ -115,6 +115,38 @@ struct BrowserAnalysisTests {
         #expect(controlRefs[BrowserControlSource.accessibility.rawValue] == 1)
     }
 
+    @Test("Control resolver prefers accessibility identity over stale selectors")
+    func controlResolverPrefersAccessibilityIdentityOverStaleSelectors() throws {
+        let cached = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(selector: "#old-save", tag: "button", role: "button", label: "Save")
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled",
+            accessibilitySnapshotObject: Self.accessibilitySnapshot(role: "button", name: "Save")
+        )
+        let live = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(selector: "#new-save", tag: "button", role: "button", label: "Save")
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled",
+            accessibilitySnapshotObject: Self.accessibilitySnapshot(role: "button", name: "Save")
+        )
+
+        let cachedControl = try #require(cached.controls.first)
+        let match = try #require(BrowserControlResolver.matchingLiveControl(
+            cachedControl: cachedControl,
+            cachedAnalysis: cached,
+            liveAnalysis: live
+        ))
+
+        #expect(match.strategy == "accessibility")
+        #expect(match.usedSelectorFallback == false)
+        #expect(match.control.selector == "#new-save")
+        #expect(match.controlRef.source == .accessibility)
+    }
+
     @Test("Control IDs stay stable across state-only changes")
     func stableIDsAcrossStateOnlyChanges() throws {
         let controls = [
@@ -464,6 +496,21 @@ struct BrowserAnalysisTests {
             "focusedElement": focused as Any,
             "text": text,
             "controls": controls
+        ]
+    }
+
+    private static func accessibilitySnapshot(role: String, name: String) -> [String: Any] {
+        [
+            "nodeCount": 1,
+            "nodes": [
+                [
+                    "nodeId": "1",
+                    "backendDOMNodeId": "42",
+                    "ignored": false,
+                    "role": ["value": role],
+                    "name": ["value": name]
+                ]
+            ]
         ]
     }
 

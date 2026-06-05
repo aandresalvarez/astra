@@ -363,12 +363,12 @@ Existing types to extend:
 
 Expected files:
 
-- `Astra/Services/ShelfBrowserSession.swift`: route V2 analysis, preflight, trace capture, and rollout mode.
-- `Astra/Services/ControlledBrowserController.swift`: add CDP accessibility snapshot support.
-- `Astra/Services/BrowserAutomationScripts.swift`: improve frame, shadow DOM, and actionability extraction.
-- `Astra/Services/BrowserAnalysis.swift`: add V2 control references, source breakdown, and stronger matching.
-- `Astra/Services/BrowserSiteAdapters.swift`: formalize adapter contract and add GitHub adapter.
-- `Astra/Services/ShelfBrowserBridgeRegistry.swift`: update task prompt instructions for V2 and untrusted page content.
+- `Astra/Services/Browser/ShelfBrowserSession.swift`: route V2 analysis, preflight, trace capture, and rollout mode.
+- `Astra/Services/Browser/ControlledBrowserController.swift`: add CDP accessibility snapshot support.
+- `Astra/Services/Browser/BrowserAutomationScripts.swift`: improve frame, shadow DOM, and actionability extraction.
+- `Astra/Services/Browser/BrowserAnalysis.swift`: add V2 control references, source breakdown, and stronger matching.
+- `Astra/Services/Browser/BrowserSiteAdapters.swift`: formalize adapter contract and add GitHub adapter.
+- `Astra/Services/Browser/ShelfBrowserBridgeRegistry.swift`: update task prompt instructions for V2 and untrusted page content.
 - `Tools/AstraBrowserTool/main.swift`: add CLI flags while preserving existing commands.
 - `Tests/BrowserAnalysisTests.swift`: add V2 unit coverage.
 - `Tests/AgentRuntimeWorkerTests.swift`: verify prompt exposure and safety instructions.

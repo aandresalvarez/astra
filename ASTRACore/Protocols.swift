@@ -31,5 +31,18 @@ public extension SecretStore {
 public protocol FileSystem {
     func createDirectory(at url: URL, withIntermediateDirectories: Bool) throws
     func fileExists(atPath path: String) -> Bool
+    func fileExists(atPath path: String, isDirectory: inout Bool) -> Bool
     func contentsOfDirectory(at url: URL, includingPropertiesForKeys keys: [URLResourceKey]?) throws -> [URL]
+}
+
+public extension FileSystem {
+    func fileExists(atPath path: String, isDirectory: inout Bool) -> Bool {
+        isDirectory = false
+        return fileExists(atPath: path)
+    }
+
+    func directoryExists(atPath path: String) -> Bool {
+        var isDirectory = false
+        return fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory
+    }
 }
