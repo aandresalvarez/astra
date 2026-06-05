@@ -96,9 +96,9 @@ struct PromptAssemblySectionManifest: Sendable, Equatable {
     }
 }
 
-private typealias PromptContextSourcePointer = PromptAssemblySourcePointer
+typealias PromptContextSourcePointer = PromptAssemblySourcePointer
 
-private struct PromptContextSection: Sendable {
+struct PromptContextSection: Sendable {
     var kind: PromptContextSectionKind
     var text: String
     var sourcePointers: [PromptContextSourcePointer]
@@ -147,90 +147,15 @@ enum AgentPromptBuilder {
     }
 
     private static func buildPromptSections(for task: AgentTask) -> [PromptContextSection] {
-        var sections: [PromptContextSection] = []
-        let capabilityScope = TaskCapabilityResolver(task: task).promptScope()
-
-        appendSection(currentTaskBlock(for: task), kind: .currentGoal, to: &sections, sourcePointers: taskSourcePointers(task))
-        appendThreadIntentContext(for: task, to: &sections)
-
-        if let instructions = task.workspace?.instructions,
-           !instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            appendSection(
-                "Workspace Context:\n\(instructions)",
-                kind: .supportingContext,
-                to: &sections,
-                sourcePointers: workspaceSourcePointers(task.workspace)
+        buildPromptSections(
+            using: initialRunSectionProviders,
+            context: PromptContextSectionProviderContext(
+                mode: .initialRun,
+                task: task,
+                followUpMessage: "",
+                capabilityScope: TaskCapabilityResolver(task: task).promptScope()
             )
-        }
-
-        if let memoriesBlock = workspaceMemoriesBlock(for: task.workspace, contextText: task.goal) {
-            appendSection(
-                memoriesBlock.text,
-                kind: .memories,
-                to: &sections,
-                sourcePointers: memoriesBlock.sourcePointers
-            )
-        }
-
-        if let ws = task.workspace {
-            let recentTasks = ws.tasks
-                .filter { $0.id != task.id && $0.isTerminal }
-                .sorted { ($0.completedAt ?? .distantPast) > ($1.completedAt ?? .distantPast) }
-                .prefix(3)
-
-            if !recentTasks.isEmpty {
-                var summaryBlock = "Recent tasks in this workspace (for context):"
-                for t in recentTasks {
-                    let status = t.status.rawValue
-                    let output = t.runs.last?.output ?? ""
-                    let summary = output.isEmpty ? "(no output)" : String(output.prefix(200))
-                    summaryBlock += "\n- [\(status)] \(t.title): \(summary)"
-                }
-                appendSection(
-                    summaryBlock,
-                    kind: .recentTranscript,
-                    to: &sections,
-                    sourcePointers: [sourcePointer(label: "workspace task history", target: ws.name)]
-                )
-            }
-        }
-
-        appendSSHContext(for: task, to: &sections)
-        appendWorkspacePaths(for: task, to: &sections)
-        appendTaskOutputFolder(for: task, to: &sections)
-
-        appendSection("Goal: \(task.goal)", kind: .currentGoal, to: &sections, sourcePointers: taskSourcePointers(task))
-
-        appendInputs(for: task, to: &sections)
-        appendConstraints(for: task, to: &sections)
-        appendSkillInstructions(from: capabilityScope, to: &sections)
-        appendConnectorContext(from: capabilityScope, to: &sections)
-        appendToolContext(from: capabilityScope, to: &sections)
-        appendShelfBrowserContext(
-            for: task,
-            contextText: "",
-            enabledBrowserAdapters: capabilityScope.enabledBrowserAdapters,
-            to: &sections
         )
-        appendDocumentReaderContext(to: &sections)
-        if AgentRuntimeAdapterRegistry.supportsAstraRunProtocol(for: task.resolvedRuntimeID) {
-            appendAstraRunProtocolInstructions(to: &sections)
-        }
-
-        appendSection(currentTaskReminder(for: task), kind: .currentGoal, to: &sections, sourcePointers: taskSourcePointers(task))
-
-        if task.useAgentTeam {
-            var teamBlock = "Create an agent team with \(task.teamSize) teammates to accomplish the goal below. Coordinate them to work in parallel and synthesize their results."
-            if !task.teamInstructions.isEmpty {
-                teamBlock += "\n\(task.teamInstructions)"
-            }
-            sections.insert(
-                PromptContextSection(kind: .currentGoal, text: teamBlock, sourcePointers: taskSourcePointers(task)),
-                at: 0
-            )
-        }
-
-        return sections
     }
 
     private static func currentTaskBlock(for task: AgentTask) -> String {
@@ -848,121 +773,315 @@ enum AgentPromptBuilder {
         message: String,
         task: AgentTask
     ) -> [PromptContextSection] {
-        var sections: [PromptContextSection] = []
-        let capabilityScope = TaskCapabilityResolver(task: task).promptScope(contextText: message)
-
-        appendSection(
-            "You are continuing an ASTRA thread. The thread may be exploration, goal planning, execution, blocked work, or completed work.",
-            kind: .currentGoal,
-            to: &sections,
-            sourcePointers: taskSourcePointers(task)
+        buildPromptSections(
+            using: followUpSectionProviders,
+            context: PromptContextSectionProviderContext(
+                mode: .followUp,
+                task: task,
+                followUpMessage: message,
+                capabilityScope: TaskCapabilityResolver(task: task).promptScope(contextText: message)
+            )
         )
-        appendSection("Goal: \(task.goal)", kind: .currentGoal, to: &sections, sourcePointers: taskSourcePointers(task))
-        appendSection(initialArtifactActionContract(for: task), kind: .currentGoal, to: &sections, sourcePointers: taskSourcePointers(task))
-        appendThreadIntentContext(for: task, to: &sections)
-        appendContextSourceIndex(for: task, to: &sections)
-        appendNativeContinuationPolicy(for: task, to: &sections)
+    }
 
-        let folder = TaskWorkspaceAccess(task: task).taskFolder
-        var includedExactSessionTranscript = false
-        if !folder.isEmpty {
-            if let transcript = buildRecentConversationTranscriptWithSources(for: task) {
-                appendSection(
-                    "Recent conversation transcript (exact recent turns from this task):\n\(transcript.text)",
-                    kind: .recentTranscript,
-                    to: &sections,
-                    sourcePointers: transcript.sourcePointers
-                )
-                includedExactSessionTranscript = true
-            } else {
-                let historyPath = SessionHistoryManager.historyPath(taskFolder: folder)
-                if let history = try? String(contentsOfFile: historyPath, encoding: .utf8) {
-                    let trimmed = recentSessionHistorySummary(from: history)
+    static func promptSectionProviderIDs(for mode: PromptAssemblyMode) -> [PromptContextSectionProviderID] {
+        switch mode {
+        case .initialRun:
+            initialRunSectionProviders.map(\.id)
+        case .followUp:
+            followUpSectionProviders.map(\.id)
+        }
+    }
+
+    private static let initialRunSectionProviders: [any PromptContextSectionProvider] = [
+        AgentTeamSectionProvider(),
+        CurrentTaskSectionProvider(),
+        ThreadStateSectionProvider(),
+        WorkspaceInstructionsSectionProvider(),
+        WorkspaceMemoriesSectionProvider(),
+        RecentTasksSectionProvider(),
+        WorkspaceEnvironmentSectionProvider(),
+        TaskOutputFolderSectionProvider(),
+        InitialTaskDetailsSectionProvider(),
+        CapabilitySectionProvider(),
+        BrowserSectionProvider(),
+        DocumentReaderSectionProvider(),
+        AstraRunProtocolSectionProvider(),
+        CurrentTaskReminderSectionProvider()
+    ]
+
+    private static let followUpSectionProviders: [any PromptContextSectionProvider] = [
+        FollowUpIntroSectionProvider(),
+        ThreadStateSectionProvider(),
+        ContextSourceIndexSectionProvider(),
+        NativeContinuationSectionProvider(),
+        ConversationHistorySectionProvider(),
+        ChangedFilesSectionProvider(),
+        TaskOutputFolderSectionProvider(),
+        FollowUpContextSectionProvider(),
+        CapabilitySectionProvider(),
+        BrowserSectionProvider(),
+        WorkspaceMemoriesSectionProvider(),
+        AstraRunProtocolSectionProvider(),
+        HistoryLookupRuleSectionProvider(),
+        FollowUpRequestSectionProvider()
+    ]
+
+    private static func buildPromptSections(
+        using providers: [any PromptContextSectionProvider],
+        context: PromptContextSectionProviderContext
+    ) -> [PromptContextSection] {
+        var sections: [PromptContextSection] = []
+        var state = PromptContextSectionProviderState()
+        for provider in providers {
+            provider.appendSections(for: context, state: &state, to: &sections)
+        }
+        return sections
+    }
+
+    private struct AgentTeamSectionProvider: PromptContextSectionProvider {
+        let id: PromptContextSectionProviderID = .agentTeam
+
+        func appendSections(
+            for context: PromptContextSectionProviderContext,
+            state _: inout PromptContextSectionProviderState,
+            to sections: inout [PromptContextSection]
+        ) {
+            let task = context.task
+            guard task.useAgentTeam else { return }
+            var teamBlock = "Create an agent team with \(task.teamSize) teammates to accomplish the goal below. Coordinate them to work in parallel and synthesize their results."
+            if !task.teamInstructions.isEmpty {
+                teamBlock += "\n\(task.teamInstructions)"
+            }
+            sections.append(PromptContextSection(
+                kind: .currentGoal,
+                text: teamBlock,
+                sourcePointers: taskSourcePointers(task)
+            ))
+        }
+    }
+
+    private struct CurrentTaskSectionProvider: PromptContextSectionProvider {
+        let id: PromptContextSectionProviderID = .currentTask
+
+        func appendSections(
+            for context: PromptContextSectionProviderContext,
+            state _: inout PromptContextSectionProviderState,
+            to sections: inout [PromptContextSection]
+        ) {
+            let task = context.task
+            appendSection(
+                currentTaskBlock(for: task),
+                kind: .currentGoal,
+                to: &sections,
+                sourcePointers: taskSourcePointers(task)
+            )
+        }
+    }
+
+    private struct FollowUpIntroSectionProvider: PromptContextSectionProvider {
+        let id: PromptContextSectionProviderID = .followUpIntro
+
+        func appendSections(
+            for context: PromptContextSectionProviderContext,
+            state _: inout PromptContextSectionProviderState,
+            to sections: inout [PromptContextSection]
+        ) {
+            let task = context.task
+            appendSection(
+                "You are continuing an ASTRA thread. The thread may be exploration, goal planning, execution, blocked work, or completed work.",
+                kind: .currentGoal,
+                to: &sections,
+                sourcePointers: taskSourcePointers(task)
+            )
+            appendSection(
+                "Goal: \(task.goal)",
+                kind: .currentGoal,
+                to: &sections,
+                sourcePointers: taskSourcePointers(task)
+            )
+            appendSection(
+                initialArtifactActionContract(for: task),
+                kind: .currentGoal,
+                to: &sections,
+                sourcePointers: taskSourcePointers(task)
+            )
+        }
+    }
+
+    private struct ThreadStateSectionProvider: PromptContextSectionProvider {
+        let id: PromptContextSectionProviderID = .threadState
+
+        func appendSections(
+            for context: PromptContextSectionProviderContext,
+            state _: inout PromptContextSectionProviderState,
+            to sections: inout [PromptContextSection]
+        ) {
+            appendThreadIntentContext(for: context.task, to: &sections)
+        }
+    }
+
+    private struct ContextSourceIndexSectionProvider: PromptContextSectionProvider {
+        let id: PromptContextSectionProviderID = .contextSourceIndex
+
+        func appendSections(
+            for context: PromptContextSectionProviderContext,
+            state _: inout PromptContextSectionProviderState,
+            to sections: inout [PromptContextSection]
+        ) {
+            appendContextSourceIndex(for: context.task, to: &sections)
+        }
+    }
+
+    private struct NativeContinuationSectionProvider: PromptContextSectionProvider {
+        let id: PromptContextSectionProviderID = .nativeContinuation
+
+        func appendSections(
+            for context: PromptContextSectionProviderContext,
+            state _: inout PromptContextSectionProviderState,
+            to sections: inout [PromptContextSection]
+        ) {
+            appendNativeContinuationPolicy(for: context.task, to: &sections)
+        }
+    }
+
+    private struct ConversationHistorySectionProvider: PromptContextSectionProvider {
+        let id: PromptContextSectionProviderID = .conversationHistory
+
+        func appendSections(
+            for context: PromptContextSectionProviderContext,
+            state: inout PromptContextSectionProviderState,
+            to sections: inout [PromptContextSection]
+        ) {
+            let task = context.task
+            let folder = TaskWorkspaceAccess(task: task).taskFolder
+            if !folder.isEmpty {
+                if let transcript = buildRecentConversationTranscriptWithSources(for: task) {
                     appendSection(
-                        "Session History (prior turns):\n\(trimmed)",
+                        "Recent conversation transcript (exact recent turns from this task):\n\(transcript.text)",
                         kind: .recentTranscript,
                         to: &sections,
-                        sourcePointers: [sourcePointer(label: "session history", target: historyPath)]
+                        sourcePointers: transcript.sourcePointers
+                    )
+                    state.includedExactSessionTranscript = true
+                } else {
+                    let historyPath = SessionHistoryManager.historyPath(taskFolder: folder)
+                    if let history = try? String(contentsOfFile: historyPath, encoding: .utf8) {
+                        let trimmed = recentSessionHistorySummary(from: history)
+                        appendSection(
+                            "Session History (prior turns):\n\(trimmed)",
+                            kind: .recentTranscript,
+                            to: &sections,
+                            sourcePointers: [sourcePointer(label: "session history", target: historyPath)]
+                        )
+                    }
+                }
+            }
+
+            let sortedRuns = followUpContextRuns(for: task)
+            if !state.includedExactSessionTranscript, !sortedRuns.isEmpty {
+                var answersBlock = "Previous responses (your final answers from each turn):"
+                for (i, run) in sortedRuns.enumerated() where !run.output.isEmpty {
+                    let turnLabel = "Turn \(i + 1)"
+                    let recentIndex = sortedRuns.count - i
+                    let maxLen = recentIndex <= fallbackRecentRunResponseLimit
+                        ? fallbackRecentRunResponseMaxCharacters
+                        : fallbackOlderRunResponseMaxCharacters
+                    let snippet = boundedText(run.output, maxCharacters: maxLen, keeping: .suffix)
+                    answersBlock += "\n\n--- \(turnLabel) ---\n\(snippet)"
+                }
+                appendSection(
+                    answersBlock,
+                    kind: .recentTranscript,
+                    to: &sections,
+                    sourcePointers: sortedRuns.map { sourcePointer(label: "task run", target: $0.id.uuidString) }
+                )
+            }
+        }
+    }
+
+    private struct ChangedFilesSectionProvider: PromptContextSectionProvider {
+        let id: PromptContextSectionProviderID = .changedFiles
+
+        func appendSections(
+            for context: PromptContextSectionProviderContext,
+            state _: inout PromptContextSectionProviderState,
+            to sections: inout [PromptContextSection]
+        ) {
+            let task = context.task
+            let activeRuns = activeFollowUpRuns(for: task)
+            let allChanges = activeRuns.flatMap { $0.fileChanges }
+            if !allChanges.isEmpty {
+                let uniquePaths = Array(Set(allChanges.map { $0.path })).sorted().suffix(20)
+                let changeList = uniquePaths.map { path -> String in
+                    let lastChange = allChanges.last { $0.path == path }
+                    let icon = lastChange?.kind == .write ? "+" : "~"
+                    return "[\(icon)] \(path)"
+                }.joined(separator: "\n")
+                appendSection(
+                    "Files modified in this task:\n\(changeList)",
+                    kind: .changedFiles,
+                    to: &sections,
+                    sourcePointers: changedFileSourcePointers(Array(uniquePaths))
+                )
+            }
+
+            let folder = TaskWorkspaceAccess(task: task).taskFolder
+            if !folder.isEmpty {
+                let taskFiles = listTaskFolderFiles(folder)
+                if !taskFiles.isEmpty {
+                    appendSection(
+                        "Generated files in task folder (\(folder)):\n\(taskFiles.joined(separator: "\n"))\nYou can read these files if needed for context.",
+                        kind: .changedFiles,
+                        to: &sections,
+                        sourcePointers: [sourcePointer(label: "task output folder", target: folder)]
                     )
                 }
             }
         }
+    }
 
-        let activeRuns = activeFollowUpRuns(for: task)
-        let sortedRuns = followUpContextRuns(for: task)
-        if !includedExactSessionTranscript, !sortedRuns.isEmpty {
-            var answersBlock = "Previous responses (your final answers from each turn):"
-            for (i, run) in sortedRuns.enumerated() where !run.output.isEmpty {
-                let turnLabel = "Turn \(i + 1)"
-                let recentIndex = sortedRuns.count - i
-                let maxLen = recentIndex <= fallbackRecentRunResponseLimit
-                    ? fallbackRecentRunResponseMaxCharacters
-                    : fallbackOlderRunResponseMaxCharacters
-                let snippet = boundedText(run.output, maxCharacters: maxLen, keeping: .suffix)
-                answersBlock += "\n\n--- \(turnLabel) ---\n\(snippet)"
+    private struct WorkspaceInstructionsSectionProvider: PromptContextSectionProvider {
+        let id: PromptContextSectionProviderID = .workspaceInstructions
+
+        func appendSections(
+            for context: PromptContextSectionProviderContext,
+            state _: inout PromptContextSectionProviderState,
+            to sections: inout [PromptContextSection]
+        ) {
+            guard let instructions = context.task.workspace?.instructions,
+                  !instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return
             }
             appendSection(
-                answersBlock,
-                kind: .recentTranscript,
-                to: &sections,
-                sourcePointers: sortedRuns.map { sourcePointer(label: "task run", target: $0.id.uuidString) }
-            )
-        }
-
-        let allChanges = activeRuns.flatMap { $0.fileChanges }
-        if !allChanges.isEmpty {
-            let uniquePaths = Array(Set(allChanges.map { $0.path })).sorted().suffix(20)
-            let changeList = uniquePaths.map { path -> String in
-                let lastChange = allChanges.last { $0.path == path }
-                let icon = lastChange?.kind == .write ? "+" : "~"
-                return "[\(icon)] \(path)"
-            }.joined(separator: "\n")
-            appendSection(
-                "Files modified in this task:\n\(changeList)",
-                kind: .changedFiles,
-                to: &sections,
-                sourcePointers: changedFileSourcePointers(Array(uniquePaths))
-            )
-        }
-
-        if !folder.isEmpty {
-            let taskFiles = listTaskFolderFiles(folder)
-            if !taskFiles.isEmpty {
-                appendSection(
-                    "Generated files in task folder (\(folder)):\n\(taskFiles.joined(separator: "\n"))\nYou can read these files if needed for context.",
-                    kind: .changedFiles,
-                    to: &sections,
-                    sourcePointers: [sourcePointer(label: "task output folder", target: folder)]
-                )
-            }
-        }
-
-        appendTaskOutputFolder(for: task, to: &sections)
-
-        let contextLine = buildFollowUpMessage(message: "", task: task, capabilityScope: capabilityScope)
-        if contextLine != "",
-           let bracketEnd = contextLine.range(of: "]\n\n") {
-            appendSection(
-                String(contextLine[contextLine.startIndex...bracketEnd.lowerBound]),
+                "Workspace Context:\n\(instructions)",
                 kind: .supportingContext,
                 to: &sections,
-                sourcePointers: followUpContextSourcePointers(task)
+                sourcePointers: workspaceSourcePointers(context.task.workspace)
             )
         }
+    }
 
-        appendConnectorContext(from: capabilityScope, to: &sections)
+    private struct WorkspaceMemoriesSectionProvider: PromptContextSectionProvider {
+        let id: PromptContextSectionProviderID = .memories
 
-        appendShelfBrowserContext(
-            for: task,
-            contextText: message,
-            enabledBrowserAdapters: capabilityScope.enabledBrowserAdapters,
-            to: &sections
-        )
-
-        if let memoriesBlock = workspaceMemoriesBlock(
-            for: task.workspace,
-            contextText: [task.goal, message].joined(separator: "\n")
+        func appendSections(
+            for context: PromptContextSectionProviderContext,
+            state _: inout PromptContextSectionProviderState,
+            to sections: inout [PromptContextSection]
         ) {
+            let contextText = switch context.mode {
+            case .initialRun:
+                context.task.goal
+            case .followUp:
+                [context.task.goal, context.followUpMessage].joined(separator: "\n")
+            }
+            guard let memoriesBlock = workspaceMemoriesBlock(
+                for: context.task.workspace,
+                contextText: contextText
+            ) else {
+                return
+            }
             appendSection(
                 memoriesBlock.text,
                 kind: .memories,
@@ -970,24 +1089,213 @@ enum AgentPromptBuilder {
                 sourcePointers: memoriesBlock.sourcePointers
             )
         }
+    }
 
-        if AgentRuntimeAdapterRegistry.supportsAstraRunProtocol(for: task.resolvedRuntimeID) {
+    private struct RecentTasksSectionProvider: PromptContextSectionProvider {
+        let id: PromptContextSectionProviderID = .recentTasks
+
+        func appendSections(
+            for context: PromptContextSectionProviderContext,
+            state _: inout PromptContextSectionProviderState,
+            to sections: inout [PromptContextSection]
+        ) {
+            let task = context.task
+            guard let ws = task.workspace else { return }
+            let recentTasks = ws.tasks
+                .filter { $0.id != task.id && $0.isTerminal }
+                .sorted { ($0.completedAt ?? .distantPast) > ($1.completedAt ?? .distantPast) }
+                .prefix(3)
+
+            guard !recentTasks.isEmpty else { return }
+            var summaryBlock = "Recent tasks in this workspace (for context):"
+            for t in recentTasks {
+                let status = t.status.rawValue
+                let output = t.runs.last?.output ?? ""
+                let summary = output.isEmpty ? "(no output)" : String(output.prefix(200))
+                summaryBlock += "\n- [\(status)] \(t.title): \(summary)"
+            }
+            appendSection(
+                summaryBlock,
+                kind: .recentTranscript,
+                to: &sections,
+                sourcePointers: [sourcePointer(label: "workspace task history", target: ws.name)]
+            )
+        }
+    }
+
+    private struct WorkspaceEnvironmentSectionProvider: PromptContextSectionProvider {
+        let id: PromptContextSectionProviderID = .workspaceEnvironment
+
+        func appendSections(
+            for context: PromptContextSectionProviderContext,
+            state _: inout PromptContextSectionProviderState,
+            to sections: inout [PromptContextSection]
+        ) {
+            appendSSHContext(for: context.task, to: &sections)
+            appendWorkspacePaths(for: context.task, to: &sections)
+        }
+    }
+
+    private struct TaskOutputFolderSectionProvider: PromptContextSectionProvider {
+        let id: PromptContextSectionProviderID = .taskOutputFolder
+
+        func appendSections(
+            for context: PromptContextSectionProviderContext,
+            state _: inout PromptContextSectionProviderState,
+            to sections: inout [PromptContextSection]
+        ) {
+            appendTaskOutputFolder(for: context.task, to: &sections)
+        }
+    }
+
+    private struct InitialTaskDetailsSectionProvider: PromptContextSectionProvider {
+        let id: PromptContextSectionProviderID = .taskDetails
+
+        func appendSections(
+            for context: PromptContextSectionProviderContext,
+            state _: inout PromptContextSectionProviderState,
+            to sections: inout [PromptContextSection]
+        ) {
+            let task = context.task
+            appendSection("Goal: \(task.goal)", kind: .currentGoal, to: &sections, sourcePointers: taskSourcePointers(task))
+            appendInputs(for: task, to: &sections)
+            appendConstraints(for: task, to: &sections)
+        }
+    }
+
+    private struct FollowUpContextSectionProvider: PromptContextSectionProvider {
+        let id: PromptContextSectionProviderID = .followUpContext
+
+        func appendSections(
+            for context: PromptContextSectionProviderContext,
+            state _: inout PromptContextSectionProviderState,
+            to sections: inout [PromptContextSection]
+        ) {
+            let contextLine = buildFollowUpMessage(
+                message: "",
+                task: context.task,
+                capabilityScope: context.capabilityScope
+            )
+            if contextLine != "",
+               let bracketEnd = contextLine.range(of: "]\n\n") {
+                appendSection(
+                    String(contextLine[contextLine.startIndex...bracketEnd.lowerBound]),
+                    kind: .supportingContext,
+                    to: &sections,
+                    sourcePointers: followUpContextSourcePointers(context.task)
+                )
+            }
+        }
+    }
+
+    private struct CapabilitySectionProvider: PromptContextSectionProvider {
+        let id: PromptContextSectionProviderID = .capabilities
+
+        func appendSections(
+            for context: PromptContextSectionProviderContext,
+            state _: inout PromptContextSectionProviderState,
+            to sections: inout [PromptContextSection]
+        ) {
+            if context.mode == .initialRun {
+                appendSkillInstructions(from: context.capabilityScope, to: &sections)
+            }
+            appendConnectorContext(from: context.capabilityScope, to: &sections)
+            if context.mode == .initialRun {
+                appendToolContext(from: context.capabilityScope, to: &sections)
+            }
+        }
+    }
+
+    private struct BrowserSectionProvider: PromptContextSectionProvider {
+        let id: PromptContextSectionProviderID = .browser
+
+        func appendSections(
+            for context: PromptContextSectionProviderContext,
+            state _: inout PromptContextSectionProviderState,
+            to sections: inout [PromptContextSection]
+        ) {
+            let contextText = context.mode == .initialRun ? "" : context.followUpMessage
+            appendShelfBrowserContext(
+                for: context.task,
+                contextText: contextText,
+                enabledBrowserAdapters: context.capabilityScope.enabledBrowserAdapters,
+                to: &sections
+            )
+        }
+    }
+
+    private struct DocumentReaderSectionProvider: PromptContextSectionProvider {
+        let id: PromptContextSectionProviderID = .documentReader
+
+        func appendSections(
+            for _: PromptContextSectionProviderContext,
+            state _: inout PromptContextSectionProviderState,
+            to sections: inout [PromptContextSection]
+        ) {
+            appendDocumentReaderContext(to: &sections)
+        }
+    }
+
+    private struct AstraRunProtocolSectionProvider: PromptContextSectionProvider {
+        let id: PromptContextSectionProviderID = .astraRunProtocol
+
+        func appendSections(
+            for context: PromptContextSectionProviderContext,
+            state _: inout PromptContextSectionProviderState,
+            to sections: inout [PromptContextSection]
+        ) {
+            guard AgentRuntimeAdapterRegistry.supportsAstraRunProtocol(for: context.task.resolvedRuntimeID) else { return }
             appendAstraRunProtocolInstructions(to: &sections)
         }
+    }
 
-        appendSection("""
-        History Lookup Rule:
-        If this follow-up asks about prior decisions, previous attempts, old failures, changed files, "what we decided", "what happened before", or exact earlier wording, read the referenced current state, session history, or turn output files before answering.
-        """, kind: .threadState, to: &sections, sourcePointers: taskStateSourcePointers(task))
+    private struct HistoryLookupRuleSectionProvider: PromptContextSectionProvider {
+        let id: PromptContextSectionProviderID = .historyLookupRule
 
-        appendSection(
-            "User's follow-up request:\n\(message)",
-            kind: .currentGoal,
-            to: &sections,
-            sourcePointers: [sourcePointer(label: "current follow-up request", target: "user message")]
-        )
+        func appendSections(
+            for context: PromptContextSectionProviderContext,
+            state _: inout PromptContextSectionProviderState,
+            to sections: inout [PromptContextSection]
+        ) {
+            appendSection("""
+            History Lookup Rule:
+            If this follow-up asks about prior decisions, previous attempts, old failures, changed files, "what we decided", "what happened before", or exact earlier wording, read the referenced current state, session history, or turn output files before answering.
+            """, kind: .threadState, to: &sections, sourcePointers: taskStateSourcePointers(context.task))
+        }
+    }
 
-        return sections
+    private struct FollowUpRequestSectionProvider: PromptContextSectionProvider {
+        let id: PromptContextSectionProviderID = .followUpRequest
+
+        func appendSections(
+            for context: PromptContextSectionProviderContext,
+            state _: inout PromptContextSectionProviderState,
+            to sections: inout [PromptContextSection]
+        ) {
+            appendSection(
+                "User's follow-up request:\n\(context.followUpMessage)",
+                kind: .currentGoal,
+                to: &sections,
+                sourcePointers: [sourcePointer(label: "current follow-up request", target: "user message")]
+            )
+        }
+    }
+
+    private struct CurrentTaskReminderSectionProvider: PromptContextSectionProvider {
+        let id: PromptContextSectionProviderID = .currentTaskReminder
+
+        func appendSections(
+            for context: PromptContextSectionProviderContext,
+            state _: inout PromptContextSectionProviderState,
+            to sections: inout [PromptContextSection]
+        ) {
+            appendSection(
+                currentTaskReminder(for: context.task),
+                kind: .currentGoal,
+                to: &sections,
+                sourcePointers: taskSourcePointers(context.task)
+            )
+        }
     }
 
     private static func appendNativeContinuationPolicy(for task: AgentTask, to sections: inout [PromptContextSection]) {
