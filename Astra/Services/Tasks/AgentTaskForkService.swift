@@ -2,6 +2,13 @@ import Foundation
 import SwiftData
 
 enum AgentTaskForkService {
+    private struct ForkManifestEventPayload: Encodable {
+        var sourceTaskID: String
+        var checkpointRunID: String
+        var checkpointRunIndex: Int
+        var manifestPath: String
+    }
+
     static func fork(from source: AgentTask, upToRun targetRun: TaskRun, in context: ModelContext) -> AgentTask {
         let forked = AgentTask(
             title: "Fork of \(source.title)",
@@ -35,6 +42,7 @@ enum AgentTaskForkService {
 
         let runsToFork = sortedRuns.prefix(through: cutoffIndex)
         var forkedRunsBySourceID: [UUID: TaskRun] = [:]
+        var copiedRunIDs: [UUID] = []
         var totalTokens = 0
         var totalCost = 0.0
 
@@ -53,6 +61,7 @@ enum AgentTaskForkService {
             newRun.exitCode = sourceRun.exitCode
             context.insert(newRun)
             forkedRunsBySourceID[sourceRun.id] = newRun
+            copiedRunIDs.append(sourceRun.id)
             totalTokens += sourceRun.tokensUsed
             totalCost += sourceRun.costUSD
         }
@@ -89,6 +98,39 @@ enum AgentTaskForkService {
         context.insert(checkpointEvent)
 
         context.insert(forked)
+        do {
+            let manifest = try TaskForkManifestService.writeManifest(
+                source: source,
+                forked: forked,
+                targetRun: targetRun,
+                checkpointRunIndex: cutoffIndex,
+                copiedRunIDs: copiedRunIDs
+            )
+            let manifestPath = TaskForkManifestService.manifestPath(
+                taskFolder: TaskWorkspaceAccess(task: forked).taskFolder
+            )
+            let payload = ForkManifestEventPayload(
+                sourceTaskID: manifest.sourceTaskID.uuidString,
+                checkpointRunID: manifest.checkpointRunID.uuidString,
+                checkpointRunIndex: manifest.checkpointRunIndex,
+                manifestPath: manifestPath
+            )
+            let eventPayload = (try? String(
+                data: JSONEncoder().encode(payload),
+                encoding: .utf8
+            )) ?? ""
+            context.insert(TaskEvent(
+                task: forked,
+                type: "task.fork_manifest.created",
+                payload: eventPayload,
+                run: forkedRunsBySourceID[targetRun.id]
+            ))
+        } catch {
+            AppLogger.audit(.taskFailed, category: "Persistence", taskID: forked.id, fields: [
+                "reason": "fork_manifest_write_failed",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+        }
         return forked
     }
 }
