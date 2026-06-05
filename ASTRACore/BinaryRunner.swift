@@ -30,11 +30,13 @@ public struct RunResult: Sendable, Equatable {
     public let launchError: String?
     public let timedOut: Bool
     public let cancelled: Bool
+    public let elapsedTime: TimeInterval
 
-    public init(outcome: Outcome, stdout: String, stderr: String) {
+    public init(outcome: Outcome, stdout: String, stderr: String, elapsedTime: TimeInterval = 0) {
         self.outcome = outcome
         self.stdout = stdout
         self.stderr = stderr
+        self.elapsedTime = elapsedTime
         switch outcome {
         case .exited(let code):
             self.exitCode = code
@@ -59,20 +61,25 @@ public struct RunResult: Sendable, Equatable {
         }
     }
 
-    public static func exited(code: Int32, stdout: String, stderr: String) -> RunResult {
-        RunResult(outcome: .exited(code: code), stdout: stdout, stderr: stderr)
+    public static func exited(code: Int32, stdout: String, stderr: String, elapsedTime: TimeInterval = 0) -> RunResult {
+        RunResult(outcome: .exited(code: code), stdout: stdout, stderr: stderr, elapsedTime: elapsedTime)
     }
 
-    public static func timedOut(stdout: String, stderr: String) -> RunResult {
-        RunResult(outcome: .timedOut, stdout: stdout, stderr: stderr)
+    public static func timedOut(stdout: String, stderr: String, elapsedTime: TimeInterval = 0) -> RunResult {
+        RunResult(outcome: .timedOut, stdout: stdout, stderr: stderr, elapsedTime: elapsedTime)
     }
 
-    public static func cancelled(stdout: String, stderr: String) -> RunResult {
-        RunResult(outcome: .cancelled, stdout: stdout, stderr: stderr)
+    public static func cancelled(stdout: String, stderr: String, elapsedTime: TimeInterval = 0) -> RunResult {
+        RunResult(outcome: .cancelled, stdout: stdout, stderr: stderr, elapsedTime: elapsedTime)
     }
 
-    public static func launchFailed(_ reason: String, stdout: String = "", stderr: String = "") -> RunResult {
-        RunResult(outcome: .launchFailed(reason), stdout: stdout, stderr: stderr)
+    public static func launchFailed(
+        _ reason: String,
+        stdout: String = "",
+        stderr: String = "",
+        elapsedTime: TimeInterval = 0
+    ) -> RunResult {
+        RunResult(outcome: .launchFailed(reason), stdout: stdout, stderr: stderr, elapsedTime: elapsedTime)
     }
 
     /// Convenience: did the process exit cleanly with status 0?
@@ -126,6 +133,22 @@ public struct ProcessBinaryRunner: BinaryRunner {
         timeout: TimeInterval,
         environment: [String: String]?
     ) async -> RunResult {
+        await run(
+            path: path,
+            args: args,
+            timeout: timeout,
+            environment: environment,
+            currentDirectory: nil
+        )
+    }
+
+    public func run(
+        path: String,
+        args: [String],
+        timeout: TimeInterval,
+        environment: [String: String]?,
+        currentDirectory: String?
+    ) async -> RunResult {
         let state = ProcessRunState()
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
@@ -136,6 +159,9 @@ public struct ProcessBinaryRunner: BinaryRunner {
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: path)
                 process.arguments = args
+                if let currentDirectory {
+                    process.currentDirectoryURL = URL(fileURLWithPath: currentDirectory, isDirectory: true)
+                }
                 if let env = environment {
                     process.environment = env
                 }
@@ -148,6 +174,7 @@ public struct ProcessBinaryRunner: BinaryRunner {
                 let stderrPipe = Pipe()
                 process.standardOutput = stdoutPipe
                 process.standardError = stderrPipe
+                process.standardInput = FileHandle.nullDevice
 
                 let stdoutCollector = PipeCollector()
                 let stderrCollector = PipeCollector()
@@ -183,7 +210,8 @@ public struct ProcessBinaryRunner: BinaryRunner {
                     state.finish(
                         outcome: outcome,
                         stdout: stdoutCollector.string,
-                        stderr: stderrCollector.string
+                        stderr: stderrCollector.string,
+                        elapsedTime: elapsed
                     )
                 }
 
@@ -194,7 +222,8 @@ public struct ProcessBinaryRunner: BinaryRunner {
                     state.finish(
                         outcome: .launchFailed(error.localizedDescription),
                         stdout: "",
-                        stderr: ""
+                        stderr: "",
+                        elapsedTime: Date().timeIntervalSince(startedAt)
                     )
                     return
                 }
@@ -214,7 +243,8 @@ public struct ProcessBinaryRunner: BinaryRunner {
                     state.finish(
                         outcome: .timedOut,
                         stdout: stdoutCollector.string,
-                        stderr: stderrCollector.string
+                        stderr: stderrCollector.string,
+                        elapsedTime: Date().timeIntervalSince(startedAt)
                     )
                     // Polite first, then forceful. terminate() sends SIGTERM;
                     // if the process hasn't exited after 500ms we SIGKILL.
@@ -272,7 +302,7 @@ private final class ProcessRunState: @unchecked Sendable {
         let alreadyFinished = didFinish
         lock.unlock()
         if alreadyFinished {
-            finish(outcome: .cancelled, stdout: "", stderr: "")
+            finish(outcome: .cancelled, stdout: "", stderr: "", elapsedTime: 0)
         }
         return alreadyFinished
     }
@@ -321,13 +351,13 @@ private final class ProcessRunState: @unchecked Sendable {
         lock.lock()
         processToTerminate = process
         lock.unlock()
-        finish(outcome: .cancelled, stdout: "", stderr: "")
+        finish(outcome: .cancelled, stdout: "", stderr: "", elapsedTime: 0)
         if let processToTerminate {
             terminate(processToTerminate)
         }
     }
 
-    func finish(outcome: RunResult.Outcome, stdout: String, stderr: String) {
+    func finish(outcome: RunResult.Outcome, stdout: String, stderr: String, elapsedTime: TimeInterval) {
         lock.lock()
         let cont = continuation
         continuation = nil
@@ -337,7 +367,12 @@ private final class ProcessRunState: @unchecked Sendable {
         timeoutTask = nil
         lock.unlock()
         task?.cancel()
-        cont?.resume(returning: RunResult(outcome: outcome, stdout: stdout, stderr: stderr))
+        cont?.resume(returning: RunResult(
+            outcome: outcome,
+            stdout: stdout,
+            stderr: stderr,
+            elapsedTime: elapsedTime
+        ))
     }
 
     private func terminate(_ process: Process) {

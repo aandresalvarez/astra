@@ -15,7 +15,46 @@ struct ProcessBinaryRunnerTests {
         #expect(result.launchError == nil)
         #expect(result.timedOut == false)
         #expect(result.cancelled == false)
+        #expect(result.elapsedTime == 0)
         #expect(result.isSuccess == true)
+    }
+
+    @Test("Successful process records elapsed time")
+    func successfulProcessRecordsElapsedTime() async {
+        let result = await ProcessBinaryRunner().run(
+            path: "/bin/sh",
+            args: ["-c", "printf ok"],
+            timeout: 3,
+            environment: nil
+        )
+
+        #expect(result.exitCode == 0)
+        #expect(result.stdout == "ok")
+        #expect(result.elapsedTime >= 0)
+    }
+
+    @Test("Process runner honors current directory")
+    func processRunnerHonorsCurrentDirectory() async throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-process-cwd-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try "cwd marker".write(
+            to: directory.appendingPathComponent("marker.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let result = await ProcessBinaryRunner().run(
+            path: "/bin/sh",
+            args: ["-c", "cat marker.txt"],
+            timeout: 3,
+            environment: nil,
+            currentDirectory: directory.path
+        )
+
+        #expect(result.exitCode == 0)
+        #expect(result.stdout == "cwd marker")
     }
 
     @Test("Launch failure is classified without an exit code")
@@ -51,6 +90,7 @@ struct ProcessBinaryRunnerTests {
         #expect(result.launchError == nil)
         #expect(result.timedOut == true)
         #expect(result.cancelled == false)
+        #expect(result.elapsedTime > 0)
         #expect(result.isSuccess == false)
         #expect(result.stdout.contains("out"))
         #expect(result.stderr.contains("err"))

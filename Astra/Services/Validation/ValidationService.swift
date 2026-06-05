@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRACore
 
 enum ValidationResult {
     case passed(details: String)
@@ -11,6 +12,10 @@ struct ValidationCommandResult: Equatable, Sendable {
     let exitCode: Int
     let stdout: String
     let stderr: String
+    var launchError: String? = nil
+    var timedOut: Bool = false
+    var cancelled: Bool = false
+    var elapsedTime: TimeInterval = 0
 }
 
 protocol ValidationCommandRunning: Sendable {
@@ -19,19 +24,36 @@ protocol ValidationCommandRunning: Sendable {
 
 struct ShellValidationCommandRunner: ValidationCommandRunning {
     func run(command: String, workingDirectory: String, environment: [String: String]) async -> ValidationCommandResult {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-c", command]
-        process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory)
-        process.environment = environment
+        let result = await ProcessBinaryRunner().run(
+            path: "/bin/zsh",
+            args: ["-c", command],
+            timeout: 300,
+            environment: environment,
+            currentDirectory: workingDirectory
+        )
+        return ValidationCommandResult(
+            exitCode: Int(result.exitCode ?? -1),
+            stdout: result.stdout.trimmingCharacters(in: .whitespacesAndNewlines),
+            stderr: validationStderr(from: result),
+            launchError: result.launchError,
+            timedOut: result.timedOut,
+            cancelled: result.cancelled,
+            elapsedTime: result.elapsedTime
+        )
+    }
 
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        let result = await AsyncProcessRunner.run(process, stdout: stdoutPipe, stderr: stderrPipe)
-        return ValidationCommandResult(exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr)
+    private func validationStderr(from result: RunResult) -> String {
+        let trimmed = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        if result.timedOut {
+            return trimmed.isEmpty ? "Validation command timed out." : trimmed
+        }
+        if let launchError = result.launchError, trimmed.isEmpty {
+            return launchError
+        }
+        if result.cancelled, trimmed.isEmpty {
+            return "Validation command cancelled."
+        }
+        return trimmed
     }
 }
 
