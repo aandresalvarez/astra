@@ -599,9 +599,8 @@ struct TaskMainView: View {
             cachedVerificationPresentation = nil
             return
         }
-        let verification = TaskContextStateManager.load(taskFolder: request.taskFolder)?.verification
         cachedVerificationRequest = request
-        cachedVerificationPresentation = verification.map(TaskPresentationState.verificationPresentation(for:))
+        cachedVerificationPresentation = TaskVerificationPresentationLoader.presentation(taskFolder: request.taskFolder)
     }
 
     private func schedulePlanStateCacheRefresh() {
@@ -1004,26 +1003,20 @@ struct TaskMainView: View {
         return cachedVerificationPresentation
     }
 
-    private var missionControlPresentation: MissionControlPresentation? {
-        let folder = TaskWorkspaceAccess(task: task).taskFolder
-        let state = folder.isEmpty ? nil : TaskContextStateManager.load(taskFolder: folder)
-        return MissionControlPresentation.build(
+    private var missionControlSnapshot: TaskMissionControlSnapshot {
+        TaskMissionControlSnapshot.build(
             task: task,
             planState: cachedPlanState,
-            state: state
+            isFinished: isFinished
         )
     }
 
+    private var missionControlPresentation: MissionControlPresentation? {
+        missionControlSnapshot.presentation
+    }
+
     private var verificationLoadRequest: TaskVerificationLoadRequest? {
-        guard isFinished else { return nil }
-        let folder = TaskWorkspaceAccess(task: task).taskFolder
-        guard !folder.isEmpty else { return nil }
-        return TaskVerificationLoadRequest(
-            taskID: task.id,
-            taskStatus: task.status,
-            taskUpdatedAt: task.updatedAt,
-            taskFolder: folder
-        )
+        missionControlSnapshot.verificationLoadRequest
     }
 
     @MainActor
