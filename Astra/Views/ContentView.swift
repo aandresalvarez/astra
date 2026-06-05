@@ -255,20 +255,20 @@ struct ContentView: View {
     @State private var linkedScheduleWarning: LinkedScheduleWarning?
     @State private var externalRouteNotice = ""
     @State private var runningTaskCount = 0
-    @AppStorage("claudePath") private var claudePath = ""
-    @AppStorage("copilotPath") private var copilotPath = ""
+    @AppStorage(AppStorageKeys.claudePath) private var claudePath = ""
+    @AppStorage(AppStorageKeys.copilotPath) private var copilotPath = ""
     @AppStorage(AppStorageKeys.runtimeProviderSettingsRevision) private var runtimeProviderSettingsRevision = 0
-    @AppStorage("defaultRuntimeID") private var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
-    @AppStorage("defaultModel") private var defaultModel = TaskExecutionDefaults.model
+    @AppStorage(AppStorageKeys.defaultRuntimeID) private var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
+    @AppStorage(AppStorageKeys.defaultModel) private var defaultModel = TaskExecutionDefaults.model
     @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultBudget = TaskExecutionDefaults.tokenBudget
     @AppStorage(AppStorageKeys.claudeProvider) private var claudeProviderRaw = ClaudeProvider.anthropic.rawValue
     @AppStorage(AppStorageKeys.claudeVertexOpusModel) private var claudeVertexOpusModel = ""
     @AppStorage(AppStorageKeys.claudeVertexSonnetModel) private var claudeVertexSonnetModel = ""
     @AppStorage(AppStorageKeys.claudeVertexHaikuModel) private var claudeVertexHaikuModel = ""
-    @AppStorage("timeoutSeconds") private var timeoutSeconds = 600
+    @AppStorage(AppStorageKeys.timeoutSeconds) private var timeoutSeconds = 600
     @AppStorage("appUIScale") private var uiScale: Double = 1.0
-    @AppStorage("validationModel") private var validationModel = "claude-haiku-4-5-20251001"
-    @AppStorage("workspacesRoot") private var workspacesRoot = ""
+    @AppStorage(AppStorageKeys.validationModel) private var validationModel = "claude-haiku-4-5-20251001"
+    @AppStorage(AppStorageKeys.workspacesRoot) private var workspacesRoot = ""
     @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
     @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var defaultAgentPolicyLevelRaw = AgentPolicyLevel.review.rawValue
     @AppStorage(AppStorageKeys.securityGateDefaultedToReview) private var securityGateDefaultedToReview = false

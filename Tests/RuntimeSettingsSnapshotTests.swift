@@ -116,6 +116,60 @@ struct RuntimeSettingsSnapshotTests {
         #expect(snapshot.defaultModel == "gpt-5.1")
     }
 
+    @MainActor
+    @Test("App settings store refreshes runtime, provider, and UI snapshots")
+    func appSettingsStoreRefreshesRuntimeProviderAndUISnapshots() {
+        let (defaults, suiteName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = AppSettingsSnapshotStore(
+            defaults: defaults,
+            notificationCenter: NotificationCenter(),
+            observesDefaultsChanges: false
+        )
+
+        defaults.set(AgentRuntimeID.copilotCLI.rawValue, forKey: AppStorageKeys.defaultRuntimeID)
+        defaults.set("gpt-5.1", forKey: AppStorageKeys.defaultModel)
+        defaults.set(42_000, forKey: AppStorageKeys.defaultTokenBudget)
+        defaults.set("/bin/copilot", forKey: AppStorageKeys.copilotPath)
+        defaults.set("/tmp/astra-workspaces", forKey: AppStorageKeys.workspacesRoot)
+        defaults.set(900, forKey: AppStorageKeys.timeoutSeconds)
+
+        store.refresh()
+
+        #expect(store.runtimeSettings.defaultRuntime == .copilotCLI)
+        #expect(store.runtimeSettings.defaultModel == "gpt-5.1")
+        #expect(store.runtimeSettings.defaultBudget == 42_000)
+        #expect(store.providerSettings.providerSettings.executablePath(for: .copilotCLI) == "/bin/copilot")
+        #expect(store.uiPreferences.workspacesRoot == "/tmp/astra-workspaces")
+        #expect(store.uiPreferences.timeoutSeconds == 900)
+    }
+
+    @MainActor
+    @Test("App settings store normalizes default model after runtime cache changes")
+    func appSettingsStoreNormalizesDefaultModelAfterRuntimeCacheChanges() {
+        let (defaults, suiteName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = AppSettingsSnapshotStore(
+            defaults: defaults,
+            notificationCenter: NotificationCenter(),
+            observesDefaultsChanges: false
+        )
+        let cacheJSON = #"{"runtimeID":"copilot_cli","models":["gpt-5.1"],"checkedAt":0,"authority":"authoritative"}"#
+
+        defaults.set(AgentRuntimeID.copilotCLI.rawValue, forKey: AppStorageKeys.defaultRuntimeID)
+        defaults.set("claude-sonnet-4-6", forKey: AppStorageKeys.defaultModel)
+        defaults.set(cacheJSON, forKey: AppStorageKeys.copilotAvailableModels)
+        defaults.set(12, forKey: AppStorageKeys.runtimeModelCacheRevision)
+
+        store.refresh()
+
+        #expect(store.runtimeSettings.defaultRuntime == .copilotCLI)
+        #expect(store.runtimeSettings.normalizedDefaultModel == "gpt-5.1")
+        #expect(store.runtimeSettings.modelCacheSignature.contains("12|"))
+    }
+
     @Test("UI preference snapshot applies stable defaults")
     func uiPreferenceSnapshotAppliesStableDefaults() {
         let (defaults, suiteName) = makeDefaults()

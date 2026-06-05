@@ -200,8 +200,8 @@ struct TaskMainView: View {
     @State private var cachedVerificationRequest: TaskVerificationLoadRequest?
     @State private var cachedVerificationPresentation: TaskVerificationPresentation?
     @FocusState private var isComposerFocused: Bool
-    @AppStorage("claudePath") private var claudePath = ""
-    @AppStorage("copilotPath") private var copilotPath = ""
+    @AppStorage(AppStorageKeys.claudePath) private var claudePath = ""
+    @AppStorage(AppStorageKeys.copilotPath) private var copilotPath = ""
     @AppStorage(AppStorageKeys.runtimeProviderSettingsRevision) private var runtimeProviderSettingsRevision = 0
     @AppStorage(AppStorageKeys.roleProfileRevision) private var roleProfileRevision = 0
     @AppStorage(AppStorageKeys.claudeProvider) private var claudeProviderRaw = ClaudeProvider.anthropic.rawValue
