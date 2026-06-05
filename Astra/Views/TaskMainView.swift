@@ -197,6 +197,7 @@ struct TaskMainView: View {
     @State private var isTaskDecisionDetailsExpanded = false
     @State private var cachedPlanStateSnapshot = TaskPlanStateSnapshot.empty
     @State private var pendingPlanStateRefreshTask: Task<Void, Never>?
+    @State private var pendingVerificationPresentationRefreshTask: Task<Void, Never>?
     @State private var cachedVerificationRequest: TaskVerificationLoadRequest?
     @State private var cachedVerificationPresentation: TaskVerificationPresentation?
     @FocusState private var isComposerFocused: Bool
@@ -570,17 +571,21 @@ struct TaskMainView: View {
 
     private func refreshTaskContextState() {
         TaskContextStateManager.refresh(task: task)
-        refreshCachedVerificationPresentationFromCurrentState()
+        scheduleVerificationPresentationRefresh()
     }
 
-    private func refreshCachedVerificationPresentationFromCurrentState() {
+    private func scheduleVerificationPresentationRefresh() {
         guard let request = verificationLoadRequest else {
+            pendingVerificationPresentationRefreshTask?.cancel()
+            pendingVerificationPresentationRefreshTask = nil
             cachedVerificationRequest = nil
             cachedVerificationPresentation = nil
             return
         }
-        cachedVerificationRequest = request
-        cachedVerificationPresentation = TaskVerificationPresentationLoader.presentation(taskFolder: request.taskFolder)
+        pendingVerificationPresentationRefreshTask?.cancel()
+        pendingVerificationPresentationRefreshTask = Task { @MainActor in
+            await refreshVerificationPresentation(for: request)
+        }
     }
 
     private func schedulePlanStateCacheRefresh() {

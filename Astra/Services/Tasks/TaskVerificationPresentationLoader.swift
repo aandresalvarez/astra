@@ -7,19 +7,31 @@ struct TaskVerificationLoadRequest: Hashable {
     let taskFolder: String
 }
 
-enum TaskVerificationPresentationLoader {
-    static func presentation(taskFolder: String) -> TaskVerificationPresentation? {
-        guard !taskFolder.isEmpty else { return nil }
-        guard let verification = TaskContextStateManager.load(taskFolder: taskFolder)?.verification else {
-            return nil
-        }
-        return TaskPresentationState.verificationPresentation(for: verification)
+struct TaskVerificationStateReader: Sendable {
+    private let loadVerification: @Sendable (String) -> TaskContextState.Verification?
+
+    init(loadVerification: @escaping @Sendable (String) -> TaskContextState.Verification?) {
+        self.loadVerification = loadVerification
     }
 
-    static func presentation(isFinished: Bool, taskFolder: String) async -> TaskVerificationPresentation? {
+    func verification(taskFolder: String) -> TaskContextState.Verification? {
+        loadVerification(taskFolder)
+    }
+
+    static let taskContextState = TaskVerificationStateReader { taskFolder in
+        TaskContextStateManager.load(taskFolder: taskFolder)?.verification
+    }
+}
+
+enum TaskVerificationPresentationLoader {
+    static func presentation(
+        isFinished: Bool,
+        taskFolder: String,
+        stateReader: TaskVerificationStateReader = .taskContextState
+    ) async -> TaskVerificationPresentation? {
         guard isFinished, !taskFolder.isEmpty else { return nil }
         let verification = await Task.detached(priority: .utility) {
-            TaskContextStateManager.load(taskFolder: taskFolder)?.verification
+            stateReader.verification(taskFolder: taskFolder)
         }.value
         return verification.map(TaskPresentationState.verificationPresentation(for:))
     }
