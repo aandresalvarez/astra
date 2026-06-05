@@ -2709,7 +2709,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 ))
             }
 
-            var object = try Self.jsonObject(from: try annotateBrowserLoopHint(json: json, action: action, target: browserActionTarget(
+            var object = try Self.jsonObject(from: try annotateBrowserLoopHint(json: json, action: action, target: BrowserControlActionService.targetIdentifier(
                 selector: selector,
                 x: x,
                 y: y,
@@ -2825,7 +2825,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 ))
             }
 
-            var object = try Self.jsonObject(from: try annotateBrowserLoopHint(json: json, action: action, target: browserActionTarget(
+            var object = try Self.jsonObject(from: try annotateBrowserLoopHint(json: json, action: action, target: BrowserControlActionService.targetIdentifier(
                 selector: selector,
                 x: x,
                 y: y,
@@ -2992,7 +2992,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 ))
             }
 
-            var object = try Self.jsonObject(from: try annotateBrowserLoopHint(json: json, action: action, target: browserActionTarget(
+            var object = try Self.jsonObject(from: try annotateBrowserLoopHint(json: json, action: action, target: BrowserControlActionService.targetIdentifier(
                 selector: selector,
                 x: nil,
                 y: nil,
@@ -3070,7 +3070,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             attempts += 1
             lastObject = object
             if Self.boolValue(object["ok"]) {
-                let boundsSignature = Self.boundsSignature(object["bounds"])
+                let boundsSignature = BrowserControlActionService.boundsSignature(object["bounds"])
                 if !boundsSignature.isEmpty && boundsSignature == lastBoundsSignature {
                     stableBoundsSamples += 1
                 } else {
@@ -3078,7 +3078,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 }
                 lastBoundsSignature = boundsSignature
                 if boundsSignature.isEmpty || stableBoundsSamples >= 1 {
-                    return actionabilityWaitSummary(
+                    return BrowserControlActionService.actionabilityWaitSummary(
                         object: object,
                         attempts: attempts,
                         stableBoundsSamples: stableBoundsSamples,
@@ -3088,8 +3088,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 }
             }
             let lastError = object["error"] as? String ?? ""
-            if !Self.isRetryableActionabilityError(lastError) {
-                return actionabilityWaitSummary(
+            if !BrowserControlActionService.isRetryableActionabilityError(lastError) {
+                return BrowserControlActionService.actionabilityWaitSummary(
                     object: object,
                     attempts: attempts,
                     stableBoundsSamples: stableBoundsSamples,
@@ -3114,7 +3114,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 fields: ["last_error": lastError]
             )
         }
-        return actionabilityWaitSummary(
+        return BrowserControlActionService.actionabilityWaitSummary(
             object: lastObject,
             attempts: attempts,
             stableBoundsSamples: stableBoundsSamples,
@@ -3165,57 +3165,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         return try Self.jsonObject(from: json)
     }
 
-    private func actionabilityWaitSummary(
-        object: [String: Any],
-        attempts: Int,
-        stableBoundsSamples: Int,
-        timedOut: Bool,
-        started: Date
-    ) -> [String: Any] {
-        let ok = Self.boolValue(object["ok"])
-        let boundsSignature = Self.boundsSignature(object["bounds"])
-        var summary: [String: Any] = [
-            "ok": ok,
-            "error": object["error"] as? String ?? "",
-            "attempts": attempts,
-            "elapsedMs": Int(Date().timeIntervalSince(started) * 1_000),
-            "timedOut": timedOut,
-            "visible": Self.boolValue(object["visible"]),
-            "disabled": Self.boolValue(object["disabled"]),
-            "actionable": Self.boolValue(object["actionable"]),
-            "stableBounds": ok && (stableBoundsSamples >= 1 || boundsSignature.isEmpty),
-            "stableBoundsSamples": stableBoundsSamples,
-            "coveredBy": object["coveredBy"] as? String ?? "",
-            "selector": object["selector"] as? String ?? "",
-            "requestedSelector": object["requestedSelector"] as? String ?? "",
-            "role": object["role"] as? String ?? "",
-            "tag": object["tag"] as? String ?? ""
-        ]
-        if let bounds = object["bounds"] as? [String: Any] {
-            summary["bounds"] = bounds
-        }
-        return summary
-    }
-
-    private static func boundsSignature(_ value: Any?) -> String {
-        guard let bounds = value as? [String: Any] else { return "" }
-        let x = intValue(bounds["x"]) ?? 0
-        let y = intValue(bounds["y"]) ?? 0
-        let width = intValue(bounds["width"]) ?? 0
-        let height = intValue(bounds["height"]) ?? 0
-        return "\(x),\(y),\(width),\(height)"
-    }
-
-    private static func isRetryableActionabilityError(_ error: String) -> Bool {
-        [
-            "selector_not_found",
-            "target_not_found",
-            "target_not_visible",
-            "target_obscured",
-            "target_outside_viewport"
-        ].contains(error)
-    }
-
     private func waitForPostActionSettle(before: [String: Any]?, action: String) async -> [String: Any] {
         let started = Date()
         let timeout: TimeInterval = 1.4
@@ -3262,25 +3211,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             "title": String(afterTitle.prefix(160)),
             "pageType": currentPageTypeLabel(urlString: afterURL)
         ]
-    }
-
-    private func browserActionTarget(
-        selector: String?,
-        x: Double?,
-        y: Double?,
-        label: String?,
-        role: String?,
-        text: String?,
-        placeholder: String?,
-        testID: String?
-    ) -> String {
-        if let selector, !selector.isEmpty { return "selector:\(selector.hashValue)" }
-        if let label, !label.isEmpty { return "label:\(label.lowercased().hashValue)" }
-        if let role, !role.isEmpty { return "role:\(role.lowercased())" }
-        if let text, !text.isEmpty { return "text:\(text.lowercased().hashValue)" }
-        if let placeholder, !placeholder.isEmpty { return "placeholder:\(placeholder.lowercased().hashValue)" }
-        if let testID, !testID.isEmpty { return "testid:\(testID.lowercased().hashValue)" }
-        return "point:\(x ?? -1),\(y ?? -1)"
     }
 
     private func logBrowserAction(
