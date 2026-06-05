@@ -151,6 +151,7 @@ public struct ProcessBinaryRunner: BinaryRunner {
 
                 let stdoutCollector = PipeCollector()
                 let stderrCollector = PipeCollector()
+                let startedAt = Date()
                 stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
                     let data = handle.availableData
                     if data.isEmpty { return }
@@ -175,8 +176,12 @@ public struct ProcessBinaryRunner: BinaryRunner {
                     let tailErr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
                     if !tailErr.isEmpty { stderrCollector.append(tailErr) }
 
+                    let elapsed = Date().timeIntervalSince(startedAt)
+                    let outcome: RunResult.Outcome = timeout > 0 && elapsed >= timeout
+                        ? .timedOut
+                        : .exited(code: proc.terminationStatus)
                     state.finish(
-                        outcome: .exited(code: proc.terminationStatus),
+                        outcome: outcome,
                         stdout: stdoutCollector.string,
                         stderr: stderrCollector.string
                     )
