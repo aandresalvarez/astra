@@ -116,6 +116,30 @@ struct BrowserBridgeSecurityTests {
         #expect(ShelfBrowserBridgeCommandRouter.route(method: "POST", path: "/missing") == nil)
     }
 
+    @Test("Bridge command router centralizes request accounting policy")
+    func bridgeCommandRouterCentralizesRequestAccountingPolicy() throws {
+        let unaccountedRoutes: Set<ShelfBrowserBridgeRoute> = [
+            .health,
+            .actions,
+            .trace,
+            .benchmark
+        ]
+
+        for route in ShelfBrowserBridgeRoute.allCases {
+            #expect(route.isFlightRecorded == !unaccountedRoutes.contains(route))
+            #expect(route.isRunGuarded == !unaccountedRoutes.contains(route))
+            #expect(route.isAvailableWhenBridgeDisabled == (route == .health || route == .actions))
+        }
+    }
+
+    @Test("Bridge command router enforces route methods")
+    func bridgeCommandRouterEnforcesRouteMethods() throws {
+        #expect(ShelfBrowserBridgeCommandRouter.route(method: "POST", path: "/health") == nil)
+        #expect(ShelfBrowserBridgeCommandRouter.route(method: "GET", path: "/navigate") == nil)
+        #expect(ShelfBrowserBridgeCommandRouter.route(method: "GET", path: "/click") == nil)
+        #expect(ShelfBrowserBridgeCommandRouter.route(method: "POST", path: "/snapshot") == nil)
+    }
+
     @Test("Bridge actions response preserves metadata contract")
     func bridgeActionsResponsePreservesMetadataContract() throws {
         let response = ShelfBrowserBridgeCommandRouter.actionsResponse(

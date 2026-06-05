@@ -897,7 +897,9 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     }
 
     private func handleBridgeRequestCore(_ request: BrowserBridgeRequest) async -> BrowserBridgeResponse {
-        if request.method == "GET", request.path == "/health" {
+        let route = ShelfBrowserBridgeCommandRouter.route(method: request.method, path: request.path)
+
+        if route == .health {
             let flightSnapshot = browserFlightRecorder.snapshot()
             var health: [String: Any] = [
                 "ok": true,
@@ -956,7 +958,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             return .json(health)
         }
 
-        if ShelfBrowserBridgeCommandRouter.route(method: request.method, path: request.path) == .actions {
+        if route == .actions {
             return .json(ShelfBrowserBridgeCommandRouter.actionsResponse(
                 backend: engine.bridgeBackendLabel,
                 capabilities: bridgeCapabilities,
@@ -971,13 +973,19 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             return .json(response, statusCode: 403)
         }
 
+        guard let route else {
+            var response: [String: Any] = ["ok": false, "error": "not_found"]
+            BrowserBridgeRecoveryHints.attach(to: &response, error: "not_found")
+            return .json(response, statusCode: 404)
+        }
+
         if let budgetResponse = browserRunGuardResponse(for: request) {
             return .json(budgetResponse, statusCode: 429)
         }
 
         do {
-            switch (request.method, request.path) {
-            case ("GET", "/analyze"):
+            switch route {
+            case .analyze:
                 let query = request.queryValue("query")
                 let full = Self.boolQueryValue(request.queryValue("full")) ?? false
                 let debug = Self.boolQueryValue(request.queryValue("debug")) ?? false
@@ -998,34 +1006,34 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     rolloutMode: rollout,
                     includeShadowV2: rollout.shouldAttachShadowAnalysis && !hasExplicitVersion
                 ))
-            case ("POST", "/preflight"):
+            case .preflight:
                 let command = try request.decodeJSON(BrowserPreflightCommand.self)
                 return .json(try await preflightResponse(command))
-            case ("GET", "/trace"):
+            case .trace:
                 var response: [String: Any] = ["ok": true]
                 response["trace"] = lastBrowserTrace ?? NSNull()
                 response["flight"] = browserFlightRecorder.snapshot()
                 response["lastDebugCapture"] = lastBrowserDebugCapture ?? NSNull()
                 return .json(response)
-            case ("GET", "/benchmark"):
+            case .benchmark:
                 return .json(BrowserBenchmarkRunner.response(
                     suiteID: request.queryValue("suite"),
                     includeResults: Self.boolQueryValue(request.queryValue("run")) ?? true
                 ))
-            case ("GET", "/snapshot"):
+            case .snapshot:
                 let mode = SnapshotMode(rawValue: request.queryValue("mode") ?? "full") ?? .full
                 let query = request.queryValue("query")
                 let limit = request.queryValue("limit").flatMap(Int.init)
                 let json = try await snapshot(mode: mode, query: query, limit: limit)
                 return .rawJSON(json)
-            case ("GET", "/readPage"):
+            case .readPage:
                 return .json(try await readPage(
                     format: request.queryValue("format"),
                     limit: request.queryValue("limit").flatMap(Int.init),
                     chunkSize: request.queryValue("chunkSize").flatMap(Int.init)
                         ?? request.queryValue("chunk-size").flatMap(Int.init)
                 ))
-            case ("POST", "/navigate"):
+            case .navigate:
                 let command = try request.decodeJSON(NavigateCommand.self)
                 guard let url = ShelfBrowserAddress.normalizedURL(from: command.url) else {
                     return .json(["ok": false, "error": "invalid_url"], statusCode: 400)
@@ -1037,7 +1045,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     "title": wait["title"] as? String ?? "",
                     "navigationWait": wait
                 ])
-            case ("POST", "/click"):
+            case .click:
                 let command = try request.decodeJSON(ClickCommand.self)
                 if command.hasAnalysisControl {
                     let resolved = try await resolvePreflight(
@@ -1081,7 +1089,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     testID: command.normalizedTestID
                 )
                 return .rawJSON(json)
-            case ("POST", "/open"):
+            case .open:
                 let command = try request.decodeJSON(ClickCommand.self)
                 guard command.hasAnalysisControl else {
                     return .json(["ok": false, "error": "missing_analysis_or_control"])
@@ -1102,7 +1110,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 )
                 object["preflight"] = resolved.response
                 return .json(object)
-            case ("POST", "/doubleClick"):
+            case .doubleClick:
                 let command = try request.decodeJSON(ClickCommand.self)
                 if command.hasAnalysisControl {
                     let resolved = try await resolvePreflight(
@@ -1146,10 +1154,10 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     testID: command.normalizedTestID
                 )
                 return .rawJSON(json)
-            case ("POST", "/type"), ("POST", "/fill"):
+            case .type, .fill:
                 let command = try request.decodeJSON(TypeCommand.self)
                 if command.hasAnalysisControl {
-                    let action = request.path == "/type" ? BrowserActionKind.fill.rawValue : BrowserActionKind.fill.rawValue
+                    let action = BrowserActionKind.fill.rawValue
                     let resolved = try await resolvePreflight(
                         analysisID: command.analysisID,
                         controlID: command.controlID,
@@ -1187,7 +1195,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     testID: command.normalizedTestID
                 )
                 return .rawJSON(json)
-            case ("POST", "/setValue"):
+            case .setValue:
                 let command = try request.decodeJSON(TypeCommand.self)
                 if command.hasAnalysisControl {
                     let resolved = try await resolvePreflight(
@@ -1227,7 +1235,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     testID: command.normalizedTestID
                 )
                 return .rawJSON(json)
-            case ("POST", "/replaceText"):
+            case .replaceText:
                 let command = try request.decodeJSON(ReplaceTextCommand.self)
                 var selector = command.normalizedSelector
                 var preflight: [String: Any]?
@@ -1262,12 +1270,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     return .json(object)
                 }
                 return .rawJSON(json)
-            case ("GET", "/findControl"), ("GET", "/locator"):
+            case .findControl, .locator:
                 let query = request.queryValue("query") ?? ""
                 let role = request.queryValue("role")
                 let limit = request.queryValue("limit").flatMap(Int.init) ?? 10
                 return .json(try await findControl(query: query, role: role, limit: limit))
-            case ("POST", "/clickControl"):
+            case .clickControl:
                 let command = try request.decodeJSON(ClickControlCommand.self)
                 if command.hasAnalysisControl {
                     let resolved = try await resolvePreflight(
@@ -1307,69 +1315,69 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     role: command.role,
                     allowDangerous: command.allowDangerous ?? false
                 ))
-            case ("POST", "/verifyText"):
+            case .verifyText:
                 let command = try request.decodeJSON(VerifyTextCommand.self)
                 return .json(try await verifyText(command.text, absent: command.absent ?? false))
-            case ("POST", "/waitSaved"):
+            case .waitSaved:
                 let command = try request.decodeJSON(WaitSavedCommand.self)
                 return .json(try await waitSaved(
                     timeoutSeconds: command.timeoutSeconds ?? 8,
                     intervalMilliseconds: command.intervalMilliseconds ?? 500
                 ))
-            case ("POST", "/googleFindReplace"):
+            case .googleFindReplace:
                 let command = try request.decodeJSON(GoogleFindReplaceCommand.self)
                 return .json(try await googleFindReplace(
                     find: command.find,
                     replacement: command.replacement,
                     all: command.all ?? true
                 ))
-            case ("POST", "/googleDocsFind"):
+            case .googleDocsFind:
                 let command = try request.decodeJSON(GoogleDocsFindCommand.self)
                 return .json(try await googleDocsFind(
                     query: command.query,
                     closeFindBar: command.closeFindBar ?? true
                 ))
-            case ("POST", "/googleDocsInsert"):
+            case .googleDocsInsert:
                 let command = try request.decodeJSON(GoogleDocsInsertCommand.self)
                 return .json(try await googleDocsInsert(
                     text: command.text,
                     verifyText: command.normalizedVerifyText,
                     waitSaved: command.waitSaved ?? true
                 ))
-            case ("POST", "/googleDocsReadVisiblePage"):
+            case .googleDocsReadVisiblePage:
                 let command = try request.decodeJSON(PageReadCommand.self)
                 return .json(try await googleDocsReadVisiblePage(
                     format: command.format,
                     limit: command.limit,
                     chunkSize: command.chunkSize
                 ))
-            case ("POST", "/googleDocsReadDocument"):
+            case .googleDocsReadDocument:
                 return .json(try await googleDocsReadDocument())
-            case ("POST", "/googleDocsReplaceDocument"):
+            case .googleDocsReplaceDocument:
                 let command = try request.decodeJSON(GoogleDocsReplaceDocumentCommand.self)
                 return .json(try await googleDocsReplaceDocument(
                     text: command.text,
                     verifyText: command.normalizedVerifyText
                 ))
-            case ("POST", "/googleDriveOpen"):
+            case .googleDriveOpen:
                 let command = try request.decodeJSON(GoogleDriveOpenCommand.self)
                 return .json(try await googleDriveOpen(
                     name: command.normalizedName,
                     timeoutSeconds: command.timeoutSeconds ?? Self.googleDriveOpenDefaultTimeoutSeconds,
                     intervalMilliseconds: command.intervalMilliseconds ?? 500
                 ))
-            case ("POST", "/act"):
+            case .act:
                 let command = try request.decodeJSON(ActCommand.self)
                 return .json(try await act(command))
-            case ("POST", "/keypress"):
+            case .keypress:
                 let command = try request.decodeJSON(KeypressCommand.self)
                 let json = try await keypress(key: command.key, modifiers: command.modifiers ?? [])
                 return .rawJSON(json)
-            case ("POST", "/text"):
+            case .text:
                 let command = try request.decodeJSON(TextCommand.self)
                 let json = try await insertText(command.text)
                 return .rawJSON(json)
-            case ("POST", "/waitForText"):
+            case .waitForText:
                 let command = try request.decodeJSON(WaitTextCommand.self)
                 let result = try await waitForText(
                     command.text,
@@ -1377,7 +1385,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     intervalMilliseconds: command.intervalMilliseconds ?? 250
                 )
                 return .json(result)
-            case ("POST", "/waitForSelector"):
+            case .waitForSelector:
                 let command = try request.decodeJSON(WaitSelectorCommand.self)
                 let result = try await waitForSelector(
                     command.selector,
@@ -1385,11 +1393,11 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     intervalMilliseconds: command.intervalMilliseconds ?? 250
                 )
                 return .json(result)
-            case ("POST", "/batch"):
+            case .batch:
                 let command = try request.decodeJSON(BatchCommand.self)
                 let result = try await runBatch(command)
                 return .json(result)
-            default:
+            case .health, .actions:
                 var response: [String: Any] = ["ok": false, "error": "not_found"]
                 BrowserBridgeRecoveryHints.attach(to: &response, error: "not_found")
                 return .json(response, statusCode: 404)
@@ -1470,12 +1478,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     }
 
     private func isFlightRecordedBridgeRequest(_ request: BrowserBridgeRequest) -> Bool {
-        switch (request.method, request.path) {
-        case ("GET", "/health"), ("GET", "/actions"), ("GET", "/trace"), ("GET", "/benchmark"):
-            return false
-        default:
-            return true
-        }
+        ShelfBrowserBridgeCommandRouter.route(method: request.method, path: request.path)?.isFlightRecorded ?? true
     }
 
     private func browserFlightPageSnapshot(result: [String: Any]? = nil) -> BrowserFlightPageSnapshot {
@@ -1678,12 +1681,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     }
 
     private func isRunGuardedBridgeRequest(_ request: BrowserBridgeRequest) -> Bool {
-        switch (request.method, request.path) {
-        case ("GET", "/health"), ("GET", "/actions"), ("GET", "/trace"), ("GET", "/benchmark"):
-            return false
-        default:
-            return true
-        }
+        ShelfBrowserBridgeCommandRouter.route(method: request.method, path: request.path)?.isRunGuarded ?? true
     }
 
     private func currentPageTypeLabel(urlString: String? = nil) -> String {

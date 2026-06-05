@@ -1,6 +1,6 @@
 import Foundation
 
-enum ShelfBrowserBridgeRoute: Equatable {
+enum ShelfBrowserBridgeRoute: CaseIterable, Equatable {
     case health
     case actions
     case analyze
@@ -35,6 +35,33 @@ enum ShelfBrowserBridgeRoute: Equatable {
     case waitForText
     case waitForSelector
     case batch
+
+    var isAvailableWhenBridgeDisabled: Bool {
+        switch self {
+        case .health, .actions:
+            return true
+        default:
+            return false
+        }
+    }
+
+    var isFlightRecorded: Bool {
+        switch self {
+        case .health, .actions, .trace, .benchmark:
+            return false
+        default:
+            return true
+        }
+    }
+
+    var isRunGuarded: Bool {
+        switch self {
+        case .health, .actions, .trace, .benchmark:
+            return false
+        default:
+            return true
+        }
+    }
 }
 
 enum ShelfBrowserBridgeCommandRouter {
