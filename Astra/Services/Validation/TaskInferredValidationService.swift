@@ -203,10 +203,10 @@ enum TaskInferredValidationService {
         guard let contract = plan.validationContract, !contract.assertions.isEmpty else { return }
 
         let requiredTotal = contract.assertions.filter(\.required).count
-        modelContext.insert(TaskEvent(
+        modelContext.insert(TaskEvent.structuredPayloadEvent(
             task: task,
             type: TaskValidationEventTypes.contractCreated,
-            payload: encode(TaskValidationContractEventPayload(
+            payload: TaskValidationContractEventPayload(
                 version: 1,
                 planID: plan.planID,
                 status: "defined",
@@ -214,14 +214,14 @@ enum TaskInferredValidationService {
                 requiredTotal: requiredTotal,
                 failedRequiredAssertionIDs: [],
                 summary: "Inferred validation contract from current task artifacts."
-            ))
+            )
         ))
 
         for assertion in contract.assertions {
-            modelContext.insert(TaskEvent(
+            modelContext.insert(TaskEvent.structuredPayloadEvent(
                 task: task,
                 type: TaskValidationEventTypes.assertionDefined,
-                payload: encode(TaskValidationAssertionEventPayload(
+                payload: TaskValidationAssertionEventPayload(
                     version: 1,
                     planID: plan.planID,
                     assertionID: assertion.id,
@@ -236,19 +236,13 @@ enum TaskInferredValidationService {
                     path: assertion.path,
                     evidence: nil,
                     reason: nil
-                ))
+                )
             ))
         }
     }
 
     private static func encode<T: Encodable>(_ value: T) -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode(value),
-              let json = String(data: data, encoding: .utf8) else {
-            return "{}"
-        }
-        return json
+        TaskEvent.payloadString(value)
     }
 
     private static func firstNonEmpty(_ values: String?...) -> String {

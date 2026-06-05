@@ -315,18 +315,17 @@ enum TaskExecutionArtifactPreparer {
             !result.errors.isEmpty else {
             return
         }
-        let payload: [String: Any] = [
-            "v": 1,
-            "phase": phase,
-            "preparedDirectories": result.preparedDirectories,
-            "skippedPaths": result.skippedPaths,
-            "rejectedPaths": result.rejectedPaths,
-            "errors": result.errors
-        ]
-        modelContext.insert(TaskEvent(
+        let payload = TaskArtifactPreflightEventPayload(
+            phase: phase,
+            preparedDirectories: result.preparedDirectories,
+            skippedPaths: result.skippedPaths,
+            rejectedPaths: result.rejectedPaths,
+            errors: result.errors
+        )
+        modelContext.insert(TaskEvent.structuredPayloadEvent(
             task: task,
-            type: "astra.artifact_preflight",
-            payload: jsonString(payload)
+            eventType: TaskEventTypes.System.astraArtifactPreflight,
+            payload: payload
         ))
         AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: [
             "event": "artifact_preflight",
@@ -358,12 +357,38 @@ enum TaskExecutionArtifactPreparer {
         try? modelContext.save()
     }
 
-    private static func jsonString(_ value: [String: Any]) -> String {
-        guard JSONSerialization.isValidJSONObject(value),
-              let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
-              let string = String(data: data, encoding: .utf8) else {
-            return "{}"
-        }
-        return string
+}
+
+struct TaskArtifactPreflightEventPayload: Codable, Sendable, Equatable {
+    var version: Int
+    var phase: String
+    var preparedDirectories: [String]
+    var skippedPaths: [String]
+    var rejectedPaths: [String]
+    var errors: [String]
+
+    init(
+        version: Int = 1,
+        phase: String,
+        preparedDirectories: [String],
+        skippedPaths: [String],
+        rejectedPaths: [String],
+        errors: [String]
+    ) {
+        self.version = version
+        self.phase = phase
+        self.preparedDirectories = preparedDirectories
+        self.skippedPaths = skippedPaths
+        self.rejectedPaths = rejectedPaths
+        self.errors = errors
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case version = "v"
+        case phase
+        case preparedDirectories
+        case skippedPaths
+        case rejectedPaths
+        case errors
     }
 }

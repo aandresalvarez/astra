@@ -251,20 +251,36 @@ enum TaskDeliverableVerificationService {
             runID: result.runID,
             verifiedAt: result.verifiedAt
         )
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        guard let data = try? encoder.encode(payload),
-              let json = String(data: data, encoding: .utf8) else {
-            return result.summary
-        }
-        return json
+        return TaskEvent.payloadString(
+            payload,
+            fallback: result.summary,
+            encoder: TaskEventPayloadCodec.makeISO8601Encoder()
+        )
     }
 
     static func decode(_ payload: String) -> TaskDeliverableVerificationEventPayload? {
-        guard let data = payload.data(using: .utf8) else { return nil }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(TaskDeliverableVerificationEventPayload.self, from: data)
+        switch decodeResult(payload) {
+        case .success(let decoded):
+            decoded
+        case .failure:
+            nil
+        }
+    }
+
+    static func decodeResult(
+        _ payload: String
+    ) -> Result<TaskDeliverableVerificationEventPayload, TaskEventPayloadDecodeError> {
+        guard let data = payload.data(using: .utf8) else {
+            return .failure(.invalidUTF8)
+        }
+        do {
+            return .success(try TaskEventPayloadCodec.makeISO8601Decoder().decode(
+                TaskDeliverableVerificationEventPayload.self,
+                from: data
+            ))
+        } catch {
+            return .failure(.decodingFailed(error.localizedDescription))
+        }
     }
 
     static func checkJavaScriptSyntaxWithNode(

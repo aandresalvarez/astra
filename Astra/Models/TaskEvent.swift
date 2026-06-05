@@ -87,6 +87,63 @@ final class TaskEvent {
         }
     }
 
+    static func payloadString<T: Encodable>(
+        _ payload: T,
+        fallback: String = "{}",
+        encoder: JSONEncoder = TaskEventPayloadCodec.makeEncoder()
+    ) -> String {
+        switch encodePayload(payload, encoder: encoder) {
+        case .success(let json):
+            json
+        case .failure:
+            fallback
+        }
+    }
+
+    static func structuredPayloadEvent<T: Encodable>(
+        task: AgentTask,
+        eventType: TaskEventType,
+        payload: T,
+        fallbackPayload: String = "{}",
+        run: TaskRun? = nil,
+        agentName: String? = nil,
+        agentId: String? = nil,
+        teamName: String? = nil,
+        encoder: JSONEncoder = TaskEventPayloadCodec.makeEncoder()
+    ) -> TaskEvent {
+        TaskEvent(
+            task: task,
+            eventType: eventType,
+            payload: payloadString(payload, fallback: fallbackPayload, encoder: encoder),
+            run: run,
+            agentName: agentName,
+            agentId: agentId,
+            teamName: teamName
+        )
+    }
+
+    static func structuredPayloadEvent<T: Encodable>(
+        task: AgentTask,
+        type: String,
+        payload: T,
+        fallbackPayload: String = "{}",
+        run: TaskRun? = nil,
+        agentName: String? = nil,
+        agentId: String? = nil,
+        teamName: String? = nil,
+        encoder: JSONEncoder = TaskEventPayloadCodec.makeEncoder()
+    ) -> TaskEvent {
+        TaskEvent(
+            task: task,
+            type: type,
+            payload: payloadString(payload, fallback: fallbackPayload, encoder: encoder),
+            run: run,
+            agentName: agentName,
+            agentId: agentId,
+            teamName: teamName
+        )
+    }
+
     static func categoryFor(type: String) -> String {
         TaskEventTypes.category(forRawValue: type).rawValue
     }
@@ -111,5 +168,27 @@ enum TaskEventPayloadCodec {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         return encoder
+    }
+
+    static func makeDecoder() -> JSONDecoder {
+        JSONDecoder()
+    }
+
+    static func makeISO8601Encoder() -> JSONEncoder {
+        let encoder = makeEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        return encoder
+    }
+
+    static func makeUnescapedEncoder() -> JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return encoder
+    }
+
+    static func makeISO8601Decoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
     }
 }

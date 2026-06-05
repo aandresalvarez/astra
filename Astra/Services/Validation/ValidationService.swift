@@ -246,7 +246,12 @@ enum ValidationService {
             case "skipped": TaskValidationEventTypes.assertionSkipped
             default: TaskValidationEventTypes.assertionFailed
             }
-            modelContext.insert(TaskEvent(task: task, type: eventType, payload: encode(payload), run: run))
+            modelContext.insert(TaskEvent.structuredPayloadEvent(
+                task: task,
+                type: eventType,
+                payload: payload,
+                run: run
+            ))
 
             let auditEvent = switch payload.status {
             case "passed": AuditEvent.validationAssertionPassed
@@ -284,7 +289,12 @@ enum ValidationService {
         let contractEventType = canComplete
             ? TaskValidationEventTypes.contractPassed
             : TaskValidationEventTypes.contractFailed
-        modelContext.insert(TaskEvent(task: task, type: contractEventType, payload: encode(contractPayload), run: run))
+        modelContext.insert(TaskEvent.structuredPayloadEvent(
+            task: task,
+            type: contractEventType,
+            payload: contractPayload,
+            run: run
+        ))
         if !canComplete {
             recordCorrectiveSteps(
                 failedAssertions: failedRequired,
@@ -398,7 +408,12 @@ enum ValidationService {
             evidence: nil,
             reason: nil
         )
-        modelContext.insert(TaskEvent(task: task, type: type, payload: encode(payload), run: run))
+        modelContext.insert(TaskEvent.structuredPayloadEvent(
+            task: task,
+            type: type,
+            payload: payload,
+            run: run
+        ))
         AppLogger.audit(.validationAssertionStarted, category: "Validation", taskID: task.id, fields: [
             "plan_id": planID.uuidString,
             "assertion_id": assertion.id,
@@ -930,10 +945,10 @@ enum ValidationService {
             summary: "Verifier review started.",
             evidence: nil
         )
-        modelContext.insert(TaskEvent(
+        modelContext.insert(TaskEvent.structuredPayloadEvent(
             task: task,
             type: TaskVerifierEventTypes.started,
-            payload: encode(startedPayload),
+            payload: startedPayload,
             run: run
         ))
         AppLogger.audit(.verifierStarted, category: "Validation", taskID: task.id, fields: [
@@ -1011,10 +1026,10 @@ enum ValidationService {
             evidence: String(result.output.prefix(1000)),
             reason: reason
         )
-        modelContext.insert(TaskEvent(
+        modelContext.insert(TaskEvent.structuredPayloadEvent(
             task: task,
             type: TaskValidationEventTypes.assertionReviewed,
-            payload: encode(assertionPayload),
+            payload: assertionPayload,
             run: run
         ))
         AppLogger.audit(.validationAssertionReviewed, category: "Validation", taskID: task.id, fields: [
@@ -1052,7 +1067,12 @@ enum ValidationService {
             summary: summary,
             evidence: evidence.map { String($0.prefix(1000)) }
         )
-        modelContext.insert(TaskEvent(task: task, type: eventType, payload: encode(payload), run: run))
+        modelContext.insert(TaskEvent.structuredPayloadEvent(
+            task: task,
+            type: eventType,
+            payload: payload,
+            run: run
+        ))
         AppLogger.audit(auditEvent, category: "Validation", taskID: task.id, fields: [
             "plan_id": planID.uuidString,
             "assertion_id": assertionID,
@@ -1168,7 +1188,12 @@ enum ValidationService {
             summary: summary,
             reason: reason
         )
-        modelContext.insert(TaskEvent(task: task, type: type, payload: encode(payload), run: run))
+        modelContext.insert(TaskEvent.structuredPayloadEvent(
+            task: task,
+            type: type,
+            payload: payload,
+            run: run
+        ))
         AppLogger.audit(auditEvent, category: "Validation", taskID: task.id, fields: [
             "plan_id": planID.uuidString,
             "assertion_id": assertionID,
@@ -1472,8 +1497,28 @@ enum ValidationService {
     }
 
     private static func decodeAssertionPayload(_ payload: String) -> TaskValidationAssertionEventPayload? {
-        guard let data = payload.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(TaskValidationAssertionEventPayload.self, from: data)
+        switch decodeAssertionPayloadResult(payload) {
+        case .success(let decoded):
+            decoded
+        case .failure:
+            nil
+        }
+    }
+
+    static func decodeAssertionPayloadResult(
+        _ payload: String
+    ) -> Result<TaskValidationAssertionEventPayload, TaskEventPayloadDecodeError> {
+        guard let data = payload.data(using: .utf8) else {
+            return .failure(.invalidUTF8)
+        }
+        do {
+            return .success(try TaskEventPayloadCodec.makeDecoder().decode(
+                TaskValidationAssertionEventPayload.self,
+                from: data
+            ))
+        } catch {
+            return .failure(.decodingFailed(error.localizedDescription))
+        }
     }
 
     private static func firstNonEmpty(_ values: String?...) -> String {
@@ -1485,13 +1530,7 @@ enum ValidationService {
     }
 
     private static func encode<T: Encodable>(_ payload: T) -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode(payload),
-              let string = String(data: data, encoding: .utf8) else {
-            return "{}"
-        }
-        return string
+        TaskEvent.payloadString(payload)
     }
 
     private static func isoTimestamp(_ date: Date) -> String {
