@@ -45,13 +45,24 @@ public actor PreflightCache {
            now().timeIntervalSince(cached.checkedAt) < ttl {
             return cached.status
         }
-        let fresh = await checker.check(
+        let checked = await checker.check(
             binary: prereq.binary,
             livenessArgs: prereq.livenessArgs,
             semantic: prereq.semantic
         )
+        let fresh = normalizedStatus(checked, for: prereq)
         entries[prereq.id] = Entry(status: fresh, checkedAt: now())
         return fresh
+    }
+
+    private func normalizedStatus(_ status: HealthStatus, for prereq: CLIPrerequisite) -> HealthStatus {
+        guard case .unresponsive(let detail) = status,
+              prereq.authHint != nil,
+              prereq.livenessArgs.contains(where: { $0.localizedCaseInsensitiveContains("auth") })
+        else {
+            return status
+        }
+        return .unauthenticated(detail: detail)
     }
 
     /// Drop all cached results. Use on app foreground / workspace switch.

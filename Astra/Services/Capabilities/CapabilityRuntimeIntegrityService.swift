@@ -36,6 +36,7 @@ enum CapabilityRuntimeIntegrityService {
         for task: AgentTask,
         packages suppliedPackages: [PluginPackage]? = nil,
         checkExecutables: Bool = true,
+        prerequisiteStatuses: [String: HealthStatus] = [:],
         policyContext: CapabilityCatalogPolicyContext? = nil,
         scope requestedScope: TaskCapabilityResolutionScope = .fullInventory
     ) -> [CapabilityRuntimeIntegrityIssue] {
@@ -101,6 +102,7 @@ enum CapabilityRuntimeIntegrityService {
                 availableConnectors: availableConnectors,
                 resolvedTools: resolvedTools,
                 enabledBrowserAdapters: enabledBrowserAdapters,
+                prerequisiteStatuses: prerequisiteStatuses,
                 checkExecutables: checkExecutables
             )
         }
@@ -138,6 +140,7 @@ enum CapabilityRuntimeIntegrityService {
         availableConnectors: [Connector],
         resolvedTools: [LocalTool],
         enabledBrowserAdapters: Set<String>,
+        prerequisiteStatuses: [String: HealthStatus],
         checkExecutables: Bool
     ) -> [CapabilityRuntimeIntegrityIssue] {
         var issues: [CapabilityRuntimeIntegrityIssue] = []
@@ -271,7 +274,33 @@ enum CapabilityRuntimeIntegrityService {
             ))
         }
 
+        issues += CapabilityHealthService.prerequisiteIssues(
+            for: package,
+            statuses: prerequisiteStatuses
+        ).map { healthIssue in
+            issue(
+                package: package,
+                source: source,
+                kind: resourceKind(for: healthIssue),
+                name: healthIssue.resourceName,
+                message: healthIssue.message
+            )
+        }
+
         return issues
+    }
+
+    private static func resourceKind(
+        for issue: CapabilityHealthIssue
+    ) -> CapabilityRuntimeIntegrityIssue.ResourceKind {
+        switch issue.kind {
+        case .missingBinary:
+            return .executable
+        case .unauthenticated:
+            return .credential
+        case .unresponsive:
+            return .localTool
+        }
     }
 
     private static func isPackageSkillResolved(

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRACore
 
 struct AgentRuntimeLaunchPreflightResult: Sendable, Equatable {
     enum Status: String, Sendable {
@@ -96,7 +97,7 @@ enum AgentRuntimeLaunchPreflight {
         phase: String,
         contextText: String
     ) async -> AgentRuntimeLaunchPreflightResult {
-        let capabilityResult = preflightCapabilitiesBeforeLaunchResult(
+        let capabilityResult = await preflightCapabilitiesBeforeLaunchResultWithPrerequisiteChecks(
             task: task,
             run: run,
             modelContext: modelContext,
@@ -205,7 +206,8 @@ enum AgentRuntimeLaunchPreflight {
         run: TaskRun,
         modelContext: ModelContext,
         phase: String,
-        contextText: String = ""
+        contextText: String = "",
+        prerequisiteStatuses: [String: HealthStatus] = [:]
     ) -> AgentRuntimeLaunchPreflightResult {
         let policyContext = task.workspace.map {
             CapabilityCatalogPolicyContext.workspaceUser(
@@ -215,6 +217,7 @@ enum AgentRuntimeLaunchPreflight {
         }
         let issues = CapabilityRuntimeIntegrityService.issues(
             for: task,
+            prerequisiteStatuses: prerequisiteStatuses,
             policyContext: policyContext,
             scope: .providerLaunch(contextText: contextText)
         )
@@ -257,6 +260,72 @@ enum AgentRuntimeLaunchPreflight {
             detail: CapabilityRuntimeIntegrityService.userMessage(for: issues),
             auditFields: fields
         )
+    }
+
+    static func preflightCapabilitiesBeforeLaunchResultWithPrerequisiteChecks(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String,
+        contextText: String = "",
+        preflightCache: PreflightCache = PreflightCache()
+    ) async -> AgentRuntimeLaunchPreflightResult {
+        let prerequisiteStatuses = await prerequisiteStatusesBeforeLaunch(
+            task: task,
+            contextText: contextText,
+            preflightCache: preflightCache
+        )
+        return preflightCapabilitiesBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: phase,
+            contextText: contextText,
+            prerequisiteStatuses: prerequisiteStatuses
+        )
+    }
+
+    private static func prerequisiteStatusesBeforeLaunch(
+        task: AgentTask,
+        contextText: String,
+        preflightCache: PreflightCache
+    ) async -> [String: HealthStatus] {
+        let packages = CapabilityRuntimeResourceMatcher.packageDefinitions()
+        let enabledPackageIDs = Set(task.workspace?.enabledCapabilityIDs ?? [])
+        let resolvedScope = TaskCapabilityResolver(task: task).resolvedScope(.providerLaunch(contextText: contextText))
+        let selectedSkillNames = Set(
+            resolvedScope.behaviorSkills.map(\.name)
+                .map(CapabilityRuntimeResourceMatcher.normalizedName)
+        )
+        var statuses: [String: HealthStatus] = [:]
+
+        for package in packages where shouldProbePrerequisites(
+            package,
+            enabledPackageIDs: enabledPackageIDs,
+            selectedSkillNames: selectedSkillNames
+        ) {
+            let packageStatuses = await CapabilityHealthService.prerequisiteStatuses(
+                for: package,
+                cache: preflightCache
+            )
+            statuses.merge(packageStatuses) { _, new in new }
+        }
+
+        return statuses
+    }
+
+    private static func shouldProbePrerequisites(
+        _ package: PluginPackage,
+        enabledPackageIDs: Set<String>,
+        selectedSkillNames: Set<String>
+    ) -> Bool {
+        if enabledPackageIDs.contains(package.id) {
+            return true
+        }
+        let packageSkillNames = Set(
+            package.skills.map { CapabilityRuntimeResourceMatcher.normalizedName($0.name) }
+        )
+        return !packageSkillNames.isDisjoint(with: selectedSkillNames)
     }
 
     static func preflightCapabilitiesBeforeLaunch(
