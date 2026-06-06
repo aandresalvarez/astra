@@ -439,12 +439,12 @@ struct AntigravityPolicyAdapter: ProviderPolicyAdapter {
         )
     }
 
-    func providerGrantStrings(for _: [PermissionGrant]) -> [String] {
-        []
+    func providerGrantStrings(for grants: [PermissionGrant]) -> [String] {
+        BrokeredProviderGrantStrings.providerGrantStrings(for: grants)
     }
 
-    func providerRuntimeGrantStrings(for _: [PermissionGrant]) -> [String] {
-        []
+    func providerRuntimeGrantStrings(for grants: [PermissionGrant]) -> [String] {
+        providerGrantStrings(for: ProviderRuntimeGrantCompanions.grants(for: grants))
     }
 }
 
@@ -518,12 +518,12 @@ struct CodexPolicyAdapter: ProviderPolicyAdapter {
         )
     }
 
-    func providerGrantStrings(for _: [PermissionGrant]) -> [String] {
-        []
+    func providerGrantStrings(for grants: [PermissionGrant]) -> [String] {
+        BrokeredProviderGrantStrings.providerGrantStrings(for: grants)
     }
 
-    func providerRuntimeGrantStrings(for _: [PermissionGrant]) -> [String] {
-        []
+    func providerRuntimeGrantStrings(for grants: [PermissionGrant]) -> [String] {
+        providerGrantStrings(for: ProviderRuntimeGrantCompanions.grants(for: grants))
     }
 }
 
@@ -597,12 +597,107 @@ struct CursorPolicyAdapter: ProviderPolicyAdapter {
         )
     }
 
-    func providerGrantStrings(for _: [PermissionGrant]) -> [String] {
-        []
+    func providerGrantStrings(for grants: [PermissionGrant]) -> [String] {
+        BrokeredProviderGrantStrings.providerGrantStrings(for: grants)
     }
 
-    func providerRuntimeGrantStrings(for _: [PermissionGrant]) -> [String] {
-        []
+    func providerRuntimeGrantStrings(for grants: [PermissionGrant]) -> [String] {
+        providerGrantStrings(for: ProviderRuntimeGrantCompanions.grants(for: grants))
+    }
+}
+
+struct OpenCodePolicyAdapter: ProviderPolicyAdapter {
+    let providerID: AgentRuntimeID = .openCodeCLI
+    let adapterVersion = 1
+
+    var supportedFeatures: ProviderPolicyFeatures {
+        ProviderPolicyFeatures(
+            supportsAllowTools: false,
+            supportsDenyTools: false,
+            supportsAskFirstMode: false,
+            supportsPathScoping: false,
+            supportsURLAllowlist: false,
+            supportsURLDenylist: false,
+            supportsSecretEnvRedaction: false,
+            supportsGeneratedSettingsFile: false,
+            supportsPerRunFlags: true,
+            supportsInteractiveCallbacks: false,
+            supportsManagedSettings: false,
+            supportsMachineReadableEvents: true,
+            supportsBroadAllowAll: true
+        )
+    }
+
+    func render(policy: AgentPolicy, context: PolicyRenderContext) -> ProviderPolicyRender {
+        let permissionPolicy = PermissionPolicy.fromAgentPolicyLevel(policy.level)
+        let args = OpenCodeCLIRuntime.permissionArguments(policy: permissionPolicy)
+        let allowedTools = policy.providerAllowedTools(requestedTools: context.requestedAllowedTools)
+        var diagnostics = diagnostics(for: policy, context: context)
+
+        let hasFineGrainedRules = !policy.allowedTools.isEmpty
+            || !policy.askFirstTools.isEmpty
+            || !policy.deniedTools.isEmpty
+            || !policy.allowedShellPatterns.isEmpty
+            || !policy.askFirstShellPatterns.isEmpty
+            || !policy.deniedShellPatterns.isEmpty
+            || !policy.allowedURLPatterns.isEmpty
+            || !policy.deniedURLPatterns.isEmpty
+        if permissionPolicy != .autonomous, hasFineGrainedRules {
+            diagnostics.append(PolicyDiagnostic(
+                id: "opencode_cli.fine-grained-provider-native-gap",
+                severity: .warning,
+                title: "Fine-grained rules use ASTRA brokering",
+                message: "OpenCode CLI exposes a broad per-run permission skip flag, but this adapter cannot render ASTRA's individual allow, deny, and ask-first rules as provider-native flags.",
+                affectedCapability: "permissions",
+                remediation: "Use Ask or Locked mode for brokered runs. Use Auto only for trusted or isolated work."
+            ))
+        }
+
+        return ProviderPolicyRender(
+            providerID: providerID,
+            adapterVersion: adapterVersion,
+            policyLevel: policy.level,
+            configOwnership: .generated,
+            permissionMode: permissionPolicy.rawValue,
+            allowedTools: permissionPolicy == .autonomous ? ["*"] : allowedTools,
+            runtimeSupportTools: runtimeSupportTools,
+            askFirstTools: policy.askFirstTools,
+            deniedTools: policy.deniedTools,
+            allowedShellPatterns: policy.allowedShellPatterns,
+            askFirstShellPatterns: policy.askFirstShellPatterns,
+            deniedShellPatterns: policy.deniedShellPatterns,
+            allowedURLPatterns: policy.allowedURLPatterns,
+            deniedURLPatterns: policy.deniedURLPatterns,
+            cliArgumentsSummary: args,
+            settingsSummary: "Generated per-run OpenCode CLI permission flags",
+            generatedConfigPreview: args.joined(separator: " "),
+            enforcementTiers: permissionPolicy == .autonomous ? [.providerNative] : [.astraBrokered],
+            diagnostics: diagnostics,
+            usesBroadProviderPermissions: permissionPolicy == .autonomous
+        )
+    }
+
+    func providerGrantStrings(for grants: [PermissionGrant]) -> [String] {
+        BrokeredProviderGrantStrings.providerGrantStrings(for: grants)
+    }
+
+    func providerRuntimeGrantStrings(for grants: [PermissionGrant]) -> [String] {
+        providerGrantStrings(for: ProviderRuntimeGrantCompanions.grants(for: grants))
+    }
+}
+
+private enum BrokeredProviderGrantStrings {
+    static func providerGrantStrings(for grants: [PermissionGrant]) -> [String] {
+        PermissionBroker.uniqueProviderGrantStrings(grants.compactMap { grant in
+            switch grant {
+            case .tool(let name), .providerTool(let name):
+                return name.trimmingCharacters(in: .whitespacesAndNewlines)
+            case .shellCommand(let executable, let pattern):
+                return "shell(\(executable):\(pattern))"
+            case .filePath, .networkPattern:
+                return nil
+            }
+        })
     }
 }
 
@@ -850,11 +945,12 @@ enum AgentPolicyManifestService {
         let runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: runtime)
         let providerPolicyAdapter = runtimeAdapter.policyAdapter(runtimeCapabilities: providerCapabilities)
         let configOwnership = runtimeAdapter.providerConfigOwnership(workspacePath: workspacePath)
+        let runtimePaths = runtimeAdditionalPaths(for: task)
         let context = PolicyRenderContext(
             runtimeID: runtime,
             model: model,
             workspacePath: workspacePath,
-            additionalPaths: TaskWorkspaceAccess(task: task).runtimeAdditionalPaths,
+            additionalPaths: runtimePaths,
             requestedAllowedTools: requestedAllowedTools,
             localToolCommands: localToolCommands(for: task),
             environmentKeyNames: envKeys,
@@ -884,7 +980,7 @@ enum AgentPolicyManifestService {
             policyScope: policyScope,
             providerRender: render,
             workspacePath: workspacePath,
-            additionalPaths: TaskWorkspaceAccess(task: task).runtimeAdditionalPaths,
+            additionalPaths: runtimePaths,
             environmentKeyNames: envKeys,
             credentialLabels: credentialLabels(for: task),
             mcpServers: capabilityPackages.map {
@@ -910,6 +1006,23 @@ enum AgentPolicyManifestService {
             "uses_broad_provider_permissions": String(render.usesBroadProviderPermissions)
         ], level: render.diagnostics.contains(where: { $0.severity == .blocked }) ? .warning : .debug)
         return manifest
+    }
+
+    private static func runtimeAdditionalPaths(for task: AgentTask) -> [String] {
+        let access = TaskWorkspaceAccess(task: task)
+        var paths = access.runtimeAdditionalPaths
+        if !access.effectiveWorkspacePath.isEmpty {
+            paths.append(access.effectiveWorkspacePath)
+        }
+        if !access.taskFolder.isEmpty {
+            paths.append(access.taskFolder)
+        }
+        var seen: Set<String> = []
+        return paths.compactMap { rawPath in
+            let path = (rawPath as NSString).expandingTildeInPath
+            guard !path.isEmpty, seen.insert(path).inserted else { return nil }
+            return path
+        }
     }
 
     @MainActor

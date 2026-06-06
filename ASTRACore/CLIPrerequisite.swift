@@ -124,6 +124,16 @@ public enum CommonCLIPrerequisites {
         authHint: "Run `cursor-agent login`, or verify the current login with `cursor-agent status`."
     )
 
+    public static let openCode = CLIPrerequisite(
+        binary: "opencode",
+        livenessArgs: ["--version"],
+        displayName: "OpenCode CLI",
+        purpose: "Runs tasks through OpenCode CLI.",
+        installURL: URL(string: "https://opencode.ai/docs/cli"),
+        installHint: "Install OpenCode, then run `opencode auth login` to authenticate.",
+        authHint: "Run `opencode auth login`, or verify providers with `opencode auth list`."
+    )
+
     public static let githubCLI = CLIPrerequisite(
         binary: "gh",
         displayName: "GitHub CLI",

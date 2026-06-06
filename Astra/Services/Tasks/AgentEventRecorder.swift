@@ -467,6 +467,26 @@ enum AgentEventRecorder {
     }
 
     @MainActor
+    static func recordOpenCodeEvent(
+        _ event: AgentEvent,
+        to task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        recordingState: AgentEventRecordingState? = nil
+    ) {
+        recordProviderAgentEvent(
+            event,
+            providerDisplayName: "OpenCode",
+            permissionSource: "opencode_stream",
+            unknownEventName: "unknown_opencode_stream_event",
+            to: task,
+            run: run,
+            modelContext: modelContext,
+            recordingState: recordingState
+        )
+    }
+
+    @MainActor
     private static func recordProviderAgentEvent(
         _ event: AgentEvent,
         providerDisplayName: String,

@@ -27,6 +27,29 @@ struct AgentUtilityRuntimeTests {
         #expect(configuration.homeDirectory(for: futureRuntime) == "/tmp/future-home")
     }
 
+    @Test("Utility runtime normalizes reassigned model against provider cache")
+    func utilityRuntimeNormalizesReassignedModelAgainstProviderCache() {
+        let defaults = UserDefaults.standard
+        let key = AppStorageKeys.runtimeAvailableModelsKey(for: .openCodeCLI)
+        let original = defaults.string(forKey: key)
+        defer {
+            if let original {
+                defaults.set(original, forKey: key)
+            } else {
+                defaults.removeObject(forKey: key)
+            }
+        }
+        RuntimeModelAvailability.persistAvailableModels(["opencode/big-pickle"], for: .openCodeCLI, defaults: defaults)
+
+        var configuration = AgentUtilityRuntimeConfiguration(
+            runtime: .openCodeCLI,
+            model: "opencode/big-pickle"
+        )
+        configuration.model = "anthropic/claude-sonnet-4-5"
+
+        #expect(configuration.model == "opencode/big-pickle")
+    }
+
     @Test("Copilot utility runtime uses provider-keyed executable and home")
     func copilotUtilityRuntimeUsesProviderKeyedSettings() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())

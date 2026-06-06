@@ -50,6 +50,7 @@ public struct AgentRuntimeID: RawRepresentable, Codable, Sendable, Hashable, Ide
     public static let antigravityCLI = AgentRuntimeID(staticRawValue: "antigravity_cli")
     public static let codexCLI = AgentRuntimeID(staticRawValue: "codex_cli")
     public static let cursorCLI = AgentRuntimeID(staticRawValue: "cursor_cli")
+    public static let openCodeCLI = AgentRuntimeID(staticRawValue: "opencode_cli")
 
     public var id: String { rawValue }
 
@@ -60,6 +61,7 @@ public struct AgentRuntimeID: RawRepresentable, Codable, Sendable, Hashable, Ide
         case .antigravityCLI: "Google Antigravity CLI"
         case .codexCLI: "Codex CLI"
         case .cursorCLI: "Cursor CLI"
+        case .openCodeCLI: "OpenCode CLI"
         default: rawValue
             .replacingOccurrences(of: "_", with: " ")
             .replacingOccurrences(of: "-", with: " ")

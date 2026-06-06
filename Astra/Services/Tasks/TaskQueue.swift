@@ -345,6 +345,7 @@ final class TaskQueue {
     }
 
     /// Continue a session on the worker that originally ran the task
+    @discardableResult
     @MainActor
     func continueSession(
         task: AgentTask,
@@ -353,13 +354,13 @@ final class TaskQueue {
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
         resourceAccess: TaskResourceAccessMode = .write,
         onEvent: @escaping (ParsedEvent) -> Void = { _ in }
-    ) async {
+    ) async -> Bool {
         // Try to find the original worker, or use any available one
         guard taskWorkerMap[task.id] != nil || hasAvailableWorker else {
             AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id, fields: [
                 "reason": "no_worker_for_continue"
             ], level: .warning)
-            return
+            return false
         }
 
         guard let resourceClaim = await waitForResourceLock(
@@ -368,7 +369,7 @@ final class TaskQueue {
             runMode: "continue",
             modelContext: modelContext
         ) else {
-            return
+            return false
         }
         defer {
             releaseResourceLock(resourceClaim, task: task, modelContext: modelContext)
@@ -378,11 +379,11 @@ final class TaskQueue {
             AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id, fields: [
                 "reason": "no_worker_for_continue_after_resource_lock"
             ], level: .warning)
-            return
+            return false
         }
 
         guard prepareTaskFolder(task, modelContext: modelContext, mode: "continue") else {
-            return
+            return false
         }
 
         taskWorkerMap[task.id] = worker
@@ -394,6 +395,7 @@ final class TaskQueue {
             onEvent: onEvent
         )
         taskWorkerMap.removeValue(forKey: task.id)
+        return true
     }
 
     /// Execute a user-approved plan on the next available worker.
