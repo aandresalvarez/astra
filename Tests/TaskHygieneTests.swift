@@ -20,8 +20,9 @@ struct TaskHygieneTests {
 
     @Test("Leaves genuine reduplications and odd-length strings alone")
     func leavesNonDoubledAlone() {
-        #expect(TaskTitleSanitizer.collapseDoubled("abcabc") == "abcabc") // no space, short half
-        #expect(TaskTitleSanitizer.collapseDoubled("hello") == "hello")   // odd length
+        #expect(TaskTitleSanitizer.collapseDoubled("abcabc") == "abcabc")       // no space
+        #expect(TaskTitleSanitizer.collapseDoubled("ParserParser") == "ParserParser") // single-token, no space
+        #expect(TaskTitleSanitizer.collapseDoubled("hello") == "hello")        // odd length
         #expect(TaskTitleSanitizer.collapseDoubled("Review the parser") == "Review the parser")
     }
 
@@ -52,7 +53,9 @@ struct TaskHygieneTests {
                        "Fix login page CSS",
                        "do i have open PRs in github?",
                        "can you read what is in this folder?",
-                       "how do I run the tests"] {
+                       "how do I run the tests",
+                       // Must NOT prefix-match the "how are you" probe phrase.
+                       "how are you going to fix the CI pipeline?"] {
             #expect(
                 !TaskConversationSignal.isLowSignalConversation(goal: phrase, userMessages: [phrase]),
                 "expected substantive: \(phrase)"
@@ -112,6 +115,29 @@ struct TaskHygieneTests {
         let queued = AgentTask(title: "x", goal: "Queued work")
         queued.status = .queued
         #expect(!TaskHygiene.isPrunableAbandonedDraft(queued, olderThan: 0, now: queued.updatedAt.addingTimeInterval(99 * 3600)))
+    }
+
+    @Test("Drafts carrying real intent are never pruned, even when stale")
+    func contentDraftsAreProtectedFromPruning() {
+        let stale = { (t: AgentTask) in t.updatedAt.addingTimeInterval(99 * 3600) }
+
+        // Stored conversation (e.g. an "Address PR comments" intent draft).
+        let withConversation = AgentTask(title: "Address PR #5 comments", goal: "Fix the review comments")
+        withConversation.status = .draft
+        withConversation.draftMessages = "[{\"role\":\"user\",\"content\":\"Fix the review comments\"}]"
+        #expect(!TaskHygiene.isPrunableAbandonedDraft(withConversation, olderThan: 0, now: stale(withConversation)))
+
+        // Attached inputs.
+        let withInputs = AgentTask(title: "Process files", goal: "Process attached files")
+        withInputs.status = .draft
+        withInputs.inputs = ["/tmp/data.csv"]
+        #expect(!TaskHygiene.isPrunableAbandonedDraft(withInputs, olderThan: 0, now: stale(withInputs)))
+
+        // Recorded acceptance criteria (an approved-but-unrun plan).
+        let withPlan = AgentTask(title: "Build feature", goal: "Build the feature")
+        withPlan.status = .draft
+        withPlan.acceptanceCriteria = ["Produces a report"]
+        #expect(!TaskHygiene.isPrunableAbandonedDraft(withPlan, olderThan: 0, now: stale(withPlan)))
     }
 
     // MARK: - Idempotent session import

@@ -33,8 +33,10 @@ enum TaskTitleSanitizer {
         let secondHalf = String(characters[midpoint...])
         guard firstHalf == secondHalf else { return text }
 
-        let isMeaningfulHalf = firstHalf.contains(" ") || firstHalf.count >= 6
-        guard isMeaningfulHalf else { return text }
+        // Require the half to be multi-word. The generator's doubling artifact is
+        // always a multi-word title ("New greetingNew greeting"), so a space-free
+        // half like "ParserParser" is left intact rather than mangled to "Parser".
+        guard firstHalf.contains(" ") else { return text }
 
         return firstHalf.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -116,7 +118,10 @@ enum TaskConversationSignal {
     private static let probeInterrogatives: Set<String> = ["who", "what", "how", "are"]
 
     private static func isGreetingOrProbe(_ normalized: String) -> Bool {
-        if probePhrases.contains(where: { normalized == $0 || normalized.hasPrefix($0) }) {
+        // Exact match only. Prefix matching would flag "how are you going to fix
+        // CI" as a greeting and wrongly drop real first-turn work; longer probes
+        // are still caught by the bounded interrogative heuristic below.
+        if probePhrases.contains(normalized) {
             return true
         }
         let words = normalized.split(separator: " ").map(String.init)
@@ -169,10 +174,13 @@ enum TaskHygiene {
         task.status == .draft
     }
 
-    /// An abandoned draft — never run and not pinned — is safe to delete once it
-    /// has gone stale (default 24h since last touch), so a draft being actively
-    /// composed isn't pulled out from under the user. With drafts off the board
-    /// there's no resume entry point, so a stale draft is pure dead weight.
+    /// A *content-free* abandoned draft — never run, not pinned, and carrying no
+    /// recoverable work — is safe to delete once it has gone stale (default 24h
+    /// since last touch). The content guard is critical: deleting an AgentTask
+    /// cascades its events/artifacts, so an approved-but-unrun plan or an
+    /// "Address PR comments" / app-intent draft must never be pruned. Only empty
+    /// husks (e.g. legacy greeting chats whose conversation was never persisted)
+    /// qualify.
     static func isPrunableAbandonedDraft(
         _ task: AgentTask,
         olderThan staleInterval: TimeInterval = 24 * 3600,
@@ -181,6 +189,18 @@ enum TaskHygiene {
         guard task.status == .draft else { return false }
         guard !task.isPinned else { return false }
         guard task.runs.isEmpty else { return false }
+        guard !hasRecoverableContent(task) else { return false }
         return now.timeIntervalSince(task.updatedAt) >= staleInterval
+    }
+
+    /// Real intent worth keeping even though the draft is off the board: a stored
+    /// conversation, attached inputs, plan activity, or recorded acceptance
+    /// criteria. Programmatic intent drafts ("Address PR comments", app-intent
+    /// routes, approved-but-unrun plans) all carry at least one of these.
+    static func hasRecoverableContent(_ task: AgentTask) -> Bool {
+        if !task.draftMessages.isEmpty { return true }
+        if !task.inputs.isEmpty { return true }
+        if !task.acceptanceCriteria.isEmpty { return true }
+        return task.events.contains { $0.type.hasPrefix("plan.") }
     }
 }

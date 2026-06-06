@@ -2212,12 +2212,15 @@ struct ContentView: View {
         seedTestDataIfNeeded()
         migrateConnectorCredentials()
         migrateSkillSecrets()
+        // Run the destructive store maintenance (draft prune + import dedup)
+        // BEFORE restoring selection, so it can never delete the task that
+        // `restoreWorkspaceSelection` is about to point `selectedTask` at.
+        runStoreMaintenanceIfNeeded()
         restoreWorkspaceSelection()
         refreshMarkdownShelfAvailabilityForSelectedTask()
         refreshQueryShelfAvailabilityForSelectedTask()
         refreshGeneratedHTMLAvailabilityForSelectedTask()
         restoreRememberedWorkspaceCanvasItemIfAvailable()
-        runStoreMaintenanceIfNeeded()
         backfillThreadTitlesIfNeeded()
         refreshProviderModelsInBackground()
         enterUITestComposerIfNeeded()
