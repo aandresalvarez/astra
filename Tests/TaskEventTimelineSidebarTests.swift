@@ -439,8 +439,41 @@ struct SidebarGroupingTests {
             SidebarColumnLayout.expandedMinimumWidth - 1
         ) == true)
         #expect(SidebarColumnLayout.shouldCollapseVisibleSplitWidth(
+            SidebarColumnLayout.expandedMinimumWidth - 1,
+            isRevealInProgress: true
+        ) == false)
+        #expect(SidebarColumnLayout.shouldCollapseVisibleSplitWidth(
             SidebarColumnLayout.expandedMinimumWidth
         ) == false)
+        #expect(SidebarColumnLayout.shouldCompleteSidebarReveal(width: 0) == false)
+        #expect(SidebarColumnLayout.shouldCompleteSidebarReveal(
+            width: SidebarColumnLayout.expandedMinimumWidth - 1
+        ) == false)
+        #expect(SidebarColumnLayout.shouldCompleteSidebarReveal(
+            width: SidebarColumnLayout.expandedMinimumWidth
+        ) == true)
+        #expect(SidebarRevealSettlingPolicy.fallbackDelayNanoseconds > 0)
+
+        let firstRevision = SidebarRevealSettlingPolicy.nextRevision(after: 0)
+        let secondRevision = SidebarRevealSettlingPolicy.nextRevision(after: firstRevision)
+        #expect(firstRevision != secondRevision)
+        #expect(SidebarRevealSettlingPolicy.shouldBeginReveal(isRevealInProgress: false))
+        #expect(!SidebarRevealSettlingPolicy.shouldBeginReveal(isRevealInProgress: true))
+        #expect(SidebarRevealSettlingPolicy.shouldClearReveal(
+            scheduledRevision: firstRevision,
+            currentRevision: firstRevision,
+            isRevealInProgress: true
+        ))
+        #expect(!SidebarRevealSettlingPolicy.shouldClearReveal(
+            scheduledRevision: firstRevision,
+            currentRevision: secondRevision,
+            isRevealInProgress: true
+        ))
+        #expect(!SidebarRevealSettlingPolicy.shouldClearReveal(
+            scheduledRevision: firstRevision,
+            currentRevision: firstRevision,
+            isRevealInProgress: false
+        ))
     }
 }
 

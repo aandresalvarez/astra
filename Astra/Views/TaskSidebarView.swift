@@ -113,15 +113,25 @@ enum SidebarColumnLayout {
     static let collapseEdge: Edge = .leading
     static let collapseUsesRightPanelMotion = true
 
-    static func shouldCollapseExpandedSidebar(width: CGFloat) -> Bool {
-        width > 0 && width < expandedMinimumWidth
+    static func shouldCollapseExpandedSidebar(width: CGFloat, isRevealInProgress: Bool = false) -> Bool {
+        guard !isRevealInProgress else { return false }
+        return width > 0 && width < expandedMinimumWidth
     }
 
     static func shouldCollapseVisibleSplitWidth(
         _ width: CGFloat,
+        minimumExpandedWidth: CGFloat = expandedMinimumWidth,
+        isRevealInProgress: Bool = false
+    ) -> Bool {
+        guard !isRevealInProgress else { return false }
+        return width.isFinite && width > 0 && width < minimumExpandedWidth
+    }
+
+    static func shouldCompleteSidebarReveal(
+        width: CGFloat,
         minimumExpandedWidth: CGFloat = expandedMinimumWidth
     ) -> Bool {
-        width.isFinite && width > 0 && width < minimumExpandedWidth
+        width.isFinite && width >= minimumExpandedWidth
     }
 
     static func collapseAnimation(reduceMotion: Bool) -> Animation? {
@@ -130,6 +140,26 @@ enum SidebarColumnLayout {
 
     static func collapseTransition(reduceMotion: Bool) -> AnyTransition {
         reduceMotion ? .identity : .move(edge: collapseEdge)
+    }
+}
+
+enum SidebarRevealSettlingPolicy {
+    static let fallbackDelayNanoseconds: UInt64 = 450_000_000
+
+    static func nextRevision(after revision: Int) -> Int {
+        revision == Int.max ? 1 : revision + 1
+    }
+
+    static func shouldBeginReveal(isRevealInProgress: Bool) -> Bool {
+        !isRevealInProgress
+    }
+
+    static func shouldClearReveal(
+        scheduledRevision: Int,
+        currentRevision: Int,
+        isRevealInProgress: Bool
+    ) -> Bool {
+        isRevealInProgress && scheduledRevision == currentRevision
     }
 }
 
