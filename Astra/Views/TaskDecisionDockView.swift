@@ -352,8 +352,8 @@ struct TaskDecisionDockView: View {
             Stanford.poppy
         case .failed:
             Stanford.failed
-        case .verified, .closed:
-            Stanford.paloAltoGreen
+        case .success, .verified, .closed:
+            Stanford.statusHealthy
         }
     }
 

@@ -87,19 +87,26 @@ struct ShelfMarkdownPanelView: View {
         VStack(spacing: 0) {
             toolbar
             Divider()
-            HStack(spacing: 0) {
-                if !isFileNavigatorCollapsed {
-                    fileNavigator
-                        .frame(width: fileNavigatorWidth)
+            if showsCombinedEmptyState {
+                // When there are no files to browse and nothing is selected,
+                // a split would show two empty states side by side ("No task
+                // files" + "No file selected"). Collapse to one centered state.
+                combinedEmptyState
+            } else {
+                HStack(spacing: 0) {
+                    if !isFileNavigatorCollapsed {
+                        fileNavigator
+                            .frame(width: fileNavigatorWidth)
 
-                    FileNavigatorResizeHandle(
-                        isResizing: isResizingFileNavigator,
-                        onChanged: resizeFileNavigator,
-                        onEnded: finishResizingFileNavigator
-                    )
+                        FileNavigatorResizeHandle(
+                            isResizing: isResizingFileNavigator,
+                            onChanged: resizeFileNavigator,
+                            onEnded: finishResizingFileNavigator
+                        )
+                    }
+
+                    viewerPane
                 }
-
-                viewerPane
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -274,6 +281,37 @@ struct ShelfMarkdownPanelView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// True when the navigator is open, has no files to show, and nothing is
+    /// selected — the only situation that otherwise renders two empty states.
+    private var showsCombinedEmptyState: Bool {
+        !isFileNavigatorCollapsed
+            && !session.hasFile
+            && fileNavigatorContentPresentation != .populatedList
+    }
+
+    private var combinedEmptyState: some View {
+        let isNoPaths = fileNavigatorContentPresentation == .noWorkspacePaths
+        return VStack(spacing: 8) {
+            Image(systemName: isNoPaths ? "folder.badge.questionmark" : "folder")
+                .font(Stanford.ui(28, weight: .regular))
+                .foregroundStyle(.tertiary)
+
+            Text(isNoPaths ? "No workspace paths" : emptyScopeTitle)
+                .font(Stanford.body(16).weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Text(isNoPaths ? "Configure a workspace folder to browse files." : emptyScopeMessage)
+                .font(Stanford.caption(12))
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 24)
+        .padding(.top, 120)
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+
     private var fileNavigator: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 7) {
@@ -333,6 +371,7 @@ struct ShelfMarkdownPanelView: View {
                     .pickerStyle(.segmented)
                     .controlSize(.small)
                     .labelsHidden()
+                    .tint(Stanford.interactive)
                     .help("Choose which paths to show")
                 }
 

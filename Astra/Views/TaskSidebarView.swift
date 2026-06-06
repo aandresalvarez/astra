@@ -95,7 +95,9 @@ enum SidebarLeanPresentation {
     static let selectedWorkspaceChildrenUseGuide = false
     static let sidebarTaskStatusesShowExceptionsOnly = true
     static let pinnedPreviewLimit = 5
-    static let childTaskListLeadingPadding: CGFloat = 0
+    // Indent the whole child group (tasks + the contextual "Add task" row) so
+    // it reads as nested under its workspace and the Add-task scope is obvious.
+    static let childTaskListLeadingPadding: CGFloat = 16
     static let childTaskContentLeadingPadding: CGFloat = 0
     static let workspaceRowTrailingSlotWidth: CGFloat = 58
     static let newTaskVerticalPadding: CGFloat = 7

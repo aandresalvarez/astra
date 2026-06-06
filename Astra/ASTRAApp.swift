@@ -447,7 +447,7 @@ public struct ASTRAApp: App {
             ContentView(appUpdateController: appUpdateController, runtime: runtime)
                 .frame(minWidth: AppWindowLayout.mainMinimumWidth, minHeight: AppWindowLayout.mainMinimumHeight)
                 .environmentObject(appSettings)
-                .tint(Stanford.cardinalRed)
+                .tint(Stanford.interactive)
                 .preferredColorScheme(resolvedAppearance.colorScheme)
                 .onOpenURL { url in
                     guard let route = AstraExternalRouteCodec.route(from: url) else { return }
@@ -505,7 +505,7 @@ public struct ASTRAApp: App {
 
         Window("About \(AppChannel.current.displayName)", id: aboutAstraWindowID) {
             AboutAstraView()
-                .tint(Stanford.cardinalRed)
+                .tint(Stanford.interactive)
                 .preferredColorScheme(resolvedAppearance.colorScheme)
         }
         .defaultSize(width: 620, height: 560)
@@ -514,7 +514,7 @@ public struct ASTRAApp: App {
         Window("Logs", id: logsWindowID) {
             LogViewerView()
                 .frame(minWidth: 760, minHeight: 460)
-                .tint(Stanford.cardinalRed)
+                .tint(Stanford.interactive)
                 .preferredColorScheme(resolvedAppearance.colorScheme)
         }
         .defaultSize(width: 980, height: 620)
@@ -523,7 +523,7 @@ public struct ASTRAApp: App {
         Window("Usage", id: usageWindowID) {
             UsageDashboardView()
                 .frame(minWidth: 600, minHeight: 500)
-                .tint(Stanford.cardinalRed)
+                .tint(Stanford.interactive)
                 .preferredColorScheme(resolvedAppearance.colorScheme)
                 .modelContainer(modelContainer)
         }

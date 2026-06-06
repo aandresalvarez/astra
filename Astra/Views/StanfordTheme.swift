@@ -36,6 +36,18 @@ enum Stanford {
 
     // MARK: - Secondary Colors
     static let coolGrey = Color.secondary
+
+    // Tuned low-emphasis text with a contrast floor. System `.secondary` /
+    // `.tertiary` go too pale on white in light mode (the repo path subtitle
+    // and "needs setup" descriptions were sub-AA). Body-weight `textSecondary`
+    // clears ~4.5:1 and incidental `textTertiary` clears ~3:1 on the canvas,
+    // while staying warm to match `readingText`.
+    static let textSecondaryLightHex: UInt = 0x5B5A57  // warm charcoal-grey, ~6:1 on white
+    static let textSecondaryDarkHex: UInt = 0xB7B2A9   // warm light grey on dark surfaces
+    static let textSecondary = Color(light: textSecondaryLightHex, dark: textSecondaryDarkHex)
+    static let textTertiaryLightHex: UInt = 0x76746F   // ~4.5:1 on white
+    static let textTertiaryDarkHex: UInt = 0x938E85
+    static let textTertiary = Color(light: textTertiaryLightHex, dark: textTertiaryDarkHex)
     static let paloAltoGreen = Color(
         light: 0x175E54,  // Stanford green (very dark)
         dark:  0x7AD4BC   // mid-green that holds up on dark
@@ -101,7 +113,13 @@ enum Stanford {
     static let diffAdded = paloAltoGreen
     static let diffRemoved = errorRed
     static let tools = plum
-    static let interactive = sky
+    // Canonical interaction accent for the whole app. The scene-level
+    // `.tint(Stanford.interactive)` in ASTRAApp flows this into every
+    // default-tinted control (pills, segmented pickers, focus rings), so
+    // `interactive`, `focusRing`, and `link` deliberately share one hue.
+    // `cardinalRed` is reserved for the brand mark and genuine errors;
+    // `sky` remains available as `statusInfo`.
+    static let interactive = lagunita
     static let scrim = Color.black
     static let focusRing = lagunita
     static let link = lagunita
@@ -354,7 +372,7 @@ struct StanfordButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
     var isPrimary: Bool = true
-    var color: Color = Stanford.lagunita
+    var color: Color = Stanford.interactive
 
     func makeBody(configuration: Configuration) -> some View {
         let shape = RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)

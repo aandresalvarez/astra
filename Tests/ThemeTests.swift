@@ -131,6 +131,43 @@ struct ThemeTests {
         #expect(contrastRatio(Stanford.readingTextDarkHex, 0x000000) >= 4.5)
     }
 
+    @Test("Low-emphasis text tokens hold a contrast floor in both modes")
+    func secondaryTextMeetsContrastTargets() {
+        // Body-weight secondary text must clear AA (4.5:1); incidental
+        // tertiary text must clear the 3:1 floor — on white, the warm
+        // canvas, and the dark canvas.
+        #expect(contrastRatio(Stanford.textSecondaryLightHex, 0xFFFFFF) >= 4.5)
+        #expect(contrastRatio(Stanford.textSecondaryLightHex, Stanford.warmCanvasLightHex) >= 4.5)
+        #expect(contrastRatio(Stanford.textSecondaryDarkHex, 0x000000) >= 4.5)
+
+        #expect(contrastRatio(Stanford.textTertiaryLightHex, 0xFFFFFF) >= 3.0)
+        #expect(contrastRatio(Stanford.textTertiaryLightHex, Stanford.warmCanvasLightHex) >= 3.0)
+        #expect(contrastRatio(Stanford.textTertiaryDarkHex, 0x000000) >= 3.0)
+    }
+
+    @Test("The interaction accent is one hue (interactive == focusRing == link == lagunita)")
+    func interactionAccentIsUnified() {
+        // A0/A2: the scene-level tint and every interactive control should
+        // resolve to a single accent. cardinalRed is reserved for the brand
+        // mark and errors, so it must NOT be the interaction accent.
+        for appearance: NSAppearance.Name in [.aqua, .darkAqua] {
+            guard
+                let interactive = resolve(Stanford.interactive, appearance: appearance),
+                let focusRing = resolve(Stanford.focusRing, appearance: appearance),
+                let link = resolve(Stanford.link, appearance: appearance),
+                let lagunita = resolve(Stanford.lagunita, appearance: appearance),
+                let cardinal = resolve(Stanford.cardinalRed, appearance: appearance)
+            else {
+                Issue.record("Could not resolve accent tokens in \(appearance)")
+                continue
+            }
+            #expect(approximatelyEqual(interactive, focusRing), "interactive != focusRing in \(appearance)")
+            #expect(approximatelyEqual(interactive, link), "interactive != link in \(appearance)")
+            #expect(approximatelyEqual(interactive, lagunita), "interactive != lagunita in \(appearance)")
+            #expect(!approximatelyEqual(interactive, cardinal), "interactive must not be cardinalRed in \(appearance)")
+        }
+    }
+
     @Test("Bundled Stanford typography fonts are packaged")
     func bundledTypographyFontsArePackaged() {
         let filenames = Set(StanfordFontRegistrar.bundledFontURLs().map(\.lastPathComponent))
