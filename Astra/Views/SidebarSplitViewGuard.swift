@@ -12,15 +12,10 @@ import SwiftUI
 /// degrade into a clipped strip.
 struct SidebarSplitViewGuard: NSViewRepresentable {
     let minimumExpandedWidth: CGFloat
-    let isRevealInProgress: Bool
     let onCollapse: () -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(
-            minimumExpandedWidth: minimumExpandedWidth,
-            isRevealInProgress: isRevealInProgress,
-            onCollapse: onCollapse
-        )
+        Coordinator(minimumExpandedWidth: minimumExpandedWidth, onCollapse: onCollapse)
     }
 
     func makeNSView(context: Context) -> NSView {
@@ -31,7 +26,6 @@ struct SidebarSplitViewGuard: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.minimumExpandedWidth = minimumExpandedWidth
-        context.coordinator.isRevealInProgress = isRevealInProgress
         context.coordinator.onCollapse = onCollapse
         configureSoon(from: nsView, coordinator: context.coordinator)
     }
@@ -45,7 +39,6 @@ struct SidebarSplitViewGuard: NSViewRepresentable {
 
     final class Coordinator {
         var minimumExpandedWidth: CGFloat
-        var isRevealInProgress: Bool
         var onCollapse: () -> Void
 
         private weak var observedSplitView: NSSplitView?
@@ -53,13 +46,8 @@ struct SidebarSplitViewGuard: NSViewRepresentable {
         private var observations: [NSObjectProtocol] = []
         private var isCollapsing = false
 
-        init(
-            minimumExpandedWidth: CGFloat,
-            isRevealInProgress: Bool,
-            onCollapse: @escaping () -> Void
-        ) {
+        init(minimumExpandedWidth: CGFloat, onCollapse: @escaping () -> Void) {
             self.minimumExpandedWidth = minimumExpandedWidth
-            self.isRevealInProgress = isRevealInProgress
             self.onCollapse = onCollapse
         }
 
@@ -123,8 +111,7 @@ struct SidebarSplitViewGuard: NSViewRepresentable {
             guard sidebarWidth.isFinite else { return }
             guard SidebarColumnLayout.shouldCollapseVisibleSplitWidth(
                 sidebarWidth,
-                minimumExpandedWidth: minimumExpandedWidth,
-                isRevealInProgress: isRevealInProgress
+                minimumExpandedWidth: minimumExpandedWidth
             ) else {
                 return
             }

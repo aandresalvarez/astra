@@ -211,28 +211,6 @@ struct PanelLayoutGeometryTests {
         #expect(PanelLayoutGeometry.isCompactPanelLayout(width: 1_500) == false)
     }
 
-    @Test("Compact auto-hide yields while sidebar reveal is settling")
-    func compactAutoHideYieldsDuringSidebarReveal() {
-        #expect(PanelLayoutGeometry.shouldAutoHideSidebarForCompactPanels(
-            width: 1_100,
-            hasRightSidePanelPresented: true,
-            isSidebarDetailOnly: false,
-            isSidebarRevealInProgress: false
-        ) == true)
-        #expect(PanelLayoutGeometry.shouldAutoHideSidebarForCompactPanels(
-            width: 1_100,
-            hasRightSidePanelPresented: true,
-            isSidebarDetailOnly: false,
-            isSidebarRevealInProgress: true
-        ) == false)
-        #expect(PanelLayoutGeometry.shouldAutoHideSidebarForCompactPanels(
-            width: 1_500,
-            hasRightSidePanelPresented: true,
-            isSidebarDetailOnly: false,
-            isSidebarRevealInProgress: false
-        ) == false)
-    }
-
     // MARK: - Inspector sizing
 
     @Test("Inspector docked width uses viewport-relative clamp")
