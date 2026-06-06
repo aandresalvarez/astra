@@ -16,8 +16,69 @@ struct CodexCLIRuntimeTests {
         #expect(CodexCLIRuntime.defaultModelName() == "gpt-5.5")
     }
 
-    @Test("Codex exec command uses JSON output, workspace root, model, and restricted policy")
-    func codexExecCommandUsesJSONWorkspaceModelAndRestrictedPolicy() {
+    @Test("Codex stream parser records thread start")
+    func codexStreamParserRecordsThreadStart() {
+        let line = #"{"type":"thread.started","thread_id":"thread-123"}"#
+        let parsed = CodexCLIRuntime.parseEvents(line: line, parsesJSONLines: true)
+
+        if case .systemInit(let model, let sessionId) = parsed.first {
+            #expect(model == nil)
+            #expect(sessionId == "thread-123")
+        } else {
+            Issue.record("Expected system init event")
+        }
+    }
+
+    @Test("Codex item completed agent message maps to visible output")
+    func codexItemCompletedAgentMessageMapsToVisibleOutput() {
+        let line = #"{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I am Codex."}}"#
+        let parsed = CodexCLIRuntime.parseEvents(line: line, parsesJSONLines: true)
+        let agentEvents = CodexCLIRuntime.parseAgentEvents(line: line, parsesJSONLines: true)
+
+        if case .result(let text, _, _, _, _, _, let isError) = parsed.first {
+            #expect(text == "I am Codex.")
+            #expect(isError == false)
+        } else {
+            Issue.record("Expected result event")
+        }
+
+        if case .completed(let summary) = agentEvents.first {
+            #expect(summary == "I am Codex.")
+        } else {
+            Issue.record("Expected completed agent event")
+        }
+    }
+
+    @Test("Codex turn completed usage includes cached input tokens")
+    func codexTurnCompletedUsageIncludesCachedInputTokens() {
+        let line = #"{"type":"turn.completed","usage":{"input_tokens":12,"cached_input_tokens":4,"output_tokens":5,"reasoning_output_tokens":3}}"#
+        let parsed = CodexCLIRuntime.parseEvents(line: line, parsesJSONLines: true)
+        let agentEvents = CodexCLIRuntime.parseAgentEvents(line: line, parsesJSONLines: true)
+
+        if case .usage(let input, let output) = parsed.first {
+            #expect(input == 16)
+            #expect(output == 5)
+        } else {
+            Issue.record("Expected usage event")
+        }
+
+        if case .stats(let input, let output, _, _, _) = agentEvents.first {
+            #expect(input == 16)
+            #expect(output == 5)
+        } else {
+            Issue.record("Expected stats agent event")
+        }
+    }
+
+    @Test("Codex adapter requires visible result on successful run")
+    func codexAdapterRequiresVisibleResultOnSuccessfulRun() {
+        let adapter = CodexCLIRuntimeAdapter()
+
+        #expect(adapter.requiresVisibleResultForSuccessfulRun(phase: "run"))
+    }
+
+    @Test("Codex exec command uses JSON, workspace, model, restricted policy, and automation isolation")
+    func codexExecCommandUsesJSONWorkspaceModelRestrictedPolicyAndAutomationIsolation() throws {
         let plan = CodexCLIRuntime.buildCommand(
             executablePath: "/opt/codex",
             prompt: "Summarize the repo",
@@ -36,16 +97,21 @@ struct CodexCLIRuntimeTests {
         #expect(plan.arguments.starts(with: [
             "exec",
             "--json",
-            "--color", "never",
-            "--model", "gpt-5.5",
-            "--cd", "/tmp/workspace"
+            "--color", "never"
         ]))
+        let modelIndex = try #require(plan.arguments.firstIndex(of: "--model"))
+        #expect(plan.arguments[modelIndex + 1] == "gpt-5.5")
+        let workspaceIndex = try #require(plan.arguments.firstIndex(of: "--cd"))
+        #expect(plan.arguments[workspaceIndex + 1] == "/tmp/workspace")
         #expect(plan.arguments.contains("--add-dir"))
         #expect(plan.arguments.contains("/tmp/extra"))
         #expect(plan.arguments.contains("--sandbox"))
         #expect(plan.arguments.contains("workspace-write"))
         #expect(plan.arguments.contains("--ask-for-approval") == false)
         #expect(plan.arguments.contains("--skip-git-repo-check"))
+        #expect(plan.arguments.contains("--ignore-user-config"))
+        #expect(plan.arguments.contains("--ignore-rules"))
+        #expect(plan.arguments.contains("--ephemeral"))
         #expect(plan.arguments.last == "Summarize the repo")
         #expect(plan.environment["CODEX_HOME"] == "/tmp/codex-home")
         #expect(plan.environment["NO_COLOR"] == "1")

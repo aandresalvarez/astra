@@ -47,6 +47,9 @@ enum CodexCLIRuntime {
             "exec",
             "--json",
             "--color", "never",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--ephemeral",
             "--model", providerModel,
             "--cd", workspacePath
         ]
