@@ -452,6 +452,26 @@ struct SidebarGroupingTests {
         #expect(SidebarColumnLayout.shouldCompleteSidebarReveal(
             width: SidebarColumnLayout.expandedMinimumWidth
         ) == true)
+        #expect(SidebarRevealSettlingPolicy.fallbackDelayNanoseconds > 0)
+
+        let firstRevision = SidebarRevealSettlingPolicy.nextRevision(after: 0)
+        let secondRevision = SidebarRevealSettlingPolicy.nextRevision(after: firstRevision)
+        #expect(firstRevision != secondRevision)
+        #expect(SidebarRevealSettlingPolicy.shouldClearReveal(
+            scheduledRevision: firstRevision,
+            currentRevision: firstRevision,
+            isRevealInProgress: true
+        ))
+        #expect(!SidebarRevealSettlingPolicy.shouldClearReveal(
+            scheduledRevision: firstRevision,
+            currentRevision: secondRevision,
+            isRevealInProgress: true
+        ))
+        #expect(!SidebarRevealSettlingPolicy.shouldClearReveal(
+            scheduledRevision: firstRevision,
+            currentRevision: firstRevision,
+            isRevealInProgress: false
+        ))
     }
 }
 

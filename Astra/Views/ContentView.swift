@@ -284,6 +284,8 @@ struct ContentView: View {
     @State private var responsiveLayoutWidth: CGFloat = 0
     @State private var didAutoHideSidebarForCompactPanels = false
     @State private var isSidebarRevealInProgress = false
+    @State private var sidebarRevealRevision = 0
+    @State private var sidebarRevealTimeoutTask: Task<Void, Never>?
     @State private var cachedHasCanvasContent = false
     @State private var generatedHTMLDiscoveryTask: Task<Void, Never>?
     @State private var markdownAvailabilityTask: Task<Void, Never>?
@@ -970,7 +972,7 @@ struct ContentView: View {
     private func handleSidebarColumnWidthChanged(_ width: CGFloat) {
         if isSidebarRevealInProgress,
            SidebarColumnLayout.shouldCompleteSidebarReveal(width: width) {
-            isSidebarRevealInProgress = false
+            finishSidebarRevealSettling()
         }
 
         guard splitVisibility != .detailOnly else { return }
@@ -985,7 +987,7 @@ struct ContentView: View {
     private func collapseSidebarForCompressedSplit() {
         guard splitVisibility != .detailOnly else { return }
 
-        isSidebarRevealInProgress = false
+        finishSidebarRevealSettling()
         withAnimation(sidebarCollapseAnimation) {
             splitVisibility = .detailOnly
         }
@@ -1054,7 +1056,7 @@ struct ContentView: View {
 
     private func handleSplitVisibilityChanged() {
         if splitVisibility != .detailOnly {
-            isSidebarRevealInProgress = true
+            beginSidebarRevealSettling()
         }
 
         guard isCompactPanelLayout else {
@@ -1080,12 +1082,38 @@ struct ContentView: View {
 
     private func revealSidebarFromCompactLayout() {
         didAutoHideSidebarForCompactPanels = false
-        isSidebarRevealInProgress = true
+        beginSidebarRevealSettling()
         animatePanelChange {
             setActiveWorkspaceCanvasItem(nil, remember: true)
             isWorkspaceRightRailVisible = false
             splitVisibility = .all
         }
+    }
+
+    private func beginSidebarRevealSettling() {
+        sidebarRevealRevision = SidebarRevealSettlingPolicy.nextRevision(after: sidebarRevealRevision)
+        let scheduledRevision = sidebarRevealRevision
+        isSidebarRevealInProgress = true
+        sidebarRevealTimeoutTask?.cancel()
+        sidebarRevealTimeoutTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: SidebarRevealSettlingPolicy.fallbackDelayNanoseconds)
+            guard SidebarRevealSettlingPolicy.shouldClearReveal(
+                scheduledRevision: scheduledRevision,
+                currentRevision: sidebarRevealRevision,
+                isRevealInProgress: isSidebarRevealInProgress
+            ) else { return }
+
+            isSidebarRevealInProgress = false
+            sidebarRevealTimeoutTask = nil
+            reconcileCompactPanelLayout()
+        }
+    }
+
+    private func finishSidebarRevealSettling() {
+        sidebarRevealRevision = SidebarRevealSettlingPolicy.nextRevision(after: sidebarRevealRevision)
+        isSidebarRevealInProgress = false
+        sidebarRevealTimeoutTask?.cancel()
+        sidebarRevealTimeoutTask = nil
     }
 
     private func setRightRailPresented(_ isPresented: Bool) {

@@ -143,6 +143,22 @@ enum SidebarColumnLayout {
     }
 }
 
+enum SidebarRevealSettlingPolicy {
+    static let fallbackDelayNanoseconds: UInt64 = 450_000_000
+
+    static func nextRevision(after revision: Int) -> Int {
+        revision == Int.max ? 1 : revision + 1
+    }
+
+    static func shouldClearReveal(
+        scheduledRevision: Int,
+        currentRevision: Int,
+        isRevealInProgress: Bool
+    ) -> Bool {
+        isRevealInProgress && scheduledRevision == currentRevision
+    }
+}
+
 private struct SidebarTopToolbar: View {
     @Binding var isSearchActive: Bool
     let showsWorkspaceActions: Bool
