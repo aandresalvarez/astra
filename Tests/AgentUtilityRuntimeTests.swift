@@ -116,12 +116,14 @@ struct AgentUtilityRuntimeTests {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-utility-codex-\(UUID().uuidString)", isDirectory: true)
         let fakeCodex = root.appendingPathComponent("codex")
+        let argsFile = root.appendingPathComponent("codex-args.txt")
         let codexHome = root.appendingPathComponent("codex-home", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
         let script = """
         #!/bin/sh
+        printf '%s\\n' "$@" > '\(argsFile.path)'
         if [ ! -d "$CODEX_HOME" ]; then
           printf 'missing CODEX_HOME directory\\n' >&2
           exit 42
@@ -149,6 +151,9 @@ struct AgentUtilityRuntimeTests {
         #expect(result.exitCode == 0)
         #expect(result.output == "Codex utility response")
         #expect(FileManager.default.fileExists(atPath: codexHome.path))
+        let args = try String(contentsOf: argsFile, encoding: .utf8)
+        #expect(args.contains("--sandbox\nread-only"))
+        #expect(args.contains("workspace-write") == false)
     }
 
     @Test("Spec chat can use a non-Claude utility runtime")

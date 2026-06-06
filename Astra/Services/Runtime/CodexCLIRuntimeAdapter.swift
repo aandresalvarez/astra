@@ -276,18 +276,19 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         _ prompt: String,
         workspacePath: String,
         configuration: AgentUtilityRuntimeConfiguration,
-        toolMode _: AgentUtilityToolMode
+        toolMode: AgentUtilityToolMode
     ) async -> AgentUtilityRunResult {
         let configuredPath = configuration.executablePath(for: id)
         let executable = configuredPath.isEmpty ? CodexCLIRuntime.detectPath() : configuredPath
         let model = AgentRuntimeProcessRunner.model(configuration.model, for: id)
+        let permissionPolicy: PermissionPolicy = toolMode == .readOnly ? .interactive : .restricted
         let plan = CodexCLIRuntime.buildCommand(
             executablePath: executable,
             prompt: prompt,
             model: model,
             workspacePath: workspacePath,
             additionalPaths: [],
-            permissionPolicy: .restricted,
+            permissionPolicy: permissionPolicy,
             timeoutSeconds: configuration.timeoutSeconds,
             taskEnvironment: [:],
             providerHomeDirectory: configuration.homeDirectory(for: id)
