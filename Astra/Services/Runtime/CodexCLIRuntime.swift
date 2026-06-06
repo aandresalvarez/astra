@@ -143,6 +143,33 @@ enum CodexCLIRuntime {
         return nil
     }
 
+    static func directoriesToCreate(providerHomeDirectory: String) -> [String] {
+        let trimmed = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? [] : [trimmed]
+    }
+
+    static func extractUtilityText(from output: String) -> String {
+        var pieces: [String] = []
+        for line in output.split(whereSeparator: \.isNewline).map(String.init) {
+            for event in CodexStreamEventParser.parseAgentEvents(line: line) {
+                switch event {
+                case .text(let text):
+                    pieces.append(text)
+                case .completed(let summary):
+                    if let summary, !summary.isEmpty {
+                        pieces.append(summary)
+                    }
+                case .failed(let message):
+                    pieces.append(message)
+                default:
+                    continue
+                }
+            }
+        }
+        let joined = pieces.joined()
+        return joined.isEmpty ? output : joined.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private static func probeVersion(executablePath: String, args: [String]) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executablePath)

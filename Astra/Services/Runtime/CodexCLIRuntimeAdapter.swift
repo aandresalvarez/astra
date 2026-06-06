@@ -167,6 +167,9 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
         let providerModel = CodexCLIRuntime.resolvedModelName(model)
         let additionalPaths = AgentRuntimeProcessRunner.runtimeAdditionalPaths(for: context.task)
+        let directoriesToCreate = CodexCLIRuntime.directoriesToCreate(
+            providerHomeDirectory: context.providerHomeDirectory
+        )
 
         let plan = CodexCLIRuntime.buildCommand(
             executablePath: executable,
@@ -192,7 +195,7 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
             browserShimDirectory: browserShimDirectory,
             providerVersion: providerVersion,
             parsesJSONLines: plan.parsesJSONLines,
-            directoriesToCreate: [],
+            directoriesToCreate: directoriesToCreate,
             providerDetectedFields: [
                 "runtime": id.rawValue,
                 "provider_version": providerVersion ?? "unknown",
@@ -290,6 +293,10 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
             providerHomeDirectory: configuration.homeDirectory(for: id)
         )
 
+        for directory in CodexCLIRuntime.directoriesToCreate(providerHomeDirectory: configuration.homeDirectory(for: id)) {
+            try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        }
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: plan.executablePath)
         process.arguments = plan.arguments
@@ -307,6 +314,10 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
             stderr: stderrPipe,
             timeoutSeconds: configuration.timeoutSeconds
         )
-        return AgentUtilityRunResult(exitCode: result.exitCode, output: result.stdout, error: result.stderr)
+        return AgentUtilityRunResult(
+            exitCode: result.exitCode,
+            output: CodexCLIRuntime.extractUtilityText(from: result.stdout),
+            error: result.stderr
+        )
     }
 }
