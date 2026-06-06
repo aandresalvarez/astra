@@ -427,6 +427,26 @@ enum AgentEventRecorder {
     }
 
     @MainActor
+    static func recordCodexEvent(
+        _ event: AgentEvent,
+        to task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        recordingState: AgentEventRecordingState? = nil
+    ) {
+        recordProviderAgentEvent(
+            event,
+            providerDisplayName: "Codex",
+            permissionSource: "codex_stream",
+            unknownEventName: "unknown_codex_stream_event",
+            to: task,
+            run: run,
+            modelContext: modelContext,
+            recordingState: recordingState
+        )
+    }
+
+    @MainActor
     private static func recordProviderAgentEvent(
         _ event: AgentEvent,
         providerDisplayName: String,

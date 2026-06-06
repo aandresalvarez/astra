@@ -48,6 +48,7 @@ public struct AgentRuntimeID: RawRepresentable, Codable, Sendable, Hashable, Ide
     public static let claudeCode = AgentRuntimeID(staticRawValue: "claude_code")
     public static let copilotCLI = AgentRuntimeID(staticRawValue: "copilot_cli")
     public static let antigravityCLI = AgentRuntimeID(staticRawValue: "antigravity_cli")
+    public static let codexCLI = AgentRuntimeID(staticRawValue: "codex_cli")
 
     public var id: String { rawValue }
 
@@ -56,6 +57,7 @@ public struct AgentRuntimeID: RawRepresentable, Codable, Sendable, Hashable, Ide
         case .claudeCode: "Claude Code"
         case .copilotCLI: "GitHub Copilot CLI"
         case .antigravityCLI: "Google Antigravity CLI"
+        case .codexCLI: "Codex CLI"
         default: rawValue
             .replacingOccurrences(of: "_", with: " ")
             .replacingOccurrences(of: "-", with: " ")

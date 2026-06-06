@@ -104,6 +104,16 @@ public enum CommonCLIPrerequisites {
         authHint: "Run `agy` once and complete Google Sign-In when prompted."
     )
 
+    public static let codex = CLIPrerequisite(
+        binary: "codex",
+        livenessArgs: ["--version"],
+        displayName: "Codex CLI",
+        purpose: "Runs tasks through OpenAI Codex CLI.",
+        installURL: URL(string: "https://developers.openai.com/codex/cli"),
+        installHint: "Install Codex CLI, then run `codex login` to authenticate.",
+        authHint: "Run `codex login`, or verify the current login with `codex doctor`."
+    )
+
     public static let githubCLI = CLIPrerequisite(
         binary: "gh",
         displayName: "GitHub CLI",

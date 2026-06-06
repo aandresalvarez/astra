@@ -865,7 +865,7 @@ struct ComposerToolbar: View {
     }
 
     private func modelDisplayName(_ model: String) -> String {
-        model.trimmingCharacters(in: .whitespacesAndNewlines)
+        RuntimeModelDisplayName.displayName(model)
     }
 
     private func runtimeModels(for runtime: AgentRuntimeID) -> [String] {
@@ -970,6 +970,7 @@ struct ComposerToolbar: View {
         case .claudeCode: "Claude"
         case .copilotCLI: "Copilot"
         case .antigravityCLI: "Antigravity"
+        case .codexCLI: "Codex"
         default: runtime.displayName
         }
     }

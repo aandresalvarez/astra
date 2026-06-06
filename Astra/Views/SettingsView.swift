@@ -365,6 +365,7 @@ struct SettingsView: View {
         case .claudeCode: "terminal"
         case .copilotCLI: "person.crop.circle"
         case .antigravityCLI: "sparkles"
+        case .codexCLI: "curlybraces.square"
         default: "terminal"
         }
     }
@@ -895,7 +896,7 @@ struct SettingsView: View {
                         selection.wrappedValue = model
                     } label: {
                         HStack {
-                            Text(model)
+                            Text(RuntimeModelDisplayName.displayName(model))
                             if selection.wrappedValue == model {
                                 Image(systemName: "checkmark")
                             }
@@ -933,7 +934,7 @@ struct SettingsView: View {
                         roleModelBinding(for: role).wrappedValue = model
                     } label: {
                         HStack {
-                            Text(model)
+                            Text(RuntimeModelDisplayName.displayName(model))
                             if selection.wrappedValue == model {
                                 Image(systemName: "checkmark")
                             }
