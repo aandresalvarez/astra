@@ -49,21 +49,21 @@ struct CodexCLIRuntimeTests {
         }
     }
 
-    @Test("Codex turn completed usage maps to stats")
-    func codexTurnCompletedUsageMapsToStats() {
+    @Test("Codex turn completed usage includes cached input tokens")
+    func codexTurnCompletedUsageIncludesCachedInputTokens() {
         let line = #"{"type":"turn.completed","usage":{"input_tokens":12,"cached_input_tokens":4,"output_tokens":5,"reasoning_output_tokens":3}}"#
         let parsed = CodexCLIRuntime.parseEvents(line: line, parsesJSONLines: true)
         let agentEvents = CodexCLIRuntime.parseAgentEvents(line: line, parsesJSONLines: true)
 
         if case .usage(let input, let output) = parsed.first {
-            #expect(input == 12)
+            #expect(input == 16)
             #expect(output == 5)
         } else {
             Issue.record("Expected usage event")
         }
 
         if case .stats(let input, let output, _, _, _) = agentEvents.first {
-            #expect(input == 12)
+            #expect(input == 16)
             #expect(output == 5)
         } else {
             Issue.record("Expected stats agent event")
@@ -77,7 +77,7 @@ struct CodexCLIRuntimeTests {
         #expect(adapter.requiresVisibleResultForSuccessfulRun(phase: "run"))
     }
 
-    @Test("Codex exec command uses JSON output, workspace root, model, and restricted policy")
+    @Test("Codex exec command uses JSON, workspace, model, restricted policy, and automation isolation")
     func codexExecCommandUsesJSONWorkspaceModelRestrictedPolicyAndAutomationIsolation() {
         let plan = CodexCLIRuntime.buildCommand(
             executablePath: "/opt/codex",

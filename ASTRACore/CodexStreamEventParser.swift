@@ -6,7 +6,7 @@ public enum CodexStreamEventParser {
     }
 
     public static func parseAll(line: String) -> [ParsedEvent] {
-        parseAgentEvents(line: line).compactMap(parsedEvent)
+        parseAgentEvents(line: line).compactMap { parsedEvent(from: $0) }
     }
 
     public static func parsePlainText(line: String, appendingNewline: Bool = false) -> [ParsedEvent] {
@@ -89,7 +89,10 @@ public enum CodexStreamEventParser {
 
     private static func usageEvent(from object: [String: Any]) -> AgentEvent? {
         let usage = object["usage"] as? [String: Any] ?? object
-        let input = int(in: usage, keys: ["input_tokens", "inputTokens", "prompt_tokens", "promptTokens"]) ?? 0
+        let input = (int(in: usage, keys: ["input_tokens", "inputTokens", "prompt_tokens", "promptTokens"]) ?? 0)
+            + (int(in: usage, keys: ["cached_input_tokens", "cachedInputTokens"]) ?? 0)
+            + (int(in: usage, keys: ["cache_read_input_tokens", "cacheReadInputTokens", "cacheReadTokens"]) ?? 0)
+            + (int(in: usage, keys: ["cache_creation_input_tokens", "cacheCreationInputTokens", "cacheWriteTokens"]) ?? 0)
         let output = int(in: usage, keys: ["output_tokens", "outputTokens", "completion_tokens", "completionTokens"]) ?? 0
         guard input > 0 || output > 0 else { return nil }
         return .stats(inputTokens: input, outputTokens: output, costUSD: nil, durationMs: nil, turns: nil)
