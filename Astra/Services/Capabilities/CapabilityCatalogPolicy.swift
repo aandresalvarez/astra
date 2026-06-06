@@ -135,6 +135,23 @@ struct CapabilityCatalogDecision: Equatable {
     var blockerMessages: [String] {
         blockers.map(\.message)
     }
+
+    /// Blockers that prevent enablement for reasons other than pending review.
+    /// Draft / admin-approval / digest-mismatch gating is surfaced as
+    /// "Needs attention" (an actionable approval step), so it must not be
+    /// treated as a hard block. Any remaining blocker (explicitly blocked
+    /// status, visibility scoping, unsafe tooling, version conflicts, etc.)
+    /// genuinely prevents the user from acting and belongs in "Blocked".
+    var hasNonApprovalBlockers: Bool {
+        blockers.contains { blocker in
+            switch blocker {
+            case .draftRequiresApproval, .adminApprovalRequired, .approvalDigestMismatch:
+                return false
+            default:
+                return true
+            }
+        }
+    }
 }
 
 enum CapabilityCatalogPolicy {

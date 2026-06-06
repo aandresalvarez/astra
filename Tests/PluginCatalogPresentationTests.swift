@@ -122,6 +122,144 @@ struct PluginCatalogPresentationTests {
         #expect(state.enabledCount == 0)
     }
 
+    @Test("state groups filtered packages by capability management status")
+    func stateGroupsFilteredPackagesByManagementStatus() {
+        let needsSetup = makePresentationPackage(
+            id: "jira",
+            name: "Jira",
+            category: "Integrations",
+            governance: .builtInApproved(riskLevel: .high)
+        )
+        let enabled = makePresentationPackage(
+            id: "mail",
+            name: "Mail",
+            category: "Integrations",
+            governance: .localDraft()
+        )
+        let available = makePresentationPackage(
+            id: "security",
+            name: "Security",
+            category: "Security",
+            governance: .builtInApproved(riskLevel: .medium)
+        )
+        let blocked = makePresentationPackage(
+            id: "blocked",
+            name: "Blocked",
+            category: "Security",
+            governance: CapabilityGovernance(
+                approvalStatus: .blocked,
+                riskLevel: .restricted,
+                visibility: .adminOnly,
+                requiresAdminApproval: true,
+                requiresExplicitUserConsent: true,
+                policyNotes: ""
+            )
+        )
+
+        let state = PluginCatalogPresentation.makeState(
+            packages: [needsSetup, enabled, available, blocked],
+            focus: .all,
+            selectedCategory: nil,
+            approvalFilter: .all,
+            riskFilter: .all,
+            showsNeedsAttentionOnly: false,
+            showsEnabledOnly: false,
+            searchText: "",
+            policyContext: CapabilityCatalogPolicyContext(isAdmin: true),
+            isEnabled: { $0.id == "mail" },
+            requiresSetup: { $0.id == "jira" }
+        )
+
+        #expect(state.groupedPackages.map(\.kind) == [.needsSetup, .enabled, .available, .blocked])
+        #expect(state.groupedPackages.map { $0.packages.map(\.id) } == [
+            ["jira"],
+            ["mail"],
+            ["security"],
+            ["blocked"]
+        ])
+    }
+
+    @Test("approval-required packages group under needs attention, not blocked")
+    func approvalRequiredPackagesGroupUnderNeedsAttention() {
+        // Regression: a draft / admin-approval package sets canEnable == false
+        // but is actionable via approval, so it must land in "Needs attention".
+        let draft = makePresentationPackage(
+            id: "draft",
+            name: "Draft Capability",
+            category: "Integrations",
+            governance: .localDraft()
+        )
+        // A genuinely blocked package (explicit blocked status) must remain
+        // under "Blocked" even though it also flags requiresApproval.
+        let blocked = makePresentationPackage(
+            id: "blocked",
+            name: "Blocked Capability",
+            category: "Security",
+            governance: CapabilityGovernance(
+                approvalStatus: .blocked,
+                riskLevel: .restricted,
+                visibility: .adminOnly,
+                requiresAdminApproval: true,
+                requiresExplicitUserConsent: true,
+                policyNotes: ""
+            )
+        )
+
+        let state = PluginCatalogPresentation.makeState(
+            packages: [draft, blocked],
+            focus: .all,
+            selectedCategory: nil,
+            approvalFilter: .all,
+            riskFilter: .all,
+            showsNeedsAttentionOnly: false,
+            showsEnabledOnly: false,
+            searchText: "",
+            policyContext: CapabilityCatalogPolicyContext(isAdmin: true),
+            isEnabled: { _ in false },
+            requiresSetup: { _ in false }
+        )
+
+        let kindByID = Dictionary(uniqueKeysWithValues: state.groupedPackages.flatMap { group in
+            group.packages.map { ($0.id, group.kind) }
+        })
+        #expect(kindByID["draft"] == .needsSetup)
+        #expect(kindByID["blocked"] == .blocked)
+    }
+
+    @Test("row attention label reflects the concrete reason for attention")
+    func rowAttentionLabelReflectsConcreteReason() {
+        let context = CapabilityCatalogPolicyContext(isAdmin: true)
+
+        let draft = makePresentationPackage(
+            id: "draft",
+            name: "Draft",
+            category: "A",
+            governance: .localDraft()
+        )
+        let draftDecision = CapabilityCatalogPolicy.decision(for: draft, context: context)
+        // Draft requires approval but no setup flow: must not claim setup.
+        #expect(CapabilityRowPresentation.attentionLabel(needsSetup: false, decision: draftDecision) == "Approval required")
+        #expect(CapabilityRowPresentation.attentionLabel(needsSetup: true, decision: draftDecision) == "Setup required")
+
+        let highRisk = makePresentationPackage(
+            id: "high",
+            name: "High",
+            category: "A",
+            governance: .builtInApproved(riskLevel: .high)
+        )
+        let highRiskDecision = CapabilityCatalogPolicy.decision(for: highRisk, context: context)
+        #expect(CapabilityRowPresentation.attentionLabel(needsSetup: false, decision: highRiskDecision) == "Policy warning")
+
+        let clean = makePresentationPackage(
+            id: "clean",
+            name: "Clean",
+            category: "A",
+            governance: .builtInApproved(riskLevel: .medium)
+        )
+        let cleanDecision = CapabilityCatalogPolicy.decision(for: clean, context: context)
+        #expect(CapabilityRowPresentation.attentionLabel(needsSetup: false, decision: cleanDecision) == nil)
+    }
+
     @Test("import overview preserves package description and hides duplicate content summary")
     func importOverviewPreservesPackageDescriptionAndHidesDuplicateContentSummary() {
         let package = makePresentationPackage(
@@ -145,6 +283,38 @@ struct PluginCatalogPresentationTests {
 
         #expect(CapabilityImportPresentation.overviewDescription(for: package, contentSummary: "A skill") == "No description provided.")
         #expect(!CapabilityImportPresentation.shouldShowContentSummary(for: package))
+    }
+
+    @Test("setup presentation makes connector fields readable while preserving keys")
+    func setupPresentationMakesConnectorFieldsReadableWhilePreservingKeys() {
+        let connector = PluginConnector(
+            name: "Jira",
+            serviceType: "jira",
+            icon: "list.clipboard",
+            description: "Tickets",
+            baseURL: "https://yourcompany.atlassian.net",
+            authMethod: "api_key",
+            credentialHints: [],
+            configHints: [],
+            notes: ""
+        )
+        let credential = PluginConnector.CredentialHint(
+            key: "JIRA_API_TOKEN",
+            hint: "Atlassian API token"
+        )
+        let config = PluginConnector.ConfigHint(
+            key: "JIRA_PROJECTS",
+            hint: "Comma-separated project keys",
+            isList: true
+        )
+
+        #expect(CapabilitySetupPresentation.fieldLabel(for: "JIRA_EMAIL") == "Email")
+        #expect(CapabilitySetupPresentation.fieldLabel(for: "JIRA_API_TOKEN") == "API token")
+        #expect(CapabilitySetupPresentation.fieldHelper(for: "JIRA_API_TOKEN") == "JIRA_API_TOKEN")
+        #expect(CapabilitySetupPresentation.baseURLLabel(for: connector) == "Jira site URL")
+        #expect(CapabilitySetupPresentation.authMethodLabel("api_key") == "API key")
+        #expect(CapabilitySetupPresentation.credentialPlaceholder(for: credential) == "Paste API token")
+        #expect(CapabilitySetupPresentation.configPlaceholder(for: config) == "ENG, OPS")
     }
 }
 
