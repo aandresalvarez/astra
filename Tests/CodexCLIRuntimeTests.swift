@@ -55,13 +55,11 @@ struct CodexCLIRuntimeTests {
         let parsed = CodexCLIRuntime.parseEvents(line: line, parsesJSONLines: true)
         let agentEvents = CodexCLIRuntime.parseAgentEvents(line: line, parsesJSONLines: true)
 
-        if case .result(let text, _, let input, let output, _, _, let isError) = parsed.first {
-            #expect(text == nil)
+        if case .usage(let input, let output) = parsed.first {
             #expect(input == 12)
             #expect(output == 5)
-            #expect(isError == false)
         } else {
-            Issue.record("Expected usage result event")
+            Issue.record("Expected usage event")
         }
 
         if case .stats(let input, let output, _, _, _) = agentEvents.first {

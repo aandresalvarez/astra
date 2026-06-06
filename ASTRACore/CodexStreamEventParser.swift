@@ -111,6 +111,9 @@ public enum CodexStreamEventParser {
         case .permissionRequested(let tool, let reason):
             return .permissionDenied(tool: tool, reason: reason)
         case .stats(let input, let output, let cost, let duration, let turns):
+            if cost == nil, duration == nil, turns == nil {
+                return .usage(totalInputTokens: input, totalOutputTokens: output)
+            }
             return .result(
                 text: nil,
                 costUSD: cost,
