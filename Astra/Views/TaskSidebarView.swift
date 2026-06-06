@@ -150,6 +150,10 @@ enum SidebarRevealSettlingPolicy {
         revision == Int.max ? 1 : revision + 1
     }
 
+    static func shouldBeginReveal(isRevealInProgress: Bool) -> Bool {
+        !isRevealInProgress
+    }
+
     static func shouldClearReveal(
         scheduledRevision: Int,
         currentRevision: Int,

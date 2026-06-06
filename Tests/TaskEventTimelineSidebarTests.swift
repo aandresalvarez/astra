@@ -457,6 +457,8 @@ struct SidebarGroupingTests {
         let firstRevision = SidebarRevealSettlingPolicy.nextRevision(after: 0)
         let secondRevision = SidebarRevealSettlingPolicy.nextRevision(after: firstRevision)
         #expect(firstRevision != secondRevision)
+        #expect(SidebarRevealSettlingPolicy.shouldBeginReveal(isRevealInProgress: false))
+        #expect(!SidebarRevealSettlingPolicy.shouldBeginReveal(isRevealInProgress: true))
         #expect(SidebarRevealSettlingPolicy.shouldClearReveal(
             scheduledRevision: firstRevision,
             currentRevision: firstRevision,

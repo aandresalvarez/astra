@@ -1055,7 +1055,8 @@ struct ContentView: View {
     }
 
     private func handleSplitVisibilityChanged() {
-        if splitVisibility != .detailOnly {
+        if splitVisibility != .detailOnly,
+           SidebarRevealSettlingPolicy.shouldBeginReveal(isRevealInProgress: isSidebarRevealInProgress) {
             beginSidebarRevealSettling()
         }
 
