@@ -7,7 +7,11 @@ public enum CursorStreamEventParser {
 
     public static func parseAll(line: String) -> [ParsedEvent] {
         let cursorEvents = cursorSpecificParsedEvents(line: line)
-        return cursorEvents.isEmpty ? StreamEventParser.parseAll(line: line) : cursorEvents
+        if !cursorEvents.isEmpty {
+            return cursorEvents
+        }
+        let streamEvents = StreamEventParser.parseAll(line: line)
+        return streamEvents.isEmpty ? parsePlainText(line: line) : streamEvents
     }
 
     public static func parsePlainText(line: String, appendingNewline: Bool = false) -> [ParsedEvent] {
@@ -15,7 +19,7 @@ public enum CursorStreamEventParser {
     }
 
     public static func parseAgentEvents(line: String) -> [AgentEvent] {
-        parseAll(line: line).flatMap(agentEvents(from:))
+        parseAll(line: line).flatMap { agentEvents(from: $0, rawLine: line) }
     }
 
     public static func parsePlainTextAgentEvents(line: String, appendingNewline: Bool = false) -> [AgentEvent] {
@@ -25,7 +29,7 @@ public enum CursorStreamEventParser {
         ).map(relabelUnknownAgentEvent)
     }
 
-    private static func agentEvents(from event: ParsedEvent) -> [AgentEvent] {
+    private static func agentEvents(from event: ParsedEvent, rawLine: String) -> [AgentEvent] {
         switch event {
         case .systemInit(let model, let sessionID):
             return [.started(sessionID: sessionID, model: model)]
@@ -64,7 +68,11 @@ public enum CursorStreamEventParser {
         case .teammateStarted, .teammateCompleted, .teamCreated, .teamDeleted, .teamMessage:
             return []
         case .unknown(let type):
-            return [.unknown(provider: "cursor", type: type, raw: "")]
+            return [.unknown(
+                provider: "cursor",
+                type: type,
+                raw: rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            )]
         }
     }
 

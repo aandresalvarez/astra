@@ -165,6 +165,39 @@ struct CursorCLIRuntimeTests {
         }
     }
 
+    @Test("Cursor stream parser surfaces non JSON output as text")
+    func cursorStreamParserSurfacesNonJSONOutputAsText() {
+        let line = "warning: Cursor CLI needs attention"
+        let parsed = CursorCLIRuntime.parseEvents(line: line, parsesJSONLines: true)
+        let agentEvents = CursorCLIRuntime.parseAgentEvents(line: line, parsesJSONLines: true)
+
+        if case .text(let text) = parsed.first {
+            #expect(text == line)
+        } else {
+            Issue.record("Expected text event")
+        }
+
+        if case .text(let text) = agentEvents.first {
+            #expect(text == line)
+        } else {
+            Issue.record("Expected text agent event")
+        }
+    }
+
+    @Test("Cursor stream parser preserves raw payload for unknown JSON events")
+    func cursorStreamParserPreservesRawPayloadForUnknownJSONEvents() {
+        let line = #"{"type":"cursor.future_event","payload":{"value":42}}"#
+        let agentEvents = CursorCLIRuntime.parseAgentEvents(line: line, parsesJSONLines: true)
+
+        if case .unknown(let provider, let type, let raw) = agentEvents.first {
+            #expect(provider == "cursor")
+            #expect(type == "cursor.future_event")
+            #expect(raw == line)
+        } else {
+            Issue.record("Expected unknown agent event")
+        }
+    }
+
     @Test("Cursor result event preserves completion and usage")
     func cursorResultEventPreservesCompletionAndUsage() {
         let line = #"{"type":"result","subtype":"success","is_error":false,"result":"Done.","duration_ms":1200,"num_turns":1,"total_cost_usd":0.04,"usage":{"input_tokens":12,"cache_read_input_tokens":4,"cache_creation_input_tokens":2,"output_tokens":5}}"#
