@@ -99,6 +99,20 @@ enum RuntimePathResolver {
         )
     }
 
+    static func detectCursorPath(fileManager: FileManager = .default) -> String {
+        detectExecutablePath(
+            named: "cursor-agent",
+            candidates: [
+                "\(userLocalBin)/cursor-agent",
+                "\(homebrewBin)/cursor-agent",
+                "\(usrLocalBin)/cursor-agent",
+                "\(NSHomeDirectory())/.npm-global/bin/cursor-agent"
+            ],
+            fallback: "",
+            fileManager: fileManager
+        )
+    }
+
     private static func defaultExecutableCandidates(named executableName: String) -> [String] {
         [
             "\(userLocalBin)/\(executableName)",

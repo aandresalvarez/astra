@@ -366,6 +366,7 @@ struct SettingsView: View {
         case .copilotCLI: "person.crop.circle"
         case .antigravityCLI: "sparkles"
         case .codexCLI: "curlybraces.square"
+        case .cursorCLI: "cursorarrow.rays"
         default: "terminal"
         }
     }

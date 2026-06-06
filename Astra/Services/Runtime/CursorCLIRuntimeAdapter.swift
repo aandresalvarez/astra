@@ -1,0 +1,323 @@
+import Foundation
+import SwiftData
+import ASTRACore
+
+struct CursorCLIRuntimeAdapterProvider: AgentRuntimeAdapterProvider {
+    let providerID = "cursor-cli"
+    var runtimeAdapters: [any AgentRuntimeAdapter] {
+        [CursorCLIRuntimeAdapter()]
+    }
+}
+
+struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
+    var id: AgentRuntimeID { descriptor.id }
+    let descriptor = AgentRuntimeDescriptor(
+        id: .cursorCLI,
+        displayName: "Cursor CLI",
+        executableName: CursorCLIRuntime.executableName,
+        installHint: "Install Cursor CLI, then run `cursor-agent login` to authenticate.",
+        authHint: "Run `cursor-agent login`, or verify the current login with `cursor-agent status`.",
+        prerequisite: CommonCLIPrerequisites.cursor,
+        defaultModel: CursorCLIRuntime.defaultModelName(),
+        defaultModels: CursorCLIRuntime.availableModelNames(),
+        supportsAstraRunProtocol: true
+    )
+    let readinessCheckID = "cursor-cli"
+    let budgetProfile = AgentRuntimeBudgetProfile(runtime: .cursorCLI, launchOverheadTokens: 0)
+    let recordsStreamTelemetry = true
+    let recordsInferredFileChanges = true
+
+    func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings {
+        let configuredPath = configuration.executablePath(for: id)
+        return AgentRuntimeLaunchSettings(
+            executablePath: configuredPath.isEmpty ? CursorCLIRuntime.detectPath() : configuredPath,
+            homeDirectory: configuration.homeDirectory(for: id)
+        )
+    }
+
+    func missingExecutableAuditReason() -> String {
+        "cursor_cli_not_found"
+    }
+
+    func missingExecutableStopReason() -> String? {
+        "missing_cursor"
+    }
+
+    func missingExecutableMessage(executablePath _: String) -> String {
+        "Cursor CLI not found. Install Cursor CLI, then authenticate with `cursor-agent login`."
+    }
+
+    func defaultStartEventPayload(task: AgentTask) -> String {
+        "Cursor started working on: \(task.goal)"
+    }
+
+    func connectorPreflightContextText(
+        task _: AgentTask,
+        promptOverride: String?,
+        startPayload: String,
+        sessionMessage _: String?,
+        phase _: String
+    ) -> String {
+        promptOverride ?? startPayload
+    }
+
+    func shouldPrepareIsolation(phase _: String) -> Bool {
+        true
+    }
+
+    func shouldValidateSuccessfulRun(phase _: String) -> Bool {
+        true
+    }
+
+    func requiresVisibleResultForSuccessfulRun(phase _: String) -> Bool {
+        true
+    }
+
+    func manualCompletionPayload(phase _: String) -> String {
+        "Cursor finished."
+    }
+
+    func failurePayloadPrefix(phase _: String, exitCode: Int) -> String {
+        "Cursor exited with code \(exitCode)."
+    }
+
+    func timeoutPayload(phase _: String, timeoutSeconds: TimeInterval) -> String {
+        "Task idle timeout - no output for \(Int(timeoutSeconds))s. Process killed."
+    }
+
+    func maxTurnsPayload(phase _: String, task: AgentTask) -> String {
+        "Max turns reached (\(task.maxTurns)). Process killed."
+    }
+
+    func sessionTurnMessage(
+        task: AgentTask,
+        promptOverride: String?,
+        startPayload: String?,
+        sessionMessage _: String?,
+        phase _: String
+    ) -> String {
+        promptOverride == nil ? task.goal : (startPayload ?? task.goal)
+    }
+
+    func policyAdapter(runtimeCapabilities _: AgentRuntimePolicyCapabilities) -> any ProviderPolicyAdapter {
+        CursorPolicyAdapter()
+    }
+
+    func providerConfigOwnership(workspacePath _: String) -> PolicyConfigOwnership {
+        .generated
+    }
+
+    func existingProviderConfigSummary(workspacePath _: String) -> String? {
+        nil
+    }
+
+    func readinessReport(
+        configuration: RuntimeReadinessConfiguration,
+        probes: RuntimeReadinessProbeContext
+    ) async -> RuntimeReadinessReport {
+        let prerequisite = descriptor.prerequisite
+        let executable = probes.resolvedExecutable(
+            configuredPath: configuration.executablePath(for: id),
+            binary: prerequisite.binary
+        )
+        let cliStatus = await probes.checkExecutable(
+            id: readinessCheckID,
+            title: prerequisite.displayName,
+            executable: executable,
+            args: prerequisite.livenessArgs,
+            missingDetail: "\(prerequisite.displayName) was not found.",
+            installHint: prerequisite.installHint
+        )
+
+        var checks = [cliStatus.check]
+        if cliStatus.isReady {
+            checks.append(RuntimeReadinessCheck(
+                id: "cursor-account",
+                title: "Cursor account",
+                detail: "CLI is available. Use `cursor-agent status` for detailed authentication diagnostics.",
+                state: .ready,
+                remediation: nil
+            ))
+        }
+        return RuntimeReadinessReport(checks: checks)
+    }
+
+    func modelAvailabilityCheck(configuration: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {
+        let configuredPath = configuration.executablePath(for: id)
+        let executable = configuredPath.isEmpty ? CursorCLIRuntime.detectPath() : configuredPath
+        let models = CursorCLIRuntime.modelNames(executablePath: executable) ?? CursorCLIRuntime.availableModelNames()
+        RuntimeModelAvailability.persistAvailableModels(models, for: id, authority: modelAvailabilityAuthority)
+        return RuntimeReadinessCheck(
+            id: "cursor-models",
+            title: "Cursor models",
+            detail: "Available: \(models.joined(separator: ", "))",
+            state: .ready,
+            remediation: nil
+        )
+    }
+
+    @MainActor
+    func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
+        let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
+            for: context.task,
+            contextText: context.contextText
+        )
+        let browserShimDirectory = AgentRuntimeProcessRunner.browserToolShimDirectory(
+            for: context.task,
+            taskEnv: taskEnv
+        )
+        let effectivePermissionPolicy = context.executionPolicy.permissionPolicy(default: context.permissionPolicy)
+        let pathPrefix = AgentRuntimeProcessRunner.pathPrefix(for: context.task, taskEnv: taskEnv)
+        let executable = context.executablePath.isEmpty ? CursorCLIRuntime.detectPath() : context.executablePath
+        let providerVersion = CursorCLIRuntime.versionSummary(executablePath: executable)
+        let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
+        let providerModel = CursorCLIRuntime.resolvedModelName(model)
+        let additionalPaths = AgentRuntimeProcessRunner.runtimeAdditionalPaths(for: context.task)
+        let plan = CursorCLIRuntime.buildCommand(
+            executablePath: executable,
+            prompt: context.prompt,
+            model: providerModel,
+            workspacePath: context.workspacePath,
+            additionalPaths: additionalPaths,
+            permissionPolicy: effectivePermissionPolicy,
+            timeoutSeconds: context.timeoutSeconds,
+            taskEnvironment: taskEnv,
+            pathPrefix: pathPrefix,
+            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task)
+                || taskEnv["ASTRA_BROWSER_URL"] != nil
+        )
+
+        return AgentRuntimeProcessLaunchPlan(
+            runtime: id,
+            executablePath: plan.executablePath,
+            arguments: plan.arguments,
+            currentDirectory: context.workspacePath,
+            environment: plan.environment,
+            browserShimDirectory: browserShimDirectory,
+            providerVersion: providerVersion,
+            parsesJSONLines: plan.parsesJSONLines,
+            directoriesToCreate: [],
+            providerDetectedFields: [
+                "runtime": id.rawValue,
+                "provider_version": providerVersion ?? "unknown",
+                "executable_configured": String(!context.executablePath.isEmpty),
+                "executable_exists": String(FileManager.default.isExecutableFile(atPath: executable)),
+                "executable_path": executable,
+                "executable_mtime": AgentRuntimeProcessRunner.fileModificationTimestamp(executable),
+                "provider_home_configured": String(!context.providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            ],
+            commandPlannedFields: [
+                "runtime": id.rawValue,
+                "phase": context.phase,
+                "model": model,
+                "provider_model": providerModel,
+                "permission_policy": effectivePermissionPolicy.rawValue,
+                "parses_json_lines": String(plan.parsesJSONLines),
+                "additional_paths_count": String(additionalPaths.count),
+                "task_env_count": String(taskEnv.count),
+                "uses_print": String(plan.arguments.contains("--print")),
+                "uses_stream_json": String(plan.arguments.contains("stream-json")),
+                "uses_workspace": String(plan.arguments.contains("--workspace")),
+                "uses_trust": String(plan.arguments.contains("--trust")),
+                "uses_sandbox": String(plan.arguments.contains("--sandbox")),
+                "uses_force": String(plan.arguments.contains("--force"))
+            ]
+        )
+    }
+
+    func parseProcessEvents(line: String, parsesJSONLines: Bool) -> [ParsedEvent] {
+        CursorCLIRuntime.parseEvents(line: line, parsesJSONLines: parsesJSONLines)
+    }
+
+    func blockingProcessPermissionMessage(line: String, parsesJSONLines: Bool) -> String? {
+        CursorCLIRuntime.blockingMessage(line: line, parsesJSONLines: parsesJSONLines)
+    }
+
+    func parseWorkerStreamEvents(line: String, parsesJSONLines: Bool) -> AgentRuntimeStreamEventBatch {
+        AgentRuntimeStreamEventBatch(agentEvents: CursorCLIRuntime.parseAgentEvents(
+            line: line,
+            parsesJSONLines: parsesJSONLines
+        ))
+    }
+
+    func processWorkerStreamEvent(
+        _ event: AgentRuntimeRecordedEvent,
+        pipeline: AgentRuntimeEventPipelineBox
+    ) -> [AgentRuntimeRecordedEvent] {
+        guard case .agent(let agentEvent) = event else { return [] }
+        return pipeline.process(agentEvent).map(AgentRuntimeRecordedEvent.agent)
+    }
+
+    func flushWorkerStreamEvents(pipeline: AgentRuntimeEventPipelineBox) -> AgentRuntimeStreamEventBatch {
+        AgentRuntimeStreamEventBatch(agentEvents: pipeline.flushAgentEvents())
+    }
+
+    @MainActor
+    func recordWorkerStreamEvent(
+        _ event: AgentRuntimeRecordedEvent,
+        mode _: AgentRuntimeRecordingMode,
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        recordingState: AgentEventRecordingState
+    ) {
+        guard case .agent(let agentEvent) = event else { return }
+        AgentEventRecorder.recordCursorEvent(
+            agentEvent,
+            to: task,
+            run: run,
+            modelContext: modelContext,
+            recordingState: recordingState
+        )
+    }
+
+    func callbackEvent(from event: AgentRuntimeRecordedEvent) -> ParsedEvent? {
+        guard let agentEvent = event.agentEvent else { return nil }
+        return AgentEventRecorder.parsedEvent(from: agentEvent)
+    }
+
+    func runUtilityPrompt(
+        _ prompt: String,
+        workspacePath: String,
+        configuration: AgentUtilityRuntimeConfiguration,
+        toolMode: AgentUtilityToolMode
+    ) async -> AgentUtilityRunResult {
+        let configuredPath = configuration.executablePath(for: id)
+        let executable = configuredPath.isEmpty ? CursorCLIRuntime.detectPath() : configuredPath
+        let model = AgentRuntimeProcessRunner.model(configuration.model, for: id)
+        let permissionPolicy: PermissionPolicy = toolMode == .readOnly ? .interactive : .restricted
+        let plan = CursorCLIRuntime.buildCommand(
+            executablePath: executable,
+            prompt: prompt,
+            model: model,
+            workspacePath: workspacePath,
+            additionalPaths: [],
+            permissionPolicy: permissionPolicy,
+            timeoutSeconds: configuration.timeoutSeconds,
+            taskEnvironment: [:]
+        )
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: plan.executablePath)
+        process.arguments = plan.arguments
+        process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
+        process.environment = plan.environment
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+        process.standardInput = FileHandle.nullDevice
+        let result = await AsyncProcessRunner.run(
+            process,
+            stdout: stdoutPipe,
+            stderr: stderrPipe,
+            timeoutSeconds: configuration.timeoutSeconds
+        )
+        return AgentUtilityRunResult(
+            exitCode: result.exitCode,
+            output: CursorCLIRuntime.extractUtilityText(from: result.stdout),
+            error: result.stderr
+        )
+    }
+}

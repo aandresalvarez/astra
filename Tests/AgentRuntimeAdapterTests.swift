@@ -114,6 +114,7 @@ struct AgentRuntimeAdapterTests {
         let copilot = AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI)
         let antigravity = AgentRuntimeAdapterRegistry.adapter(for: .antigravityCLI)
         let codex = AgentRuntimeAdapterRegistry.adapter(for: .codexCLI)
+        let cursor = AgentRuntimeAdapterRegistry.adapter(for: .cursorCLI)
 
         #expect(claude.availableModelsStorageKey == AppStorageKeys.claudeAvailableModels)
         #expect(claude.modelsCheckedAtStorageKey == AppStorageKeys.claudeModelsCheckedAt)
@@ -123,6 +124,8 @@ struct AgentRuntimeAdapterTests {
         #expect(antigravity.descriptor.defaultModel != "default")
         #expect(codex.descriptor.executableName == "codex")
         #expect(codex.descriptor.defaultModels.first == "gpt-5.5")
+        #expect(cursor.descriptor.executableName == "cursor-agent")
+        #expect(cursor.descriptor.defaultModels.first == "composer-2.5-fast")
         #expect(Set(AgentRuntimeAdapterRegistry.allAdapters.map(\.availableModelsStorageKey)).count == AgentRuntimeAdapterRegistry.allAdapters.count)
         #expect(Set(AgentRuntimeAdapterRegistry.allAdapters.map(\.modelsCheckedAtStorageKey)).count == AgentRuntimeAdapterRegistry.allAdapters.count)
     }
@@ -168,6 +171,7 @@ struct AgentRuntimeAdapterTests {
         let copilot = AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI)
         let antigravity = AgentRuntimeAdapterRegistry.adapter(for: .antigravityCLI)
         let codex = AgentRuntimeAdapterRegistry.adapter(for: .codexCLI)
+        let cursor = AgentRuntimeAdapterRegistry.adapter(for: .cursorCLI)
         let permissiveCapabilities = AgentRuntimePolicyCapabilities(
             copilotCLI: CopilotCLICapabilities(helpText: "--output-format --no-ask-user --allow-all")
         )
@@ -177,16 +181,19 @@ struct AgentRuntimeAdapterTests {
         #expect(copilot.policyAdapter(runtimeCapabilities: .conservative).providerID == .copilotCLI)
         #expect(antigravity.policyAdapter(runtimeCapabilities: .conservative).providerID == .antigravityCLI)
         #expect(codex.policyAdapter(runtimeCapabilities: .conservative).providerID == .codexCLI)
+        #expect(cursor.policyAdapter(runtimeCapabilities: .conservative).providerID == .cursorCLI)
         #expect(copilotPolicyAdapter?.capabilities.supportsAllowAll == true)
         #expect(copilotPolicyAdapter?.capabilities.supportsOutputFormatJSON == true)
         #expect(claude.budgetProfile == AgentRuntimeBudgetProfile.profile(for: .claudeCode))
         #expect(copilot.budgetProfile == AgentRuntimeBudgetProfile.profile(for: .copilotCLI))
         #expect(antigravity.budgetProfile == AgentRuntimeBudgetProfile.profile(for: .antigravityCLI))
         #expect(codex.budgetProfile == AgentRuntimeBudgetProfile.profile(for: .codexCLI))
+        #expect(cursor.budgetProfile == AgentRuntimeBudgetProfile.profile(for: .cursorCLI))
         #expect(claude.budgetProfile.launchOverheadTokens == 120_000)
         #expect(copilot.budgetProfile.launchOverheadTokens == 0)
         #expect(antigravity.budgetProfile.launchOverheadTokens == 0)
         #expect(codex.budgetProfile.launchOverheadTokens == 0)
+        #expect(cursor.budgetProfile.launchOverheadTokens == 0)
     }
 
     @Test("Adapters own CLI install planning")
@@ -230,38 +237,48 @@ struct AgentRuntimeAdapterTests {
         let claude = AgentRuntimeAdapterRegistry.adapter(for: .claudeCode)
         let copilot = AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI)
         let antigravity = AgentRuntimeAdapterRegistry.adapter(for: .antigravityCLI)
+        let cursor = AgentRuntimeAdapterRegistry.adapter(for: .cursorCLI)
 
         #expect(claude.launchSettings(configuration: configuration).executablePath == "/tmp/claude")
         #expect(copilot.launchSettings(configuration: configuration).homeDirectory == "/tmp/copilot-home")
         #expect(claude.recordsStreamTelemetry == false)
         #expect(copilot.recordsStreamTelemetry)
         #expect(antigravity.recordsStreamTelemetry == false)
+        #expect(cursor.recordsStreamTelemetry)
         #expect(claude.recordsInferredFileChanges == false)
         #expect(copilot.recordsInferredFileChanges)
         #expect(antigravity.recordsInferredFileChanges)
+        #expect(cursor.recordsInferredFileChanges)
         #expect(claude.descriptor.supportsNativeContinuation)
         #expect(AgentRuntimeAdapterRegistry.supportsNativeContinuation(for: .claudeCode))
         #expect(copilot.descriptor.supportsNativeContinuation == false)
         #expect(AgentRuntimeAdapterRegistry.supportsNativeContinuation(for: .copilotCLI) == false)
         #expect(antigravity.descriptor.supportsNativeContinuation == false)
         #expect(AgentRuntimeAdapterRegistry.supportsNativeContinuation(for: .antigravityCLI) == false)
+        #expect(cursor.descriptor.supportsNativeContinuation == false)
+        #expect(AgentRuntimeAdapterRegistry.supportsNativeContinuation(for: .cursorCLI) == false)
 
         #expect(claude.shouldCheckWorkspaceDirectory(phase: "resume") == false)
         #expect(copilot.shouldCheckWorkspaceDirectory(phase: "resume"))
         #expect(antigravity.shouldCheckWorkspaceDirectory(phase: "resume"))
+        #expect(cursor.shouldCheckWorkspaceDirectory(phase: "resume"))
         #expect(claude.shouldPrepareIsolation(phase: "resume") == false)
         #expect(copilot.shouldPrepareIsolation(phase: "resume"))
         #expect(antigravity.shouldPrepareIsolation(phase: "resume"))
+        #expect(cursor.shouldPrepareIsolation(phase: "resume"))
         #expect(claude.shouldValidateSuccessfulRun(phase: "resume") == false)
         #expect(copilot.shouldValidateSuccessfulRun(phase: "resume"))
         #expect(antigravity.shouldValidateSuccessfulRun(phase: "resume"))
+        #expect(cursor.shouldValidateSuccessfulRun(phase: "resume"))
         #expect(claude.performsPostRunFollowUps(phase: "run"))
         #expect(copilot.performsPostRunFollowUps(phase: "run") == false)
         #expect(antigravity.performsPostRunFollowUps(phase: "run") == false)
+        #expect(cursor.performsPostRunFollowUps(phase: "run") == false)
 
         #expect(claude.defaultStartEventPayload(task: task) == "Agent started working on: Say hi")
         #expect(copilot.defaultStartEventPayload(task: task) == "Copilot started working on: Say hi")
         #expect(antigravity.defaultStartEventPayload(task: task) == "Antigravity started working on: Say hi")
+        #expect(cursor.defaultStartEventPayload(task: task) == "Cursor started working on: Say hi")
         #expect(claude.sessionTurnMessage(
             task: task,
             promptOverride: "prompt",
@@ -312,6 +329,10 @@ struct AgentRuntimeAdapterTests {
             forKey: "/opt/codex --version",
             result: RunResult(outcome: .exited(code: 0), stdout: "codex-cli 1.0\n", stderr: "")
         )
+        await runner.setResponse(
+            forKey: "/opt/cursor-agent --version",
+            result: RunResult(outcome: .exited(code: 0), stdout: "2026.06.04-5fd875e\n", stderr: "")
+        )
 
         let service = RuntimeReadinessService(
             runner: runner,
@@ -321,6 +342,7 @@ struct AgentRuntimeAdapterTests {
                 case "copilot": "/opt/copilot"
                 case "agy": "/opt/agy"
                 case "codex": "/opt/codex"
+                case "cursor-agent": "/opt/cursor-agent"
                 default: ""
                 }
             },
@@ -377,6 +399,13 @@ struct AgentRuntimeAdapterTests {
             workspace: workspace,
             model: "gpt-5.5",
             runtime: .codexCLI
+        )
+        let cursorTask = AgentTask(
+            title: "Cursor",
+            goal: "Say hi",
+            workspace: workspace,
+            model: "composer-2.5-fast",
+            runtime: .cursorCLI
         )
 
         let claudePlan = AgentRuntimeAdapterRegistry
@@ -446,6 +475,19 @@ struct AgentRuntimeAdapterTests {
                 permissionManifest: nil,
                 timeoutSeconds: 30
             ))
+        let cursorPlan = AgentRuntimeAdapterRegistry
+            .adapter(for: .cursorCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: cursorTask,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/cursor-agent-not-present",
+                providerHomeDirectory: "",
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30
+            ))
 
         #expect(claudePlan.runtime == .claudeCode)
         #expect(claudePlan.executablePath == "/bin/claude")
@@ -498,6 +540,23 @@ struct AgentRuntimeAdapterTests {
         #expect(codexPlan.providerDetectedFields["runtime"] == AgentRuntimeID.codexCLI.rawValue)
         #expect(codexPlan.providerDetectedFields["provider_home_configured"] == "true")
         #expect(codexPlan.commandPlannedFields["permission_policy"] == PermissionPolicy.restricted.rawValue)
+
+        #expect(cursorPlan.runtime == .cursorCLI)
+        #expect(cursorPlan.executablePath == "/bin/cursor-agent-not-present")
+        #expect(cursorPlan.arguments.starts(with: ["--print", "--output-format", "stream-json"]))
+        #expect(cursorPlan.arguments.contains("--stream-partial-output") == false)
+        #expect(cursorPlan.arguments.contains("--trust"))
+        #expect(cursorPlan.arguments.contains("--workspace"))
+        #expect(cursorPlan.arguments.contains(workspace.primaryPath))
+        #expect(cursorPlan.arguments.contains("--model"))
+        #expect(cursorPlan.arguments.contains("composer-2.5-fast"))
+        #expect(cursorPlan.arguments.contains("--sandbox"))
+        #expect(cursorPlan.arguments.contains("enabled"))
+        #expect(cursorPlan.arguments.last == "hello")
+        #expect(cursorPlan.parsesJSONLines)
+        #expect(cursorPlan.directoriesToCreate == [])
+        #expect(cursorPlan.providerDetectedFields["runtime"] == AgentRuntimeID.cursorCLI.rawValue)
+        #expect(cursorPlan.commandPlannedFields["permission_policy"] == PermissionPolicy.restricted.rawValue)
     }
 
     @Test("Copilot launch audit separates task and runtime support tools")
@@ -964,9 +1023,11 @@ struct AgentRuntimeAdapterTests {
         let claude = AgentRuntimeAdapterRegistry.adapter(for: .claudeCode)
         let copilot = AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI)
         let antigravity = AgentRuntimeAdapterRegistry.adapter(for: .antigravityCLI)
+        let cursor = AgentRuntimeAdapterRegistry.adapter(for: .cursorCLI)
         let claudeLine = #"{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}"#
         let copilotLine = #"{"type":"agent.message.delta","data":{"text":"hello"}}"#
         let antigravityLine = "hello from antigravity"
+        let cursorLine = #"{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}"#
         let permissionPrompt = "Allow access to these paths? (y/n):"
 
         #expect(claude.parseProcessEvents(line: claudeLine, parsesJSONLines: true).count == 1)
@@ -976,6 +1037,10 @@ struct AgentRuntimeAdapterTests {
         #expect(antigravity.parseProcessEvents(line: antigravityLine, parsesJSONLines: false).isEmpty == false)
         #expect(antigravity.parseWorkerStreamEvents(line: antigravityLine, parsesJSONLines: false).agentEvents == [
             .text(text: "hello from antigravity\n")
+        ])
+        #expect(cursor.parseProcessEvents(line: cursorLine, parsesJSONLines: true).count == 1)
+        #expect(cursor.parseWorkerStreamEvents(line: cursorLine, parsesJSONLines: true).agentEvents == [
+            .text(text: "hello")
         ])
         #expect(claude.blockingProcessPermissionMessage(line: permissionPrompt, parsesJSONLines: false) == nil)
         #expect(copilot.blockingProcessPermissionMessage(line: permissionPrompt, parsesJSONLines: false) != nil)

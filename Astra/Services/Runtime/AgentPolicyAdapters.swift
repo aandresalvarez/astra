@@ -527,6 +527,85 @@ struct CodexPolicyAdapter: ProviderPolicyAdapter {
     }
 }
 
+struct CursorPolicyAdapter: ProviderPolicyAdapter {
+    let providerID: AgentRuntimeID = .cursorCLI
+    let adapterVersion = 1
+
+    var supportedFeatures: ProviderPolicyFeatures {
+        ProviderPolicyFeatures(
+            supportsAllowTools: false,
+            supportsDenyTools: false,
+            supportsAskFirstMode: true,
+            supportsPathScoping: false,
+            supportsURLAllowlist: false,
+            supportsURLDenylist: false,
+            supportsSecretEnvRedaction: false,
+            supportsGeneratedSettingsFile: false,
+            supportsPerRunFlags: true,
+            supportsInteractiveCallbacks: false,
+            supportsManagedSettings: false,
+            supportsMachineReadableEvents: true,
+            supportsBroadAllowAll: true
+        )
+    }
+
+    func render(policy: AgentPolicy, context: PolicyRenderContext) -> ProviderPolicyRender {
+        let permissionPolicy = PermissionPolicy.fromAgentPolicyLevel(policy.level)
+        let args = CursorCLIRuntime.cursorPermissionArguments(policy: permissionPolicy)
+        var diagnostics = diagnostics(for: policy, context: context)
+
+        let hasFineGrainedRules = !policy.allowedTools.isEmpty
+            || !policy.askFirstTools.isEmpty
+            || !policy.deniedTools.isEmpty
+            || !policy.allowedShellPatterns.isEmpty
+            || !policy.askFirstShellPatterns.isEmpty
+            || !policy.deniedShellPatterns.isEmpty
+            || !policy.allowedURLPatterns.isEmpty
+            || !policy.deniedURLPatterns.isEmpty
+        if permissionPolicy != .autonomous, hasFineGrainedRules {
+            diagnostics.append(PolicyDiagnostic(
+                id: "cursor_cli.fine-grained-provider-native-gap",
+                severity: .warning,
+                title: "Fine-grained rules use Cursor sandbox mode",
+                message: "Cursor CLI exposes per-run sandbox, ask mode, and force flags, but this adapter cannot render ASTRA's individual allow, deny, and ask-first rules as provider-native flags.",
+                affectedCapability: "permissions",
+                remediation: "Use Ask or Locked mode for sandboxed runs. Use Auto only for trusted or isolated work."
+            ))
+        }
+
+        return ProviderPolicyRender(
+            providerID: providerID,
+            adapterVersion: adapterVersion,
+            policyLevel: policy.level,
+            configOwnership: .generated,
+            permissionMode: permissionPolicy.rawValue,
+            allowedTools: permissionPolicy == .autonomous ? ["*"] : [],
+            runtimeSupportTools: runtimeSupportTools,
+            askFirstTools: policy.askFirstTools,
+            deniedTools: policy.deniedTools,
+            allowedShellPatterns: policy.allowedShellPatterns,
+            askFirstShellPatterns: policy.askFirstShellPatterns,
+            deniedShellPatterns: policy.deniedShellPatterns,
+            allowedURLPatterns: policy.allowedURLPatterns,
+            deniedURLPatterns: policy.deniedURLPatterns,
+            cliArgumentsSummary: args,
+            settingsSummary: "Generated per-run Cursor CLI sandbox and mode flags",
+            generatedConfigPreview: args.joined(separator: " "),
+            enforcementTiers: permissionPolicy == .autonomous ? [.providerNative] : [.providerNative, .astraBrokered],
+            diagnostics: diagnostics,
+            usesBroadProviderPermissions: permissionPolicy == .autonomous
+        )
+    }
+
+    func providerGrantStrings(for _: [PermissionGrant]) -> [String] {
+        []
+    }
+
+    func providerRuntimeGrantStrings(for _: [PermissionGrant]) -> [String] {
+        []
+    }
+}
+
 private enum ProviderRuntimeGrantCompanions {
     static func grants(for grants: [PermissionGrant]) -> [PermissionGrant] {
         let sanitized = PermissionBroker.sanitizeApprovedGrants(grants)
