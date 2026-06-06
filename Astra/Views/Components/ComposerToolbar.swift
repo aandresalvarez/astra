@@ -971,6 +971,7 @@ struct ComposerToolbar: View {
         case .copilotCLI: "Copilot"
         case .antigravityCLI: "Antigravity"
         case .codexCLI: "Codex"
+        case .cursorCLI: "Cursor"
         default: runtime.displayName
         }
     }

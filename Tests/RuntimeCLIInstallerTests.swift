@@ -96,4 +96,22 @@ struct RuntimeCLIInstallerTests {
         #expect(result.detail?.contains("| bash") == false)
         #expect(await runner.recordedCalls().isEmpty)
     }
+
+    @Test("Cursor installer uses official guidance")
+    func cursorInstallerUsesOfficialGuidance() async {
+        let runner = StubBinaryRunner()
+        let installer = RuntimeCLIInstaller(
+            runner: runner,
+            detectExecutable: { _ in "" }
+        )
+
+        #expect(installer.plan(for: .cursorCLI) == nil)
+
+        let result = await installer.install(runtime: .cursorCLI)
+        #expect(!result.succeeded)
+        #expect(result.plan == nil)
+        #expect(result.detail?.contains("Install Cursor CLI") == true)
+        #expect(result.detail?.contains("cursor-agent login") == true)
+        #expect(await runner.recordedCalls().isEmpty)
+    }
 }

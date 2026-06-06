@@ -114,6 +114,16 @@ public enum CommonCLIPrerequisites {
         authHint: "Run `codex login`, or verify the current login with `codex doctor`."
     )
 
+    public static let cursor = CLIPrerequisite(
+        binary: "cursor-agent",
+        livenessArgs: ["--version"],
+        displayName: "Cursor CLI",
+        purpose: "Runs tasks through Cursor Agent CLI.",
+        installURL: URL(string: "https://cursor.com/cli"),
+        installHint: "Install Cursor CLI, then run `cursor-agent login` to authenticate.",
+        authHint: "Run `cursor-agent login`, or verify the current login with `cursor-agent status`."
+    )
+
     public static let githubCLI = CLIPrerequisite(
         binary: "gh",
         displayName: "GitHub CLI",

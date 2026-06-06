@@ -74,6 +74,10 @@ struct OnboardingWizardTests {
         let antigravityPrerequisites = OnboardingWizardView.requiredCLIPrerequisites(for: .antigravityCLI)
         #expect(antigravityPrerequisites.map(\.binary) == ["agy"])
         #expect(antigravityPrerequisites.map(\.livenessArgs) == [["--version"]])
+
+        let cursorPrerequisites = OnboardingWizardView.requiredCLIPrerequisites(for: .cursorCLI)
+        #expect(cursorPrerequisites.map(\.binary) == ["cursor-agent"])
+        #expect(cursorPrerequisites.map(\.livenessArgs) == [["--version"]])
     }
 
     @Test("Onboarding completion uses the Astra-specific storage key")
