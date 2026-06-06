@@ -30,30 +30,57 @@ final class TaskScheduler {
 
         checkTask = Task { @MainActor in
             while !Task.isCancelled {
-                checkAndFire(modelContext: modelContext, taskQueue: taskQueue)
+                // One fetch per tick, shared by firing and the sleep
+                // computation, so the loop doesn't hit SwiftData twice on the
+                // main actor each wake.
+                let schedules = fetchEnabledSchedules(modelContext)
+                let now = Date()
+                fireDueSchedules(schedules, now: now, modelContext: modelContext, taskQueue: taskQueue)
+                // fireSchedule advances nextFireDate in place, so the same
+                // array already reflects post-fire times here.
+                let wait = sleepSeconds(from: schedules, now: now)
                 do {
-                    try await Task.sleep(for: .seconds(nextSleepSeconds(modelContext: modelContext)))
+                    try await Task.sleep(for: .seconds(wait))
                 } catch { break }
             }
             isRunning = false
         }
     }
 
-    /// Seconds to sleep before the next evaluation: until the soonest enabled
-    /// schedule's future fire time, clamped to [minSleep, maxSleep]. Falls back
-    /// to maxSleep when nothing upcoming is scheduled. This fires imminent
-    /// schedules on time without ever polling less often than the old 30s loop.
-    @MainActor
-    func nextSleepSeconds(modelContext: ModelContext) -> TimeInterval {
-        let now = Date()
+    private func fetchEnabledSchedules(_ modelContext: ModelContext) -> [TaskSchedule] {
         let descriptor = FetchDescriptor<TaskSchedule>(
             predicate: #Predicate<TaskSchedule> { $0.isEnabled == true }
         )
-        let schedules = (try? modelContext.fetch(descriptor)) ?? []
+        return (try? modelContext.fetch(descriptor)) ?? []
+    }
+
+    private func fireDueSchedules(
+        _ schedules: [TaskSchedule],
+        now: Date,
+        modelContext: ModelContext,
+        taskQueue: TaskQueue
+    ) {
+        for schedule in schedules where schedule.nextFireDate <= now {
+            fireSchedule(schedule, modelContext: modelContext, taskQueue: taskQueue)
+        }
+    }
+
+    /// Seconds to sleep before the next evaluation: until the soonest future
+    /// fire time in `schedules`, clamped to [minSleep, maxSleep]. Falls back to
+    /// maxSleep when nothing upcoming is scheduled. Fires imminent schedules on
+    /// time without ever polling less often than the old 30s loop.
+    private func sleepSeconds(from schedules: [TaskSchedule], now: Date) -> TimeInterval {
         guard let soonest = schedules.map(\.nextFireDate).filter({ $0 > now }).min() else {
             return Self.maxSleepSeconds
         }
         return min(max(soonest.timeIntervalSince(now), Self.minSleepSeconds), Self.maxSleepSeconds)
+    }
+
+    /// Convenience wrapper for callers/tests that just want the next sleep
+    /// interval; the run loop uses the shared-fetch path above instead.
+    @MainActor
+    func nextSleepSeconds(modelContext: ModelContext) -> TimeInterval {
+        sleepSeconds(from: fetchEnabledSchedules(modelContext), now: Date())
     }
 
     @MainActor
@@ -65,18 +92,12 @@ final class TaskScheduler {
 
     @MainActor
     func checkAndFire(modelContext: ModelContext, taskQueue: TaskQueue) {
-        let now = Date()
-        let descriptor = FetchDescriptor<TaskSchedule>(
-            predicate: #Predicate<TaskSchedule> { $0.isEnabled == true }
+        fireDueSchedules(
+            fetchEnabledSchedules(modelContext),
+            now: Date(),
+            modelContext: modelContext,
+            taskQueue: taskQueue
         )
-
-        guard let schedules = try? modelContext.fetch(descriptor) else { return }
-        let due = schedules.filter { $0.nextFireDate <= now }
-        guard !due.isEmpty else { return }
-
-        for schedule in due {
-            fireSchedule(schedule, modelContext: modelContext, taskQueue: taskQueue)
-        }
     }
 
     @MainActor

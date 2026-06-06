@@ -97,7 +97,10 @@ enum TaskRunOutputCap {
     /// at its start). Falls back to a lossy decode only if trimming cannot
     /// produce valid UTF-8.
     private static func decodeOnScalarBoundary(_ slice: Data, preferTrailingTrim: Bool) -> String {
-        var data = Data(slice)
+        // `Data` is copy-on-write, so this shares storage with `slice` until the
+        // first trim mutation — no eager copy. The fallback below still reads
+        // the original `slice`.
+        var data = slice
         for _ in 0..<4 {
             if let decoded = String(data: data, encoding: .utf8) {
                 return decoded
