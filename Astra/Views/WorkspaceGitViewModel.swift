@@ -220,6 +220,13 @@ final class WorkspaceGitViewModel: ObservableObject {
         return WorkspacePathPresentation.abbreviatePath(repo.path)
     }
 
+    /// Full, un-abbreviated path for the repository row tooltip so the
+    /// truncated subtitle never hides where the repo actually lives.
+    var selectedRepositoryFullPath: String? {
+        guard let repo = selectedRepository else { return nil }
+        return WorkspacePathPresentation.standardizedPath(repo.path)
+    }
+
     var activeSelectionScopeLabel: String {
         guard let task = selectedTask else { return "Workspace default" }
         return task.status == .draft ? "Draft task" : "Pinned task"

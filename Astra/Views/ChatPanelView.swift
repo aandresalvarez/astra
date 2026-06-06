@@ -781,20 +781,9 @@ struct ChatPanelView: View {
                 .lineLimit(2)
                 .frame(maxWidth: 720, minHeight: 84)
 
-            if let ws = workspace {
-                HStack(spacing: 6) {
-                    Image(systemName: "folder.fill")
-                        .font(Stanford.ui(12))
-                        .foregroundStyle(.secondary)
-                    Text(ws.name)
-                        .font(Stanford.body(14).weight(.medium))
-                        .foregroundStyle(.primary)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(Color.primary.opacity(0.055))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
+            // The active workspace is already shown in the title bar subtitle
+            // and the right-hand "Workspace Context" panel; a third chip here
+            // was pure repetition, so the hero stays focused on the prompt.
 
             HStack(spacing: 28) {
                 HStack(spacing: 5) {

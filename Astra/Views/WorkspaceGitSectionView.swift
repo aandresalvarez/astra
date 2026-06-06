@@ -405,7 +405,7 @@ struct WorkspaceGitSectionView: View {
                     rowTitle("Repository")
                     Text(viewModel.activeSelectionScopeLabel)
                         .font(Stanford.caption(10).weight(.medium))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Stanford.textTertiary)
                         .lineLimit(1)
                 }
 
@@ -419,9 +419,12 @@ struct WorkspaceGitSectionView: View {
                         .truncationMode(.middle)
                     Text(viewModel.selectedRepositorySubtitle)
                         .font(Stanford.caption(10))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Stanford.textTertiary)
                         .lineLimit(1)
-                        .truncationMode(.middle)
+                        // Head-truncate so the meaningful tail (…/repo) always
+                        // survives instead of clipping mid-word ("Addition...ode/astra").
+                        .truncationMode(.head)
+                        .help(viewModel.selectedRepositoryFullPath ?? viewModel.selectedRepositorySubtitle)
                 }
 
                 rowDisclosureChevron
