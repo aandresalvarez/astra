@@ -152,6 +152,46 @@ struct CapabilityRuntimeIntegrityServiceTests {
         #expect(issues.first?.message.contains("catalog policy blocks runtime activation") == true)
     }
 
+    @Test("enabled package with unauthenticated prerequisite blocks runtime activation")
+    func enabledPackageWithUnauthenticatedPrerequisiteBlocksRuntimeActivation() throws {
+        let container = try makeRuntimeIntegrityContainer()
+        let context = container.mainContext
+        let prerequisite = CommonCLIPrerequisites.githubAuth
+        let package = PluginPackage(
+            id: "runtime-auth-prereq",
+            name: "Runtime Auth Prereq",
+            icon: "terminal",
+            description: "Package requiring CLI auth",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            prerequisites: [prerequisite],
+            governance: .builtInApproved()
+        )
+        let workspace = Workspace(name: "Runtime Auth", primaryPath: "/tmp/runtime-auth")
+        workspace.enabledCapabilityIDs = [package.id]
+        context.insert(workspace)
+        let task = AgentTask(title: "Use auth package", goal: "Use GitHub", workspace: workspace)
+        context.insert(task)
+        try context.save()
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [package],
+            checkExecutables: false,
+            prerequisiteStatuses: [prerequisite.id: .unauthenticated(detail: "not logged in")]
+        )
+
+        #expect(issues.map(\.resourceKind) == [.credential])
+        #expect(issues.first?.resourceName == "GitHub login")
+        #expect(issues.first?.message.contains("Run `gh auth login`.") == true)
+    }
+
     @Test("unknown browser adapter IDs are runtime integrity issues")
     func unknownBrowserAdapterIDsAreRuntimeIntegrityIssues() throws {
         let container = try makeRuntimeIntegrityContainer()
