@@ -69,6 +69,10 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         true
     }
 
+    func requiresVisibleResultForSuccessfulRun(phase _: String) -> Bool {
+        true
+    }
+
     func manualCompletionPayload(phase _: String) -> String {
         "Codex finished."
     }
