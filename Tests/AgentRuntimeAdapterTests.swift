@@ -122,7 +122,7 @@ struct AgentRuntimeAdapterTests {
         #expect(antigravity.descriptor.defaultModels.contains("Gemini 3.5 Flash (Low)"))
         #expect(antigravity.descriptor.defaultModel != "default")
         #expect(codex.descriptor.executableName == "codex")
-        #expect(codex.descriptor.defaultModels.contains("gpt-5.2-codex"))
+        #expect(codex.descriptor.defaultModels.first == "gpt-5.5")
         #expect(Set(AgentRuntimeAdapterRegistry.allAdapters.map(\.availableModelsStorageKey)).count == AgentRuntimeAdapterRegistry.allAdapters.count)
         #expect(Set(AgentRuntimeAdapterRegistry.allAdapters.map(\.modelsCheckedAtStorageKey)).count == AgentRuntimeAdapterRegistry.allAdapters.count)
     }
@@ -375,7 +375,7 @@ struct AgentRuntimeAdapterTests {
             title: "Codex",
             goal: "Say hi",
             workspace: workspace,
-            model: "gpt-5.2-codex",
+            model: "gpt-5.5",
             runtime: .codexCLI
         )
 
@@ -485,13 +485,12 @@ struct AgentRuntimeAdapterTests {
         #expect(codexPlan.executablePath == "/bin/codex-not-present")
         #expect(codexPlan.arguments.starts(with: ["exec", "--json", "--color", "never"]))
         #expect(codexPlan.arguments.contains("--model"))
-        #expect(codexPlan.arguments.contains("gpt-5.2-codex"))
+        #expect(codexPlan.arguments.contains("gpt-5.5"))
         #expect(codexPlan.arguments.contains("--cd"))
         #expect(codexPlan.arguments.contains(workspace.primaryPath))
         #expect(codexPlan.arguments.contains("--sandbox"))
         #expect(codexPlan.arguments.contains("workspace-write"))
-        #expect(codexPlan.arguments.contains("--ask-for-approval"))
-        #expect(codexPlan.arguments.contains("never"))
+        #expect(codexPlan.arguments.contains("--ask-for-approval") == false)
         #expect(codexPlan.arguments.last == "hello")
         #expect(codexPlan.parsesJSONLines)
         #expect(codexPlan.environment["CODEX_HOME"] == "/tmp/astra-codex-home")

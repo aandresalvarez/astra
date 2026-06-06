@@ -140,7 +140,7 @@ struct AgentUtilityRuntimeTests {
             workspacePath: root.path,
             configuration: AgentUtilityRuntimeConfiguration(
                 runtime: .codexCLI,
-                model: "gpt-5.2-codex",
+                model: "gpt-5.5",
                 providerSettings: settings
             ),
             toolMode: .readOnly

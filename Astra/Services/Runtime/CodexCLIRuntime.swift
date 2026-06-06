@@ -11,10 +11,8 @@ struct CodexCLICommandPlan: Equatable {
 enum CodexCLIRuntime {
     static let executableName = "codex"
     static let bundledModelNames = [
-        "gpt-5.3-codex",
-        "gpt-5.2-codex",
+        "gpt-5.5",
         "gpt-5.2",
-        "gpt-5-codex",
         "gpt-5",
         "codex-mini-latest"
     ]
@@ -24,7 +22,7 @@ enum CodexCLIRuntime {
     }
 
     static func defaultModelName() -> String {
-        bundledModelNames.first ?? "gpt-5.2-codex"
+        bundledModelNames.first ?? "gpt-5.5"
     }
 
     static func availableModelNames() -> [String] {
@@ -94,11 +92,11 @@ enum CodexCLIRuntime {
     static func codexPermissionArguments(policy: PermissionPolicy) -> [String] {
         switch policy {
         case .autonomous:
-            return ["--sandbox", "danger-full-access", "--ask-for-approval", "never"]
+            return ["--dangerously-bypass-approvals-and-sandbox"]
         case .restricted:
-            return ["--sandbox", "workspace-write", "--ask-for-approval", "never"]
+            return ["--sandbox", "workspace-write"]
         case .interactive:
-            return ["--sandbox", "read-only", "--ask-for-approval", "never"]
+            return ["--sandbox", "read-only"]
         }
     }
 

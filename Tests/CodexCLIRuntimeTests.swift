@@ -10,7 +10,7 @@ struct CodexCLIRuntimeTests {
         let plan = CodexCLIRuntime.buildCommand(
             executablePath: "/opt/codex",
             prompt: "Summarize the repo",
-            model: "gpt-5.2-codex",
+            model: "gpt-5.5",
             workspacePath: "/tmp/workspace",
             additionalPaths: ["/tmp/workspace", "/tmp/extra", "/tmp/extra"],
             permissionPolicy: .restricted,
@@ -26,15 +26,14 @@ struct CodexCLIRuntimeTests {
             "exec",
             "--json",
             "--color", "never",
-            "--model", "gpt-5.2-codex",
+            "--model", "gpt-5.5",
             "--cd", "/tmp/workspace"
         ]))
         #expect(plan.arguments.contains("--add-dir"))
         #expect(plan.arguments.contains("/tmp/extra"))
         #expect(plan.arguments.contains("--sandbox"))
         #expect(plan.arguments.contains("workspace-write"))
-        #expect(plan.arguments.contains("--ask-for-approval"))
-        #expect(plan.arguments.contains("never"))
+        #expect(plan.arguments.contains("--ask-for-approval") == false)
         #expect(plan.arguments.contains("--skip-git-repo-check"))
         #expect(plan.arguments.last == "Summarize the repo")
         #expect(plan.environment["CODEX_HOME"] == "/tmp/codex-home")
@@ -48,7 +47,7 @@ struct CodexCLIRuntimeTests {
         let plan = CodexCLIRuntime.buildCommand(
             executablePath: "/opt/codex",
             prompt: "Implement the plan",
-            model: "gpt-5.2-codex",
+            model: "gpt-5.5",
             workspacePath: "/tmp/workspace",
             additionalPaths: [],
             permissionPolicy: .autonomous,
@@ -56,10 +55,10 @@ struct CodexCLIRuntimeTests {
             taskEnvironment: [:]
         )
 
-        #expect(plan.arguments.contains("--sandbox"))
-        #expect(plan.arguments.contains("danger-full-access"))
-        #expect(plan.arguments.contains("--ask-for-approval"))
-        #expect(plan.arguments.contains("never"))
+        #expect(plan.arguments.contains("--sandbox") == false)
+        #expect(plan.arguments.contains("danger-full-access") == false)
+        #expect(plan.arguments.contains("--dangerously-bypass-approvals-and-sandbox"))
+        #expect(plan.arguments.contains("--ask-for-approval") == false)
     }
 
     @Test("Codex policy render records provider sandbox limitations")
@@ -68,7 +67,7 @@ struct CodexCLIRuntimeTests {
             policy: .preset(.review),
             context: PolicyRenderContext(
                 runtimeID: .codexCLI,
-                model: "gpt-5.2-codex",
+                model: "gpt-5.5",
                 workspacePath: "/tmp/workspace",
                 additionalPaths: [],
                 requestedAllowedTools: ["Read", "Bash"],
@@ -81,7 +80,7 @@ struct CodexCLIRuntimeTests {
 
         #expect(render.providerID == AgentRuntimeID.codexCLI)
         #expect(render.generatedConfigPreview.contains("--sandbox workspace-write"))
-        #expect(render.generatedConfigPreview.contains("--ask-for-approval never"))
+        #expect(render.generatedConfigPreview.contains("--ask-for-approval") == false)
         #expect(render.diagnostics.contains { $0.id == "codex_cli.fine-grained-provider-native-gap" })
         #expect(render.usesBroadProviderPermissions == false)
     }
