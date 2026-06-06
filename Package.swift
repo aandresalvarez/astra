@@ -58,7 +58,6 @@ let package = Package(
             ],
             path: "Astra",
             resources: [
-                .process("Assets.xcassets"),
                 .copy("Resources/AppIcon.icns"),
                 .copy("Resources/AppIconDev.icns"),
                 .copy("Resources/Capabilities"),

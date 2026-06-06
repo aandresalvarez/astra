@@ -7,6 +7,14 @@ enum AppStorageKeys {
     static let onboardingEnabledCapabilityIDs = "astra.onboardingEnabledCapabilityIDs"
     static let skipPermissions = "skipPermissions"
     static let securityGateDefaultedToReview = "astra.securityGateDefaultedToReview.v1"
+    // Build number for which the one-time startup Skill migrations last ran.
+    // Re-runs once after each app update as a self-healing legacy backfill.
+    static let completedStartupSkillMigrationsBuild = "astra.startup.completedSkillMigrationsBuild.v1"
+    // Build number for which the legacy SQLite enum-raw-value repair last ran.
+    // The repair is idempotent, so re-running it once after each app update
+    // (e.g. when a schema/store change reintroduces stale enum values) is the
+    // intended self-healing behavior; gating skips it on unchanged launches.
+    static let completedLegacyStoreRepairBuild = "astra.startup.completedLegacyStoreRepairBuild.v1"
     static let hasSeenNewTaskNudge = "astra.hasSeenNewTaskNudge.v1"
     static let showStarredWorkspacesOnly = "astra.sidebar.showStarredWorkspacesOnly.v1"
     static let diagnosticsScope = "astra.diagnostics.scope.v1"

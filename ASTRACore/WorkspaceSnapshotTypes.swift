@@ -1,6 +1,6 @@
 import Foundation
 
-public struct ConnectorSnapshotConfig: Codable, Equatable {
+public struct ConnectorSnapshotConfig: Codable, Equatable, Sendable {
     public var id: String?
     public var name: String
     public var serviceType: String
@@ -49,7 +49,7 @@ public struct ConnectorSnapshotConfig: Codable, Equatable {
     }
 }
 
-public struct LocalToolSnapshotConfig: Codable, Equatable {
+public struct LocalToolSnapshotConfig: Codable, Equatable, Sendable {
     public var id: String?
     public var name: String
     public var description: String
@@ -86,7 +86,7 @@ public struct LocalToolSnapshotConfig: Codable, Equatable {
     }
 }
 
-public struct SkillSnapshotConfig: Codable, Equatable {
+public struct SkillSnapshotConfig: Codable, Equatable, Sendable {
     public var id: String?
     public var name: String
     public var icon: String
@@ -144,7 +144,7 @@ public struct SkillSnapshotConfig: Codable, Equatable {
     }
 }
 
-public struct ArtifactConfig: Codable, Equatable {
+public struct ArtifactConfig: Codable, Equatable, Sendable {
     public var id: String?
     public var type: String
     public var path: String
