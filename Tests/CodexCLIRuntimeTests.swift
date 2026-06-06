@@ -78,7 +78,7 @@ struct CodexCLIRuntimeTests {
     }
 
     @Test("Codex exec command uses JSON, workspace, model, restricted policy, and automation isolation")
-    func codexExecCommandUsesJSONWorkspaceModelRestrictedPolicyAndAutomationIsolation() {
+    func codexExecCommandUsesJSONWorkspaceModelRestrictedPolicyAndAutomationIsolation() throws {
         let plan = CodexCLIRuntime.buildCommand(
             executablePath: "/opt/codex",
             prompt: "Summarize the repo",
@@ -99,10 +99,10 @@ struct CodexCLIRuntimeTests {
             "--json",
             "--color", "never"
         ]))
-        #expect(plan.arguments.contains("--model"))
-        #expect(plan.arguments.contains("gpt-5.5"))
-        #expect(plan.arguments.contains("--cd"))
-        #expect(plan.arguments.contains("/tmp/workspace"))
+        let modelIndex = try #require(plan.arguments.firstIndex(of: "--model"))
+        #expect(plan.arguments[modelIndex + 1] == "gpt-5.5")
+        let workspaceIndex = try #require(plan.arguments.firstIndex(of: "--cd"))
+        #expect(plan.arguments[workspaceIndex + 1] == "/tmp/workspace")
         #expect(plan.arguments.contains("--add-dir"))
         #expect(plan.arguments.contains("/tmp/extra"))
         #expect(plan.arguments.contains("--sandbox"))
