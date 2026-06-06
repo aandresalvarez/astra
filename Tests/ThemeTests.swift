@@ -126,9 +126,13 @@ struct ThemeTests {
 
     @Test("Chat reading text meets paragraph contrast targets")
     func chatReadingTextMeetsContrastTargets() {
+        // Dark mode is checked against the real content surface
+        // (warmCanvasDarkHex ≈ textBackgroundColor / cardBackground, where
+        // reading text sits), not pure black — black is misleadingly lenient
+        // for light-on-dark text.
         #expect(contrastRatio(Stanford.readingTextLightHex, 0xFFFFFF) >= 4.5)
         #expect(contrastRatio(Stanford.readingTextLightHex, Stanford.warmCanvasLightHex) >= 4.5)
-        #expect(contrastRatio(Stanford.readingTextDarkHex, 0x000000) >= 4.5)
+        #expect(contrastRatio(Stanford.readingTextDarkHex, Stanford.warmCanvasDarkHex) >= 4.5)
     }
 
     @Test("Low-emphasis text tokens clear WCAG AA (4.5:1) in both modes")
