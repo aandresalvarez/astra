@@ -294,15 +294,15 @@ struct ShelfMarkdownPanelView: View {
         return VStack(spacing: 8) {
             Image(systemName: isNoPaths ? "folder.badge.questionmark" : "folder")
                 .font(Stanford.ui(28, weight: .regular))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Stanford.textTertiary)
 
             Text(isNoPaths ? "No workspace paths" : emptyScopeTitle)
                 .font(Stanford.body(16).weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Stanford.textSecondary)
 
             Text(isNoPaths ? "Configure a workspace folder to browse files." : emptyScopeMessage)
                 .font(Stanford.caption(12))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Stanford.textTertiary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
         }
