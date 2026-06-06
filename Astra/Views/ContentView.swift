@@ -283,6 +283,7 @@ struct ContentView: View {
     @State private var splitVisibility: NavigationSplitViewVisibility = .all
     @State private var responsiveLayoutWidth: CGFloat = 0
     @State private var didAutoHideSidebarForCompactPanels = false
+    @State private var isSidebarRevealInProgress = false
     @State private var cachedHasCanvasContent = false
     @State private var generatedHTMLDiscoveryTask: Task<Void, Never>?
     @State private var markdownAvailabilityTask: Task<Void, Never>?
@@ -590,6 +591,7 @@ struct ContentView: View {
             }
             SidebarSplitViewGuard(
                 minimumExpandedWidth: SidebarColumnLayout.expandedMinimumWidth,
+                isRevealInProgress: isSidebarRevealInProgress,
                 onCollapse: collapseSidebarForCompressedSplit
             )
             .frame(width: 0, height: 0)
@@ -966,8 +968,16 @@ struct ContentView: View {
     }
 
     private func handleSidebarColumnWidthChanged(_ width: CGFloat) {
+        if isSidebarRevealInProgress,
+           SidebarColumnLayout.shouldCompleteSidebarReveal(width: width) {
+            isSidebarRevealInProgress = false
+        }
+
         guard splitVisibility != .detailOnly else { return }
-        guard SidebarColumnLayout.shouldCollapseExpandedSidebar(width: width) else { return }
+        guard SidebarColumnLayout.shouldCollapseExpandedSidebar(
+            width: width,
+            isRevealInProgress: isSidebarRevealInProgress
+        ) else { return }
 
         collapseSidebarForCompressedSplit()
     }
@@ -975,6 +985,7 @@ struct ContentView: View {
     private func collapseSidebarForCompressedSplit() {
         guard splitVisibility != .detailOnly else { return }
 
+        isSidebarRevealInProgress = false
         withAnimation(sidebarCollapseAnimation) {
             splitVisibility = .detailOnly
         }
@@ -1028,7 +1039,12 @@ struct ContentView: View {
             }
             return
         }
-        guard splitVisibility != .detailOnly else { return }
+        guard PanelLayoutGeometry.shouldAutoHideSidebarForCompactPanels(
+            width: currentWidth,
+            hasRightSidePanelPresented: hasRightSidePanelPresented,
+            isSidebarDetailOnly: splitVisibility == .detailOnly,
+            isSidebarRevealInProgress: isSidebarRevealInProgress
+        ) else { return }
 
         didAutoHideSidebarForCompactPanels = true
         withAnimation(panelTransitionAnimation) {
@@ -1037,6 +1053,10 @@ struct ContentView: View {
     }
 
     private func handleSplitVisibilityChanged() {
+        if splitVisibility != .detailOnly {
+            isSidebarRevealInProgress = true
+        }
+
         guard isCompactPanelLayout else {
             if splitVisibility != .detailOnly {
                 didAutoHideSidebarForCompactPanels = false
@@ -1053,15 +1073,16 @@ struct ContentView: View {
 
     private func hideRightSidePanelsForCompactSidebar() {
         animatePanelChange {
-            setActiveWorkspaceCanvasItem(nil, remember: false)
+            setActiveWorkspaceCanvasItem(nil, remember: true)
             isWorkspaceRightRailVisible = false
         }
     }
 
     private func revealSidebarFromCompactLayout() {
         didAutoHideSidebarForCompactPanels = false
+        isSidebarRevealInProgress = true
         animatePanelChange {
-            setActiveWorkspaceCanvasItem(nil, remember: false)
+            setActiveWorkspaceCanvasItem(nil, remember: true)
             isWorkspaceRightRailVisible = false
             splitVisibility = .all
         }

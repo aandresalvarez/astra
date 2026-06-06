@@ -39,6 +39,18 @@ enum PanelLayoutGeometry {
         width > 0 && width < compactPanelMutualExclusionWidth
     }
 
+    static func shouldAutoHideSidebarForCompactPanels(
+        width: CGFloat,
+        hasRightSidePanelPresented: Bool,
+        isSidebarDetailOnly: Bool,
+        isSidebarRevealInProgress: Bool
+    ) -> Bool {
+        guard !isSidebarRevealInProgress else { return false }
+        guard isCompactPanelLayout(width: width) else { return false }
+        guard hasRightSidePanelPresented else { return false }
+        return !isSidebarDetailOnly
+    }
+
     /// Uses a viewport-relative target with hard readability clamps:
     /// roughly `clamp(340, 24vw, 420)` in SwiftUI layout terms.
     static func inspectorDockedColumnWidth(for detailAreaWidth: CGFloat) -> CGFloat {

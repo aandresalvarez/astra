@@ -439,8 +439,19 @@ struct SidebarGroupingTests {
             SidebarColumnLayout.expandedMinimumWidth - 1
         ) == true)
         #expect(SidebarColumnLayout.shouldCollapseVisibleSplitWidth(
+            SidebarColumnLayout.expandedMinimumWidth - 1,
+            isRevealInProgress: true
+        ) == false)
+        #expect(SidebarColumnLayout.shouldCollapseVisibleSplitWidth(
             SidebarColumnLayout.expandedMinimumWidth
         ) == false)
+        #expect(SidebarColumnLayout.shouldCompleteSidebarReveal(width: 0) == false)
+        #expect(SidebarColumnLayout.shouldCompleteSidebarReveal(
+            width: SidebarColumnLayout.expandedMinimumWidth - 1
+        ) == false)
+        #expect(SidebarColumnLayout.shouldCompleteSidebarReveal(
+            width: SidebarColumnLayout.expandedMinimumWidth
+        ) == true)
     }
 }
 
