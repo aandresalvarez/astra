@@ -506,6 +506,71 @@ struct BuildPromptTests {
         )
     }
 
+    @Test("OpenCode follow-up prompt uses inline thread state instead of task-folder file reads")
+    func openCodeFollowUpPromptUsesInlineThreadStateInsteadOfTaskFolderFileReads() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "OpenCode Prompt", primaryPath: "/tmp/opencode-prompt")
+        ctx.insert(ws)
+        let task = AgentTask(
+            title: "OpenCode follow-up",
+            goal: "check my open prs in github",
+            workspace: ws,
+            model: "opencode/big-pickle",
+            runtime: .openCodeCLI
+        )
+        task.runtimeID = AgentRuntimeID.openCodeCLI.rawValue
+        ctx.insert(task)
+        let run = TaskRun(task: task)
+        run.status = .failed
+        run.stopReason = "no_usable_result"
+        run.output = "The prior run stopped while trying to read ASTRA task state."
+        run.completedAt = Date()
+        ctx.insert(run)
+        AgentRuntimeRunPersistence.recordSessionTurn(
+            task: task,
+            run: run,
+            message: "check my open prs in github"
+        )
+
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
+            message: "retry the last request",
+            task: task
+        )
+
+        #expect(prompt.contains("History Lookup Rule:"))
+        #expect(prompt.contains("Use the thread state already included in this prompt"))
+        #expect(!prompt.contains("read the referenced current state"))
+        #expect(!prompt.contains("Read them for context when needed"))
+        #expect(!prompt.contains("use the read tool for ASTRA state/history files instead of Bash"))
+        #expect(!prompt.contains("current_state.md"))
+        #expect(!prompt.contains("current_state.json"))
+        #expect(!prompt.contains("session_history.md"))
+    }
+
+    @Test("Multi-root follow-up prompt keeps explicit task-state lookup guidance")
+    func multiRootFollowUpPromptKeepsExplicitTaskStateLookupGuidance() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Claude Prompt", primaryPath: "/tmp/claude-prompt")
+        ctx.insert(ws)
+        let task = AgentTask(
+            title: "Claude follow-up",
+            goal: "review prior task decisions",
+            workspace: ws
+        )
+        task.runtimeID = AgentRuntimeID.claudeCode.rawValue
+        ctx.insert(task)
+
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
+            message: "what did we decide?",
+            task: task
+        )
+
+        #expect(prompt.contains("History Lookup Rule:"))
+        #expect(prompt.contains("read the referenced current state"))
+    }
+
     @Test("Prompt includes goal")
     func includesGoal() throws {
         let container = try makeContainer()
@@ -583,6 +648,33 @@ struct BuildPromptTests {
         #expect(prompt.contains("Task Output Folder:"))
         #expect(!prompt.contains("Artifact delivery contract:"))
         #expect(!prompt.contains("Create the first useful deliverable promptly"))
+    }
+
+    @Test("OpenCode prompt steers task state reads to inline context")
+    func openCodePromptSteersTaskStateReadsToInlineContext() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Test", primaryPath: "/tmp/prompt-opencode")
+        ctx.insert(ws)
+        let task = AgentTask(
+            title: "Say hello",
+            goal: "hi, how are you?",
+            workspace: ws,
+            model: "opencode/big-pickle",
+            runtime: .openCodeCLI
+        )
+        ctx.insert(task)
+        try ctx.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(prompt.contains("For OpenCode, use the inline Context Capsule"))
+        #expect(prompt.contains("Do not request external_directory approval just to inspect ASTRA state/history files."))
+        #expect(!prompt.contains("use the read tool for ASTRA state/history files instead of Bash"))
+        #expect(!prompt.contains("Read them for context when needed"))
+        #expect(!prompt.contains("current_state.md"))
+        #expect(!prompt.contains("current_state.json"))
+        #expect(!prompt.contains("session_history.md"))
     }
 
     @Test("Prompt keeps current task explicit before context and at current-goal section end")

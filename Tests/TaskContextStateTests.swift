@@ -204,6 +204,56 @@ struct TaskContextStateTests {
         #expect(state.turns.map(\.outputFile) == ["outputs/turn_001.md", "outputs/turn_002.md"])
     }
 
+    @Test("completed run clears prior permission blocker from current state")
+    func completedRunClearsPriorPermissionBlockerFromCurrentState() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Permission Resume", primaryPath: root)
+        let task = AgentTask(title: "Resume", goal: "who are you?", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        task.status = .pendingUser
+        let blockedRun = TaskRun(task: task)
+        blockedRun.status = .failed
+        blockedRun.stopReason = "permission_approval_required"
+        blockedRun.completedAt = Date()
+        context.insert(blockedRun)
+        context.insert(TaskEvent(
+            task: task,
+            type: "permission.approval.requested",
+            payload: "Permission requested for tool: Bash(gh pr list *)",
+            run: blockedRun
+        ))
+        TaskContextStateManager.recordTurn(task: task, run: blockedRun, message: "do i have open prs to review?")
+
+        var blockedState = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        #expect(blockedState.mode == .blocked)
+        #expect(blockedState.blockers.contains { $0.contains("gh pr list") })
+
+        task.status = .completed
+        let completedRun = TaskRun(task: task)
+        completedRun.status = .completed
+        completedRun.stopReason = "completed"
+        completedRun.output = "You have one open PR to review."
+        completedRun.completedAt = Date()
+        context.insert(completedRun)
+        TaskContextStateManager.recordTurn(
+            task: task,
+            run: completedRun,
+            message: "ASTRA approved one-time runtime permission for this run: shell(gh:pr list *)"
+        )
+
+        blockedState = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        #expect(blockedState.mode == .completed)
+        #expect(blockedState.blockers.isEmpty)
+        #expect(blockedState.blockerFacts.isEmpty)
+        #expect(blockedState.turns.first?.blockers.contains { $0.contains("gh pr list") } == true)
+        #expect(blockedState.turns.last?.blockers.isEmpty == true)
+    }
+
     @Test("approved plans refresh state with explicit planning mode and approved goal")
     func planApprovalRecordsApprovedGoal() throws {
         let root = try temporaryRoot()

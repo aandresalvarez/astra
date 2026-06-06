@@ -113,6 +113,20 @@ enum RuntimePathResolver {
         )
     }
 
+    static func detectOpenCodePath(fileManager: FileManager = .default) -> String {
+        detectExecutablePath(
+            named: "opencode",
+            candidates: [
+                "\(userLocalBin)/opencode",
+                "\(homebrewBin)/opencode",
+                "\(usrLocalBin)/opencode",
+                "\(NSHomeDirectory())/.npm-global/bin/opencode"
+            ],
+            fallback: "",
+            fileManager: fileManager
+        )
+    }
+
     private static func defaultExecutableCandidates(named executableName: String) -> [String] {
         [
             "\(userLocalBin)/\(executableName)",

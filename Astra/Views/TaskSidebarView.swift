@@ -95,14 +95,55 @@ enum SidebarLeanPresentation {
     static let selectedWorkspaceChildrenUseGuide = false
     static let sidebarTaskStatusesShowExceptionsOnly = true
     static let pinnedPreviewLimit = 5
-    // Indent the whole child group (tasks + the contextual "Add task" row) so
-    // it reads as nested under its workspace and the Add-task scope is obvious.
-    static let childTaskListLeadingPadding: CGFloat = 16
+    // Keep child task chrome close to the sidebar edge; the workspace card
+    // above establishes scope, while task rows need the reclaimed title width.
+    static let childTaskListLeadingPadding: CGFloat = 0
     static let childTaskContentLeadingPadding: CGFloat = 0
     static let workspaceRowTrailingSlotWidth: CGFloat = 58
     static let newTaskVerticalPadding: CGFloat = 7
     static let newTaskRestFillOpacity = 0.045
     static let newTaskHoverFillOpacity = 0.075
+}
+
+enum SidebarThreadRowLayout {
+    static let rowHorizontalPadding: CGFloat = 8
+    static let statusIconWidth: CGFloat = 14
+    static let statusIconTitleSpacing: CGFloat = 9
+    static let titleFontSize: CGFloat = 14
+
+    static func showsStatusIcon(
+        for status: TaskStatus,
+        isHovered: Bool,
+        isSelected: Bool
+    ) -> Bool {
+        isHovered || isSelected || isActionableStatus(status)
+    }
+
+    static func isActionableStatus(_ status: TaskStatus) -> Bool {
+        switch status {
+        case .running, .pendingUser, .failed, .budgetExceeded:
+            return true
+        case .draft, .queued, .completed, .cancelled:
+            return false
+        }
+    }
+
+    static func restingTitleLeadingOffset(
+        childListPadding: CGFloat,
+        contentLeadingPadding: CGFloat,
+        status: TaskStatus
+    ) -> CGFloat {
+        childListPadding
+            + rowHorizontalPadding
+            + contentLeadingPadding
+            + reservedStatusIconWidth(for: status)
+    }
+
+    private static func reservedStatusIconWidth(for status: TaskStatus) -> CGFloat {
+        isActionableStatus(status)
+            ? statusIconWidth + statusIconTitleSpacing
+            : 0
+    }
 }
 
 enum SidebarColumnLayout {
@@ -1896,16 +1937,15 @@ private struct SidebarThreadRow: View {
     }
 
     private var showIcon: Bool {
-        isSelected || isHovered || isActionableStatus
+        SidebarThreadRowLayout.showsStatusIcon(
+            for: task.status,
+            isHovered: isHovered,
+            isSelected: isSelected
+        )
     }
 
     private var isActionableStatus: Bool {
-        switch task.status {
-        case .running, .pendingUser, .failed, .budgetExceeded:
-            return true
-        default:
-            return false
-        }
+        SidebarThreadRowLayout.isActionableStatus(task.status)
     }
 
     /// Inline chip surfaced only for exceptional or active states. Draft,
@@ -1927,17 +1967,22 @@ private struct SidebarThreadRow: View {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 9) {
-            statusIcon
-                .frame(width: 14, height: 14)
-                .opacity(showIcon ? (isActionableStatus && !isSelected && !isHovered ? 0.6 : 1) : 0)
-                .padding(.leading, contentLeadingPadding)
+        HStack(alignment: .center, spacing: SidebarThreadRowLayout.statusIconTitleSpacing) {
+            if showIcon {
+                statusIcon
+                    .frame(
+                        width: SidebarThreadRowLayout.statusIconWidth,
+                        height: SidebarThreadRowLayout.statusIconWidth
+                    )
+                    .opacity(isActionableStatus && !isSelected && !isHovered ? 0.6 : 1)
+                    .padding(.leading, contentLeadingPadding)
+            }
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
                     SidebarTaskTitleText(
                         presentation: titlePresentation,
-                        font: Stanford.ui(13, weight: titleWeight)
+                        font: Stanford.ui(SidebarThreadRowLayout.titleFontSize, weight: titleWeight)
                     )
                     .layoutPriority(1)
 
@@ -1960,6 +2005,7 @@ private struct SidebarThreadRow: View {
                         .lineLimit(1)
                 }
             }
+            .padding(.leading, showIcon ? 0 : contentLeadingPadding)
 
             Spacer(minLength: 6)
 
@@ -1997,7 +2043,7 @@ private struct SidebarThreadRow: View {
                 .animation(metadataAnimation, value: isHovered)
             }
         }
-        .padding(.horizontal, 8)
+        .padding(.horizontal, SidebarThreadRowLayout.rowHorizontalPadding)
         .padding(.vertical, 5)
         .frame(minHeight: Stanford.sidebarThreadRowHeight, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)

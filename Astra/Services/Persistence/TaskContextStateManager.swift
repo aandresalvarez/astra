@@ -395,7 +395,11 @@ enum TaskContextStateManager {
 
         var lines: [String] = []
         lines.append("Context Capsule v2:")
-        lines.append("- Treat this capsule as the authoritative compact task state. Use transcript, history, and output files as supporting evidence when exact prior wording or details are needed.")
+        if task.resolvedRuntimeID == .openCodeCLI {
+            lines.append("- Treat this capsule as the authoritative compact task state. Use the inline transcript and summaries in this prompt as supporting evidence before requesting task-state file access.")
+        } else {
+            lines.append("- Treat this capsule as the authoritative compact task state. Use transcript, history, and output files as supporting evidence when exact prior wording or details are needed.")
+        }
         lines.append("Thread Intent:")
         lines.append("- Mode: \(state.mode.rawValue)")
         if let checkpoint = checkpointSummary(for: task) {
@@ -454,8 +458,13 @@ enum TaskContextStateManager {
             }
         }
 
-        lines.append("- Canonical state file: \(folder)/\(jsonFileName)")
-        lines.append("- Read \(folder)/\(markdownFileName) or referenced turn outputs if this follow-up depends on older decisions, failures, changed files, or exact prior wording.")
+        if task.resolvedRuntimeID == .openCodeCLI {
+            lines.append("- Canonical ASTRA state is already inlined in this capsule for OpenCode.")
+            lines.append("- Use this inline capsule and recent transcript unless the user explicitly asks for raw file contents.")
+        } else {
+            lines.append("- Canonical state file: \(folder)/\(jsonFileName)")
+            lines.append("- Read \(folder)/\(markdownFileName) or referenced turn outputs if this follow-up depends on older decisions, failures, changed files, or exact prior wording.")
+        }
 
         let block = lines.joined(separator: "\n")
         return block.count > promptBlockCharacterLimit
@@ -629,15 +638,9 @@ enum TaskContextStateManager {
             let detail = step.detail.trimmingCharacters(in: .whitespacesAndNewlines)
             return detail.isEmpty ? "Blocked step: \(step.title)" : "Blocked step: \(step.title) - \(detail)"
         } ?? []
-        let eventBlockers = task.events
-            .filter { ["error", "permission.denied", "permission.approval.requested", "budget.exceeded"].contains($0.type) }
-            .sorted { $0.timestamp > $1.timestamp }
-            .prefix(6)
-            .map { boundedInline($0.payload, maxCharacters: 220) }
-        state.blockers = dedupeKeepingOrder(planBlockers + Array(eventBlockers) + state.blockers, limit: maxListItems)
-        if state.mode != .blocked {
-            state.blockers = state.blockers.filter { !$0.isEmpty }.prefixArray(maxListItems)
-        }
+        let eventBlockers = activeEventBlockers(task: task, latestRun: latestRun, mode: state.mode)
+        let eventBlockerMessages = eventBlockers.map { boundedInline($0.payload, maxCharacters: 220) }
+        state.blockers = dedupeKeepingOrder(planBlockers + eventBlockerMessages, limit: maxListItems)
 
         let changedFiles = task.runs
             .sorted { $0.startedAt < $1.startedAt }
@@ -656,7 +659,7 @@ enum TaskContextStateManager {
         }
         state.testCommand = normalizedTestCommand(task)
         state.decisionFacts = decisionFacts(for: state, task: task, planState: planState)
-        state.blockerFacts = blockerFacts(for: task, planBlockers: planBlockers)
+        state.blockerFacts = blockerFacts(for: task, planBlockers: planBlockers, eventBlockers: eventBlockers)
         state.changedFiles = changedFileReferences(for: task, discoveredFiles: discoveredTaskOutputFiles)
         state.artifacts = artifactReferences(for: task, discoveredFiles: discoveredTaskOutputFiles)
         state.verification = verificationState(task: task, latestRun: latestRun, artifacts: state.artifacts)
@@ -920,13 +923,13 @@ enum TaskContextStateManager {
     @MainActor
     private static func blockerFacts(
         for task: AgentTask,
-        planBlockers: [String]
+        planBlockers: [String],
+        eventBlockers: [TaskEvent]
     ) -> [TaskContextState.ContextFact] {
         var facts = planBlockers.map {
             contextFact($0, sourcePointers: [sourcePointer(kind: "plan", id: nil, summary: "Blocked plan step")])
         }
-        let eventFacts = task.events
-            .filter { ["error", "permission.denied", "permission.approval.requested", "budget.exceeded"].contains($0.type) }
+        let eventFacts = eventBlockers
             .sorted { $0.timestamp > $1.timestamp }
             .prefix(6)
             .map { event in
@@ -937,6 +940,24 @@ enum TaskContextStateManager {
             }
         facts.append(contentsOf: eventFacts)
         return dedupeFacts(facts, limit: maxListItems)
+    }
+
+    @MainActor
+    private static func activeEventBlockers(
+        task: AgentTask,
+        latestRun: TaskRun?,
+        mode: TaskThreadMode
+    ) -> [TaskEvent] {
+        guard mode == .blocked else { return [] }
+        let blockingTypes = ["error", "permission.denied", "permission.approval.requested", "budget.exceeded"]
+        let events = task.events
+            .filter { blockingTypes.contains($0.type) }
+            .sorted { $0.timestamp > $1.timestamp }
+        guard let latestRun else {
+            return Array(events.prefix(6))
+        }
+        let latestRunEvents = events.filter { $0.run?.id == latestRun.id }
+        return Array((latestRunEvents.isEmpty ? events : latestRunEvents).prefix(6))
     }
 
     @MainActor

@@ -1045,6 +1045,89 @@ struct RuntimePolicyGuardTests {
         #expect(monitor.policyViolationMessage?.contains("not in the provider allow-list") == true)
     }
 
+    @Test("Read tool can access task folder when manifest includes runtime path")
+    func readToolCanAccessTaskFolderWhenManifestIncludesRuntimePath() {
+        let taskID = UUID()
+        let taskFolder = "/tmp/astra-policy-guard/.astra/tasks/\(String(taskID.uuidString.prefix(8)).uppercased())"
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read"],
+            workspacePath: "/tmp/astra-code-root",
+            additionalPaths: [taskFolder],
+            providerID: .openCodeCLI,
+            taskID: taskID
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "read", id: "t1", input: ["filePath": "\(taskFolder)/current_state.md"]),
+            process: nil
+        )
+
+        #expect(shouldKill == false)
+        #expect(monitor.policyViolation == false)
+    }
+
+    @Test("Brokered provider approved gh shell grant continues in Ask mode")
+    func brokeredProviderApprovedGhShellGrantContinuesInAskMode() {
+        let runtimes: [AgentRuntimeID] = [
+            .antigravityCLI,
+            .codexCLI,
+            .cursorCLI,
+            .openCodeCLI
+        ]
+
+        for runtime in runtimes {
+            let manifest = runtimePolicyManifest(
+                allowedTools: ["Read", "shell(gh:pr list *)"],
+                providerID: runtime,
+                approvalGrants: [.shellCommand(executable: "gh", pattern: "pr list *")]
+            )
+            let monitor = AgentRuntimeWorker.ProcessMonitor(
+                tokenBudget: Int.max,
+                taskID: manifest.taskID,
+                policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+            )
+
+            let shouldKill = monitor.processEvent(
+                .toolUse(
+                    name: "bash",
+                    id: "t1",
+                    input: ["command": "gh pr list --state open --limit 30"]
+                ),
+                process: nil
+            )
+
+            #expect(shouldKill == false, "\(runtime.rawValue) should accept approved gh list command")
+            #expect(monitor.policyViolation == false, "\(runtime.rawValue) should not report a policy violation")
+        }
+    }
+
+    @Test("Read tool outside manifest paths still stops provider")
+    func readToolOutsideManifestPathsStillStopsProvider() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read"],
+            workspacePath: "/tmp/astra-code-root",
+            providerID: .openCodeCLI
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "read", id: "t1", input: ["filePath": "/tmp/astra-policy-guard/.astra/tasks/ABCDEF12/current_state.md"]),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyViolationMessage?.contains("outside the workspace paths") == true)
+    }
+
     @Test("Runtime support tools do not trip policy")
     func runtimeSupportToolsDoNotTripPolicy() {
         let manifest = runtimePolicyManifest(
@@ -2412,6 +2495,7 @@ private func runtimePolicyManifest(
     allowedURLPatterns: [String] = [],
     deniedURLPatterns: [String] = [],
     workspacePath: String = "/tmp/astra-policy-guard",
+    additionalPaths: [String] = [],
     permissionMode: String = PermissionPolicy.restricted.rawValue,
     providerID: AgentRuntimeID = .claudeCode,
     policyLevel: AgentPolicyLevel = .review,
@@ -2453,7 +2537,7 @@ private func runtimePolicyManifest(
         policyScope: .taskOverride,
         providerRender: render,
         workspacePath: workspacePath,
-        additionalPaths: [],
+        additionalPaths: additionalPaths,
         environmentKeyNames: [],
         credentialLabels: [],
         approvalsGranted: [],
