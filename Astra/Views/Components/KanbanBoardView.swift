@@ -373,7 +373,11 @@ struct KanbanBoardView: View {
     }
 
     private var boardCategories: [KanbanCategory] {
-        KanbanCategory.allCases
+        // Drafts are in-composition plumbing, not delegated work — the board is
+        // the supervision pipeline only (Queued → Running → Review → Done).
+        // Draft-status tasks are also filtered out before they reach the board,
+        // so the lane is dropped here to avoid an always-empty column.
+        KanbanCategory.allCases.filter { $0 != .drafts }
     }
 
     private var persistentDropCategories: Set<KanbanCategory> {

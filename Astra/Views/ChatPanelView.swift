@@ -2496,6 +2496,21 @@ struct ChatPanelView: View {
             draft.updatedAt = Date()
             return draft
         } else {
+            // Gate creation at the source: don't persist a brand-new draft for a
+            // throwaway greeting/probe chat ("hi", "who are you"). Once the thread
+            // carries real intent — a second user turn, plan mode, or a candidate
+            // plan — it persists normally and captures the full conversation. This
+            // keeps the long tail of "open chat, type hi, wander off" out of the
+            // store entirely, complementing the board filter and launch prune.
+            if !isPlanMode, pendingPlan == nil {
+                let userMessages = messages.filter { $0.role == "user" }.map(\.content)
+                if TaskConversationSignal.isLowSignalConversation(
+                    goal: messages.first?.content ?? "",
+                    userMessages: userMessages
+                ) {
+                    return nil
+                }
+            }
             let workerSelection = workerRoleSelection
             let runtime = workerSelection.profile.runtime
             let model = workerSelection.profile.model

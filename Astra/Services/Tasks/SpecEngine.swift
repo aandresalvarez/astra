@@ -520,9 +520,10 @@ enum SpecEngine {
                 continue
             }
 
-            let title = result.output
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .replacingOccurrences(of: "\"", with: "")
+            // Sanitise at the source: trim, strip quotes, and collapse the
+            // occasional self-doubled output ("New greetingNew greeting") so the
+            // stored title is clean and no view layer has to paper over it.
+            let title = TaskTitleSanitizer.sanitizeGeneratedTitle(result.output)
             guard !title.isEmpty, title.count <= 80 else { continue }
             return title
         }

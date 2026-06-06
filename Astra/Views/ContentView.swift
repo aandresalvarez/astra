@@ -2173,6 +2173,13 @@ struct ContentView: View {
         coordinator.migrateSkillSecrets(skills: skills)
     }
 
+    private func runStoreMaintenanceIfNeeded() {
+        runtime.runStoreMaintenanceIfNeeded(
+            modelContext: modelContext,
+            isUITestingSeededLaunch: isUITestingSeededLaunch
+        )
+    }
+
     private func backfillThreadTitlesIfNeeded() {
         runtime.backfillThreadTitlesIfNeeded(
             coordinator: coordinator,
@@ -2221,6 +2228,7 @@ struct ContentView: View {
         refreshQueryShelfAvailabilityForSelectedTask()
         refreshGeneratedHTMLAvailabilityForSelectedTask()
         restoreRememberedWorkspaceCanvasItemIfAvailable()
+        runStoreMaintenanceIfNeeded()
         backfillThreadTitlesIfNeeded()
         refreshProviderModelsInBackground()
         enterUITestComposerIfNeeded()
