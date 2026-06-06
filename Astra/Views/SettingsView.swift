@@ -365,6 +365,7 @@ struct SettingsView: View {
         case .claudeCode: "terminal"
         case .copilotCLI: "person.crop.circle"
         case .antigravityCLI: "sparkles"
+        case .codexCLI: "curlybraces.square"
         default: "terminal"
         }
     }

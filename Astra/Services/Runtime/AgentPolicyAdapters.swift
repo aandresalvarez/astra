@@ -448,6 +448,85 @@ struct AntigravityPolicyAdapter: ProviderPolicyAdapter {
     }
 }
 
+struct CodexPolicyAdapter: ProviderPolicyAdapter {
+    let providerID: AgentRuntimeID = .codexCLI
+    let adapterVersion = 1
+
+    var supportedFeatures: ProviderPolicyFeatures {
+        ProviderPolicyFeatures(
+            supportsAllowTools: false,
+            supportsDenyTools: false,
+            supportsAskFirstMode: false,
+            supportsPathScoping: true,
+            supportsURLAllowlist: false,
+            supportsURLDenylist: false,
+            supportsSecretEnvRedaction: false,
+            supportsGeneratedSettingsFile: false,
+            supportsPerRunFlags: true,
+            supportsInteractiveCallbacks: false,
+            supportsManagedSettings: false,
+            supportsMachineReadableEvents: true,
+            supportsBroadAllowAll: true
+        )
+    }
+
+    func render(policy: AgentPolicy, context: PolicyRenderContext) -> ProviderPolicyRender {
+        let permissionPolicy = PermissionPolicy.fromAgentPolicyLevel(policy.level)
+        let args = CodexCLIRuntime.codexPermissionArguments(policy: permissionPolicy)
+        var diagnostics = diagnostics(for: policy, context: context)
+
+        let hasFineGrainedRules = !policy.allowedTools.isEmpty
+            || !policy.askFirstTools.isEmpty
+            || !policy.deniedTools.isEmpty
+            || !policy.allowedShellPatterns.isEmpty
+            || !policy.askFirstShellPatterns.isEmpty
+            || !policy.deniedShellPatterns.isEmpty
+            || !policy.allowedURLPatterns.isEmpty
+            || !policy.deniedURLPatterns.isEmpty
+        if permissionPolicy != .autonomous, hasFineGrainedRules {
+            diagnostics.append(PolicyDiagnostic(
+                id: "codex_cli.fine-grained-provider-native-gap",
+                severity: .warning,
+                title: "Fine-grained rules use Codex sandbox mode",
+                message: "Codex CLI exposes per-run sandbox and approval policy flags, but this adapter cannot render ASTRA's individual allow, deny, and ask-first rules as provider-native flags.",
+                affectedCapability: "permissions",
+                remediation: "Use Ask or Locked mode for sandboxed runs. Use Auto only for trusted or isolated work."
+            ))
+        }
+
+        return ProviderPolicyRender(
+            providerID: providerID,
+            adapterVersion: adapterVersion,
+            policyLevel: policy.level,
+            configOwnership: .generated,
+            permissionMode: permissionPolicy.rawValue,
+            allowedTools: permissionPolicy == .autonomous ? ["*"] : [],
+            runtimeSupportTools: runtimeSupportTools,
+            askFirstTools: policy.askFirstTools,
+            deniedTools: policy.deniedTools,
+            allowedShellPatterns: policy.allowedShellPatterns,
+            askFirstShellPatterns: policy.askFirstShellPatterns,
+            deniedShellPatterns: policy.deniedShellPatterns,
+            allowedURLPatterns: policy.allowedURLPatterns,
+            deniedURLPatterns: policy.deniedURLPatterns,
+            cliArgumentsSummary: args,
+            settingsSummary: "Generated per-run Codex CLI sandbox and approval flags",
+            generatedConfigPreview: args.joined(separator: " "),
+            enforcementTiers: permissionPolicy == .autonomous ? [.providerNative] : [.providerNative, .astraBrokered],
+            diagnostics: diagnostics,
+            usesBroadProviderPermissions: permissionPolicy == .autonomous
+        )
+    }
+
+    func providerGrantStrings(for _: [PermissionGrant]) -> [String] {
+        []
+    }
+
+    func providerRuntimeGrantStrings(for _: [PermissionGrant]) -> [String] {
+        []
+    }
+}
+
 private enum ProviderRuntimeGrantCompanions {
     static func grants(for grants: [PermissionGrant]) -> [PermissionGrant] {
         let sanitized = PermissionBroker.sanitizeApprovedGrants(grants)

@@ -85,6 +85,20 @@ enum RuntimePathResolver {
         )
     }
 
+    static func detectCodexPath(fileManager: FileManager = .default) -> String {
+        detectExecutablePath(
+            named: "codex",
+            candidates: [
+                "\(userLocalBin)/codex",
+                "\(homebrewBin)/codex",
+                "\(usrLocalBin)/codex",
+                "\(NSHomeDirectory())/.npm-global/bin/codex"
+            ],
+            fallback: "",
+            fileManager: fileManager
+        )
+    }
+
     private static func defaultExecutableCandidates(named executableName: String) -> [String] {
         [
             "\(userLocalBin)/\(executableName)",

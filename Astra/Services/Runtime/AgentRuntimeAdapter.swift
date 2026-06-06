@@ -523,7 +523,8 @@ enum BuiltInAgentRuntimeAdapterProviders {
         [
             ClaudeCodeRuntimeAdapterProvider(),
             CopilotCLIRuntimeAdapterProvider(),
-            AntigravityCLIRuntimeAdapterProvider()
+            AntigravityCLIRuntimeAdapterProvider(),
+            CodexCLIRuntimeAdapterProvider()
         ]
     }
 }
@@ -1551,8 +1552,10 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             "claude-opus-4.6",
             "claude-opus-4.5",
             "gpt-5.2-codex",
+            "gpt-5-codex",
             "gpt-5.2",
             "gpt-5-mini",
+            "gpt-5",
             "gpt-4.1"
         ],
         supportsAstraRunProtocol: true

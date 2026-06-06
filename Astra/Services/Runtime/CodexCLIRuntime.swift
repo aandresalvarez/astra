@@ -1,0 +1,186 @@
+import Foundation
+import ASTRACore
+
+struct CodexCLICommandPlan: Equatable {
+    var executablePath: String
+    var arguments: [String]
+    var environment: [String: String]
+    var parsesJSONLines: Bool
+}
+
+enum CodexCLIRuntime {
+    static let executableName = "codex"
+    static let bundledModelNames = [
+        "gpt-5.3-codex",
+        "gpt-5.2-codex",
+        "gpt-5.2",
+        "gpt-5-codex",
+        "gpt-5",
+        "codex-mini-latest"
+    ]
+
+    static func detectPath() -> String {
+        RuntimePathResolver.detectCodexPath()
+    }
+
+    static func defaultModelName() -> String {
+        bundledModelNames.first ?? "gpt-5.2-codex"
+    }
+
+    static func availableModelNames() -> [String] {
+        bundledModelNames
+    }
+
+    static func buildCommand(
+        executablePath: String,
+        prompt: String,
+        model: String,
+        workspacePath: String,
+        additionalPaths: [String],
+        permissionPolicy: PermissionPolicy,
+        timeoutSeconds _: TimeInterval,
+        taskEnvironment: [String: String],
+        providerHomeDirectory: String = "",
+        pathPrefix: [String] = [],
+        includeAstraToolsPath: Bool = false
+    ) -> CodexCLICommandPlan {
+        let providerModel = resolvedModelName(model)
+        var args = [
+            "exec",
+            "--json",
+            "--color", "never",
+            "--model", providerModel,
+            "--cd", workspacePath
+        ]
+
+        let uniquePaths = Array(Set(additionalPaths.filter { !$0.isEmpty && $0 != workspacePath })).sorted()
+        for path in uniquePaths {
+            args += ["--add-dir", path]
+        }
+
+        args += codexPermissionArguments(policy: permissionPolicy)
+        args.append("--skip-git-repo-check")
+        args.append(prompt)
+
+        var extraVars: [String: String] = [
+            "NO_COLOR": "1"
+        ]
+        let parentTerm = ProcessInfo.processInfo.environment["TERM"]
+        extraVars["TERM"] = parentTerm ?? "xterm-256color"
+        for (key, value) in taskEnvironment {
+            extraVars[key] = value
+        }
+        let trimmedHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedHome.isEmpty {
+            extraVars["CODEX_HOME"] = trimmedHome
+        }
+
+        let additionalPathPrefix = includeAstraToolsPath
+            ? pathPrefix + [RuntimePathResolver.astraToolsPath]
+            : pathPrefix
+        let env = RuntimeProcessEnvironment.enriched(
+            additionalPaths: additionalPathPrefix,
+            extraVariables: extraVars
+        )
+
+        return CodexCLICommandPlan(
+            executablePath: executablePath,
+            arguments: args,
+            environment: env,
+            parsesJSONLines: true
+        )
+    }
+
+    static func codexPermissionArguments(policy: PermissionPolicy) -> [String] {
+        switch policy {
+        case .autonomous:
+            return ["--sandbox", "danger-full-access", "--ask-for-approval", "never"]
+        case .restricted:
+            return ["--sandbox", "workspace-write", "--ask-for-approval", "never"]
+        case .interactive:
+            return ["--sandbox", "read-only", "--ask-for-approval", "never"]
+        }
+    }
+
+    static func resolvedModelName(_ model: String) -> String {
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed.lowercased() == "default" {
+            return defaultModelName()
+        }
+        return trimmed
+    }
+
+    static func versionSummary(executablePath: String) -> String? {
+        guard FileManager.default.isExecutableFile(atPath: executablePath) else {
+            return nil
+        }
+        return probeVersion(executablePath: executablePath, args: ["--version"])
+    }
+
+    static func parseEvents(line: String, parsesJSONLines: Bool) -> [ParsedEvent] {
+        parsesJSONLines
+            ? CodexStreamEventParser.parseAll(line: line)
+            : CodexStreamEventParser.parsePlainText(line: line)
+    }
+
+    static func parseAgentEvents(line: String, parsesJSONLines: Bool) -> [AgentEvent] {
+        parsesJSONLines
+            ? CodexStreamEventParser.parseAgentEvents(line: line)
+            : CodexStreamEventParser.parsePlainTextAgentEvents(line: line, appendingNewline: true)
+    }
+
+    static func blockingMessage(line: String, parsesJSONLines: Bool) -> String? {
+        if parsesJSONLines {
+            return nil
+        }
+        let lower = line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if lower.contains("codex login") || lower.contains("not logged in") || lower.contains("authentication") {
+            return "Codex CLI needs an authenticated session before ASTRA can run it. Open a terminal and run `codex login`, then retry.\n"
+        }
+        if lower.contains("approval") || lower.contains("permission") {
+            return "Codex CLI is waiting for an approval ASTRA cannot answer directly: \(line)\n"
+        }
+        return nil
+    }
+
+    private static func probeVersion(executablePath: String, args: [String]) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = args
+        process.environment = RuntimeProcessEnvironment.enriched()
+
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        let semaphore = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in semaphore.signal() }
+
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+
+        let result = semaphore.wait(timeout: .now() + 2)
+        guard result == .success else {
+            process.terminate()
+            return nil
+        }
+        guard process.terminationStatus == 0 else {
+            return nil
+        }
+
+        let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
+        let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
+        let output = (String(data: outputData, encoding: .utf8) ?? "")
+            + "\n"
+            + (String(data: errorData, encoding: .utf8) ?? "")
+        return output
+            .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: true)
+            .first
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}

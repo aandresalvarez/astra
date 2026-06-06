@@ -113,6 +113,7 @@ struct AgentRuntimeAdapterTests {
         let claude = AgentRuntimeAdapterRegistry.adapter(for: .claudeCode)
         let copilot = AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI)
         let antigravity = AgentRuntimeAdapterRegistry.adapter(for: .antigravityCLI)
+        let codex = AgentRuntimeAdapterRegistry.adapter(for: .codexCLI)
 
         #expect(claude.availableModelsStorageKey == AppStorageKeys.claudeAvailableModels)
         #expect(claude.modelsCheckedAtStorageKey == AppStorageKeys.claudeModelsCheckedAt)
@@ -120,6 +121,8 @@ struct AgentRuntimeAdapterTests {
         #expect(copilot.modelsCheckedAtStorageKey == AppStorageKeys.copilotModelsCheckedAt)
         #expect(antigravity.descriptor.defaultModels.contains("Gemini 3.5 Flash (Low)"))
         #expect(antigravity.descriptor.defaultModel != "default")
+        #expect(codex.descriptor.executableName == "codex")
+        #expect(codex.descriptor.defaultModels.contains("gpt-5.2-codex"))
         #expect(Set(AgentRuntimeAdapterRegistry.allAdapters.map(\.availableModelsStorageKey)).count == AgentRuntimeAdapterRegistry.allAdapters.count)
         #expect(Set(AgentRuntimeAdapterRegistry.allAdapters.map(\.modelsCheckedAtStorageKey)).count == AgentRuntimeAdapterRegistry.allAdapters.count)
     }
@@ -164,6 +167,7 @@ struct AgentRuntimeAdapterTests {
         let claude = AgentRuntimeAdapterRegistry.adapter(for: .claudeCode)
         let copilot = AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI)
         let antigravity = AgentRuntimeAdapterRegistry.adapter(for: .antigravityCLI)
+        let codex = AgentRuntimeAdapterRegistry.adapter(for: .codexCLI)
         let permissiveCapabilities = AgentRuntimePolicyCapabilities(
             copilotCLI: CopilotCLICapabilities(helpText: "--output-format --no-ask-user --allow-all")
         )
@@ -172,14 +176,17 @@ struct AgentRuntimeAdapterTests {
         #expect(claude.policyAdapter(runtimeCapabilities: .conservative).providerID == .claudeCode)
         #expect(copilot.policyAdapter(runtimeCapabilities: .conservative).providerID == .copilotCLI)
         #expect(antigravity.policyAdapter(runtimeCapabilities: .conservative).providerID == .antigravityCLI)
+        #expect(codex.policyAdapter(runtimeCapabilities: .conservative).providerID == .codexCLI)
         #expect(copilotPolicyAdapter?.capabilities.supportsAllowAll == true)
         #expect(copilotPolicyAdapter?.capabilities.supportsOutputFormatJSON == true)
         #expect(claude.budgetProfile == AgentRuntimeBudgetProfile.profile(for: .claudeCode))
         #expect(copilot.budgetProfile == AgentRuntimeBudgetProfile.profile(for: .copilotCLI))
         #expect(antigravity.budgetProfile == AgentRuntimeBudgetProfile.profile(for: .antigravityCLI))
+        #expect(codex.budgetProfile == AgentRuntimeBudgetProfile.profile(for: .codexCLI))
         #expect(claude.budgetProfile.launchOverheadTokens == 120_000)
         #expect(copilot.budgetProfile.launchOverheadTokens == 0)
         #expect(antigravity.budgetProfile.launchOverheadTokens == 0)
+        #expect(codex.budgetProfile.launchOverheadTokens == 0)
     }
 
     @Test("Adapters own CLI install planning")
@@ -301,6 +308,10 @@ struct AgentRuntimeAdapterTests {
             forKey: "/opt/agy --print Reply with ASTRA_READY only. --print-timeout 30s --sandbox",
             result: RunResult(outcome: .exited(code: 0), stdout: "ASTRA_READY\n", stderr: "")
         )
+        await runner.setResponse(
+            forKey: "/opt/codex --version",
+            result: RunResult(outcome: .exited(code: 0), stdout: "codex-cli 1.0\n", stderr: "")
+        )
 
         let service = RuntimeReadinessService(
             runner: runner,
@@ -309,6 +320,7 @@ struct AgentRuntimeAdapterTests {
                 case "claude": "/opt/claude"
                 case "copilot": "/opt/copilot"
                 case "agy": "/opt/agy"
+                case "codex": "/opt/codex"
                 default: ""
                 }
             },
@@ -358,6 +370,13 @@ struct AgentRuntimeAdapterTests {
             workspace: workspace,
             model: "default",
             runtime: .antigravityCLI
+        )
+        let codexTask = AgentTask(
+            title: "Codex",
+            goal: "Say hi",
+            workspace: workspace,
+            model: "gpt-5.2-codex",
+            runtime: .codexCLI
         )
 
         let claudePlan = AgentRuntimeAdapterRegistry
@@ -414,6 +433,19 @@ struct AgentRuntimeAdapterTests {
                 permissionManifest: nil,
                 timeoutSeconds: 30
             ))
+        let codexPlan = AgentRuntimeAdapterRegistry
+            .adapter(for: .codexCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: codexTask,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/codex-not-present",
+                providerHomeDirectory: "/tmp/astra-codex-home",
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30
+            ))
 
         #expect(claudePlan.runtime == .claudeCode)
         #expect(claudePlan.executablePath == "/bin/claude")
@@ -448,6 +480,24 @@ struct AgentRuntimeAdapterTests {
         #expect(antigravityPlan.commandPlannedFields["model"] == AgentRuntimeAdapterRegistry.defaultModel(for: .antigravityCLI))
         #expect(antigravityPlan.commandPlannedFields["provider_model"] == AgentRuntimeAdapterRegistry.defaultModel(for: .antigravityCLI))
         #expect(antigravityPlan.commandPlannedFields["model_applied"] == "false")
+
+        #expect(codexPlan.runtime == .codexCLI)
+        #expect(codexPlan.executablePath == "/bin/codex-not-present")
+        #expect(codexPlan.arguments.starts(with: ["exec", "--json", "--color", "never"]))
+        #expect(codexPlan.arguments.contains("--model"))
+        #expect(codexPlan.arguments.contains("gpt-5.2-codex"))
+        #expect(codexPlan.arguments.contains("--cd"))
+        #expect(codexPlan.arguments.contains(workspace.primaryPath))
+        #expect(codexPlan.arguments.contains("--sandbox"))
+        #expect(codexPlan.arguments.contains("workspace-write"))
+        #expect(codexPlan.arguments.contains("--ask-for-approval"))
+        #expect(codexPlan.arguments.contains("never"))
+        #expect(codexPlan.arguments.last == "hello")
+        #expect(codexPlan.parsesJSONLines)
+        #expect(codexPlan.environment["CODEX_HOME"] == "/tmp/astra-codex-home")
+        #expect(codexPlan.providerDetectedFields["runtime"] == AgentRuntimeID.codexCLI.rawValue)
+        #expect(codexPlan.providerDetectedFields["provider_home_configured"] == "true")
+        #expect(codexPlan.commandPlannedFields["permission_policy"] == PermissionPolicy.restricted.rawValue)
     }
 
     @Test("Copilot launch audit separates task and runtime support tools")
