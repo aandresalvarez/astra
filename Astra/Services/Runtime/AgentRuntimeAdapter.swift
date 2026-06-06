@@ -685,7 +685,7 @@ struct AgentRuntimePostProcessContext {
     let onEvent: (ParsedEvent) -> Void
 }
 
-struct AgentRuntimeProcessLaunchPlan {
+struct AgentRuntimeProcessLaunchPlan: Equatable {
     let runtime: AgentRuntimeID
     let executablePath: String
     let arguments: [String]

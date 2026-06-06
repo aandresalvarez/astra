@@ -968,6 +968,207 @@ struct RunPermissionManifestTests {
         #expect(manifestEvent?.payload.contains("value-that-must-not-be-logged") == false)
     }
 
+    @Test("Preflight manifest declares the OS sandbox tier for wrapped runtimes")
+    func preflightManifestDeclaresOSSandboxTier() throws {
+        // Pin the relevant sandbox defaults so the assertion is deterministic
+        // regardless of any developer's stored preference.
+        let enforcementKey = AppStorageKeys.sandboxEnforcement
+        let layerKey = AppStorageKeys.sandboxLayerNativeProviders
+        let previousEnforcement = UserDefaults.standard.string(forKey: enforcementKey)
+        let previousLayer = UserDefaults.standard.object(forKey: layerKey)
+        UserDefaults.standard.set(ExecutionSandboxEnforcement.bestEffort.rawValue, forKey: enforcementKey)
+        UserDefaults.standard.set(false, forKey: layerKey)
+        defer {
+            if let previousEnforcement {
+                UserDefaults.standard.set(previousEnforcement, forKey: enforcementKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: enforcementKey)
+            }
+            if let previousLayer {
+                UserDefaults.standard.set(previousLayer, forKey: layerKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: layerKey)
+            }
+        }
+
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Sandbox Tier", primaryPath: "/tmp/sandbox-tier-workspace")
+        context.insert(workspace)
+
+        // Claude Code is wrapped by ASTRA's Seatbelt -> OS sandbox tier declared.
+        let claudeTask = AgentTask(title: "Claude", goal: "Do work", workspace: workspace)
+        let claudeRun = TaskRun(task: claudeTask)
+        context.insert(claudeTask)
+        context.insert(claudeRun)
+        let claude = AgentPolicyManifestService.recordPreflightManifest(
+            task: claudeTask,
+            run: claudeRun,
+            runtime: .claudeCode,
+            model: "claude-sonnet-4-6",
+            workspacePath: workspace.primaryPath,
+            phase: "test",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            modelContext: context
+        )
+        #expect(claude.providerRender.enforcementTiers.contains(.osSandboxed))
+
+        // Codex self-sandboxes and is not layered by default -> no OS sandbox tier.
+        let codexTask = AgentTask(title: "Codex", goal: "Do work", workspace: workspace)
+        let codexRun = TaskRun(task: codexTask)
+        context.insert(codexTask)
+        context.insert(codexRun)
+        let codex = AgentPolicyManifestService.recordPreflightManifest(
+            task: codexTask,
+            run: codexRun,
+            runtime: .codexCLI,
+            model: "gpt-5.5",
+            workspacePath: workspace.primaryPath,
+            phase: "test",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            modelContext: context
+        )
+        #expect(!codex.providerRender.enforcementTiers.contains(.osSandboxed))
+    }
+
+    @Test("Preflight manifest layers the OS sandbox tier over a self-sandboxing provider when opted in")
+    func preflightManifestLayersOSSandboxTierWhenOptedIn() throws {
+        let enforcementKey = AppStorageKeys.sandboxEnforcement
+        let layerKey = AppStorageKeys.sandboxLayerNativeProviders
+        let previousEnforcement = UserDefaults.standard.string(forKey: enforcementKey)
+        let previousLayer = UserDefaults.standard.object(forKey: layerKey)
+        UserDefaults.standard.set(ExecutionSandboxEnforcement.bestEffort.rawValue, forKey: enforcementKey)
+        UserDefaults.standard.set(true, forKey: layerKey) // opt in to layering
+        defer {
+            if let previousEnforcement {
+                UserDefaults.standard.set(previousEnforcement, forKey: enforcementKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: enforcementKey)
+            }
+            if let previousLayer {
+                UserDefaults.standard.set(previousLayer, forKey: layerKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: layerKey)
+            }
+        }
+
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Layered Tier", primaryPath: "/tmp/layered-tier-workspace")
+        context.insert(workspace)
+
+        let codexTask = AgentTask(title: "Codex", goal: "Do work", workspace: workspace)
+        let codexRun = TaskRun(task: codexTask)
+        context.insert(codexTask)
+        context.insert(codexRun)
+        let codex = AgentPolicyManifestService.recordPreflightManifest(
+            task: codexTask,
+            run: codexRun,
+            runtime: .codexCLI,
+            model: "gpt-5.5",
+            workspacePath: workspace.primaryPath,
+            phase: "test",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            modelContext: context
+        )
+        // With layering on, Codex is now wrapped by ASTRA's Seatbelt too.
+        #expect(codex.providerRender.enforcementTiers.contains(.osSandboxed))
+    }
+
+    @Test("Preflight manifest omits the OS sandbox tier when the sandbox would not actually apply")
+    func preflightManifestOmitsTierWhenSandboxWontApply() throws {
+        let enforcementKey = AppStorageKeys.sandboxEnforcement
+        let previousEnforcement = UserDefaults.standard.string(forKey: enforcementKey)
+        UserDefaults.standard.set(ExecutionSandboxEnforcement.bestEffort.rawValue, forKey: enforcementKey)
+        defer {
+            if let previousEnforcement {
+                UserDefaults.standard.set(previousEnforcement, forKey: enforcementKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: enforcementKey)
+            }
+        }
+
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        // An over-broad workspace ("/") makes the sandbox refuse to apply; under
+        // best-effort that's a silent fallback to unconfined, so the manifest must
+        // NOT claim "OS Sandboxed" (otherwise display diverges from launch).
+        let workspace = Workspace(name: "Root Workspace", primaryPath: "/")
+        context.insert(workspace)
+        let task = AgentTask(title: "Claude", goal: "Do work", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .claudeCode,
+            model: "claude-sonnet-4-6",
+            workspacePath: workspace.primaryPath,
+            phase: "test",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            modelContext: context
+        )
+        #expect(!manifest.providerRender.enforcementTiers.contains(.osSandboxed))
+    }
+
+    @Test("Disabled enforcement removes the OS sandbox tier even under an autonomous override")
+    func preflightManifestTierRespectsDisabledEnforcementUnderOverride() throws {
+        // The sandbox is OFF. Even with an execution-policy override that escalates
+        // the permission policy to autonomous, the manifest must NOT manufacture an
+        // "OS Sandboxed" tier — the user-level kill switch wins. This exercises the
+        // override path (`manifestExecutionPolicy.permissionPolicyOverride ??
+        // permissionPolicy`) while asserting a property that would actually break
+        // if off-enforcement weren't honored (the binary tier is unaffected by the
+        // best-effort/strict distinction, so off-vs-on is what's observable here).
+        let enforcementKey = AppStorageKeys.sandboxEnforcement
+        let previousEnforcement = UserDefaults.standard.string(forKey: enforcementKey)
+        UserDefaults.standard.set(ExecutionSandboxEnforcement.off.rawValue, forKey: enforcementKey)
+        defer {
+            if let previousEnforcement {
+                UserDefaults.standard.set(previousEnforcement, forKey: enforcementKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: enforcementKey)
+            }
+        }
+
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Override Tier", primaryPath: "/tmp/override-tier-workspace")
+        context.insert(workspace)
+        let task = AgentTask(title: "Claude", goal: "Do work", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        let overridePolicy = AgentRuntimeExecutionPolicy(
+            permissionPolicyOverride: .autonomous,
+            allowedToolsOverride: nil,
+            permissionGrantsOverride: nil
+        )
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .claudeCode,
+            model: "claude-sonnet-4-6",
+            workspacePath: workspace.primaryPath,
+            phase: "test",
+            permissionPolicy: .restricted,
+            executionPolicy: overridePolicy,
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            modelContext: context
+        )
+        #expect(!manifest.providerRender.enforcementTiers.contains(.osSandboxed))
+    }
+
     @Test("Preflight manifest persists Copilot runtime support tools separately")
     func preflightManifestPersistsCopilotRuntimeSupportToolsSeparately() throws {
         let container = try makeAgentPolicyContainer()

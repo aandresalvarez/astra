@@ -865,6 +865,20 @@ enum AgentPolicyManifestService {
         )
         var render = providerPolicyAdapter.render(policy: policy, context: context)
         render.diagnostics = providerPolicyAdapter.validate(render: render, context: context)
+        // Reflect ASTRA's OS-level Seatbelt sandbox in the declared enforcement
+        // tiers — but only when the run will both be wrapped (runtime in scope)
+        // AND the sandbox would actually apply (enforcement on, usable workspace,
+        // sandbox-exec present). Without the second check the manifest would
+        // claim "OS Sandboxed" for a best-effort run that silently falls back to
+        // unconfined at launch. Display-only; application + fallbacks are audited
+        // at launch time.
+        let effectiveSandboxPolicy = manifestExecutionPolicy.permissionPolicyOverride ?? permissionPolicy
+        let sandboxSettings = ExecutionSandboxSettings.current(permissionPolicy: effectiveSandboxPolicy)
+        if sandboxSettings.shouldWrap(runtime: runtime),
+           ExecutionSandbox.willLikelyApply(workspacePath: workspacePath, settings: sandboxSettings),
+           !render.enforcementTiers.contains(.osSandboxed) {
+            render.enforcementTiers.append(.osSandboxed)
+        }
         let approvals = approvalsGranted(executionPolicy: manifestExecutionPolicy, render: render)
         let policyScope = if executionPolicy.allowedToolsOverride != nil || !executionGrants.isEmpty {
             AgentPolicyScope.oneRunEscalation

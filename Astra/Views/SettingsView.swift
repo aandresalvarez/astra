@@ -8,6 +8,11 @@ struct SettingsView: View {
     @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultTokenBudget = TaskExecutionDefaults.tokenBudget
     @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var defaultAgentPolicyLevelRaw = AgentPolicyLevel.review.rawValue
     @AppStorage(AppStorageKeys.budgetEnforcementMode) private var budgetEnforcementModeRaw = TaskExecutionDefaults.budgetEnforcementMode.rawValue
+    // Defaults derive from ExecutionSandboxSettings so the UI's initial state and
+    // the resolved (current()) behavior share one source of truth and can't drift.
+    @AppStorage(AppStorageKeys.sandboxEnforcement) private var sandboxEnforcementRaw = ExecutionSandboxSettings.defaultEnforcement.rawValue
+    @AppStorage(AppStorageKeys.sandboxAllowNetwork) private var sandboxAllowNetwork = ExecutionSandboxSettings.defaultAllowNetwork
+    @AppStorage(AppStorageKeys.sandboxLayerNativeProviders) private var sandboxLayerNativeProviders = ExecutionSandboxSettings.defaultLayerNativeProviders
     @AppStorage(AppStorageKeys.defaultRuntimeID) private var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
     @AppStorage(AppStorageKeys.claudePath) private var claudePath = ""
     @AppStorage(AppStorageKeys.copilotPath) private var copilotPath = ""
@@ -211,6 +216,33 @@ struct SettingsView: View {
                 }
 
                 Text(selectedDefaultPolicyLevel.shortDescription)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+
+                Picker("Execution Sandbox", selection: $sandboxEnforcementRaw) {
+                    ForEach(ExecutionSandboxEnforcement.allCases) { mode in
+                        Text(mode.displayName).tag(mode.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text(selectedSandboxEnforcement.helpText)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+
+                Toggle("Allow Network In Sandbox", isOn: $sandboxAllowNetwork)
+                    .disabled(selectedSandboxEnforcement == .off)
+
+                Text(sandboxAllowNetwork
+                    ? "Sandboxed agents can reach the network — required for the provider's model API and online tools."
+                    : "Offline: the sandbox blocks all outbound network. Use only for fully local tasks; most agent runs will fail to reach their model.")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+
+                Toggle("Also Sandbox Providers With Built-In Sandboxes", isOn: $sandboxLayerNativeProviders)
+                    .disabled(selectedSandboxEnforcement == .off)
+
+                Text("Layer ASTRA's sandbox over Codex, Cursor, and Antigravity for defense-in-depth. Off by default — these providers already self-sandbox, and double-confinement can break them.")
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
             }
@@ -833,6 +865,10 @@ struct SettingsView: View {
 
     private var selectedBudgetEnforcementMode: BudgetEnforcementMode {
         BudgetEnforcementMode(rawValue: budgetEnforcementModeRaw) ?? TaskExecutionDefaults.budgetEnforcementMode
+    }
+
+    private var selectedSandboxEnforcement: ExecutionSandboxEnforcement {
+        ExecutionSandboxEnforcement.normalized(sandboxEnforcementRaw)
     }
 
     private var selectedDefaultPolicyLevel: AgentPolicyLevel {

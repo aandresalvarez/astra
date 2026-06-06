@@ -36,6 +36,14 @@ enum AppStorageKeys {
     static let markdownPinnedToTask = "astra.markdown.pinnedToTask.v1"
     static let browserDebugCapture = "astra.browser.debugCapture.v1"
     static let runtimeStreamDebugCapture = "astra.runtime.streamDebugCapture.v1"
+    // OS-level execution sandbox enforcement: off | best_effort | strict.
+    // See ExecutionSandbox and docs/specs/2026-06-06-seatbelt-execution-sandbox-plan.md.
+    static let sandboxEnforcement = "astra.runtime.sandboxEnforcement.v1"
+    // When false, the Seatbelt profile denies outbound network (offline runs).
+    static let sandboxAllowNetwork = "astra.runtime.sandboxAllowNetwork.v1"
+    // When true, ASTRA also wraps providers that ship their own OS sandbox
+    // (Codex, Cursor, Antigravity) for defense-in-depth.
+    static let sandboxLayerNativeProviders = "astra.runtime.sandboxLayerNativeProviders.v1"
     static let logRetentionDays = "astra.logging.retentionDays.v1"
     static let browserAutoPromoteGoogleWorkspace = "astra.browser.autoPromoteGoogleWorkspace.v1"
     static let defaultTokenBudget = "defaultTokenBudget"
