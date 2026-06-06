@@ -77,6 +77,24 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
 
     func reset() {
         lock.lock()
+        resetLocked()
+        lock.unlock()
+    }
+
+    /// Reset only if the registry currently points at `taskID`. Used when a
+    /// non-active session is torn down/evicted so it cannot clobber the
+    /// registration belonging to the session an agent is actively driving.
+    func resetIfActive(taskID: UUID?) {
+        lock.lock()
+        guard self.taskID == taskID else {
+            lock.unlock()
+            return
+        }
+        resetLocked()
+        lock.unlock()
+    }
+
+    private func resetLocked() {
         endpoint = nil
         currentURL = nil
         currentTitle = nil
@@ -86,7 +104,6 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         isPresented = false
         isEnabled = false
         enabledBrowserAdapters = []
-        lock.unlock()
     }
 
     func environmentVariables(for taskID: UUID) -> [String: String] {

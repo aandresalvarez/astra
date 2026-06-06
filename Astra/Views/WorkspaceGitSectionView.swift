@@ -47,6 +47,7 @@ struct WorkspaceGitTransientPresentationState: Equatable {
 
 struct WorkspaceGitSectionView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject var viewModel = WorkspaceGitViewModel()
     let workspace: Workspace
     var selectedTask: AgentTask?
@@ -94,6 +95,16 @@ struct WorkspaceGitSectionView: View {
         .onAppear {
             viewModel.setup(for: workspace, selectedTask: selectedTask)
             clearTransientRepositoryPresentation()
+        }
+        .onDisappear {
+            viewModel.pauseRefresh()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                viewModel.resumeRefresh()
+            } else {
+                viewModel.pauseRefresh()
+            }
         }
         .onChange(of: selectedTask?.id) {
             viewModel.setup(for: workspace, selectedTask: selectedTask)

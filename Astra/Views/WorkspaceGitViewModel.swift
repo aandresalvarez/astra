@@ -83,6 +83,11 @@ final class WorkspaceGitViewModel: ObservableObject {
     private var workspace: Workspace?
     private var selectedTask: AgentTask?
     private var refreshTimer: Timer?
+    private var isRefreshPaused = false
+    // Background git status refresh interval. Each tick fans out git
+    // subprocesses, so we keep it lazy (30s) and pause it entirely when the
+    // rail is offscreen or the app is backgrounded — see pause/resumeRefresh.
+    private let refreshInterval: TimeInterval = 30.0
     private let git: GitRepositoryOperating
 
     var authoringServiceFactory: (() -> any GitCommitMessageGenerating & GitPullRequestGenerating)?
@@ -115,12 +120,37 @@ final class WorkspaceGitViewModel: ObservableObject {
         self.activeWorkingPath = initialActiveCodePath(workspace: workspace, selectedTask: selectedTask)
         Task { await scanRepositories() }
 
+        // setup() runs on appear / task change, i.e. the rail is visible again.
+        isRefreshPaused = false
+        startRefreshTimer()
+    }
+
+    private func startRefreshTimer() {
         refreshTimer?.invalidate()
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
+        guard !isRefreshPaused else { return }
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 await self?.refreshRepoDetails()
             }
         }
+    }
+
+    /// Stop the background refresh ticks. Call when the rail goes offscreen or
+    /// the app is backgrounded so idle windows stop spawning git subprocesses.
+    func pauseRefresh() {
+        isRefreshPaused = true
+        refreshTimer?.invalidate()
+        refreshTimer = nil
+    }
+
+    /// Resume background refresh and refresh once immediately so the rail is
+    /// current the moment it becomes visible/active again.
+    func resumeRefresh() {
+        guard isRefreshPaused else { return }
+        isRefreshPaused = false
+        guard workspace != nil else { return }
+        Task { @MainActor in await refreshRepoDetails() }
+        startRefreshTimer()
     }
 
     #if DEBUG

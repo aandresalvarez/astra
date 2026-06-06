@@ -107,6 +107,16 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     private var bridgeServer: BrowserBridgeServer?
     private let bridgeAccessToken = BrowserBridgeServer.generateAccessToken()
     private var isPresented = false
+    /// Last time an agent hit this session's bridge. Used to keep an
+    /// off-screen session that a background agent is actively driving from
+    /// being evicted between commands.
+    private var lastBridgeActivity = Date()
+    /// Idle grace before a hidden session becomes eligible for eviction.
+    static let evictionIdleGrace: TimeInterval = 120
+    /// Plain mirror of `boundTaskID` (which is @Published and therefore not
+    /// readable from the nonisolated deinit). Used only for the guarded
+    /// registry reset on deallocation.
+    private var lastBoundTaskID: UUID?
     private var browserActionLoopCounts: [String: (state: String, count: Int)] = [:]
     private let browserAnalysisCache = BrowserAnalysisCache()
     private var enabledBrowserAdapters: Set<String> = []
@@ -259,7 +269,42 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     deinit {
         bridgeServer?.stop()
-        ShelfBrowserBridgeRegistry.shared.reset()
+        // Only clear the shared registry if it still points at us, so a
+        // non-active session being deallocated cannot wipe the registration
+        // of the session an agent is currently driving. Uses the plain mirror
+        // because the @Published boundTaskID isn't readable from deinit.
+        ShelfBrowserBridgeRegistry.shared.resetIfActive(taskID: lastBoundTaskID)
+    }
+
+    /// True only when this session is safe to tear down: off screen, not
+    /// loading, not bound to a live controlled browser, and idle past the
+    /// bridge grace window — so eviction never interrupts in-flight agent
+    /// browser automation running in a non-visible task.
+    var isEvictable: Bool {
+        !isPresented
+            && !isLoading
+            && !isUsingControlledBrowser
+            && !controlledBrowser.isRunning
+            && Date().timeIntervalSince(lastBridgeActivity) > Self.evictionIdleGrace
+    }
+
+    /// Release this session's heavy resources (WebContent process, localhost
+    /// bridge listener, KVO observers) before the store drops it. Only call on
+    /// an `isEvictable` session.
+    func teardown() {
+        webView.stopLoading()
+        webView.navigationDelegate = nil
+        webView.uiDelegate = nil
+        observations.forEach { $0.invalidate() }
+        observations.removeAll()
+        controlledBrowserCancellable?.cancel()
+        controlledBrowserCancellable = nil
+        controlledBrowser.stop()
+        bridgeServer?.stop()
+        bridgeServer = nil
+        ShelfBrowserBridgeRegistry.shared.resetIfActive(taskID: boundTaskID)
+        // Drop the page so WebKit can reclaim the DOM/JS heap.
+        webView.loadHTMLString("", baseURL: nil)
     }
 
     func setPresented(_ isPresented: Bool) {
@@ -270,6 +315,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     func bindToTask(_ taskID: UUID?) {
         guard boundTaskID != taskID else { return }
         boundTaskID = taskID
+        lastBoundTaskID = taskID
         keypressSafetyState = BrowserKeypressSafetyState()
         browserRunGuard.reset()
         browserDiagnostics.reset()
@@ -846,6 +892,9 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     }
 
     private func handleBridgeRequest(_ request: BrowserBridgeRequest) async -> BrowserBridgeResponse {
+        // Mark the session as actively driven so the store won't evict it
+        // between an agent's bridge commands while it's off screen.
+        lastBridgeActivity = Date()
         guard isFlightRecordedBridgeRequest(request) else {
             return await handleBridgeRequestCore(request)
         }

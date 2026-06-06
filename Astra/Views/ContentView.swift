@@ -284,6 +284,11 @@ struct ContentView: View {
     @State private var responsiveLayoutWidth: CGFloat = 0
     @State private var didAutoHideSidebarForCompactPanels = false
     @State private var cachedHasCanvasContent = false
+    /// Run-once guard for the deferred Sparkle update probe. handleAppear can
+    /// fire on more than one .onAppear for the same view instance; this keeps
+    /// the ~3s deferral scheduled exactly once. (The controller also guards the
+    /// actual probe via hasProbedForUpdates, so this is belt-and-suspenders.)
+    @State private var didScheduleUpdateProbe = false
     @State private var generatedHTMLDiscoveryTask: Task<Void, Never>?
     @State private var markdownAvailabilityTask: Task<Void, Never>?
     @State private var queryAvailabilityTask: Task<Void, Never>?
@@ -2050,10 +2055,15 @@ struct ContentView: View {
     }
 
     private func deleteTask(_ task: AgentTask) {
+        let deletedTaskID = task.id
         if selectedTask?.id == task.id {
             setSelectedTask(nil)
         }
         _ = coordinator.deleteTask(task)
+        // Release the task's browser (WebContent process + bridge listener) and
+        // markdown sessions; otherwise they leak until the window closes.
+        browserSessionStore.releaseSession(for: deletedTaskID)
+        markdownSessionStore.releaseSession(for: deletedTaskID)
         refreshRunningTaskCount()
     }
 
@@ -2169,7 +2179,25 @@ struct ContentView: View {
         refreshRunningTaskCount()
         handlePendingExternalRoute()
         refreshUpdateSafetyHooks()
-        appUpdateController.probeForUpdatesOnce()
+        // Defer Sparkle's network probe ~3s after first appear so it doesn't
+        // compete with launch I/O. Non-development channels only (dev already
+        // disables updates in AppUpdateController.disabledReason). Scheduled
+        // once per view instance; the controller's hasProbedForUpdates guard
+        // keeps the actual probe single-fire regardless.
+        if !didScheduleUpdateProbe, AppChannel.current != .development {
+            didScheduleUpdateProbe = true
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                appUpdateController.probeForUpdatesOnce()
+            }
+        }
+        // Post-launch chores moved off ASTRAApp.init() so they don't block the
+        // first frame. Wrapped in a Task so they run on a later runloop turn,
+        // after this frame is presented. Run-once-guarded inside.
+        Task { @MainActor in
+            ASTRAApp.runDeferredStartupWork(modelContext: modelContext)
+            refreshRunningTaskCount()
+        }
     }
 
     private func applySecurityGateDefaultIfNeeded() {

@@ -7,6 +7,14 @@ final class TaskScheduler {
     private(set) var isRunning = false
     private var checkTask: Task<Void, Never>?
 
+    /// Worst-case re-evaluation interval. Bounds staleness for schedule edits
+    /// that don't notify the scheduler — identical to the previous fixed 30s
+    /// poll, so there is no idle regression — while letting the loop wake
+    /// sooner to fire an imminent schedule on time instead of up to 30s late.
+    private static let maxSleepSeconds: TimeInterval = 30
+    /// Floor to avoid a hot loop when a schedule is already due or microseconds away.
+    private static let minSleepSeconds: TimeInterval = 0.5
+
     private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "MMM d, h:mm a"
@@ -24,11 +32,28 @@ final class TaskScheduler {
             while !Task.isCancelled {
                 checkAndFire(modelContext: modelContext, taskQueue: taskQueue)
                 do {
-                    try await Task.sleep(for: .seconds(30))
+                    try await Task.sleep(for: .seconds(nextSleepSeconds(modelContext: modelContext)))
                 } catch { break }
             }
             isRunning = false
         }
+    }
+
+    /// Seconds to sleep before the next evaluation: until the soonest enabled
+    /// schedule's future fire time, clamped to [minSleep, maxSleep]. Falls back
+    /// to maxSleep when nothing upcoming is scheduled. This fires imminent
+    /// schedules on time without ever polling less often than the old 30s loop.
+    @MainActor
+    func nextSleepSeconds(modelContext: ModelContext) -> TimeInterval {
+        let now = Date()
+        let descriptor = FetchDescriptor<TaskSchedule>(
+            predicate: #Predicate<TaskSchedule> { $0.isEnabled == true }
+        )
+        let schedules = (try? modelContext.fetch(descriptor)) ?? []
+        guard let soonest = schedules.map(\.nextFireDate).filter({ $0 > now }).min() else {
+            return Self.maxSleepSeconds
+        }
+        return min(max(soonest.timeIntervalSince(now), Self.minSleepSeconds), Self.maxSleepSeconds)
     }
 
     @MainActor

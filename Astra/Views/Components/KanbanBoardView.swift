@@ -246,6 +246,56 @@ enum KanbanBoardLayout {
 
 private let kanbanBoardCoordinateSpace = "kanbanBoardCoordinateSpace"
 
+/// Fingerprint of the board-relevant fields of one task. Streaming token
+/// updates mutate fields like `tokensUsed`/`costUSD`/`draftMessages` that do
+/// NOT appear here, so the fingerprint stays stable and the board does not
+/// re-bucket. Only id / status / queuePosition / isDone / updatedAt are
+/// included — exactly the fields `KanbanCategory.includes(_:)` and
+/// `KanbanCategory.sortedTasks(from:)` read.
+private struct KanbanTaskFingerprint: Equatable {
+    let id: UUID
+    let status: String
+    let queuePosition: Int
+    let isDone: Bool
+    let updatedAt: Date
+
+    init(_ task: AgentTask) {
+        self.id = task.id
+        self.status = task.status.rawValue
+        self.queuePosition = task.queuePosition
+        self.isDone = task.isDone
+        self.updatedAt = task.updatedAt
+    }
+}
+
+/// Reference-type memo for the board's per-column buckets. Held in `@State`
+/// on `KanbanBoardView`; because it is a class, mutating it in place does NOT
+/// invalidate the view (unlike mutating a value-type `@State`), so the lazy
+/// recompute can run safely from within `body`/computed reads. Recomputes the
+/// five buckets once per data change, gated on a cheap fingerprint array so
+/// streaming updates that don't change board membership or ordering reuse the
+/// previous buckets.
+private final class KanbanBucketCache {
+    private var fingerprint: [KanbanTaskFingerprint] = []
+    private var cached: [KanbanCategory: [AgentTask]] = [:]
+    private var primed = false
+
+    func buckets(for tasks: [AgentTask]) -> [KanbanCategory: [AgentTask]] {
+        let next = tasks.map(KanbanTaskFingerprint.init)
+        if primed && next == fingerprint {
+            return cached
+        }
+        var result: [KanbanCategory: [AgentTask]] = [:]
+        for category in KanbanCategory.allCases {
+            result[category] = category.sortedTasks(from: tasks.filter { category.includes($0) })
+        }
+        fingerprint = next
+        cached = result
+        primed = true
+        return result
+    }
+}
+
 private struct KanbanDragState: Equatable {
     let taskID: UUID
     let sourceCategory: KanbanCategory
@@ -305,6 +355,9 @@ struct KanbanBoardView: View {
     @State private var dragState: KanbanDragState?
     @State private var taskPendingDiscard: AgentTask?
     @State private var showClearAllDoneConfirm = false
+    // Reference-type memo: buckets are recomputed once per data change and
+    // reused across the multiple `tasksFor(_:)` calls each body pass makes.
+    @State private var bucketCache = KanbanBucketCache()
 
     private let acceptedDropTypes: [UTType] = [.plainText, .text, .utf8PlainText]
 
@@ -403,8 +456,16 @@ struct KanbanBoardView: View {
         }
     }
 
+    /// Memoized buckets for the current `tasks`. Recomputes only when the
+    /// fingerprint (ids + statuses + positions + isDone + updatedAt) changes,
+    /// so a streaming token update that leaves board membership and order
+    /// unchanged reuses the previous buckets instead of re-filtering/sorting.
+    private var buckets: [KanbanCategory: [AgentTask]] {
+        bucketCache.buckets(for: tasks)
+    }
+
     private func tasksFor(_ category: KanbanCategory) -> [AgentTask] {
-        category.sortedTasks(from: tasks.filter { category.includes($0) })
+        buckets[category] ?? []
     }
 
     private func handleDrop(category: KanbanCategory, providers: [NSItemProvider]) -> Bool {
@@ -808,7 +869,7 @@ struct KanbanBoardView: View {
     }
 
     private var doneTasks: [AgentTask] {
-        tasks.filter { KanbanCategory.done.includes($0) }
+        tasksFor(.done)
     }
 
     private var boardHeader: some View {

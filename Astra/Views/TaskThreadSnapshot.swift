@@ -948,7 +948,7 @@ struct TaskThreadSnapshotTrigger: Equatable {
         status = task.status
         latestRunID = latestRun?.id
         latestRunStatus = latestRun?.status
-        latestRunOutputCount = latestRun?.output.count ?? 0
+        latestRunOutputCount = latestRun?.output.utf8.count ?? 0
         latestRunOutputBucket = Self.outputBucket(for: latestRunOutputCount)
     }
 

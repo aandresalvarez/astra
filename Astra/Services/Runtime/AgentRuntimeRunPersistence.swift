@@ -32,6 +32,15 @@ enum AgentRuntimeRunPersistence {
         phase: String,
         handoffDiscoveredFiles: [TaskOutputDiscoveredFile]? = nil
     ) {
+        // Bound the inline output blob now that the run is finalized. Session
+        // history already captured the full output via recordSessionTurn before
+        // this call, so nothing the user can re-open is lost. Assign only when it
+        // actually changes to avoid a needless SwiftData write.
+        let cappedOutput = TaskRunOutputCap.capped(run.output)
+        if cappedOutput != run.output {
+            run.output = cappedOutput
+        }
+
         let artifactReconciliation = TaskArtifactPersistenceService.reconcileTaskOutputArtifacts(
             for: task,
             modelContext: modelContext
