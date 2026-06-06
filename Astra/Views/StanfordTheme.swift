@@ -37,16 +37,19 @@ enum Stanford {
     // MARK: - Secondary Colors
     static let coolGrey = Color.secondary
 
-    // Tuned low-emphasis text with a contrast floor. System `.secondary` /
+    // Tuned low-emphasis text with an AA contrast floor. System `.secondary` /
     // `.tertiary` go too pale on white in light mode (the repo path subtitle
-    // and "needs setup" descriptions were sub-AA). Body-weight `textSecondary`
-    // clears ~4.5:1 and incidental `textTertiary` clears ~3:1 on the canvas,
-    // while staying warm to match `readingText`.
+    // and "needs setup" descriptions were sub-AA). BOTH tokens back small
+    // (10–12pt) normal-weight text, so BOTH must clear WCAG AA (4.5:1) — there
+    // is no "large text" 3:1 exemption here. They clear 4.5:1 against white,
+    // the warm canvas, and the dark canvas; `textSecondary` is the
+    // higher-emphasis grey, `textTertiary` the lower. Kept warm to match
+    // `readingText`. ThemeTests pins both at 4.5:1.
     static let textSecondaryLightHex: UInt = 0x5B5A57  // warm charcoal-grey, ~6:1 on white
     static let textSecondaryDarkHex: UInt = 0xB7B2A9   // warm light grey on dark surfaces
     static let textSecondary = Color(light: textSecondaryLightHex, dark: textSecondaryDarkHex)
-    static let textTertiaryLightHex: UInt = 0x76746F   // ~4.5:1 on white
-    static let textTertiaryDarkHex: UInt = 0x938E85
+    static let textTertiaryLightHex: UInt = 0x6E6B66   // warm grey, ≥4.5:1 on white + warm canvas
+    static let textTertiaryDarkHex: UInt = 0x938E85    // ≥4.5:1 on the dark canvas
     static let textTertiary = Color(light: textTertiaryLightHex, dark: textTertiaryDarkHex)
     static let paloAltoGreen = Color(
         light: 0x175E54,  // Stanford green (very dark)

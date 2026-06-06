@@ -131,18 +131,18 @@ struct ThemeTests {
         #expect(contrastRatio(Stanford.readingTextDarkHex, 0x000000) >= 4.5)
     }
 
-    @Test("Low-emphasis text tokens hold a contrast floor in both modes")
+    @Test("Low-emphasis text tokens clear WCAG AA (4.5:1) in both modes")
     func secondaryTextMeetsContrastTargets() {
-        // Body-weight secondary text must clear AA (4.5:1); incidental
-        // tertiary text must clear the 3:1 floor — on white, the warm
-        // canvas, and the dark canvas.
+        // Both tokens back small (10–12pt) normal-weight text, so both must
+        // clear AA (4.5:1) — there's no large-text 3:1 exemption here. Checked
+        // against white, the warm canvas, and the dark canvas.
         #expect(contrastRatio(Stanford.textSecondaryLightHex, 0xFFFFFF) >= 4.5)
         #expect(contrastRatio(Stanford.textSecondaryLightHex, Stanford.warmCanvasLightHex) >= 4.5)
         #expect(contrastRatio(Stanford.textSecondaryDarkHex, 0x000000) >= 4.5)
 
-        #expect(contrastRatio(Stanford.textTertiaryLightHex, 0xFFFFFF) >= 3.0)
-        #expect(contrastRatio(Stanford.textTertiaryLightHex, Stanford.warmCanvasLightHex) >= 3.0)
-        #expect(contrastRatio(Stanford.textTertiaryDarkHex, 0x000000) >= 3.0)
+        #expect(contrastRatio(Stanford.textTertiaryLightHex, 0xFFFFFF) >= 4.5)
+        #expect(contrastRatio(Stanford.textTertiaryLightHex, Stanford.warmCanvasLightHex) >= 4.5)
+        #expect(contrastRatio(Stanford.textTertiaryDarkHex, 0x000000) >= 4.5)
     }
 
     @Test("The interaction accent is one hue (interactive == focusRing == link == lagunita)")
