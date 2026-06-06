@@ -77,13 +77,17 @@ enum TaskRunOutputCap {
     /// re-truncates a string this function produced. Splits only on UTF-8 scalar
     /// boundaries so no multi-byte character is corrupted.
     static func capped(_ output: String) -> String {
-        let bytes = output.utf8
-        let total = bytes.count
+        let utf8 = output.utf8
+        let total = utf8.count
         guard total > headByteLimit + tailByteLimit else { return output }
 
-        let data = Data(bytes)
-        let head = decodeOnScalarBoundary(data.prefix(headByteLimit), preferTrailingTrim: true)
-        let tail = decodeOnScalarBoundary(data.suffix(tailByteLimit), preferTrailingTrim: false)
+        // Materialize only the head and tail byte slices, never the whole
+        // output as a second buffer — capping a multi-MB run at finalize time
+        // should reduce peak memory, not double it. `String.UTF8View` is
+        // bidirectional, so `suffix` walks back `tailByteLimit` bytes from the
+        // end rather than scanning the full string.
+        let head = decodeOnScalarBoundary(Data(utf8.prefix(headByteLimit)), preferTrailingTrim: true)
+        let tail = decodeOnScalarBoundary(Data(utf8.suffix(tailByteLimit)), preferTrailingTrim: false)
         return head + elisionMarker + tail
     }
 
