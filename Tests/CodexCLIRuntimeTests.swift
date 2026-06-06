@@ -80,7 +80,7 @@ struct CodexCLIRuntimeTests {
     }
 
     @Test("Codex exec command uses JSON output, workspace root, model, and restricted policy")
-    func codexExecCommandUsesJSONWorkspaceModelAndRestrictedPolicy() {
+    func codexExecCommandUsesJSONWorkspaceModelRestrictedPolicyAndAutomationIsolation() {
         let plan = CodexCLIRuntime.buildCommand(
             executablePath: "/opt/codex",
             prompt: "Summarize the repo",
@@ -99,16 +99,21 @@ struct CodexCLIRuntimeTests {
         #expect(plan.arguments.starts(with: [
             "exec",
             "--json",
-            "--color", "never",
-            "--model", "gpt-5.5",
-            "--cd", "/tmp/workspace"
+            "--color", "never"
         ]))
+        #expect(plan.arguments.contains("--model"))
+        #expect(plan.arguments.contains("gpt-5.5"))
+        #expect(plan.arguments.contains("--cd"))
+        #expect(plan.arguments.contains("/tmp/workspace"))
         #expect(plan.arguments.contains("--add-dir"))
         #expect(plan.arguments.contains("/tmp/extra"))
         #expect(plan.arguments.contains("--sandbox"))
         #expect(plan.arguments.contains("workspace-write"))
         #expect(plan.arguments.contains("--ask-for-approval") == false)
         #expect(plan.arguments.contains("--skip-git-repo-check"))
+        #expect(plan.arguments.contains("--ignore-user-config"))
+        #expect(plan.arguments.contains("--ignore-rules"))
+        #expect(plan.arguments.contains("--ephemeral"))
         #expect(plan.arguments.last == "Summarize the repo")
         #expect(plan.environment["CODEX_HOME"] == "/tmp/codex-home")
         #expect(plan.environment["NO_COLOR"] == "1")
