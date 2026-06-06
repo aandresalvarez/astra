@@ -63,19 +63,29 @@ final class TaskLifecycleCoordinator {
     }
 
     func retryTask(_ task: AgentTask) {
-        AppLogger.audit(.taskRetried, category: "UI", taskID: task.id)
+        let retryFollowUpMessage = Self.latestRetryableFollowUpMessage(for: task)
+        let retryMode = retryFollowUpMessage == nil ? "initial_task" : "latest_follow_up"
+        AppLogger.audit(.taskRetried, category: "UI", taskID: task.id, fields: [
+            "retry_mode": retryMode
+        ])
         let interruptionSummary = TaskRunLifecycleService.cancelTask(
             task,
             modelContext: modelContext,
             source: .supersededByNewRun
         )
-        task.status = .queued
+        task.status = retryFollowUpMessage == nil ? .queued : .running
         task.tokensUsed = 0
         task.costUSD = 0
         task.updatedAt = Date()
         task.completedAt = nil
         task.markRead()
-        let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.retried, payload: "Task re-queued for retry.")
+        let event = TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.Task.retried,
+            payload: retryFollowUpMessage == nil
+                ? "Task re-queued for retry."
+                : "Latest follow-up re-queued for retry."
+        )
         modelContext.insert(event)
         if interruptionSummary.runsUpdated > 0 {
             AppLogger.audit(.taskInterrupted, category: "UI", taskID: task.id, fields: [
@@ -85,7 +95,24 @@ final class TaskLifecycleCoordinator {
             ], level: .warning)
         }
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
-        runSingleTask(task)
+        if let retryFollowUpMessage {
+            AppLogger.audit(.taskStarted, category: "UI", taskID: task.id, fields: [
+                "source": "retry_latest_follow_up"
+            ])
+            Task {
+                await taskQueue.continueSession(
+                    task: task,
+                    message: retryFollowUpMessage,
+                    modelContext: modelContext
+                )
+                AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
+                    "status": task.status.rawValue,
+                    "source": "retry_latest_follow_up"
+                ])
+            }
+        } else {
+            runSingleTask(task)
+        }
     }
 
     func resumeTask(_ task: AgentTask) {
@@ -309,12 +336,22 @@ final class TaskLifecycleCoordinator {
         for task: AgentTask,
         grants: [PermissionGrant]
     ) -> String {
-        PermissionBroker.resumeMessage(
+        var message = PermissionBroker.resumeMessage(
             providerID: task.resolvedRuntimeID,
             grants: grants,
             fallback: latestRequestedPermissionTool(for: task)
                 .flatMap { PermissionBroker.permissionGrant(fromProviderString: $0)?.displayName }
         )
+        if let blockedRequest = latestBlockedUserRequest(for: task) {
+            message += """
+
+
+            Original blocked user request: \(blockedRequest)
+
+            Continue by answering that request now. Do not answer an earlier turn or the approval notice itself.
+            """
+        }
+        return message
     }
 
     private static func approvedRuntimePermissionGrants(for task: AgentTask) -> [PermissionGrant] {
@@ -349,6 +386,45 @@ final class TaskLifecycleCoordinator {
     private static func permissionRequestEvents(for task: AgentTask) -> [TaskEvent] {
         task.events
             .filter { $0.type == "permission.denied" || $0.type == "permission.approval.requested" }
+    }
+
+    private static func latestBlockedUserRequest(for task: AgentTask) -> String? {
+        let latestPermissionEvent = permissionRequestEvents(for: task)
+            .sorted { $0.timestamp < $1.timestamp }
+            .last
+        let cutoff = latestPermissionEvent?.timestamp ?? Date.distantFuture
+        let request = latestActionableUserMessage(for: task, before: cutoff)
+        let fallback = task.goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        return request ?? (fallback.isEmpty ? nil : fallback)
+    }
+
+    private static func latestRetryableFollowUpMessage(for task: AgentTask) -> String? {
+        let goal = task.goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let message = latestActionableUserMessage(for: task) else { return nil }
+        return message == goal ? nil : message
+    }
+
+    private static func latestActionableUserMessage(
+        for task: AgentTask,
+        before cutoff: Date = Date.distantFuture
+    ) -> String? {
+        task.events
+            .filter { $0.type == "user.message" }
+            .filter { $0.timestamp <= cutoff }
+            .sorted { $0.timestamp < $1.timestamp }
+            .reversed()
+            .compactMap { event -> String? in
+                let trimmed = event.payload.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty, !isRuntimePermissionResumePrompt(trimmed) else { return nil }
+                return trimmed
+            }
+            .first
+    }
+
+    private static func isRuntimePermissionResumePrompt(_ value: String) -> Bool {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized.hasPrefix("astra approved one-time runtime permission") ||
+            normalized.hasPrefix("astra approved task-scoped runtime permission")
     }
 
     private static func permissionToolName(from payload: String) -> String? {

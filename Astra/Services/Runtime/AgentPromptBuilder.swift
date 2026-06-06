@@ -286,13 +286,16 @@ enum AgentPromptBuilder {
         if !taskDir.isEmpty {
             let relativePath = relativeTaskFolderPath(for: task, taskDir: taskDir)
             let artifactDirective = standaloneArtifactDirective(for: task, relativePath: relativePath, taskDir: taskDir)
+            let stateHistoryDirective = stateHistoryOwnershipDirective(for: task)
+            let stateReadDirective = providerStateReadDirective(for: task)
             if let relativePath {
                 appendSection("""
                 Task Output Folder: \(relativePath)
                 Absolute path: \(taskDir)
                 This directory already exists. Save output files, reports, or artifacts there using the relative path when writing from the current working directory. Do not create the folder yourself.
                 For standalone generated files or artifacts requested by the user, such as web pages, scripts, reports, documents, or demo apps, create them in this task output folder by default. Only write to workspace or project files when the user explicitly names that target path or asks you to modify the project.
-                ASTRA owns state/history files in this folder, including current_state.json, current_state.md, session_history.md, diagnostics/, and outputs/turn_*.md. Read them for context when needed, but do not create, edit, overwrite, or use them as deliverables.
+                \(stateHistoryDirective)
+                \(stateReadDirective)
                 For informational tasks, summaries, reviews, lookups, and status checks, return the useful answer in chat. Do not only write intermediate JSON, logs, or scratch files unless the user asked for a file artifact.
                 \(artifactDirective)
                 """, kind: .currentGoal, to: &sections, sourcePointers: taskFolderSourcePointers(task))
@@ -301,12 +304,25 @@ enum AgentPromptBuilder {
                 Task Output Folder: \(taskDir)
                 This directory already exists. Save output files, reports, or artifacts there. Do not create the folder yourself.
                 For standalone generated files or artifacts requested by the user, such as web pages, scripts, reports, documents, or demo apps, create them in this task output folder by default. Only write to workspace or project files when the user explicitly names that target path or asks you to modify the project.
-                ASTRA owns state/history files in this folder, including current_state.json, current_state.md, session_history.md, diagnostics/, and outputs/turn_*.md. Read them for context when needed, but do not create, edit, overwrite, or use them as deliverables.
+                \(stateHistoryDirective)
+                \(stateReadDirective)
                 For informational tasks, summaries, reviews, lookups, and status checks, return the useful answer in chat. Do not only write intermediate JSON, logs, or scratch files unless the user asked for a file artifact.
                 \(artifactDirective)
                 """, kind: .currentGoal, to: &sections, sourcePointers: taskFolderSourcePointers(task))
             }
         }
+    }
+
+    private static func stateHistoryOwnershipDirective(for task: AgentTask) -> String {
+        if task.resolvedRuntimeID == .openCodeCLI {
+            return "ASTRA owns internal state/history files in this folder. Treat that state as already summarized in this prompt; do not create, edit, overwrite, or use ASTRA-owned state/history files as deliverables."
+        }
+        return "ASTRA owns state/history files in this folder, including current_state.json, current_state.md, session_history.md, diagnostics/, and outputs/turn_*.md. Read them for context when needed, but do not create, edit, overwrite, or use them as deliverables."
+    }
+
+    private static func providerStateReadDirective(for task: AgentTask) -> String {
+        guard task.resolvedRuntimeID == .openCodeCLI else { return "" }
+        return "For OpenCode, use the inline Context Capsule, Context Source Index, and transcript in this prompt before asking for any task-state file access. Do not request external_directory approval just to inspect ASTRA state/history files."
     }
 
     private static func standaloneArtifactDirective(
@@ -1267,10 +1283,18 @@ enum AgentPromptBuilder {
             state _: inout PromptContextSectionProviderState,
             to sections: inout [PromptContextSection]
         ) {
-            appendSection("""
-            History Lookup Rule:
-            If this follow-up asks about prior decisions, previous attempts, old failures, changed files, "what we decided", "what happened before", or exact earlier wording, read the referenced current state, session history, or turn output files before answering.
-            """, kind: .threadState, to: &sections, sourcePointers: taskStateSourcePointers(context.task))
+            if context.task.resolvedRuntimeID == .openCodeCLI {
+                appendSection("""
+                History Lookup Rule:
+                Use the thread state already included in this prompt before answering questions about prior decisions, previous attempts, old failures, changed files, "what we decided", "what happened before", or exact earlier wording.
+                If exact raw wording is required but task-state files are outside OpenCode's working directory, answer from the inline Context Capsule, Context Source Index, and transcript instead of requesting external_directory approval.
+                """, kind: .threadState, to: &sections, sourcePointers: taskStateSourcePointers(context.task))
+            } else {
+                appendSection("""
+                History Lookup Rule:
+                If this follow-up asks about prior decisions, previous attempts, old failures, changed files, "what we decided", "what happened before", or exact earlier wording, read the referenced current state, session history, or turn output files before answering.
+                """, kind: .threadState, to: &sections, sourcePointers: taskStateSourcePointers(context.task))
+            }
         }
     }
 
@@ -1415,7 +1439,11 @@ enum AgentPromptBuilder {
         if !folder.isEmpty {
             let historyPath = SessionHistoryManager.historyPath(taskFolder: folder)
             if FileManager.default.fileExists(atPath: historyPath) {
-                contextParts.append("Session history: \(historyPath)")
+                if task.resolvedRuntimeID == .openCodeCLI {
+                    contextParts.append("Session history is summarized inline in Context Capsule v2 and the recent transcript.")
+                } else {
+                    contextParts.append("Session history: \(historyPath)")
+                }
             }
         }
 
@@ -1443,6 +1471,30 @@ enum AgentPromptBuilder {
 
     private static func contextSourceIndex(for task: AgentTask) -> PromptContextText? {
         let folder = TaskWorkspaceAccess(task: task).taskFolder
+        if task.resolvedRuntimeID == .openCodeCLI {
+            var pointers: [PromptContextSourcePointer] = []
+            if !folder.isEmpty {
+                let stateJSONPath = (folder as NSString).appendingPathComponent(TaskContextStateManager.jsonFileName)
+                let stateMarkdownPath = (folder as NSString).appendingPathComponent(TaskContextStateManager.markdownFileName)
+                let historyPath = SessionHistoryManager.historyPath(taskFolder: folder)
+                pointers.append(sourcePointer(label: "canonical current state JSON", target: stateJSONPath))
+                pointers.append(sourcePointer(label: "current state markdown", target: stateMarkdownPath))
+                if FileManager.default.fileExists(atPath: historyPath) {
+                    pointers.append(sourcePointer(label: "session history", target: historyPath))
+                }
+                for path in PromptContextIOSnapshotLoader.outputTurnFilePaths(taskFolder: folder)
+                    .suffix(contextSourceIndexOutputFileLimit) {
+                    pointers.append(sourcePointer(label: "turn output", target: path))
+                }
+            }
+            return PromptContextText(
+                text: """
+                Context Source Index:
+                ASTRA has already inlined the compact state, recent transcript, and latest output needed for this follow-up. Use those inline sections as the source of truth for OpenCode; do not tool-read ASTRA task-state files unless the user explicitly asks for raw file contents and the path is inside OpenCode's working directory.
+                """,
+                sourcePointers: pointers
+            )
+        }
         var lines = [
             "Context Source Index:",
             "Use this index for just-in-time retrieval. Read exact files/history/artifacts before relying on omitted details, old decisions, failed commands, verification evidence, generated outputs, or exact prior wording."

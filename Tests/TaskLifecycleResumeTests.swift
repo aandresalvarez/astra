@@ -87,4 +87,79 @@ struct TaskLifecycleResumeTests {
                 == "Continue where you left off. Complete the original goal."
         )
     }
+
+    @Test("Retry replays the latest actionable follow-up instead of the original task seed")
+    func retryReplaysLatestActionableFollowUpInsteadOfOriginalTaskSeed() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsFile = harness.rootURL.appendingPathComponent("opencode-retry-args.txt")
+        let opencodePath = try harness.writeExecutable(
+            named: "opencode",
+            script: Self.fakeOpenCodeScript(argsFile: argsFile)
+        )
+        var settings = AgentRuntimeProviderSettings()
+        settings.setExecutablePath(opencodePath, for: .openCodeCLI)
+        let queue = TaskQueue(poolSize: 1)
+        queue.applySettings(
+            claudePath: nil,
+            providerSettings: settings,
+            defaultRuntimeID: .openCodeCLI,
+            timeoutSeconds: 5,
+            validationModel: "opencode/big-pickle"
+        )
+        let coordinator = TaskLifecycleCoordinator(modelContext: harness.context, taskQueue: queue)
+        let task = harness.makeTask(
+            runtime: .openCodeCLI,
+            goal: "hi , how are you ?",
+            model: "opencode/big-pickle"
+        )
+        task.status = .pendingUser
+
+        let followUpRun = TaskRun(task: task)
+        followUpRun.status = .failed
+        followUpRun.stopReason = "permission_approval_required"
+        followUpRun.completedAt = Date()
+        harness.context.insert(followUpRun)
+        harness.context.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.Conversation.userMessage,
+            payload: "check my open prs in github",
+            run: followUpRun
+        ))
+        let approvalRun = TaskRun(task: task)
+        approvalRun.status = .failed
+        approvalRun.stopReason = "no_usable_result"
+        approvalRun.completedAt = Date().addingTimeInterval(1)
+        harness.context.insert(approvalRun)
+        harness.context.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.Conversation.userMessage,
+            payload: "ASTRA approved task-scoped runtime permission for similar requests in this task: shell(gh:repo view *). Continue the original task from where it stopped.",
+            run: approvalRun
+        ))
+        try harness.context.save()
+
+        coordinator.retryTask(task)
+
+        let completed = await harness.waitUntil(task: task) { $0.status == .completed }
+        #expect(completed)
+        let rawArgs = try String(contentsOf: argsFile, encoding: .utf8)
+        #expect(rawArgs.contains("User's follow-up request:\ncheck my open prs in github"))
+        #expect(!rawArgs.contains("User's follow-up request:\nhi , how are you ?"))
+    }
+
+    private static func fakeOpenCodeScript(argsFile: URL) -> String {
+        """
+        #!/bin/sh
+        if [ "$1" = "--version" ]; then
+          echo "opencode fake 1.0"
+          exit 0
+        fi
+        printf '%s\\n' "$@" > \(HeadlessChatScenarioTests.shQuote(argsFile.path))
+        printf '%s\\n' '{"type":"text","sessionID":"retry-session","part":{"type":"text","text":"Retried latest follow-up."}}'
+        printf '%s\\n' '{"type":"step_finish","sessionID":"retry-session","part":{"type":"step-finish","reason":"stop","tokens":{"total":4,"input":3,"output":1,"reasoning":0,"cache":{"write":0,"read":0}},"cost":0}}'
+        exit 0
+        """
+    }
 }

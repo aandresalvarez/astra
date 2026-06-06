@@ -69,6 +69,17 @@ enum E2ETestSupport {
                 expectsTeamEvents: false,
                 expectsStructuredToolEvents: true,
                 expectsResultCallback: true
+            ),
+            RuntimeCase(
+                runtimeID: .openCodeCLI,
+                model: environment["REAL_OPENCODE_MODEL"] ?? AgentRuntimeAdapterRegistry.defaultModel(for: .openCodeCLI),
+                directoryNameComponent: "opencode",
+                expectsSessionID: true,
+                expectsUsageStats: false,
+                expectsCostUSD: false,
+                expectsTeamEvents: false,
+                expectsStructuredToolEvents: true,
+                expectsResultCallback: true
             )
         ]
         let requested = (environment["RUN_E2E_RUNTIME"] ?? "")
@@ -140,6 +151,12 @@ enum E2ETestSupport {
                 throw E2ETestSupportError.missingExecutable("cursor-agent")
             }
             worker.setExecutablePath(path, for: .cursorCLI)
+        case .openCodeCLI:
+            let path = RuntimePathResolver.detectOpenCodePath()
+            guard FileManager.default.isExecutableFile(atPath: path) else {
+                throw E2ETestSupportError.missingExecutable("opencode")
+            }
+            worker.setExecutablePath(path, for: .openCodeCLI)
         default:
             throw E2ETestSupportError.missingExecutable(runtimeID.rawValue)
         }
@@ -240,10 +257,10 @@ private actor E2ELiveProviderGate {
 
 @Suite("E2E live provider gate")
 struct E2ELiveProviderGateTests {
-    @Test("Runtime cases include Antigravity, Cursor, and support runtime filtering")
-    func runtimeCasesIncludeAntigravityCursorAndSupportFiltering() {
+    @Test("Runtime cases include Antigravity, Cursor, OpenCode, and support runtime filtering")
+    func runtimeCasesIncludeAntigravityCursorOpenCodeAndSupportFiltering() {
         let allCases = E2ETestSupport.runtimeCases(environment: [:])
-        #expect(allCases.map(\.runtimeID) == [.claudeCode, .copilotCLI, .antigravityCLI, .cursorCLI])
+        #expect(allCases.map(\.runtimeID) == [.claudeCode, .copilotCLI, .antigravityCLI, .cursorCLI, .openCodeCLI])
 
         let filteredByID = E2ETestSupport.runtimeCases(environment: [
             "RUN_E2E_RUNTIME": "antigravity_cli",
@@ -262,8 +279,15 @@ struct E2ELiveProviderGateTests {
         #expect(filteredByCursorName.map(\.runtimeID) == [.cursorCLI])
         #expect(filteredByCursorName.first?.model == "Cursor Test Model")
 
+        let filteredByOpenCodeName = E2ETestSupport.runtimeCases(environment: [
+            "RUN_E2E_RUNTIME": "opencode",
+            "REAL_OPENCODE_MODEL": "OpenCode Test Model"
+        ])
+        #expect(filteredByOpenCodeName.map(\.runtimeID) == [.openCodeCLI])
+        #expect(filteredByOpenCodeName.first?.model == "OpenCode Test Model")
+
         let unknownFilter = E2ETestSupport.runtimeCases(environment: ["RUN_E2E_RUNTIME": "not-a-runtime"])
-        #expect(unknownFilter.map(\.runtimeID) == [.claudeCode, .copilotCLI, .antigravityCLI, .cursorCLI])
+        #expect(unknownFilter.map(\.runtimeID) == [.claudeCode, .copilotCLI, .antigravityCLI, .cursorCLI, .openCodeCLI])
     }
 
     @Test("Queued live provider waiters finish when cancelled")

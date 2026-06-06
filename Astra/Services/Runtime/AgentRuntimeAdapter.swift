@@ -525,7 +525,8 @@ enum BuiltInAgentRuntimeAdapterProviders {
             CopilotCLIRuntimeAdapterProvider(),
             AntigravityCLIRuntimeAdapterProvider(),
             CodexCLIRuntimeAdapterProvider(),
-            CursorCLIRuntimeAdapterProvider()
+            CursorCLIRuntimeAdapterProvider(),
+            OpenCodeCLIRuntimeAdapterProvider()
         ]
     }
 }
