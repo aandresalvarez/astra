@@ -73,7 +73,7 @@ final class TaskLifecycleCoordinator {
             modelContext: modelContext,
             source: .supersededByNewRun
         )
-        task.status = retryFollowUpMessage == nil ? .queued : .running
+        task.status = .queued
         task.tokensUsed = 0
         task.costUSD = 0
         task.updatedAt = Date()

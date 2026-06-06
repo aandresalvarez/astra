@@ -122,6 +122,48 @@ struct OpenCodeCLIRuntimeTests {
         #expect(plan.arguments[dirIndex + 1] == workspace.path)
     }
 
+    @Test("OpenCode launch directory expands tilde when falling back")
+    func openCodeLaunchDirectoryExpandsTildeFallback() throws {
+        let workspacePath = "~/astra-opencode-non-git-\(UUID().uuidString)"
+        let plan = OpenCodeCLIRuntime.buildCommand(
+            executablePath: "/opt/opencode",
+            prompt: "Summarize the repo",
+            model: "opencode/big-pickle",
+            workspacePath: workspacePath,
+            additionalPaths: [],
+            permissionPolicy: .restricted,
+            timeoutSeconds: 60,
+            taskEnvironment: [:]
+        )
+
+        let dirIndex = try #require(plan.arguments.firstIndex(of: "--dir"))
+        #expect(plan.arguments[dirIndex + 1] == (workspacePath as NSString).expandingTildeInPath)
+    }
+
+    @Test("OpenCode launch directory falls back to first non-empty additional path")
+    func openCodeLaunchDirectoryFallsBackToFirstNonEmptyAdditionalPath() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-opencode-empty-primary-\(UUID().uuidString)", isDirectory: true)
+        let additionalDirectory = root.appendingPathComponent("workspace", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: additionalDirectory, withIntermediateDirectories: true)
+
+        let plan = OpenCodeCLIRuntime.buildCommand(
+            executablePath: "/opt/opencode",
+            prompt: "Summarize the repo",
+            model: "opencode/big-pickle",
+            workspacePath: "",
+            additionalPaths: [" ", additionalDirectory.path],
+            permissionPolicy: .restricted,
+            timeoutSeconds: 60,
+            taskEnvironment: [:]
+        )
+
+        let dirIndex = try #require(plan.arguments.firstIndex(of: "--dir"))
+        #expect(plan.arguments[dirIndex + 1] == additionalDirectory.path)
+    }
+
     @Test("OpenCode autonomous policy skips provider permissions")
     func openCodeAutonomousPolicySkipsProviderPermissions() {
         let args = OpenCodeCLIRuntime.permissionArguments(policy: .autonomous)

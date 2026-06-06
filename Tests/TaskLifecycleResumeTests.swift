@@ -149,6 +149,38 @@ struct TaskLifecycleResumeTests {
         #expect(!rawArgs.contains("User's follow-up request:\nhi , how are you ?"))
     }
 
+    @Test("Retry follow-up remains queued when no worker can continue")
+    func retryFollowUpRemainsQueuedWhenNoWorkerCanContinue() async throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+
+        let workspace = Workspace(name: "Retry Guard", primaryPath: env.root)
+        let task = AgentTask(title: "Retry Guard", goal: "Initial request", workspace: workspace)
+        task.status = .pendingUser
+        env.context.insert(workspace)
+        env.context.insert(task)
+
+        let failedRun = TaskRun(task: task)
+        failedRun.status = .failed
+        failedRun.stopReason = "permission_approval_required"
+        failedRun.completedAt = Date()
+        env.context.insert(failedRun)
+        env.context.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.Conversation.userMessage,
+            payload: "latest follow-up request",
+            run: failedRun
+        ))
+        try env.context.save()
+
+        env.coordinator.retryTask(task)
+        await Task.yield()
+
+        #expect(task.status == .queued)
+        #expect(task.runs.filter { $0.status == .running }.isEmpty)
+        #expect(task.events.contains { $0.type == "task.retried" })
+    }
+
     private static func fakeOpenCodeScript(argsFile: URL) -> String {
         """
         #!/bin/sh

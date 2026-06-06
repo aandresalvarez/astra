@@ -83,13 +83,14 @@ enum OpenCodeCLIRuntime {
 
     static func executionDirectory(workspacePath: String, additionalPaths: [String]) -> String {
         let candidates = ([workspacePath] + additionalPaths)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
             .map { ($0 as NSString).expandingTildeInPath }
-            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
         if let gitWorkspace = candidates.first(where: isGitBackedDirectory) {
             return gitWorkspace
         }
-        return workspacePath
+        return candidates.first ?? ""
     }
 
     static func permissionArguments(policy: PermissionPolicy) -> [String] {
