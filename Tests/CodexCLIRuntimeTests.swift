@@ -5,6 +5,17 @@ import ASTRACore
 
 @Suite("Codex CLI Runtime")
 struct CodexCLIRuntimeTests {
+    @Test("Codex model suggestions match supported CLI models")
+    func codexModelSuggestionsMatchSupportedCLIModels() {
+        #expect(CodexCLIRuntime.availableModelNames() == [
+            "gpt-5.5",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.3-codex-spark"
+        ])
+        #expect(CodexCLIRuntime.defaultModelName() == "gpt-5.5")
+    }
+
     @Test("Codex exec command uses JSON output, workspace root, model, and restricted policy")
     func codexExecCommandUsesJSONWorkspaceModelAndRestrictedPolicy() {
         let plan = CodexCLIRuntime.buildCommand(
