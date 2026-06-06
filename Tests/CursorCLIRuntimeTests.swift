@@ -116,6 +116,16 @@ struct CursorCLIRuntimeTests {
         #expect(plan.arguments.contains("--mode") == false)
     }
 
+    @Test("Cursor blocking diagnostics are detected in stream JSON mode")
+    func cursorBlockingDiagnosticsAreDetectedInStreamJSONMode() {
+        let message = CursorCLIRuntime.blockingMessage(
+            line: "Error: not logged in. Run cursor-agent login to continue.",
+            parsesJSONLines: true
+        )
+
+        #expect(message?.contains("cursor-agent login") == true)
+    }
+
     @Test("Cursor stream parser records system start and assistant text")
     func cursorStreamParserRecordsSystemStartAndAssistantText() {
         let startLine = #"{"type":"system","subtype":"init","session_id":"chat-123","model":"composer-2.5-fast"}"#

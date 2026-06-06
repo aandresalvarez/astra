@@ -147,7 +147,7 @@ enum CursorCLIRuntime {
     }
 
     static func blockingMessage(line: String, parsesJSONLines: Bool) -> String? {
-        if parsesJSONLines {
+        if parsesJSONLines, lineParsesAsJSON(line) {
             return nil
         }
         let lower = line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -161,6 +161,14 @@ enum CursorCLIRuntime {
             return "Cursor CLI is waiting for an approval ASTRA cannot answer directly: \(line)\n"
         }
         return nil
+    }
+
+    private static func lineParsesAsJSON(_ line: String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else {
+            return false
+        }
+        return (try? JSONSerialization.jsonObject(with: data)) != nil
     }
 
     static func extractUtilityText(from output: String) -> String {
