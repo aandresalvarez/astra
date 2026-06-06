@@ -175,10 +175,16 @@ struct TaskLifecycleResumeTests {
 
         env.coordinator.retryTask(task)
         await Task.yield()
+        AppLogger.flushForTesting()
 
         #expect(task.status == .queued)
         #expect(task.runs.filter { $0.status == .running }.isEmpty)
         #expect(task.events.contains { $0.type == "task.retried" })
+        #expect(
+            AppLogger.entries.contains {
+                $0.taskID == task.id && $0.message.contains("task.completed")
+            } == false
+        )
     }
 
     private static func fakeOpenCodeScript(argsFile: URL) -> String {

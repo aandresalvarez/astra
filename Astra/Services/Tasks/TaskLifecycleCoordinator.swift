@@ -100,11 +100,12 @@ final class TaskLifecycleCoordinator {
                 "source": "retry_latest_follow_up"
             ])
             Task {
-                await taskQueue.continueSession(
+                let didStart = await taskQueue.continueSession(
                     task: task,
                     message: retryFollowUpMessage,
                     modelContext: modelContext
                 )
+                guard didStart else { return }
                 AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
                     "status": task.status.rawValue,
                     "source": "retry_latest_follow_up"
