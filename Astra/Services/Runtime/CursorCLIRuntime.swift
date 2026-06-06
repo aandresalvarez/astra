@@ -104,7 +104,11 @@ enum CursorCLIRuntime {
         guard FileManager.default.isExecutableFile(atPath: executablePath) else {
             return nil
         }
-        return runProbe(executablePath: executablePath, args: ["--version"], timeoutSeconds: 2)
+        return runProbe(executablePath: executablePath, args: ["--version"], timeoutSeconds: 2)?
+            .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: true)
+            .first
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     static func modelNames(executablePath: String) -> [String]? {
