@@ -254,6 +254,52 @@ struct TaskContextStateTests {
         #expect(blockedState.turns.last?.blockers.isEmpty == true)
     }
 
+    @Test("follow-up user instructions are retained verbatim past the transcript window")
+    func standingInstructionsRetainFollowUpDirectives() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Standing", primaryPath: root)
+        let task = AgentTask(title: "Export", goal: "Build the export feature", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        // First message → pinned as startingRequest, excluded from standing list.
+        let messages: [(Double, String)] = [
+            (1, "Build the export feature"),
+            (2, "Never modify the auth module"),
+            (3, "ok proceed"),
+            (4, "Output must be CSV not JSON")
+        ]
+        for (ts, text) in messages {
+            let event = TaskEvent(task: task, type: "user.message", payload: text)
+            event.timestamp = Date(timeIntervalSince1970: ts)
+            context.insert(event)
+        }
+        // Many later turns push the follow-ups out of the recent-transcript window;
+        // the standing list reads all user messages regardless, so they survive.
+        for index in 0..<20 {
+            let event = TaskEvent(task: task, type: "agent.response", payload: "progress \(index)")
+            event.timestamp = Date(timeIntervalSince1970: Double(100 + index))
+            context.insert(event)
+        }
+
+        TaskContextStateManager.refresh(task: task)
+
+        let state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        let instructions = (state.standingInstructions ?? []).map(\.text)
+        #expect(instructions == ["Never modify the auth module", "Output must be CSV not JSON"])
+        #expect(!instructions.contains("Build the export feature")) // pinned as startingRequest
+        #expect(!instructions.contains("ok proceed"))               // trimmed acknowledgement
+        #expect(state.startingRequest == "Build the export feature")
+
+        let prompt = try #require(TaskContextStateManager.promptContext(for: task))
+        #expect(prompt.contains("Standing user instructions"))
+        #expect(prompt.contains("Never modify the auth module"))
+        #expect(prompt.contains("Output must be CSV not JSON"))
+    }
+
     @Test("approved plans refresh state with explicit planning mode and approved goal")
     func planApprovalRecordsApprovedGoal() throws {
         let root = try temporaryRoot()
@@ -1148,6 +1194,7 @@ struct TaskContextStateTests {
             correctiveWork: nil,
             sourcePointers: [],
             nextLikelyAction: nil,
+            standingInstructions: nil,
             turns: [],
             updatedAt: "2026-06-05T00:00:00Z"
         )
