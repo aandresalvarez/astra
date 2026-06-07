@@ -161,6 +161,7 @@ struct TaskContextStateTests {
         let state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
         #expect(state.startingRequest == "Original exploratory request")
         #expect(state.currentObjective == "Edited execution goal")
+        #expect(state.standingInstructions == nil) // no follow-ups → nil, not []
     }
 
     @Test("turn numbering follows saved state and deterministic output paths")
@@ -270,7 +271,8 @@ struct TaskContextStateTests {
             (1, "Build the export feature"),
             (2, "Never modify the auth module"),
             (3, "ok proceed"),
-            (4, "Output must be CSV not JSON")
+            (4, "Output must be CSV not JSON"),
+            (5, "no") // bare negation: a meaningful course-correction, must be kept
         ]
         for (ts, text) in messages {
             let event = TaskEvent(task: task, type: "user.message", payload: text)
@@ -289,7 +291,7 @@ struct TaskContextStateTests {
 
         let state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
         let instructions = (state.standingInstructions ?? []).map(\.text)
-        #expect(instructions == ["Never modify the auth module", "Output must be CSV not JSON"])
+        #expect(instructions == ["Never modify the auth module", "Output must be CSV not JSON", "no"])
         #expect(!instructions.contains("Build the export feature")) // pinned as startingRequest
         #expect(!instructions.contains("ok proceed"))               // trimmed acknowledgement
         #expect(state.startingRequest == "Build the export feature")
