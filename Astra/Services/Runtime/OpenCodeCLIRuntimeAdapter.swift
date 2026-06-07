@@ -131,15 +131,57 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
 
         var checks = [cliStatus.check]
         if cliStatus.isReady {
-            checks.append(RuntimeReadinessCheck(
-                id: "opencode-account",
-                title: "OpenCode account",
-                detail: "CLI is available. Use `opencode auth list` for provider authentication diagnostics.",
-                state: .ready,
-                remediation: nil
-            ))
+            if configuration.scope == .availability {
+                checks.append(RuntimeReadinessCheck(
+                    id: "opencode-account",
+                    title: "OpenCode account",
+                    detail: "CLI is available. Run a readiness check to verify provider credentials.",
+                    state: .ready,
+                    remediation: nil
+                ))
+            } else if let executable = cliStatus.executable {
+                checks.append(await checkOpenCodeAuth(executable: executable, probes: probes))
+            }
         }
         return RuntimeReadinessReport(checks: checks)
+    }
+
+    private func checkOpenCodeAuth(
+        executable: String,
+        probes: RuntimeReadinessProbeContext
+    ) async -> RuntimeReadinessCheck {
+        let result = await probes.run(path: executable, args: ["auth", "list"])
+        guard result.isSuccess else {
+            return RuntimeReadinessCheck(
+                id: "opencode-account",
+                title: "OpenCode account",
+                detail: RuntimeReadinessDiagnostics.detail(
+                    from: result,
+                    fallback: "OpenCode auth list did not pass."
+                ),
+                state: .blocked,
+                remediation: CommonCLIPrerequisites.openCode.authHint
+            )
+        }
+
+        let output = [result.stdout, result.stderr].joined(separator: "\n")
+        if OpenCodeCLIRuntime.authListShowsConfiguredCredentials(output) {
+            return RuntimeReadinessCheck(
+                id: "opencode-account",
+                title: "OpenCode account",
+                detail: "OpenCode reports configured provider credentials.",
+                state: .ready,
+                remediation: nil
+            )
+        }
+
+        return RuntimeReadinessCheck(
+            id: "opencode-account",
+            title: "OpenCode account",
+            detail: "No OpenCode credentials are configured.",
+            state: .blocked,
+            remediation: CommonCLIPrerequisites.openCode.authHint
+        )
     }
 
     func modelAvailabilityCheck(configuration: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {

@@ -921,6 +921,40 @@ enum RuntimeReadinessRedactor {
     }
 }
 
+enum RuntimeReadinessDiagnostics {
+    static func detail(from result: RunResult, fallback: String) -> String {
+        let diagnostic = [result.stdout, result.stderr]
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !diagnostic.isEmpty else { return fallback }
+        return RuntimeReadinessRedactor.redacted(diagnostic)
+    }
+
+    static func showsAuthenticatedSession(_ output: String) -> Bool {
+        let lower = output.lowercased()
+        let compact = lower.filter { !$0.isWhitespace }
+        let negativeSignals = [
+            "\"loggedin\":false",
+            "\"authenticated\":false",
+            "not logged in",
+            "not authenticated",
+            "not signed in",
+            "unauthenticated",
+            "logged out",
+            "login required",
+            "authentication required",
+            "no authenticated"
+        ]
+        if negativeSignals.contains(where: { lower.contains($0) || compact.contains($0) }) {
+            return false
+        }
+        return compact.contains("\"loggedin\":true")
+            || compact.contains("\"authenticated\":true")
+            || lower.contains("logged in")
+            || lower.contains("authenticated")
+    }
+}
+
 struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
     var id: AgentRuntimeID { descriptor.id }
     let descriptor = AgentRuntimeDescriptor(
@@ -1381,7 +1415,10 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             return RuntimeReadinessCheck(
                 id: "claude-auth",
                 title: "Claude authentication",
-                detail: "Claude auth status did not pass.",
+                detail: RuntimeReadinessDiagnostics.detail(
+                    from: result,
+                    fallback: "Claude auth status did not pass."
+                ),
                 state: .blocked,
                 remediation: configuration.claudeProvider == .vertex
                     ? "Check Vertex project, region, ADC credentials, and model aliases."
@@ -1389,9 +1426,8 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             )
         }
 
-        let output = result.stdout.lowercased()
-        let compactOutput = output.filter { !$0.isWhitespace }
-        if compactOutput.contains("\"loggedin\":true") || output.contains("logged in") || output.contains("authenticated") {
+        let output = [result.stdout, result.stderr].joined(separator: "\n")
+        if RuntimeReadinessDiagnostics.showsAuthenticatedSession(output) {
             return RuntimeReadinessCheck(
                 id: "claude-auth",
                 title: "Claude authentication",
@@ -1404,7 +1440,10 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         return RuntimeReadinessCheck(
             id: "claude-auth",
             title: "Claude authentication",
-            detail: "Claude responded, but no authenticated session was detected.",
+            detail: RuntimeReadinessDiagnostics.detail(
+                from: result,
+                fallback: "Claude responded, but no authenticated session was detected."
+            ),
             state: .blocked,
             remediation: configuration.claudeProvider == .vertex
                 ? "Run `gcloud auth application-default login` and re-check."

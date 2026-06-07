@@ -139,6 +139,43 @@ struct RuntimeReadinessServiceTests {
         #expect(!calls.contains { $0.path == "/detected/claude" })
     }
 
+    @Test("Claude readiness blocks when auth status reports logged out")
+    func claudeReadinessBlocksWhenAuthStatusReportsLoggedOut() async {
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/opt/claude --version",
+            result: RunResult(outcome: .exited(code: 0), stdout: "1.2.3\n", stderr: "")
+        )
+        await runner.setResponse(
+            forKey: "/opt/claude auth status",
+            result: RunResult(outcome: .exited(code: 0), stdout: #"{"loggedIn":false}"#, stderr: "")
+        )
+
+        let service = RuntimeReadinessService(
+            runner: runner,
+            detectExecutable: { binary in binary == "claude" ? "/opt/claude" : "" },
+            isExecutable: { $0 == "/opt/claude" }
+        )
+
+        let report = await service.check(configuration: RuntimeReadinessConfiguration(
+            runtime: .claudeCode,
+            claudePath: "",
+            copilotPath: "",
+            claudeProvider: .anthropic,
+            vertexProjectID: "",
+            vertexRegion: "",
+            vertexOpusModel: "",
+            vertexSonnetModel: "",
+            vertexHaikuModel: ""
+        ))
+
+        #expect(report.state == .blocked)
+        let account = report.checks.first { $0.id == "claude-auth" }
+        #expect(account?.state == .blocked)
+        #expect(account?.detail.contains("loggedIn") == true)
+        #expect(account?.remediation?.contains("claude /login") == true)
+    }
+
     @Test("Copilot readiness does not warn when only auth status is unknown")
     func copilotReadinessDefersAccountValidation() async {
         let runner = StubBinaryRunner()
@@ -268,6 +305,211 @@ struct RuntimeReadinessServiceTests {
         #expect(report.checks.count == 1)
         #expect(report.checks.first?.id == "copilot-cli")
         #expect(report.checks.first?.state == .blocked)
+    }
+
+    @Test("OpenCode readiness blocks with login guidance when no credentials are configured")
+    func opencodeReadinessBlocksWhenAuthListHasNoCredentials() async {
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/opt/opencode --version",
+            result: RunResult(outcome: .exited(code: 0), stdout: "1.16.2\n", stderr: "")
+        )
+        await runner.setResponse(
+            forKey: "/opt/opencode auth list",
+            result: RunResult(
+                outcome: .exited(code: 0),
+                stdout: """
+                ┌  Credentials ~/.local/share/opencode/auth.json
+                │
+                └  0 credentials
+                """,
+                stderr: ""
+            )
+        )
+
+        let service = RuntimeReadinessService(
+            runner: runner,
+            detectExecutable: { binary in binary == "opencode" ? "/opt/opencode" : "" },
+            isExecutable: { $0 == "/opt/opencode" }
+        )
+
+        let report = await service.check(configuration: RuntimeReadinessConfiguration(
+            runtime: .openCodeCLI,
+            claudePath: "",
+            copilotPath: "",
+            claudeProvider: .anthropic,
+            vertexProjectID: "",
+            vertexRegion: "",
+            vertexOpusModel: "",
+            vertexSonnetModel: "",
+            vertexHaikuModel: ""
+        ))
+
+        #expect(report.state == .blocked)
+        let account = report.checks.first { $0.id == "opencode-account" }
+        #expect(account?.state == .blocked)
+        #expect(account?.detail.contains("No OpenCode credentials") == true)
+        #expect(account?.remediation?.contains("opencode auth login") == true)
+        #expect(await runner.recordedCalls() == [
+            StubBinaryRunner.Call(path: "/opt/opencode", args: ["--version"]),
+            StubBinaryRunner.Call(path: "/opt/opencode", args: ["auth", "list"])
+        ])
+    }
+
+    @Test("Codex readiness blocks with login guidance when login status fails")
+    func codexReadinessBlocksWhenLoginStatusFails() async {
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/opt/codex --version",
+            result: RunResult(outcome: .exited(code: 0), stdout: "codex 1.0\n", stderr: "")
+        )
+        await runner.setResponse(
+            forKey: "/opt/codex login status",
+            result: RunResult(outcome: .exited(code: 1), stdout: "", stderr: "Not logged in\n")
+        )
+
+        let service = RuntimeReadinessService(
+            runner: runner,
+            detectExecutable: { binary in binary == "codex" ? "/opt/codex" : "" },
+            isExecutable: { $0 == "/opt/codex" }
+        )
+
+        let report = await service.check(configuration: RuntimeReadinessConfiguration(
+            runtime: .codexCLI,
+            claudePath: "",
+            copilotPath: "",
+            claudeProvider: .anthropic,
+            vertexProjectID: "",
+            vertexRegion: "",
+            vertexOpusModel: "",
+            vertexSonnetModel: "",
+            vertexHaikuModel: ""
+        ))
+
+        #expect(report.state == .blocked)
+        let account = report.checks.first { $0.id == "codex-account" }
+        #expect(account?.state == .blocked)
+        #expect(account?.detail.contains("Not logged in") == true)
+        #expect(account?.remediation?.contains("codex login") == true)
+        #expect(await runner.recordedCalls() == [
+            StubBinaryRunner.Call(path: "/opt/codex", args: ["--version"]),
+            StubBinaryRunner.Call(path: "/opt/codex", args: ["login", "status"])
+        ])
+    }
+
+    @Test("Codex readiness blocks when login status exits zero but reports logged out")
+    func codexReadinessBlocksWhenLoginStatusReportsLoggedOut() async {
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/opt/codex --version",
+            result: RunResult(outcome: .exited(code: 0), stdout: "codex 1.0\n", stderr: "")
+        )
+        await runner.setResponse(
+            forKey: "/opt/codex login status",
+            result: RunResult(outcome: .exited(code: 0), stdout: "Not logged in\n", stderr: "")
+        )
+
+        let service = RuntimeReadinessService(
+            runner: runner,
+            detectExecutable: { binary in binary == "codex" ? "/opt/codex" : "" },
+            isExecutable: { $0 == "/opt/codex" }
+        )
+
+        let report = await service.check(configuration: RuntimeReadinessConfiguration(
+            runtime: .codexCLI,
+            claudePath: "",
+            copilotPath: "",
+            claudeProvider: .anthropic,
+            vertexProjectID: "",
+            vertexRegion: "",
+            vertexOpusModel: "",
+            vertexSonnetModel: "",
+            vertexHaikuModel: ""
+        ))
+
+        #expect(report.state == .blocked)
+        let account = report.checks.first { $0.id == "codex-account" }
+        #expect(account?.state == .blocked)
+        #expect(account?.detail.contains("Not logged in") == true)
+        #expect(account?.remediation?.contains("codex login") == true)
+    }
+
+    @Test("Cursor readiness blocks with login guidance when status fails")
+    func cursorReadinessBlocksWhenStatusFails() async {
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/opt/cursor-agent --version",
+            result: RunResult(outcome: .exited(code: 0), stdout: "2026.06.04\n", stderr: "")
+        )
+        await runner.setResponse(
+            forKey: "/opt/cursor-agent status",
+            result: RunResult(outcome: .exited(code: 1), stdout: "", stderr: "Not logged in\n")
+        )
+
+        let service = RuntimeReadinessService(
+            runner: runner,
+            detectExecutable: { binary in binary == "cursor-agent" ? "/opt/cursor-agent" : "" },
+            isExecutable: { $0 == "/opt/cursor-agent" }
+        )
+
+        let report = await service.check(configuration: RuntimeReadinessConfiguration(
+            runtime: .cursorCLI,
+            claudePath: "",
+            copilotPath: "",
+            claudeProvider: .anthropic,
+            vertexProjectID: "",
+            vertexRegion: "",
+            vertexOpusModel: "",
+            vertexSonnetModel: "",
+            vertexHaikuModel: ""
+        ))
+
+        #expect(report.state == .blocked)
+        let account = report.checks.first { $0.id == "cursor-account" }
+        #expect(account?.state == .blocked)
+        #expect(account?.detail.contains("Not logged in") == true)
+        #expect(account?.remediation?.contains("cursor-agent login") == true)
+        #expect(await runner.recordedCalls() == [
+            StubBinaryRunner.Call(path: "/opt/cursor-agent", args: ["--version"]),
+            StubBinaryRunner.Call(path: "/opt/cursor-agent", args: ["status"])
+        ])
+    }
+
+    @Test("Cursor readiness blocks when status exits zero but reports logged out")
+    func cursorReadinessBlocksWhenStatusReportsLoggedOut() async {
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/opt/cursor-agent --version",
+            result: RunResult(outcome: .exited(code: 0), stdout: "2026.06.04\n", stderr: "")
+        )
+        await runner.setResponse(
+            forKey: "/opt/cursor-agent status",
+            result: RunResult(outcome: .exited(code: 0), stdout: "Not authenticated\n", stderr: "")
+        )
+
+        let service = RuntimeReadinessService(
+            runner: runner,
+            detectExecutable: { binary in binary == "cursor-agent" ? "/opt/cursor-agent" : "" },
+            isExecutable: { $0 == "/opt/cursor-agent" }
+        )
+
+        let report = await service.check(configuration: RuntimeReadinessConfiguration(
+            runtime: .cursorCLI,
+            claudePath: "",
+            copilotPath: "",
+            claudeProvider: .anthropic,
+            vertexProjectID: "",
+            vertexRegion: "",
+            vertexOpusModel: "",
+            vertexSonnetModel: "",
+            vertexHaikuModel: ""
+        ))
+
+        #expect(report.state == .blocked)
+        let account = report.checks.first { $0.id == "cursor-account" }
+        #expect(account?.state == .blocked)
+        #expect(account?.detail.contains("Not authenticated") == true)
+        #expect(account?.remediation?.contains("cursor-agent login") == true)
     }
 
     @Test("Antigravity diagnostic readiness runs a live noninteractive check")

@@ -143,6 +143,14 @@ enum OpenCodeCLIRuntime {
         return RuntimeModelAvailability.cleanProviderModels(models)
     }
 
+    static func authListShowsConfiguredCredentials(_ output: String) -> Bool {
+        let lower = output.lowercased()
+        if lower.range(of: #"\b0 credentials?\b"#, options: .regularExpression) != nil {
+            return false
+        }
+        return lower.range(of: #"\b[1-9][0-9]* credentials?\b"#, options: .regularExpression) != nil
+    }
+
     static func parseEvents(line: String, parsesJSONLines: Bool) -> [ParsedEvent] {
         parsesJSONLines
             ? OpenCodeStreamEventParser.parseAll(line: line)

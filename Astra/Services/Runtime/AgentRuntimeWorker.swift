@@ -435,17 +435,6 @@ final class AgentRuntimeWorker {
             phase: auditPhase
         )
 
-        guard await AgentRuntimeLaunchPreflight.preflightConnectorsBeforeLaunch(
-            task: task,
-            run: run,
-            modelContext: modelContext,
-            phase: auditPhase,
-            contextText: providerLaunchContextText
-        ) else {
-            isRunning = false
-            return
-        }
-
         guard FileManager.default.isExecutableFile(atPath: launchSettings.executablePath) else {
             AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
                 "reason": runtimeAdapter.missingExecutableAuditReason(),
@@ -462,6 +451,28 @@ final class AgentRuntimeWorker {
             let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error,
                 payload: runtimeAdapter.missingExecutableMessage(executablePath: launchSettings.executablePath), run: run)
             modelContext.insert(event)
+            isRunning = false
+            return
+        }
+
+        guard await AgentRuntimeLaunchPreflight.preflightRuntimeReadinessBeforeLaunch(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: auditPhase,
+            configuration: runtimeReadinessConfiguration(for: selectedRuntime)
+        ) else {
+            isRunning = false
+            return
+        }
+
+        guard await AgentRuntimeLaunchPreflight.preflightConnectorsBeforeLaunch(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: auditPhase,
+            contextText: providerLaunchContextText
+        ) else {
             isRunning = false
             return
         }
@@ -1021,6 +1032,20 @@ final class AgentRuntimeWorker {
     }
 
     // MARK: - Private
+
+    private func runtimeReadinessConfiguration(for runtime: AgentRuntimeID) -> RuntimeReadinessConfiguration {
+        let providerSnapshot = RuntimeSettingsSnapshotStore.providerSnapshot()
+        return RuntimeReadinessConfiguration(
+            runtime: runtime,
+            providerSettings: runtimeConfiguration.configuredProviderSettings,
+            claudeProvider: providerSnapshot.claudeProvider,
+            vertexProjectID: providerSnapshot.vertexProjectID,
+            vertexRegion: providerSnapshot.vertexRegion,
+            vertexOpusModel: providerSnapshot.vertexOpusModel,
+            vertexSonnetModel: providerSnapshot.vertexSonnetModel,
+            vertexHaikuModel: providerSnapshot.vertexHaikuModel
+        )
+    }
 
     @MainActor
     private static func applyEmptySuccessfulRunIfNeeded(

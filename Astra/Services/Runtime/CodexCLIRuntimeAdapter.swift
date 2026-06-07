@@ -131,15 +131,60 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
 
         var checks = [cliStatus.check]
         if cliStatus.isReady {
-            checks.append(RuntimeReadinessCheck(
-                id: "codex-account",
-                title: "Codex account",
-                detail: "CLI is available. Use `codex doctor` for detailed authentication diagnostics.",
-                state: .ready,
-                remediation: nil
-            ))
+            if configuration.scope == .availability {
+                checks.append(RuntimeReadinessCheck(
+                    id: "codex-account",
+                    title: "Codex account",
+                    detail: "CLI is available. Run a readiness check to verify login status.",
+                    state: .ready,
+                    remediation: nil
+                ))
+            } else if let executable = cliStatus.executable {
+                checks.append(await checkCodexAuth(executable: executable, probes: probes))
+            }
         }
         return RuntimeReadinessReport(checks: checks)
+    }
+
+    private func checkCodexAuth(
+        executable: String,
+        probes: RuntimeReadinessProbeContext
+    ) async -> RuntimeReadinessCheck {
+        let result = await probes.run(path: executable, args: ["login", "status"])
+        guard result.isSuccess else {
+            return RuntimeReadinessCheck(
+                id: "codex-account",
+                title: "Codex account",
+                detail: RuntimeReadinessDiagnostics.detail(
+                    from: result,
+                    fallback: "Codex login status did not pass."
+                ),
+                state: .blocked,
+                remediation: CommonCLIPrerequisites.codex.authHint
+            )
+        }
+
+        let output = [result.stdout, result.stderr].joined(separator: "\n")
+        if RuntimeReadinessDiagnostics.showsAuthenticatedSession(output) {
+            return RuntimeReadinessCheck(
+                id: "codex-account",
+                title: "Codex account",
+                detail: "Codex reports an authenticated session.",
+                state: .ready,
+                remediation: nil
+            )
+        }
+
+        return RuntimeReadinessCheck(
+            id: "codex-account",
+            title: "Codex account",
+            detail: RuntimeReadinessDiagnostics.detail(
+                from: result,
+                fallback: "Codex responded, but no authenticated session was detected."
+            ),
+            state: .blocked,
+            remediation: CommonCLIPrerequisites.codex.authHint
+        )
     }
 
     func modelAvailabilityCheck(configuration _: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {

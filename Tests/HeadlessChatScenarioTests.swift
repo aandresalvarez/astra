@@ -35,6 +35,31 @@ extension HeadlessChatScenarioTests {
         let recordArgs = argsFile.map { "printf '%s\\n' \"$@\" > \(shQuote($0.path))" } ?? ""
         return """
         #!/bin/sh
+        if [ "$1" = "--version" ]; then
+          echo "claude fake 1.0"
+          exit 0
+        fi
+        if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+          printf '%s\\n' '{"loggedIn":true}'
+          exit 0
+        fi
+        \(recordArgs)
+        \(body)
+        """
+    }
+
+    static func antigravityScript(body: String, argsFile: URL? = nil) -> String {
+        let recordArgs = argsFile.map { "printf '%s\\n' \"$@\" > \(shQuote($0.path))" } ?? ""
+        return """
+        #!/bin/sh
+        if [ "$1" = "--version" ]; then
+          printf '%s\\n' '1.0.3'
+          exit 0
+        fi
+        if [ "$1" = "--print" ] && [ "$2" = "Reply with ASTRA_READY only." ]; then
+          printf '%s\\n' 'ASTRA_READY'
+          exit 0
+        fi
         \(recordArgs)
         \(body)
         """
@@ -80,9 +105,80 @@ final class HeadlessChatHarness {
 
     func writeExecutable(named name: String, script: String) throws -> String {
         let url = rootURL.appendingPathComponent(name)
-        try script.write(to: url, atomically: true, encoding: .utf8)
+        try scriptByAddingHeadlessReadinessProbeResponses(named: name, script: script)
+            .write(to: url, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
         return url.path
+    }
+
+    private func scriptByAddingHeadlessReadinessProbeResponses(named name: String, script: String) -> String {
+        let probeBody: String
+        switch name {
+        case "claude":
+            probeBody = """
+            if [ "$1" = "--version" ]; then
+              echo "claude fake 1.0"
+              exit 0
+            fi
+            if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+              printf '%s\\n' '{"loggedIn":true}'
+              exit 0
+            fi
+            """
+        case "agy":
+            probeBody = """
+            if [ "$1" = "--version" ]; then
+              printf '%s\\n' '1.0.3'
+              exit 0
+            fi
+            if [ "$1" = "--print" ] && [ "$2" = "Reply with ASTRA_READY only." ]; then
+              printf '%s\\n' 'ASTRA_READY'
+              exit 0
+            fi
+            """
+        case "opencode":
+            probeBody = """
+            if [ "$1" = "--version" ]; then
+              echo "opencode fake 1.0"
+              exit 0
+            fi
+            if [ "$1" = "auth" ] && [ "$2" = "list" ]; then
+              printf '%s\\n' '1 credential'
+              exit 0
+            fi
+            """
+        case "codex":
+            probeBody = """
+            if [ "$1" = "--version" ]; then
+              echo "codex fake 1.0"
+              exit 0
+            fi
+            if [ "$1" = "login" ] && [ "$2" = "status" ]; then
+              printf '%s\\n' 'Logged in'
+              exit 0
+            fi
+            """
+        case "cursor-agent":
+            probeBody = """
+            if [ "$1" = "--version" ]; then
+              echo "cursor-agent fake 1.0"
+              exit 0
+            fi
+            if [ "$1" = "status" ]; then
+              printf '%s\\n' 'Authenticated'
+              exit 0
+            fi
+            """
+        default:
+            return script
+        }
+
+        guard script.hasPrefix("#!") else {
+            return "#!/bin/sh\n\(probeBody)\n\(script)"
+        }
+        var lines = script.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let shebang = lines.removeFirst()
+        return ([shebang, probeBody] + lines).joined(separator: "\n")
     }
 
     func makeTask(
