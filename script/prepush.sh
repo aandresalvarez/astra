@@ -23,8 +23,7 @@ check_whitespace() {
   fi
 }
 
-run swift test --filter ArchitectureFitnessTests
-run swift test --filter RuntimeReadinessServiceTests
-run swift test --filter WorkspacePersistenceTests
-run swift test --filter AgentRuntimeAdapterTests
+FOCUSED_SWIFT_TEST_FILTER="ArchitectureFitnessTests|RuntimeReadinessServiceTests|WorkspacePersistenceTests|AgentRuntimeAdapterTests"
+
+run swift test --filter "$FOCUSED_SWIFT_TEST_FILTER"
 check_whitespace
