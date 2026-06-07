@@ -85,4 +85,21 @@ struct BrowserToolArgumentTests {
 
         #expect(cursor.remainingText() == "Alvaro1 t")
     }
+
+    @Test("Find control locator query flags are allowed")
+    func findControlLocatorQueryFlagsAreAllowed() throws {
+        let sanitized = try BrowserToolCommandParser.sanitizedArguments([
+            "find-control",
+            "--placeholder",
+            "Email address",
+            "--test-id",
+            "email-field",
+            "fallback label"
+        ])
+        var cursor = BrowserToolArgumentCursor(Array(sanitized.dropFirst()))
+
+        #expect(cursor.value(after: "--placeholder") == "Email address")
+        #expect(cursor.value(after: "--test-id") == "email-field")
+        #expect(cursor.remainingText() == "fallback label")
+    }
 }

@@ -1,0 +1,11 @@
+# Keep the high-risk ASTRA surfaces under explicit review.
+Astra/Services/Runtime/ @aandresalvarez
+Astra/Services/Persistence/ @aandresalvarez
+Astra/Models/ @aandresalvarez
+ASTRACore/ @aandresalvarez
+ASTRAGitContracts/ @aandresalvarez
+Package.swift @aandresalvarez
+script/ @aandresalvarez
+.github/ @aandresalvarez
+.githooks/ @aandresalvarez
+Tests/ArchitectureFitnessTests.swift @aandresalvarez
