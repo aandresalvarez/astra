@@ -10,15 +10,46 @@ enum AgentEventCompactor {
     }
     private static let semanticLineLimit = 12
 
+    /// Event-type namespaces whose state is reconstructed from the event log
+    /// (`TaskPlanService.reconstruct`, the Context Capsule's validation/handoff/
+    /// corrective summaries). Deleting these during compaction silently corrupts
+    /// the derived state that feeds the prompt — e.g. an approved plan reverting
+    /// to draft, or a passed contract reading back as not_verified.
+    private static let reconstructedEventTypePrefixes = [
+        "plan.",
+        "validation.",
+        "verifier.",
+        "handoff.",
+        "corrective."
+    ]
+
+    /// Validation assertion event types. These are grouped by `assertionID`
+    /// (not by type) when deciding what to preserve, mirroring how the Context
+    /// Capsule reads the latest event per assertion in `latestAssertionEventsByID`.
+    private static let validationAssertionEventTypes: Set<String> = [
+        TaskValidationEventTypes.assertionDefined,
+        TaskValidationEventTypes.assertionStarted,
+        TaskValidationEventTypes.assertionPassed,
+        TaskValidationEventTypes.assertionFailed,
+        TaskValidationEventTypes.assertionSkipped,
+        TaskValidationEventTypes.assertionReviewed
+    ]
+
     @MainActor
     static func compactEvents(for task: AgentTask, modelContext: ModelContext) {
         let events = task.events.sorted { $0.timestamp < $1.timestamp }
         guard events.count > threshold else { return }
 
         let cutoff = events.count - keepCount
-        let toCompact = events
+        let compactionCandidates = events
             .prefix(cutoff)
             .filter { !shouldPreserveDuringCompaction($0) }
+        // Keep the most recent event of each reconstructed lifecycle type beyond
+        // the recency window so plan/contract state still rebuilds after
+        // compaction. Bounded to one event per distinct type, so high-volume
+        // step/assertion streams still compact away.
+        let reconstructionCriticalIDs = latestReconstructedEventIDs(in: compactionCandidates)
+        let toCompact = compactionCandidates.filter { !reconstructionCriticalIDs.contains($0.id) }
         guard !toCompact.isEmpty else { return }
 
         var typeCounts: [String: Int] = [:]
@@ -55,6 +86,50 @@ enum AgentEventCompactor {
             "compacted_count": String(toCompact.count),
             "kept_count": String(keepCount)
         ])
+    }
+
+    /// IDs of the most recent reconstructed-lifecycle event for each grouping key
+    /// present in `events`, exempted from deletion so the derived state that feeds
+    /// the prompt still rebuilds after compaction. Grouping is per-entity, matching
+    /// how the consumers read the log:
+    /// - validation assertion events → latest per `assertionID`
+    ///   (mirrors the Context Capsule's `latestAssertionEventsByID`),
+    /// - corrective step events → latest per `correctiveStepID`
+    ///   (mirrors `TaskCorrectiveWorkService.latestCorrectiveSteps`),
+    /// - everything else (plan lifecycle, `validation.contract.*`, verifier,
+    ///   handoff) → latest per event type.
+    /// Bounded by the number of distinct assertions/steps/types, so high-volume
+    /// `plan.step.*` streams still compact while per-assertion status survives.
+    private static func latestReconstructedEventIDs(in events: [TaskEvent]) -> Set<UUID> {
+        var latestByKey: [String: TaskEvent] = [:]
+        for event in events where isReconstructedLifecycleEvent(event) {
+            let key = reconstructionGroupingKey(for: event)
+            if let existing = latestByKey[key], existing.timestamp >= event.timestamp {
+                continue
+            }
+            latestByKey[key] = event
+        }
+        return Set(latestByKey.values.map(\.id))
+    }
+
+    private static func isReconstructedLifecycleEvent(_ event: TaskEvent) -> Bool {
+        reconstructedEventTypePrefixes.contains { event.type.hasPrefix($0) }
+    }
+
+    /// Per-entity key used to decide which reconstructed events to keep. Reuses the
+    /// same decoders the consumers use, so a preserved event keys identically to how
+    /// it will later be read. Falls back to the event type when the payload can't be
+    /// decoded (still preserved as latest-of-type).
+    private static func reconstructionGroupingKey(for event: TaskEvent) -> String {
+        if validationAssertionEventTypes.contains(event.type),
+           case let .success(payload) = ValidationService.decodeAssertionPayloadResult(event.payload) {
+            return "assertion:\(payload.assertionID)"
+        }
+        if event.type.hasPrefix("corrective."),
+           let payload = TaskCorrectiveWorkService.decode(event.payload) {
+            return "corrective:\(TaskCorrectiveWorkService.normalizedCorrectiveStepID(payload))"
+        }
+        return event.type
     }
 
     private static func shouldPreserveDuringCompaction(_ event: TaskEvent) -> Bool {
