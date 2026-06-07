@@ -204,6 +204,7 @@ enum ExecutionSandbox {
     static func decide(
         plan: AgentRuntimeProcessLaunchPlan,
         providerHomeDirectory: String,
+        additionalWritablePaths: [String] = [],
         settings: ExecutionSandboxSettings,
         fileManager: FileManager = .default
     ) -> ExecutionSandboxDecision {
@@ -235,6 +236,7 @@ enum ExecutionSandbox {
         let roots = writableRoots(
             plan: plan,
             providerHomeDirectory: providerHomeDirectory,
+            additionalWritablePaths: additionalWritablePaths,
             canonicalWorkspace: workspace
         )
         // Defense-in-depth: `writableRoots` always seeds at least the workspace
@@ -317,10 +319,17 @@ enum ExecutionSandbox {
     static func writableRoots(
         plan: AgentRuntimeProcessLaunchPlan,
         providerHomeDirectory: String,
+        additionalWritablePaths: [String] = [],
         canonicalWorkspace: String
     ) -> [String] {
         var raw: [String] = [canonicalWorkspace]
         raw.append(contentsOf: plan.directoriesToCreate)
+        // Workspaces can span multiple paths; agents are granted (and prompted to
+        // use) the workspace's additional paths + input dirs via `--add-dir`, and
+        // the in-band policy guard treats them as write roots. Mirror that here so
+        // the kernel boundary doesn't block legitimate writes outside the primary
+        // path. Overly-broad entries are still dropped by the final filter.
+        raw.append(contentsOf: additionalWritablePaths)
 
         let trimmedHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedHome.isEmpty {

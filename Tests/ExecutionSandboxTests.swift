@@ -724,6 +724,38 @@ struct ExecutionSandboxTests {
         #expect(roots.contains("/private/tmp"))
     }
 
+    @Test("Additional workspace paths (multi-path workspaces) are included in the allowlist")
+    func writableRootsIncludeAdditionalWorkspacePaths() {
+        let ws = ExecutionSandbox.canonicalize("/tmp/ws-primary")!
+        let plan = makePlan(currentDirectory: "/tmp/ws-primary", environment: ["HOME": "/tmp/h"])
+        let roots = ExecutionSandbox.writableRoots(
+            plan: plan,
+            providerHomeDirectory: "",
+            additionalWritablePaths: ["/tmp/ws-secondary", "/tmp/inputs/data"],
+            canonicalWorkspace: ws
+        )
+        #expect(roots.contains(ws))
+        #expect(roots.contains("/private/tmp/ws-secondary"))
+        #expect(roots.contains("/private/tmp/inputs/data"))
+    }
+
+    @Test("decide() wraps a multi-path workspace with every path in the writable set")
+    func decideIncludesAdditionalWorkspacePaths() {
+        guard FileManager.default.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
+        let decision = ExecutionSandbox.decide(
+            plan: makePlan(currentDirectory: "/tmp/ws-primary"),
+            providerHomeDirectory: "",
+            additionalWritablePaths: ["/tmp/ws-secondary"],
+            settings: ExecutionSandboxSettings(enforcement: .bestEffort)
+        )
+        guard case .applied(_, let roots) = decision else {
+            Issue.record("Expected .applied, got \(decision)")
+            return
+        }
+        #expect(roots.contains("/private/tmp/ws-primary"))
+        #expect(roots.contains("/private/tmp/ws-secondary"))
+    }
+
     @Test("Overly broad roots (e.g. a provider home or TMPDIR of '/') are dropped from the allowlist")
     func writableRootsExcludeOverlyBroadSources() {
         let ws = ExecutionSandbox.canonicalize("/tmp/ws")!

@@ -69,9 +69,14 @@ final class AgentRuntimeProcessRunner {
     ) -> SandboxedPlanOutcome {
         let plan = adapter.makeProcessLaunchPlan(context: context)
         let settings = ExecutionSandboxSettings.current(permissionPolicy: context.permissionPolicy)
+        // Multi-path workspaces: the agent is granted the workspace's additional
+        // paths + input dirs (same set passed to providers via `--add-dir` and
+        // honored by the in-band policy guard), so include them in the sandbox's
+        // writable allowlist or the kernel would block legitimate writes.
         let decision = ExecutionSandbox.decide(
             plan: plan,
             providerHomeDirectory: context.providerHomeDirectory,
+            additionalWritablePaths: Self.runtimeAdditionalPaths(for: context.task),
             settings: settings
         )
         let taskID = context.task.id

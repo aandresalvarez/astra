@@ -68,6 +68,15 @@ All phases implemented and tested.
   - The `@AppStorage` architecture-fitness ratchet was bumped 125 → 129 for the
     three new sandbox settings (user-facing toggles following the existing
     pattern).
+- **Multi-path workspace support (2026-06-06).** A workspace can span multiple
+  paths (`Workspace.additionalPaths`) plus input directories; the agent is
+  granted these via `--add-dir`, told about them in the prompt, and the in-band
+  `AgentRuntimePolicyGuard` already treats `[workspacePath] + additionalPaths` as
+  write roots. The sandbox now mirrors that: `decide(...)` /  `writableRoots(...)`
+  take `additionalWritablePaths`, and `AgentRuntimeProcessRunner.sandboxedPlan`
+  passes `runtimeAdditionalPaths(for:)` (the same set fed to providers), so the
+  kernel boundary no longer blocks legitimate writes outside the primary path.
+  Overly-broad entries are still dropped by `forbiddenWritableRoots`.
 - **Phase 2 — done.** `AgentRuntimeProcessRunner.sandboxedPlan(...)` wraps the
   launch plan at the single chokepoint, audits every decision
   (`sandbox.applied` / `skipped` / `fallback` / `failed`), and defaults to
