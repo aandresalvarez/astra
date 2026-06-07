@@ -301,7 +301,10 @@ struct ArchitectureFitnessTests {
                 swiftFiles(under: root.appendingPathComponent("ASTRACore"))
         )
 
-        #expect(count <= 125, "Prefer settings snapshots or stores over new direct @AppStorage reads. Current count: \(count)")
+        // Ratchet bumped 125 -> 129 for the execution-sandbox settings
+        // (sandboxEnforcement / sandboxAllowNetwork / sandboxLayerNativeProviders),
+        // which are user-facing toggles following the existing SettingsView pattern.
+        #expect(count <= 129, "Prefer settings snapshots or stores over new direct @AppStorage reads. Current count: \(count)")
     }
 
     @Test("Repository protection artifacts stay wired")
