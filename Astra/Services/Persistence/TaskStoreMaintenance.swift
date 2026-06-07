@@ -71,8 +71,16 @@ enum TaskStoreMaintenance {
 
         var removed = 0
         for (_, duplicates) in groups where duplicates.count > 1 {
-            // Keep the earliest import; delete the rest.
-            let sorted = duplicates.sorted { $0.createdAt < $1.createdAt }
+            // Keep one copy, delete the rest. Prefer a pinned task (user-curated)
+            // so dedup never drops a pin in favour of an unpinned twin, then the
+            // earliest import, then a stable id tiebreaker — imported sessions
+            // overwrite createdAt with the session start time, so ties are common
+            // and the survivor must be deterministic.
+            let sorted = duplicates.sorted { lhs, rhs in
+                if lhs.isPinned != rhs.isPinned { return lhs.isPinned }
+                if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
             for task in sorted.dropFirst() {
                 modelContext.delete(task)
                 removed += 1

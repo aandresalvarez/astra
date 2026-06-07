@@ -56,7 +56,9 @@ struct TaskHygieneTests {
                        "can you read what is in this folder?",
                        "how do I run the tests",
                        // Must NOT prefix-match the "how are you" probe phrase.
-                       "how are you going to fix the CI pipeline?"] {
+                       "how are you going to fix the CI pipeline?",
+                       // Slash commands are intentional even when short.
+                       "/tool", "/recap"] {
             #expect(
                 !TaskConversationSignal.isLowSignalConversation(goal: phrase, userMessages: [phrase]),
                 "expected substantive: \(phrase)"
@@ -139,6 +141,18 @@ struct TaskHygieneTests {
         withPlan.status = .draft
         withPlan.acceptanceCriteria = ["Produces a report"]
         #expect(!TaskHygiene.isPrunableAbandonedDraft(withPlan, olderThan: 0, now: stale(withPlan)))
+
+        // Programmatic intent: a template-chain main task held as .draft until
+        // its before-task completes (WorkspaceCommandService) — no conversation.
+        let templated = AgentTask(title: "Template main", goal: "Run the template")
+        templated.status = .draft
+        templated.templateID = UUID()
+        #expect(!TaskHygiene.isPrunableAbandonedDraft(templated, olderThan: 0, now: stale(templated)))
+
+        let chained = AgentTask(title: "Chained phase", goal: "Second phase")
+        chained.status = .draft
+        chained.chainedFromID = UUID()
+        #expect(!TaskHygiene.isPrunableAbandonedDraft(chained, olderThan: 0, now: stale(chained)))
     }
 
     @Test("Drafts whose only content is conversation history are never pruned")

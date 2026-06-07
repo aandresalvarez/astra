@@ -657,7 +657,7 @@ final class TaskLifecycleCoordinator {
         let count = SessionScanner.importSessions(sessions, into: workspace, modelContext: modelContext)
         guard count > 0 else { return }
         AppLogger.audit(.workspaceImported, category: "App", fields: [
-            "previous_thread_count": String(count),
+            "imported_session_count": String(count),
             "workspace_id": workspace.id.uuidString
         ])
     }

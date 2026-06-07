@@ -109,6 +109,11 @@ enum TaskConversationSignal {
         if userMessages.count >= 2 { return false }
 
         let source = userMessages.first ?? goal
+        // Slash commands are intentional even when short ("/tool", "/recap") —
+        // normalisation strips the leading "/" and would otherwise flag them as
+        // sub-5-char noise, so the conversation could be dropped before a second
+        // turn. Keep them.
+        if source.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") { return false }
         let normalized = normalize(source)
         if normalized.isEmpty { return true }
         if normalized.count < lowSignalMaxCharacters { return true }
@@ -200,13 +205,24 @@ enum TaskHygiene {
     /// criteria. Programmatic intent drafts ("Address PR comments", app-intent
     /// routes, approved-but-unrun plans) all carry at least one of these.
     static func hasRecoverableContent(_ task: AgentTask) -> Bool {
+        // Authored content: conversation, attachments, plan acceptance.
         if !task.draftMessages.isEmpty { return true }
         if !task.inputs.isEmpty { return true }
         if !task.acceptanceCriteria.isEmpty { return true }
         // Any recorded history. A queued task moved back to draft for editing
         // keeps its turns in TaskEvents (user.message), not draftMessages, and
-        // pruning would cascade-delete those events, runs, and artifacts. Empty
-        // greeting husks have no events, so this never blocks husk cleanup.
-        return !task.events.isEmpty
+        // pruning would cascade-delete those events, runs, and artifacts.
+        if !task.events.isEmpty { return true }
+        // Programmatic intent. A draft that is part of a template chain, a fork,
+        // or a schedule carries real intended work even with no conversation yet
+        // — e.g. the main task of a before/after template is held as `.draft`
+        // until its before-task completes (WorkspaceCommandService).
+        if task.templateID != nil { return true }
+        if task.chainedFromID != nil { return true }
+        if task.forkedFromID != nil { return true }
+        if task.originScheduleID != nil { return true }
+        if !task.chainedGoal.isEmpty { return true }
+        // Empty greeting husks have none of the above, so cleanup is unaffected.
+        return false
     }
 }
