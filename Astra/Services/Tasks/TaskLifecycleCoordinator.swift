@@ -649,12 +649,15 @@ final class TaskLifecycleCoordinator {
     }
 
     func importSessionsIfNeeded(for workspace: Workspace) {
-        guard workspace.tasks.isEmpty else { return }
+        // No longer gated on an empty workspace: `importSessions` is idempotent
+        // (skips sessions already imported by `sessionId`), so re-running is safe
+        // and picks up new sessions without duplicating existing cards.
         let sessions = SessionScanner.discoverSessions(workspacePath: workspace.primaryPath)
         guard !sessions.isEmpty else { return }
         let count = SessionScanner.importSessions(sessions, into: workspace, modelContext: modelContext)
+        guard count > 0 else { return }
         AppLogger.audit(.workspaceImported, category: "App", fields: [
-            "previous_thread_count": String(count),
+            "imported_session_count": String(count),
             "workspace_id": workspace.id.uuidString
         ])
     }
@@ -741,6 +744,10 @@ final class TaskLifecycleCoordinator {
 
     private static func shouldBackfillGeneratedTitle(_ task: AgentTask) -> Bool {
         guard task.status != .running else { return false }
+
+        // Drafts never appear on the board (they're in-composition plumbing), so
+        // don't spend tokens fabricating titles for them.
+        guard task.status != .draft else { return false }
 
         let title = task.title.trimmingCharacters(in: .whitespacesAndNewlines)
         let goal = task.goal.trimmingCharacters(in: .whitespacesAndNewlines)

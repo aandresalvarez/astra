@@ -308,7 +308,10 @@ struct WorkspaceHomeContainerView: View {
     var body: some View {
         WorkspaceHomeView(
             workspace: workspace,
-            tasks: tasks,
+            // Enforce the board invariant at the view layer: a card is delegated
+            // work, so drafts (in-composition chats) are never surfaced. A task
+            // appears here the moment it's queued/run.
+            tasks: tasks.filter { !TaskHygiene.isHiddenFromBoard($0) },
             onCreateTask: onCreateTask,
             onOpenTask: onOpenTask,
             onDeleteTask: onDeleteTask,
