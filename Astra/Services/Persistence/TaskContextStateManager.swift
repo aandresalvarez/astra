@@ -203,6 +203,11 @@ struct TaskContextState: Codable, Sendable, Equatable {
     var correctiveWork: [CorrectiveWorkSummary]?
     var sourcePointers: [SourcePointer]
     var nextLikelyAction: String?
+    /// Recent follow-up user messages kept verbatim so mid-conversation
+    /// instructions survive past the transcript window. Derived from durable
+    /// user.message events; the first message is excluded (pinned as
+    /// startingRequest).
+    var standingInstructions: [ContextFact]?
     var turns: [Turn]
     var updatedAt: String
 }
@@ -255,6 +260,8 @@ enum TaskContextStateManager {
     private static let maxTurns = 12
     private static let maxListItems = 20
     private static let maxPromptTurns = 4
+    private static let maxStandingInstructions = 8
+    private static let standingInstructionCharacterLimit = 280
     private static let promptBlockCharacterLimit = 6_000
 
     private struct LegacyTaskContextState: Decodable {
@@ -420,6 +427,12 @@ enum TaskContextStateManager {
         }
         appendFactList("Constraints", state.constraints, to: &lines, limit: 6)
         appendFactList("Acceptance criteria", state.acceptanceCriteria, to: &lines, limit: 6)
+        appendFactList(
+            "Standing user instructions (recent follow-up directives; treat as binding unless superseded)",
+            state.standingInstructions ?? [],
+            to: &lines,
+            limit: maxStandingInstructions
+        )
         appendValidationContract(state.validationContract, to: &lines, limit: 8)
         if let testCommand = state.testCommand, !testCommand.isEmpty {
             lines.append("- Test command: \(boundedInline(testCommand, maxCharacters: 320))")
@@ -513,6 +526,7 @@ enum TaskContextStateManager {
         }
         appendMarkdownFacts("Constraints", state.constraints, to: &parts)
         appendMarkdownFacts("Acceptance Criteria", state.acceptanceCriteria, to: &parts)
+        appendMarkdownFacts("Standing User Instructions", state.standingInstructions ?? [], to: &parts)
         appendMarkdownValidationContract(state.validationContract, to: &parts)
         if let testCommand = state.testCommand, !testCommand.isEmpty {
             parts.append("")
@@ -594,6 +608,7 @@ enum TaskContextStateManager {
             correctiveWork: nil,
             sourcePointers: [sourcePointer(kind: "task", id: task.id.uuidString, summary: "Task context")],
             nextLikelyAction: nil,
+            standingInstructions: nil,
             turns: [],
             updatedAt: timestamp(Date())
         )
@@ -657,6 +672,8 @@ enum TaskContextStateManager {
         state.acceptanceCriteria = task.acceptanceCriteria.map {
             contextFact($0, sourcePointers: [sourcePointer(kind: "task", id: task.id.uuidString, summary: "Task acceptance criterion")])
         }
+        let standing = standingUserInstructions(for: task)
+        state.standingInstructions = standing.isEmpty ? nil : standing
         state.testCommand = normalizedTestCommand(task)
         state.decisionFacts = decisionFacts(for: state, task: task, planState: planState)
         state.blockerFacts = blockerFacts(for: task, planBlockers: planBlockers, eventBlockers: eventBlockers)
@@ -840,6 +857,7 @@ enum TaskContextStateManager {
             correctiveWork: nil,
             sourcePointers: sourcePointers,
             nextLikelyAction: legacy.nextLikelyAction,
+            standingInstructions: nil,
             turns: legacy.turns,
             updatedAt: legacy.updatedAt
         )
@@ -1522,6 +1540,62 @@ enum TaskContextStateManager {
             .sorted { $0.timestamp > $1.timestamp }
             .prefix(6)
             .flatMap { questionSentences(in: $0.payload) }
+    }
+
+    /// The most recent follow-up user messages, kept close to as-typed (whitespace
+    /// collapsed and length-capped to a single compact line), so a constraint or
+    /// course-correction stated mid-conversation survives past the short transcript
+    /// window even after it is never promoted into a structured constraint. The
+    /// first user message is excluded (already pinned as startingRequest). Pure
+    /// acknowledgements are trimmed as noise; everything else is retained for the
+    /// model to weigh.
+    @MainActor
+    private static func standingUserInstructions(for task: AgentTask) -> [TaskContextState.ContextFact] {
+        let userMessages = task.events
+            .filter { $0.type == "user.message" || $0.type == TaskPlanConversationEventTypes.userMessage }
+            .sorted { $0.timestamp < $1.timestamp }
+        guard userMessages.count > 1 else { return [] }
+
+        var facts: [TaskContextState.ContextFact] = []
+        var seen = Set<String>()
+        // Most recent first so the newest follow-ups win the bounded slots.
+        for event in userMessages.dropFirst().reversed() {
+            // Single bound: whitespace-collapse + length cap for a compact capsule
+            // line. Built directly rather than via contextFact() to avoid a second
+            // (redundant) bounding pass.
+            let text = boundedInline(event.payload, maxCharacters: standingInstructionCharacterLimit)
+            guard !text.isEmpty, !isLowSignalAcknowledgement(text) else { continue }
+            guard seen.insert(text.lowercased()).inserted else { continue }
+            facts.append(TaskContextState.ContextFact(
+                text: text,
+                sourcePointers: [eventSource(event, summary: "User follow-up instruction")],
+                confidence: "follow_up"
+            ))
+            if facts.count >= maxStandingInstructions { break }
+        }
+        return facts.reversed()
+    }
+
+    /// A message is treated as a bare acknowledgement only when *every* word is a
+    /// filler/ack token (e.g. "ok", "ok proceed", "sounds good"). Any non-filler
+    /// word keeps the message — so "proceed with the CSV format" is retained. This
+    /// trims noise; it does not try to detect or classify constraints. Bare
+    /// affirmations/negations ("yes", "no", ...) are deliberately NOT filler — a
+    /// lone "no" is often a meaningful course-correction (rejecting the prior
+    /// approach), which is exactly what this feature must not drop.
+    private static func isLowSignalAcknowledgement(_ text: String) -> Bool {
+        let tokens = text
+            .lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+        guard !tokens.isEmpty else { return true }
+        let fillerWords: Set<String> = [
+            "ok", "okay", "k", "kk", "thanks", "thank", "you", "ty",
+            "proceed", "continue", "go", "ahead", "do", "it",
+            "sure", "great", "perfect", "nice", "cool", "done", "lgtm", "please",
+            "now", "then", "sounds", "good", "sg", "ack", "got", "fine"
+        ]
+        return tokens.allSatisfy { fillerWords.contains($0) }
     }
 
     private static func inferredMode(
