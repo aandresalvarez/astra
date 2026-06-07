@@ -35,11 +35,16 @@ final class TaskLifecycleCoordinator {
         }
     }
 
-    func runSingleTask(_ task: AgentTask) {
+    /// Returns the continuation `Task` so callers (notably tests) can await the
+    /// run to fully drain before tearing down the model container. The handle is
+    /// `@discardableResult` — production callers ignore it and behaviour is
+    /// unchanged.
+    @discardableResult
+    func runSingleTask(_ task: AgentTask) -> Task<Void, Never> {
         AppLogger.audit(.taskStarted, category: "UI", taskID: task.id, fields: [
             "source": "manual_run"
         ])
-        Task {
+        return Task {
             await taskQueue.executeTask(task, modelContext: modelContext)
             AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
                 "status": task.status.rawValue
@@ -62,7 +67,11 @@ final class TaskLifecycleCoordinator {
         TaskRunLifecycleService.persist(summary: summary, modelContext: modelContext)
     }
 
-    func retryTask(_ task: AgentTask) {
+    /// Returns the continuation `Task` (the follow-up run, or the delegated
+    /// `runSingleTask` handle) so callers can await the run to fully drain.
+    /// `@discardableResult` — production callers ignore it.
+    @discardableResult
+    func retryTask(_ task: AgentTask) -> Task<Void, Never>? {
         let retryFollowUpMessage = Self.latestRetryableFollowUpMessage(for: task)
         let retryMode = retryFollowUpMessage == nil ? "initial_task" : "latest_follow_up"
         AppLogger.audit(.taskRetried, category: "UI", taskID: task.id, fields: [
@@ -99,7 +108,7 @@ final class TaskLifecycleCoordinator {
             AppLogger.audit(.taskStarted, category: "UI", taskID: task.id, fields: [
                 "source": "retry_latest_follow_up"
             ])
-            Task {
+            return Task {
                 let didStart = await taskQueue.continueSession(
                     task: task,
                     message: retryFollowUpMessage,
@@ -112,7 +121,7 @@ final class TaskLifecycleCoordinator {
                 ])
             }
         } else {
-            runSingleTask(task)
+            return runSingleTask(task)
         }
     }
 

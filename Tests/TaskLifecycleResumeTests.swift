@@ -140,10 +140,16 @@ struct TaskLifecycleResumeTests {
         ))
         try harness.context.save()
 
-        coordinator.retryTask(task)
+        // Await the retry continuation to fully drain. The continuation is a
+        // detached Task that keeps touching `task` (the trailing audit) after the
+        // worker finishes; without awaiting it, the harness — and its in-memory
+        // ModelContainer — can be torn down mid-continuation, destroying the model
+        // it still references and crashing the whole test process under suite
+        // parallelism. Awaiting the handle also guarantees the fake provider has
+        // written `argsFile` before we read it.
+        await coordinator.retryTask(task)?.value
 
-        let completed = await harness.waitUntil(task: task) { $0.status == .completed }
-        #expect(completed)
+        #expect(task.status == .completed)
         let rawArgs = try String(contentsOf: argsFile, encoding: .utf8)
         #expect(rawArgs.contains("User's follow-up request:\ncheck my open prs in github"))
         #expect(!rawArgs.contains("User's follow-up request:\nhi , how are you ?"))
@@ -173,8 +179,9 @@ struct TaskLifecycleResumeTests {
         ))
         try env.context.save()
 
-        env.coordinator.retryTask(task)
-        await Task.yield()
+        // Drain the continuation deterministically (with a zero-size pool it
+        // returns immediately without launching a provider).
+        await env.coordinator.retryTask(task)?.value
         AppLogger.flushForTesting()
 
         #expect(task.status == .queued)
