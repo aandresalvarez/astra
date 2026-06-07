@@ -1148,6 +1148,14 @@ struct WorkspaceCanvasPanelView: View {
             return
         }
         TaskPlanService.recordUpdated(sanitized, task: selectedTask, modelContext: modelContext)
+        // Editing the plan goal in the canvas is a deliberate redefinition, so keep
+        // the user-facing task goal in sync (mirrors the chat approval path). This
+        // prevents the capsule's objective from silently diverging from task.goal.
+        // sanitizedPlan already guarantees goal is trimmed and non-empty.
+        if selectedTask.goal != sanitized.goal {
+            selectedTask.goal = sanitized.goal
+            selectedTask.updatedAt = Date()
+        }
         try? modelContext.save()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: selectedTask.workspace, modelContext: modelContext)
         draftPlan = sanitized

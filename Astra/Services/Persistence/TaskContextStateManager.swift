@@ -203,10 +203,11 @@ struct TaskContextState: Codable, Sendable, Equatable {
     var correctiveWork: [CorrectiveWorkSummary]?
     var sourcePointers: [SourcePointer]
     var nextLikelyAction: String?
-    /// Recent follow-up user messages kept verbatim so mid-conversation
-    /// instructions survive past the transcript window. Derived from durable
-    /// user.message events; the first message is excluded (pinned as
-    /// startingRequest).
+    /// Set when an unreconciled plan goal diverges from the task goal; surfaced in
+    /// the capsule so the drift cannot silently re-anchor the objective.
+    var objectiveDivergenceNote: String?
+    /// Recent follow-up user messages, kept close to as-typed, so mid-conversation
+    /// instructions survive past the transcript window (first message excluded).
     var standingInstructions: [ContextFact]?
     var turns: [Turn]
     var updatedAt: String
@@ -425,6 +426,9 @@ enum TaskContextStateManager {
         if let approvedGoal = state.objective.approvedGoal, !approvedGoal.isEmpty {
             lines.append("- Approved goal: \(boundedInline(approvedGoal, maxCharacters: 320))")
         }
+        if let divergence = state.objectiveDivergenceNote, !divergence.isEmpty {
+            lines.append("- Objective reconciliation: \(boundedInline(divergence, maxCharacters: 320))")
+        }
         appendFactList("Constraints", state.constraints, to: &lines, limit: 6)
         appendFactList("Acceptance criteria", state.acceptanceCriteria, to: &lines, limit: 6)
         appendFactList(
@@ -524,6 +528,9 @@ enum TaskContextStateManager {
         if let approvedGoal = state.approvedGoal, !approvedGoal.isEmpty {
             parts.append("- Approved goal: \(approvedGoal)")
         }
+        if let divergence = state.objectiveDivergenceNote, !divergence.isEmpty {
+            parts.append("- Objective reconciliation: \(divergence)")
+        }
         appendMarkdownFacts("Constraints", state.constraints, to: &parts)
         appendMarkdownFacts("Acceptance Criteria", state.acceptanceCriteria, to: &parts)
         appendMarkdownFacts("Standing User Instructions", state.standingInstructions ?? [], to: &parts)
@@ -608,6 +615,7 @@ enum TaskContextStateManager {
             correctiveWork: nil,
             sourcePointers: [sourcePointer(kind: "task", id: task.id.uuidString, summary: "Task context")],
             nextLikelyAction: nil,
+            objectiveDivergenceNote: nil,
             standingInstructions: nil,
             turns: [],
             updatedAt: timestamp(Date())
@@ -625,12 +633,21 @@ enum TaskContextStateManager {
             state.startingRequest,
             task.goal
         )
+        // Only adopt the plan goal as the objective when reconciled (plan approved/
+        // executing/completed, or goals match); otherwise keep task.goal and note it.
+        let trimmedPlanGoal = (planState.plan?.goal ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let planGoalReconciled = trimmedPlanGoal.isEmpty
+            || [.approved, .executing, .completed].contains(planState.lifecycleStatus)
+            || trimmedPlanGoal.caseInsensitiveCompare(task.goal.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame
         state.currentObjective = firstNonEmpty(
-            planState.plan?.goal,
+            planGoalReconciled ? planState.plan?.goal : nil,
             state.approvedGoal,
             task.goal,
             state.startingRequest
         )
+        state.objectiveDivergenceNote = (!trimmedPlanGoal.isEmpty && !planGoalReconciled)
+            ? "Draft plan goal differs from the task goal; using the task goal as the objective until reconciled. Draft plan goal: \(boundedInline(trimmedPlanGoal, maxCharacters: 240))"
+            : nil
 
         if let plan = planState.plan {
             switch planState.lifecycleStatus {
@@ -857,6 +874,7 @@ enum TaskContextStateManager {
             correctiveWork: nil,
             sourcePointers: sourcePointers,
             nextLikelyAction: legacy.nextLikelyAction,
+            objectiveDivergenceNote: nil,
             standingInstructions: nil,
             turns: legacy.turns,
             updatedAt: legacy.updatedAt
@@ -1542,13 +1560,10 @@ enum TaskContextStateManager {
             .flatMap { questionSentences(in: $0.payload) }
     }
 
-    /// The most recent follow-up user messages, kept close to as-typed (whitespace
-    /// collapsed and length-capped to a single compact line), so a constraint or
-    /// course-correction stated mid-conversation survives past the short transcript
-    /// window even after it is never promoted into a structured constraint. The
-    /// first user message is excluded (already pinned as startingRequest). Pure
-    /// acknowledgements are trimmed as noise; everything else is retained for the
-    /// model to weigh.
+    /// Recent follow-up user messages, kept close to as-typed (whitespace-collapsed,
+    /// length-capped), so a mid-conversation constraint survives past the transcript
+    /// window. Excludes the first message (pinned as startingRequest) and bare
+    /// acknowledgements; everything else is retained for the model to weigh.
     @MainActor
     private static func standingUserInstructions(for task: AgentTask) -> [TaskContextState.ContextFact] {
         let userMessages = task.events
@@ -1560,9 +1575,7 @@ enum TaskContextStateManager {
         var seen = Set<String>()
         // Most recent first so the newest follow-ups win the bounded slots.
         for event in userMessages.dropFirst().reversed() {
-            // Single bound: whitespace-collapse + length cap for a compact capsule
-            // line. Built directly rather than via contextFact() to avoid a second
-            // (redundant) bounding pass.
+            // Bound once (built directly, not via contextFact, to avoid double-bounding).
             let text = boundedInline(event.payload, maxCharacters: standingInstructionCharacterLimit)
             guard !text.isEmpty, !isLowSignalAcknowledgement(text) else { continue }
             guard seen.insert(text.lowercased()).inserted else { continue }
@@ -1576,13 +1589,9 @@ enum TaskContextStateManager {
         return facts.reversed()
     }
 
-    /// A message is treated as a bare acknowledgement only when *every* word is a
-    /// filler/ack token (e.g. "ok", "ok proceed", "sounds good"). Any non-filler
-    /// word keeps the message — so "proceed with the CSV format" is retained. This
-    /// trims noise; it does not try to detect or classify constraints. Bare
-    /// affirmations/negations ("yes", "no", ...) are deliberately NOT filler — a
-    /// lone "no" is often a meaningful course-correction (rejecting the prior
-    /// approach), which is exactly what this feature must not drop.
+    /// True only when *every* word is a filler/ack token (e.g. "ok", "ok proceed").
+    /// Any non-filler word keeps the message. Bare yes/no are deliberately NOT filler
+    /// — a lone "no" is often a real course-correction this feature must not drop.
     private static func isLowSignalAcknowledgement(_ text: String) -> Bool {
         let tokens = text
             .lowercased()
