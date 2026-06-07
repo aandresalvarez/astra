@@ -131,15 +131,60 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
 
         var checks = [cliStatus.check]
         if cliStatus.isReady {
-            checks.append(RuntimeReadinessCheck(
-                id: "cursor-account",
-                title: "Cursor account",
-                detail: "CLI is available. Use `cursor-agent status` for detailed authentication diagnostics.",
-                state: .ready,
-                remediation: nil
-            ))
+            if configuration.scope == .availability {
+                checks.append(RuntimeReadinessCheck(
+                    id: "cursor-account",
+                    title: "Cursor account",
+                    detail: "CLI is available. Run a readiness check to verify login status.",
+                    state: .ready,
+                    remediation: nil
+                ))
+            } else if let executable = cliStatus.executable {
+                checks.append(await checkCursorAuth(executable: executable, probes: probes))
+            }
         }
         return RuntimeReadinessReport(checks: checks)
+    }
+
+    private func checkCursorAuth(
+        executable: String,
+        probes: RuntimeReadinessProbeContext
+    ) async -> RuntimeReadinessCheck {
+        let result = await probes.run(path: executable, args: ["status"])
+        guard result.isSuccess else {
+            return RuntimeReadinessCheck(
+                id: "cursor-account",
+                title: "Cursor account",
+                detail: RuntimeReadinessDiagnostics.detail(
+                    from: result,
+                    fallback: "Cursor auth status did not pass."
+                ),
+                state: .blocked,
+                remediation: CommonCLIPrerequisites.cursor.authHint
+            )
+        }
+
+        let output = [result.stdout, result.stderr].joined(separator: "\n")
+        if RuntimeReadinessDiagnostics.showsAuthenticatedSession(output) {
+            return RuntimeReadinessCheck(
+                id: "cursor-account",
+                title: "Cursor account",
+                detail: "Cursor reports an authenticated session.",
+                state: .ready,
+                remediation: nil
+            )
+        }
+
+        return RuntimeReadinessCheck(
+            id: "cursor-account",
+            title: "Cursor account",
+            detail: RuntimeReadinessDiagnostics.detail(
+                from: result,
+                fallback: "Cursor responded, but no authenticated session was detected."
+            ),
+            state: .blocked,
+            remediation: CommonCLIPrerequisites.cursor.authHint
+        )
     }
 
     func modelAvailabilityCheck(configuration: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {

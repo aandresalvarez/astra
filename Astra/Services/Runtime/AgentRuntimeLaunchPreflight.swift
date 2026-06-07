@@ -6,6 +6,8 @@ struct AgentRuntimeLaunchPreflightResult: Sendable, Equatable {
     enum Status: String, Sendable {
         case taskFolderPrepared
         case taskFolderCreateFailed
+        case runtimeReadinessPassed
+        case runtimeReadinessFailed
         case capabilityRuntimeResourcesPassed
         case capabilityRuntimeResourcesMissing
         case connectorPreflightPassed
@@ -20,9 +22,9 @@ struct AgentRuntimeLaunchPreflightResult: Sendable, Equatable {
 
     var didPass: Bool {
         switch status {
-        case .taskFolderPrepared, .capabilityRuntimeResourcesPassed, .connectorPreflightPassed:
+        case .taskFolderPrepared, .runtimeReadinessPassed, .capabilityRuntimeResourcesPassed, .connectorPreflightPassed:
             return true
-        case .taskFolderCreateFailed, .capabilityRuntimeResourcesMissing, .connectorPreflightFailed:
+        case .taskFolderCreateFailed, .runtimeReadinessFailed, .capabilityRuntimeResourcesMissing, .connectorPreflightFailed:
             return false
         }
     }
@@ -201,6 +203,72 @@ enum AgentRuntimeLaunchPreflight {
         ).didPass
     }
 
+    static func preflightRuntimeReadinessBeforeLaunchResult(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String,
+        report: RuntimeReadinessReport
+    ) -> AgentRuntimeLaunchPreflightResult {
+        let blockedChecks = report.checks.filter { $0.state == .blocked }
+        var fields: [String: String] = [
+            "source": "runtime_readiness_preflight",
+            "phase": phase,
+            "runtime": task.resolvedRuntimeID.rawValue,
+            "readiness_state": report.state.rawValue,
+            "blocked_check_count": String(blockedChecks.count)
+        ]
+
+        guard let blocked = blockedChecks.first else {
+            fields["diagnostic_result"] = AgentRuntimeLaunchPreflightResult.Status.runtimeReadinessPassed.rawValue
+            AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: fields, level: .debug)
+            return AgentRuntimeLaunchPreflightResult(
+                status: .runtimeReadinessPassed,
+                phase: phase,
+                reason: nil,
+                detail: nil,
+                auditFields: fields
+            )
+        }
+
+        fields["diagnostic_result"] = AgentRuntimeLaunchPreflightResult.Status.runtimeReadinessFailed.rawValue
+        fields["blocked_check_id"] = blocked.id
+        fields["blocked_check_title"] = blocked.title
+        let message = runtimeReadinessFailureMessage(blocked)
+        finishPreLaunchFailure(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            reason: "runtime_readiness_failed",
+            payload: message
+        )
+        return AgentRuntimeLaunchPreflightResult(
+            status: .runtimeReadinessFailed,
+            phase: phase,
+            reason: "runtime_readiness_failed",
+            detail: blocked.detail,
+            auditFields: fields
+        )
+    }
+
+    static func preflightRuntimeReadinessBeforeLaunch(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String,
+        configuration: RuntimeReadinessConfiguration,
+        readinessService: RuntimeReadinessService = RuntimeReadinessService()
+    ) async -> Bool {
+        let report = await readinessService.check(configuration: configuration)
+        return preflightRuntimeReadinessBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: phase,
+            report: report
+        ).didPass
+    }
+
     static func preflightCapabilitiesBeforeLaunchResult(
         task: AgentTask,
         run: TaskRun,
@@ -342,6 +410,15 @@ enum AgentRuntimeLaunchPreflight {
             phase: phase,
             contextText: contextText
         ).didPass
+    }
+
+    private static func runtimeReadinessFailureMessage(_ check: RuntimeReadinessCheck) -> String {
+        let remediation = check.remediation.map { "\n\n\($0)" } ?? ""
+        return """
+        \(check.title) check failed before the agent ran:
+
+        \(check.detail)\(remediation)
+        """
     }
 
     static func finishPreLaunchFailure(
