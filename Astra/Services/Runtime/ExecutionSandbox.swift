@@ -277,6 +277,22 @@ enum ExecutionSandbox {
         overlyBroadRoots.contains(canonicalRoot)
     }
 
+    /// Canonical roots that must never enter the *writable allowlist*, no matter
+    /// which source produced them (workspace, `directoriesToCreate`,
+    /// `providerHomeDirectory`, `TMPDIR`). A misconfigured provider home or
+    /// `TMPDIR` of `/` would otherwise emit `ROOT_N=/` and make the whole
+    /// filesystem writable while still reporting the sandbox as applied.
+    ///
+    /// This is `overlyBroadRoots` minus the shared temp root: `/private/tmp`
+    /// (canonical form of `/tmp`) is *intentionally* writable for every run, even
+    /// though it is too broad to serve as the workspace anchor.
+    static let forbiddenWritableRoots: Set<String> = overlyBroadRoots.subtracting(["/tmp", "/private/tmp"])
+
+    /// Whether `canonicalRoot` is too broad to grant write access to.
+    static func isForbiddenWritableRoot(_ canonicalRoot: String) -> Bool {
+        forbiddenWritableRoots.contains(canonicalRoot)
+    }
+
     /// Cheap, plan-free prediction of whether `decide(...)` would actually apply
     /// the sandbox for a run anchored on `workspacePath`. The preflight manifest
     /// uses this so the declared `osSandboxed` tier reflects reality —
@@ -311,8 +327,11 @@ enum ExecutionSandbox {
             raw.append(trimmedHome)
         }
 
+        // Only anchor the provider config/cache subpaths on a real home; a home
+        // that is itself an overly broad root (e.g. "/") would just yield junk
+        // top-level paths like "/.claude".
         let home = effectiveHome(plan: plan, providerHomeDirectory: trimmedHome)
-        if !home.isEmpty {
+        if !home.isEmpty, let canonicalHome = canonicalize(home), !isOverlyBroadRoot(canonicalHome) {
             for relative in homeWritableRelativePaths {
                 raw.append((home as NSString).appendingPathComponent(relative))
             }
@@ -323,8 +342,15 @@ enum ExecutionSandbox {
         }
         raw.append("/tmp")
 
+        // Drop any root that is too broad to grant write access to — regardless of
+        // which source produced it — so a misconfigured provider home / TMPDIR / `/`
+        // can never widen the allowlist to most of the filesystem. (`/private/tmp`
+        // is deliberately retained; see `forbiddenWritableRoots`.)
         var seen: Set<String> = []
-        return raw.compactMap { canonicalize($0) }.filter { seen.insert($0).inserted }
+        return raw.compactMap { canonicalize($0) }.filter { canonical in
+            guard !isForbiddenWritableRoot(canonical) else { return false }
+            return seen.insert(canonical).inserted
+        }
     }
 
     /// The HOME the spawned CLI will actually see: an explicit provider home if

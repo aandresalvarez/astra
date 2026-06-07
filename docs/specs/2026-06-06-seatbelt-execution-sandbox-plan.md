@@ -24,7 +24,11 @@ All phases implemented and tested.
     (`ExecutionSandbox.isOverlyBroadRoot`), returning `unsafe_execution_path`
     (fail-closed under strict, fallback under best-effort). Previously such a
     path would emit `.applied` with `ROOT_0=/` — a no-op sandbox that still
-    reported "OS Sandboxed".
+    reported "OS Sandboxed". `writableRoots(...)` additionally drops *any*
+    overly-broad root (`forbiddenWritableRoots`) from the allowlist regardless of
+    source, so a misconfigured `providerHomeDirectory` / `TMPDIR` / dir-to-create
+    of `/` can never widen the allowlist (the shared `/private/tmp` root is
+    deliberately retained).
   - **Failure-path decision coverage.** `sandbox_exec_missing` (via an injected
     `FileManager` stub) and the full `strict→failClosed` / `bestEffort→fallback`
     mapping for every unavailable reason are now tested.

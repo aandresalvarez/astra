@@ -724,6 +724,31 @@ struct ExecutionSandboxTests {
         #expect(roots.contains("/private/tmp"))
     }
 
+    @Test("Overly broad roots (e.g. a provider home or TMPDIR of '/') are dropped from the allowlist")
+    func writableRootsExcludeOverlyBroadSources() {
+        let ws = ExecutionSandbox.canonicalize("/tmp/ws")!
+        let plan = makePlan(
+            currentDirectory: "/tmp/ws",
+            environment: ["HOME": "/tmp/h", "TMPDIR": "/"],          // broad TMPDIR
+            directoriesToCreate: ["/", "/usr"]                       // broad dirs-to-create
+        )
+        let roots = ExecutionSandbox.writableRoots(
+            plan: plan,
+            providerHomeDirectory: "/",                              // broad provider home
+            canonicalWorkspace: ws
+        )
+        // None of the filesystem-spanning roots leak in...
+        #expect(!roots.contains("/"))
+        #expect(!roots.contains("/usr"))
+        #expect(!roots.contains("/private/var"))
+        #expect(roots.allSatisfy { !ExecutionSandbox.isForbiddenWritableRoot($0) })
+        // ...but the legitimate workspace and the shared temp root remain.
+        #expect(roots.contains(ws))
+        #expect(roots.contains("/private/tmp"))
+        // A provider home of "/" yields no junk "/.claude" top-level roots.
+        #expect(!roots.contains("/.claude"))
+    }
+
     @Test("directoriesToCreate entries become writable roots even when outside the workspace")
     func writableRootsDirectoriesToCreate() {
         let ws = ExecutionSandbox.canonicalize("/tmp/ws")!
