@@ -2162,6 +2162,13 @@ struct ContentView: View {
         coordinator.migrateSkillSecrets(skills: skills)
     }
 
+    private func runStoreMaintenanceIfNeeded() {
+        runtime.runStoreMaintenanceIfNeeded(
+            modelContext: modelContext,
+            isUITestingSeededLaunch: isUITestingSeededLaunch
+        )
+    }
+
     private func backfillThreadTitlesIfNeeded() {
         runtime.backfillThreadTitlesIfNeeded(
             coordinator: coordinator,
@@ -2205,6 +2212,10 @@ struct ContentView: View {
         seedTestDataIfNeeded()
         migrateConnectorCredentials()
         migrateSkillSecrets()
+        // Run the destructive store maintenance (draft prune + import dedup)
+        // BEFORE restoring selection, so it can never delete the task that
+        // `restoreWorkspaceSelection` is about to point `selectedTask` at.
+        runStoreMaintenanceIfNeeded()
         restoreWorkspaceSelection()
         refreshMarkdownShelfAvailabilityForSelectedTask()
         refreshQueryShelfAvailabilityForSelectedTask()
