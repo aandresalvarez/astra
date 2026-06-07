@@ -283,6 +283,45 @@ struct TaskContextStateTests {
         #expect(state.nextLikelyAction == "Continue with plan step: Add state file")
     }
 
+    @Test("unreconciled draft plan goal does not re-anchor the objective")
+    func draftPlanGoalDivergenceDoesNotReanchorObjective() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Divergence", primaryPath: root)
+        let task = AgentTask(title: "Goal drift", goal: "Original task goal", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        let draftPlan = TaskPlanPayload(
+            title: "Drifted plan",
+            goal: "Drifted plan goal",
+            steps: [TaskPlanPayloadStep(id: "s1", title: "Do work")]
+        )
+        // Draft only — not approved, and task.goal is not synced to the plan goal.
+        TaskPlanService.recordCreated(draftPlan, task: task, modelContext: context)
+        TaskContextStateManager.refresh(task: task)
+
+        let draftState = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        #expect(draftState.currentObjective == "Original task goal")
+        #expect(draftState.objective.currentObjective == "Original task goal")
+        let note = try #require(draftState.objectiveDivergenceNote)
+        #expect(note.contains("Drifted plan goal"))
+
+        let prompt = try #require(TaskContextStateManager.promptContext(for: task))
+        #expect(prompt.contains("Current objective: Original task goal"))
+        #expect(prompt.contains("Objective reconciliation:"))
+
+        // Approving reconciles the goal: the plan goal becomes authoritative and the note clears.
+        TaskPlanService.recordApproved(draftPlan, task: task, modelContext: context)
+        TaskContextStateManager.refresh(task: task)
+
+        let approvedState = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        #expect(approvedState.currentObjective == "Drifted plan goal")
+        #expect(approvedState.objectiveDivergenceNote == nil)
+    }
+
     @Test("context capsule records validation contract summary")
     func contextCapsuleRecordsValidationContractSummary() throws {
         let root = try temporaryRoot()
@@ -1148,6 +1187,7 @@ struct TaskContextStateTests {
             correctiveWork: nil,
             sourcePointers: [],
             nextLikelyAction: nil,
+            objectiveDivergenceNote: nil,
             turns: [],
             updatedAt: "2026-06-05T00:00:00Z"
         )

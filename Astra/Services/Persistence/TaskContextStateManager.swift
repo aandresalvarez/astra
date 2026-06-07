@@ -203,6 +203,10 @@ struct TaskContextState: Codable, Sendable, Equatable {
     var correctiveWork: [CorrectiveWorkSummary]?
     var sourcePointers: [SourcePointer]
     var nextLikelyAction: String?
+    /// Set when the reconstructed plan goal diverges from the task goal and has
+    /// not been reconciled (synced or approved). Surfaced in the capsule so an
+    /// unreconciled drift cannot silently re-anchor the objective.
+    var objectiveDivergenceNote: String?
     var turns: [Turn]
     var updatedAt: String
 }
@@ -418,6 +422,9 @@ enum TaskContextStateManager {
         if let approvedGoal = state.objective.approvedGoal, !approvedGoal.isEmpty {
             lines.append("- Approved goal: \(boundedInline(approvedGoal, maxCharacters: 320))")
         }
+        if let divergence = state.objectiveDivergenceNote, !divergence.isEmpty {
+            lines.append("- Objective reconciliation: \(boundedInline(divergence, maxCharacters: 320))")
+        }
         appendFactList("Constraints", state.constraints, to: &lines, limit: 6)
         appendFactList("Acceptance criteria", state.acceptanceCriteria, to: &lines, limit: 6)
         appendValidationContract(state.validationContract, to: &lines, limit: 8)
@@ -511,6 +518,9 @@ enum TaskContextStateManager {
         if let approvedGoal = state.approvedGoal, !approvedGoal.isEmpty {
             parts.append("- Approved goal: \(approvedGoal)")
         }
+        if let divergence = state.objectiveDivergenceNote, !divergence.isEmpty {
+            parts.append("- Objective reconciliation: \(divergence)")
+        }
         appendMarkdownFacts("Constraints", state.constraints, to: &parts)
         appendMarkdownFacts("Acceptance Criteria", state.acceptanceCriteria, to: &parts)
         appendMarkdownValidationContract(state.validationContract, to: &parts)
@@ -594,6 +604,7 @@ enum TaskContextStateManager {
             correctiveWork: nil,
             sourcePointers: [sourcePointer(kind: "task", id: task.id.uuidString, summary: "Task context")],
             nextLikelyAction: nil,
+            objectiveDivergenceNote: nil,
             turns: [],
             updatedAt: timestamp(Date())
         )
@@ -610,12 +621,24 @@ enum TaskContextStateManager {
             state.startingRequest,
             task.goal
         )
+        // The plan goal may only become the live objective when it is reconciled
+        // with the task goal: either the plan is approved/executing/completed (the
+        // approval flow syncs task.goal) or the goals already match. An unreconciled
+        // draft plan goal must not silently re-anchor the objective; prefer the task
+        // goal and record a divergence note instead.
+        let trimmedPlanGoal = (planState.plan?.goal ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let planGoalReconciled = trimmedPlanGoal.isEmpty
+            || [.approved, .executing, .completed].contains(planState.lifecycleStatus)
+            || trimmedPlanGoal.caseInsensitiveCompare(task.goal.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame
         state.currentObjective = firstNonEmpty(
-            planState.plan?.goal,
+            planGoalReconciled ? planState.plan?.goal : nil,
             state.approvedGoal,
             task.goal,
             state.startingRequest
         )
+        state.objectiveDivergenceNote = (!trimmedPlanGoal.isEmpty && !planGoalReconciled)
+            ? "Draft plan goal differs from the task goal; using the task goal as the objective until reconciled. Draft plan goal: \(boundedInline(trimmedPlanGoal, maxCharacters: 240))"
+            : nil
 
         if let plan = planState.plan {
             switch planState.lifecycleStatus {
@@ -840,6 +863,7 @@ enum TaskContextStateManager {
             correctiveWork: nil,
             sourcePointers: sourcePointers,
             nextLikelyAction: legacy.nextLikelyAction,
+            objectiveDivergenceNote: nil,
             turns: legacy.turns,
             updatedAt: legacy.updatedAt
         )
