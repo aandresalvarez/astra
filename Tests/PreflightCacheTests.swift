@@ -120,6 +120,21 @@ struct PreflightCacheTests {
         _ = await cache.status(for: CommonCLIPrerequisites.gcloudAuth)   // auth list
         #expect(await cache.cachedCount() == 2, "Different liveness args = different cache slots")
     }
+
+    @Test("auth prerequisite nonzero exit is classified as unauthenticated")
+    func authPrerequisiteNonzeroExitIsClassifiedAsUnauthenticated() async {
+        let runner = AuthFailingRunner()
+        let checker = EnvironmentHealthChecker(runner: runner)
+        let cache = PreflightCache(checker: checker)
+
+        let status = await cache.status(for: CommonCLIPrerequisites.githubAuth)
+
+        guard case .unauthenticated(let detail) = status else {
+            Issue.record("Expected unauthenticated, got \(status)")
+            return
+        }
+        #expect(detail.contains("not logged in"))
+    }
 }
 
 // MARK: - Clock stub
@@ -142,5 +157,19 @@ final class ClockStub: @unchecked Sendable {
     func advance(by seconds: TimeInterval) {
         lock.lock(); defer { lock.unlock() }
         time = time.addingTimeInterval(seconds)
+    }
+}
+
+private actor AuthFailingRunner: BinaryRunner {
+    nonisolated func run(
+        path: String,
+        args: [String],
+        timeout: TimeInterval,
+        environment: [String: String]?
+    ) async -> RunResult {
+        if args.first == "which" {
+            return RunResult.exited(code: 0, stdout: "/opt/bin/gh\n", stderr: "")
+        }
+        return RunResult.exited(code: 1, stdout: "", stderr: "not logged in")
     }
 }

@@ -10,7 +10,6 @@ enum WorkspaceCanvasItem: String, Equatable {
     case markdown
     case browser
     case query
-
     var minWidth: CGFloat {
         switch self {
         case .plan: 400
@@ -19,7 +18,6 @@ enum WorkspaceCanvasItem: String, Equatable {
         case .query: 460
         }
     }
-
     var idealWidth: CGFloat {
         switch self {
         case .plan: 520
@@ -28,7 +26,6 @@ enum WorkspaceCanvasItem: String, Equatable {
         case .query: 640
         }
     }
-
     var maxWidth: CGFloat {
         switch self {
         case .plan: 1040
@@ -37,7 +34,6 @@ enum WorkspaceCanvasItem: String, Equatable {
         case .query: 1180
         }
     }
-
     var title: String {
         switch self {
         case .plan: "Plan"
@@ -46,7 +42,6 @@ enum WorkspaceCanvasItem: String, Equatable {
         case .query: "Query"
         }
     }
-
     var closesWhenDraggedBelowMinimum: Bool {
         self == .markdown
     }
@@ -55,7 +50,6 @@ enum WorkspaceCanvasItem: String, Equatable {
 private enum WorkspaceRightPanel: Equatable {
     case canvas(WorkspaceCanvasItem)
     case context(UUID)
-
     var isContext: Bool {
         if case .context = self { return true }
         return false
@@ -66,7 +60,6 @@ private struct ShelfBoundaryMetrics: Equatable {
     var width: CGFloat = 0
     var isVisible = false
     var isResizing = false
-
     static let hidden = ShelfBoundaryMetrics()
 }
 
@@ -90,7 +83,6 @@ private struct CompactPanelLayoutObserver: View {
     let onWidthChanged: (CGFloat) -> Void
     let onSplitVisibilityChanged: () -> Void
     let onPanelStateChanged: () -> Void
-
     var body: some View {
         Color.clear
             .onAppear {
@@ -122,7 +114,6 @@ private struct CompactPanelLayoutCoordinator: ViewModifier {
     let onWidthChanged: (CGFloat) -> Void
     let onSplitVisibilityChanged: () -> Void
     let onPanelStateChanged: () -> Void
-
     func body(content: Content) -> some View {
         content
             .background {
@@ -191,11 +182,9 @@ struct NewWorkspaceDraft: Equatable {
     var instructions = ""
     var selectedCapabilityIDs: Set<String> = []
     var capabilityConfiguration = OnboardingCapabilityConfiguration()
-
     var trimmedName: String {
         name.trimmingCharacters(in: .whitespacesAndNewlines)
     }
-
     var trimmedInstructions: String {
         instructions.trimmingCharacters(in: .whitespacesAndNewlines)
     }

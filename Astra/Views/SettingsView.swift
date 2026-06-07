@@ -158,7 +158,7 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Technical Readiness") {
+            Section("Default Provider Readiness") {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(alignment: .center, spacing: 12) {
                         readinessSummary
@@ -183,7 +183,7 @@ struct SettingsView: View {
                             }
                         }
                     } else {
-                        Text("Run a readiness check to verify the selected runtime, authentication, provider route, and required local tools.")
+                        Text("Run a readiness check to verify the default provider, authentication, provider route, and required local tools.")
                             .font(Stanford.caption(12))
                             .foregroundStyle(.secondary)
                     }
@@ -399,6 +399,7 @@ struct SettingsView: View {
         case .antigravityCLI: "sparkles"
         case .codexCLI: "curlybraces.square"
         case .cursorCLI: "cursorarrow.rays"
+        case .openCodeCLI: "chevron.left.forwardslash.chevron.right"
         default: "terminal"
         }
     }

@@ -705,6 +705,30 @@ struct AgentPolicyTests {
         #expect(adapter.providerGrantStrings(for: grants) == ["shell(node:*)", "Read"])
     }
 
+    @Test("Brokered provider adapters keep scoped shell grants visible")
+    func brokeredProviderAdaptersKeepScopedShellGrantsVisible() {
+        let grants: [PermissionGrant] = [
+            .shellCommand(executable: "gh", pattern: "pr list *")
+        ]
+        let runtimes: [AgentRuntimeID] = [
+            .antigravityCLI,
+            .codexCLI,
+            .cursorCLI,
+            .openCodeCLI
+        ]
+
+        for runtime in runtimes {
+            #expect(
+                PermissionBroker.providerGrantStrings(for: grants, runtime: runtime) == ["shell(gh:pr list *)"],
+                "\(runtime.rawValue) should keep scoped shell approvals visible to ASTRA's broker"
+            )
+            #expect(
+                PermissionBroker.providerRuntimeGrantStrings(for: grants, runtime: runtime).contains("shell(gh:pr list *)"),
+                "\(runtime.rawValue) should replay scoped shell approvals on runtime retries"
+            )
+        }
+    }
+
     @Test("Launch execution policy uses rendered provider tools")
     func launchExecutionPolicyUsesRenderedProviderTools() {
         let adapter = ClaudePolicyAdapter()
@@ -1218,6 +1242,44 @@ struct RunPermissionManifestTests {
         #expect(manifestEvent?.payload.contains("\"fetch_copilot_cli_documentation\"") == true)
     }
 
+    @Test("Preflight manifest includes task folder as runtime path when workspace path is code root")
+    func preflightManifestIncludesTaskFolderAsRuntimePathWhenWorkspacePathIsCodeRoot() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let durableWorkspace = "/tmp/astra-dev-workspaces/artana"
+        let codeRoot = "/tmp/astra-code-root"
+        let workspace = Workspace(name: "Artana", primaryPath: durableWorkspace)
+        workspace.additionalPaths = [codeRoot]
+        let task = AgentTask(
+            title: "OpenCode state read",
+            goal: "Read task state then answer",
+            workspace: workspace,
+            model: "opencode/big-pickle",
+            runtime: .openCodeCLI
+        )
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .openCodeCLI,
+            model: "opencode/big-pickle",
+            workspacePath: codeRoot,
+            phase: "test",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            modelContext: context
+        )
+
+        #expect(manifest.workspacePath == codeRoot)
+        #expect(manifest.additionalPaths.contains(TaskWorkspaceAccess(task: task).taskFolder))
+        #expect(manifest.additionalPaths.contains(durableWorkspace))
+    }
+
     @Test("Old manifest JSON without runtime support tools decodes")
     func oldManifestJSONWithoutRuntimeSupportToolsDecodes() throws {
         let render = ProviderPolicyRender(
@@ -1315,6 +1377,51 @@ struct RunPermissionManifestTests {
         #expect(manifest.approvalGrants == [.shellCommand(executable: "gh", pattern: "search prs *")])
         #expect(manifest.providerRender.allowedTools.contains("shell(gh:search prs *)"))
         #expect(!manifest.providerRender.allowedTools.contains("shell(gh:*)"))
+    }
+
+    @Test("OpenCode preflight manifest replays task-scoped broker shell grants")
+    func openCodePreflightManifestReplaysTaskScopedBrokerShellGrants() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "OpenCode Grants", primaryPath: "/tmp/opencode-grants-workspace")
+        let task = AgentTask(
+            title: "OpenCode Grants",
+            goal: "Check open PRs",
+            workspace: workspace,
+            model: "opencode/big-pickle"
+        )
+        task.runtimeID = AgentRuntimeID.openCodeCLI.rawValue
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        let recorded = TaskRuntimePermissionGrants.record(
+            grants: [.shellCommand(executable: "gh", pattern: "pr list *")],
+            providerID: .openCodeCLI,
+            task: task,
+            modelContext: context,
+            source: "test"
+        )
+        try context.save()
+
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .openCodeCLI,
+            model: "opencode/big-pickle",
+            workspacePath: workspace.primaryPath,
+            phase: "test",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            modelContext: context
+        )
+
+        #expect(recorded == [.shellCommand(executable: "gh", pattern: "pr list *")])
+        #expect(manifest.policyScope == .taskApproval)
+        #expect(manifest.approvalGrants == [.shellCommand(executable: "gh", pattern: "pr list *")])
+        #expect(manifest.providerRender.allowedTools.contains("shell(gh:pr list *)"))
+        #expect(manifest.providerRender.usesBroadProviderPermissions == false)
     }
 
     @Test("Task-scoped grant records reject risky shell approvals")

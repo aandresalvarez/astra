@@ -406,8 +406,20 @@ struct SidebarGroupingTests {
         #expect(!SidebarLeanPresentation.selectedWorkspaceChildrenUseGuide)
         #expect(SidebarLeanPresentation.sidebarTaskStatusesShowExceptionsOnly)
         #expect(SidebarLeanPresentation.pinnedPreviewLimit == 5)
-        #expect(SidebarLeanPresentation.childTaskListLeadingPadding == 16)
+        #expect(SidebarLeanPresentation.childTaskListLeadingPadding == 0)
         #expect(SidebarLeanPresentation.childTaskContentLeadingPadding == 0)
+        #expect(!SidebarThreadRowLayout.isActionableStatus(.completed))
+        #expect(SidebarThreadRowLayout.isActionableStatus(.running))
+        #expect(SidebarThreadRowLayout.showsStatusIcon(for: .completed, isHovered: false, isSelected: false) == false)
+        #expect(SidebarThreadRowLayout.showsStatusIcon(for: .completed, isHovered: true, isSelected: false))
+        #expect(SidebarThreadRowLayout.showsStatusIcon(for: .completed, isHovered: false, isSelected: true))
+        #expect(SidebarThreadRowLayout.showsStatusIcon(for: .running, isHovered: false, isSelected: false))
+        #expect(SidebarThreadRowLayout.restingTitleLeadingOffset(
+            childListPadding: SidebarLeanPresentation.childTaskListLeadingPadding,
+            contentLeadingPadding: SidebarLeanPresentation.childTaskContentLeadingPadding,
+            status: .completed
+        ) == 8)
+        #expect(SidebarThreadRowLayout.titleFontSize == 14)
     }
 
     @Test("Sidebar collapses before the expanded rail can clip trailing metadata")
