@@ -57,10 +57,10 @@ enum AgentEventCompactor {
         let compactionCandidates = events
             .prefix(cutoff)
             .filter { !shouldPreserveDuringCompaction($0) }
-        // Keep the most recent event of each reconstructed lifecycle type beyond
-        // the recency window so plan/contract state still rebuilds after
-        // compaction. Bounded to one event per distinct type, so high-volume
-        // step/assertion streams still compact away.
+        // Keep the most recent reconstructed-lifecycle event per grouping key beyond
+        // the recency window so plan/contract state still rebuilds after compaction
+        // (see latestReconstructedEventIDs for the per-key rules). Bounded by the
+        // number of distinct keys, so high-volume plan.step.* streams still compact.
         let reconstructionCriticalIDs = latestReconstructedEventIDs(in: compactionCandidates)
         let toCompact = compactionCandidates.filter { !reconstructionCriticalIDs.contains($0.id) }
         guard !toCompact.isEmpty else { return }
