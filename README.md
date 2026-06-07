@@ -372,6 +372,22 @@ Before opening a change:
 swift test
 ```
 
+Install repo-managed git hooks once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The pre-commit hook runs the architecture fitness suite and whitespace check.
+The pre-push hook adds focused runtime, persistence, and adapter regression
+suites. GitHub CI also requires `Focused Swift tests` and `Whitespace` checks on
+protected branches. Repository admins can apply the default `main` branch
+protection with:
+
+```bash
+script/configure_branch_protection.sh
+```
+
 Default tests do not call account-backed provider CLIs. To run live provider
 integration checks, including Claude/Copilot smoke paths, opt in explicitly:
 
