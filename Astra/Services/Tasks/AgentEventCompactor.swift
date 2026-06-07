@@ -10,15 +10,59 @@ enum AgentEventCompactor {
     }
     private static let semanticLineLimit = 12
 
+    /// Event-type namespaces whose state is reconstructed from the event log
+    /// (`TaskPlanService.reconstruct`, the Context Capsule's validation/handoff/
+    /// corrective summaries). Deleting these during compaction silently corrupts
+    /// the derived state that feeds the prompt — e.g. an approved plan reverting
+    /// to draft, or a passed contract reading back as not_verified.
+    private static let reconstructedEventTypePrefixes = [
+        "plan.",
+        "validation.",
+        "verifier.",
+        "handoff.",
+        "corrective."
+    ]
+
+    /// Validation assertion event types. Grouped by `(planID, assertionID)` when
+    /// deciding what to preserve, mirroring how the Context Capsule reads the latest
+    /// event per assertion *within a plan* in `latestAssertionEventsByID(task:planID:)`.
+    /// Scoping by planID prevents two plans that reuse an assertion id (e.g. "a1")
+    /// from colliding and dropping the active plan's event.
+    private static let validationAssertionEventTypes: Set<String> = [
+        TaskValidationEventTypes.assertionDefined,
+        TaskValidationEventTypes.assertionStarted,
+        TaskValidationEventTypes.assertionPassed,
+        TaskValidationEventTypes.assertionFailed,
+        TaskValidationEventTypes.assertionSkipped,
+        TaskValidationEventTypes.assertionReviewed
+    ]
+
+    /// Validation contract event types. Grouped by `(planID, type)` so each plan's
+    /// latest contract outcome survives, mirroring how the capsule filters contract
+    /// events by `payload.planID` in `validationContractState`.
+    private static let validationContractEventTypes: Set<String> = [
+        TaskValidationEventTypes.contractCreated,
+        TaskValidationEventTypes.contractUpdated,
+        TaskValidationEventTypes.contractPassed,
+        TaskValidationEventTypes.contractFailed,
+        TaskValidationEventTypes.contractOverridden
+    ]
+
     @MainActor
     static func compactEvents(for task: AgentTask, modelContext: ModelContext) {
         let events = task.events.sorted { $0.timestamp < $1.timestamp }
         guard events.count > threshold else { return }
 
         let cutoff = events.count - keepCount
-        let toCompact = events
+        let compactionCandidates = events
             .prefix(cutoff)
             .filter { !shouldPreserveDuringCompaction($0) }
+        // Keep the most recent reconstructed-lifecycle event per grouping key beyond
+        // the recency window so plan/contract state still rebuilds after compaction
+        // (see latestReconstructedEventIDs for the per-key rules). Bounded by the
+        // number of distinct keys, so high-volume plan.step.* streams still compact.
+        let reconstructionCriticalIDs = latestReconstructedEventIDs(in: compactionCandidates)
+        let toCompact = compactionCandidates.filter { !reconstructionCriticalIDs.contains($0.id) }
         guard !toCompact.isEmpty else { return }
 
         var typeCounts: [String: Int] = [:]
@@ -55,6 +99,64 @@ enum AgentEventCompactor {
             "compacted_count": String(toCompact.count),
             "kept_count": String(keepCount)
         ])
+    }
+
+    /// IDs of the most recent reconstructed-lifecycle event for each grouping key
+    /// present in `events`, exempted from deletion so the derived state that feeds
+    /// the prompt still rebuilds after compaction. Grouping is per-entity, matching
+    /// how the consumers read the log:
+    /// - validation assertion events → latest per `(planID, assertionID)`
+    ///   (mirrors the Context Capsule's `latestAssertionEventsByID(task:planID:)`),
+    /// - validation contract events → latest per `(planID, type)`,
+    /// - corrective step events → latest per `correctiveStepID`
+    ///   (mirrors `TaskCorrectiveWorkService.latestCorrectiveSteps`),
+    /// - everything else (plan lifecycle, verifier, handoff) → latest per type.
+    /// Bounded by the number of distinct assertions/steps/types, so high-volume
+    /// `plan.step.*` streams still compact while per-assertion status survives.
+    private static func latestReconstructedEventIDs(in events: [TaskEvent]) -> Set<UUID> {
+        var latestByKey: [String: TaskEvent] = [:]
+        for event in events where isReconstructedLifecycleEvent(event) {
+            let key = reconstructionGroupingKey(for: event)
+            // `events` is sorted ascending by timestamp, so a strict `>` keeps the
+            // last-seen (latest) event on a timestamp tie.
+            if let existing = latestByKey[key], existing.timestamp > event.timestamp {
+                continue
+            }
+            latestByKey[key] = event
+        }
+        return Set(latestByKey.values.map(\.id))
+    }
+
+    private static func isReconstructedLifecycleEvent(_ event: TaskEvent) -> Bool {
+        reconstructedEventTypePrefixes.contains { event.type.hasPrefix($0) }
+    }
+
+    /// Per-entity key used to decide which reconstructed events to keep. Reuses the
+    /// same decoders the consumers use, so a preserved event keys identically to how
+    /// it will later be read. Falls back to the event type when the payload can't be
+    /// decoded (still preserved as latest-of-type).
+    private static func reconstructionGroupingKey(for event: TaskEvent) -> String {
+        if validationAssertionEventTypes.contains(event.type),
+           case let .success(payload) = ValidationService.decodeAssertionPayloadResult(event.payload) {
+            return "assertion:\(payload.planID.uuidString):\(payload.assertionID)"
+        }
+        if validationContractEventTypes.contains(event.type),
+           let planID = decodeContractPlanID(event.payload) {
+            return "contract:\(planID):\(event.type)"
+        }
+        if event.type.hasPrefix("corrective."),
+           let payload = TaskCorrectiveWorkService.decode(event.payload) {
+            return "corrective:\(TaskCorrectiveWorkService.normalizedCorrectiveStepID(payload))"
+        }
+        return event.type
+    }
+
+    private static func decodeContractPlanID(_ payload: String) -> String? {
+        guard let data = payload.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(TaskValidationContractEventPayload.self, from: data) else {
+            return nil
+        }
+        return decoded.planID.uuidString
     }
 
     private static func shouldPreserveDuringCompaction(_ event: TaskEvent) -> Bool {
