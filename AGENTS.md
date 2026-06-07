@@ -91,11 +91,47 @@ For shared behavior, persistence, updater, or release changes, run full tests:
 swift test
 ```
 
+Install the repo hooks once per clone so local commits run the same lightweight
+guardrails that agents are expected to respect:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The pre-commit hook runs `script/precommit.sh`, which checks
+`ArchitectureFitnessTests` and whitespace. The pre-push hook runs
+`script/prepush.sh`, which adds focused runtime, persistence, and adapter
+regression suites before allowing a push.
+
 Push feature branches and open draft PRs unless the user asks otherwise:
 
 ```bash
 git push -u origin codex/<feature-name>
 ```
+
+## Repository Protections
+
+`main` should be protected by GitHub branch protection. Apply the current repo
+default with:
+
+```bash
+script/configure_branch_protection.sh
+```
+
+The protection requires pull requests, one code-owner review for non-admin
+merges, stale-review dismissal, resolved conversations, no force-pushes, no
+branch deletion, and the required status checks from `.github/workflows/ci.yml`:
+
+- `Focused Swift tests`
+- `Whitespace`
+
+Changes to runtime, persistence, models, package metadata, scripts, GitHub
+configuration, hooks, or architecture fitness tests are covered by
+`.github/CODEOWNERS` and should receive explicit owner review. Branch
+protection does not enforce these rules for repository admins so the owner can
+merge without an additional reviewer when intentionally choosing to do so. Do
+not use that bypass for agent-authored changes unless the repository owner
+explicitly directs it.
 
 ## Sparkle Release Cycle
 
