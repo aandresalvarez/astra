@@ -83,7 +83,11 @@ All phases implemented and tested.
   best-effort for Claude Code + Copilot.
 - **Phase 3 — done.** `AppStorageKeys.sandboxEnforcement` + segmented
   "Execution Sandbox" control in Settings → Runtime Guardrails; strict mode
-  fails the run closed; `autonomous` runs auto-escalate to strict.
+  fails the run closed; `autonomous` runs auto-escalate to strict. Both the
+  launch-time runner and the preflight manifest resolve enforcement from the
+  run's *effective* permission policy
+  (`executionPolicy.permissionPolicyOverride ?? permissionPolicy`), so an
+  override-escalated run gets strict consistently in both places.
   `AgentPolicyManifestService.recordPreflightManifest` now appends
   `PolicyEnforcementTier.osSandboxed` to the run manifest's enforcement tiers
   when the run will be wrapped, so the permissions UI (`AgentPolicySheet`,

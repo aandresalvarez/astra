@@ -179,6 +179,42 @@ struct ExecutionSandboxRunnerTests {
         }
     }
 
+    @Test("sandboxedPlan honors the execution-policy permissionPolicy override (autonomous escalates to strict)")
+    func sandboxedPlanHonorsPermissionPolicyOverride() {
+        withStandardEnforcement(.bestEffort) {
+            let runner = AgentRuntimeProcessRunner()
+
+            // Base policy .restricted + best-effort + an unsatisfiable plan (empty
+            // currentDirectory) -> fall back and run unconfined.
+            let base = runner.sandboxedPlan(
+                adapter: FakeLaunchAdapter(currentDirectory: ""),
+                context: makeContext(workspacePath: "", permissionPolicy: .restricted)
+            )
+            guard case .plan = base else {
+                Issue.record("Without the override, best-effort should fall back to .plan")
+                return
+            }
+
+            // Same run, but an execution-policy override escalates to autonomous ->
+            // best-effort becomes strict -> the unsatisfiable plan is blocked.
+            // (If the runner ignored the override, this would also be .plan.)
+            let overridePolicy = AgentRuntimeExecutionPolicy(
+                permissionPolicyOverride: .autonomous,
+                allowedToolsOverride: nil,
+                permissionGrantsOverride: nil
+            )
+            let escalated = runner.sandboxedPlan(
+                adapter: FakeLaunchAdapter(currentDirectory: ""),
+                context: makeContext(workspacePath: "", permissionPolicy: .restricted, executionPolicy: overridePolicy)
+            )
+            guard case .blocked(let result) = escalated else {
+                Issue.record("The autonomous override should escalate best-effort to strict -> .blocked")
+                return
+            }
+            #expect(result.runtimeStopReason == "sandbox_unavailable")
+        }
+    }
+
     // MARK: - Auditing
 
     @Test("Each sandbox decision emits its matching audit event, isolated by task id")

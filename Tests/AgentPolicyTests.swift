@@ -923,7 +923,10 @@ struct TaskPolicyStoreTests {
     }
 }
 
-@Suite("Run Permission Manifest")
+// Serialized: several sandbox-tier tests mutate `UserDefaults.standard` sandbox
+// keys (with save/restore), so they must not run concurrently with each other or
+// with other suites reading the same keys.
+@Suite("Run Permission Manifest", .serialized)
 @MainActor
 struct RunPermissionManifestTests {
     @Test("Preflight manifest persists policy render without environment values")

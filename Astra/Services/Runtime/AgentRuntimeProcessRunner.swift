@@ -68,7 +68,12 @@ final class AgentRuntimeProcessRunner {
         context: AgentRuntimeProcessLaunchContext
     ) -> SandboxedPlanOutcome {
         let plan = adapter.makeProcessLaunchPlan(context: context)
-        let settings = ExecutionSandboxSettings.current(permissionPolicy: context.permissionPolicy)
+        // Use the run's effective permission policy (an execution-policy override
+        // wins over the base policy) so best-effort correctly escalates to strict
+        // for override-autonomous runs — matching how the preflight manifest
+        // resolves the sandbox tier.
+        let effectivePermissionPolicy = context.executionPolicy.permissionPolicyOverride ?? context.permissionPolicy
+        let settings = ExecutionSandboxSettings.current(permissionPolicy: effectivePermissionPolicy)
         // Multi-path workspaces: the agent is granted the workspace's additional
         // paths + input dirs (same set passed to providers via `--add-dir` and
         // honored by the in-band policy guard), so include them in the sandbox's
