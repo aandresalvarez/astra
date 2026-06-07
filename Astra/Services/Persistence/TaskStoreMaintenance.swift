@@ -26,9 +26,11 @@ enum TaskStoreMaintenance {
         }
         // Always emit one line so the pass is observable in logs even on a
         // no-op launch (positive confirmation that maintenance ran). The
-        // `hidden_drafts` count is how many drafts the board now suppresses but
-        // that aren't yet stale enough to delete.
-        let hidden = allTasks.filter(TaskHygiene.isHiddenFromBoard).count
+        // `hidden_drafts` is how many drafts the board still suppresses *after*
+        // this pass — i.e. survivors that weren't stale enough to delete. The
+        // pruned drafts are a subset of the hidden set (`allTasks` is the
+        // pre-prune snapshot), so subtract them to keep the count accurate.
+        let hidden = max(0, allTasks.filter(TaskHygiene.isHiddenFromBoard).count - pruned)
         AppLogger.audit(.taskStats, category: "App", fields: [
             "operation": "task_store_maintenance",
             "scanned_tasks": String(allTasks.count),

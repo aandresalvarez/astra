@@ -19,11 +19,11 @@ enum TaskTitleSanitizer {
         return collapseDoubled(trimmed)
     }
 
-    /// Collapse `"abcabc"` -> `"abc"` when a string is exactly its first half
-    /// repeated. Conservative: requires an even length and either an embedded
-    /// space in the half (real titles are multi-word) or a half of at least 6
-    /// characters, so genuine reduplications like "bonbon" or "hihi" are left
-    /// alone.
+    /// Collapse `"New planNew plan"` -> `"New plan"` when a string is exactly its
+    /// first half repeated. Conservative: requires an even length and a
+    /// *multi-word* half (the generator's doubling artifact is always a
+    /// multi-word title), so single-token reduplications like "ParserParser" or
+    /// "bonbon" are left intact.
     static func collapseDoubled(_ text: String) -> String {
         let characters = Array(text)
         guard !characters.isEmpty, characters.count.isMultiple(of: 2) else { return text }
@@ -59,8 +59,10 @@ enum TaskConversationSignal {
     ]
 
     /// Phrases that, on their own, are an opening pleasantry or a probe of the
-    /// assistant's identity/capabilities rather than a task. Matched as a whole
-    /// string or as a leading prefix of the (normalised) message.
+    /// assistant's identity/capabilities rather than a task. Matched *exactly*
+    /// against the normalised message; longer variants ("how are you going to
+    /// fix CI?") fall through to the bounded interrogative heuristic instead of
+    /// being swept up by prefix matching.
     private static let probePhrases: [String] = [
         "who are you", "what are you", "what is your name", "whats your name",
         "what can you do", "what do you do", "introduce yourself",
@@ -201,6 +203,10 @@ enum TaskHygiene {
         if !task.draftMessages.isEmpty { return true }
         if !task.inputs.isEmpty { return true }
         if !task.acceptanceCriteria.isEmpty { return true }
-        return task.events.contains { $0.type.hasPrefix("plan.") }
+        // Any recorded history. A queued task moved back to draft for editing
+        // keeps its turns in TaskEvents (user.message), not draftMessages, and
+        // pruning would cascade-delete those events, runs, and artifacts. Empty
+        // greeting husks have no events, so this never blocks husk cleanup.
+        return !task.events.isEmpty
     }
 }

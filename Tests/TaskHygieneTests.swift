@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import Testing
 @testable import ASTRA
 import ASTRACore
@@ -138,6 +139,33 @@ struct TaskHygieneTests {
         withPlan.status = .draft
         withPlan.acceptanceCriteria = ["Produces a report"]
         #expect(!TaskHygiene.isPrunableAbandonedDraft(withPlan, olderThan: 0, now: stale(withPlan)))
+    }
+
+    @Test("Drafts whose only content is conversation history are never pruned")
+    func eventBackedDraftsAreProtectedFromPruning() throws {
+        // A queued task moved back to draft for editing (TaskMainView) keeps its
+        // turn in a TaskEvent, not in draftMessages. Requires a real context so
+        // the event ↔ task inverse relationship is established.
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = ModelContext(container)
+
+        let task = AgentTask(title: "Moved back to draft", goal: "Edit me")
+        task.status = .draft
+        context.insert(task)
+        context.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.Conversation.userMessage,
+            payload: "check my open prs in github"
+        ))
+        try context.save()
+
+        #expect(TaskHygiene.hasRecoverableContent(task))
+        let stale = task.updatedAt.addingTimeInterval(99 * 3600)
+        #expect(!TaskHygiene.isPrunableAbandonedDraft(task, olderThan: 0, now: stale))
     }
 
     // MARK: - Idempotent session import
