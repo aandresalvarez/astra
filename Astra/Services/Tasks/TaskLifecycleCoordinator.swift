@@ -35,11 +35,16 @@ final class TaskLifecycleCoordinator {
         }
     }
 
-    func runSingleTask(_ task: AgentTask) {
+    /// Returns the continuation `Task` so callers (notably tests) can await the
+    /// run to fully drain before tearing down the model container. The handle is
+    /// `@discardableResult` — production callers ignore it and behaviour is
+    /// unchanged.
+    @discardableResult
+    func runSingleTask(_ task: AgentTask) -> Task<Void, Never> {
         AppLogger.audit(.taskStarted, category: "UI", taskID: task.id, fields: [
             "source": "manual_run"
         ])
-        Task {
+        return Task {
             await taskQueue.executeTask(task, modelContext: modelContext)
             AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
                 "status": task.status.rawValue
@@ -62,7 +67,11 @@ final class TaskLifecycleCoordinator {
         TaskRunLifecycleService.persist(summary: summary, modelContext: modelContext)
     }
 
-    func retryTask(_ task: AgentTask) {
+    /// Returns the continuation `Task` (the follow-up run, or the delegated
+    /// `runSingleTask` handle) so callers can await the run to fully drain.
+    /// `@discardableResult` — production callers ignore it.
+    @discardableResult
+    func retryTask(_ task: AgentTask) -> Task<Void, Never>? {
         let retryFollowUpMessage = Self.latestRetryableFollowUpMessage(for: task)
         let retryMode = retryFollowUpMessage == nil ? "initial_task" : "latest_follow_up"
         AppLogger.audit(.taskRetried, category: "UI", taskID: task.id, fields: [
@@ -99,7 +108,7 @@ final class TaskLifecycleCoordinator {
             AppLogger.audit(.taskStarted, category: "UI", taskID: task.id, fields: [
                 "source": "retry_latest_follow_up"
             ])
-            Task {
+            return Task {
                 let didStart = await taskQueue.continueSession(
                     task: task,
                     message: retryFollowUpMessage,
@@ -112,7 +121,7 @@ final class TaskLifecycleCoordinator {
                 ])
             }
         } else {
-            runSingleTask(task)
+            return runSingleTask(task)
         }
     }
 
@@ -649,12 +658,15 @@ final class TaskLifecycleCoordinator {
     }
 
     func importSessionsIfNeeded(for workspace: Workspace) {
-        guard workspace.tasks.isEmpty else { return }
+        // No longer gated on an empty workspace: `importSessions` is idempotent
+        // (skips sessions already imported by `sessionId`), so re-running is safe
+        // and picks up new sessions without duplicating existing cards.
         let sessions = SessionScanner.discoverSessions(workspacePath: workspace.primaryPath)
         guard !sessions.isEmpty else { return }
         let count = SessionScanner.importSessions(sessions, into: workspace, modelContext: modelContext)
+        guard count > 0 else { return }
         AppLogger.audit(.workspaceImported, category: "App", fields: [
-            "previous_thread_count": String(count),
+            "imported_session_count": String(count),
             "workspace_id": workspace.id.uuidString
         ])
     }
@@ -741,6 +753,10 @@ final class TaskLifecycleCoordinator {
 
     private static func shouldBackfillGeneratedTitle(_ task: AgentTask) -> Bool {
         guard task.status != .running else { return false }
+
+        // Drafts never appear on the board (they're in-composition plumbing), so
+        // don't spend tokens fabricating titles for them.
+        guard task.status != .draft else { return false }
 
         let title = task.title.trimmingCharacters(in: .whitespacesAndNewlines)
         let goal = task.goal.trimmingCharacters(in: .whitespacesAndNewlines)
