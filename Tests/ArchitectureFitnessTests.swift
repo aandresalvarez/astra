@@ -304,6 +304,65 @@ struct ArchitectureFitnessTests {
         #expect(count <= 125, "Prefer settings snapshots or stores over new direct @AppStorage reads. Current count: \(count)")
     }
 
+    @Test("Repository protection artifacts stay wired")
+    func repositoryProtectionArtifactsStayWired() throws {
+        let root = try repositoryRoot()
+        let requiredFiles = [
+            ".github/workflows/ci.yml",
+            ".github/CODEOWNERS",
+            ".githooks/pre-commit",
+            ".githooks/pre-push",
+            "script/precommit.sh",
+            "script/prepush.sh",
+            "script/configure_branch_protection.sh"
+        ]
+
+        for relativePath in requiredFiles {
+            #expect(
+                FileManager.default.fileExists(atPath: root.appendingPathComponent(relativePath).path),
+                "Missing repository protection artifact: \(relativePath)"
+            )
+        }
+
+        for relativePath in requiredFiles.filter({ $0.hasPrefix(".githooks/") || $0.hasPrefix("script/") }) {
+            #expect(
+                try isExecutable(root.appendingPathComponent(relativePath)),
+                "Protection script should be executable: \(relativePath)"
+            )
+        }
+
+        let preCommitHook = try fileText(".githooks/pre-commit", root: root)
+        let prePushHook = try fileText(".githooks/pre-push", root: root)
+        let preCommitScript = try fileText("script/precommit.sh", root: root)
+        let prePushScript = try fileText("script/prepush.sh", root: root)
+        let branchProtectionScript = try fileText("script/configure_branch_protection.sh", root: root)
+        let ciWorkflow = try fileText(".github/workflows/ci.yml", root: root)
+        let codeowners = try fileText(".github/CODEOWNERS", root: root)
+
+        #expect(preCommitHook.contains("script/precommit.sh"))
+        #expect(prePushHook.contains("script/prepush.sh"))
+        #expect(preCommitScript.contains("swift test --filter ArchitectureFitnessTests"))
+        #expect(preCommitScript.contains("git diff --cached --check"))
+        #expect(branchProtectionScript.contains(#""enforce_admins": false"#))
+        #expect(prePushScript.contains("swift test --filter RuntimeReadinessServiceTests"))
+        #expect(prePushScript.contains("swift test --filter WorkspacePersistenceTests"))
+        #expect(prePushScript.contains("swift test --filter AgentRuntimeAdapterTests"))
+        #expect(prePushScript.contains("git diff --no-ext-diff --check"))
+        #expect(prePushScript.contains("git merge-base"))
+        #expect(prePushScript.contains(#""${range}...HEAD""#))
+        #expect(prePushScript.contains("origin/main...HEAD"))
+        #expect(prePushScript.contains("git diff-tree --check --no-commit-id --root -r HEAD"))
+        #expect(ciWorkflow.contains("script/prepush.sh"))
+        #expect(ciWorkflow.contains("Focused Swift tests"))
+        #expect(ciWorkflow.contains("fetch-depth: 0"))
+        #expect(ciWorkflow.range(of: #"runs-on:\s+macos[-A-Za-z0-9_.]*"#, options: .regularExpression) != nil)
+        #expect(ciWorkflow.contains("git diff --check"))
+        #expect(!codeowners.contains("* @aandresalvarez"))
+        #expect(codeowners.contains("Astra/Services/Runtime/"))
+        #expect(codeowners.contains("Astra/Services/Persistence/"))
+        #expect(codeowners.contains("Tests/ArchitectureFitnessTests.swift"))
+    }
+
     private func declaredTaskEventTypeConstants() throws -> Set<String> {
         let file = try repositoryRoot().appendingPathComponent("Astra/Models/TaskEventTypes.swift")
         let text = try String(contentsOf: file, encoding: .utf8)
@@ -363,6 +422,21 @@ struct ArchitectureFitnessTests {
             let text = try String(contentsOf: file, encoding: .utf8)
             return total + text.components(separatedBy: pattern).count - 1
         }
+    }
+
+    private func fileText(_ relativePath: String, root: URL) throws -> String {
+        try String(
+            contentsOf: root.appendingPathComponent(relativePath),
+            encoding: .utf8
+        )
+    }
+
+    private func isExecutable(_ file: URL) throws -> Bool {
+        let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+        guard let permissions = attributes[.posixPermissions] as? NSNumber else {
+            return false
+        }
+        return permissions.intValue & 0o111 != 0
     }
 }
 

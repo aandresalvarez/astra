@@ -261,14 +261,8 @@ struct AstraBrowserTool {
             return try await request(endpoint: endpoint, method: "POST", path: "/replaceText", object: object)
         case "find-control", "findcontrol", "locator":
             let endpoint = try browserEndpoint()
-            guard let query = args.value(after: "--query")
-                ?? args.value(after: "--label")
-                ?? args.value(after: "--name")
-                ?? args.value(after: "--text")
-                ?? args.value(after: "--placeholder")
-                ?? args.value(after: "--testid")
-                ?? args.value(after: "--test-id")
-                ?? args.remainingText() else {
+            let query = findControlQuery(from: &args)
+            guard let query else {
                 throw ToolError("\(command) requires --query or locator text")
             }
             var items = [URLQueryItem(name: "query", value: query)]
@@ -510,6 +504,17 @@ struct AstraBrowserTool {
             throw ToolError("ASTRA_BROWSER_URL is not set. Open Shelf browser and enable Agent control.")
         }
         return url
+    }
+
+    private static func findControlQuery(from args: inout BrowserToolArgumentCursor) -> String? {
+        if let query = args.value(after: "--query") { return query }
+        if let label = args.value(after: "--label") { return label }
+        if let name = args.value(after: "--name") { return name }
+        if let text = args.value(after: "--text") { return text }
+        if let placeholder = args.value(after: "--placeholder") { return placeholder }
+        if let testID = args.value(after: "--testid") { return testID }
+        if let testID = args.value(after: "--test-id") { return testID }
+        return args.remainingText()
     }
 
     private static func request(

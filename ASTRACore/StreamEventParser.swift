@@ -403,10 +403,18 @@ public enum StreamEventParser {
     }
 
     private static func totalInputTokens(from usage: StreamUsage) -> Int {
-        (usage.input_tokens ?? usage.inputTokens ?? 0)
-            + (usage.cachedInputTokens ?? 0)
-            + (usage.cache_read_input_tokens ?? usage.cacheReadInputTokens ?? usage.cacheReadTokens ?? 0)
-            + (usage.cache_creation_input_tokens ?? usage.cacheCreationInputTokens ?? usage.cacheWriteTokens ?? 0)
+        let uncachedInput = usage.input_tokens ?? usage.inputTokens ?? 0
+        let cachedInput = usage.cachedInputTokens ?? 0
+        let cacheReadInput = usage.cache_read_input_tokens
+            ?? usage.cacheReadInputTokens
+            ?? usage.cacheReadTokens
+            ?? 0
+        let cacheCreationInput = usage.cache_creation_input_tokens
+            ?? usage.cacheCreationInputTokens
+            ?? usage.cacheWriteTokens
+            ?? 0
+
+        return uncachedInput + cachedInput + cacheReadInput + cacheCreationInput
     }
 
     private static func totalOutputTokens(from usage: StreamUsage) -> Int {

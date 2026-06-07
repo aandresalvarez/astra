@@ -732,7 +732,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     private func installObservers() {
         observations = [
             webView.observe(\.url, options: [.initial, .new]) { [weak self] webView, _ in
-                Task { @MainActor in
+                Task { @MainActor [weak self] in
                     guard let self else { return }
                     let nextURL = webView.url?.absoluteString ?? ""
                     if nextURL != self.currentURL {
@@ -745,28 +745,28 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 }
             },
             webView.observe(\.title, options: [.initial, .new]) { [weak self] webView, _ in
-                Task { @MainActor in
+                Task { @MainActor [weak self] in
                     self?.pageTitle = webView.title ?? ""
                     self?.publishBridgeState()
                 }
             },
             webView.observe(\.isLoading, options: [.initial, .new]) { [weak self] webView, _ in
-                Task { @MainActor in
+                Task { @MainActor [weak self] in
                     self?.isLoading = webView.isLoading
                 }
             },
             webView.observe(\.estimatedProgress, options: [.initial, .new]) { [weak self] webView, _ in
-                Task { @MainActor in
+                Task { @MainActor [weak self] in
                     self?.estimatedProgress = webView.estimatedProgress
                 }
             },
             webView.observe(\.canGoBack, options: [.initial, .new]) { [weak self] webView, _ in
-                Task { @MainActor in
+                Task { @MainActor [weak self] in
                     self?.canGoBack = webView.canGoBack
                 }
             },
             webView.observe(\.canGoForward, options: [.initial, .new]) { [weak self] webView, _ in
-                Task { @MainActor in
+                Task { @MainActor [weak self] in
                     self?.canGoForward = webView.canGoForward
                 }
             }
@@ -780,7 +780,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             }
             return await self.handleBridgeRequest(request)
         }, onEndpointChanged: { [weak self] endpoint in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 self?.bridgeEndpoint = endpoint
                 self?.publishBridgeState()
             }
