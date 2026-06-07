@@ -31,6 +31,20 @@ private func encodedAssertionPayload(planID: UUID, assertionID: String, status: 
     return String(decoding: data, as: UTF8.self)
 }
 
+private func encodedContractPayload(planID: UUID, status: String) throws -> String {
+    let payload = TaskValidationContractEventPayload(
+        version: 1,
+        planID: planID,
+        status: status,
+        requiredPassed: 1,
+        requiredTotal: 1,
+        failedRequiredAssertionIDs: [],
+        summary: "contract \(status)"
+    )
+    let data = try TaskEventPayloadCodec.makeEncoder().encode(payload)
+    return String(decoding: data, as: UTF8.self)
+}
+
 @Suite("Event Compaction")
 @MainActor
 struct CompactionTests {
@@ -226,7 +240,7 @@ struct CompactionTests {
         let contractEvent = TaskEvent(
             task: task,
             type: TaskValidationEventTypes.contractPassed,
-            payload: "{\"planID\":\"\(plan.planID.uuidString)\"}"
+            payload: try encodedContractPayload(planID: plan.planID, status: "passed")
         )
         contractEvent.timestamp = Date(timeIntervalSince1970: 8)
         context.insert(contractEvent)
@@ -302,6 +316,54 @@ struct CompactionTests {
                 return nil
             }
         #expect(Set(survivingAssertionIDs) == ["a1", "a2"])
+        #expect(remaining.contains { $0.type == "activity.compacted" })
+    }
+
+    @Test("Compaction keeps same-named assertions from different plans (no planID collision)")
+    func preservesAssertionsAcrossPlansWithoutCollision() throws {
+        let container = try makeCompactionTestContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "T", goal: "G")
+        context.insert(task)
+
+        // Two plans that reuse assertion id "a1". Keying by assertionID alone would
+        // collide and drop one plan's event; keying by (planID, assertionID) keeps both.
+        let planA = UUID()
+        let planB = UUID()
+        let aEvent = TaskEvent(
+            task: task,
+            type: TaskValidationEventTypes.assertionPassed,
+            payload: try encodedAssertionPayload(planID: planA, assertionID: "a1", status: "passed")
+        )
+        aEvent.timestamp = Date(timeIntervalSince1970: 5)
+        context.insert(aEvent)
+        let bEvent = TaskEvent(
+            task: task,
+            type: TaskValidationEventTypes.assertionPassed,
+            payload: try encodedAssertionPayload(planID: planB, assertionID: "a1", status: "passed")
+        )
+        bEvent.timestamp = Date(timeIntervalSince1970: 8)
+        context.insert(bEvent)
+
+        for index in 0..<250 {
+            let event = TaskEvent(task: task, type: "agent.response", payload: "event \(index)")
+            event.timestamp = Date(timeIntervalSince1970: Double(100 + index))
+            context.insert(event)
+        }
+
+        AgentEventCompactor.compactEvents(for: task, modelContext: context)
+        try context.save()
+
+        let remaining = try context.fetch(FetchDescriptor<TaskEvent>())
+        let survivingPlanIDs = remaining
+            .filter { $0.type == TaskValidationEventTypes.assertionPassed }
+            .compactMap { event -> UUID? in
+                if case let .success(payload) = ValidationService.decodeAssertionPayloadResult(event.payload) {
+                    return payload.planID
+                }
+                return nil
+            }
+        #expect(Set(survivingPlanIDs) == [planA, planB])
         #expect(remaining.contains { $0.type == "activity.compacted" })
     }
 

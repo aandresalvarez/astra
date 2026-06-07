@@ -23,9 +23,11 @@ enum AgentEventCompactor {
         "corrective."
     ]
 
-    /// Validation assertion event types. These are grouped by `assertionID`
-    /// (not by type) when deciding what to preserve, mirroring how the Context
-    /// Capsule reads the latest event per assertion in `latestAssertionEventsByID`.
+    /// Validation assertion event types. Grouped by `(planID, assertionID)` when
+    /// deciding what to preserve, mirroring how the Context Capsule reads the latest
+    /// event per assertion *within a plan* in `latestAssertionEventsByID(task:planID:)`.
+    /// Scoping by planID prevents two plans that reuse an assertion id (e.g. "a1")
+    /// from colliding and dropping the active plan's event.
     private static let validationAssertionEventTypes: Set<String> = [
         TaskValidationEventTypes.assertionDefined,
         TaskValidationEventTypes.assertionStarted,
@@ -33,6 +35,17 @@ enum AgentEventCompactor {
         TaskValidationEventTypes.assertionFailed,
         TaskValidationEventTypes.assertionSkipped,
         TaskValidationEventTypes.assertionReviewed
+    ]
+
+    /// Validation contract event types. Grouped by `(planID, type)` so each plan's
+    /// latest contract outcome survives, mirroring how the capsule filters contract
+    /// events by `payload.planID` in `validationContractState`.
+    private static let validationContractEventTypes: Set<String> = [
+        TaskValidationEventTypes.contractCreated,
+        TaskValidationEventTypes.contractUpdated,
+        TaskValidationEventTypes.contractPassed,
+        TaskValidationEventTypes.contractFailed,
+        TaskValidationEventTypes.contractOverridden
     ]
 
     @MainActor
@@ -92,19 +105,21 @@ enum AgentEventCompactor {
     /// present in `events`, exempted from deletion so the derived state that feeds
     /// the prompt still rebuilds after compaction. Grouping is per-entity, matching
     /// how the consumers read the log:
-    /// - validation assertion events → latest per `assertionID`
-    ///   (mirrors the Context Capsule's `latestAssertionEventsByID`),
+    /// - validation assertion events → latest per `(planID, assertionID)`
+    ///   (mirrors the Context Capsule's `latestAssertionEventsByID(task:planID:)`),
+    /// - validation contract events → latest per `(planID, type)`,
     /// - corrective step events → latest per `correctiveStepID`
     ///   (mirrors `TaskCorrectiveWorkService.latestCorrectiveSteps`),
-    /// - everything else (plan lifecycle, `validation.contract.*`, verifier,
-    ///   handoff) → latest per event type.
+    /// - everything else (plan lifecycle, verifier, handoff) → latest per type.
     /// Bounded by the number of distinct assertions/steps/types, so high-volume
     /// `plan.step.*` streams still compact while per-assertion status survives.
     private static func latestReconstructedEventIDs(in events: [TaskEvent]) -> Set<UUID> {
         var latestByKey: [String: TaskEvent] = [:]
         for event in events where isReconstructedLifecycleEvent(event) {
             let key = reconstructionGroupingKey(for: event)
-            if let existing = latestByKey[key], existing.timestamp >= event.timestamp {
+            // `events` is sorted ascending by timestamp, so a strict `>` keeps the
+            // last-seen (latest) event on a timestamp tie.
+            if let existing = latestByKey[key], existing.timestamp > event.timestamp {
                 continue
             }
             latestByKey[key] = event
@@ -123,13 +138,25 @@ enum AgentEventCompactor {
     private static func reconstructionGroupingKey(for event: TaskEvent) -> String {
         if validationAssertionEventTypes.contains(event.type),
            case let .success(payload) = ValidationService.decodeAssertionPayloadResult(event.payload) {
-            return "assertion:\(payload.assertionID)"
+            return "assertion:\(payload.planID.uuidString):\(payload.assertionID)"
+        }
+        if validationContractEventTypes.contains(event.type),
+           let planID = decodeContractPlanID(event.payload) {
+            return "contract:\(planID):\(event.type)"
         }
         if event.type.hasPrefix("corrective."),
            let payload = TaskCorrectiveWorkService.decode(event.payload) {
             return "corrective:\(TaskCorrectiveWorkService.normalizedCorrectiveStepID(payload))"
         }
         return event.type
+    }
+
+    private static func decodeContractPlanID(_ payload: String) -> String? {
+        guard let data = payload.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(TaskValidationContractEventPayload.self, from: data) else {
+            return nil
+        }
+        return decoded.planID.uuidString
     }
 
     private static func shouldPreserveDuringCompaction(_ event: TaskEvent) -> Bool {
