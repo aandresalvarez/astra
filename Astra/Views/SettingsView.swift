@@ -219,7 +219,7 @@ struct SettingsView: View {
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
 
-                Picker("Execution Sandbox", selection: $sandboxEnforcementRaw) {
+                Picker("Execution Sandbox", selection: sandboxEnforcementSelectionBinding) {
                     ForEach(ExecutionSandboxEnforcement.allCases) { mode in
                         Text(mode.displayName).tag(mode.rawValue)
                     }
@@ -869,6 +869,17 @@ struct SettingsView: View {
 
     private var selectedSandboxEnforcement: ExecutionSandboxEnforcement {
         ExecutionSandboxEnforcement.normalized(sandboxEnforcementRaw)
+    }
+
+    /// Normalizing binding so the segmented Picker always reads/writes a canonical
+    /// raw value. A legacy/unknown stored value (which `normalized` tolerates)
+    /// therefore still maps to a valid segment instead of leaving the control with
+    /// no selection.
+    private var sandboxEnforcementSelectionBinding: Binding<String> {
+        Binding(
+            get: { ExecutionSandboxEnforcement.normalized(sandboxEnforcementRaw).rawValue },
+            set: { sandboxEnforcementRaw = ExecutionSandboxEnforcement.normalized($0).rawValue }
+        )
     }
 
     private var selectedDefaultPolicyLevel: AgentPolicyLevel {

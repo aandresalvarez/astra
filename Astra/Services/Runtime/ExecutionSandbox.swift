@@ -90,7 +90,7 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
     init(
         enforcement: ExecutionSandboxEnforcement,
         wrappedRuntimes: Set<AgentRuntimeID> = ExecutionSandboxSettings.defaultWrappedRuntimes,
-        allowNetwork: Bool = true
+        allowNetwork: Bool = ExecutionSandboxSettings.defaultAllowNetwork
     ) {
         self.enforcement = enforcement
         self.wrappedRuntimes = wrappedRuntimes
