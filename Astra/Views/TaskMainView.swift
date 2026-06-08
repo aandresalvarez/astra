@@ -77,7 +77,7 @@ private struct StreamingAgentTextView: View {
         Text(MarkdownTextView.normalizedStreamingText(displayText))
             .font(Stanford.chatBody())
             .foregroundStyle(Stanford.readingText)
-            .textSelection(.enabled)
+            .textSelection(.disabled)
             .lineSpacing(Stanford.chatBodyLineSpacing)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -94,10 +94,10 @@ private struct CompletedAgentMarkdownView: View, Equatable {
         MarkdownTextView(
             text: displayText,
             maxContentWidth: Stanford.chatParagraphMaxWidth,
-            onSuggestedNextStep: onSuggestedNextStep
+            onSuggestedNextStep: onSuggestedNextStep,
+            isSelectable: false
         )
         .frame(maxWidth: .infinity, alignment: .leading)
-        .textSelection(.enabled)
     }
 
     static func == (lhs: CompletedAgentMarkdownView, rhs: CompletedAgentMarkdownView) -> Bool {
@@ -5346,23 +5346,37 @@ struct TaskMainView: View {
 
 // MARK: - Markdown Text View
 
+private extension View {
+    @ViewBuilder
+    func markdownTextSelection(_ isSelectable: Bool) -> some View {
+        if isSelectable {
+            textSelection(.enabled)
+        } else {
+            textSelection(.disabled)
+        }
+    }
+}
+
 /// Renders text as formatted markdown with support for headers, bold, italic,
 /// code blocks, lists, tables, dividers, blockquotes, and system notices.
 struct MarkdownTextView: View {
     let text: String
     let maxContentWidth: CGFloat?
     let onSuggestedNextStep: ((String) -> Void)?
+    let isSelectable: Bool
     @State private var blocks: [MarkdownBlock] = []
     @State private var skippedSuggestionIDs: Set<UUID> = []
 
     init(
         text: String,
         maxContentWidth: CGFloat? = Stanford.chatParagraphMaxWidth,
-        onSuggestedNextStep: ((String) -> Void)? = nil
+        onSuggestedNextStep: ((String) -> Void)? = nil,
+        isSelectable: Bool = true
     ) {
         self.text = text
         self.maxContentWidth = maxContentWidth
         self.onSuggestedNextStep = onSuggestedNextStep
+        self.isSelectable = isSelectable
         _blocks = State(initialValue: Self.cachedParse(text))
     }
 
@@ -5377,7 +5391,7 @@ struct MarkdownTextView: View {
                     .padding(.top, topSpacing(for: block, previous: index > 0 ? blocks[index - 1] : nil))
             }
         }
-        .textSelection(.enabled)
+        .markdownTextSelection(isSelectable)
         .tint(Stanford.link)
         .frame(maxWidth: .infinity, alignment: .leading)
         .onChange(of: text) { _, newText in
@@ -5424,7 +5438,7 @@ struct MarkdownTextView: View {
                     Text(Self.markdownAttributed(block.content))
                         .font(Stanford.chatBody())
                         .foregroundStyle(Stanford.readingText)
-                        .textSelection(.enabled)
+                        .markdownTextSelection(isSelectable)
                         .lineSpacing(Stanford.chatCompactLineSpacing)
                 }
 
@@ -5486,7 +5500,7 @@ struct MarkdownTextView: View {
                 Text(Self.markdownAttributed(block.content))
                     .font(Stanford.chatBody())
                     .foregroundStyle(Stanford.readingText)
-                    .textSelection(.enabled)
+                    .markdownTextSelection(isSelectable)
                     .lineSpacing(Stanford.chatBodyLineSpacing)
 
                 if !suggestedNextActions.isEmpty,
@@ -5719,7 +5733,7 @@ struct MarkdownTextView: View {
                 Text(code)
                     .font(Stanford.chatRaw())
                     .foregroundStyle(Stanford.readingText)
-                    .textSelection(.enabled)
+                    .markdownTextSelection(isSelectable)
                     .lineSpacing(3)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
@@ -5813,7 +5827,7 @@ struct MarkdownTextView: View {
             Text(cell)
                 .font(Stanford.chatRaw(13))
                 .foregroundStyle(Stanford.readingText)
-                .textSelection(.enabled)
+                .markdownTextSelection(isSelectable)
                 .multilineTextAlignment(alignment.textAlignment)
                 .lineLimit(nil)
                 .fixedSize(horizontal: false, vertical: true)
@@ -5822,7 +5836,7 @@ struct MarkdownTextView: View {
             Text(Self.markdownAttributed(cell))
                 .font(rowIndex == 0 ? Stanford.chatSection(13) : Stanford.chatBody(14))
                 .foregroundStyle(Stanford.readingText)
-                .textSelection(.enabled)
+                .markdownTextSelection(isSelectable)
                 .multilineTextAlignment(alignment.textAlignment)
                 .lineLimit(nil)
                 .fixedSize(horizontal: false, vertical: true)
