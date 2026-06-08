@@ -1197,7 +1197,7 @@ struct SettingsView: View {
     }
 
     private func dataLocationRow(_ title: String, path: String, canOpen: Bool = true) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
+        HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(Stanford.body(15))

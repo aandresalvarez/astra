@@ -187,7 +187,7 @@ private struct AboutAstraView: View {
 
 private struct AboutHighlightLabelStyle: LabelStyle {
     func makeBody(configuration: Configuration) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        HStack(alignment: .top, spacing: 8) {
             configuration.icon
                 .font(Stanford.ui(12, weight: .semibold))
                 .foregroundStyle(Stanford.lagunita)

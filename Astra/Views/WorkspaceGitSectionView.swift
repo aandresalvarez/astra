@@ -1613,7 +1613,7 @@ private struct DiffLineRow: View {
     let minimumWidth: CGFloat
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        HStack(alignment: .top, spacing: 8) {
             Text(prefix)
                 .font(Stanford.ui(11, design: .monospaced))
                 .foregroundStyle(prefixColor)

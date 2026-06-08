@@ -535,7 +535,7 @@ struct AgentPolicySheet: View {
         placeholder: String
     ) -> some View {
         VStack(alignment: .leading, spacing: 5) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
                 Text(title)
                     .font(Stanford.caption(12).weight(.semibold))
                 Text(help)

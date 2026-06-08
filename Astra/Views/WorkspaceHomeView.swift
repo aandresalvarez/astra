@@ -461,7 +461,7 @@ struct WorkspaceHomeView: View {
 
     private var workspaceContextCard: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
                 Text("Workspace context")
                     .font(Stanford.caption(13).weight(.semibold))
                     .foregroundStyle(.primary)
@@ -538,7 +538,7 @@ struct WorkspaceHomeView: View {
                 .padding(.top, 13)
 
             VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                HStack(alignment: .top, spacing: 10) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Instructions")
                             .font(Stanford.caption(12).weight(.semibold))

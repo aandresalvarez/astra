@@ -2809,7 +2809,7 @@ struct TaskMainView: View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(approvals) { approval in
                 VStack(alignment: .leading, spacing: 5) {
-                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    HStack(alignment: .top, spacing: 7) {
                         Image(systemName: "hand.raised")
                             .font(Stanford.ui(11))
                             .foregroundStyle(Stanford.coolGrey.opacity(0.82))

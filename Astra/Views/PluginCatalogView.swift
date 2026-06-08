@@ -620,7 +620,7 @@ struct PluginCatalogView: View {
 
     private func capabilityGroupSection(_ group: CapabilityCatalogPackageGroup) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
+            HStack(alignment: .top, spacing: 6) {
                 Text(group.kind.title)
                     .font(Stanford.caption(12).weight(.semibold))
                     .foregroundStyle(.secondary)
@@ -1544,7 +1544,7 @@ struct PluginCatalogView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Divider().opacity(0.35)
 
-                HStack(alignment: .firstTextBaseline) {
+                HStack(alignment: .top) {
                     Text("Configure resources")
                         .font(Stanford.caption(11).weight(.semibold))
                         .foregroundStyle(.secondary)
@@ -2111,7 +2111,7 @@ struct PluginInstallSheet: View {
     }
 
     private var copySetupSection: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 9) {
+        HStack(alignment: .top, spacing: 9) {
             Image(systemName: copiedSetupSourceName == nil ? "square.on.square" : "checkmark.circle.fill")
                 .font(Stanford.ui(12, weight: .medium))
                 .foregroundStyle(copiedSetupSourceName == nil ? Stanford.lagunita : Stanford.paloAltoGreen)
@@ -2606,7 +2606,7 @@ struct PluginInstallSheet: View {
     }
 
     private func setupFieldHeader(for key: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
+        HStack(alignment: .top, spacing: 6) {
             Text(CapabilitySetupPresentation.fieldLabel(for: key))
                 .font(Stanford.caption(11).weight(.semibold))
                 .foregroundStyle(Stanford.black)
