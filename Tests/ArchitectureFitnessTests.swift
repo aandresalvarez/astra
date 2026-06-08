@@ -317,6 +317,19 @@ struct ArchitectureFitnessTests {
         #expect(shelfSession.contains("NSImage(contentsOf:"))
     }
 
+    @Test("Files shelf image reload fast-paths unchanged previews before decoding")
+    func filesShelfImageReloadFastPathsUnchangedPreviewsBeforeDecoding() throws {
+        let root = try repositoryRoot()
+        let shelfSession = try fileText("Astra/Services/Browser/ShelfMarkdownSession.swift", root: root)
+        let loadStart = try #require(shelfSession.range(of: "func load(_ url: URL)"))
+        let selectStart = try #require(shelfSession[loadStart.upperBound...].range(of: "func selectDocument"))
+        let loadBody = String(shelfSession[loadStart.lowerBound..<selectStart.lowerBound])
+        let reuseFastPath = try #require(loadBody.range(of: "reuseUnchangedImageDocument"))
+        let fullDocumentLoad = try #require(loadBody.range(of: "Self.makeDocument(for: url)"))
+
+        #expect(reuseFastPath.lowerBound < fullDocumentLoad.lowerBound)
+    }
+
     @Test("Completed chat markdown avoids SwiftUI text selection overlay")
     func completedChatMarkdownAvoidsSwiftUITextSelectionOverlay() throws {
         let root = try repositoryRoot()

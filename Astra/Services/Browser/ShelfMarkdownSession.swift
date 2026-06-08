@@ -84,6 +84,11 @@ struct ShelfMarkdownDocument: Identifiable, Equatable {
     }
 }
 
+private struct ShelfFileMetadata {
+    let fileByteSize: Int64
+    let modifiedAt: Date?
+}
+
 @MainActor
 final class ShelfMarkdownSession: ObservableObject {
     static let largeTextPreviewBytes: Int64 = 300_000
@@ -147,6 +152,15 @@ final class ShelfMarkdownSession: ObservableObject {
     }
 
     func load(_ url: URL) {
+        let documentID = url.path
+        if let index = documents.firstIndex(where: { $0.id == documentID }),
+           Self.reuseUnchangedImageDocument(documents[index], for: url) {
+            if selectedDocumentID != documentID {
+                selectedDocumentID = documentID
+            }
+            return
+        }
+
         let document = Self.makeDocument(for: url)
         if let index = documents.firstIndex(where: { $0.id == document.id }) {
             if documents[index] != document {
@@ -225,10 +239,10 @@ final class ShelfMarkdownSession: ObservableObject {
                 encoding: .utf8
             )
             documents[index].savedContent = documents[index].content
-            let attributes = try? FileManager.default.attributesOfItem(atPath: documents[index].fileURL.path)
-            let fileByteSize = attributes?[.size] as? Int64 ?? Int64(documents[index].content.utf8.count)
+            let metadata = try? Self.fileMetadata(for: documents[index].fileURL)
+            let fileByteSize = metadata?.fileByteSize ?? Int64(documents[index].content.utf8.count)
             documents[index].fileByteSize = fileByteSize
-            documents[index].modifiedAt = attributes?[.modificationDate] as? Date
+            documents[index].modifiedAt = metadata?.modifiedAt
             documents[index].isLargePreview = fileByteSize >= Self.largeTextPreviewBytes
             documents[index].errorMessage = nil
             documents[index].saveErrorMessage = nil
@@ -262,6 +276,17 @@ final class ShelfMarkdownSession: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([fileURL])
     }
 
+    private static func reuseUnchangedImageDocument(_ document: ShelfMarkdownDocument, for url: URL) -> Bool {
+        guard document.kind == .image,
+              ShelfTextDocumentKind.infer(from: url) == .image,
+              let preview = document.imagePreview,
+              let metadata = try? fileMetadata(for: url) else {
+            return false
+        }
+
+        return preview.signature == contentSignature(for: url, metadata: metadata, content: "")
+    }
+
     private static func makeDocument(for url: URL) -> ShelfMarkdownDocument {
         let kind = ShelfTextDocumentKind.infer(from: url)
         let content: String
@@ -269,13 +294,12 @@ final class ShelfMarkdownSession: ObservableObject {
         var fileByteSize: Int64 = 0
         var modifiedAt: Date?
         do {
-            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-            let size = attributes[.size] as? Int64 ?? 0
-            fileByteSize = size
-            modifiedAt = attributes[.modificationDate] as? Date
+            let metadata = try Self.fileMetadata(for: url)
+            fileByteSize = metadata.fileByteSize
+            modifiedAt = metadata.modifiedAt
 
             if kind == .image {
-                let preview = Self.imagePreview(for: url, fileByteSize: size, modifiedAt: modifiedAt)
+                let preview = Self.imagePreview(for: url, metadata: metadata)
                 return ShelfMarkdownDocument(
                     id: url.path,
                     fileURL: url,
@@ -283,8 +307,8 @@ final class ShelfMarkdownSession: ObservableObject {
                     kind: kind,
                     content: "",
                     savedContent: "",
-                    fileByteSize: size,
-                    modifiedAt: modifiedAt,
+                    fileByteSize: metadata.fileByteSize,
+                    modifiedAt: metadata.modifiedAt,
                     isLargePreview: false,
                     imagePreview: preview,
                     imageSize: preview?.pixelSize,
@@ -294,14 +318,13 @@ final class ShelfMarkdownSession: ObservableObject {
                     saveErrorMessage: nil,
                     contentSignature: preview?.signature ?? Self.contentSignature(
                         for: url,
-                        fileByteSize: size,
-                        modifiedAt: modifiedAt,
+                        metadata: metadata,
                         content: ""
                     )
                 )
             }
 
-            guard size <= maxTextDocumentBytes else {
+            guard metadata.fileByteSize <= maxTextDocumentBytes else {
                 return ShelfMarkdownDocument(
                     id: url.path,
                     fileURL: url,
@@ -309,8 +332,8 @@ final class ShelfMarkdownSession: ObservableObject {
                     kind: kind,
                     content: "",
                     savedContent: "",
-                    fileByteSize: size,
-                    modifiedAt: modifiedAt,
+                    fileByteSize: metadata.fileByteSize,
+                    modifiedAt: metadata.modifiedAt,
                     isLargePreview: false,
                     imagePreview: nil,
                     imageSize: nil,
@@ -320,8 +343,7 @@ final class ShelfMarkdownSession: ObservableObject {
                     saveErrorMessage: nil,
                     contentSignature: Self.contentSignature(
                         for: url,
-                        fileByteSize: size,
-                        modifiedAt: modifiedAt,
+                        metadata: metadata,
                         content: ""
                     )
                 )
@@ -336,8 +358,8 @@ final class ShelfMarkdownSession: ObservableObject {
                     kind: .unsupported,
                     content: "",
                     savedContent: "",
-                    fileByteSize: size,
-                    modifiedAt: modifiedAt,
+                    fileByteSize: metadata.fileByteSize,
+                    modifiedAt: metadata.modifiedAt,
                     isLargePreview: false,
                     imagePreview: nil,
                     imageSize: nil,
@@ -347,8 +369,7 @@ final class ShelfMarkdownSession: ObservableObject {
                     saveErrorMessage: nil,
                     contentSignature: Self.contentSignature(
                         for: url,
-                        fileByteSize: size,
-                        modifiedAt: modifiedAt,
+                        metadata: metadata,
                         content: ""
                     )
                 )
@@ -410,16 +431,10 @@ final class ShelfMarkdownSession: ObservableObject {
 
     private static func imagePreview(
         for url: URL,
-        fileByteSize: Int64,
-        modifiedAt: Date?
+        metadata: ShelfFileMetadata
     ) -> ShelfImagePreview? {
+        let signature = contentSignature(for: url, metadata: metadata, content: "")
         guard let image = NSImage(contentsOf: url) else { return nil }
-        let signature = contentSignature(
-            for: url,
-            fileByteSize: fileByteSize,
-            modifiedAt: modifiedAt,
-            content: ""
-        )
         return ShelfImagePreview(
             image: image,
             pixelSize: imagePixelSize(for: image),
@@ -437,6 +452,33 @@ final class ShelfMarkdownSession: ObservableObject {
             return image.size == .zero ? nil : image.size
         }
         return CGSize(width: representation.pixelsWide, height: representation.pixelsHigh)
+    }
+
+    private static func fileMetadata(for url: URL) throws -> ShelfFileMetadata {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        let byteSize: Int64
+        if let size = attributes[.size] as? NSNumber {
+            byteSize = size.int64Value
+        } else {
+            byteSize = attributes[.size] as? Int64 ?? 0
+        }
+        return ShelfFileMetadata(
+            fileByteSize: byteSize,
+            modifiedAt: attributes[.modificationDate] as? Date
+        )
+    }
+
+    private static func contentSignature(
+        for url: URL,
+        metadata: ShelfFileMetadata,
+        content: String
+    ) -> String {
+        contentSignature(
+            for: url,
+            fileByteSize: metadata.fileByteSize,
+            modifiedAt: metadata.modifiedAt,
+            content: content
+        )
     }
 
     private static func contentSignature(
