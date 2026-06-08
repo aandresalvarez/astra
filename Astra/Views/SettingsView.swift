@@ -1197,6 +1197,8 @@ struct SettingsView: View {
     }
 
     private func dataLocationRow(_ title: String, path: String, canOpen: Bool = true) -> some View {
+        // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+        // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)

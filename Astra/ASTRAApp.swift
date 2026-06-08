@@ -187,6 +187,8 @@ private struct AboutAstraView: View {
 
 private struct AboutHighlightLabelStyle: LabelStyle {
     func makeBody(configuration: Configuration) -> some View {
+        // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+        // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
         HStack(alignment: .top, spacing: 8) {
             configuration.icon
                 .font(Stanford.ui(12, weight: .semibold))
