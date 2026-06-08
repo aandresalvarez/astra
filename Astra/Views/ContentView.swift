@@ -218,7 +218,6 @@ struct ContentView: View {
     let runtime: AppRuntimeController
     @Environment(\.modelContext) private var modelContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.scenePhase) private var scenePhase
     @Query(sort: \Workspace.name) private var workspaces: [Workspace]
     @State private var selectedTask: AgentTask?
     @State private var selectedWorkspace: Workspace?
@@ -499,7 +498,8 @@ struct ContentView: View {
 
     /// True when the sidebar column is not occupying layout — either manually
     /// collapsed inside the split view (`.detailOnly`) or hidden by the
-    /// responsive compact path. Gates the hover-to-peek edge sensor and overlay.
+    /// responsive compact path. Gates the hover-to-peek overlay (opened by hovering
+    /// the show-sidebar toggle).
     private var isSidebarColumnHidden: Bool {
         shouldUseDetailOnlyCompactLayout || splitVisibility == .detailOnly
     }
@@ -702,6 +702,11 @@ struct ContentView: View {
                         // sensor, which opened the peek whenever the pointer drifted to
                         // the window's left margin.
                         .onHover { isSidebarToggleHovered = $0 }
+                        // SwiftUI may not emit onHover(false) when the toolbar button is
+                        // removed (e.g. the compact layout exits while the pointer is over
+                        // it), which would strand the peek open while the column stays
+                        // hidden. Reset the hover state on disappearance.
+                        .onDisappear { isSidebarToggleHovered = false }
                     }
                 }
             }

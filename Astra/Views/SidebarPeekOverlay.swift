@@ -4,17 +4,17 @@ import SwiftUI
 /// Mirrors `SidebarRevealSettlingPolicy` so the open/dismiss rules can be
 /// reasoned about — and unit-tested — in isolation from any view state.
 enum SidebarPeekPolicy {
-    /// Grace period after the pointer leaves *both* the edge sensor and the
-    /// panel before the peek dismisses. Absorbs fast diagonal exits and the
-    /// few-pixel gap as the pointer crosses from the edge strip into the panel.
+    /// Grace period after the pointer leaves *both* the show-sidebar toggle and the
+    /// panel before the peek dismisses. Absorbs fast diagonal exits and the few-pixel
+    /// gap as the pointer crosses from the toggle into the panel.
     static let dismissDelayNanoseconds: UInt64 = 180_000_000
 
-    static func shouldOpen(edgeHovered: Bool, panelHovered: Bool) -> Bool {
-        edgeHovered || panelHovered
+    static func shouldOpen(triggerHovered: Bool, panelHovered: Bool) -> Bool {
+        triggerHovered || panelHovered
     }
 
-    static func shouldDismiss(edgeHovered: Bool, panelHovered: Bool) -> Bool {
-        !edgeHovered && !panelHovered
+    static func shouldDismiss(triggerHovered: Bool, panelHovered: Bool) -> Bool {
+        !triggerHovered && !panelHovered
     }
 }
 
@@ -108,7 +108,7 @@ struct SidebarPeekContainer<SidebarContent: View>: View {
     /// Open immediately when either the toggle or the panel is hovered; otherwise
     /// start the debounced dismiss.
     private func reconcile() {
-        if SidebarPeekPolicy.shouldOpen(edgeHovered: triggerActive, panelHovered: isPanelHovered) {
+        if SidebarPeekPolicy.shouldOpen(triggerHovered: triggerActive, panelHovered: isPanelHovered) {
             dismissTask?.cancel()
             dismissTask = nil
             if !isPeeking {
@@ -129,7 +129,7 @@ struct SidebarPeekContainer<SidebarContent: View>: View {
             // Re-check live hover state at fire time so a re-entry during the grace
             // window keeps the peek open.
             guard SidebarPeekPolicy.shouldDismiss(
-                edgeHovered: triggerActive,
+                triggerHovered: triggerActive,
                 panelHovered: isPanelHovered
             ) else { return }
             withAnimation(AstraMotion.rightPanel(reduceMotion: reduceMotion)) {
