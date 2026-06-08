@@ -3741,7 +3741,9 @@ struct WorkspaceSetupForm: View {
     }
 
     private var availableCapabilityShortcut: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 7) {
+        // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+        // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
+        HStack(alignment: .top, spacing: 7) {
             Image(systemName: "wand.and.stars")
                 .font(Stanford.ui(10, weight: .medium))
                 .foregroundStyle(Stanford.lagunita)
@@ -3765,7 +3767,9 @@ struct WorkspaceSetupForm: View {
     }
 
     private var copyCapabilitySetupShortcut: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 7) {
+        // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+        // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
+        HStack(alignment: .top, spacing: 7) {
             Image(systemName: copiedCapabilitySetup == nil ? "square.on.square" : "checkmark.circle.fill")
                 .font(Stanford.ui(10, weight: .medium))
                 .foregroundStyle(copiedCapabilitySetup == nil ? Stanford.lagunita : Stanford.paloAltoGreen)

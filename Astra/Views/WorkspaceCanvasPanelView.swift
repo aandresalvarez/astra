@@ -615,7 +615,9 @@ struct WorkspaceCanvasPanelView: View {
     }
 
     private func expandedEditableStepHeader(index: Int, step: TaskPlanStep) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+        // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
+        HStack(alignment: .top, spacing: 8) {
             stepNumberBadge(index: index, step: step, isExpanded: true)
 
             TextField("Step title", text: stepTitleBinding(index))
@@ -969,7 +971,9 @@ struct WorkspaceCanvasPanelView: View {
     }
 
     private func stepReadOnlyText(_ text: String, systemImage: String, tint: Color) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 7) {
+        // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+        // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
+        HStack(alignment: .top, spacing: 7) {
             Image(systemName: systemImage)
                 .font(Stanford.caption(11).weight(.semibold))
                 .foregroundStyle(tint)

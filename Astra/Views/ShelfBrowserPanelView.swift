@@ -613,7 +613,9 @@ struct ShelfBrowserPanelView: View {
     }
 
     private func engineHintRow(title: String, body: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+        // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
+        HStack(alignment: .top, spacing: 8) {
             Text(title)
                 .font(Stanford.caption(11).weight(.semibold))
                 .foregroundStyle(.primary)

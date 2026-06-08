@@ -535,7 +535,9 @@ struct AgentPolicySheet: View {
         placeholder: String
     ) -> some View {
         VStack(alignment: .leading, spacing: 5) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
+            // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+            // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
+            HStack(alignment: .top, spacing: 8) {
                 Text(title)
                     .font(Stanford.caption(12).weight(.semibold))
                 Text(help)
