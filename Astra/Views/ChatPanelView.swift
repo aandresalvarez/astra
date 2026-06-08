@@ -711,7 +711,12 @@ struct ChatPanelView: View {
                         .defaultScrollAnchor(chatScrollAnchor)
                         .coordinateSpace(name: Self.chatScrollSpace)
                         .onAppear {
-                            scrollChatToBottom(proxy, animated: false)
+                            // A real transcript opens pinned to the latest message;
+                            // summary-only mode stays top-aligned (defaultScrollAnchor(.top)),
+                            // so don't force it to the bottom here.
+                            if !showsApprovedPlanSummaryOnly {
+                                scrollChatToBottom(proxy, animated: false)
+                            }
                         }
                         .overlay(alignment: .bottom) {
                             jumpToLatestPill(proxy: proxy)
@@ -742,7 +747,7 @@ struct ChatPanelView: View {
                         .onChange(of: approvedDraftPlan?.planID) {
                             if approvedDraftPlan != nil {
                                 withAnimation(.easeOut(duration: 0.2)) {
-                                    proxy.scrollTo("approved-plan-card", anchor: .bottom)
+                                    proxy.scrollTo("approved-plan-card", anchor: chatScrollAnchor)
                                 }
                             }
                         }
@@ -788,14 +793,17 @@ struct ChatPanelView: View {
 
     private static let chatScrollSpace = "chat-panel-scroll"
 
-    /// Resting scroll anchor for the chat area. A real message transcript pins to the
-    /// bottom (chat-style, and it overflows anyway); the approved-plan summary with its
-    /// history collapsed is a single card that reads better top-aligned than floating at
-    /// the bottom of a tall pane.
+    /// The approved-plan summary with its history collapsed is a single card that reads
+    /// better top-aligned than floating at the bottom of a tall pane; a real message
+    /// transcript pins to the bottom (chat-style, and it overflows anyway).
+    private var showsApprovedPlanSummaryOnly: Bool {
+        approvedDraftPlan != nil && pendingPlan == nil && !isApprovedPlanHistoryExpanded
+    }
+
+    /// Resting scroll anchor for the chat area. Also used as the anchor for explicit
+    /// `scrollTo` calls so they don't fight the resting position in summary-only mode.
     private var chatScrollAnchor: UnitPoint {
-        let showsApprovedPlanSummaryOnly =
-            approvedDraftPlan != nil && pendingPlan == nil && !isApprovedPlanHistoryExpanded
-        return showsApprovedPlanSummaryOnly ? .top : .bottom
+        showsApprovedPlanSummaryOnly ? .top : .bottom
     }
 
     /// Floating "scroll to latest" pill, shown whenever the user is scrolled away from
@@ -812,12 +820,11 @@ struct ChatPanelView: View {
     }
 
     private func handleMessageCountChange(proxy: ScrollViewProxy) {
-        // Approved-plan summary mode keeps the plan card pinned (history is collapsed).
-        if approvedDraftPlan != nil,
-           pendingPlan == nil,
-           !isApprovedPlanHistoryExpanded {
+        // Approved-plan summary mode keeps the plan card pinned top (history collapsed),
+        // matching the resting anchor so it doesn't float at the bottom of a tall pane.
+        if showsApprovedPlanSummaryOnly {
             withAnimation(.easeOut(duration: 0.2)) {
-                proxy.scrollTo("approved-plan-card", anchor: .bottom)
+                proxy.scrollTo("approved-plan-card", anchor: .top)
             }
             return
         }

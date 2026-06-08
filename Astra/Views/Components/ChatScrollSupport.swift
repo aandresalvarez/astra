@@ -85,7 +85,7 @@ struct ChatJumpToLatestButton: View {
             )
         }
         .buttonStyle(.plain)
-        .help(hasUnseenActivity ? "Jump to latest activity" : "Scroll to latest")
+        .help(hasUnseenActivity ? "Jump to latest activity" : "Jump to latest")
         .padding(.bottom, 10)
     }
 }
