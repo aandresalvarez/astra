@@ -739,6 +739,8 @@ struct TaskMainView: View {
                 inputs: inputs
             )
         }.value
+        // Under `.task(id:)`: don't apply a result whose inputs are now stale.
+        guard !Task.isCancelled else { return }
         headerFileItemsCache = items
     }
 
@@ -5468,14 +5470,12 @@ struct MarkdownTextView: View, Equatable {
     @State private var blocks: [MarkdownBlock] = []
     @State private var skippedSuggestionIDs: Set<UUID> = []
 
-    /// Renders identically for identical inputs, so SwiftUI can skip
-    /// re-evaluating unchanged bubbles via `.equatable()` (the action closure is
-    /// a stable callback and is intentionally excluded). See the UI
-    /// responsiveness audit (Cluster 4).
+    /// `.equatable()` skips unchanged bubbles; closure *presence* affects rendering (Cluster 4).
     static func == (lhs: MarkdownTextView, rhs: MarkdownTextView) -> Bool {
         lhs.text == rhs.text
             && lhs.maxContentWidth == rhs.maxContentWidth
             && lhs.isSelectable == rhs.isSelectable
+            && (lhs.onSuggestedNextStep == nil) == (rhs.onSuggestedNextStep == nil)
     }
 
     init(

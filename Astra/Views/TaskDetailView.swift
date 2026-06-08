@@ -359,6 +359,8 @@ struct ArtifactsTabView: View {
         latestRun = task.runs.max(by: { $0.startedAt < $1.startedAt })
     }
 
+    @State private var allFilesRefreshTask: Task<Void, Never>?
+
     /// Recompute cachedAllFiles off the main render path. Called from
     /// onAppear/onChange. The per-file `fileExists`/`attributesOfItem` stats run
     /// on a detached task (mirroring `scanTaskFolder`) so they never block the
@@ -370,7 +372,11 @@ struct ArtifactsTabView: View {
         let inputs = task.inputs
         let outputFiles = outputPathFiles
 
-        Task {
+        // onAppear + several onChange triggers can fire in quick succession.
+        // Cancel the in-flight refresh and skip a stale apply so an earlier
+        // task can't finish last and overwrite cachedAllFiles with old data.
+        allFilesRefreshTask?.cancel()
+        allFilesRefreshTask = Task {
             let files: [ArtifactFile] = await Task.detached(priority: .userInitiated) {
                 var files: [ArtifactFile] = []
                 var seen = Set<String>()
@@ -417,6 +423,7 @@ struct ArtifactsTabView: View {
                 return files
             }.value
 
+            guard !Task.isCancelled else { return }
             cachedAllFiles = files
         }
     }
