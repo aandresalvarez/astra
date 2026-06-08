@@ -48,7 +48,7 @@ struct SidebarPeekPanel<Content: View>: View {
                 isHovered = hovering
                 onHoverChange()
             }
-            .transition(.move(edge: .leading).combined(with: .opacity))
+            .transition(reduceMotion ? .opacity : .move(edge: .leading).combined(with: .opacity))
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Sidebar")
     }
@@ -89,7 +89,10 @@ struct SidebarPeekContainer<SidebarContent: View>: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .accessibilityHidden(!isPeeking)
+        // The panel only renders when the column is hidden AND peeking, so mirror both
+        // here — otherwise a brief column-visible+peeking state would expose an empty
+        // overlay to accessibility.
+        .accessibilityHidden(!(isColumnHidden && isPeeking))
         .onChange(of: isTriggerHovered) { _, _ in reconcile() }
         .onChange(of: isColumnHidden) { _, hidden in
             // Sidebar re-expanded (or compact layout changed) — drop any open peek.
@@ -98,6 +101,12 @@ struct SidebarPeekContainer<SidebarContent: View>: View {
         .onChange(of: scenePhase) { _, newPhase in
             // Don't strand the peek open if the app/window deactivates mid-hover.
             if newPhase != .active { forceDismiss() }
+        }
+        .onDisappear {
+            // Cancel any pending dismiss so the detached task can't mutate state
+            // after the overlay is torn down.
+            dismissTask?.cancel()
+            dismissTask = nil
         }
     }
 
