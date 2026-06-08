@@ -307,6 +307,16 @@ struct ArchitectureFitnessTests {
         #expect(count <= 129, "Prefer settings snapshots or stores over new direct @AppStorage reads. Current count: \(count)")
     }
 
+    @Test("Files shelf does not decode image previews from SwiftUI body")
+    func filesShelfDoesNotDecodeImagePreviewsFromSwiftUIBody() throws {
+        let root = try repositoryRoot()
+        let shelfView = try fileText("Astra/Views/ShelfMarkdownPanelView.swift", root: root)
+        let shelfSession = try fileText("Astra/Services/Browser/ShelfMarkdownSession.swift", root: root)
+
+        #expect(!shelfView.contains("NSImage(contentsOf:"))
+        #expect(shelfSession.contains("NSImage(contentsOf:"))
+    }
+
     @Test("Repository protection artifacts stay wired")
     func repositoryProtectionArtifactsStayWired() throws {
         let root = try repositoryRoot()
