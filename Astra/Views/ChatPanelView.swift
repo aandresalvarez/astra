@@ -375,6 +375,8 @@ struct ChatPanelView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var messageText = ""
     @State private var messages: [ChatMessage] = []
+    @State private var isChatAtBottom = true
+    @State private var hasUnseenChatActivity = false
     @State private var isThinking = false
     @State private var extractedSpec: TaskSpec?
     @State private var showSpecCard = false
@@ -652,80 +654,96 @@ struct ChatPanelView: View {
                 heroView
             } else {
                 ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(spacing: 10) {
-                            if let approvedPlan = approvedDraftPlan,
-                               pendingPlan == nil {
-                                ApprovedPlanReadyCard(
-                                    plan: approvedPlan,
-                                    isHistoryExpanded: $isApprovedPlanHistoryExpanded,
-                                    isPlanCanvasVisible: isPlanCanvasVisible,
-                                    onOpenPlan: {
-                                        if let draftTask {
-                                            onOpenPlan?(draftTask)
+                    GeometryReader { viewport in
+                        ScrollView {
+                            VStack(spacing: 10) {
+                                if let approvedPlan = approvedDraftPlan,
+                                   pendingPlan == nil {
+                                    ApprovedPlanReadyCard(
+                                        plan: approvedPlan,
+                                        isHistoryExpanded: $isApprovedPlanHistoryExpanded,
+                                        isPlanCanvasVisible: isPlanCanvasVisible,
+                                        onOpenPlan: {
+                                            if let draftTask {
+                                                onOpenPlan?(draftTask)
+                                            }
                                         }
-                                    }
-                                )
-                                .padding(.horizontal)
-                                .id("approved-plan-card")
+                                    )
+                                    .padding(.horizontal)
+                                    .id("approved-plan-card")
 
-                                if isApprovedPlanHistoryExpanded {
+                                    if isApprovedPlanHistoryExpanded {
+                                        conversationMessages
+                                    }
+                                } else {
                                     conversationMessages
                                 }
-                            } else {
-                                conversationMessages
-                            }
 
-                            if isThinking {
-                                thinkingIndicator
-                            }
+                                if isThinking {
+                                    thinkingIndicator
+                                }
 
-                            if showSpecCard {
-                                SpecCardView(
-                                    spec: $extractedSpec,
-                                    chainedGoal: $chainedGoal,
-                                    onCreateTask: createTaskFromSpec,
-                                    onDismiss: { showSpecCard = false; extractedSpec = nil; chainedGoal = "" }
+                                if showSpecCard {
+                                    SpecCardView(
+                                        spec: $extractedSpec,
+                                        chainedGoal: $chainedGoal,
+                                        onCreateTask: createTaskFromSpec,
+                                        onDismiss: { showSpecCard = false; extractedSpec = nil; chainedGoal = "" }
+                                    )
+                                    .padding(.horizontal)
+                                    .id("spec-card")
+                                }
+
+                                ChatScrollMetrics.bottomSentinel(
+                                    id: "chatBottom",
+                                    coordinateSpace: Self.chatScrollSpace
                                 )
-                                .padding(.horizontal)
-                                .id("spec-card")
+                            }
+                            .frame(maxWidth: 780)
+                            .padding()
+                            .frame(maxWidth: .infinity)
+                        }
+                        // Open pinned to the latest message and tail-follow while at the
+                        // bottom. The layout-time anchor survives async draft loading
+                        // without a one-shot scrollTo landing short. A standalone card
+                        // (e.g. the approved-plan summary) anchors to the top instead so
+                        // it doesn't float in dead space at the bottom of a tall pane.
+                        .defaultScrollAnchor(chatScrollAnchor)
+                        .coordinateSpace(name: Self.chatScrollSpace)
+                        .onAppear {
+                            scrollChatToBottom(proxy, animated: false)
+                        }
+                        .overlay(alignment: .bottom) {
+                            jumpToLatestPill(proxy: proxy)
+                                .transition(.move(edge: .bottom).combined(with: .opacity))
+                                .animation(.easeOut(duration: 0.18), value: isChatAtBottom)
+                                .animation(.easeOut(duration: 0.18), value: hasUnseenChatActivity)
+                        }
+                        .onPreferenceChange(ChatBottomPositionPreferenceKey.self) { bottomMinY in
+                            updateChatBottomState(bottomMinY: bottomMinY, viewportHeight: viewport.size.height)
+                        }
+                        .onChange(of: messages.count) {
+                            handleMessageCountChange(proxy: proxy)
+                        }
+                        .onChange(of: showSpecCard) {
+                            if showSpecCard {
+                                withAnimation(.easeOut(duration: 0.2)) {
+                                    proxy.scrollTo("spec-card", anchor: .bottom)
+                                }
                             }
                         }
-                        .frame(maxWidth: 780)
-                        .padding()
-                        .frame(maxWidth: .infinity)
-                    }
-                    .onChange(of: messages.count) {
-                        if approvedDraftPlan != nil,
-                           pendingPlan == nil,
-                           !isApprovedPlanHistoryExpanded {
-                            withAnimation(.easeOut(duration: 0.2)) {
-                                proxy.scrollTo("approved-plan-card", anchor: .bottom)
-                            }
-                        } else if let last = messages.last {
-                            withAnimation(.easeOut(duration: 0.2)) {
-                                proxy.scrollTo(last.id, anchor: .bottom)
+                        .onChange(of: pendingPlan?.planID) {
+                            if pendingPlan != nil {
+                                withAnimation(.easeOut(duration: 0.2)) {
+                                    proxy.scrollTo("pending-plan-card", anchor: .bottom)
+                                }
                             }
                         }
-                    }
-                    .onChange(of: showSpecCard) {
-                        if showSpecCard {
-                            withAnimation(.easeOut(duration: 0.2)) {
-                                proxy.scrollTo("spec-card", anchor: .bottom)
-                            }
-                        }
-                    }
-                    .onChange(of: pendingPlan?.planID) {
-                        if pendingPlan != nil {
-                            withAnimation(.easeOut(duration: 0.2)) {
-                                proxy.scrollTo("pending-plan-card", anchor: .bottom)
-                            }
-                        }
-                    }
-                    .onChange(of: approvedDraftPlan?.planID) {
-                        if approvedDraftPlan != nil {
-                            withAnimation(.easeOut(duration: 0.2)) {
-                                proxy.scrollTo("approved-plan-card", anchor: .bottom)
+                        .onChange(of: approvedDraftPlan?.planID) {
+                            if approvedDraftPlan != nil {
+                                withAnimation(.easeOut(duration: 0.2)) {
+                                    proxy.scrollTo("approved-plan-card", anchor: .bottom)
+                                }
                             }
                         }
                     }
@@ -764,6 +782,78 @@ struct ChatPanelView: View {
         .onChange(of: copilotAvailableModels) { alignDefaultModelWithRuntime() }
         .onChange(of: runtimeModelCacheRevision) { alignDefaultModelWithRuntime() }
         .onChange(of: workspace?.id) { initializeComposerPolicyFromDefaults() }
+    }
+
+    // MARK: - Scroll behavior
+
+    private static let chatScrollSpace = "chat-panel-scroll"
+
+    /// Resting scroll anchor for the chat area. A real message transcript pins to the
+    /// bottom (chat-style, and it overflows anyway); the approved-plan summary with its
+    /// history collapsed is a single card that reads better top-aligned than floating at
+    /// the bottom of a tall pane.
+    private var chatScrollAnchor: UnitPoint {
+        let showsApprovedPlanSummaryOnly =
+            approvedDraftPlan != nil && pendingPlan == nil && !isApprovedPlanHistoryExpanded
+        return showsApprovedPlanSummaryOnly ? .top : .bottom
+    }
+
+    /// Floating "scroll to latest" pill, shown whenever the user is scrolled away from
+    /// the bottom. `hasUnseenChatActivity` only changes its emphasis. The enter/exit
+    /// transition + animation live at the `.overlay` call site (on the stable slot), not
+    /// here, so SwiftUI reliably animates the insertion/removal.
+    @ViewBuilder
+    private func jumpToLatestPill(proxy: ScrollViewProxy) -> some View {
+        if !isChatAtBottom {
+            ChatJumpToLatestButton(hasUnseenActivity: hasUnseenChatActivity) {
+                scrollChatToBottom(proxy)
+            }
+        }
+    }
+
+    private func handleMessageCountChange(proxy: ScrollViewProxy) {
+        // Approved-plan summary mode keeps the plan card pinned (history is collapsed).
+        if approvedDraftPlan != nil,
+           pendingPlan == nil,
+           !isApprovedPlanHistoryExpanded {
+            withAnimation(.easeOut(duration: 0.2)) {
+                proxy.scrollTo("approved-plan-card", anchor: .bottom)
+            }
+            return
+        }
+
+        // Always follow the user's own just-sent message; otherwise only tail-follow
+        // live output when the user is already at the bottom. If they've scrolled up to
+        // read history, surface the jump-to-latest pill instead of yanking them down.
+        if messages.last?.role == "user" || isChatAtBottom {
+            scrollChatToBottom(proxy)
+        } else {
+            hasUnseenChatActivity = true
+        }
+    }
+
+    private func updateChatBottomState(bottomMinY: CGFloat, viewportHeight: CGFloat) {
+        let wasAtBottom = isChatAtBottom
+        isChatAtBottom = ChatScrollMetrics.isAtBottom(
+            bottomMinY: bottomMinY,
+            viewportHeight: viewportHeight
+        )
+        if isChatAtBottom && !wasAtBottom {
+            hasUnseenChatActivity = false
+        }
+    }
+
+    private func scrollChatToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
+        hasUnseenChatActivity = false
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    proxy.scrollTo("chatBottom", anchor: .bottom)
+                }
+            } else {
+                proxy.scrollTo("chatBottom", anchor: .bottom)
+            }
+        }
     }
 
     // MARK: - Hero (empty state)

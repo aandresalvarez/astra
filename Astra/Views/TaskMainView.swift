@@ -45,14 +45,9 @@ private struct ScheduleSourceContext {
     let conversationContext: String
 }
 
-private struct ChatBottomPositionPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = .infinity
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
+// ChatBottomPositionPreferenceKey lives in ChatScrollSupport.swift, shared with
+// ChatPanelView. ChatTopPositionPreferenceKey stays private here — it drives this
+// view's older-runs window expansion, which has no analogue in ChatPanelView.
 private struct ChatTopPositionPreferenceKey: PreferenceKey {
     static var defaultValue: CGFloat = -.infinity
 
@@ -1178,9 +1173,17 @@ struct TaskMainView: View {
                     .padding(.vertical, 16)
                     .frame(maxWidth: .infinity)
                 }
+                // Pin the resting position to the latest message. Unlike a one-shot
+                // scrollTo("chatBottom"), this layout-time anchor re-applies as the async
+                // snapshot lands and as LazyVStack rows realize their true heights, so an
+                // existing chat opens at the bottom without the user scrolling down.
+                .defaultScrollAnchor(.bottom)
                 .coordinateSpace(name: "task-chat-scroll")
                 .overlay(alignment: .bottom) {
                     newActivityPill(proxy: proxy)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .animation(.easeOut(duration: 0.18), value: isChatAtBottom)
+                        .animation(.easeOut(duration: 0.18), value: hasUnseenChatActivity)
                 }
                 .onPreferenceChange(ChatBottomPositionPreferenceKey.self) { bottomMinY in
                     updateChatBottomState(bottomMinY: bottomMinY, viewportHeight: viewport.size.height)
@@ -1662,35 +1665,22 @@ struct TaskMainView: View {
 
     @ViewBuilder
     private func newActivityPill(proxy: ScrollViewProxy) -> some View {
-        if hasUnseenChatActivity && !isChatAtBottom {
-            Button {
+        // Show whenever the user is scrolled away from the bottom — a general
+        // "scroll to latest" affordance. hasUnseenChatActivity only changes the
+        // emphasis (label + accent + dot) when live output arrived while scrolled up.
+        if !isChatAtBottom {
+            ChatJumpToLatestButton(hasUnseenActivity: hasUnseenChatActivity) {
                 scrollChatToBottom(proxy)
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "arrow.down")
-                        .font(Stanford.ui(11))
-                    Text("Jump to latest")
-                        .font(Stanford.chatSection())
-                }
-                .foregroundStyle(Stanford.lagunita)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-                .background(.ultraThickMaterial)
-                .clipShape(Capsule())
-                .overlay(
-                    Capsule()
-                        .stroke(Stanford.lagunita.opacity(0.25), lineWidth: 1)
-                )
             }
-            .buttonStyle(.plain)
-            .help("Jump to latest activity")
-            .padding(.bottom, 10)
         }
     }
 
     private func updateChatBottomState(bottomMinY: CGFloat, viewportHeight: CGFloat) {
         let wasAtBottom = isChatAtBottom
-        isChatAtBottom = bottomMinY <= viewportHeight + 80
+        isChatAtBottom = ChatScrollMetrics.isAtBottom(
+            bottomMinY: bottomMinY,
+            viewportHeight: viewportHeight
+        )
         if isChatAtBottom && !wasAtBottom {
             hasUnseenChatActivity = false
         }
