@@ -252,19 +252,31 @@ private let kanbanBoardCoordinateSpace = "kanbanBoardCoordinateSpace"
 /// re-bucket. Only id / status / queuePosition / isDone / updatedAt are
 /// included — exactly the fields `KanbanCategory.includes(_:)` and
 /// `KanbanCategory.sortedTasks(from:)` read.
+/// Cheap value-type fingerprint of the inputs that determine board membership
+/// and ordering. Stored by `KanbanBucketCache` and compared element-wise (no
+/// hashing, so no collision risk). `status` is the `TaskStatus` enum, not its
+/// rawValue String, so comparison allocates nothing.
 private struct KanbanTaskFingerprint: Equatable {
     let id: UUID
-    let status: String
+    let status: TaskStatus
     let queuePosition: Int
     let isDone: Bool
     let updatedAt: Date
 
     init(_ task: AgentTask) {
         self.id = task.id
-        self.status = task.status.rawValue
+        self.status = task.status
         self.queuePosition = task.queuePosition
         self.isDone = task.isDone
         self.updatedAt = task.updatedAt
+    }
+
+    func matches(_ task: AgentTask) -> Bool {
+        id == task.id
+            && status == task.status
+            && queuePosition == task.queuePosition
+            && isDone == task.isDone
+            && updatedAt == task.updatedAt
     }
 }
 
@@ -272,24 +284,31 @@ private struct KanbanTaskFingerprint: Equatable {
 /// on `KanbanBoardView`; because it is a class, mutating it in place does NOT
 /// invalidate the view (unlike mutating a value-type `@State`), so the lazy
 /// recompute can run safely from within `body`/computed reads. Recomputes the
-/// five buckets once per data change, gated on a cheap fingerprint array so
-/// streaming updates that don't change board membership or ordering reuse the
-/// previous buckets.
+/// five buckets once per data change, gated on an exact element-wise comparison
+/// so streaming updates that don't change board membership or ordering reuse
+/// the previous buckets.
 private final class KanbanBucketCache {
     private var fingerprint: [KanbanTaskFingerprint] = []
     private var cached: [KanbanCategory: [AgentTask]] = [:]
     private var primed = false
 
     func buckets(for tasks: [AgentTask]) -> [KanbanCategory: [AgentTask]] {
-        let next = tasks.map(KanbanTaskFingerprint.init)
-        if primed && next == fingerprint {
+        // Exact, allocation-free check on the no-change (hot) path: compare each
+        // task against the stored fingerprint in a single pass without building
+        // a new `[KanbanTaskFingerprint]` array. `buckets(for:)` is read 15–25×
+        // per render (and on every drag-delta frame while dragging a card), so
+        // avoiding the per-call array allocation removes the bulk of the cost.
+        // An exact compare (vs. a hash) means no chance of reusing stale buckets
+        // on a hash collision. See the UI responsiveness audit (Cluster 3).
+        if primed, fingerprint.count == tasks.count,
+           zip(fingerprint, tasks).allSatisfy({ $0.matches($1) }) {
             return cached
         }
         var result: [KanbanCategory: [AgentTask]] = [:]
         for category in KanbanCategory.allCases {
             result[category] = category.sortedTasks(from: tasks.filter { category.includes($0) })
         }
-        fingerprint = next
+        fingerprint = tasks.map(KanbanTaskFingerprint.init)
         cached = result
         primed = true
         return result

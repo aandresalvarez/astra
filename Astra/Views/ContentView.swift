@@ -213,6 +213,31 @@ struct NewWorkspaceDraft: Equatable {
     }
 }
 
+/// Leaf observer that watches the task queue's update-safety signal in
+/// isolation. Reading `taskQueue.isProcessing/activeCount/activeTasks` here —
+/// rather than in `ContentView.body` — keeps queue churn (task start/exit)
+/// from invalidating ContentView's very large body. See the UI responsiveness
+/// audit (Cluster 1): this is the only body-level reader of those fields.
+private struct UpdateSafetyObserver: View {
+    let taskQueue: TaskQueue
+    let runningTaskCount: Int
+    let onChange: () -> Void
+
+    private var signature: String {
+        [
+            String(taskQueue.isProcessing),
+            String(taskQueue.activeCount),
+            String(taskQueue.activeTasks.count),
+            String(runningTaskCount)
+        ].joined(separator: "|")
+    }
+
+    var body: some View {
+        Color.clear
+            .onChange(of: signature) { onChange() }
+    }
+}
+
 struct ContentView: View {
     @ObservedObject var appUpdateController: AppUpdateController
     let runtime: AppRuntimeController
@@ -421,14 +446,21 @@ struct ContentView: View {
 
     private var selectedTaskCanvasSignature: String {
         guard let selectedTask else { return "none" }
-        let htmlPreviewSignature = selectedTaskHTMLPreviewSignature(for: selectedTask)
-        let inputSignature = selectedTask.inputs.joined(separator: "|")
+        // Compute the latest run once (was scanned twice — here and in the
+        // HTML-preview helper). Deliberately exclude `output.count`: it is an
+        // O(output-length) walk that re-runs every body pass while output
+        // streams, and the canvas only reflects file changes, not raw output.
         let latestRun = selectedTask.runs.max { $0.startedAt < $1.startedAt }
+        let inputSignature = selectedTask.inputs.joined(separator: "|")
+        let htmlPreviewSignature = [
+            selectedTask.status.rawValue,
+            latestRun?.id.uuidString ?? "none",
+            String(latestRun?.fileChangesJSON.count ?? 0)
+        ].joined(separator: "|")
         let latestRunSignature = [
             latestRun?.id.uuidString ?? "none",
             latestRun?.status.rawValue ?? "none",
             String(Int(latestRun?.startedAt.timeIntervalSince1970 ?? 0)),
-            String(latestRun?.output.count ?? 0),
             String(latestRun?.fileChangesJSON.count ?? 0)
         ].joined(separator: ":")
         return [
@@ -440,15 +472,6 @@ struct ContentView: View {
             latestRunSignature,
             htmlPreviewSignature,
             inputSignature
-        ].joined(separator: "|")
-    }
-
-    private func selectedTaskHTMLPreviewSignature(for task: AgentTask) -> String {
-        let latestRun = task.runs.max { $0.startedAt < $1.startedAt }
-        return [
-            task.status.rawValue,
-            latestRun?.id.uuidString ?? "none",
-            String(latestRun?.fileChangesJSON.count ?? 0)
         ].joined(separator: "|")
     }
 
@@ -890,9 +913,15 @@ struct ContentView: View {
             handleAppear()
         }
         .onChange(of: executionSettingsSignature) { applySettings() }
-        .onChange(of: updateSafetySignature) {
-            refreshRunningTaskCount()
-            refreshUpdateSafetyHooks()
+        .background {
+            UpdateSafetyObserver(
+                taskQueue: runtime.taskQueue,
+                runningTaskCount: runningTaskCount,
+                onChange: {
+                    refreshRunningTaskCount()
+                    refreshUpdateSafetyHooks()
+                }
+            )
         }
         .onChange(of: workspaceSelectionSignature) {
             handleWorkspaceSelectionSignatureChanged()
@@ -1581,12 +1610,13 @@ struct ContentView: View {
 
             let discoveryState = GeneratedHTMLDiscoveryState.discovered(preferredPath: path, taskID: taskID)
             await MainActor.run {
+                // Compare against the signature already computed off-main above
+                // rather than calling shouldApplyDiscovery(), which would re-run
+                // an attributesOfItem stat on the main actor for the same path.
+                // See the UI responsiveness audit (Cluster 2).
                 guard !Task.isCancelled,
                       self.selectedTask?.id == taskID,
-                      GeneratedHTMLDiscoveryState(
-                          preferredPath: selectedTaskPreferredHTMLPath,
-                          signature: lastGeneratedHTMLDiscoverySignature
-                      ).shouldApplyDiscovery(preferredPath: path, taskID: taskID) else {
+                      lastGeneratedHTMLDiscoverySignature != discoveryState.signature else {
                     return
                 }
 
@@ -1887,15 +1917,6 @@ struct ContentView: View {
             defaultModel: defaultModel,
             defaultBudget: defaultBudget
         )
-    }
-
-    private var updateSafetySignature: String {
-        return [
-            String(runtime.taskQueue.isProcessing),
-            String(runtime.taskQueue.activeCount),
-            String(runtime.taskQueue.activeTasks.count),
-            String(runningTaskCount)
-        ].joined(separator: "|")
     }
 
     private var hasUpdateBlockingWork: Bool {
