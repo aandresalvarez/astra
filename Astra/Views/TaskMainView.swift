@@ -1828,7 +1828,11 @@ struct TaskMainView: View {
                 .frame(height: 1)
                 .frame(maxWidth: 60)
 
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
+            // `.top`, not `.firstTextBaseline`: the label is selectable, so a
+            // baseline-aligned HStack would live-lock the layout engine on the
+            // hosted SelectionOverlay's baseline query. See the list-item case in
+            // MarkdownTextView for the full explanation.
+            HStack(alignment: .top, spacing: 6) {
                 Image(systemName: icon)
                     .font(Stanford.ui(11, weight: .medium))
                     .foregroundStyle(tint)
@@ -5401,7 +5405,15 @@ struct MarkdownTextView: View {
 
         case .listItem(let depth, let marker):
             VStack(alignment: .leading, spacing: 5) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                // NOTE: `.top` (not `.firstTextBaseline`) is deliberate. The body
+                // Text is selectable (`.textSelection` is enabled on the enclosing
+                // MarkdownTextView), so SwiftUI hosts it in a `SelectionOverlay`
+                // NSView. A baseline-aligned HStack must query that hosted view's
+                // baseline via `FallbackAlignmentProvider`, which invalidates the
+                // overlay's layout metrics on every pass and live-locks the main
+                // thread in an infinite layout loop the moment a markdown list
+                // renders. Aligning to `.top` removes the baseline query.
+                HStack(alignment: .top, spacing: 8) {
                     Text(marker)
                         .font(Stanford.chatBody(depth == 0 ? 15 : 13))
                         .foregroundStyle(Stanford.coolGrey.opacity(0.72))
