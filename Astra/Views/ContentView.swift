@@ -275,6 +275,12 @@ struct ContentView: View {
     @State private var isSidebarRevealInProgress = false
     @State private var sidebarRevealRevision = 0
     @State private var sidebarRevealTimeoutTask: Task<Void, Never>?
+    // MARK: Sidebar Peek
+    /// Hover state of the show-sidebar toggle, which drives the hover-to-peek overlay
+    /// (`SidebarPeekContainer`). That container owns the rest of the peek state and
+    /// never mutates `splitVisibility`, so it can't feed the collapse/reveal loop that
+    /// `SidebarSplitViewGuard` suppresses.
+    @State private var isSidebarToggleHovered = false
     @State private var cachedHasCanvasContent = false
     /// Run-once guard for the deferred Sparkle update probe. handleAppear can
     /// fire on more than one .onAppear for the same view instance; this keeps
@@ -490,6 +496,14 @@ struct ContentView: View {
         isCompactPanelLayout && hasRightSidePanelPresented
     }
 
+    /// True when the sidebar column is not occupying layout — either manually
+    /// collapsed inside the split view (`.detailOnly`) or hidden by the
+    /// responsive compact path. Gates the hover-to-peek overlay (opened by hovering
+    /// the show-sidebar toggle).
+    private var isSidebarColumnHidden: Bool {
+        shouldUseDetailOnlyCompactLayout || splitVisibility == .detailOnly
+    }
+
     private var panelTransitionAnimation: Animation? {
         AstraMotion.rightPanel(reduceMotion: reduceMotion)
     }
@@ -552,7 +566,10 @@ struct ContentView: View {
         .navigationSplitViewStyle(.balanced)
     }
 
-    private var sidebarArea: some View {
+    /// The sidebar's content, free of any `NavigationSplitView` sizing
+    /// modifiers, so it can be reused verbatim by both the real column
+    /// (`sidebarArea`) and the floating peek overlay (`SidebarPeekPanel`).
+    private var sidebarContent: some View {
         TaskSidebarContainerView(
             selectedTask: selectedTaskBinding,
             taskQueue: runtime.taskQueue,
@@ -575,6 +592,10 @@ struct ContentView: View {
             onEditSchedule: beginEditingSchedule,
             isSearchActive: $isSearchActive
         )
+    }
+
+    private var sidebarArea: some View {
+        sidebarContent
         .background {
             GeometryReader { proxy in
                 Color.clear
@@ -652,7 +673,9 @@ struct ContentView: View {
         )
     }
 
-    var body: some View {
+    // Split out of `body` so each modifier chain stays small enough for the
+    // SwiftUI type-checker. `body` adds only the .onChange / .sheet tail.
+    private var rootLayoutWithChrome: some View {
         rootLayout
         .frame(minHeight: 600)
         .accessibilityIdentifier("MainContentView")
@@ -673,6 +696,17 @@ struct ContentView: View {
                         .help("Show sidebar and close the right panel")
                         .accessibilityIdentifier("CompactShowSidebarButton")
                         .accessibilityLabel("Show sidebar")
+                        // Hovering the show-sidebar toggle peeks the collapsed sidebar
+                        // (click still fully reveals it). SidebarPeekContainer observes
+                        // this hover state. Replaces the old full-height leading-edge
+                        // sensor, which opened the peek whenever the pointer drifted to
+                        // the window's left margin.
+                        .onHover { isSidebarToggleHovered = $0 }
+                        // SwiftUI may not emit onHover(false) when the toolbar button is
+                        // removed (e.g. the compact layout exits while the pointer is over
+                        // it), which would strand the peek open while the column stays
+                        // hidden. Reset the hover state on disappearance.
+                        .onDisappear { isSidebarToggleHovered = false }
                     }
                 }
             }
@@ -708,6 +742,15 @@ struct ContentView: View {
                 )
             }
         }
+        .overlay(alignment: .topLeading) {
+            SidebarPeekContainer(
+                isColumnHidden: isSidebarColumnHidden,
+                isTriggerHovered: isSidebarToggleHovered,
+                reduceMotion: reduceMotion
+            ) {
+                sidebarContent
+            }
+        }
         .safeAreaInset(edge: .top) {
             TopNoticeBannersView(
                 recoveryNotice: recoveryNotice,
@@ -718,6 +761,10 @@ struct ContentView: View {
                 onCheckForUpdates: appUpdateController.checkForUpdatesFromButton
             )
         }
+    }
+
+    var body: some View {
+        rootLayoutWithChrome
         .onChange(of: selectedTaskCanvasSignature) {
             handleSelectedTaskCanvasSignatureChanged()
         }
