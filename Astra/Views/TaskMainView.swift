@@ -134,6 +134,31 @@ private struct AgentGeneratedFilesListView: View {
     }
 }
 
+/// Leaf observer that watches the task's live thread/generated-file triggers in
+/// isolation. Building `TaskThreadSnapshotTrigger`/`TaskGeneratedFilesTrigger`
+/// reads the live `task.runs[].output` (an O(output-length) walk) — doing that
+/// here, in a trivial `Color.clear`, rather than inside `TaskMainView.body`
+/// keeps the large body from re-evaluating (and re-walking output) on every
+/// streamed token. The triggers' `==` is already coarse (1 KB bucket), so the
+/// callbacks still fire at snapshot granularity. See the UI responsiveness
+/// audit (Cluster 1).
+private struct TaskThreadChangeObserver: View {
+    let task: AgentTask
+    let generatedFilesLatestRun: TaskRunSnapshot?
+    let onSnapshotChange: () -> Void
+    let onGeneratedFilesChange: () -> Void
+
+    var body: some View {
+        Color.clear
+            .onChange(of: TaskThreadSnapshotTrigger(task: task)) { _, _ in
+                onSnapshotChange()
+            }
+            .onChange(of: TaskGeneratedFilesTrigger(task: task, latestRun: generatedFilesLatestRun)) { _, _ in
+                onGeneratedFilesChange()
+            }
+    }
+}
+
 /// Unified main view: compact status bar + chat-style activity thread + composer
 struct TaskMainView: View {
     let task: AgentTask
@@ -171,6 +196,7 @@ struct TaskMainView: View {
     @State private var scheduleCreationTaskID: UUID?
     @State private var scheduleStatusMessage: TaskScopedStatusMessage?
     @State private var isShowingFilesPopover = false
+    @State private var headerFileItemsCache: [TaskFileItem] = []
     @State private var isGeneratingRecap = false
     @State private var recapStatusMessage: String?
     @State private var showCopyConfirmation = false
@@ -248,14 +274,6 @@ struct TaskMainView: View {
             goal: task.goal,
             createdAt: task.createdAt
         )
-    }
-
-    private var threadSnapshotTrigger: TaskThreadSnapshotTrigger {
-        TaskThreadSnapshotTrigger(task: task)
-    }
-
-    private var generatedFilesTrigger: TaskGeneratedFilesTrigger {
-        TaskGeneratedFilesTrigger(task: task, latestRun: currentThreadSnapshot.latestRun)
     }
 
     private var planStateCacheRefreshTrigger: TaskPlanStateCacheSignature {
@@ -457,6 +475,9 @@ struct TaskMainView: View {
         .task(id: planStateCacheRefreshTrigger) {
             refreshPlanStateCache()
         }
+        .task(id: headerFileItemsInputSignature) {
+            await recomputeHeaderFileItems()
+        }
         .task(id: verificationLoadRequest) {
             await refreshVerificationPresentation(for: verificationLoadRequest)
         }
@@ -503,16 +524,22 @@ struct TaskMainView: View {
         .onChange(of: claudeAvailableModels) { alignTaskModelWithRuntime() }
         .onChange(of: copilotAvailableModels) { alignTaskModelWithRuntime() }
         .onChange(of: runtimeModelCacheRevision) { alignTaskModelWithRuntime() }
-        .onChange(of: threadSnapshotTrigger) { _, _ in
-            threadViewModel.refreshSnapshot(for: task)
-            schedulePlanStateCacheRefresh()
-            runtimeHealthNow = Date()
-            logRuntimeHealthIfNeeded(reason: "snapshot")
-        }
-        .onChange(of: generatedFilesTrigger) { _, _ in
-            threadViewModel.refreshGeneratedFiles(folder: TaskWorkspaceAccess(task: task).taskFolder)
-            refreshTaskContextState()
-            refreshForkSourceAvailabilityWarning()
+        .background {
+            TaskThreadChangeObserver(
+                task: task,
+                generatedFilesLatestRun: currentThreadSnapshot.latestRun,
+                onSnapshotChange: {
+                    threadViewModel.refreshSnapshot(for: task)
+                    schedulePlanStateCacheRefresh()
+                    runtimeHealthNow = Date()
+                    logRuntimeHealthIfNeeded(reason: "snapshot")
+                },
+                onGeneratedFilesChange: {
+                    threadViewModel.refreshGeneratedFiles(folder: TaskWorkspaceAccess(task: task).taskFolder)
+                    refreshTaskContextState()
+                    refreshForkSourceAvailabilityWarning()
+                }
+            )
         }
         .onChange(of: runtimeHealth.telemetrySignature) { _, _ in
             logRuntimeHealthIfNeeded(reason: "health")
@@ -680,12 +707,39 @@ struct TaskMainView: View {
         headerFileItems.count
     }
 
+    /// Cached header file list. `TaskFileIndex.headerItems` does synchronous
+    /// `fileExists` + `attributesOfItem` syscalls per candidate path; reading it
+    /// from a `body` computed property meant the walk ran on the main actor ~5×
+    /// per render (once per `headerFileCount` read). It is now recomputed
+    /// off-main by `recomputeHeaderFileItems()` only when the inputs change.
+    /// See the UI responsiveness audit (Cluster 2).
     private var headerFileItems: [TaskFileItem] {
-        TaskFileIndex.headerItems(
-            runs: currentThreadSnapshot.sortedRuns,
-            generatedFilePaths: threadViewModel.generatedFilePaths,
-            inputs: task.inputs
-        )
+        headerFileItemsCache
+    }
+
+    /// Cheap, syscall-free signature of the inputs that determine the header
+    /// file list (candidate paths only). Gates the off-main recompute below.
+    private var headerFileItemsInputSignature: String {
+        let runChangePaths = currentThreadSnapshot.sortedRuns.flatMap { run in
+            run.fileChanges.map(\.path)
+        }
+        return (runChangePaths
+            + threadViewModel.generatedFilePaths
+            + task.inputs).joined(separator: "|")
+    }
+
+    private func recomputeHeaderFileItems() async {
+        let runs = currentThreadSnapshot.sortedRuns
+        let generatedFilePaths = threadViewModel.generatedFilePaths
+        let inputs = task.inputs
+        let items = await Task.detached(priority: .userInitiated) {
+            TaskFileIndex.headerItems(
+                runs: runs,
+                generatedFilePaths: generatedFilePaths,
+                inputs: inputs
+            )
+        }.value
+        headerFileItemsCache = items
     }
 
     private var headerTextShelfFileItems: [TaskFileItem] {
@@ -1711,9 +1765,20 @@ struct TaskMainView: View {
             return
         }
 
-        if shouldScrollAfterUserMessage || isChatAtBottom {
+        if shouldScrollAfterUserMessage {
+            // Discrete user action — a short animation reads well here.
             scrollChatToBottom(proxy)
             shouldScrollAfterUserMessage = false
+            return
+        }
+
+        if isChatAtBottom {
+            // Tail-follow during streaming: this handler fires on every snapshot
+            // update (~8×/sec). An animated scroll would stack a fresh 0.18s
+            // animation each time, interrupted before it settles, reading as
+            // jitter. Snap unanimated and reserve animation for discrete events.
+            // See the UI responsiveness audit (Cluster 5).
+            scrollChatToBottom(proxy, animated: false)
             return
         }
 
@@ -2150,41 +2215,42 @@ struct TaskMainView: View {
         presentation.hasVisibleDetails
     }
 
-    @ViewBuilder
     private func runActivityDisclosure(
         run: TaskRunSnapshot,
         presentation: RunActivityPresentation,
         notices: [TaskRunNotice]
     ) -> some View {
-        if run.status == .running && run.completedAt == nil {
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                runActivityDisclosureContent(
-                    run: run,
-                    presentation: presentation,
-                    notices: notices,
-                    now: context.date
-                )
-            }
-        } else {
-            runActivityDisclosureContent(
-                run: run,
-                presentation: presentation,
-                notices: notices,
-                now: Date()
-            )
-        }
+        // Previously the whole disclosure (including the expanded details with
+        // their nested ForEach) was wrapped in TimelineView(.periodic(by: 1)),
+        // so the entire subtree rebuilt every second while a run was active.
+        // Only the elapsed-duration text and the live badge depend on the clock,
+        // so the periodic context is now scoped to just those leaves. See the
+        // UI responsiveness audit (Cluster 5).
+        runActivityDisclosureContent(
+            run: run,
+            presentation: presentation,
+            notices: notices
+        )
     }
 
     private func runActivityDisclosureContent(
         run: TaskRunSnapshot,
         presentation: RunActivityPresentation,
-        notices: [TaskRunNotice],
-        now: Date
+        notices: [TaskRunNotice]
     ) -> some View {
         let isExpanded = expandedRunActivity.contains(run.id)
         let accent = runActivitySummaryColor(run: run, notices: notices)
         let title = runActivityDisclosureTitle(run: run, notices: notices)
-        let parts = runActivitySummaryParts(run: run, presentation: presentation, notices: notices, now: now)
+        // Static snapshot for the accessibility label only; the visible
+        // duration ticks via the narrowed TimelineView in
+        // runActivitySummaryPartsView so the whole disclosure no longer rebuilds
+        // every second.
+        let accessibilityParts = runActivitySummaryParts(
+            run: run,
+            presentation: presentation,
+            notices: notices,
+            now: Date()
+        )
 
         return VStack(alignment: .leading, spacing: 6) {
             Button {
@@ -2211,17 +2277,17 @@ struct TaskMainView: View {
                                 .lineLimit(1)
                                 .layoutPriority(1)
                             if run.status == .running {
-                                runActivityLiveBadge(run: run, now: now)
-                                    .fixedSize()
+                                TimelineView(.periodic(from: .now, by: 1)) { context in
+                                    runActivityLiveBadge(run: run, now: context.date)
+                                }
+                                .fixedSize()
                             }
                         }
-                        if !parts.isEmpty {
-                            Text(parts.joined(separator: " · "))
-                                .font(Stanford.chatMeta())
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .monospacedDigit()
-                        }
+                        runActivitySummaryPartsView(
+                            run: run,
+                            presentation: presentation,
+                            notices: notices
+                        )
                     }
                     Spacer(minLength: 8)
                 }
@@ -2244,7 +2310,7 @@ struct TaskMainView: View {
                 .stroke(Color.primary.opacity(0.055), lineWidth: 1)
         )
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(title). \(parts.joined(separator: ", "))")
+        .accessibilityLabel("\(title). \(accessibilityParts.joined(separator: ", "))")
         .transition(chatStatusBlockTransition)
     }
 
@@ -2254,6 +2320,51 @@ struct TaskMainView: View {
             return message.isEmpty ? "Agent is working..." : message
         }
         return "Details"
+    }
+
+    /// The "·"-joined summary parts (elapsed time, tokens, etc.). When the run
+    /// is live, only this leaf ticks on the 1 s clock; everything else in the
+    /// disclosure is built once. See the UI responsiveness audit (Cluster 5).
+    @ViewBuilder
+    private func runActivitySummaryPartsView(
+        run: TaskRunSnapshot,
+        presentation: RunActivityPresentation,
+        notices: [TaskRunNotice]
+    ) -> some View {
+        if run.status == .running && run.completedAt == nil {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                runActivitySummaryPartsText(
+                    run: run,
+                    presentation: presentation,
+                    notices: notices,
+                    now: context.date
+                )
+            }
+        } else {
+            runActivitySummaryPartsText(
+                run: run,
+                presentation: presentation,
+                notices: notices,
+                now: Date()
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func runActivitySummaryPartsText(
+        run: TaskRunSnapshot,
+        presentation: RunActivityPresentation,
+        notices: [TaskRunNotice],
+        now: Date
+    ) -> some View {
+        let parts = runActivitySummaryParts(run: run, presentation: presentation, notices: notices, now: now)
+        if !parts.isEmpty {
+            Text(parts.joined(separator: " · "))
+                .font(Stanford.chatMeta())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .monospacedDigit()
+        }
     }
 
     private func runActivityDetails(
@@ -2421,7 +2532,7 @@ struct TaskMainView: View {
                 .fill(Stanford.lagunita.opacity(dotOpacity))
                 .frame(width: 4.5, height: 4.5)
                 .scaleEffect(dotScale)
-                .animation(.easeInOut(duration: 1.2), value: dotOpacity)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 1.2), value: dotOpacity)
             Text("Live · \(elapsed)")
                 .font(Stanford.chatMeta(10))
                 .foregroundStyle(Stanford.lagunita.opacity(0.9))
@@ -5349,13 +5460,23 @@ private extension View {
 
 /// Renders text as formatted markdown with support for headers, bold, italic,
 /// code blocks, lists, tables, dividers, blockquotes, and system notices.
-struct MarkdownTextView: View {
+struct MarkdownTextView: View, Equatable {
     let text: String
     let maxContentWidth: CGFloat?
     let onSuggestedNextStep: ((String) -> Void)?
     let isSelectable: Bool
     @State private var blocks: [MarkdownBlock] = []
     @State private var skippedSuggestionIDs: Set<UUID> = []
+
+    /// Renders identically for identical inputs, so SwiftUI can skip
+    /// re-evaluating unchanged bubbles via `.equatable()` (the action closure is
+    /// a stable callback and is intentionally excluded). See the UI
+    /// responsiveness audit (Cluster 4).
+    static func == (lhs: MarkdownTextView, rhs: MarkdownTextView) -> Bool {
+        lhs.text == rhs.text
+            && lhs.maxContentWidth == rhs.maxContentWidth
+            && lhs.isSelectable == rhs.isSelectable
+    }
 
     init(
         text: String,

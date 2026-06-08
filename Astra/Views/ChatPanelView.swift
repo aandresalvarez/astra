@@ -656,7 +656,12 @@ struct ChatPanelView: View {
                 ScrollViewReader { proxy in
                     GeometryReader { viewport in
                         ScrollView {
-                            VStack(spacing: 10) {
+                            // Lazy so historical message subtrees (each hosting an
+                            // AppKit selection overlay via `.textSelection`) are
+                            // realized on demand instead of all up front — mirrors the
+                            // sibling transcript in TaskMainView. See the UI
+                            // responsiveness audit (Cluster 4).
+                            LazyVStack(spacing: 10) {
                                 if let approvedPlan = approvedDraftPlan,
                                    pendingPlan == nil {
                                     ApprovedPlanReadyCard(
@@ -979,6 +984,7 @@ struct ChatPanelView: View {
                     maxContentWidth: Stanford.chatParagraphMaxWidth,
                     onSuggestedNextStep: pursueSuggestedNextStep
                 )
+                    .equatable()
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
 

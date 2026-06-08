@@ -252,44 +252,43 @@ private let kanbanBoardCoordinateSpace = "kanbanBoardCoordinateSpace"
 /// re-bucket. Only id / status / queuePosition / isDone / updatedAt are
 /// included — exactly the fields `KanbanCategory.includes(_:)` and
 /// `KanbanCategory.sortedTasks(from:)` read.
-private struct KanbanTaskFingerprint: Equatable {
-    let id: UUID
-    let status: String
-    let queuePosition: Int
-    let isDone: Bool
-    let updatedAt: Date
-
-    init(_ task: AgentTask) {
-        self.id = task.id
-        self.status = task.status.rawValue
-        self.queuePosition = task.queuePosition
-        self.isDone = task.isDone
-        self.updatedAt = task.updatedAt
-    }
-}
-
 /// Reference-type memo for the board's per-column buckets. Held in `@State`
 /// on `KanbanBoardView`; because it is a class, mutating it in place does NOT
 /// invalidate the view (unlike mutating a value-type `@State`), so the lazy
 /// recompute can run safely from within `body`/computed reads. Recomputes the
-/// five buckets once per data change, gated on a cheap fingerprint array so
+/// five buckets once per data change, gated on a cheap fingerprint hash so
 /// streaming updates that don't change board membership or ordering reuse the
 /// previous buckets.
 private final class KanbanBucketCache {
-    private var fingerprint: [KanbanTaskFingerprint] = []
+    private var fingerprintHash = 0
     private var cached: [KanbanCategory: [AgentTask]] = [:]
     private var primed = false
 
     func buckets(for tasks: [AgentTask]) -> [KanbanCategory: [AgentTask]] {
-        let next = tasks.map(KanbanTaskFingerprint.init)
-        if primed && next == fingerprint {
+        // Allocation-free fingerprint: hash the membership/ordering inputs in a
+        // single pass rather than building a `[KanbanTaskFingerprint]` array on
+        // every call. `buckets(for:)` is read 15–25× per render (and on every
+        // drag-delta frame while dragging a card), so avoiding the per-call
+        // array allocation removes the bulk of the cost on the hot path. See
+        // the UI responsiveness audit (Cluster 3).
+        var hasher = Hasher()
+        hasher.combine(tasks.count)
+        for task in tasks {
+            hasher.combine(task.id)
+            hasher.combine(task.status.rawValue)
+            hasher.combine(task.queuePosition)
+            hasher.combine(task.isDone)
+            hasher.combine(task.updatedAt)
+        }
+        let next = hasher.finalize()
+        if primed && next == fingerprintHash {
             return cached
         }
         var result: [KanbanCategory: [AgentTask]] = [:]
         for category in KanbanCategory.allCases {
             result[category] = category.sortedTasks(from: tasks.filter { category.includes($0) })
         }
-        fingerprint = next
+        fingerprintHash = next
         cached = result
         primed = true
         return result

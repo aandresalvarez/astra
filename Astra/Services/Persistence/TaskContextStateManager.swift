@@ -304,8 +304,11 @@ enum TaskContextStateManager {
     @MainActor
     static func refresh(task: AgentTask) {
         guard let folder = ensureTaskFolder(for: task) else { return }
-        var state = load(taskFolder: folder) ?? initialState(for: task)
+        let existing = load(taskFolder: folder)
+        var state = existing ?? initialState(for: task)
         updateDerivedFields(&state, task: task, latestRun: latestRun(for: task))
+        // No-op refresh (common on task open) — skip the encode + two file writes. See perf audit.
+        guard existing != state else { return }
         state.updatedAt = timestamp(Date())
         save(state, taskFolder: folder, taskID: task.id)
     }

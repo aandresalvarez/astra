@@ -72,6 +72,10 @@ struct ShelfMarkdownPanelView: View {
     @State private var isScanningFiles = false
     @State private var fileNavigatorScope: FileNavigatorScope = .task
     @State private var fileSearchText = ""
+    /// Debounced mirror of `fileSearchText` that actually drives filtering, so a
+    /// keystroke doesn't re-filter the (up to ~5,000 node) tree on every key.
+    /// See the UI responsiveness audit (Cluster 3).
+    @State private var appliedFileSearchText = ""
     @State private var isFileSearchVisible = false
     @State private var isFileSearchCollapsed = false
     @State private var expandedRootIDs: Set<String> = []
@@ -118,6 +122,16 @@ struct ShelfMarkdownPanelView: View {
         }
         .onDisappear {
             fileIndexTask?.cancel()
+        }
+        .task(id: fileSearchText) {
+            // Apply clears immediately; debounce non-empty queries so typing
+            // doesn't re-filter the whole tree on every keystroke. `.task(id:)`
+            // cancels the prior wait when the text changes again.
+            if !fileSearchText.isEmpty {
+                try? await Task.sleep(nanoseconds: 180_000_000)
+                if Task.isCancelled { return }
+            }
+            appliedFileSearchText = fileSearchText
         }
         .onChange(of: session.selectedDocumentID) {
             isEditing = false
@@ -889,7 +903,7 @@ struct ShelfMarkdownPanelView: View {
     }
 
     private var normalizedFileSearchText: String {
-        fileSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        appliedFileSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     private var isSearchingFiles: Bool {
@@ -1148,9 +1162,12 @@ struct ShelfMarkdownPanelView: View {
         return fileNodes.filter { node in
             guard node.rootID == root.id else { return false }
             guard !query.isEmpty else { return true }
-            return node.name.lowercased().contains(query)
-                || node.relativePath.lowercased().contains(query)
-                || node.path.lowercased().contains(query)
+            // Case-insensitive search without allocating a lowercased copy of
+            // each field per node (previously 3 allocations/node over up to
+            // ~5,000 nodes). See the UI responsiveness audit (Cluster 3).
+            return node.name.range(of: query, options: .caseInsensitive) != nil
+                || node.relativePath.range(of: query, options: .caseInsensitive) != nil
+                || node.path.range(of: query, options: .caseInsensitive) != nil
         }
     }
 

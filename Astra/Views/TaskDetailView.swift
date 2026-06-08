@@ -359,59 +359,66 @@ struct ArtifactsTabView: View {
         latestRun = task.runs.max(by: { $0.startedAt < $1.startedAt })
     }
 
-    /// Recompute cachedAllFiles off the main render path. Called from onAppear/onChange.
+    /// Recompute cachedAllFiles off the main render path. Called from
+    /// onAppear/onChange. The per-file `fileExists`/`attributesOfItem` stats run
+    /// on a detached task (mirroring `scanTaskFolder`) so they never block the
+    /// main actor — the prior implementation did the syscalls synchronously
+    /// despite this comment. See the UI responsiveness audit (Cluster 2).
     private func refreshAllFiles() {
-        var files: [ArtifactFile] = []
-        var seen = Set<String>()
+        let runFileChanges = latestRun?.fileChanges ?? []
+        let folderFiles = taskFolderFiles
+        let inputs = task.inputs
+        let outputFiles = outputPathFiles
 
-        // 1. Files from fileChanges (written/edited by agent)
-        if let run = latestRun {
-            for change in run.fileChanges {
-                guard !seen.contains(change.path) else { continue }
-                seen.insert(change.path)
-                let exists = FileManager.default.fileExists(atPath: change.path)
-                files.append(ArtifactFile(
-                    path: change.path,
-                    name: URL(fileURLWithPath: change.path).lastPathComponent,
-                    isDirectory: false,
-                    size: exists ? (try? FileManager.default.attributesOfItem(atPath: change.path)[.size] as? Int64) ?? 0 : 0,
-                    source: change.kind == .write ? "created" : "changed"
-                ))
-            }
+        Task {
+            let files: [ArtifactFile] = await Task.detached(priority: .userInitiated) {
+                var files: [ArtifactFile] = []
+                var seen = Set<String>()
+                let fm = FileManager.default
+
+                // 1. Files from fileChanges (written/edited by agent)
+                for change in runFileChanges {
+                    guard !seen.contains(change.path) else { continue }
+                    seen.insert(change.path)
+                    let exists = fm.fileExists(atPath: change.path)
+                    files.append(ArtifactFile(
+                        path: change.path,
+                        name: URL(fileURLWithPath: change.path).lastPathComponent,
+                        isDirectory: false,
+                        size: exists ? (try? fm.attributesOfItem(atPath: change.path)[.size] as? Int64) ?? 0 : 0,
+                        source: change.kind == .write ? "created" : "changed"
+                    ))
+                }
+
+                // 2. Files in task output folder
+                for file in folderFiles where seen.insert(file.path).inserted {
+                    files.append(file)
+                }
+
+                // 3. Attached input files
+                for input in inputs where !input.isEmpty {
+                    guard seen.insert(input).inserted else { continue }
+                    var isDir: ObjCBool = false
+                    let exists = fm.fileExists(atPath: input, isDirectory: &isDir)
+                    files.append(ArtifactFile(
+                        path: input,
+                        name: URL(fileURLWithPath: input).lastPathComponent,
+                        isDirectory: isDir.boolValue,
+                        size: exists && !isDir.boolValue ? ((try? fm.attributesOfItem(atPath: input)[.size] as? Int64) ?? 0) : 0,
+                        source: "input"
+                    ))
+                }
+
+                // 4. File paths found in output text (for imported sessions)
+                for file in outputFiles where seen.insert(file.path).inserted {
+                    files.append(file)
+                }
+
+                return files
+            }.value
+
+            cachedAllFiles = files
         }
-
-        // 2. Files in task output folder
-        for file in taskFolderFiles {
-            if !seen.contains(file.path) {
-                seen.insert(file.path)
-                files.append(file)
-            }
-        }
-
-        // 3. Attached input files
-        for input in task.inputs where !input.isEmpty {
-            guard !seen.contains(input) else { continue }
-            seen.insert(input)
-            var isDir: ObjCBool = false
-            let exists = FileManager.default.fileExists(atPath: input, isDirectory: &isDir)
-            files.append(ArtifactFile(
-                path: input,
-                name: URL(fileURLWithPath: input).lastPathComponent,
-                isDirectory: isDir.boolValue,
-                size: exists && !isDir.boolValue ? ((try? FileManager.default.attributesOfItem(atPath: input)[.size] as? Int64) ?? 0) : 0,
-                source: "input"
-            ))
-        }
-
-        // 4. File paths found in output text (for imported sessions)
-        for file in outputPathFiles {
-            if !seen.contains(file.path) {
-                seen.insert(file.path)
-                files.append(file)
-            }
-        }
-
-        cachedAllFiles = files
     }
 
     @State private var outputPathFiles: [ArtifactFile] = []
@@ -767,569 +774,5 @@ struct DiffsTabView: View {
         } // Group
         .onAppear { rebuildLatestRun() }
         .onChange(of: task.runs.count) { rebuildLatestRun() }
-    }
-}
-
-// MARK: - Merged Files Tab (Changes + Artifacts)
-
-struct FilesTabView: View {
-    let task: AgentTask
-    var onOpenGeneratedFile: ((String) -> Void)?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var expandedPaths: Set<String> = []
-    @State private var taskFolderFiles: [ArtifactFile] = []
-    @State private var outputPathFiles: [ArtifactFile] = []
-    @State private var cachedAllFiles: [ArtifactFile] = []
-    @State private var fileContents: [String: String] = [:]
-    @State private var viewMode: [String: FileViewMode] = [:]
-
-    enum FileViewMode: String {
-        case content, diff
-    }
-
-    typealias ArtifactFile = TaskFileItem
-
-    @State private var showInternalFiles = false
-    @State private var latestRun: TaskRun?
-
-    private func rebuildLatestRun() {
-        latestRun = task.runs.max(by: { $0.startedAt < $1.startedAt })
-    }
-
-    private static let internalPatterns: Set<String> = ["session_history.md"]
-    private static let internalPrefixes = ["turn_"]
-
-    private func isInternalFile(_ file: ArtifactFile) -> Bool {
-        let name = file.name.lowercased()
-        if Self.internalPatterns.contains(name) { return true }
-        if Self.internalPrefixes.contains(where: { name.hasPrefix($0) }) { return true }
-        return false
-    }
-
-    private var taskFiles: [ArtifactFile] {
-        cachedAllFiles.filter { !isInternalFile($0) }
-    }
-
-    private var internalFiles: [ArtifactFile] {
-        cachedAllFiles.filter { isInternalFile($0) }
-            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            if cachedAllFiles.isEmpty {
-                ContentUnavailableView("No Files", systemImage: "doc",
-                    description: Text("Files will appear here when the task produces or references files."))
-            } else {
-                // Header
-                HStack {
-                    Text("\(taskFiles.count) file\(taskFiles.count == 1 ? "" : "s")")
-                        .font(Stanford.caption(13))
-                        .foregroundStyle(Stanford.coolGrey)
-                    Spacer()
-                    if !TaskWorkspaceAccess(task: task).taskFolder.isEmpty {
-                        Button {
-                            NSWorkspace.shared.open(URL(fileURLWithPath: TaskWorkspaceAccess(task: task).taskFolder))
-                        } label: {
-                            Label("Open Folder", systemImage: "folder")
-                                .font(Stanford.caption(12))
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(Stanford.lagunita)
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-
-                Divider()
-
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        // Task files (user-visible artifacts and changes)
-                        ForEach(taskFiles) { file in
-                            VStack(spacing: 0) {
-                                fileRow(file)
-                                if expandedPaths.contains(file.path) {
-                                    fileDetail(file)
-                                }
-                                Divider().opacity(0.3)
-                            }
-                        }
-
-                        // Internal files section (turn logs, session history)
-                        if !internalFiles.isEmpty {
-                            Button {
-                                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
-                                    showInternalFiles.toggle()
-                                }
-                            } label: {
-                                HStack(spacing: 8) {
-                                    Image(systemName: showInternalFiles ? "chevron.down" : "chevron.right")
-                                        .font(Stanford.ui(10))
-                                        .foregroundStyle(.tertiary)
-                                        .frame(width: 14)
-                                    Image(systemName: "gearshape.2")
-                                        .font(Stanford.ui(12))
-                                        .foregroundStyle(.tertiary)
-                                    Text("Internal (\(internalFiles.count))")
-                                        .font(Stanford.caption(12))
-                                        .foregroundStyle(.tertiary)
-                                    Text("Turn logs, session data")
-                                        .font(Stanford.caption(11))
-                                        .foregroundStyle(.quaternary)
-                                    Spacer()
-                                }
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 10)
-                                .background(Stanford.fog.opacity(0.3))
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-
-                            if showInternalFiles {
-                                ForEach(internalFiles) { file in
-                                    VStack(spacing: 0) {
-                                        fileRow(file)
-                                        if expandedPaths.contains(file.path) {
-                                            fileDetail(file)
-                                        }
-                                        Divider().opacity(0.3)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        .onAppear {
-            rebuildLatestRun()
-            scanTaskFolder()
-            extractPathsFromOutput()
-            refreshAllFiles()
-        }
-        .onChange(of: task.runs.count) {
-            rebuildLatestRun()
-            extractPathsFromOutput()
-            refreshAllFiles()
-        }
-        .onChange(of: taskFolderFiles.count) { refreshAllFiles() }
-        .onChange(of: outputPathFiles.count) { refreshAllFiles() }
-    }
-
-    // MARK: - File Row
-
-    private var isFileReadable: (ArtifactFile) -> Bool {
-        { file in
-            TaskGeneratedFiles.isFilesShelfFile(file.path)
-        }
-    }
-
-    private func isMarkdown(_ file: ArtifactFile) -> Bool {
-        TaskGeneratedFiles.isMarkdownFile(file.path)
-    }
-
-    private func shelfDestination(for file: ArtifactFile) -> TaskGeneratedFileShelfDestination? {
-        guard !file.isDirectory,
-              FileManager.default.fileExists(atPath: file.path) else {
-            return nil
-        }
-        return TaskGeneratedFiles.shelfDestination(for: file.path)
-    }
-
-    private func openInShelf(_ file: ArtifactFile) {
-        guard shelfDestination(for: file) != nil else { return }
-        onOpenGeneratedFile?(file.path)
-    }
-
-    private func loadFileContent(_ file: ArtifactFile) {
-        guard fileContents[file.path] == nil,
-              FileManager.default.fileExists(atPath: file.path) else { return }
-        let path = file.path
-        Task {
-            let text: String = await Task.detached(priority: .userInitiated) {
-                let url = URL(fileURLWithPath: path)
-                guard let data = try? Data(contentsOf: url),
-                      data.count < 200_000,
-                      let str = String(data: data, encoding: .utf8) else {
-                    return "[Binary or file too large to preview]"
-                }
-                return str
-            }.value
-            fileContents[path] = text
-        }
-    }
-
-    private func fileRow(_ file: ArtifactFile) -> some View {
-        HStack(spacing: 10) {
-            Button {
-                toggleExpanded(file)
-            } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: fileIcon(for: file))
-                        .font(Stanford.ui(14))
-                        .foregroundStyle(fileColor(for: file.source))
-                        .frame(width: 22)
-
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(file.name)
-                            .font(Stanford.body(14))
-                            .foregroundStyle(Stanford.black)
-                            .lineLimit(1)
-                        Text(file.path)
-                            .font(Stanford.caption(11))
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-            .buttonStyle(.plain)
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            if let destination = shelfDestination(for: file), onOpenGeneratedFile != nil {
-                Button {
-                    openInShelf(file)
-                } label: {
-                    Label(destination.compactTitle, systemImage: destination.systemImage)
-                        .font(Stanford.caption(11).weight(.medium))
-                        .labelStyle(.titleAndIcon)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Stanford.lagunita.opacity(0.10))
-                        .clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(Stanford.lagunita)
-                .help(destination.title)
-            }
-
-            Text(file.source)
-                .font(Stanford.caption(11))
-                .foregroundStyle(fileColor(for: file.source))
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(fileColor(for: file.source).opacity(0.1))
-                .clipShape(Capsule())
-
-            if file.size > 0 {
-                Text(formatSize(file.size))
-                    .font(Stanford.caption(11))
-                    .foregroundStyle(Stanford.coolGrey)
-            }
-
-            Button {
-                toggleExpanded(file)
-            } label: {
-                Image(systemName: expandedPaths.contains(file.path) ? "chevron.down" : "chevron.right")
-                    .font(Stanford.ui(11))
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 18, height: 18)
-            }
-            .buttonStyle(.plain)
-            .help(expandedPaths.contains(file.path) ? "Hide file details" : "Show file details")
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .contentShape(Rectangle())
-        .contextMenu {
-            Button {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(file.path, forType: .string)
-            } label: {
-                Label("Copy Path", systemImage: "doc.on.doc")
-            }
-            if FileManager.default.fileExists(atPath: file.path) {
-                if let destination = shelfDestination(for: file), onOpenGeneratedFile != nil {
-                    Button {
-                        openInShelf(file)
-                    } label: {
-                        Label(destination.title, systemImage: destination.systemImage)
-                    }
-                }
-                Button {
-                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: file.path)])
-                } label: {
-                    Label("Reveal in Finder", systemImage: "folder")
-                }
-                Button {
-                    NSWorkspace.shared.open(URL(fileURLWithPath: file.path))
-                } label: {
-                    Label("Open in Default App", systemImage: "arrow.up.right.square")
-                }
-            }
-        }
-    }
-
-    private func toggleExpanded(_ file: ArtifactFile) {
-        if expandedPaths.contains(file.path) {
-            expandedPaths.remove(file.path)
-        } else {
-            expandedPaths.insert(file.path)
-            loadFileContent(file)
-            // Default to content view, diff if the file has changes
-            if viewMode[file.path] == nil {
-                viewMode[file.path] = file.change != nil ? .diff : .content
-            }
-        }
-    }
-
-    // MARK: - File Detail (Content + Diff)
-
-    private func fileDetail(_ file: ArtifactFile) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Mode toggle bar
-            HStack(spacing: 12) {
-                if file.change != nil {
-                    Picker("", selection: Binding(
-                        get: { viewMode[file.path] ?? .content },
-                        set: { viewMode[file.path] = $0 }
-                    )) {
-                        Label("Content", systemImage: "doc.text").tag(FileViewMode.content)
-                        Label("Diff", systemImage: "arrow.left.arrow.right").tag(FileViewMode.diff)
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 200)
-                }
-
-                Spacer()
-
-                if FileManager.default.fileExists(atPath: file.path) {
-                    if let destination = shelfDestination(for: file), onOpenGeneratedFile != nil {
-                        Button {
-                            openInShelf(file)
-                        } label: {
-                            Label(destination.title, systemImage: destination.systemImage)
-                                .font(Stanford.caption(12))
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(Stanford.lagunita)
-                        .help(destination.title)
-                    }
-
-                    Button {
-                        NSWorkspace.shared.open(URL(fileURLWithPath: file.path))
-                    } label: {
-                        Label("Default App", systemImage: "arrow.up.right.square")
-                            .font(Stanford.caption(12))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Stanford.lagunita)
-                }
-
-                if let change = file.change {
-                    Text(change.timestamp, style: .time)
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-
-            Divider().opacity(0.3)
-
-            let mode = viewMode[file.path] ?? .content
-
-            if mode == .diff, let change = file.change {
-                diffContent(change)
-            } else {
-                fileContentView(file)
-            }
-        }
-        .background(Stanford.fog.opacity(0.5))
-    }
-
-    @ViewBuilder
-    private func fileContentView(_ file: ArtifactFile) -> some View {
-        if let content = fileContents[file.path] {
-            if content == "[Binary or file too large to preview]" {
-                HStack {
-                    Image(systemName: "exclamationmark.triangle")
-                        .foregroundStyle(Stanford.poppy)
-                    Text(content)
-                        .font(Stanford.caption(13))
-                        .foregroundStyle(Stanford.coolGrey)
-                }
-                .padding(16)
-            } else if isMarkdown(file) {
-                renderedMarkdown(content, path: file.path)
-                    .padding(16)
-            } else {
-                ScrollView(.horizontal, showsIndicators: true) {
-                    Text(content)
-                        .font(Stanford.ui(12, design: .monospaced))
-                        .textSelection(.enabled)
-                        .padding(12)
-                }
-                .frame(maxHeight: 500)
-            }
-        } else if !FileManager.default.fileExists(atPath: file.path) {
-            HStack {
-                Image(systemName: "exclamationmark.triangle")
-                    .foregroundStyle(Stanford.poppy)
-                Text("File no longer exists at this path")
-                    .font(Stanford.caption(13))
-                    .foregroundStyle(Stanford.coolGrey)
-            }
-            .padding(16)
-        } else {
-            ProgressView()
-                .padding(16)
-                .onAppear { loadFileContent(file) }
-        }
-    }
-
-    private func renderedMarkdown(_ text: String, path _: String) -> some View {
-        MarkdownTextView(text: text)
-            .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func diffContent(_ change: StoredFileChange) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label(change.changeType, systemImage: change.kind == .write ? "doc.badge.plus" : "pencil")
-                    .font(Stanford.caption(12).weight(.medium))
-                    .foregroundStyle(change.kind == .write ? Stanford.paloAltoGreen : Stanford.poppy)
-                Spacer()
-            }
-
-            if change.kind == .write {
-                if let content = change.content {
-                    ScrollView(.horizontal, showsIndicators: true) {
-                        Text(content)
-                            .font(Stanford.ui(12, design: .monospaced))
-                            .textSelection(.enabled)
-                            .padding(8)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Stanford.diffAdded.opacity(0.05))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                }
-            } else {
-                if let oldStr = change.oldString {
-                    HStack(spacing: 6) {
-                        Image(systemName: "minus.circle.fill")
-                            .foregroundStyle(Stanford.diffRemoved.opacity(0.6))
-                            .font(Stanford.caption())
-                        Text("Removed")
-                            .font(Stanford.caption(11).weight(.medium))
-                            .foregroundStyle(Stanford.diffRemoved.opacity(0.7))
-                    }
-                    ScrollView(.horizontal, showsIndicators: true) {
-                        Text(oldStr)
-                            .font(Stanford.ui(12, design: .monospaced))
-                            .textSelection(.enabled)
-                            .padding(8)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Stanford.diffRemoved.opacity(0.06))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                }
-                if let newStr = change.newString {
-                    HStack(spacing: 6) {
-                        Image(systemName: "plus.circle.fill")
-                            .foregroundStyle(Stanford.diffAdded.opacity(0.6))
-                            .font(Stanford.caption())
-                        Text("Added")
-                            .font(Stanford.caption(11).weight(.medium))
-                            .foregroundStyle(Stanford.diffAdded.opacity(0.7))
-                    }
-                    ScrollView(.horizontal, showsIndicators: true) {
-                        Text(newStr)
-                            .font(Stanford.ui(12, design: .monospaced))
-                            .textSelection(.enabled)
-                            .padding(8)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Stanford.diffAdded.opacity(0.06))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                }
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-    }
-
-    // MARK: - Data Loading
-
-    private func refreshAllFiles() {
-        cachedAllFiles = TaskFileIndex.mergedItems(
-            latestRun: latestRun,
-            taskFolderFiles: taskFolderFiles,
-            inputs: task.inputs,
-            outputPathFiles: outputPathFiles
-        )
-    }
-
-    private func scanTaskFolder() {
-        let folder = TaskWorkspaceAccess(task: task).taskFolder
-        Task {
-            let scanned: [ArtifactFile] = await Task.detached(priority: .userInitiated) {
-                TaskFileIndex.scanTaskFolder(folder)
-            }.value
-            taskFolderFiles = scanned
-        }
-    }
-
-    private func extractPathsFromOutput() {
-        var texts: [String] = []
-        if let run = latestRun { texts.append(run.output) }
-        for event in task.events where ["tool.use", "agent.response"].contains(event.type) {
-            texts.append(event.payload)
-        }
-        let combined = texts.joined(separator: "\n")
-        guard !combined.isEmpty else { return }
-        Task {
-            let found: [ArtifactFile] = await Task.detached(priority: .userInitiated) {
-                TaskFileIndex.referencedItems(in: combined)
-            }.value
-            outputPathFiles = found
-        }
-    }
-
-    // MARK: - Helpers
-
-    private func fileIcon(for file: ArtifactFile) -> String {
-        if file.isDirectory { return "folder.fill" }
-        if file.change != nil {
-            return file.change?.kind == .write ? "doc.badge.plus" : "pencil"
-        }
-        let ext = URL(fileURLWithPath: file.path).pathExtension.lowercased()
-        switch ext {
-        case "swift", "py", "js", "ts", "go", "rs", "java", "kt", "c", "cpp", "h", "m":
-            return "doc.text"
-        case "json", "yaml", "yml", "toml", "xml", "plist":
-            return "doc.badge.gearshape"
-        case "md", "markdown", "qmd", "txt", "rtf", "log":
-            return "doc.plaintext"
-        case "html", "htm", "css":
-            return "globe"
-        case "png", "jpg", "jpeg", "gif", "svg", "webp":
-            return "photo"
-        case "pdf":
-            return "doc.richtext"
-        case "zip", "tar", "gz":
-            return "doc.zipper"
-        default:
-            return "doc"
-        }
-    }
-
-    private func fileColor(for source: String) -> Color {
-        switch source {
-        case "created": return Stanford.paloAltoGreen
-        case "changed": return Stanford.poppy
-        case "input": return Stanford.cardinalRed
-        case "folder": return Stanford.driftwood
-        case "referenced": return Stanford.sky
-        default: return Stanford.lagunita
-        }
-    }
-
-    private func formatSize(_ bytes: Int64) -> String {
-        if bytes < 1024 { return "\(bytes) B" }
-        if bytes < 1024 * 1024 { return String(format: "%.1f KB", Double(bytes) / 1024) }
-        return String(format: "%.1f MB", Double(bytes) / (1024 * 1024))
     }
 }
