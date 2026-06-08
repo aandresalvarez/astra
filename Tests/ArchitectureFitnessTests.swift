@@ -317,6 +317,24 @@ struct ArchitectureFitnessTests {
         #expect(shelfSession.contains("NSImage(contentsOf:"))
     }
 
+    @Test("Completed chat markdown avoids SwiftUI text selection overlay")
+    func completedChatMarkdownAvoidsSwiftUITextSelectionOverlay() throws {
+        let root = try repositoryRoot()
+        let taskMainView = try fileText("Astra/Views/TaskMainView.swift", root: root)
+        let completedAgentMarkdownView = try extractedStruct(
+            named: "CompletedAgentMarkdownView",
+            from: taskMainView
+        )
+        let streamingAgentTextView = try extractedStruct(
+            named: "StreamingAgentTextView",
+            from: taskMainView
+        )
+
+        #expect(completedAgentMarkdownView.contains("isSelectable: false"))
+        #expect(!completedAgentMarkdownView.contains(".textSelection(.enabled)"))
+        #expect(!streamingAgentTextView.contains(".textSelection(.enabled)"))
+    }
+
     @Test("Repository protection artifacts stay wired")
     func repositoryProtectionArtifactsStayWired() throws {
         let root = try repositoryRoot()
@@ -447,6 +465,34 @@ struct ArchitectureFitnessTests {
         )
     }
 
+    private func extractedStruct(named name: String, from source: String) throws -> String {
+        guard let declarationRange = source.range(of: "struct \(name)") else {
+            throw ArchitectureFitnessError.sourceSnippetNotFound(name)
+        }
+        guard let openingBrace = source[declarationRange.lowerBound...].firstIndex(of: "{") else {
+            throw ArchitectureFitnessError.sourceSnippetNotFound(name)
+        }
+
+        var depth = 0
+        var index = openingBrace
+        while index < source.endIndex {
+            switch source[index] {
+            case "{":
+                depth += 1
+            case "}":
+                depth -= 1
+                if depth == 0 {
+                    return String(source[declarationRange.lowerBound...index])
+                }
+            default:
+                break
+            }
+            index = source.index(after: index)
+        }
+
+        throw ArchitectureFitnessError.sourceSnippetNotFound(name)
+    }
+
     private func isExecutable(_ file: URL) throws -> Bool {
         let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
         guard let permissions = attributes[.posixPermissions] as? NSNumber else {
@@ -458,4 +504,5 @@ struct ArchitectureFitnessTests {
 
 private enum ArchitectureFitnessError: Error {
     case repositoryRootNotFound
+    case sourceSnippetNotFound(String)
 }
