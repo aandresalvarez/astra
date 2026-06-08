@@ -307,6 +307,47 @@ struct ArchitectureFitnessTests {
         #expect(count <= 129, "Prefer settings snapshots or stores over new direct @AppStorage reads. Current count: \(count)")
     }
 
+    @Test("Files shelf does not decode image previews from SwiftUI body")
+    func filesShelfDoesNotDecodeImagePreviewsFromSwiftUIBody() throws {
+        let root = try repositoryRoot()
+        let shelfView = try fileText("Astra/Views/ShelfMarkdownPanelView.swift", root: root)
+        let shelfSession = try fileText("Astra/Services/Browser/ShelfMarkdownSession.swift", root: root)
+
+        #expect(!shelfView.contains("NSImage(contentsOf:"))
+        #expect(shelfSession.contains("NSImage(contentsOf:"))
+    }
+
+    @Test("Files shelf image reload fast-paths unchanged previews before decoding")
+    func filesShelfImageReloadFastPathsUnchangedPreviewsBeforeDecoding() throws {
+        let root = try repositoryRoot()
+        let shelfSession = try fileText("Astra/Services/Browser/ShelfMarkdownSession.swift", root: root)
+        let loadStart = try #require(shelfSession.range(of: "func load(_ url: URL)"))
+        let selectStart = try #require(shelfSession[loadStart.upperBound...].range(of: "func selectDocument"))
+        let loadBody = String(shelfSession[loadStart.lowerBound..<selectStart.lowerBound])
+        let reuseFastPath = try #require(loadBody.range(of: "reuseUnchangedImageDocument"))
+        let fullDocumentLoad = try #require(loadBody.range(of: "Self.makeDocument(for: url)"))
+
+        #expect(reuseFastPath.lowerBound < fullDocumentLoad.lowerBound)
+    }
+
+    @Test("Completed chat markdown avoids SwiftUI text selection overlay")
+    func completedChatMarkdownAvoidsSwiftUITextSelectionOverlay() throws {
+        let root = try repositoryRoot()
+        let taskMainView = try fileText("Astra/Views/TaskMainView.swift", root: root)
+        let completedAgentMarkdownView = try extractedStruct(
+            named: "CompletedAgentMarkdownView",
+            from: taskMainView
+        )
+        let streamingAgentTextView = try extractedStruct(
+            named: "StreamingAgentTextView",
+            from: taskMainView
+        )
+
+        #expect(completedAgentMarkdownView.contains("isSelectable: false"))
+        #expect(!completedAgentMarkdownView.contains(".textSelection(.enabled)"))
+        #expect(!streamingAgentTextView.contains(".textSelection(.enabled)"))
+    }
+
     @Test("Repository protection artifacts stay wired")
     func repositoryProtectionArtifactsStayWired() throws {
         let root = try repositoryRoot()
@@ -437,6 +478,34 @@ struct ArchitectureFitnessTests {
         )
     }
 
+    private func extractedStruct(named name: String, from source: String) throws -> String {
+        guard let declarationRange = source.range(of: "struct \(name)") else {
+            throw ArchitectureFitnessError.sourceSnippetNotFound(name)
+        }
+        guard let openingBrace = source[declarationRange.lowerBound...].firstIndex(of: "{") else {
+            throw ArchitectureFitnessError.sourceSnippetNotFound(name)
+        }
+
+        var depth = 0
+        var index = openingBrace
+        while index < source.endIndex {
+            switch source[index] {
+            case "{":
+                depth += 1
+            case "}":
+                depth -= 1
+                if depth == 0 {
+                    return String(source[declarationRange.lowerBound...index])
+                }
+            default:
+                break
+            }
+            index = source.index(after: index)
+        }
+
+        throw ArchitectureFitnessError.sourceSnippetNotFound(name)
+    }
+
     private func isExecutable(_ file: URL) throws -> Bool {
         let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
         guard let permissions = attributes[.posixPermissions] as? NSNumber else {
@@ -448,4 +517,5 @@ struct ArchitectureFitnessTests {
 
 private enum ArchitectureFitnessError: Error {
     case repositoryRootNotFound
+    case sourceSnippetNotFound(String)
 }
