@@ -1681,13 +1681,13 @@ struct ShelfMarkdownPanelView: View {
 
     @ViewBuilder
     private func imagePreviewBody(_ document: ShelfMarkdownDocument) -> some View {
-        if let image = NSImage(contentsOf: document.fileURL) {
+        if let preview = document.imagePreview {
             GeometryReader { proxy in
                 ZStack {
                     Stanford.cardBackground.opacity(0.45)
 
                     ScrollView([.horizontal, .vertical]) {
-                        Image(nsImage: image)
+                        Image(nsImage: preview.image)
                             .resizable()
                             .interpolation(.medium)
                             .scaledToFit()

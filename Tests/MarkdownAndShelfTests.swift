@@ -1,5 +1,6 @@
 import Testing
 import AppKit
+import Combine
 import SwiftUI
 @testable import ASTRA
 import ASTRACore
@@ -518,6 +519,51 @@ struct ShelfMarkdownSessionTests {
     }
 
     @MainActor
+    @Test("Reloading unchanged image file keeps the same preview without publishing")
+    func reloadingUnchangedImageFileKeepsSamePreviewWithoutPublishing() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-image-reload-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let imageFile = root.appendingPathComponent("preview.png")
+        let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 3,
+            pixelsHigh: 2,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        )
+        let pngData = try #require(bitmap?.representation(using: .png, properties: [:]))
+        try pngData.write(to: imageFile)
+
+        let session = ShelfMarkdownSession()
+        session.load(imageFile)
+        let firstDocument = try #require(session.selectedDocument)
+        let firstPreview = try #require(firstDocument.imagePreview)
+        var publishCount = 0
+        let cancellable = session.objectWillChange.sink { _ in
+            publishCount += 1
+        }
+
+        withExtendedLifetime(cancellable) {
+            session.load(imageFile)
+        }
+
+        let reloadedDocument = try #require(session.selectedDocument)
+        #expect(publishCount == 0)
+        #expect(reloadedDocument.contentSignature == firstDocument.contentSignature)
+        #expect(reloadedDocument.imagePreview == firstPreview)
+        #expect(reloadedDocument.imageSize.map { Int($0.width) } == 3)
+        #expect(reloadedDocument.imageSize.map { Int($0.height) } == 2)
+    }
+
+    @MainActor
     @Test("Reloading selected text file discards dirty edits and rereads disk")
     func reloadingSelectedTextFileDiscardsDirtyEditsAndRereadsDisk() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -586,4 +632,3 @@ struct ShelfMarkdownSessionTests {
         #expect(session.isSelectedDocumentDirty == false)
     }
 }
-
