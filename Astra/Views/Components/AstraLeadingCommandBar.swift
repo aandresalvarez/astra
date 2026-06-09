@@ -7,6 +7,7 @@ enum AstraLeadingCommandBarMetrics {
     /// chrome. Reserving one inert command slot makes the first actionable button
     /// land in the same reliable hit region where the following controls work.
     static let reservedAccessorySlotWidth: CGFloat = AstraToolbarCommandMetrics.iconWidth
+    static let reservedAccessorySlotAllowsHitTesting = false
     static let trailingPadding: CGFloat = 2
 }
 
@@ -44,6 +45,7 @@ struct AstraLeadingCommandBar: View {
                     width: AstraLeadingCommandBarMetrics.reservedAccessorySlotWidth,
                     height: AstraToolbarCommandMetrics.controlHeight
                 )
+            .allowsHitTesting(AstraLeadingCommandBarMetrics.reservedAccessorySlotAllowsHitTesting)
             .accessibilityHidden(true)
 
             Button {

@@ -65,4 +65,9 @@ struct WindowChromeConfiguratorTests {
                 >= AstraToolbarCommandMetrics.iconWidth
         )
     }
+
+    @Test("Reserved leading command slot does not capture titlebar hit testing")
+    func leadingCommandBarReservedSlotDoesNotCaptureHitTesting() {
+        #expect(!AstraLeadingCommandBarMetrics.reservedAccessorySlotAllowsHitTesting)
+    }
 }

@@ -17,8 +17,18 @@ struct SidebarSurface<Content: View>: View {
     enum Style { case docked, floating }
 
     let style: Style
-    var width: CGFloat = SidebarColumnLayout.expandedIdealWidth
-    @ViewBuilder var content: Content
+    let width: CGFloat
+    let content: Content
+
+    init(
+        style: Style,
+        width: CGFloat = SidebarColumnLayout.expandedIdealWidth,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.style = style
+        self.width = width
+        self.content = content()
+    }
 
     var body: some View {
         switch style {
