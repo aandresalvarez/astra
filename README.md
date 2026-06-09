@@ -320,6 +320,11 @@ ASTRA_RELEASE_MODE=developer-id ./script/release_update.sh
 
 That future path requires Apple Developer ID signing and notarization.
 
+For the full code-signing setup — including a stable self-signed identity for
+local development (which avoids the Keychain re-prompts that ad-hoc signing
+causes on every rebuild) and the Developer ID + notarization steps — see
+[docs/code-signing.md](docs/code-signing.md).
+
 ## Project Structure
 
 ```text
