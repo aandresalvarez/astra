@@ -25,6 +25,7 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
     let redactedSummary: String
     let rawErrorCharacterCount: Int
     let userMessage: String
+    let stderrWasWarningOnly: Bool
 
     var hasErrorOutput: Bool {
         rawErrorCharacterCount > 0
@@ -42,10 +43,23 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
         maxTurnsExceeded: Bool = false
     ) -> AgentRuntimeFailureDiagnostic {
         let raw = rawError ?? ""
-        let redacted = LogSanitizer.sanitize(raw, maxLength: 800)
+        // Strip benign provider warnings (e.g. deprecation notices) so they never
+        // become the surfaced cause or defeat the noVisibleOutput branch below.
+        let meaningful = strippingBenignWarnings(raw)
+        // "Warning only" requires actual (non-whitespace) stderr that reduced to
+        // nothing after stripping benign warnings — a blank line or trailing
+        // newline must not count as a warning.
+        let hadStderr = !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let warningOnly = hadStderr && meaningful.isEmpty
+        let redacted = LogSanitizer.sanitize(meaningful, maxLength: 800)
+        // Keyword classification (auth/model/quota/...) still inspects the FULL
+        // output so a real error embedded alongside a warning is matched first.
         let haystack = "\(raw)\n\(redacted)".lowercased()
+        // The noVisibleOutput empty-check uses only the warning-stripped text.
+        let meaningfulHaystack = meaningful.trimmingCharacters(in: .whitespacesAndNewlines)
         let category = classifyCategory(
             haystack: haystack,
+            meaningfulHaystackEmpty: meaningfulHaystack.isEmpty,
             stream: stream,
             timedOut: timedOut,
             budgetExceeded: budgetExceeded,
@@ -61,7 +75,8 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
             category: category,
             redactedSummary: summary,
             rawErrorCharacterCount: raw.count,
-            userMessage: userMessage(for: category, runtime: runtime, model: resolvedModel)
+            userMessage: userMessage(for: category, runtime: runtime, model: resolvedModel),
+            stderrWasWarningOnly: warningOnly
         )
     }
 
@@ -75,7 +90,8 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
             "failure_category": category.rawValue,
             "has_error_output": String(hasErrorOutput),
             "raw_error_chars": String(rawErrorCharacterCount),
-            "error_summary": redactedSummary
+            "error_summary": redactedSummary,
+            "stderr_was_warning_only": String(stderrWasWarningOnly)
         ]
         if let stream {
             fields["raw_lines"] = String(stream.rawLineCount)
@@ -100,6 +116,7 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
 
     private static func classifyCategory(
         haystack: String,
+        meaningfulHaystackEmpty: Bool,
         stream: AgentRuntimeStreamTelemetrySnapshot?,
         timedOut: Bool,
         budgetExceeded: Bool,
@@ -164,10 +181,30 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
            stream.rawLineCount > 0,
            stream.textEventCount == 0,
            stream.completedEventCount == 0,
-           haystack.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+           meaningfulHaystackEmpty {
+            // A benign warning (e.g. a deprecation notice) leaves no meaningful
+            // stderr, so it no longer defeats this branch. Genuine unmatched
+            // errors still fall through to providerProcessFailed below.
             return .noVisibleOutput
         }
         return .providerProcessFailed
+    }
+
+    /// Drops lines that are only provider warnings (deprecation notices, etc.)
+    /// so they never surface as the failure cause. Substantive lines survive.
+    private static func strippingBenignWarnings(_ raw: String) -> String {
+        // Deprecation notices may appear mid-line, but a generic "warning:" is only
+        // treated as benign at the start of a line so a substantive error that merely
+        // mentions the word is never dropped.
+        let benignSubstrings = ["is deprecated", "deprecated. use"]
+        let kept = raw
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { line in
+                let lowered = line.lowercased()
+                if lowered.trimmingCharacters(in: .whitespaces).hasPrefix("warning:") { return false }
+                return !benignSubstrings.contains { lowered.contains($0) }
+            }
+        return kept.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func userMessage(for category: AgentRuntimeFailureCategory, runtime: AgentRuntimeID, model: String) -> String {
@@ -193,6 +230,10 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
         case .budgetExceeded:
             return "\(runtime.displayName) stopped because the configured task budget was reached."
         case .noVisibleOutput:
+            if runtime == .claudeCode {
+                let hint = CommonCLIPrerequisites.claude.authHint ?? "Run `claude /login` or set `ANTHROPIC_API_KEY`."
+                return "\(runtime.displayName) returned no output. It is usually not logged in (\(hint)) or a SessionStart hook failed before any response was produced."
+            }
             return "\(runtime.displayName) exited before returning a visible assistant response."
         case .providerProcessFailed:
             return "\(runtime.displayName) failed before ASTRA received a visible assistant response."
