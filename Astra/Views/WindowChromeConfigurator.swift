@@ -1,6 +1,21 @@
 import AppKit
 import SwiftUI
 
+struct WindowChromeCommandBarState: Equatable {
+    let isSearchActive: Bool
+    let isSidebarHidden: Bool
+    let titleBarHeight: CGFloat?
+}
+
+enum WindowChromeCommandBarRefreshPolicy {
+    static func shouldRefresh(
+        previous: WindowChromeCommandBarState?,
+        next: WindowChromeCommandBarState
+    ) -> Bool {
+        previous != next
+    }
+}
+
 /// Small AppKit bridge for window chrome that SwiftUI does not fully expose on macOS 14.
 ///
 /// Besides the transparent/unified titlebar tweaks, this installs a leading
@@ -10,9 +25,9 @@ import SwiftUI
 /// items slide to the detail column's leading edge when the sidebar is open).
 struct WindowChromeConfigurator: NSViewRepresentable {
     @Binding var isSearchActive: Bool
+    let sidebarCommands: SidebarTitlebarCommandBridge
     @Binding var isSidebarToggleHovered: Bool
     var isSidebarHidden: Bool
-    var onToggleSidebar: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -33,15 +48,17 @@ struct WindowChromeConfigurator: NSViewRepresentable {
     private func makeCommandBar(titleBarHeight: CGFloat?) -> AstraLeadingCommandBar {
         AstraLeadingCommandBar(
             isSearchActive: $isSearchActive,
+            sidebarCommands: sidebarCommands,
             isSidebarToggleHovered: $isSidebarToggleHovered,
             isSidebarHidden: isSidebarHidden,
-            onToggleSidebar: onToggleSidebar,
             titleBarHeight: titleBarHeight
         )
     }
 
     private func configureSoon(from view: NSView, context: Context) {
         let makeBar = makeCommandBar
+        let isSearchActive = isSearchActive
+        let isSidebarHidden = isSidebarHidden
         let coordinator = context.coordinator
         // Capture view/coordinator weakly: if the representable is torn down (or
         // the window closes) before these blocks run, bail out instead of keeping
@@ -49,7 +66,12 @@ struct WindowChromeConfigurator: NSViewRepresentable {
         DispatchQueue.main.async { [weak view, weak coordinator] in
             guard let view, let coordinator, let window = view.window else { return }
             Self.configure(window)
-            coordinator.installLeadingCommands(in: window, makeBar: makeBar)
+            coordinator.installLeadingCommands(
+                in: window,
+                makeBar: makeBar,
+                isSearchActive: isSearchActive,
+                isSidebarHidden: isSidebarHidden
+            )
 
             // SwiftUI can attach the toolbar after the representable first appears.
             // Reuse the coordinator's current builder (pass none) so this delayed
@@ -90,11 +112,14 @@ struct WindowChromeConfigurator: NSViewRepresentable {
         private var accessory: NSTitlebarAccessoryViewController?
         private weak var hostedWindow: NSWindow?
         private var makeBar: ((CGFloat?) -> AstraLeadingCommandBar)?
+        private var lastCommandBarState: WindowChromeCommandBarState?
         private var observers: [NSObjectProtocol] = []
 
         func installLeadingCommands(
             in window: NSWindow,
-            makeBar: ((CGFloat?) -> AstraLeadingCommandBar)? = nil
+            makeBar: ((CGFloat?) -> AstraLeadingCommandBar)? = nil,
+            isSearchActive: Bool? = nil,
+            isSidebarHidden: Bool? = nil
         ) {
             // Adopt a builder only when a fresh one is supplied. The delayed retry
             // (and the full-screen observer) pass nil and reuse the stored builder,
@@ -102,10 +127,17 @@ struct WindowChromeConfigurator: NSViewRepresentable {
             // newer builder — and its stale binding values — over it.
             if let makeBar { self.makeBar = makeBar }
             guard let builder = self.makeBar else { return }
+            guard let state = commandBarState(
+                for: window,
+                isSearchActive: isSearchActive,
+                isSidebarHidden: isSidebarHidden
+            ) else { return }
 
-            // Already installed in this same window → just refresh the bar.
+            // Already installed in this same window → refresh only when visible
+            // command state changes. Hover-only state changes must not replace the
+            // hosted SwiftUI root mid-click.
             if hostingView != nil, hostedWindow === window {
-                refreshBar()
+                refreshBarIfNeeded(state: state)
                 return
             }
 
@@ -118,7 +150,7 @@ struct WindowChromeConfigurator: NSViewRepresentable {
             }
 
             self.hostedWindow = window
-            let host = NSHostingView(rootView: builder(titleBarHeight(of: window)))
+            let host = NSHostingView(rootView: builder(state.titleBarHeight))
             host.frame = NSRect(origin: .zero, size: host.fittingSize)
 
             let controller = NSTitlebarAccessoryViewController()
@@ -129,7 +161,7 @@ struct WindowChromeConfigurator: NSViewRepresentable {
             accessory = controller
 
             observeTitleBarChanges(of: window)
-            refreshBar()
+            refreshBar(state: state)
         }
 
         /// Removes the accessory + title-bar observers from the currently hosted
@@ -151,13 +183,49 @@ struct WindowChromeConfigurator: NSViewRepresentable {
         /// Rebuilds the bar at the current measured title bar height and resizes
         /// the host to match, so its content centers on the traffic-light row.
         /// Runs on every SwiftUI update and whenever the title bar resizes.
-        private func refreshBar() {
-            guard let host = hostingView, let window = hostedWindow, let makeBar else { return }
-            host.rootView = makeBar(titleBarHeight(of: window))
+        private func refreshBarIfNeeded(state: WindowChromeCommandBarState) {
+            guard WindowChromeCommandBarRefreshPolicy.shouldRefresh(
+                previous: lastCommandBarState,
+                next: state
+            ) else {
+                return
+            }
+            refreshBar(state: state)
+        }
+
+        private func refreshBarForTitleBarChange() {
+            guard let window = hostedWindow, let lastCommandBarState else { return }
+            guard let state = commandBarState(
+                for: window,
+                isSearchActive: lastCommandBarState.isSearchActive,
+                isSidebarHidden: lastCommandBarState.isSidebarHidden
+            ) else { return }
+            refreshBarIfNeeded(state: state)
+        }
+
+        private func refreshBar(state: WindowChromeCommandBarState) {
+            guard let host = hostingView, let makeBar else { return }
+            host.rootView = makeBar(state.titleBarHeight)
             // Force the layout pass before reading fittingSize, so the size
             // reflects the just-assigned root view rather than a cached one.
             host.layoutSubtreeIfNeeded()
             host.frame.size = host.fittingSize
+            lastCommandBarState = state
+        }
+
+        private func commandBarState(
+            for window: NSWindow,
+            isSearchActive: Bool?,
+            isSidebarHidden: Bool?
+        ) -> WindowChromeCommandBarState? {
+            let searchActive = isSearchActive ?? lastCommandBarState?.isSearchActive
+            let sidebarHidden = isSidebarHidden ?? lastCommandBarState?.isSidebarHidden
+            guard let searchActive, let sidebarHidden else { return nil }
+            return WindowChromeCommandBarState(
+                isSearchActive: searchActive,
+                isSidebarHidden: sidebarHidden,
+                titleBarHeight: titleBarHeight(of: window)
+            )
         }
 
         /// Height of the title bar band the traffic lights are vertically centered
@@ -182,7 +250,7 @@ struct WindowChromeConfigurator: NSViewRepresentable {
                     // Hop onto the main actor explicitly instead of asserting the
                     // delivery context, so this can't trap if the notification is
                     // ever delivered off the main-actor executor.
-                    Task { @MainActor in self?.refreshBar() }
+                    Task { @MainActor in self?.refreshBarForTitleBarChange() }
                 }
                 observers.append(token)
             }
@@ -208,16 +276,16 @@ struct WindowChromeConfigurator: NSViewRepresentable {
 extension View {
     func astraWindowChrome(
         isSearchActive: Binding<Bool>,
+        sidebarCommands: SidebarTitlebarCommandBridge,
         isSidebarToggleHovered: Binding<Bool>,
-        isSidebarHidden: Bool,
-        onToggleSidebar: @escaping () -> Void
+        isSidebarHidden: Bool
     ) -> some View {
         background {
             WindowChromeConfigurator(
                 isSearchActive: isSearchActive,
+                sidebarCommands: sidebarCommands,
                 isSidebarToggleHovered: isSidebarToggleHovered,
-                isSidebarHidden: isSidebarHidden,
-                onToggleSidebar: onToggleSidebar
+                isSidebarHidden: isSidebarHidden
             )
             .frame(width: 0, height: 0)
         }

@@ -1,5 +1,16 @@
 import SwiftUI
 
+enum AstraLeadingCommandBarMetrics {
+    static let leadingPadding: CGFloat = 6
+    /// AppKit starts a leading titlebar accessory immediately after the traffic
+    /// lights, but the first accessory-sized child can still behave like titlebar
+    /// chrome. Reserving one inert command slot makes the first actionable button
+    /// land in the same reliable hit region where the following controls work.
+    static let reservedAccessorySlotWidth: CGFloat = AstraToolbarCommandMetrics.iconWidth
+    static let reservedAccessorySlotAllowsHitTesting = false
+    static let trailingPadding: CGFloat = 2
+}
+
 /// Sidebar-toggle + search commands rendered as a plain view so they can live in
 /// an AppKit *titlebar accessory* (see `WindowChromeConfigurator`) pinned to the
 /// window's leading edge, right after the traffic lights.
@@ -13,9 +24,9 @@ import SwiftUI
 /// `.toolbar(removing: .sidebarToggle)` so this is the only such control.
 struct AstraLeadingCommandBar: View {
     @Binding var isSearchActive: Bool
+    let sidebarCommands: SidebarTitlebarCommandBridge
     @Binding var isSidebarToggleHovered: Bool
     let isSidebarHidden: Bool
-    let onToggleSidebar: () -> Void
     /// Height of the title bar the hosting accessory occupies, measured at runtime
     /// by `WindowChromeConfigurator`. The bar fills it and centers its content, so
     /// the icons sit on the traffic-light row at *any* title bar height (windowed,
@@ -29,20 +40,25 @@ struct AstraLeadingCommandBar: View {
 
     var body: some View {
         AstraToolbarCommandCluster {
-            Button(action: onToggleSidebar) {
+            Color.clear
+                .frame(
+                    width: AstraLeadingCommandBarMetrics.reservedAccessorySlotWidth,
+                    height: AstraToolbarCommandMetrics.controlHeight
+                )
+            .allowsHitTesting(AstraLeadingCommandBarMetrics.reservedAccessorySlotAllowsHitTesting)
+            .accessibilityHidden(true)
+
+            Button {
+                sidebarCommands.requestSidebarToggle()
+            } label: {
                 AstraToolbarCommandIcon(systemImage: "sidebar.left", isActive: false)
             }
             .buttonStyle(.plain)
             .help(sidebarToggleHelp)
+            .onHover { isSidebarToggleHovered = $0 }
+            .onDisappear { isSidebarToggleHovered = false }
             .accessibilityIdentifier("SidebarToggleButton")
             .accessibilityLabel(sidebarToggleHelp)
-            // Hovering the toggle peeks the collapsed sidebar (the click still
-            // fully shows/hides it). SidebarPeekContainer reads this hover state
-            // but only opens the peek while the column is actually hidden.
-            .onHover { isSidebarToggleHovered = $0 }
-            // SwiftUI may skip onHover(false) if the button is removed while
-            // hovered; reset defensively so the peek can't strand open.
-            .onDisappear { isSidebarToggleHovered = false }
 
             Button { isSearchActive.toggle() } label: {
                 AstraToolbarCommandIcon(systemImage: "magnifyingglass", isActive: isSearchActive)
@@ -54,10 +70,8 @@ struct AstraLeadingCommandBar: View {
             // so a `.keyboardShortcut` here would never fire.
             .accessibilityLabel("Search")
         }
-        // Small breathing room from the traffic lights; AppKit positions the
-        // accessory immediately after them, so no large leading inset is needed.
-        .padding(.leading, 6)
-        .padding(.trailing, 2)
+        .padding(.leading, AstraLeadingCommandBarMetrics.leadingPadding)
+        .padding(.trailing, AstraLeadingCommandBarMetrics.trailingPadding)
         // Fill the measured title bar height and center: the icons land on the
         // traffic-light row by construction, with no fixed pixel offset to drift
         // when the title bar height changes. `nil` height = intrinsic, until the
