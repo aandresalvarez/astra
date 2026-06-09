@@ -267,8 +267,26 @@ cat >>"$INFO_PLIST" <<PLIST
 </plist>
 PLIST
 
-if [[ -n "$SIGN_IDENTITY" ]]; then
+# Dev builds prefer a STABLE self-signed identity over ad-hoc when one exists, so
+# the login-keychain ACL (bound to the signing Designated Requirement) survives
+# rebuilds. An ad-hoc signature's DR is a cdhash that changes on every build, which
+# is what triggers the repeated keychain prompts/failures while configuring ASTRA.
+if [[ -z "$SIGN_IDENTITY" && "$ASTRA_CHANNEL" == "dev" ]]; then
+  if security find-identity -v -p codesigning 2>/dev/null | grep -q '"ASTRA Local Dev"'; then
+    SIGN_IDENTITY="ASTRA Local Dev"
+    echo "  signing dev build with stable self-signed identity 'ASTRA Local Dev'"
+  fi
+fi
+
+if [[ -n "$SIGN_IDENTITY" && "$ASTRA_CHANNEL" != "dev" ]]; then
+  # Distributed channels (prod/beta): hardened runtime + secure timestamp so the
+  # bundle can be notarized.
   /usr/bin/codesign --force --deep --timestamp --options runtime --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
+elif [[ -n "$SIGN_IDENTITY" ]]; then
+  # Dev: stable identity but NO hardened runtime/timestamp. Those are only needed
+  # for notarization and would change local runtime behavior vs the ad-hoc build
+  # (hardened runtime enables library validation against the bundled tools/helper).
+  /usr/bin/codesign --force --deep --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
 else
   /usr/bin/codesign --force --deep --entitlements "$ENTITLEMENTS" --sign - "$APP_BUNDLE"
 fi
