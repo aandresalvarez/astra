@@ -765,6 +765,9 @@ final class LocalAgentOrchestrator {
             return preflightResult
         }
 
+        // Ensure the persistent serve helper (when enabled) is torn down on every exit path.
+        defer { inferenceClient.shutdown() }
+
         for turn in 1...controls.maxTurns {
             if shouldStopForCancellation(task: task) {
                 recordMetrics(status: "cancelled", stopReason: "local_agent_cancelled", turn: turn)
@@ -3719,10 +3722,22 @@ struct LocalAgentToolExecutor {
 @MainActor
 final class LocalAgentInferenceClient {
     private var activeProcess: AgentExecutionScopedProcess?
+    // The persistent-session machinery runs on background threads (event reader, timers,
+    // termination handler), so it is nonisolated and synchronized by `sessionLock` + the
+    // session's own lock rather than by the class's @MainActor isolation.
+    private nonisolated let sessionLock = NSLock()
+    private nonisolated(unsafe) var session: LocalAgentPersistentSession?
 
     func cancel() {
         activeProcess?.requestCancellation(reason: "cancelled_by_user")
         activeProcess = nil
+        shutdownSession()
+    }
+
+    /// Tears down the persistent `serve` helper, if one is running. Safe to call when none
+    /// exists. The orchestrator calls this once its run finishes (and on cancellation).
+    func shutdown() {
+        shutdownSession()
     }
 
     func generate(
@@ -3769,6 +3784,16 @@ final class LocalAgentInferenceClient {
             includeClaudeTeamFlag: false
         )
         environment["HOME"] = NSHomeDirectory()
+
+        if LocalModelSettingsStore.persistentHelperEnabled() {
+            return await generatePersistent(
+                executablePath: executablePath,
+                requestPath: requestPath,
+                currentDirectory: workspacePath,
+                environment: environment,
+                timeoutSeconds: timeoutSeconds
+            )
+        }
 
         return await runProcess(
             executablePath: executablePath,
@@ -3890,6 +3915,290 @@ final class LocalAgentInferenceClient {
                 execute: timeoutWorkItem
             )
         }
+    }
+
+    // MARK: - Persistent serve session (model resident across turns)
+
+    /// Runs one turn against a long-lived `serve` helper, spawning it lazily on first use and
+    /// reusing it (model resident) for subsequent turns. Resolves when the helper emits this
+    /// turn's terminal envelope (`completed`/`failed`/`cancelled`), on timeout, or on crash.
+    private nonisolated func generatePersistent(
+        executablePath: String,
+        requestPath: String,
+        currentDirectory: String,
+        environment: [String: String],
+        timeoutSeconds: TimeInterval
+    ) async -> LocalAgentModelTurnResult {
+        let requestID = UUID().uuidString
+        return await withCheckedContinuation { continuation in
+            let session: LocalAgentPersistentSession
+            do {
+                session = try ensureSession(
+                    executablePath: executablePath,
+                    currentDirectory: currentDirectory,
+                    environment: environment
+                )
+            } catch {
+                continuation.resume(returning: LocalAgentModelTurnResult(
+                    exitCode: -1,
+                    text: "",
+                    error: error.localizedDescription,
+                    inputTokens: 0,
+                    outputTokens: 0,
+                    durationMs: nil,
+                    benchmark: LocalAgentInferenceBenchmark(),
+                    events: [],
+                    timedOut: false
+                ))
+                return
+            }
+
+            let turn = LocalAgentInFlightTurn(
+                requestID: requestID,
+                state: LocalAgentInferenceState(),
+                resume: { result in continuation.resume(returning: result) }
+            )
+
+            // Timeout cancels the in-flight generation (NOT the process), so the warm model
+            // survives for the next turn; a short backstop resolves the turn if the helper
+            // never acknowledges the cancel.
+            let timeoutWorkItem = DispatchWorkItem { [weak self, weak session, weak turn] in
+                guard let self, let session, let turn else { return }
+                turn.state.markTimedOut()
+                session.process.sendControl(.cancel(reason: "local_agent_timeout"))
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 3) { [weak self] in
+                    self?.resolveTurn(session: session, turn: turn, exitCode: 130, fallbackError: nil)
+                }
+            }
+            turn.timeoutWorkItem = timeoutWorkItem
+
+            session.lock.lock()
+            session.current = turn
+            session.lock.unlock()
+
+            let sent = session.process.sendControl(.run(requestID: requestID, requestFile: requestPath))
+            guard sent else {
+                dropSession(session)
+                resolveTurn(
+                    session: session,
+                    turn: turn,
+                    exitCode: -1,
+                    fallbackError: "Local MLX serve helper is unavailable."
+                )
+                return
+            }
+
+            DispatchQueue.global(qos: .utility).asyncAfter(
+                deadline: .now() + max(1, timeoutSeconds),
+                execute: timeoutWorkItem
+            )
+        }
+    }
+
+    private nonisolated func ensureSession(
+        executablePath: String,
+        currentDirectory: String,
+        environment: [String: String]
+    ) throws -> LocalAgentPersistentSession {
+        sessionLock.lock()
+        if let session, session.process.isRunning {
+            sessionLock.unlock()
+            return session
+        }
+        sessionLock.unlock()
+
+        let process = AgentExecutionScopedProcess(
+            executablePath: executablePath,
+            arguments: ["serve", "--idle-ttl-seconds", "300"],
+            currentDirectory: currentDirectory,
+            environment: environment,
+            dedicatedEventFileDescriptor: LocalMLXRuntime.protocolFileDescriptor,
+            dedicatedControlFileDescriptor: LocalMLXRuntime.controlFileDescriptor
+        )
+        let session = LocalAgentPersistentSession(process: process)
+        installReaders(on: session)
+        process.terminationHandler = { [weak self] proc in
+            self?.handleSessionTermination(session: session, process: proc)
+        }
+        try process.run()
+
+        sessionLock.lock()
+        self.session = session
+        sessionLock.unlock()
+        return session
+    }
+
+    private nonisolated func installReaders(on session: LocalAgentPersistentSession) {
+        session.process.eventFileHandle.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8) else { return }
+            session.lineBuffer.appendAndProcessLines(chunk) { line in
+                self?.handleEventLine(line, session: session)
+            }
+        }
+        session.process.stderrFileHandle.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8) else { return }
+            session.errorOutput.append(chunk)
+        }
+    }
+
+    /// Routes one helper event line to the current turn and resolves it on a terminal envelope.
+    private nonisolated func handleEventLine(_ line: String, session: LocalAgentPersistentSession) {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let data = trimmed.data(using: .utf8),
+              let envelope = try? JSONDecoder().decode(LocalModelProtocolEnvelope.self, from: data) else {
+            return
+        }
+        session.lock.lock()
+        let turn = session.current
+        session.lock.unlock()
+        guard let turn else { return }
+        if let requestID = envelope.requestID, requestID != turn.requestID {
+            return // stale event from a previous turn
+        }
+
+        turn.state.recordEnvelopeTelemetry(line: trimmed)
+        for event in LocalModelProtocolParser.agentEvents(from: trimmed) {
+            turn.state.record(event)
+        }
+
+        switch envelope.type {
+        case "completed", "done":
+            resolveTurn(session: session, turn: turn, exitCode: 0, fallbackError: nil)
+        case "failed", "error":
+            resolveTurn(
+                session: session,
+                turn: turn,
+                exitCode: 1,
+                fallbackError: envelope.message ?? envelope.summary ?? "Local MLX serve helper failed."
+            )
+        case "cancelled", "canceled":
+            resolveTurn(session: session, turn: turn, exitCode: 130, fallbackError: nil)
+        default:
+            break
+        }
+    }
+
+    private nonisolated func resolveTurn(
+        session: LocalAgentPersistentSession,
+        turn: LocalAgentInFlightTurn,
+        exitCode: Int,
+        fallbackError: String?
+    ) {
+        session.lock.lock()
+        if turn.resolved {
+            session.lock.unlock()
+            return
+        }
+        turn.resolved = true
+        if session.current === turn {
+            session.current = nil
+        }
+        let bufferedError = session.errorOutput.value.trimmingCharacters(in: .whitespacesAndNewlines)
+        session.errorOutput.value = ""
+        session.lock.unlock()
+
+        turn.timeoutWorkItem?.cancel()
+        let error = fallbackError ?? bufferedError
+        turn.resume(turn.state.result(exitCode: exitCode, fallbackError: error))
+    }
+
+    private nonisolated func handleSessionTermination(
+        session: LocalAgentPersistentSession,
+        process proc: AgentExecutionScopedProcess
+    ) {
+        proc.stdoutFileHandle.readabilityHandler = nil
+        proc.stderrFileHandle.readabilityHandler = nil
+        proc.eventFileHandle.readabilityHandler = nil
+
+        if let chunk = String(data: proc.eventFileHandle.readDataToEndOfFile(), encoding: .utf8),
+           !chunk.isEmpty {
+            session.lineBuffer.appendAndProcessLines(chunk) { [weak self] line in
+                self?.handleEventLine(line, session: session)
+            }
+        }
+        if let chunk = String(data: proc.stderrFileHandle.readDataToEndOfFile(), encoding: .utf8),
+           !chunk.isEmpty {
+            session.errorOutput.append(chunk)
+        }
+
+        session.lock.lock()
+        let turn = session.current
+        session.lock.unlock()
+        if let turn, !turn.resolved {
+            let code = Int(proc.terminationStatus)
+            let bufferedError = session.errorOutput.value.trimmingCharacters(in: .whitespacesAndNewlines)
+            resolveTurn(
+                session: session,
+                turn: turn,
+                exitCode: code == 0 ? -1 : code,
+                fallbackError: bufferedError.isEmpty
+                    ? "Local MLX serve helper exited unexpectedly."
+                    : bufferedError
+            )
+        }
+
+        dropSession(session)
+        proc.terminationHandler = nil // break the process <-> session reference cycle
+    }
+
+    private nonisolated func dropSession(_ session: LocalAgentPersistentSession) {
+        sessionLock.lock()
+        if self.session === session {
+            self.session = nil
+        }
+        sessionLock.unlock()
+    }
+
+    private nonisolated func shutdownSession() {
+        sessionLock.lock()
+        let session = self.session
+        self.session = nil
+        sessionLock.unlock()
+        guard let session else { return }
+
+        session.lock.lock()
+        session.terminated = true
+        session.lock.unlock()
+
+        session.process.sendControl(.shutdown())
+        session.process.closeControl()
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 3) { [weak session] in
+            session?.process.terminate()
+        }
+    }
+}
+
+private final class LocalAgentPersistentSession: @unchecked Sendable {
+    let process: AgentExecutionScopedProcess
+    let lineBuffer = AgentLockedBuffer()
+    let errorOutput = AgentLockedBuffer()
+    let lock = NSLock()
+    var current: LocalAgentInFlightTurn?
+    var terminated = false
+
+    init(process: AgentExecutionScopedProcess) {
+        self.process = process
+    }
+}
+
+private final class LocalAgentInFlightTurn: @unchecked Sendable {
+    let requestID: String
+    let state: LocalAgentInferenceState
+    let resume: (LocalAgentModelTurnResult) -> Void
+    var timeoutWorkItem: DispatchWorkItem?
+    var resolved = false
+
+    init(
+        requestID: String,
+        state: LocalAgentInferenceState,
+        resume: @escaping (LocalAgentModelTurnResult) -> Void
+    ) {
+        self.requestID = requestID
+        self.state = state
+        self.resume = resume
     }
 }
 

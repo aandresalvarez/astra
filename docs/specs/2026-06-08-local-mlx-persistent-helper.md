@@ -1,8 +1,11 @@
 # Spec: persistent Local-MLX helper (model resident across turns)
 
-**Status:** foundation landed (protocol + transport primitive, build-verified); behavioral layer
-(helper `serve` loop + orchestrator session client) specified below, **pending an Apple-Silicon build
-+ runtime test**. Targets the per-turn-reload finding from the PR #94 review.
+**Status:** implemented behind an OFF-by-default flag. The app-side (session client, settings flag,
+orchestrator wiring) is **compile-verified** (`swift build` green). The helper `serve` loop is written
+and its MLX API usage is verified against pinned upstream (`mlx-swift-lm` 3.31.3), but a full **native
+build + runtime test on Apple Silicon is still required** (the nested package can't be resolved from a
+non-`astra` worktree directory, so it must be built from the canonical checkout via
+`script/build_and_run.sh`). Targets the per-turn-reload finding from the PR #94 review.
 
 ## Problem (verified in this branch)
 
@@ -58,7 +61,13 @@ single-shot path.
 
 ---
 
-## Remaining behavioral layer (apply, build on arm64, runtime-test, then commit)
+## Behavioral layer (implemented; helper pending native build + runtime test)
+
+> Implemented in `main.swift` (`runServe`/`generateServeTurn`/`ServeControlChannel`),
+> `LocalAgentOrchestrator.swift` (`LocalAgentInferenceClient` persistent session +
+> `defer { inferenceClient.shutdown() }`), and `LocalModelSettingsStore.persistentHelperEnabled()`
+> (default OFF). The app-side is compile-verified; the helper still needs a native build + the parity
+> runtime test below. The original design notes follow.
 
 ### A. Helper `serve` mode — `Tools/AstraLocalModelNative/.../main.swift`
 

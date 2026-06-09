@@ -1414,6 +1414,7 @@ enum LocalModelSettingsStore {
     static let maxContextTokensKey = "astra.localModel.maxContextTokens.v1"
     static let maxOutputTokensKey = "astra.localModel.maxOutputTokens.v1"
     static let keepWarmTTLSecondsKey = "astra.localModel.keepWarmTTLSeconds.v1"
+    static let persistentHelperEnabledKey = "astra.localModel.persistentHelper.v1"
     static let memoryBudgetGBKey = "astra.localModel.memoryBudgetGB.v1"
     static let experimentalToolsKey = "astra.local-model.experimental-tools"
     static let localAgentMaxTurnsKey = "astra.localModel.localAgent.maxTurns.v1"
@@ -1436,6 +1437,7 @@ enum LocalModelSettingsStore {
         maxContextTokensKey,
         maxOutputTokensKey,
         keepWarmTTLSecondsKey,
+        persistentHelperEnabledKey,
         memoryBudgetGBKey,
         experimentalToolsKey,
         localAgentMaxTurnsKey,
@@ -1517,6 +1519,14 @@ enum LocalModelSettingsStore {
     static func keepWarmTTLSeconds(defaults: UserDefaults = .standard) -> Int {
         let configured = defaults.integer(forKey: keepWarmTTLSecondsKey)
         return min(max(configured, 0), 3_600)
+    }
+
+    /// When enabled, the Local Agent loop drives one long-lived `serve` helper that keeps the
+    /// model resident across turns (instead of spawning a fresh single-shot helper per turn).
+    /// Defaults OFF so the proven single-shot path stays the safe default until validated.
+    static func persistentHelperEnabled(defaults: UserDefaults = .standard) -> Bool {
+        guard defaults.object(forKey: persistentHelperEnabledKey) != nil else { return false }
+        return defaults.bool(forKey: persistentHelperEnabledKey)
     }
 
     static func memoryBudgetOverrideGB(defaults: UserDefaults = .standard) -> Int {

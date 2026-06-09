@@ -41,8 +41,14 @@ struct LocalModelNativeMain {
             return await runSmoke(arguments: arguments)
         }
 
+        if arguments.first == "serve" {
+            startParentWatchdog()
+            return await runServe(arguments: arguments)
+        }
+
         guard arguments.first == "run" else {
-            FileHandle.standardError.writeString("Usage: astra-local-model run --request-file <path>\n")
+            FileHandle.standardError.writeString(
+                "Usage: astra-local-model (run --request-file <path> | serve [--idle-ttl-seconds <n>])\n")
             return 64
         }
 
@@ -289,6 +295,173 @@ struct LocalModelNativeMain {
         throw LocalModelNativeError.unsupportedArchitecture
         #endif
     }
+
+    private func loadRequestFile(_ path: String) throws -> LocalModelRunRequest {
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        return try JSONDecoder().decode(LocalModelRunRequest.self, from: data)
+    }
+
+    /// Persistent inference: load the model once, then serve many turns over the control channel
+    /// (fd 4) keeping the `ModelContainer` resident. Reloads only when the selected model directory
+    /// changes; exits cleanly on `shutdown`, on idle TTL, or when the control channel closes.
+    private func runServe(arguments: [String]) async -> Int32 {
+        #if arch(arm64)
+        let output = protocolOutputHandle()
+        let control = ServeControlChannel(handle: protocolControlHandle())
+        let idleTTL = TimeInterval(max(1, intArgumentValue("--idle-ttl-seconds", in: arguments) ?? 300))
+        var loadedDirectory: String?
+        var container: ModelContainer?
+
+        while let message = await control.next(timeout: idleTTL) {
+            switch message.type {
+            case "shutdown":
+                return 0
+            case "run":
+                guard let requestFile = message.requestFile else { continue }
+                let requestID = message.requestID
+                let request: LocalModelRunRequest
+                do {
+                    request = try loadRequestFile(requestFile)
+                } catch {
+                    try? emit(.init(type: "failed", requestID: requestID,
+                                    message: "Could not read local model request: \(error.localizedDescription)"),
+                              to: output)
+                    continue
+                }
+                let cancellation = control.beginTurn()
+                do {
+                    try emit(.init(type: "started", requestID: requestID, model: request.model), to: output)
+                    configureMemoryLimits(for: request)
+                    guard let modelDirectory = request.modelDirectory?
+                        .trimmingCharacters(in: .whitespacesAndNewlines), !modelDirectory.isEmpty else {
+                        throw LocalModelNativeError.missingModelDirectory
+                    }
+                    try cancellation.check()
+                    if modelDirectory != loadedDirectory || container == nil {
+                        try emit(.init(type: "phase", requestID: requestID,
+                                       message: "Loading local MLX model.", phase: "load_model"), to: output)
+                        container = try await MLXLMCommon.loadModelContainer(
+                            from: URL(fileURLWithPath: modelDirectory, isDirectory: true),
+                            using: #huggingFaceTokenizerLoader())
+                        loadedDirectory = modelDirectory
+                    }
+                    try await generateServeTurn(
+                        request: request,
+                        container: container!,
+                        output: output,
+                        requestID: requestID,
+                        cancellation: cancellation
+                    )
+                } catch {
+                    if isProtocolChannelClosed(error) { return 0 }
+                    if case LocalModelNativeError.cancelled(let reason) = error {
+                        try? emit(.init(type: "cancelled", requestID: requestID,
+                                        message: reason ?? "Local MLX run cancelled."), to: output)
+                        continue
+                    }
+                    Memory.clearCache()
+                    try? emit(.init(type: "failed", requestID: requestID,
+                                    message: error.localizedDescription), to: output)
+                    // A memory-budget breach leaves MLX state suspect — exit so the app respawns clean.
+                    if case LocalModelNativeError.memoryBudgetExceeded = error { return 1 }
+                }
+            default:
+                continue
+            }
+        }
+        return 0
+        #else
+        FileHandle.standardError.writeString("Native MLX serve requires an arm64 Apple Silicon build.\n")
+        return 78
+        #endif
+    }
+
+    #if arch(arm64)
+    /// One generation against an already-resident container. Mirrors the streaming core of
+    /// `runInference` but does NOT load the model, clear the cache, or idle — those are owned by the
+    /// `serve` loop so the model stays warm across turns. Every envelope carries `requestID`.
+    private func generateServeTurn(
+        request: LocalModelRunRequest,
+        container: ModelContainer,
+        output: FileHandle,
+        requestID: String?,
+        cancellation: LocalModelCancellationToken
+    ) async throws {
+        let startedAt = Date()
+        try cancellation.check()
+        let input = UserInput(chat: try chatMessages(from: request))
+        try emit(.init(type: "phase", requestID: requestID,
+                       message: "Preparing local MLX prompt.", phase: "prepare_prompt"), to: output)
+        let preparedInput = try await container.prepare(input: input)
+        try cancellation.check()
+
+        let parameters = GenerateParameters(
+            maxTokens: request.maxOutputTokens ?? 1_024,
+            maxKVSize: request.maxContextTokens,
+            temperature: 0.2
+        )
+        try emit(.init(type: "phase", requestID: requestID,
+                       message: "Generating local MLX response.", phase: "generate"), to: output)
+        let firstTokenStartedAt = Date()
+        var firstTokenLatencyMs: Int?
+        let stream = try await container.generate(input: preparedInput, parameters: parameters)
+
+        var outputTokens = 0
+        var inputTokens = 0
+        var fullText = ""
+        var reasoningFilter = LocalModelReasoningFilter()
+        for await generation in stream {
+            try cancellation.check()
+            switch generation {
+            case .chunk(let text):
+                if firstTokenLatencyMs == nil {
+                    firstTokenLatencyMs = Int(Date().timeIntervalSince(firstTokenStartedAt) * 1_000)
+                }
+                let visibleText = reasoningFilter.process(text: text)
+                if !visibleText.isEmpty {
+                    fullText += visibleText
+                    try emit(.init(type: "text", requestID: requestID, text: visibleText), to: output)
+                }
+                try enforceMemoryBudget(request: request, output: output)
+            case .info(let info):
+                inputTokens = info.promptTokenCount
+                outputTokens = info.generationTokenCount
+                try emit(.init(
+                    type: "stats",
+                    requestID: requestID,
+                    inputTokens: info.promptTokenCount,
+                    outputTokens: info.generationTokenCount,
+                    durationMs: Int((info.promptTime + info.generateTime) * 1_000),
+                    turns: 1,
+                    promptTokensPerSecond: finite(info.promptTokensPerSecond),
+                    tokensPerSecond: finite(info.tokensPerSecond),
+                    firstTokenLatencyMs: firstTokenLatencyMs
+                ), to: output)
+            case .toolCall:
+                break
+            }
+        }
+
+        let trailingText = reasoningFilter.flush()
+        if !trailingText.isEmpty {
+            fullText += trailingText
+            try emit(.init(type: "text", requestID: requestID, text: trailingText), to: output)
+        }
+        if outputTokens == 0 {
+            outputTokens = max(1, fullText.split(whereSeparator: \.isWhitespace).count)
+        }
+        try emit(.init(
+            type: "stats",
+            requestID: requestID,
+            inputTokens: inputTokens,
+            outputTokens: outputTokens,
+            durationMs: Int(Date().timeIntervalSince(startedAt) * 1_000),
+            turns: 1,
+            firstTokenLatencyMs: firstTokenLatencyMs
+        ), to: output)
+        try emit(.init(type: "completed", requestID: requestID, summary: fullText), to: output)
+    }
+    #endif
 
     #if arch(arm64)
     private func configureMemoryLimits(for request: LocalModelRunRequest) {
@@ -604,6 +777,134 @@ final class LocalModelCancellationToken: @unchecked Sendable {
         if let reason {
             throw LocalModelNativeError.cancelled(reason: reason)
         }
+    }
+}
+
+/// Line-delimited reader for the control channel (fd 4) in `serve` mode. Delivers `run`/`shutdown`
+/// messages to the serve loop (one at a time, with an idle timeout), and applies `cancel` messages
+/// immediately to the current turn's cancellation token — so a cancel interrupts the in-flight
+/// generation without queueing behind a pending run.
+final class ServeControlChannel: @unchecked Sendable {
+    private let handle: FileHandle?
+    private let lock = NSLock()
+    private var buffer = ""
+    private var pending: [LocalModelControlMessage] = []
+    private var waiter: CheckedContinuation<LocalModelControlMessage?, Never>?
+    private var waiterTimeout: DispatchWorkItem?
+    private var closed = false
+    private var currentToken: LocalModelCancellationToken?
+
+    init(handle: FileHandle?) {
+        self.handle = handle
+        startReading()
+    }
+
+    /// Begins a new turn, rotating in a fresh cancellation token that `cancel` messages target.
+    func beginTurn() -> LocalModelCancellationToken {
+        let token = LocalModelCancellationToken()
+        lock.lock()
+        currentToken = token
+        lock.unlock()
+        return token
+    }
+
+    /// Awaits the next `run`/`shutdown` message. Returns nil if the channel closed or no message
+    /// arrived within `timeout` seconds (idle TTL).
+    func next(timeout: TimeInterval) async -> LocalModelControlMessage? {
+        await withCheckedContinuation { (continuation: CheckedContinuation<LocalModelControlMessage?, Never>) in
+            lock.lock()
+            if !pending.isEmpty {
+                let message = pending.removeFirst()
+                lock.unlock()
+                continuation.resume(returning: message)
+                return
+            }
+            if closed {
+                lock.unlock()
+                continuation.resume(returning: nil)
+                return
+            }
+            let timeoutItem = DispatchWorkItem { [weak self] in
+                self?.resumeWaiter(with: nil)
+            }
+            waiter = continuation
+            waiterTimeout = timeoutItem
+            lock.unlock()
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout, execute: timeoutItem)
+        }
+    }
+
+    private func startReading() {
+        guard let handle else {
+            lock.lock(); closed = true; lock.unlock()
+            return
+        }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            while true {
+                let chunk = handle.availableData
+                if chunk.isEmpty {
+                    self?.finish()
+                    return
+                }
+                self?.ingest(chunk)
+            }
+        }
+    }
+
+    private func ingest(_ chunk: Data) {
+        // Control messages are small ASCII JSON lines; partial multi-byte splits are not expected.
+        guard let text = String(data: chunk, encoding: .utf8) else { return }
+        var delivered: [LocalModelControlMessage] = []
+        lock.lock()
+        buffer += text
+        while let newlineIndex = buffer.firstIndex(of: "\n") {
+            let line = String(buffer[buffer.startIndex..<newlineIndex])
+            buffer = String(buffer[buffer.index(after: newlineIndex)...])
+            guard let data = line.data(using: .utf8),
+                  let message = try? JSONDecoder().decode(LocalModelControlMessage.self, from: data) else {
+                continue
+            }
+            if message.type == "cancel" {
+                currentToken?.cancel(reason: message.reason)
+            } else {
+                delivered.append(message)
+            }
+        }
+        lock.unlock()
+        for message in delivered {
+            deliver(message)
+        }
+    }
+
+    private func deliver(_ message: LocalModelControlMessage) {
+        lock.lock()
+        if let waiter {
+            self.waiter = nil
+            waiterTimeout?.cancel()
+            waiterTimeout = nil
+            lock.unlock()
+            waiter.resume(returning: message)
+        } else {
+            pending.append(message)
+            lock.unlock()
+        }
+    }
+
+    private func resumeWaiter(with message: LocalModelControlMessage?) {
+        lock.lock()
+        guard let waiter else { lock.unlock(); return }
+        self.waiter = nil
+        waiterTimeout?.cancel()
+        waiterTimeout = nil
+        lock.unlock()
+        waiter.resume(returning: message)
+    }
+
+    private func finish() {
+        lock.lock()
+        closed = true
+        lock.unlock()
+        resumeWaiter(with: nil)
     }
 }
 
