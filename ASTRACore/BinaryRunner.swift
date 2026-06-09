@@ -111,12 +111,35 @@ public protocol BinaryRunner: Sendable {
         timeout: TimeInterval,
         environment: [String: String]?
     ) async -> RunResult
+
+    /// Run with `stdin` written to the process, after which the write end
+    /// is closed so the child observes EOF. Needed for CLIs that only
+    /// answer over a stdin/stdout protocol (e.g. stream-json handshakes).
+    func run(
+        path: String,
+        args: [String],
+        timeout: TimeInterval,
+        environment: [String: String]?,
+        stdin: Data?
+    ) async -> RunResult
 }
 
 public extension BinaryRunner {
     /// Convenience: run with inherited environment.
     func run(path: String, args: [String], timeout: TimeInterval = 3) async -> RunResult {
         await run(path: path, args: args, timeout: timeout, environment: nil)
+    }
+
+    /// Default for runners that don't support stdin: the input is dropped.
+    /// `ProcessBinaryRunner` overrides this with a real pipe.
+    func run(
+        path: String,
+        args: [String],
+        timeout: TimeInterval,
+        environment: [String: String]?,
+        stdin _: Data?
+    ) async -> RunResult {
+        await run(path: path, args: args, timeout: timeout, environment: environment)
     }
 }
 
@@ -147,7 +170,25 @@ public struct ProcessBinaryRunner: BinaryRunner {
         args: [String],
         timeout: TimeInterval,
         environment: [String: String]?,
-        currentDirectory: String?
+        stdin: Data?
+    ) async -> RunResult {
+        await run(
+            path: path,
+            args: args,
+            timeout: timeout,
+            environment: environment,
+            currentDirectory: nil,
+            stdin: stdin
+        )
+    }
+
+    public func run(
+        path: String,
+        args: [String],
+        timeout: TimeInterval,
+        environment: [String: String]?,
+        currentDirectory: String?,
+        stdin: Data? = nil
     ) async -> RunResult {
         let state = ProcessRunState()
         return await withTaskCancellationHandler {
@@ -174,7 +215,15 @@ public struct ProcessBinaryRunner: BinaryRunner {
                 let stderrPipe = Pipe()
                 process.standardOutput = stdoutPipe
                 process.standardError = stderrPipe
-                process.standardInput = FileHandle.nullDevice
+                let stdinPipe: Pipe?
+                if stdin != nil {
+                    let pipe = Pipe()
+                    process.standardInput = pipe
+                    stdinPipe = pipe
+                } else {
+                    process.standardInput = FileHandle.nullDevice
+                    stdinPipe = nil
+                }
 
                 let stdoutCollector = PipeCollector()
                 let stderrCollector = PipeCollector()
@@ -226,6 +275,13 @@ public struct ProcessBinaryRunner: BinaryRunner {
                         elapsedTime: Date().timeIntervalSince(startedAt)
                     )
                     return
+                }
+                if let stdinPipe, let stdin {
+                    // Small payloads only (well under the 64KB pipe buffer),
+                    // so a synchronous write cannot block. Closing signals EOF.
+                    let writer = stdinPipe.fileHandleForWriting
+                    try? writer.write(contentsOf: stdin)
+                    try? writer.close()
                 }
                 if state.stopIfFinished(process) {
                     return

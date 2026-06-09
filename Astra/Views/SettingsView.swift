@@ -944,12 +944,15 @@ struct SettingsView: View {
                     Button {
                         selection.wrappedValue = model
                     } label: {
-                        HStack {
-                            Text(RuntimeModelDisplayName.displayName(model))
-                            if selection.wrappedValue == model {
-                                Image(systemName: "checkmark")
-                            }
-                        }
+                        ModelMenuItemLabel(
+                            model: model,
+                            displayName: RuntimeModelAvailability.displayName(
+                                for: model,
+                                runtime: selectedRuntime,
+                                cache: runtimeModelCache
+                            ),
+                            isSelected: selection.wrappedValue == model
+                        )
                     }
                 }
             } label: {
@@ -982,12 +985,15 @@ struct SettingsView: View {
                     Button {
                         roleModelBinding(for: role).wrappedValue = model
                     } label: {
-                        HStack {
-                            Text(RuntimeModelDisplayName.displayName(model))
-                            if selection.wrappedValue == model {
-                                Image(systemName: "checkmark")
-                            }
-                        }
+                        ModelMenuItemLabel(
+                            model: model,
+                            displayName: RuntimeModelAvailability.displayName(
+                                for: model,
+                                runtime: runtime,
+                                cache: runtimeModelCache
+                            ),
+                            isSelected: selection.wrappedValue == model
+                        )
                     }
                 }
             } label: {

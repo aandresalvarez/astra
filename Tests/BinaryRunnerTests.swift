@@ -57,6 +57,33 @@ struct ProcessBinaryRunnerTests {
         #expect(result.stdout == "cwd marker")
     }
 
+    @Test("Stdin payload is delivered and closed so the child sees EOF")
+    func stdinPayloadIsDeliveredWithEOF() async {
+        let result = await ProcessBinaryRunner().run(
+            path: "/bin/cat",
+            args: [],
+            timeout: 3,
+            environment: nil,
+            stdin: Data("ping over stdin".utf8)
+        )
+
+        #expect(result.exitCode == 0)
+        #expect(result.stdout == "ping over stdin")
+    }
+
+    @Test("Nil stdin still terminates stdin-reading children")
+    func nilStdinTerminatesStdinReaders() async {
+        let result = await ProcessBinaryRunner().run(
+            path: "/bin/cat",
+            args: [],
+            timeout: 3,
+            environment: nil
+        )
+
+        #expect(result.exitCode == 0)
+        #expect(result.stdout.isEmpty)
+    }
+
     @Test("Launch failure is classified without an exit code")
     func launchFailureClassification() async {
         let result = await ProcessBinaryRunner().run(

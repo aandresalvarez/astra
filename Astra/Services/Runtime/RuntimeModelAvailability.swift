@@ -6,24 +6,44 @@ enum RuntimeModelAvailabilityAuthority: String, Codable, Equatable, Sendable {
     case suggestions
 }
 
+/// Optional human-facing metadata for one model ID, as reported by the
+/// provider (e.g. the Claude CLI initialize handshake). `value` is the
+/// string passed to `--model`; the rest is display-only.
+struct RuntimeModelDetail: Codable, Equatable, Sendable {
+    var value: String
+    var displayName: String?
+    var description: String?
+
+    init(value: String, displayName: String? = nil, description: String? = nil) {
+        self.value = value
+        self.displayName = displayName
+        self.description = description
+    }
+}
+
 struct RuntimeModelAvailabilitySnapshot: Codable, Equatable, Sendable {
     var runtimeID: String
     var models: [String]
     var checkedAt: Date
     var authority: RuntimeModelAvailabilityAuthority
     var hasExplicitAuthority: Bool
+    /// Display lookup table keyed by model value. `models` stays the
+    /// canonical list; absent in snapshots written before this field.
+    var details: [RuntimeModelDetail]?
 
     init(
         runtimeID: String,
         models: [String],
         checkedAt: Date,
-        authority: RuntimeModelAvailabilityAuthority = .authoritative
+        authority: RuntimeModelAvailabilityAuthority = .authoritative,
+        details: [RuntimeModelDetail]? = nil
     ) {
         self.runtimeID = runtimeID
         self.models = models
         self.checkedAt = checkedAt
         self.authority = authority
         self.hasExplicitAuthority = true
+        self.details = details
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -31,6 +51,7 @@ struct RuntimeModelAvailabilitySnapshot: Codable, Equatable, Sendable {
         case models
         case checkedAt
         case authority
+        case details
     }
 
     init(from decoder: Decoder) throws {
@@ -43,6 +64,7 @@ struct RuntimeModelAvailabilitySnapshot: Codable, Equatable, Sendable {
             RuntimeModelAvailabilityAuthority.self,
             forKey: .authority
         ) ?? .authoritative
+        details = try container.decodeIfPresent([RuntimeModelDetail].self, forKey: .details)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -51,6 +73,7 @@ struct RuntimeModelAvailabilitySnapshot: Codable, Equatable, Sendable {
         try container.encode(models, forKey: .models)
         try container.encode(checkedAt, forKey: .checkedAt)
         try container.encode(authority, forKey: .authority)
+        try container.encodeIfPresent(details, forKey: .details)
     }
 }
 
@@ -176,6 +199,39 @@ enum RuntimeModelAvailability {
                 cachedCopilotModelsJSON: cachedCopilotModelsJSON
             )
         )
+    }
+
+    /// Human-facing name for a model in this runtime's picker: the
+    /// provider-reported display name when the cache has one, otherwise
+    /// the generic string prettifier.
+    static func displayName(
+        for model: String,
+        runtime: AgentRuntimeID,
+        cache: RuntimeModelAvailabilityCache
+    ) -> String {
+        cachedDetail(for: model, runtime: runtime, cache: cache)?.displayName
+            ?? RuntimeModelDisplayName.displayName(model)
+    }
+
+    /// Provider-reported description for a model, when the cache has one.
+    static func modelDescription(
+        for model: String,
+        runtime: AgentRuntimeID,
+        cache: RuntimeModelAvailabilityCache
+    ) -> String? {
+        cachedDetail(for: model, runtime: runtime, cache: cache)?.description
+    }
+
+    private static func cachedDetail(
+        for model: String,
+        runtime: AgentRuntimeID,
+        cache: RuntimeModelAvailabilityCache
+    ) -> RuntimeModelDetail? {
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return cachedSnapshot(for: runtime, cache: cache)?
+            .details?
+            .first { $0.value == trimmed }
     }
 
     static func hasCachedModels(
@@ -306,13 +362,31 @@ enum RuntimeModelAvailability {
         checkedAt: Date = Date(),
         authority: RuntimeModelAvailabilityAuthority = .authoritative
     ) {
-        let cleaned = cleanProviderModels(models)
-        guard !cleaned.isEmpty else { return }
-        let snapshot = RuntimeModelAvailabilitySnapshot(
-            runtimeID: runtime.rawValue,
-            models: cleaned,
+        persistAvailableModelDetails(
+            models.map { RuntimeModelDetail(value: $0) },
+            for: runtime,
+            defaults: defaults,
             checkedAt: checkedAt,
             authority: authority
+        )
+    }
+
+    static func persistAvailableModelDetails(
+        _ details: [RuntimeModelDetail],
+        for runtime: AgentRuntimeID,
+        defaults: UserDefaults = .standard,
+        checkedAt: Date = Date(),
+        authority: RuntimeModelAvailabilityAuthority = .authoritative
+    ) {
+        let cleaned = cleanProviderModelDetails(details)
+        guard !cleaned.isEmpty else { return }
+        let hasMetadata = cleaned.contains { $0.displayName != nil || $0.description != nil }
+        let snapshot = RuntimeModelAvailabilitySnapshot(
+            runtimeID: runtime.rawValue,
+            models: cleaned.map(\.value),
+            checkedAt: checkedAt,
+            authority: authority,
+            details: hasMetadata ? cleaned : nil
         )
         guard let data = try? JSONEncoder().encode(snapshot),
               let raw = String(data: data, encoding: .utf8) else {
@@ -348,7 +422,8 @@ enum RuntimeModelAvailability {
             runtimeID: snapshot.runtimeID,
             models: cleaned,
             checkedAt: snapshot.checkedAt,
-            authority: authority
+            authority: authority,
+            details: snapshot.details.map(cleanProviderModelDetails)
         )
     }
 
@@ -361,6 +436,29 @@ enum RuntimeModelAvailability {
             cleaned.append(trimmed)
         }
         return cleaned
+    }
+
+    /// Same dedupe/trim rules as `cleanProviderModels`, applied to the
+    /// `value` field; the first occurrence keeps its metadata. Blank
+    /// display strings collapse to nil.
+    static func cleanProviderModelDetails(_ details: [RuntimeModelDetail]) -> [RuntimeModelDetail] {
+        var seen: Set<String> = []
+        var cleaned: [RuntimeModelDetail] = []
+        for detail in details {
+            let value = detail.value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty, seen.insert(value).inserted else { continue }
+            cleaned.append(RuntimeModelDetail(
+                value: value,
+                displayName: normalizedDisplayString(detail.displayName),
+                description: normalizedDisplayString(detail.description)
+            ))
+        }
+        return cleaned
+    }
+
+    private static func normalizedDisplayString(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private static func cachedModels(for runtime: AgentRuntimeID, defaults: UserDefaults) -> [String]? {
