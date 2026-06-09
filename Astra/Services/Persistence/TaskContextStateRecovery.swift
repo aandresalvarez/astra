@@ -50,13 +50,16 @@ enum TaskContextStateRecovery {
     private static func quarantine(path: String, reason: String, taskID: UUID?, diagnostic: String?) -> String? {
         let fileManager = FileManager.default
         guard fileManager.fileExists(atPath: path) else { return nil }
-        let destination = (path as NSString).deletingPathExtension + ".corrupt-\(timestampSlug()).json"
-        do {
-            if fileManager.fileExists(atPath: destination) { try fileManager.removeItem(atPath: destination) }
-            try fileManager.moveItem(atPath: path, toPath: destination)
-        } catch {
-            return nil
+        // Never overwrite an existing quarantine — deleting it would reintroduce the
+        // silent data loss this guards against. Find the next free suffix instead.
+        let base = (path as NSString).deletingPathExtension + ".corrupt-\(timestampSlug())"
+        var destination = base + ".json"
+        var counter = 1
+        while fileManager.fileExists(atPath: destination) {
+            destination = "\(base)-\(counter).json"
+            counter += 1
         }
+        guard (try? fileManager.moveItem(atPath: path, toPath: destination)) != nil else { return nil }
         audit(result: "quarantined", reason: reason, path: destination, taskID: taskID, diagnostic: diagnostic)
         return destination
     }

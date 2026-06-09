@@ -51,6 +51,7 @@ struct CapsuleSelectionPressureTests {
         )
         let context = ModelContext(container)
         let workspaceRoot = (NSTemporaryDirectory() as NSString).appendingPathComponent("capsule-scan-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(atPath: workspaceRoot) }
         let workspace = Workspace(name: "Scan", primaryPath: workspaceRoot)
         let task = AgentTask(title: "Scan", goal: "scan", workspace: workspace)
         context.insert(workspace)

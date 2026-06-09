@@ -485,8 +485,9 @@ enum TaskContextStateManager {
             tail.append("- Canonical ASTRA state is already inlined in this capsule for OpenCode.")
             tail.append("- Use this inline capsule and recent transcript unless the user explicitly asks for raw file contents.")
         } else {
-            tail.append("- Canonical state file: \(folder)/\(jsonFileName)")
-            tail.append("- Read \(folder)/\(markdownFileName) or referenced turn outputs if this follow-up depends on older decisions, failures, changed files, or exact prior wording.")
+            let boundedFolder = boundedInline(folder, maxCharacters: 1024) // keep the reserved tail within budget for pathologically long paths
+            tail.append("- Canonical state file: \(boundedFolder)/\(jsonFileName)")
+            tail.append("- Read \(boundedFolder)/\(markdownFileName) or referenced turn outputs if this follow-up depends on older decisions, failures, changed files, or exact prior wording.")
         }
 
         let body = lines.joined(separator: "\n")

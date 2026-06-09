@@ -1361,6 +1361,34 @@ struct TaskContextStateTests {
         #expect(TaskContextStateManager.promptContext(for: task) == prompt)
     }
 
+    @Test("repeated quarantines in the same second do not overwrite each other")
+    func repeatedQuarantinesArePreserved() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Quarantine", primaryPath: root)
+        let task = AgentTask(title: "Repeat", goal: "Survive repeated corruption", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let jsonPath = (folder as NSString).appendingPathComponent(TaskContextStateManager.jsonFileName)
+
+        try "{ corrupt one".write(toFile: jsonPath, atomically: true, encoding: .utf8)
+        TaskContextStateManager.refresh(task: task) // quarantine #1, then fresh save
+        try "{ corrupt two".write(toFile: jsonPath, atomically: true, encoding: .utf8)
+        TaskContextStateManager.refresh(task: task) // quarantine #2, same wall-clock second
+
+        let quarantined = try FileManager.default.contentsOfDirectory(atPath: folder)
+            .filter { $0.hasPrefix("current_state.corrupt-") && $0.hasSuffix(".json") }
+        #expect(quarantined.count == 2) // neither overwrote the other
+        var preserved: Set<String> = []
+        for name in quarantined {
+            preserved.insert(try String(contentsOfFile: (folder as NSString).appendingPathComponent(name), encoding: .utf8))
+        }
+        #expect(preserved == ["{ corrupt one", "{ corrupt two"])
+    }
+
     private func temporaryRoot() throws -> String {
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-context-state-\(UUID().uuidString)", isDirectory: true)
