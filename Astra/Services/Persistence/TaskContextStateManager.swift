@@ -518,7 +518,7 @@ enum TaskContextStateManager {
             "session_history_chars": String(fileSize(historyPath)),
             "output_file_count": String(outputFiles.count),
             "output_latest_chars": String(latestOutputChars)
-        ]
+        ].merging(CapsuleSelectionPressure.fields(forTaskFolder: folder, prompt: prompt)) { _, new in new }
     }
 
     static func renderMarkdown(_ state: TaskContextState) -> String {
