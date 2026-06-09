@@ -18,57 +18,28 @@ enum SidebarPeekPolicy {
     }
 }
 
-/// Floating sidebar panel shown when the user peeks the collapsed sidebar.
+/// Floating presenter for the sidebar's non-docked states. Renders the *same*
+/// `SidebarSurface` the docked column uses, in two situations:
 ///
-/// Reuses the real sidebar content (injected) inside fixed-width chrome that
-/// floats *over* the detail area. It deliberately carries none of the
-/// `NavigationSplitView` sizing modifiers, so it never participates in the split
-/// layout and cannot feed the collapse/reveal loop that `SidebarSplitViewGuard`
-/// exists to suppress.
-struct SidebarPeekPanel<Content: View>: View {
-    let reduceMotion: Bool
-    @Binding var isHovered: Bool
-    let onHoverChange: () -> Void
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        content
-            .frame(width: SidebarColumnLayout.expandedIdealWidth)
-            .frame(maxHeight: .infinity, alignment: .top)
-            .background(.ultraThickMaterial)
-            .overlay(alignment: .trailing) {
-                // Hairline so the panel reads as a distinct surface over light
-                // detail content, complementing the trailing shadow.
-                Rectangle()
-                    .fill(Color.primary.opacity(0.08))
-                    .frame(width: 1)
-            }
-            .shadow(color: .black.opacity(0.28), radius: 16, x: 6, y: 0)
-            .onHover { hovering in
-                isHovered = hovering
-                onHoverChange()
-            }
-            .transition(reduceMotion ? .opacity : .move(edge: .leading).combined(with: .opacity))
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Sidebar")
-    }
-}
-
-/// Owns the transient hover-to-peek state and renders the floating sidebar panel.
-/// Extracted from `ContentView` so the peek lives behind a focused boundary (and so
-/// `ContentView` stays within its architecture size budget). The peek is a pure
-/// overlay and never mutates `splitVisibility`, so it can't feed the collapse/reveal
-/// loop that `SidebarSplitViewGuard` suppresses.
+///  1. **Committed overlay** (`mode == .overlay`): the window is too narrow to
+///     dock the column alongside the right panel, so a deliberate "show sidebar"
+///     presents the sidebar as a persistent drawer over the detail area, with a
+///     tap-to-dismiss scrim. The right rail stays logically present, just occluded.
+///  2. **Transient preview** (`mode == .collapsed` + the toggle is hovered): a
+///     hover preview of that same drawer, debounced by `SidebarPeekPolicy`.
 ///
-/// The host passes `isTriggerHovered` from the show-sidebar toggle button's hover;
-/// the panel keeps itself open while hovered, and a debounced grace window
-/// (`SidebarPeekPolicy`) absorbs the pointer crossing from the toggle into the panel.
+/// It never writes sidebar state directly; dismissal is forwarded to the owner
+/// (`SidebarPresentationModel`) via `onDismiss`, so there is still one writer.
 struct SidebarPeekContainer<SidebarContent: View>: View {
-    /// True while the sidebar column is collapsed — the peek only applies then.
-    let isColumnHidden: Bool
-    /// Hover state of the show-sidebar toggle button (the peek's open trigger).
+    /// Current sidebar presentation mode (the single source of truth).
+    let mode: SidebarMode
+    /// Hover state of the show-sidebar toggle button (the preview's open trigger).
     let isTriggerHovered: Bool
+    /// Shared sidebar width, so the floating surface matches the docked column.
+    let width: CGFloat
     let reduceMotion: Bool
+    /// Collapse the committed overlay (scrim tap) — routed to the owner.
+    let onDismiss: () -> Void
     @ViewBuilder var sidebarContent: SidebarContent
 
     @Environment(\.scenePhase) private var scenePhase
@@ -76,31 +47,44 @@ struct SidebarPeekContainer<SidebarContent: View>: View {
     @State private var isPanelHovered = false
     @State private var dismissTask: Task<Void, Never>?
 
+    /// Persistent drawer the user committed to on a too-narrow window.
+    private var isCommittedOverlay: Bool { mode == .overlay }
+    /// Transient hover preview — only while the sidebar is fully collapsed.
+    private var isPreviewing: Bool { mode == .collapsed && isPeeking }
+    private var isDrawerVisible: Bool { isCommittedOverlay || isPreviewing }
+
     var body: some View {
         ZStack(alignment: .topLeading) {
-            if isColumnHidden, isPeeking {
-                SidebarPeekPanel(
-                    reduceMotion: reduceMotion,
-                    isHovered: $isPanelHovered,
-                    onHoverChange: reconcile
-                ) {
+            if isCommittedOverlay {
+                scrim
+            }
+            if isDrawerVisible {
+                SidebarSurface(style: .floating, width: width) {
                     sidebarContent
                 }
+                .onHover { hovering in
+                    isPanelHovered = hovering
+                    reconcile()
+                }
+                .transition(reduceMotion ? .opacity : .move(edge: .leading).combined(with: .opacity))
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Sidebar")
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        // The panel only renders when the column is hidden AND peeking, so mirror both
-        // here — otherwise a brief column-visible+peeking state would expose an empty
-        // overlay to accessibility.
-        .accessibilityHidden(!(isColumnHidden && isPeeking))
+        // Mode-driven visibility (committed overlay, resize transitions) animates
+        // here; the transient hover preview animates at its own mutation site.
+        .animation(AstraMotion.rightPanel(reduceMotion: reduceMotion), value: mode)
+        .accessibilityHidden(!isDrawerVisible)
         .onChange(of: isTriggerHovered) { _, _ in reconcile() }
-        .onChange(of: isColumnHidden) { _, hidden in
-            // Sidebar re-expanded (or compact layout changed) — drop any open peek.
-            if !hidden { forceDismiss() }
+        .onChange(of: mode) { _, newMode in
+            // Left the collapsed state (docked, or committed to an overlay) — drop
+            // any transient hover preview so it can't linger as a second surface.
+            if newMode != .collapsed { forceDismissPreview() }
         }
         .onChange(of: scenePhase) { _, newPhase in
-            // Don't strand the peek open if the app/window deactivates mid-hover.
-            if newPhase != .active { forceDismiss() }
+            // Don't strand the preview open if the app/window deactivates mid-hover.
+            if newPhase != .active { forceDismissPreview() }
         }
         .onDisappear {
             // Cancel any pending dismiss so the detached task can't mutate state
@@ -110,14 +94,25 @@ struct SidebarPeekContainer<SidebarContent: View>: View {
         }
     }
 
-    /// The open trigger only counts while the column is actually hidden — mirrors the
-    /// host's gating so a stale hover can't reopen a peek after the sidebar returns.
-    private var triggerActive: Bool { isColumnHidden && isTriggerHovered }
+    private var scrim: some View {
+        Color.black.opacity(0.08)
+            .ignoresSafeArea(.all, edges: .top)
+            .contentShape(Rectangle())
+            .onTapGesture { onDismiss() }
+            .transition(.opacity)
+            .accessibilityHidden(true)
+    }
 
-    /// Open immediately when either the toggle or the panel is hovered; otherwise
-    /// start the debounced dismiss.
+    /// The preview trigger only counts while the sidebar is fully collapsed —
+    /// mirrors the owner's gating so a stale hover can't reopen a preview after
+    /// the column docks or the overlay commits.
+    private var triggerActive: Bool { mode == .collapsed && isTriggerHovered }
+    private var panelActive: Bool { mode == .collapsed && isPanelHovered }
+
+    /// Open the transient preview immediately when either the toggle or the panel
+    /// is hovered while collapsed; otherwise start the debounced dismiss.
     private func reconcile() {
-        if SidebarPeekPolicy.shouldOpen(triggerHovered: triggerActive, panelHovered: isPanelHovered) {
+        if SidebarPeekPolicy.shouldOpen(triggerHovered: triggerActive, panelHovered: panelActive) {
             dismissTask?.cancel()
             dismissTask = nil
             if !isPeeking {
@@ -136,10 +131,10 @@ struct SidebarPeekContainer<SidebarContent: View>: View {
             try? await Task.sleep(nanoseconds: SidebarPeekPolicy.dismissDelayNanoseconds)
             guard !Task.isCancelled else { return }
             // Re-check live hover state at fire time so a re-entry during the grace
-            // window keeps the peek open.
+            // window keeps the preview open.
             guard SidebarPeekPolicy.shouldDismiss(
                 triggerHovered: triggerActive,
-                panelHovered: isPanelHovered
+                panelHovered: panelActive
             ) else { return }
             withAnimation(AstraMotion.rightPanel(reduceMotion: reduceMotion)) {
                 isPeeking = false
@@ -148,7 +143,7 @@ struct SidebarPeekContainer<SidebarContent: View>: View {
         }
     }
 
-    private func forceDismiss() {
+    private func forceDismissPreview() {
         dismissTask?.cancel()
         dismissTask = nil
         isPanelHovered = false
