@@ -2278,6 +2278,8 @@ struct LocalModelSustainedValidationService {
         switch result.outcome {
         case .timedOut:
             return "Timed out while validating the selected local model."
+        case .cancelled:
+            return "Local model validation was cancelled."
         case .launchFailed(let reason):
             return "Could not start local validation: \(RuntimeReadinessRedactor.redacted(reason))"
         case .exited(let code):
@@ -2665,6 +2667,8 @@ struct LocalModelAvailabilityService {
             return "Could not start local model support: \(RuntimeReadinessRedactor.redacted(reason))"
         case .timedOut:
             return "ASTRA timed out while reading installed local models."
+        case .cancelled:
+            return "Reading installed local models was cancelled."
         case .exited(let code):
             let evidence = result.stderr.isEmpty ? result.stdout : result.stderr
             let trimmed = evidence
@@ -2940,6 +2944,8 @@ struct LocalModelInstaller {
             throw LocalModelInstallerError.pythonLaunchFailed(reason)
         case .timedOut:
             throw LocalModelInstallerError.timedOut
+        case .cancelled:
+            throw LocalModelInstallerError.cancelled
         case .exited(let code):
             throw LocalModelInstallerError.downloadFailed(
                 code: code,
@@ -4205,6 +4211,8 @@ struct LocalMLXRuntimeAdapter: AgentRuntimeAdapter {
         switch result.outcome {
         case .timedOut:
             return "Timed out while loading the local model or generating the first token."
+        case .cancelled:
+            return "The local model smoke test was cancelled."
         case .launchFailed(let reason):
             return "Could not launch smoke test: \(RuntimeReadinessRedactor.redacted(reason))"
         case .exited(let code):

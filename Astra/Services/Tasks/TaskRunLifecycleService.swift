@@ -36,12 +36,12 @@ enum TaskRunInterruptionSource {
         }
     }
 
-    var runStopReason: String {
+    var runStopReason: TaskRunStopReason {
         switch self {
-        case .userAction: return "cancelled"
+        case .userAction: return .cancelled
         case .queueStopped: return "queue_cancelled"
-        case .appRestart: return "app_restarted"
-        case .supersededByNewRun: return "superseded"
+        case .appRestart: return .appRestarted
+        case .supersededByNewRun: return .superseded
         }
     }
 
@@ -111,7 +111,7 @@ enum TaskRunLifecycleService {
         source: TaskRunInterruptionSource = .queueStopped,
         at finishedAt: Date = Date()
     ) -> TaskRunInterruptionSummary {
-        let tasks = fetchAllTasks(modelContext: modelContext)
+        let tasks = fetchIncompleteTasks(modelContext: modelContext)
         var summary = TaskRunInterruptionSummary()
         for task in tasks where task.status == .running {
             summary.add(finalizeInterruptedRuns(
@@ -131,7 +131,7 @@ enum TaskRunLifecycleService {
         at recoveredAt: Date = Date(),
         autoExportWorkspaces: Bool = true
     ) -> TaskRunInterruptionSummary {
-        let tasks = fetchAllTasks(modelContext: modelContext)
+        let tasks = fetchOrphanRecoveryCandidates(modelContext: modelContext)
         var summary = TaskRunInterruptionSummary()
 
         for task in tasks {
@@ -202,7 +202,13 @@ enum TaskRunLifecycleService {
         for run in runningRuns {
             run.status = .cancelled
             run.completedAt = finishedAt
-            run.stopReason = source.runStopReason
+            run.typedStopReason = source.runStopReason
+            // Bound output on this terminal transition too: a run cancelled mid-
+            // stream can carry a large partial output. Assign only on change.
+            let cappedOutput = TaskRunOutputCap.capped(run.output)
+            if cappedOutput != run.output {
+                run.output = cappedOutput
+            }
             summary.runsUpdated += 1
         }
 
@@ -235,15 +241,64 @@ enum TaskRunLifecycleService {
         return summary
     }
 
-    private static func fetchAllTasks(modelContext: ModelContext) -> [AgentTask] {
+    // Note on the fetches below: we deliberately predicate on `completedAt ==
+    // nil` rather than on the status enum. SwiftData `#Predicate` enum-equality
+    // is unreliable across store backends (it silently matches nothing on the
+    // in-memory store), whereas nil comparisons are well supported. A running /
+    // pendingUser task and a running run always have `completedAt == nil` (that
+    // field is only set when finalizing), so this narrows the fetch to the
+    // open set and we refine the exact status in memory — same result as a full
+    // scan, without faulting the runs of every historical task.
+
+    private static func fetchIncompleteTasks(modelContext: ModelContext) -> [AgentTask] {
+        let descriptor = FetchDescriptor<AgentTask>(
+            predicate: #Predicate<AgentTask> { $0.completedAt == nil }
+        )
         do {
-            return try modelContext.fetch(FetchDescriptor<AgentTask>())
+            return try modelContext.fetch(descriptor)
         } catch {
             AppLogger.audit(.taskFailed, category: "Persistence", fields: [
-                "operation": "fetch_tasks_for_run_lifecycle",
+                "operation": "fetch_incomplete_tasks",
                 "error_type": String(describing: type(of: error))
             ], level: .error)
-            return []
+            // Fall back to a full scan so recovery still works correctly.
+            return (try? modelContext.fetch(FetchDescriptor<AgentTask>())) ?? []
         }
+    }
+
+    private static func fetchIncompleteRuns(modelContext: ModelContext) -> [TaskRun] {
+        let descriptor = FetchDescriptor<TaskRun>(
+            predicate: #Predicate<TaskRun> { $0.completedAt == nil }
+        )
+        do {
+            return try modelContext.fetch(descriptor)
+        } catch {
+            AppLogger.audit(.taskFailed, category: "Persistence", fields: [
+                "operation": "fetch_incomplete_runs",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+            return (try? modelContext.fetch(FetchDescriptor<TaskRun>())) ?? []
+        }
+    }
+
+    /// Tasks that may need interrupted-run recovery after a restart, narrowed
+    /// to the open set so we never materialize and run-fault the entire task
+    /// history. Union of: tasks whose own status is orphaned (running /
+    /// pendingUser), and parents of any run still marked running.
+    private static func fetchOrphanRecoveryCandidates(modelContext: ModelContext) -> [AgentTask] {
+        var candidates: [UUID: AgentTask] = [:]
+
+        for task in fetchIncompleteTasks(modelContext: modelContext)
+        where task.status == .running || task.status == .pendingUser {
+            candidates[task.id] = task
+        }
+
+        for run in fetchIncompleteRuns(modelContext: modelContext) where run.status == .running {
+            if let task = run.task {
+                candidates[task.id] = task
+            }
+        }
+
+        return Array(candidates.values)
     }
 }

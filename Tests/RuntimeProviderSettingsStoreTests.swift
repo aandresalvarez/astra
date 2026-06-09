@@ -7,8 +7,14 @@ import ASTRACore
 struct RuntimeProviderSettingsStoreTests {
     @Test("Built-in provider path keys stay backward compatible")
     func builtInProviderPathKeysStayBackwardCompatible() {
-        #expect(RuntimeProviderSettingsStore.executablePathKey(for: .claudeCode) == "claudePath")
-        #expect(RuntimeProviderSettingsStore.executablePathKey(for: .copilotCLI) == "copilotPath")
+        #expect(AppStorageKeys.claudePath == "claudePath")
+        #expect(AppStorageKeys.copilotPath == "copilotPath")
+        #expect(RuntimeProviderSettingsStore.executablePathKey(for: .claudeCode) == AppStorageKeys.claudePath)
+        #expect(RuntimeProviderSettingsStore.executablePathKey(for: .copilotCLI) == AppStorageKeys.copilotPath)
+        #expect(
+            RuntimeProviderSettingsStore.homeDirectoryKey(for: .copilotCLI)
+                == "astra.copilot.homeDirectory.v1"
+        )
     }
 
     @Test("Future provider settings use provider-keyed storage and revision")
@@ -29,14 +35,31 @@ struct RuntimeProviderSettingsStoreTests {
         )
 
         #expect(defaults.integer(forKey: AppStorageKeys.runtimeProviderSettingsRevision) == 2)
-        #expect(defaults.string(forKey: "claudePath") == nil)
-        #expect(defaults.string(forKey: "copilotPath") == nil)
-        #expect(defaults.string(forKey: RuntimeProviderSettingsStore.executablePathKey(for: futureRuntime)) == "/opt/future/bin/future")
+        #expect(defaults.string(forKey: AppStorageKeys.claudePath) == nil)
+        #expect(defaults.string(forKey: AppStorageKeys.copilotPath) == nil)
+        #expect(
+            defaults.string(forKey: RuntimeProviderSettingsStore.executablePathKey(for: futureRuntime))
+                == "/opt/future/bin/future"
+        )
 
         let settings = RuntimeProviderSettingsStore.settings(for: [futureRuntime], defaults: defaults)
         #expect(settings.executablePath(for: futureRuntime) == "/opt/future/bin/future")
         #expect(settings.homeDirectory(for: futureRuntime) == "/tmp/future-home")
         #expect(RuntimeProviderSettingsStore.signature(for: [futureRuntime], defaults: defaults).contains("future_cli"))
+    }
+
+    @Test("Future provider storage keys stay runtime namespaced")
+    func futureProviderStorageKeysStayRuntimeNamespaced() throws {
+        let futureRuntime = try #require(AgentRuntimeID(rawValue: "Future CLI/Preview"))
+
+        #expect(
+            RuntimeProviderSettingsStore.executablePathKey(for: futureRuntime)
+                == "astra.runtime.future_cli_preview.executablePath.v1"
+        )
+        #expect(
+            RuntimeProviderSettingsStore.homeDirectoryKey(for: futureRuntime)
+                == "astra.runtime.future_cli_preview.homeDirectory.v1"
+        )
     }
 
     @Test("Runtime configuration preserves arbitrary provider settings")

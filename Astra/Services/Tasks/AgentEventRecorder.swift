@@ -447,6 +447,66 @@ enum AgentEventRecorder {
     }
 
     @MainActor
+    static func recordCodexEvent(
+        _ event: AgentEvent,
+        to task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        recordingState: AgentEventRecordingState? = nil
+    ) {
+        recordProviderAgentEvent(
+            event,
+            providerDisplayName: "Codex",
+            permissionSource: "codex_stream",
+            unknownEventName: "unknown_codex_stream_event",
+            to: task,
+            run: run,
+            modelContext: modelContext,
+            recordingState: recordingState
+        )
+    }
+
+    @MainActor
+    static func recordCursorEvent(
+        _ event: AgentEvent,
+        to task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        recordingState: AgentEventRecordingState? = nil
+    ) {
+        recordProviderAgentEvent(
+            event,
+            providerDisplayName: "Cursor",
+            permissionSource: "cursor_stream",
+            unknownEventName: "unknown_cursor_stream_event",
+            to: task,
+            run: run,
+            modelContext: modelContext,
+            recordingState: recordingState
+        )
+    }
+
+    @MainActor
+    static func recordOpenCodeEvent(
+        _ event: AgentEvent,
+        to task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        recordingState: AgentEventRecordingState? = nil
+    ) {
+        recordProviderAgentEvent(
+            event,
+            providerDisplayName: "OpenCode",
+            permissionSource: "opencode_stream",
+            unknownEventName: "unknown_opencode_stream_event",
+            to: task,
+            run: run,
+            modelContext: modelContext,
+            recordingState: recordingState
+        )
+    }
+
+    @MainActor
     private static func recordProviderAgentEvent(
         _ event: AgentEvent,
         providerDisplayName: String,

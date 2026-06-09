@@ -10,6 +10,7 @@ final class AppRuntimeController {
     let preflightCache: PreflightCache
 
     private var hasStartedThreadTitleBackfill = false
+    private var hasRunStoreMaintenance = false
 
     init(
         poolSize: Int = UserDefaults.standard.object(forKey: "workerPoolSize") as? Int ?? 3,
@@ -54,6 +55,15 @@ final class AppRuntimeController {
 
     func loadPluginCatalog() {
         pluginCatalog.loadApprovedCapabilities()
+    }
+
+    /// One-time-per-launch task-store housekeeping: prune abandoned low-signal
+    /// drafts and remove duplicate session imports. Skipped during seeded UI
+    /// test launches so fixtures stay deterministic.
+    func runStoreMaintenanceIfNeeded(modelContext: ModelContext, isUITestingSeededLaunch: Bool) {
+        guard !hasRunStoreMaintenance, !isUITestingSeededLaunch else { return }
+        hasRunStoreMaintenance = true
+        TaskStoreMaintenance.runStartupMaintenance(modelContext: modelContext)
     }
 
     func backfillThreadTitlesIfNeeded(

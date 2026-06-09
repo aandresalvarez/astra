@@ -7,24 +7,49 @@ enum AppStorageKeys {
     static let onboardingEnabledCapabilityIDs = "astra.onboardingEnabledCapabilityIDs"
     static let skipPermissions = "skipPermissions"
     static let securityGateDefaultedToReview = "astra.securityGateDefaultedToReview.v1"
+    // Build number for which the one-time startup Skill migrations last ran.
+    // Re-runs once after each app update as a self-healing legacy backfill.
+    static let completedStartupSkillMigrationsBuild = "astra.startup.completedSkillMigrationsBuild.v1"
+    // Build number for which the legacy SQLite enum-raw-value repair last ran.
+    // The repair is idempotent, so re-running it once after each app update
+    // (e.g. when a schema/store change reintroduces stale enum values) is the
+    // intended self-healing behavior; gating skips it on unchanged launches.
+    static let completedLegacyStoreRepairBuild = "astra.startup.completedLegacyStoreRepairBuild.v1"
     static let hasSeenNewTaskNudge = "astra.hasSeenNewTaskNudge.v1"
     static let showStarredWorkspacesOnly = "astra.sidebar.showStarredWorkspacesOnly.v1"
     static let diagnosticsScope = "astra.diagnostics.scope.v1"
+    static let appUIScale = "appUIScale"
+    static let defaultRuntimeID = "defaultRuntimeID"
+    static let defaultModel = "defaultModel"
     static let defaultAgentPolicyLevel = "astra.policy.defaultLevel.v1"
+    static let workspacesRoot = "workspacesRoot"
+    static let timeoutSeconds = "timeoutSeconds"
+    static let validationModel = "validationModel"
     static let planShelfWidth = "astra.planShelf.width.v1"
     static let browserShelfWidth = "astra.browserShelf.width.v1"
     static let markdownShelfWidth = "astra.markdownShelf.width.v1"
     static let queryShelfWidth = "astra.queryShelf.width.v1"
+    static let activeWorkspaceCanvasItemsByConversation = "astra.workspaceCanvas.activeItemsByConversation.v1"
     static let rightRailWidth = "astra.rightRail.width.v1"
     static let markdownShelfShowHiddenPaths = "astra.markdownShelf.showHiddenPaths.v1"
     static let browserPinnedToTask = "astra.browser.pinnedToTask.v1"
     static let markdownPinnedToTask = "astra.markdown.pinnedToTask.v1"
     static let browserDebugCapture = "astra.browser.debugCapture.v1"
     static let runtimeStreamDebugCapture = "astra.runtime.streamDebugCapture.v1"
+    // OS-level execution sandbox enforcement: off | best_effort | strict.
+    // See ExecutionSandbox and docs/specs/2026-06-06-seatbelt-execution-sandbox-plan.md.
+    static let sandboxEnforcement = "astra.runtime.sandboxEnforcement.v1"
+    // When false, the Seatbelt profile denies outbound network (offline runs).
+    static let sandboxAllowNetwork = "astra.runtime.sandboxAllowNetwork.v1"
+    // When true, ASTRA also wraps providers that ship their own OS sandbox
+    // (Codex, Cursor, Antigravity) for defense-in-depth.
+    static let sandboxLayerNativeProviders = "astra.runtime.sandboxLayerNativeProviders.v1"
     static let logRetentionDays = "astra.logging.retentionDays.v1"
     static let browserAutoPromoteGoogleWorkspace = "astra.browser.autoPromoteGoogleWorkspace.v1"
     static let defaultTokenBudget = "defaultTokenBudget"
     static let budgetEnforcementMode = "astra.budget.enforcementMode.v1"
+    static let claudePath = "claudePath"
+    static let copilotPath = "copilotPath"
     static let claudeProvider = "astra.claudeProvider.v1"
     static let claudeVertexProjectID = "astra.claudeVertexProjectID.v1"
     static let claudeVertexRegion = "astra.claudeVertexRegion.v1"
@@ -38,6 +63,26 @@ enum AppStorageKeys {
     static let runtimeModelCacheRevision = "astra.runtime.modelCacheRevision.v1"
     static let runtimeProviderSettingsRevision = "astra.runtime.providerSettingsRevision.v1"
     static let roleProfileRevision = "astra.roleProfile.revision.v1"
+
+    static func runtimeExecutablePathKey(for runtime: AgentRuntimeID) -> String {
+        switch runtime {
+        case .claudeCode:
+            return claudePath
+        case .copilotCLI:
+            return copilotPath
+        default:
+            return "astra.runtime.\(storageComponent(for: runtime)).executablePath.v1"
+        }
+    }
+
+    static func runtimeHomeDirectoryKey(for runtime: AgentRuntimeID) -> String {
+        switch runtime {
+        case .copilotCLI:
+            return "astra.copilot.homeDirectory.v1"
+        default:
+            return "astra.runtime.\(storageComponent(for: runtime)).homeDirectory.v1"
+        }
+    }
 
     static func runtimeAvailableModelsKey(for runtime: AgentRuntimeID) -> String {
         switch runtime {

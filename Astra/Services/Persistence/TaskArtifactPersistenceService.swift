@@ -12,12 +12,13 @@ struct TaskArtifactReconciliationSummary {
     var discoveredFiles: [TaskOutputDiscoveredFile]
     var createdArtifacts: [Artifact]
     var normalizedArtifacts: [Artifact]
+    var normalizedArtifactKinds: [Artifact]
     var duplicateArtifacts: [Artifact]
     var currentArtifacts: [Artifact]
     var staleArtifacts: [Artifact]
 
     var didChangeArtifactRows: Bool {
-        !createdArtifacts.isEmpty || !normalizedArtifacts.isEmpty
+        !createdArtifacts.isEmpty || !normalizedArtifacts.isEmpty || !normalizedArtifactKinds.isEmpty
     }
 
     var status: Status {
@@ -39,6 +40,7 @@ struct TaskArtifactReconciliationSummary {
             "discovered_file_count": String(discoveredFiles.count),
             "created_artifact_count": String(createdArtifacts.count),
             "normalized_artifact_count": String(normalizedArtifacts.count),
+            "normalized_artifact_kind_count": String(normalizedArtifactKinds.count),
             "duplicate_artifact_count": String(duplicateArtifacts.count),
             "current_artifact_count": String(currentArtifacts.count),
             "stale_artifact_count": String(staleArtifacts.count)
@@ -70,6 +72,7 @@ enum TaskArtifactPersistenceService {
         fileManager: FileManager = .default
     ) -> TaskArtifactReconciliationSummary {
         var normalizedArtifacts: [Artifact] = []
+        var normalizedArtifactKinds: [Artifact] = []
         var seenPaths = Set<String>()
 
         for artifact in task.artifacts {
@@ -77,6 +80,11 @@ enum TaskArtifactPersistenceService {
             if artifact.path != path {
                 artifact.path = path
                 normalizedArtifacts.append(artifact)
+            }
+            let kind = ArtifactKind(rawValue: artifact.type)
+            if artifact.type != kind.rawValue {
+                artifact.type = kind.rawValue
+                normalizedArtifactKinds.append(artifact)
             }
             if !path.isEmpty {
                 seenPaths.insert(path)
@@ -90,7 +98,7 @@ enum TaskArtifactPersistenceService {
 
             let artifact = Artifact(
                 task: task,
-                type: file.type,
+                type: file.kind.rawValue,
                 path: path,
                 version: nextVersion(for: path, task: task)
             )
@@ -102,6 +110,7 @@ enum TaskArtifactPersistenceService {
             discoveredFiles: files,
             createdArtifacts: created,
             normalizedArtifacts: normalizedArtifacts,
+            normalizedArtifactKinds: normalizedArtifactKinds,
             duplicateArtifacts: duplicateArtifacts(for: task),
             currentArtifacts: task.artifacts.filter { artifactExists($0, fileManager: fileManager) },
             staleArtifacts: task.artifacts.filter { !artifactExists($0, fileManager: fileManager) }
@@ -144,7 +153,7 @@ enum TaskArtifactPersistenceService {
         guard !path.isEmpty else { return nil }
         let artifact = Artifact(
             task: task,
-            type: change.changeType,
+            type: artifactKind(for: change).rawValue,
             path: path,
             content: change.content,
             version: nextVersion(for: path, task: task)
@@ -210,5 +219,16 @@ enum TaskArtifactPersistenceService {
 
     private static func artifactExists(_ artifact: Artifact, fileManager: FileManager) -> Bool {
         fileManager.fileExists(atPath: artifact.path)
+    }
+
+    private static func artifactKind(for change: StoredFileChange) -> ArtifactKind {
+        let pathKind = ArtifactKind.forPath(change.path)
+        guard pathKind != .file else {
+            switch change.kind {
+            case .write, .edit, .discovered, .unknown:
+                return .file
+            }
+        }
+        return pathKind
     }
 }

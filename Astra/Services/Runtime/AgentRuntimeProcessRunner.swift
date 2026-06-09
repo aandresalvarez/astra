@@ -22,6 +22,99 @@ final class AgentRuntimeProcessRunner {
         currentProcess = nil
     }
 
+    /// Either a launch plan ready to run, or a fail-closed result that blocks the
+    /// run (strict sandbox enforcement when the sandbox cannot be applied).
+    enum SandboxedPlanOutcome {
+        case plan(AgentRuntimeProcessLaunchPlan)
+        case blocked(AgentProcessResult)
+    }
+
+    /// Pure mapping from a sandbox decision to a launch outcome. Extracted from
+    /// `sandboxedPlan` so the security-critical branch — `failClosed` MUST block
+    /// the run and never fall through to running unconfined — is unit-testable
+    /// without spawning a process or constructing a full adapter. A regression
+    /// that turned `.failClosed` into `.plan` would otherwise run the provider
+    /// unconfined under strict/autonomous with no test to catch it.
+    static func sandboxOutcome(
+        for decision: ExecutionSandboxDecision,
+        originalPlan: AgentRuntimeProcessLaunchPlan
+    ) -> SandboxedPlanOutcome {
+        switch decision {
+        case .applied(let wrapped, _):
+            return .plan(wrapped)
+        case .skipped, .fallback:
+            return .plan(originalPlan)
+        case .failClosed(let reason):
+            let message = "ASTRA could not apply the macOS execution sandbox (\(reason)) and strict enforcement is enabled, so the run was blocked."
+            return .blocked(AgentProcessResult(
+                exitCode: -1,
+                error: message,
+                runtimeStopReason: "sandbox_unavailable",
+                runtimeStopMessage: message
+            ))
+        }
+    }
+
+    /// Builds the launch plan and applies the macOS execution sandbox to it.
+    /// Returns the (possibly wrapped) plan, or — under strict enforcement when
+    /// the sandbox cannot be applied — a fail-closed `AgentProcessResult` so the
+    /// run never proceeds unconfined. All decisions are audited.
+    /// Internal (not private) so the sandbox wiring — decision, auditing, and the
+    /// fail-closed translation — is unit-testable with a fake adapter without
+    /// spawning a process.
+    @MainActor
+    func sandboxedPlan(
+        adapter: any AgentRuntimeProcessLaunchPlanning & AgentRuntimeProcessEventParsing,
+        context: AgentRuntimeProcessLaunchContext
+    ) -> SandboxedPlanOutcome {
+        let plan = adapter.makeProcessLaunchPlan(context: context)
+        // Use the run's effective permission policy (an execution-policy override
+        // wins over the base policy) so best-effort correctly escalates to strict
+        // for override-autonomous runs — matching how the preflight manifest
+        // resolves the sandbox tier.
+        let effectivePermissionPolicy = context.executionPolicy.permissionPolicyOverride ?? context.permissionPolicy
+        let settings = ExecutionSandboxSettings.current(permissionPolicy: effectivePermissionPolicy)
+        // Multi-path workspaces: the agent is granted the workspace's additional
+        // paths + input dirs (same set passed to providers via `--add-dir` and
+        // honored by the in-band policy guard), so include them in the sandbox's
+        // writable allowlist or the kernel would block legitimate writes.
+        let decision = ExecutionSandbox.decide(
+            plan: plan,
+            providerHomeDirectory: context.providerHomeDirectory,
+            additionalWritablePaths: Self.runtimeAdditionalPaths(for: context.task),
+            settings: settings
+        )
+        let taskID = context.task.id
+        switch decision {
+        case .applied(_, let writableRoots):
+            AppLogger.audit(.sandboxApplied, category: "Worker", taskID: taskID, fields: [
+                "runtime": plan.runtime.rawValue,
+                "enforcement": settings.enforcement.rawValue,
+                "writable_root_count": String(writableRoots.count),
+                "allow_network": String(settings.allowNetwork)
+            ], level: .debug)
+        case .skipped(let reason):
+            AppLogger.audit(.sandboxSkipped, category: "Worker", taskID: taskID, fields: [
+                "runtime": plan.runtime.rawValue,
+                "reason": reason
+            ], level: .debug)
+        case .fallback(let reason):
+            AppLogger.audit(.sandboxFallback, category: "Worker", taskID: taskID, fields: [
+                "runtime": plan.runtime.rawValue,
+                "enforcement": settings.enforcement.rawValue,
+                "reason": reason
+            ], level: .warning)
+        case .failClosed(let reason):
+            AppLogger.audit(.sandboxFailed, category: "Worker", taskID: taskID, fields: [
+                "runtime": plan.runtime.rawValue,
+                "enforcement": settings.enforcement.rawValue,
+                "reason": reason
+            ], level: .error)
+        }
+
+        return Self.sandboxOutcome(for: decision, originalPlan: plan)
+    }
+
     @MainActor
     func runRuntimeProcess(
         adapter: any AgentRuntimeProcessLaunchPlanning & AgentRuntimeProcessEventParsing,
@@ -69,7 +162,14 @@ final class AgentRuntimeProcessRunner {
             } catch {
                 return AgentProcessResult(exitCode: -1, error: error.localizedDescription)
             }
-            let plan = adapter.makeProcessLaunchPlan(context: launchContext)
+            let plan: AgentRuntimeProcessLaunchPlan
+            switch sandboxedPlan(adapter: adapter, context: launchContext) {
+            case .plan(let resolvedPlan):
+                plan = resolvedPlan
+            case .blocked(let blockedResult):
+                await AgentRuntimeSharedStateGate.shared.release(sharedStateKey)
+                return blockedResult
+            }
             let result = await runProcess(
                 adapter: adapter,
                 plan: plan,
@@ -83,7 +183,13 @@ final class AgentRuntimeProcessRunner {
             return result
         }
 
-        let plan = adapter.makeProcessLaunchPlan(context: launchContext)
+        let plan: AgentRuntimeProcessLaunchPlan
+        switch sandboxedPlan(adapter: adapter, context: launchContext) {
+        case .plan(let resolvedPlan):
+            plan = resolvedPlan
+        case .blocked(let blockedResult):
+            return blockedResult
+        }
         return await runProcess(
             adapter: adapter,
             plan: plan,

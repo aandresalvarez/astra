@@ -948,7 +948,7 @@ struct TaskThreadSnapshotTrigger: Equatable {
         status = task.status
         latestRunID = latestRun?.id
         latestRunStatus = latestRun?.status
-        latestRunOutputCount = latestRun?.output.count ?? 0
+        latestRunOutputCount = latestRun?.output.utf8.count ?? 0
         latestRunOutputBucket = Self.outputBucket(for: latestRunOutputCount)
     }
 
@@ -962,9 +962,9 @@ struct TaskThreadSnapshotTrigger: Equatable {
             lhs.latestRunOutputBucket == rhs.latestRunOutputBucket
     }
 
-    private static func outputBucket(for characterCount: Int) -> Int {
-        guard characterCount > 0 else { return 0 }
-        return ((characterCount - 1) / liveOutputBucketSize) + 1
+    private static func outputBucket(for byteCount: Int) -> Int {
+        guard byteCount > 0 else { return 0 }
+        return ((byteCount - 1) / liveOutputBucketSize) + 1
     }
 }
 

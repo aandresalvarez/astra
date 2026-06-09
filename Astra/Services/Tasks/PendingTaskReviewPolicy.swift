@@ -52,7 +52,7 @@ enum PendingTaskReviewPolicy {
     }
 
     private static func unresolvedDismissalReason(for task: AgentTask, latestRun: TaskRun) -> PendingTaskDismissalReason? {
-        if latestRun.stopReason == "no_usable_result" {
+        if latestRun.typedStopReason == .noUsableResult {
             if TaskDeliverableExpectation.requiresStandaloneArtifact(task),
                !TaskDeliverableExpectation.hasRunScopedArtifact(for: task, run: latestRun) {
                 return .noUsableResult
@@ -60,7 +60,7 @@ enum PendingTaskReviewPolicy {
             return nil
         }
 
-        if stopReasonIsPolicyBlocked(latestRun.stopReason) {
+        if stopReasonIsPolicyBlocked(latestRun.typedStopReason) {
             return .policyBlocked
         }
 
@@ -92,6 +92,10 @@ enum PendingTaskReviewPolicy {
     }
 
     static func stopReasonIsPolicyBlocked(_ stopReason: String) -> Bool {
-        stopReason.lowercased().contains("policy")
+        TaskRunStopReason(rawValue: stopReason)?.isPolicyBlocked ?? stopReason.lowercased().contains("policy")
+    }
+
+    static func stopReasonIsPolicyBlocked(_ stopReason: TaskRunStopReason?) -> Bool {
+        stopReason?.isPolicyBlocked ?? false
     }
 }

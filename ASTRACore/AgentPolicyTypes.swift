@@ -671,7 +671,7 @@ public struct PolicyObservedEvent: Codable, Equatable, Sendable, Identifiable {
             let patchPath = patchText.flatMap { Self.patchFilePaths(in: $0).first }
             let command = Self.firstString(in: normalizedInput, keys: ["command", "cmd"])
                 ?? (Self.isShellTool(name) ? Self.firstString(in: normalizedInput, keys: ["summary"]) : nil)
-            let path = Self.firstString(in: normalizedInput, keys: ["file_path", "path", "target_path"])
+            let path = Self.firstString(in: normalizedInput, keys: ["file_path", "filePath", "path", "target_path", "targetPath"])
                 ?? patchPath
                 ?? (Self.isFileTool(name) && !Self.isPatchTool(name) ? Self.firstString(in: normalizedInput, keys: ["summary"]) : nil)
             let url = Self.firstString(in: input, keys: ["url", "uri"])

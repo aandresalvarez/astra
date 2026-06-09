@@ -5,12 +5,11 @@ import AppKit
 
 /// Layout-level artifacts shown in the docked Shelf column.
 /// Future cases can choose wider sizing for browser or file previews.
-private enum WorkspaceCanvasItem: Equatable {
+enum WorkspaceCanvasItem: String, Equatable {
     case plan
     case markdown
     case browser
     case query
-
     var minWidth: CGFloat {
         switch self {
         case .plan: 400
@@ -19,7 +18,6 @@ private enum WorkspaceCanvasItem: Equatable {
         case .query: 460
         }
     }
-
     var idealWidth: CGFloat {
         switch self {
         case .plan: 520
@@ -28,7 +26,6 @@ private enum WorkspaceCanvasItem: Equatable {
         case .query: 640
         }
     }
-
     var maxWidth: CGFloat {
         switch self {
         case .plan: 1040
@@ -37,7 +34,6 @@ private enum WorkspaceCanvasItem: Equatable {
         case .query: 1180
         }
     }
-
     var title: String {
         switch self {
         case .plan: "Plan"
@@ -46,7 +42,6 @@ private enum WorkspaceCanvasItem: Equatable {
         case .query: "Query"
         }
     }
-
     var closesWhenDraggedBelowMinimum: Bool {
         self == .markdown
     }
@@ -55,7 +50,6 @@ private enum WorkspaceCanvasItem: Equatable {
 private enum WorkspaceRightPanel: Equatable {
     case canvas(WorkspaceCanvasItem)
     case context(UUID)
-
     var isContext: Bool {
         if case .context = self { return true }
         return false
@@ -66,7 +60,6 @@ private struct ShelfBoundaryMetrics: Equatable {
     var width: CGFloat = 0
     var isVisible = false
     var isResizing = false
-
     static let hidden = ShelfBoundaryMetrics()
 }
 
@@ -90,7 +83,6 @@ private struct CompactPanelLayoutObserver: View {
     let onWidthChanged: (CGFloat) -> Void
     let onSplitVisibilityChanged: () -> Void
     let onPanelStateChanged: () -> Void
-
     var body: some View {
         Color.clear
             .onAppear {
@@ -122,7 +114,6 @@ private struct CompactPanelLayoutCoordinator: ViewModifier {
     let onWidthChanged: (CGFloat) -> Void
     let onSplitVisibilityChanged: () -> Void
     let onPanelStateChanged: () -> Void
-
     func body(content: Content) -> some View {
         content
             .background {
@@ -191,11 +182,9 @@ struct NewWorkspaceDraft: Equatable {
     var instructions = ""
     var selectedCapabilityIDs: Set<String> = []
     var capabilityConfiguration = OnboardingCapabilityConfiguration()
-
     var trimmedName: String {
         name.trimmingCharacters(in: .whitespacesAndNewlines)
     }
-
     var trimmedInstructions: String {
         instructions.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -221,6 +210,31 @@ struct NewWorkspaceDraft: Equatable {
         instructions = ""
         selectedCapabilityIDs = []
         capabilityConfiguration = OnboardingCapabilityConfiguration()
+    }
+}
+
+/// Leaf observer that watches the task queue's update-safety signal in
+/// isolation. Reading `taskQueue.isProcessing/activeCount/activeTasks` here —
+/// rather than in `ContentView.body` — keeps queue churn (task start/exit)
+/// from invalidating ContentView's very large body. See the UI responsiveness
+/// audit (Cluster 1): this is the only body-level reader of those fields.
+private struct UpdateSafetyObserver: View {
+    let taskQueue: TaskQueue
+    let runningTaskCount: Int
+    let onChange: () -> Void
+
+    private var signature: String {
+        [
+            String(taskQueue.isProcessing),
+            String(taskQueue.activeCount),
+            String(taskQueue.activeTasks.count),
+            String(runningTaskCount)
+        ].joined(separator: "|")
+    }
+
+    var body: some View {
+        Color.clear
+            .onChange(of: signature) { onChange() }
     }
 }
 
@@ -255,20 +269,20 @@ struct ContentView: View {
     @State private var linkedScheduleWarning: LinkedScheduleWarning?
     @State private var externalRouteNotice = ""
     @State private var runningTaskCount = 0
-    @AppStorage("claudePath") private var claudePath = ""
-    @AppStorage("copilotPath") private var copilotPath = ""
+    @AppStorage(AppStorageKeys.claudePath) private var claudePath = ""
+    @AppStorage(AppStorageKeys.copilotPath) private var copilotPath = ""
     @AppStorage(AppStorageKeys.runtimeProviderSettingsRevision) private var runtimeProviderSettingsRevision = 0
-    @AppStorage("defaultRuntimeID") private var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
-    @AppStorage("defaultModel") private var defaultModel = TaskExecutionDefaults.model
+    @AppStorage(AppStorageKeys.defaultRuntimeID) private var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
+    @AppStorage(AppStorageKeys.defaultModel) private var defaultModel = TaskExecutionDefaults.model
     @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultBudget = TaskExecutionDefaults.tokenBudget
     @AppStorage(AppStorageKeys.claudeProvider) private var claudeProviderRaw = ClaudeProvider.anthropic.rawValue
     @AppStorage(AppStorageKeys.claudeVertexOpusModel) private var claudeVertexOpusModel = ""
     @AppStorage(AppStorageKeys.claudeVertexSonnetModel) private var claudeVertexSonnetModel = ""
     @AppStorage(AppStorageKeys.claudeVertexHaikuModel) private var claudeVertexHaikuModel = ""
-    @AppStorage("timeoutSeconds") private var timeoutSeconds = 600
+    @AppStorage(AppStorageKeys.timeoutSeconds) private var timeoutSeconds = 600
     @AppStorage("appUIScale") private var uiScale: Double = 1.0
-    @AppStorage("validationModel") private var validationModel = "claude-haiku-4-5-20251001"
-    @AppStorage("workspacesRoot") private var workspacesRoot = ""
+    @AppStorage(AppStorageKeys.validationModel) private var validationModel = "claude-haiku-4-5-20251001"
+    @AppStorage(AppStorageKeys.workspacesRoot) private var workspacesRoot = ""
     @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
     @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var defaultAgentPolicyLevelRaw = AgentPolicyLevel.review.rawValue
     @AppStorage(AppStorageKeys.securityGateDefaultedToReview) private var securityGateDefaultedToReview = false
@@ -283,19 +297,33 @@ struct ContentView: View {
     @State private var splitVisibility: NavigationSplitViewVisibility = .all
     @State private var responsiveLayoutWidth: CGFloat = 0
     @State private var didAutoHideSidebarForCompactPanels = false
+    @State private var isSidebarRevealInProgress = false
+    @State private var sidebarRevealRevision = 0
+    @State private var sidebarRevealTimeoutTask: Task<Void, Never>?
+    // MARK: Sidebar Peek
+    /// Hover state of the show-sidebar toggle, which drives the hover-to-peek overlay
+    /// (`SidebarPeekContainer`). That container owns the rest of the peek state and
+    /// never mutates `splitVisibility`, so it can't feed the collapse/reveal loop that
+    /// `SidebarSplitViewGuard` suppresses.
+    @State private var isSidebarToggleHovered = false
     @State private var cachedHasCanvasContent = false
-    @State private var generatedHTMLPreviewTask: Task<Void, Never>?
-    @State private var generatedMarkdownPreviewTask: Task<Void, Never>?
+    /// Run-once guard for the deferred Sparkle update probe. handleAppear can
+    /// fire on more than one .onAppear for the same view instance; this keeps
+    /// the ~3s deferral scheduled exactly once. (The controller also guards the
+    /// actual probe via hasProbedForUpdates, so this is belt-and-suspenders.)
+    @State private var didScheduleUpdateProbe = false
+    @State private var generatedHTMLDiscoveryTask: Task<Void, Never>?
     @State private var markdownAvailabilityTask: Task<Void, Never>?
     @State private var queryAvailabilityTask: Task<Void, Never>?
     @State private var runtimeModelRefreshTasks: [AgentRuntimeID: Task<Void, Never>] = [:]
     @State private var lastRuntimeModelRefreshSignatures: [AgentRuntimeID: String] = [:]
-    @State private var lastGeneratedHTMLPreviewSignature = ""
-    @State private var lastGeneratedMarkdownPreviewSignature = ""
+    @State private var lastGeneratedHTMLDiscoverySignature = ""
+    @State private var selectedTaskPreferredHTMLPath = ""
     @State private var selectedTaskHasMarkdownShelfContent = false
     @State private var selectedTaskPreferredMarkdownPath = ""
     @State private var selectedTaskHasQueryShelfContent = false
     @State private var selectedTaskPreferredQueryPath = ""
+    @State private var rememberedWorkspaceCanvasItemsRaw = WorkspaceCanvasItemPreferenceStore.load()
     /// First-run flag. Flips to true once the user finishes the
     /// onboarding wizard. Exposed via Settings → "Show Onboarding Again"
     /// so users can replay the guide on demand.
@@ -418,14 +446,21 @@ struct ContentView: View {
 
     private var selectedTaskCanvasSignature: String {
         guard let selectedTask else { return "none" }
-        let htmlPreviewSignature = selectedTaskHTMLPreviewSignature(for: selectedTask)
-        let inputSignature = selectedTask.inputs.joined(separator: "|")
+        // Compute the latest run once (was scanned twice — here and in the
+        // HTML-preview helper). Deliberately exclude `output.count`: it is an
+        // O(output-length) walk that re-runs every body pass while output
+        // streams, and the canvas only reflects file changes, not raw output.
         let latestRun = selectedTask.runs.max { $0.startedAt < $1.startedAt }
+        let inputSignature = selectedTask.inputs.joined(separator: "|")
+        let htmlPreviewSignature = [
+            selectedTask.status.rawValue,
+            latestRun?.id.uuidString ?? "none",
+            String(latestRun?.fileChangesJSON.count ?? 0)
+        ].joined(separator: "|")
         let latestRunSignature = [
             latestRun?.id.uuidString ?? "none",
             latestRun?.status.rawValue ?? "none",
             String(Int(latestRun?.startedAt.timeIntervalSince1970 ?? 0)),
-            String(latestRun?.output.count ?? 0),
             String(latestRun?.fileChangesJSON.count ?? 0)
         ].joined(separator: ":")
         return [
@@ -437,15 +472,6 @@ struct ContentView: View {
             latestRunSignature,
             htmlPreviewSignature,
             inputSignature
-        ].joined(separator: "|")
-    }
-
-    private func selectedTaskHTMLPreviewSignature(for task: AgentTask) -> String {
-        let latestRun = task.runs.max { $0.startedAt < $1.startedAt }
-        return [
-            task.status.rawValue,
-            latestRun?.id.uuidString ?? "none",
-            String(latestRun?.fileChangesJSON.count ?? 0)
         ].joined(separator: "|")
     }
 
@@ -493,8 +519,24 @@ struct ContentView: View {
         isCompactPanelLayout && hasRightSidePanelPresented
     }
 
+    /// True when the sidebar column is not occupying layout — either manually
+    /// collapsed inside the split view (`.detailOnly`) or hidden by the
+    /// responsive compact path. Gates the hover-to-peek overlay (opened by hovering
+    /// the show-sidebar toggle).
+    private var isSidebarColumnHidden: Bool {
+        shouldUseDetailOnlyCompactLayout || splitVisibility == .detailOnly
+    }
+
     private var panelTransitionAnimation: Animation? {
         AstraMotion.rightPanel(reduceMotion: reduceMotion)
+    }
+
+    private var sidebarCollapseAnimation: Animation? {
+        SidebarColumnLayout.collapseAnimation(reduceMotion: reduceMotion)
+    }
+
+    private var sidebarCollapseTransition: AnyTransition {
+        SidebarColumnLayout.collapseTransition(reduceMotion: reduceMotion)
     }
 
     private var rightRailInspectorBinding: Binding<Bool> {
@@ -547,7 +589,10 @@ struct ContentView: View {
         .navigationSplitViewStyle(.balanced)
     }
 
-    private var sidebarArea: some View {
+    /// The sidebar's content, free of any `NavigationSplitView` sizing
+    /// modifiers, so it can be reused verbatim by both the real column
+    /// (`sidebarArea`) and the floating peek overlay (`SidebarPeekPanel`).
+    private var sidebarContent: some View {
         TaskSidebarContainerView(
             selectedTask: selectedTaskBinding,
             taskQueue: runtime.taskQueue,
@@ -567,10 +612,40 @@ struct ContentView: View {
             onDeleteWorkspace: deleteWorkspace,
             onRenameWorkspace: beginRenamingWorkspace,
             onNewSchedule: showNewSchedule,
-            onEditSchedule: beginEditingSchedule,
-            isSearchActive: $isSearchActive
+            onEditSchedule: beginEditingSchedule
         )
-        .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 360)
+    }
+
+    private var sidebarArea: some View {
+        sidebarContent
+        .background {
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear {
+                        handleSidebarColumnWidthChanged(proxy.size.width)
+                    }
+                    .onChange(of: proxy.size.width) {
+                        handleSidebarColumnWidthChanged(proxy.size.width)
+                    }
+            }
+            SidebarSplitViewGuard(
+                minimumExpandedWidth: SidebarColumnLayout.expandedMinimumWidth,
+                isRevealInProgress: isSidebarRevealInProgress,
+                onCollapse: collapseSidebarForCompressedSplit
+            )
+            .frame(width: 0, height: 0)
+        }
+        .navigationSplitViewColumnWidth(
+            min: SidebarColumnLayout.expandedMinimumWidth,
+            ideal: SidebarColumnLayout.expandedIdealWidth,
+            max: SidebarColumnLayout.expandedMaximumWidth
+        )
+        .clipped()
+        // The leading titlebar accessory (AstraLeadingCommandBar) owns the only
+        // sidebar toggle; drop NavigationSplitView's built-in one.
+        .toolbar(removing: .sidebarToggle)
+        .transition(sidebarCollapseTransition)
+        .animation(sidebarCollapseAnimation, value: splitVisibility)
     }
 
     private var detailArea: some View {
@@ -587,7 +662,7 @@ struct ContentView: View {
             queryUtilityRuntime: queryUtilityRuntime,
             sshReloadTrigger: sshReloadTrigger,
             isRightRailPresented: rightRailInspectorBinding,
-            activeCanvasItem: $activeWorkspaceCanvasItem,
+            activeCanvasItem: workspaceCanvasItemBinding,
             isPlanCanvasVisible: activeWorkspaceCanvasItem == .plan,
             onQuickRun: handleQuickRunTask,
             onTaskCreated: handleTaskCreated,
@@ -623,31 +698,45 @@ struct ContentView: View {
         )
     }
 
-    var body: some View {
+    /// Keeps ⌘F toggling search even though the visible search button lives in
+    /// the leading titlebar accessory (`AstraLeadingCommandBar`), which sits
+    /// outside the window's key responder chain where a `.keyboardShortcut`
+    /// can't fire. The button stays in the SwiftUI hierarchy (so the shortcut
+    /// registers) but is made invisible with a zero-size clear label + opacity(0).
+    private var searchHotkey: some View {
+        Button(action: { isSearchActive.toggle() }) { Color.clear.frame(width: 0, height: 0) }
+            .buttonStyle(.plain)
+            .keyboardShortcut("f", modifiers: .command)
+            .opacity(0)
+            .accessibilityHidden(true)
+    }
+
+    // Split out of `body` so each modifier chain stays small enough for the
+    // SwiftUI type-checker. `body` adds only the .onChange / .sheet tail.
+    private var rootLayoutWithChrome: some View {
         rootLayout
         .frame(minHeight: 600)
         .accessibilityIdentifier("MainContentView")
-        .astraWindowChrome()
+        // Installs the leading titlebar accessory (AstraLeadingCommandBar):
+        // sidebar toggle + search pinned beside the traffic lights in every layout.
+        .astraWindowChrome(
+            isSearchActive: $isSearchActive,
+            isSidebarToggleHovered: $isSidebarToggleHovered,
+            isSidebarHidden: isSidebarColumnHidden,
+            onToggleSidebar: toggleSidebarColumn
+        )
+        .background(searchHotkey)
         .astraHiddenToolbarBackground()
         // Right-rail toggle. Attached to the NavigationSplitView root so
         // .primaryAction lands at the WINDOW's trailing edge — past the
         // inspector column — instead of at the inspector boundary
         // (where attaching to .detail or to the inspector content put it).
         .toolbar {
-            if shouldUseDetailOnlyCompactLayout {
-                ToolbarItem(placement: .navigation) {
-                    AstraToolbarCommandCluster {
-                        Button(action: revealSidebarFromCompactLayout) {
-                            AstraToolbarCommandIcon(systemImage: "sidebar.left", isActive: false)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Show sidebar and close the right panel")
-                        .accessibilityIdentifier("CompactShowSidebarButton")
-                        .accessibilityLabel("Show sidebar")
-                    }
-                }
-            }
-
+            // Sidebar toggle + search live in the leading titlebar accessory
+            // (AstraLeadingCommandBar, installed by astraWindowChrome) — pinned
+            // beside the traffic lights in every layout. It feeds the hover-to-peek
+            // state (isSidebarToggleHovered); the native split-view toggle is
+            // suppressed on `sidebarArea` via `.toolbar(removing: .sidebarToggle)`.
             ContentToolbar(
                 appUpdateController: appUpdateController,
                 onCheckForUpdates: appUpdateController.checkForUpdatesFromButton
@@ -679,6 +768,15 @@ struct ContentView: View {
                 )
             }
         }
+        .overlay(alignment: .topLeading) {
+            SidebarPeekContainer(
+                isColumnHidden: isSidebarColumnHidden,
+                isTriggerHovered: isSidebarToggleHovered,
+                reduceMotion: reduceMotion
+            ) {
+                sidebarContent
+            }
+        }
         .safeAreaInset(edge: .top) {
             TopNoticeBannersView(
                 recoveryNotice: recoveryNotice,
@@ -689,6 +787,10 @@ struct ContentView: View {
                 onCheckForUpdates: appUpdateController.checkForUpdatesFromButton
             )
         }
+    }
+
+    var body: some View {
+        rootLayoutWithChrome
         .onChange(of: selectedTaskCanvasSignature) {
             handleSelectedTaskCanvasSignatureChanged()
         }
@@ -698,7 +800,7 @@ struct ContentView: View {
                     return
                 }
                 animatePanelChange {
-                    activeWorkspaceCanvasItem = nil
+                    setActiveWorkspaceCanvasItem(nil, remember: false)
                 }
             }
         }
@@ -814,9 +916,15 @@ struct ContentView: View {
             handleAppear()
         }
         .onChange(of: executionSettingsSignature) { applySettings() }
-        .onChange(of: updateSafetySignature) {
-            refreshRunningTaskCount()
-            refreshUpdateSafetyHooks()
+        .background {
+            UpdateSafetyObserver(
+                taskQueue: runtime.taskQueue,
+                runningTaskCount: runningTaskCount,
+                onChange: {
+                    refreshRunningTaskCount()
+                    refreshUpdateSafetyHooks()
+                }
+            )
         }
         .onChange(of: workspaceSelectionSignature) {
             handleWorkspaceSelectionSignatureChanged()
@@ -934,6 +1042,30 @@ struct ContentView: View {
         reconcileCompactPanelLayout(for: width)
     }
 
+    private func handleSidebarColumnWidthChanged(_ width: CGFloat) {
+        if isSidebarRevealInProgress,
+           SidebarColumnLayout.shouldCompleteSidebarReveal(width: width) {
+            finishSidebarRevealSettling()
+        }
+
+        guard splitVisibility != .detailOnly else { return }
+        guard SidebarColumnLayout.shouldCollapseExpandedSidebar(
+            width: width,
+            isRevealInProgress: isSidebarRevealInProgress
+        ) else { return }
+
+        collapseSidebarForCompressedSplit()
+    }
+
+    private func collapseSidebarForCompressedSplit() {
+        guard splitVisibility != .detailOnly else { return }
+
+        finishSidebarRevealSettling()
+        withAnimation(sidebarCollapseAnimation) {
+            splitVisibility = .detailOnly
+        }
+    }
+
     private func handleRightSidePanelStateChanged() {
         reconcileCompactPanelLayout()
     }
@@ -941,18 +1073,18 @@ struct ContentView: View {
     private func handleSelectedTaskCanvasSignatureChanged() {
         cachedHasCanvasContent = selectedTask.flatMap { TaskPlanService.reconstruct(for: $0).plan } != nil
         if !cachedHasCanvasContent, activeWorkspaceCanvasItem == .plan {
-            activeWorkspaceCanvasItem = nil
+            setActiveWorkspaceCanvasItem(nil, remember: false)
         }
         if selectedTask == nil, !isComposingTask, activeWorkspaceCanvasItem == .browser {
-            activeWorkspaceCanvasItem = nil
+            setActiveWorkspaceCanvasItem(nil, remember: false)
         }
         if selectedTask == nil, !isComposingTask, effectiveWorkspace == nil, activeWorkspaceCanvasItem == .markdown {
-            activeWorkspaceCanvasItem = nil
+            setActiveWorkspaceCanvasItem(nil, remember: false)
         }
         refreshMarkdownShelfAvailabilityForSelectedTask()
         refreshQueryShelfAvailabilityForSelectedTask()
-        previewGeneratedHTMLForSelectedTaskIfNeeded()
-        previewGeneratedMarkdownForSelectedTaskIfNeeded()
+        refreshGeneratedHTMLAvailabilityForSelectedTask()
+        restoreRememberedWorkspaceCanvasItemIfAvailable()
     }
 
     private func reconcileCompactPanelLayout(for width: CGFloat? = nil) {
@@ -982,7 +1114,12 @@ struct ContentView: View {
             }
             return
         }
-        guard splitVisibility != .detailOnly else { return }
+        guard PanelLayoutGeometry.shouldAutoHideSidebarForCompactPanels(
+            width: currentWidth,
+            hasRightSidePanelPresented: hasRightSidePanelPresented,
+            isSidebarDetailOnly: splitVisibility == .detailOnly,
+            isSidebarRevealInProgress: isSidebarRevealInProgress
+        ) else { return }
 
         didAutoHideSidebarForCompactPanels = true
         withAnimation(panelTransitionAnimation) {
@@ -991,6 +1128,11 @@ struct ContentView: View {
     }
 
     private func handleSplitVisibilityChanged() {
+        if splitVisibility != .detailOnly,
+           SidebarRevealSettlingPolicy.shouldBeginReveal(isRevealInProgress: isSidebarRevealInProgress) {
+            beginSidebarRevealSettling()
+        }
+
         guard isCompactPanelLayout else {
             if splitVisibility != .detailOnly {
                 didAutoHideSidebarForCompactPanels = false
@@ -1007,18 +1149,62 @@ struct ContentView: View {
 
     private func hideRightSidePanelsForCompactSidebar() {
         animatePanelChange {
-            activeWorkspaceCanvasItem = nil
+            setActiveWorkspaceCanvasItem(nil, remember: true)
             isWorkspaceRightRailVisible = false
         }
     }
 
     private func revealSidebarFromCompactLayout() {
         didAutoHideSidebarForCompactPanels = false
+        beginSidebarRevealSettling()
         animatePanelChange {
-            activeWorkspaceCanvasItem = nil
+            setActiveWorkspaceCanvasItem(nil, remember: true)
             isWorkspaceRightRailVisible = false
             splitVisibility = .all
         }
+    }
+
+    /// Backs the leading titlebar-accessory sidebar toggle. When the column is
+    /// showing, collapse it (`.detailOnly`); when it's hidden, reveal it —
+    /// deferring to `revealSidebarFromCompactLayout` in the compact layout, where
+    /// the sidebar and a right panel can't share the width, so revealing closes it.
+    private func toggleSidebarColumn() {
+        guard isSidebarColumnHidden else {
+            animatePanelChange { splitVisibility = .detailOnly }
+            return
+        }
+        if shouldUseDetailOnlyCompactLayout {
+            revealSidebarFromCompactLayout()
+        } else {
+            beginSidebarRevealSettling()
+            animatePanelChange { splitVisibility = .all }
+        }
+    }
+
+    private func beginSidebarRevealSettling() {
+        sidebarRevealRevision = SidebarRevealSettlingPolicy.nextRevision(after: sidebarRevealRevision)
+        let scheduledRevision = sidebarRevealRevision
+        isSidebarRevealInProgress = true
+        sidebarRevealTimeoutTask?.cancel()
+        sidebarRevealTimeoutTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: SidebarRevealSettlingPolicy.fallbackDelayNanoseconds)
+            guard SidebarRevealSettlingPolicy.shouldClearReveal(
+                scheduledRevision: scheduledRevision,
+                currentRevision: sidebarRevealRevision,
+                isRevealInProgress: isSidebarRevealInProgress
+            ) else { return }
+
+            isSidebarRevealInProgress = false
+            sidebarRevealTimeoutTask = nil
+            reconcileCompactPanelLayout()
+        }
+    }
+
+    private func finishSidebarRevealSettling() {
+        sidebarRevealRevision = SidebarRevealSettlingPolicy.nextRevision(after: sidebarRevealRevision)
+        isSidebarRevealInProgress = false
+        sidebarRevealTimeoutTask?.cancel()
+        sidebarRevealTimeoutTask = nil
     }
 
     private func setRightRailPresented(_ isPresented: Bool) {
@@ -1031,9 +1217,9 @@ struct ContentView: View {
         }
     }
 
-    private func presentRightRail() {
+    private func presentRightRail(rememberShelfState: Bool = true) {
         animatePanelChange {
-            activeWorkspaceCanvasItem = nil
+            setActiveWorkspaceCanvasItem(nil, remember: rememberShelfState)
             isWorkspaceRightRailVisible = true
         }
     }
@@ -1041,7 +1227,94 @@ struct ContentView: View {
     private func presentCanvas(_ item: WorkspaceCanvasItem) {
         animatePanelChange {
             isWorkspaceRightRailVisible = false
-            activeWorkspaceCanvasItem = item
+            setActiveWorkspaceCanvasItem(item, remember: true)
+        }
+    }
+
+    private var workspaceCanvasItemBinding: Binding<WorkspaceCanvasItem?> {
+        Binding(
+            get: { activeWorkspaceCanvasItem },
+            set: { setActiveWorkspaceCanvasItem($0, remember: true) }
+        )
+    }
+
+    private var selectedWorkspaceCanvasConversationID: String? {
+        selectedTask?.id.uuidString
+    }
+
+    private var rememberedWorkspaceCanvasItem: WorkspaceCanvasItem? {
+        WorkspaceCanvasItemPreference.item(
+            in: rememberedWorkspaceCanvasItemsRaw,
+            for: selectedWorkspaceCanvasConversationID
+        )
+    }
+
+    private func setActiveWorkspaceCanvasItem(_ item: WorkspaceCanvasItem?, remember: Bool) {
+        activeWorkspaceCanvasItem = item
+        let currentStorage = rememberedWorkspaceCanvasItemsRaw
+        let updatedStorage = WorkspaceCanvasItemPreference.updatedStorageRawValue(
+            currentStorageRawValue: currentStorage,
+            conversationID: selectedWorkspaceCanvasConversationID,
+            item: item,
+            remember: remember
+        )
+        rememberedWorkspaceCanvasItemsRaw = updatedStorage
+        WorkspaceCanvasItemPreferenceStore.saveIfChanged(
+            currentRawValue: currentStorage,
+            updatedRawValue: updatedStorage
+        )
+    }
+
+    private func restoreRememberedWorkspaceCanvasItemIfAvailable() {
+        let rememberedItem = rememberedWorkspaceCanvasItem
+        guard WorkspaceCanvasItemPreference.shouldRestoreRememberedItem(
+            activeItem: activeWorkspaceCanvasItem,
+            isRightRailVisible: isWorkspaceRightRailVisible,
+            rememberedItem: rememberedItem,
+            canPresentRememberedItem: rememberedItem.map(canPresentWorkspaceCanvasItem) ?? false
+        ), let item = rememberedItem else {
+            return
+        }
+
+        isWorkspaceRightRailVisible = false
+        prepareWorkspaceCanvasItemForPresentation(item, source: "remembered_shelf_restore")
+        setActiveWorkspaceCanvasItem(item, remember: false)
+    }
+
+    private func canPresentWorkspaceCanvasItem(_ item: WorkspaceCanvasItem) -> Bool {
+        switch item {
+        case .plan:
+            return hasOpenTaskThread && hasWorkspaceCanvasContent
+        case .markdown:
+            return effectiveWorkspace != nil || selectedTaskHasMarkdownShelfContent || selectedTask != nil || isComposingTask
+        case .browser:
+            return hasOpenTaskThread
+        case .query:
+            return hasOpenTaskThread && hasQueryShelfAffordance
+        }
+    }
+
+    private func prepareWorkspaceCanvasItemForPresentation(_ item: WorkspaceCanvasItem, source: String) {
+        switch item {
+        case .plan:
+            return
+        case .markdown:
+            currentMarkdownSession.bindToTask(selectedTask?.id)
+            guard !selectedTaskPreferredMarkdownPath.isEmpty else { return }
+            let url = URL(fileURLWithPath: selectedTaskPreferredMarkdownPath)
+            if currentMarkdownSession.fileURL?.path != url.path {
+                currentMarkdownSession.load(url)
+            }
+        case .browser:
+            currentBrowserSession.bindToTask(selectedTask?.id)
+            loadPreferredGeneratedHTMLForBrowserShelfIfNeeded(source: source)
+        case .query:
+            querySession.bindToTask(selectedTask?.id)
+            guard !selectedTaskPreferredQueryPath.isEmpty else { return }
+            let url = URL(fileURLWithPath: selectedTaskPreferredQueryPath)
+            if querySession.selectedDocument?.sourcePath != url.path {
+                querySession.loadFile(url)
+            }
         }
     }
 
@@ -1057,14 +1330,14 @@ struct ContentView: View {
         guard hasWorkspaceCanvasContent else {
             animatePanelChange {
                 if activeWorkspaceCanvasItem == .plan {
-                    activeWorkspaceCanvasItem = nil
+                    setActiveWorkspaceCanvasItem(nil, remember: true)
                 }
             }
             return
         }
         if activeWorkspaceCanvasItem == .plan {
             animatePanelChange {
-                activeWorkspaceCanvasItem = nil
+                setActiveWorkspaceCanvasItem(nil, remember: true)
             }
         } else {
             presentCanvas(.plan)
@@ -1075,9 +1348,10 @@ struct ContentView: View {
         currentBrowserSession.bindToTask(selectedTask?.id)
         if activeWorkspaceCanvasItem == .browser {
             animatePanelChange {
-                activeWorkspaceCanvasItem = nil
+                setActiveWorkspaceCanvasItem(nil, remember: true)
             }
         } else {
+            loadPreferredGeneratedHTMLForBrowserShelfIfNeeded(source: "browser_shelf_open")
             presentCanvas(.browser)
         }
     }
@@ -1089,6 +1363,7 @@ struct ContentView: View {
             session.engine = engine
         }
         browserToolbarEngine = engine
+        loadPreferredGeneratedHTMLForBrowserShelfIfNeeded(source: "browser_shelf_open")
         if activeWorkspaceCanvasItem != .browser {
             presentCanvas(.browser)
         }
@@ -1098,7 +1373,7 @@ struct ContentView: View {
         guard effectiveWorkspace != nil || selectedTaskHasMarkdownShelfContent || selectedTask != nil || isComposingTask else {
             if activeWorkspaceCanvasItem == .markdown {
                 animatePanelChange {
-                    activeWorkspaceCanvasItem = nil
+                    setActiveWorkspaceCanvasItem(nil, remember: true)
                 }
             }
             return
@@ -1112,7 +1387,7 @@ struct ContentView: View {
         }
         if activeWorkspaceCanvasItem == .markdown {
             animatePanelChange {
-                activeWorkspaceCanvasItem = nil
+                setActiveWorkspaceCanvasItem(nil, remember: true)
             }
         } else {
             presentCanvas(.markdown)
@@ -1123,7 +1398,7 @@ struct ContentView: View {
         guard hasQueryShelfAffordance else {
             if activeWorkspaceCanvasItem == .query {
                 animatePanelChange {
-                    activeWorkspaceCanvasItem = nil
+                    setActiveWorkspaceCanvasItem(nil, remember: true)
                 }
             }
             return
@@ -1137,7 +1412,7 @@ struct ContentView: View {
         }
         if activeWorkspaceCanvasItem == .query {
             animatePanelChange {
-                activeWorkspaceCanvasItem = nil
+                setActiveWorkspaceCanvasItem(nil, remember: true)
             }
         } else {
             presentCanvas(.query)
@@ -1184,6 +1459,7 @@ struct ContentView: View {
                     selectedTaskHasMarkdownShelfContent = false
                     closeMarkdownShelfIfUnavailable()
                 }
+                restoreRememberedWorkspaceCanvasItemIfAvailable()
             }
         }
     }
@@ -1238,6 +1514,7 @@ struct ContentView: View {
                     selectedTaskHasQueryShelfContent = false
                     closeQueryShelfIfUnavailable()
                 }
+                restoreRememberedWorkspaceCanvasItemIfAvailable()
             }
         }
     }
@@ -1304,129 +1581,117 @@ struct ContentView: View {
     private func closeMarkdownShelfIfUnavailable() {
         guard activeWorkspaceCanvasItem == .markdown, effectiveWorkspace == nil else { return }
         animatePanelChange {
-            activeWorkspaceCanvasItem = nil
+            setActiveWorkspaceCanvasItem(nil, remember: false)
         }
     }
 
     private func closeQueryShelfIfUnavailable() {
         guard activeWorkspaceCanvasItem == .query, !selectedTaskHasQueryShelfContent else { return }
         animatePanelChange {
-            activeWorkspaceCanvasItem = nil
+            setActiveWorkspaceCanvasItem(nil, remember: false)
         }
     }
 
-    private func previewGeneratedHTMLForSelectedTaskIfNeeded() {
+    private func clearGeneratedHTMLDiscoveryState() {
+        selectedTaskPreferredHTMLPath = GeneratedHTMLDiscoveryState.empty.preferredPath
+        lastGeneratedHTMLDiscoverySignature = GeneratedHTMLDiscoveryState.empty.signature
+    }
+
+    private func refreshGeneratedHTMLAvailabilityForSelectedTask() {
         guard isBrowserPinnedToTask else { return }
         guard let selectedTask else {
-            generatedHTMLPreviewTask?.cancel()
+            generatedHTMLDiscoveryTask?.cancel()
+            clearGeneratedHTMLDiscoveryState()
             return
         }
 
         let taskID = selectedTask.id
         let taskFolder = TaskWorkspaceAccess(task: selectedTask).taskFolder
-        guard !taskFolder.isEmpty else { return }
+        guard !taskFolder.isEmpty else {
+            generatedHTMLDiscoveryTask?.cancel()
+            clearGeneratedHTMLDiscoveryState()
+            return
+        }
 
-        generatedHTMLPreviewTask?.cancel()
-        generatedHTMLPreviewTask = Task {
+        generatedHTMLDiscoveryTask?.cancel()
+        generatedHTMLDiscoveryTask = Task {
             let files = await TaskGeneratedFiles.filesAsync(in: taskFolder)
             guard !Task.isCancelled,
                   let path = TaskGeneratedFiles.preferredHTMLFile(in: files, taskFolder: taskFolder) else {
+                await MainActor.run {
+                    guard !Task.isCancelled,
+                          self.selectedTask?.id == taskID else {
+                        return
+                    }
+                    clearGeneratedHTMLDiscoveryState()
+                }
                 return
             }
 
-            let signature = TaskGeneratedFiles.htmlPreviewSignature(for: path, taskID: taskID)
+            let discoveryState = GeneratedHTMLDiscoveryState.discovered(preferredPath: path, taskID: taskID)
             await MainActor.run {
+                // Compare against the signature already computed off-main above
+                // rather than calling shouldApplyDiscovery(), which would re-run
+                // an attributesOfItem stat on the main actor for the same path.
+                // See the UI responsiveness audit (Cluster 2).
                 guard !Task.isCancelled,
                       self.selectedTask?.id == taskID,
-                      lastGeneratedHTMLPreviewSignature != signature else {
+                      lastGeneratedHTMLDiscoverySignature != discoveryState.signature else {
                     return
                 }
 
-                let session = browserSessionStore.session(for: taskID, pinnedToTask: isBrowserPinnedToTask)
-                let shouldLoadPreview = TaskGeneratedFiles.shouldAutoLoadHTMLPreview(
-                    currentBrowserURL: session.currentURL,
-                    targetPath: path
-                )
-                lastGeneratedHTMLPreviewSignature = signature
-                guard shouldLoadPreview else {
-                    logGeneratedHTMLPreview(
-                        taskID: taskID,
-                        event: "auto_preview_skipped",
-                        reason: "browser_has_user_page",
-                        targetPath: path,
-                        currentURL: session.currentURL
-                    )
-                    return
-                }
-
-                session.load(URL(fileURLWithPath: path), source: "generated_html_preview")
-                logGeneratedHTMLPreview(
+                selectedTaskPreferredHTMLPath = discoveryState.preferredPath
+                lastGeneratedHTMLDiscoverySignature = discoveryState.signature
+                logGeneratedHTMLDiscovery(
                     taskID: taskID,
-                    event: "auto_preview_loaded",
-                    reason: "signature_changed",
-                    targetPath: path,
-                    currentURL: session.currentURL
+                    event: "artifact_discovered",
+                    reason: "explicit_open_required",
+                    targetPath: discoveryState.preferredPath
                 )
-                if activeWorkspaceCanvasItem != .browser {
-                    presentCanvas(.browser)
-                }
-                syncBrowserPresentation()
+                restoreRememberedWorkspaceCanvasItemIfAvailable()
             }
         }
     }
 
-    private func logGeneratedHTMLPreview(
+    private func loadPreferredGeneratedHTMLForBrowserShelfIfNeeded(source: String) {
+        guard !selectedTaskPreferredHTMLPath.isEmpty else { return }
+
+        let taskID = selectedTask?.id
+        let session = browserSessionStore.session(
+            for: taskID,
+            pinnedToTask: isBrowserPinnedToTask,
+            enabledBrowserAdapters: enabledBrowserAdapterIDs(for: selectedTask)
+        )
+        guard TaskGeneratedFiles.shouldLoadGeneratedHTMLOnUserOpen(
+            currentBrowserURL: session.currentURL,
+            targetPath: selectedTaskPreferredHTMLPath
+        ) else {
+            return
+        }
+
+        session.load(URL(fileURLWithPath: selectedTaskPreferredHTMLPath), source: source)
+        if let taskID {
+            let discoveryState = GeneratedHTMLDiscoveryState.discovered(
+                preferredPath: selectedTaskPreferredHTMLPath,
+                taskID: taskID
+            )
+            selectedTaskPreferredHTMLPath = discoveryState.preferredPath
+            lastGeneratedHTMLDiscoverySignature = discoveryState.signature
+        }
+        syncBrowserPresentation()
+    }
+
+    private func logGeneratedHTMLDiscovery(
         taskID: UUID,
         event: String,
         reason: String,
-        targetPath: String,
-        currentURL: String
+        targetPath: String
     ) {
         var fields = ShelfBrowserURLLogFields.fields(for: URL(fileURLWithPath: targetPath), prefix: "target")
-        fields.merge(ShelfBrowserURLLogFields.fields(for: currentURL, prefix: "current"), uniquingKeysWith: { current, _ in current })
         fields["event"] = event
         fields["reason"] = reason
         fields["pinned_to_task"] = String(isBrowserPinnedToTask)
         AppLogger.audit(.shelfBrowserPreview, category: "Browser", taskID: taskID, fields: fields)
-    }
-
-    private func previewGeneratedMarkdownForSelectedTaskIfNeeded() {
-        guard isMarkdownPinnedToTask else { return }
-        guard let selectedTask else {
-            generatedMarkdownPreviewTask?.cancel()
-            return
-        }
-
-        let taskID = selectedTask.id
-        let taskFolder = TaskWorkspaceAccess(task: selectedTask).taskFolder
-        guard !taskFolder.isEmpty else { return }
-
-        generatedMarkdownPreviewTask?.cancel()
-        generatedMarkdownPreviewTask = Task {
-            let files = await TaskGeneratedFiles.filesAsync(in: taskFolder)
-            guard !Task.isCancelled,
-                  let path = TaskGeneratedFiles.preferredMarkdownFile(in: files, taskFolder: taskFolder) else {
-                return
-            }
-
-            let signature = TaskGeneratedFiles.markdownPreviewSignature(for: path, taskID: taskID)
-            await MainActor.run {
-                guard !Task.isCancelled,
-                      self.selectedTask?.id == taskID,
-                      lastGeneratedMarkdownPreviewSignature != signature else {
-                    return
-                }
-
-                lastGeneratedMarkdownPreviewSignature = signature
-                selectedTaskPreferredMarkdownPath = path
-                selectedTaskHasMarkdownShelfContent = true
-                let session = markdownSessionStore.session(for: taskID, pinnedToTask: isMarkdownPinnedToTask)
-                session.load(URL(fileURLWithPath: path))
-                if activeWorkspaceCanvasItem != .browser {
-                    presentCanvas(.markdown)
-                }
-            }
-        }
     }
 
     private func openGeneratedFile(_ path: String) {
@@ -1434,10 +1699,16 @@ struct ContentView: View {
         switch TaskGeneratedFiles.shelfDestination(for: path) {
         case .browser?:
             let taskID = selectedTask?.id
-            let session = browserSessionStore.session(for: taskID, pinnedToTask: isBrowserPinnedToTask)
+            let session = browserSessionStore.session(
+                for: taskID,
+                pinnedToTask: isBrowserPinnedToTask,
+                enabledBrowserAdapters: enabledBrowserAdapterIDs(for: selectedTask)
+            )
             session.load(url, source: "generated_file")
             if let taskID {
-                lastGeneratedHTMLPreviewSignature = TaskGeneratedFiles.htmlPreviewSignature(for: path, taskID: taskID)
+                let discoveryState = GeneratedHTMLDiscoveryState.discovered(preferredPath: path, taskID: taskID)
+                selectedTaskPreferredHTMLPath = discoveryState.preferredPath
+                lastGeneratedHTMLDiscoverySignature = discoveryState.signature
             }
             presentCanvas(.browser)
             syncBrowserPresentation()
@@ -1449,9 +1720,6 @@ struct ContentView: View {
             selectedTaskHasMarkdownShelfContent = true
             let session = markdownSessionStore.session(for: taskID, pinnedToTask: isMarkdownPinnedToTask)
             session.load(url)
-            if let taskID {
-                lastGeneratedMarkdownPreviewSignature = TaskGeneratedFiles.markdownPreviewSignature(for: path, taskID: taskID)
-            }
             presentCanvas(.markdown)
             return
 
@@ -1497,7 +1765,7 @@ struct ContentView: View {
         let previousSession = currentBrowserSession
         let previousAddress = previousSession.currentURL
         isBrowserPinnedToTask = pinnedToTask
-        lastGeneratedHTMLPreviewSignature = ""
+        clearGeneratedHTMLDiscoveryState()
 
         let nextSession = currentBrowserSession
         if !previousAddress.isEmpty && nextSession.currentURL.isEmpty {
@@ -1505,9 +1773,7 @@ struct ContentView: View {
         }
 
         syncBrowserPresentation()
-        if pinnedToTask {
-            previewGeneratedHTMLForSelectedTaskIfNeeded()
-        }
+        if pinnedToTask { refreshGeneratedHTMLAvailabilityForSelectedTask() }
     }
 
     private func setMarkdownPinnedToTask(_ pinnedToTask: Bool) {
@@ -1516,22 +1782,19 @@ struct ContentView: View {
         let previousSession = currentMarkdownSession
         let previousURL = previousSession.fileURL
         isMarkdownPinnedToTask = pinnedToTask
-        lastGeneratedMarkdownPreviewSignature = ""
 
         let nextSession = currentMarkdownSession
         if let previousURL, !nextSession.hasFile {
             nextSession.load(previousURL)
         }
 
-        if pinnedToTask {
-            previewGeneratedMarkdownForSelectedTaskIfNeeded()
-        }
+        if pinnedToTask { refreshMarkdownShelfAvailabilityForSelectedTask() }
     }
 
     private func startComposingTask() {
         setSelectedTask(nil)
         isComposingTask = true
-        presentRightRail()
+        presentRightRail(rememberShelfState: false)
     }
 
     private func handleQuickRunTask(_ task: AgentTask) {
@@ -1545,7 +1808,7 @@ struct ContentView: View {
         promoteDraftBrowserSessionIfNeeded(to: task)
         setSelectedTask(task)
         isComposingTask = false
-        presentRightRail()
+        presentRightRail(rememberShelfState: false)
     }
 
     private func promoteDraftBrowserSessionIfNeeded(to task: AgentTask) {
@@ -1575,7 +1838,7 @@ struct ContentView: View {
         }
         if selectedTask?.id == task.id, activeWorkspaceCanvasItem == .plan {
             animatePanelChange {
-                activeWorkspaceCanvasItem = nil
+                setActiveWorkspaceCanvasItem(nil, remember: true)
             }
             return
         }
@@ -1620,16 +1883,11 @@ struct ContentView: View {
     }
 
     private func openWorkspaceFromExternalRoute(_ workspace: Workspace) {
-        selectedWorkspace = workspace
-        setSelectedTask(nil)
-        isComposingTask = false
-        presentRightRail()
+        applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.open(workspace: workspace))
     }
 
     private func openTaskFromExternalRoute(_ task: AgentTask) {
-        setSelectedTask(task)
-        isComposingTask = false
-        presentRightRail()
+        applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.open(task: task))
     }
 
     private func moveTaskToDraft(_ task: AgentTask) {
@@ -1656,6 +1914,14 @@ struct ContentView: View {
         )
     }
 
+    private var workspaceSelectionCoordinator: ContentWorkspaceSelectionCoordinator {
+        ContentWorkspaceSelectionCoordinator(
+            selectedTask: selectedTask,
+            selectedWorkspace: selectedWorkspace,
+            isComposingTask: isComposingTask
+        )
+    }
+
     private var workspaceActionCoordinator: ContentWorkspaceActionCoordinator {
         ContentWorkspaceActionCoordinator(
             modelContext: modelContext,
@@ -1671,15 +1937,6 @@ struct ContentView: View {
             defaultModel: defaultModel,
             defaultBudget: defaultBudget
         )
-    }
-
-    private var updateSafetySignature: String {
-        return [
-            String(runtime.taskQueue.isProcessing),
-            String(runtime.taskQueue.activeCount),
-            String(runtime.taskQueue.activeTasks.count),
-            String(runningTaskCount)
-        ].joined(separator: "|")
     }
 
     private var hasUpdateBlockingWork: Bool {
@@ -1781,15 +2038,7 @@ struct ContentView: View {
 
     private func restoreWorkspaceSelection() {
         let restored = sceneCoordinator.restoredWorkspace()
-        if let restored {
-            if selectedWorkspace?.id != restored.id {
-                selectedWorkspace = restored
-            }
-        } else {
-            selectedWorkspace = nil
-            setSelectedTask(nil)
-            isComposingTask = false
-        }
+        applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.restore(workspace: restored))
     }
 
     private func persistWorkspaceSelection() {
@@ -1816,18 +2065,13 @@ struct ContentView: View {
     @discardableResult
     private func createWorkspace(from draft: NewWorkspaceDraft, source: String) -> Bool {
         guard let result = workspaceActionCoordinator.createWorkspace(from: draft, source: source) else { return false }
-        selectedWorkspace = result.workspace
+        applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.create(workspace: result.workspace))
         return true
     }
 
     private func deleteWorkspace(_ ws: Workspace) {
-        if selectedWorkspace?.id == ws.id {
-            selectedWorkspace = nil
-        }
         let next = coordinator.deleteWorkspace(ws, existingWorkspaces: workspaces)
-        if let next {
-            selectedWorkspace = next
-        }
+        applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.delete(workspace: ws, nextWorkspace: next))
     }
 
     private func importWorkspace() {
@@ -1839,8 +2083,23 @@ struct ContentView: View {
             existingWorkspaces: workspaces,
             askDuplicateAction: WorkspaceDuplicateActionPrompt.ask
         )
-        if let selected = result.selectedWorkspace {
-            selectedWorkspace = selected
+        applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.importWorkspace(result.selectedWorkspace))
+    }
+
+    private func applyWorkspaceSelectionUpdate(_ update: ContentWorkspaceSelectionUpdate) {
+        if selectedWorkspace?.id != update.selectedWorkspace?.id {
+            selectedWorkspace = update.selectedWorkspace
+        }
+        if selectedTask?.id != update.selectedTask?.id {
+            setSelectedTask(update.selectedTask)
+        } else {
+            selectedTask = update.selectedTask
+        }
+        isComposingTask = update.isComposingTask
+        if update.shouldPresentRightRail {
+            presentRightRail(
+                rememberShelfState: update.shouldRememberShelfStateWhenPresentingRightRail
+            )
         }
     }
 
@@ -1848,31 +2107,24 @@ struct ContentView: View {
 
     private func setSelectedTask(_ task: AgentTask?) {
         let previousTaskID = selectedTask?.id
-        let shouldCloseBrowserForTaskChange = isBrowserPinnedToTask
-            && activeWorkspaceCanvasItem == .browser
-            && previousTaskID != nil
-            && previousTaskID != task?.id
+        if previousTaskID != task?.id {
+            setActiveWorkspaceCanvasItem(nil, remember: false)
+        }
         if let taskWorkspace = task?.workspace,
            selectedWorkspace?.id != taskWorkspace.id {
             selectedWorkspace = taskWorkspace
         }
         selectedTask = task
         if previousTaskID != task?.id {
-            lastGeneratedHTMLPreviewSignature = ""
-            lastGeneratedMarkdownPreviewSignature = ""
+            clearGeneratedHTMLDiscoveryState()
             currentBrowserSession.bindToTask(task?.id)
             currentMarkdownSession.bindToTask(task?.id)
             querySession.bindToTask(task?.id)
-            if shouldCloseBrowserForTaskChange {
-                animatePanelChange {
-                    activeWorkspaceCanvasItem = nil
-                }
-            }
             syncBrowserPresentation()
             refreshMarkdownShelfAvailabilityForSelectedTask()
             refreshQueryShelfAvailabilityForSelectedTask()
-            previewGeneratedHTMLForSelectedTaskIfNeeded()
-            previewGeneratedMarkdownForSelectedTaskIfNeeded()
+            refreshGeneratedHTMLAvailabilityForSelectedTask()
+            restoreRememberedWorkspaceCanvasItemIfAvailable()
         }
         if task != nil {
             isComposingTask = false
@@ -1930,10 +2182,15 @@ struct ContentView: View {
     }
 
     private func deleteTask(_ task: AgentTask) {
+        let deletedTaskID = task.id
         if selectedTask?.id == task.id {
             setSelectedTask(nil)
         }
         _ = coordinator.deleteTask(task)
+        // Release the task's browser (WebContent process + bridge listener) and
+        // markdown sessions; otherwise they leak until the window closes.
+        browserSessionStore.releaseSession(for: deletedTaskID)
+        markdownSessionStore.releaseSession(for: deletedTaskID)
         refreshRunningTaskCount()
     }
 
@@ -1993,6 +2250,13 @@ struct ContentView: View {
         coordinator.migrateSkillSecrets(skills: skills)
     }
 
+    private func runStoreMaintenanceIfNeeded() {
+        runtime.runStoreMaintenanceIfNeeded(
+            modelContext: modelContext,
+            isUITestingSeededLaunch: isUITestingSeededLaunch
+        )
+    }
+
     private func backfillThreadTitlesIfNeeded() {
         runtime.backfillThreadTitlesIfNeeded(
             coordinator: coordinator,
@@ -2036,7 +2300,15 @@ struct ContentView: View {
         seedTestDataIfNeeded()
         migrateConnectorCredentials()
         migrateSkillSecrets()
+        // Run the destructive store maintenance (draft prune + import dedup)
+        // BEFORE restoring selection, so it can never delete the task that
+        // `restoreWorkspaceSelection` is about to point `selectedTask` at.
+        runStoreMaintenanceIfNeeded()
         restoreWorkspaceSelection()
+        refreshMarkdownShelfAvailabilityForSelectedTask()
+        refreshQueryShelfAvailabilityForSelectedTask()
+        refreshGeneratedHTMLAvailabilityForSelectedTask()
+        restoreRememberedWorkspaceCanvasItemIfAvailable()
         backfillThreadTitlesIfNeeded()
         refreshProviderModelsInBackground()
         enterUITestComposerIfNeeded()
@@ -2045,7 +2317,25 @@ struct ContentView: View {
         refreshRunningTaskCount()
         handlePendingExternalRoute()
         refreshUpdateSafetyHooks()
-        appUpdateController.probeForUpdatesOnce()
+        // Defer Sparkle's network probe ~3s after first appear so it doesn't
+        // compete with launch I/O. Non-development channels only (dev already
+        // disables updates in AppUpdateController.disabledReason). Scheduled
+        // once per view instance; the controller's hasProbedForUpdates guard
+        // keeps the actual probe single-fire regardless.
+        if !didScheduleUpdateProbe, AppChannel.current != .development {
+            didScheduleUpdateProbe = true
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                appUpdateController.probeForUpdatesOnce()
+            }
+        }
+        // Post-launch chores moved off ASTRAApp.init() so they don't block the
+        // first frame. Wrapped in a Task so they run on a later runloop turn,
+        // after this frame is presented. Run-once-guarded inside.
+        Task { @MainActor in
+            ASTRAApp.runDeferredStartupWork(modelContext: modelContext)
+            refreshRunningTaskCount()
+        }
     }
 
     private func applySecurityGateDefaultIfNeeded() {
@@ -3539,7 +3829,9 @@ struct WorkspaceSetupForm: View {
     }
 
     private var availableCapabilityShortcut: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 7) {
+        // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+        // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
+        HStack(alignment: .top, spacing: 7) {
             Image(systemName: "wand.and.stars")
                 .font(Stanford.ui(10, weight: .medium))
                 .foregroundStyle(Stanford.lagunita)
@@ -3563,7 +3855,9 @@ struct WorkspaceSetupForm: View {
     }
 
     private var copyCapabilitySetupShortcut: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 7) {
+        // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+        // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
+        HStack(alignment: .top, spacing: 7) {
             Image(systemName: copiedCapabilitySetup == nil ? "square.on.square" : "checkmark.circle.fill")
                 .font(Stanford.ui(10, weight: .medium))
                 .foregroundStyle(copiedCapabilitySetup == nil ? Stanford.lagunita : Stanford.paloAltoGreen)
@@ -4315,6 +4609,8 @@ struct WorkspaceSetupForm: View {
             return "exit \(code)"
         case .timedOut:
             return "timed out after 10s"
+        case .cancelled:
+            return "cancelled"
         case .launchFailed(let reason):
             return reason
         }
@@ -4502,114 +4798,6 @@ struct WorkspaceSetupForm: View {
 
     private func capabilityPrerequisiteColor(for packageID: String) -> Color {
         capabilityPrerequisitesReady(for: packageID) ? Stanford.paloAltoGreen : Stanford.poppy
-    }
-}
-
-private struct TopNoticeBannersView: View {
-    let recoveryNotice: String
-    let updateBlockNotice: String?
-    let externalRouteNotice: String
-    let onDismissRecoveryNotice: () -> Void
-    let onDismissExternalRouteNotice: () -> Void
-    let onCheckForUpdates: () -> Void
-
-    var body: some View {
-        if !recoveryNotice.isEmpty || updateBlockNotice != nil || !externalRouteNotice.isEmpty {
-            VStack(spacing: 0) {
-                if !recoveryNotice.isEmpty {
-                    RecoveryNoticeBanner(
-                        message: recoveryNotice,
-                        onDismiss: onDismissRecoveryNotice
-                    )
-                }
-                if !externalRouteNotice.isEmpty {
-                    ExternalRouteNoticeBanner(
-                        message: externalRouteNotice,
-                        onDismiss: onDismissExternalRouteNotice
-                    )
-                }
-                if let updateBlockNotice {
-                    UpdateNoticeBanner(
-                        message: updateBlockNotice,
-                        onCheckForUpdates: onCheckForUpdates
-                    )
-                }
-            }
-        }
-    }
-}
-
-private struct RecoveryNoticeBanner: View {
-    let message: String
-    let onDismiss: () -> Void
-
-    var body: some View {
-        NoticeBanner(
-            systemImage: "externaldrive.badge.checkmark",
-            imageColor: Stanford.paloAltoGreen,
-            message: message,
-            buttonTitle: "Dismiss",
-            buttonAction: onDismiss
-        )
-    }
-}
-
-private struct ExternalRouteNoticeBanner: View {
-    let message: String
-    let onDismiss: () -> Void
-
-    var body: some View {
-        NoticeBanner(
-            systemImage: "exclamationmark.triangle.fill",
-            imageColor: Stanford.poppy,
-            message: message,
-            buttonTitle: "Dismiss",
-            buttonAction: onDismiss
-        )
-    }
-}
-
-private struct UpdateNoticeBanner: View {
-    let message: String
-    let onCheckForUpdates: () -> Void
-
-    var body: some View {
-        NoticeBanner(
-            systemImage: "arrow.down.circle",
-            imageColor: Stanford.cardinalRed,
-            message: message,
-            buttonTitle: "Check Again",
-            buttonAction: onCheckForUpdates
-        )
-    }
-}
-
-private struct NoticeBanner: View {
-    let systemImage: String
-    let imageColor: Color
-    let message: String
-    let buttonTitle: String
-    let buttonAction: () -> Void
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: systemImage)
-                .foregroundStyle(imageColor)
-            Text(message)
-                .font(Stanford.body(13))
-                .foregroundStyle(Stanford.black)
-            Spacer()
-            Button(buttonTitle, action: buttonAction)
-                .font(Stanford.body(12))
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(Stanford.fog)
-        .overlay(alignment: .bottom) {
-            SoftHorizontalTransition(height: 12)
-                .rotationEffect(.degrees(180))
-                .offset(y: 8)
-        }
     }
 }
 

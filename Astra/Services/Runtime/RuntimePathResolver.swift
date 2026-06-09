@@ -85,6 +85,48 @@ enum RuntimePathResolver {
         )
     }
 
+    static func detectCodexPath(fileManager: FileManager = .default) -> String {
+        detectExecutablePath(
+            named: "codex",
+            candidates: [
+                "\(userLocalBin)/codex",
+                "\(homebrewBin)/codex",
+                "\(usrLocalBin)/codex",
+                "\(NSHomeDirectory())/.npm-global/bin/codex"
+            ],
+            fallback: "",
+            fileManager: fileManager
+        )
+    }
+
+    static func detectCursorPath(fileManager: FileManager = .default) -> String {
+        detectExecutablePath(
+            named: "cursor-agent",
+            candidates: [
+                "\(userLocalBin)/cursor-agent",
+                "\(homebrewBin)/cursor-agent",
+                "\(usrLocalBin)/cursor-agent",
+                "\(NSHomeDirectory())/.npm-global/bin/cursor-agent"
+            ],
+            fallback: "",
+            fileManager: fileManager
+        )
+    }
+
+    static func detectOpenCodePath(fileManager: FileManager = .default) -> String {
+        detectExecutablePath(
+            named: "opencode",
+            candidates: [
+                "\(userLocalBin)/opencode",
+                "\(homebrewBin)/opencode",
+                "\(usrLocalBin)/opencode",
+                "\(NSHomeDirectory())/.npm-global/bin/opencode"
+            ],
+            fallback: "",
+            fileManager: fileManager
+        )
+    }
+
     private static func defaultExecutableCandidates(named executableName: String) -> [String] {
         [
             "\(userLocalBin)/\(executableName)",

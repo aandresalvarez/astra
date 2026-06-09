@@ -415,6 +415,88 @@ extension HeadlessChatScenarioTests {
         #expect(runs.last?.output == "Reviewed open PRs after repaired approval")
     }
 
+    @Test("UI approval resume prompt preserves blocked user request")
+    func uiApprovalResumePromptPreservesBlockedUserRequest() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsURL = harness.rootURL.appendingPathComponent("ui-approval-blocked-request-args.txt")
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(
+                body: """
+                if printf '%s\\n' "$@" | grep -Fq -- 'Original blocked user request: do i have open prs to review?' \\
+                  && ! printf '%s\\n' "$@" | grep -Fq -- 'Original blocked user request: who are you?'; then
+                  printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Reviewed open PRs after preserving blocked request"}}'
+                  printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+                  exit 0
+                fi
+                printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+                exit 1
+                """,
+                argsFile: argsURL
+            )
+        )
+
+        let task = harness.makeTask(
+            runtime: .copilotCLI,
+            goal: "who are you?",
+            model: "gpt-5",
+            tokenBudget: 200_000
+        )
+        task.status = .pendingUser
+
+        let firstMessage = TaskEvent(task: task, type: "user.message", payload: "who are you?")
+        firstMessage.timestamp = Date(timeIntervalSince1970: 1)
+        harness.context.insert(firstMessage)
+
+        let blockedRequest = TaskEvent(task: task, type: "user.message", payload: "do i have open prs to review?")
+        blockedRequest.timestamp = Date(timeIntervalSince1970: 2)
+        harness.context.insert(blockedRequest)
+
+        let blockedRun = TaskRun(task: task)
+        blockedRun.status = .failed
+        blockedRun.stopReason = "permission_approval_required"
+        harness.context.insert(blockedRun)
+
+        let permissionEvent = TaskEvent(
+            task: task,
+            type: "permission.approval.requested",
+            payload: PermissionBroker.approvalPayloadString(
+                providerID: .copilotCLI,
+                request: .shell(command: "gh pr list --json number,title,url", toolName: "bash"),
+                reason: "The shell command requires user approval by the effective ASTRA policy.",
+                grants: [.shellCommand(executable: "gh", pattern: "pr list *")]
+            ),
+            run: blockedRun
+        )
+        permissionEvent.timestamp = Date(timeIntervalSince1970: 3)
+        harness.context.insert(permissionEvent)
+        try harness.context.save()
+
+        let queue = TaskQueue(poolSize: 1)
+        queue.applySettings(
+            claudePath: nil,
+            copilotPath: copilotPath,
+            copilotHome: harness.rootURL.appendingPathComponent("copilot-home", isDirectory: true).path,
+            defaultRuntimeID: .copilotCLI,
+            timeoutSeconds: 10,
+            validationModel: "gpt-5"
+        )
+        let coordinator = TaskLifecycleCoordinator(modelContext: harness.context, taskQueue: queue)
+        defer { queue.cancelAll() }
+
+        let continuation = coordinator.approveTask(task)
+        let completed = await harness.waitUntil(task: task, timeoutSeconds: 60) { $0.status == .completed }
+        await continuation?.value
+
+        let args = try String(contentsOf: argsURL, encoding: .utf8)
+        #expect(completed)
+        #expect(args.contains("Original blocked user request: do i have open prs to review?"))
+        #expect(!args.contains("Original blocked user request: who are you?"))
+        #expect(task.runs.sorted { $0.startedAt < $1.startedAt }.last?.output == "Reviewed open PRs after preserving blocked request")
+    }
+
     @Test("UI approve similar records task-scoped command grant")
     func uiApproveSimilarRecordsTaskScopedCommandGrant() async throws {
         let harness = try HeadlessChatHarness()

@@ -5,6 +5,11 @@ import SwiftData
 /// previous threads for a workspace path and import them as tasks.
 enum SessionScanner {
 
+    /// Marker payload written on the start event of every imported session, used
+    /// to recognise (and de-duplicate) imports later. Kept as a shared constant
+    /// so `TaskStoreMaintenance` and the import code agree on the exact string.
+    static let importedSessionMarker = "Imported from Claude Code session"
+
     struct DiscoveredSession {
         let sessionId: String
         let goal: String
@@ -47,14 +52,42 @@ enum SessionScanner {
         return sessions.sorted { $0.startedAt > $1.startedAt }
     }
 
+    /// Filter discovered sessions down to those worth importing: ones not
+    /// already imported (idempotency, keyed by `sessionId`) and ones that carry
+    /// real task intent (drop bare greeting/identity-probe sessions). Pure so it
+    /// can be unit-tested without a model context.
+    static func sessionsToImport(
+        _ sessions: [DiscoveredSession],
+        existingSessionIds: Set<String>
+    ) -> [DiscoveredSession] {
+        sessions.filter { session in
+            guard !existingSessionIds.contains(session.sessionId) else { return false }
+            return !TaskConversationSignal.isLowSignalConversation(
+                goal: session.goal,
+                userMessages: session.userMessages
+            )
+        }
+    }
+
     /// Import discovered sessions as completed tasks into a workspace.
+    ///
+    /// Idempotent: sessions already present (matched by `sessionId`) are skipped,
+    /// so re-running an import can never create duplicate cards. Trivial
+    /// greeting/probe sessions are filtered out entirely.
+    @discardableResult
     static func importSessions(
         _ sessions: [DiscoveredSession],
         into workspace: Workspace,
         modelContext: ModelContext
     ) -> Int {
+        let existingSessionIds = Set(workspace.tasks.compactMap { task -> String? in
+            guard let id = task.sessionId, !id.isEmpty else { return nil }
+            return id
+        })
+        let pending = sessionsToImport(sessions, existingSessionIds: existingSessionIds)
+
         var count = 0
-        for session in sessions {
+        for session in pending {
             let title = extractTitle(from: session.goal)
             let task = AgentTask(
                 title: title,
@@ -81,14 +114,14 @@ enum SessionScanner {
             run.tokensUsed = session.totalTokens
             run.exitCode = 0
             run.output = session.userMessages.joined(separator: "\n---\n")
-            run.stopReason = "completed"
+            run.typedStopReason = .completed
             modelContext.insert(run)
 
             // Create conversation events from user messages
             let startEvent = TaskEvent(
                 task: task,
                 eventType: TaskEventTypes.Task.started,
-                payload: "Imported from Claude Code session",
+                payload: importedSessionMarker,
                 run: run
             )
             startEvent.timestamp = session.startedAt

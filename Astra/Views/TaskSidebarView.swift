@@ -23,7 +23,6 @@ struct TaskSidebarContainerView: View {
     var onRenameWorkspace: ((Workspace) -> Void)?
     var onNewSchedule: (() -> Void)?
     var onEditSchedule: ((TaskSchedule) -> Void)?
-    @Binding var isSearchActive: Bool
 
     var body: some View {
         TaskSidebarView(
@@ -46,8 +45,7 @@ struct TaskSidebarContainerView: View {
             onDeleteWorkspace: onDeleteWorkspace,
             onRenameWorkspace: onRenameWorkspace,
             onNewSchedule: onNewSchedule,
-            onEditSchedule: onEditSchedule,
-            isSearchActive: $isSearchActive
+            onEditSchedule: onEditSchedule
         )
     }
 }
@@ -92,20 +90,121 @@ enum SidebarLeanPresentation {
     static let sidebarTaskTitlesUsePrefixPrimaryPresentation = true
     static let workspaceStarsMoveToTrailingEdge = true
     static let workspaceMetadataAndActionsShareTrailingSlot = true
-    static let selectedWorkspaceChildrenUseGuide = true
+    static let selectedWorkspaceChildrenUseGuide = false
     static let sidebarTaskStatusesShowExceptionsOnly = true
     static let pinnedPreviewLimit = 5
-    static let childTaskContentLeadingPadding: CGFloat = 2
-    static let childGuideLeadingPadding: CGFloat = 17
-    static let childGuideWidth: CGFloat = 1
+    // Keep child task chrome close to the sidebar edge; the workspace card
+    // above establishes scope, while task rows need the reclaimed title width.
+    static let childTaskListLeadingPadding: CGFloat = 0
+    static let childTaskContentLeadingPadding: CGFloat = 0
     static let workspaceRowTrailingSlotWidth: CGFloat = 58
     static let newTaskVerticalPadding: CGFloat = 7
     static let newTaskRestFillOpacity = 0.045
     static let newTaskHoverFillOpacity = 0.075
 }
 
+enum SidebarThreadRowLayout {
+    static let rowHorizontalPadding: CGFloat = 8
+    static let statusIconWidth: CGFloat = 14
+    static let statusIconTitleSpacing: CGFloat = 9
+    static let titleFontSize: CGFloat = 14
+
+    static func showsStatusIcon(
+        for status: TaskStatus,
+        isHovered: Bool,
+        isSelected: Bool
+    ) -> Bool {
+        isHovered || isSelected || isActionableStatus(status)
+    }
+
+    static func isActionableStatus(_ status: TaskStatus) -> Bool {
+        switch status {
+        case .running, .pendingUser, .failed, .budgetExceeded:
+            return true
+        case .draft, .queued, .completed, .cancelled:
+            return false
+        }
+    }
+
+    static func restingTitleLeadingOffset(
+        childListPadding: CGFloat,
+        contentLeadingPadding: CGFloat,
+        status: TaskStatus
+    ) -> CGFloat {
+        childListPadding
+            + rowHorizontalPadding
+            + contentLeadingPadding
+            + reservedStatusIconWidth(for: status)
+    }
+
+    private static func reservedStatusIconWidth(for status: TaskStatus) -> CGFloat {
+        isActionableStatus(status)
+            ? statusIconWidth + statusIconTitleSpacing
+            : 0
+    }
+}
+
+enum SidebarColumnLayout {
+    /// The expanded sidebar needs enough room for a workspace name plus the
+    /// fixed trailing count/action slot. Below this, collapse the column instead
+    /// of rendering a clipped navigation rail.
+    static let expandedMinimumWidth: CGFloat = 310
+    static let expandedIdealWidth: CGFloat = 320
+    static let expandedMaximumWidth: CGFloat = 360
+    static let collapseEdge: Edge = .leading
+    static let collapseUsesRightPanelMotion = true
+
+    static func shouldCollapseExpandedSidebar(width: CGFloat, isRevealInProgress: Bool = false) -> Bool {
+        guard !isRevealInProgress else { return false }
+        return width > 0 && width < expandedMinimumWidth
+    }
+
+    static func shouldCollapseVisibleSplitWidth(
+        _ width: CGFloat,
+        minimumExpandedWidth: CGFloat = expandedMinimumWidth,
+        isRevealInProgress: Bool = false
+    ) -> Bool {
+        guard !isRevealInProgress else { return false }
+        return width.isFinite && width > 0 && width < minimumExpandedWidth
+    }
+
+    static func shouldCompleteSidebarReveal(
+        width: CGFloat,
+        minimumExpandedWidth: CGFloat = expandedMinimumWidth
+    ) -> Bool {
+        width.isFinite && width >= minimumExpandedWidth
+    }
+
+    static func collapseAnimation(reduceMotion: Bool) -> Animation? {
+        AstraMotion.rightPanel(reduceMotion: reduceMotion)
+    }
+
+    static func collapseTransition(reduceMotion: Bool) -> AnyTransition {
+        reduceMotion ? .identity : .move(edge: collapseEdge)
+    }
+}
+
+enum SidebarRevealSettlingPolicy {
+    static let fallbackDelayNanoseconds: UInt64 = 450_000_000
+
+    static func nextRevision(after revision: Int) -> Int {
+        revision == Int.max ? 1 : revision + 1
+    }
+
+    static func shouldBeginReveal(isRevealInProgress: Bool) -> Bool {
+        !isRevealInProgress
+    }
+
+    static func shouldClearReveal(
+        scheduledRevision: Int,
+        currentRevision: Int,
+        isRevealInProgress: Bool
+    ) -> Bool {
+        isRevealInProgress && scheduledRevision == currentRevision
+    }
+}
+
 private struct SidebarTopToolbar: View {
-    @Binding var isSearchActive: Bool
     let showsWorkspaceActions: Bool
     var onNewWorkspace: (() -> Void)?
     var onImportWorkspace: (() -> Void)?
@@ -115,16 +214,11 @@ private struct SidebarTopToolbar: View {
     }
 
     var body: some View {
-        AstraToolbarCommandCluster {
-            Button { isSearchActive.toggle() } label: {
-                AstraToolbarCommandIcon(systemImage: "magnifyingglass", isActive: isSearchActive)
-            }
-            .buttonStyle(.plain)
-            .help("Search (⌘F)")
-            .keyboardShortcut("f", modifiers: .command)
-            .accessibilityLabel("Search")
-
-            if showsAddWorkspaceMenu {
+        // Search moved to the leading titlebar accessory (AstraLeadingCommandBar).
+        // Only the workspace-list add menu remains; render nothing when it doesn't
+        // apply so the column toolbar stays empty rather than padded.
+        if showsAddWorkspaceMenu {
+            AstraToolbarCommandCluster {
                 Menu {
                     if let onNewWorkspace {
                         Button(action: onNewWorkspace) {
@@ -199,7 +293,6 @@ struct TaskSidebarView: View {
     var onRenameWorkspace: ((Workspace) -> Void)?
     var onNewSchedule: (() -> Void)?
     var onEditSchedule: ((TaskSchedule) -> Void)?
-    @Binding var isSearchActive: Bool
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -334,7 +427,6 @@ struct TaskSidebarView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 SidebarTopToolbar(
-                    isSearchActive: $isSearchActive,
                     showsWorkspaceActions: selectedWorkspace == nil,
                     onNewWorkspace: onNewWorkspace,
                     onImportWorkspace: onImportWorkspace
@@ -931,9 +1023,10 @@ struct TaskSidebarView: View {
     /// the tasks lives inside the row's view tree, where transitions
     /// behave like they do everywhere else.
     ///
-    /// Child task rows keep their text indented, but the row surface itself
-    /// spans the same width as the parent workspace row. This keeps hover and
-    /// selection chrome from shrinking to the nested content width.
+    /// Child task rows keep a compact workspace-relative indent, but avoid the
+    /// permanent guide rail that used to consume title width and dominate the
+    /// scan path. The row surface still spans the same width as the parent
+    /// workspace row so hover and selection chrome stay stable.
     @ViewBuilder
     private func workspaceListRow(for workspace: Workspace, using taskIndex: SidebarTaskIndex) -> some View {
         let isExpanded = isWorkspaceExpanded(workspace, using: taskIndex)
@@ -974,16 +1067,9 @@ struct TaskSidebarView: View {
                         }
                     }
                 }
-                .padding(.leading, SidebarLeanPresentation.childGuideLeadingPadding + 8)
+                .padding(.leading, SidebarLeanPresentation.childTaskListLeadingPadding)
                 .padding(.top, 2)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .overlay(alignment: .leading) {
-                    Rectangle()
-                        .fill(Stanford.lagunita.opacity(0.18))
-                        .frame(width: SidebarLeanPresentation.childGuideWidth)
-                        .padding(.leading, SidebarLeanPresentation.childGuideLeadingPadding)
-                        .padding(.vertical, 6)
-                }
                 // Pure opacity in both directions. Earlier `.move(edge:
                 // .top)` slid tasks vertically as the container's height
                 // changed, so the rows visually crossed through the
@@ -1841,16 +1927,15 @@ private struct SidebarThreadRow: View {
     }
 
     private var showIcon: Bool {
-        isSelected || isHovered || isActionableStatus
+        SidebarThreadRowLayout.showsStatusIcon(
+            for: task.status,
+            isHovered: isHovered,
+            isSelected: isSelected
+        )
     }
 
     private var isActionableStatus: Bool {
-        switch task.status {
-        case .running, .pendingUser, .failed, .budgetExceeded:
-            return true
-        default:
-            return false
-        }
+        SidebarThreadRowLayout.isActionableStatus(task.status)
     }
 
     /// Inline chip surfaced only for exceptional or active states. Draft,
@@ -1872,17 +1957,22 @@ private struct SidebarThreadRow: View {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 9) {
-            statusIcon
-                .frame(width: 14, height: 14)
-                .opacity(showIcon ? (isActionableStatus && !isSelected && !isHovered ? 0.6 : 1) : 0)
-                .padding(.leading, contentLeadingPadding)
+        HStack(alignment: .center, spacing: SidebarThreadRowLayout.statusIconTitleSpacing) {
+            if showIcon {
+                statusIcon
+                    .frame(
+                        width: SidebarThreadRowLayout.statusIconWidth,
+                        height: SidebarThreadRowLayout.statusIconWidth
+                    )
+                    .opacity(isActionableStatus && !isSelected && !isHovered ? 0.6 : 1)
+                    .padding(.leading, contentLeadingPadding)
+            }
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
                     SidebarTaskTitleText(
                         presentation: titlePresentation,
-                        font: Stanford.ui(13, weight: titleWeight)
+                        font: Stanford.ui(SidebarThreadRowLayout.titleFontSize, weight: titleWeight)
                     )
                     .layoutPriority(1)
 
@@ -1905,6 +1995,7 @@ private struct SidebarThreadRow: View {
                         .lineLimit(1)
                 }
             }
+            .padding(.leading, showIcon ? 0 : contentLeadingPadding)
 
             Spacer(minLength: 6)
 
@@ -1942,7 +2033,7 @@ private struct SidebarThreadRow: View {
                 .animation(metadataAnimation, value: isHovered)
             }
         }
-        .padding(.horizontal, 8)
+        .padding(.horizontal, SidebarThreadRowLayout.rowHorizontalPadding)
         .padding(.vertical, 5)
         .frame(minHeight: Stanford.sidebarThreadRowHeight, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)

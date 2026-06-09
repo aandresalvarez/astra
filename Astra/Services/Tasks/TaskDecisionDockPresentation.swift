@@ -4,6 +4,7 @@ enum TaskDecisionDockTone: String, Equatable {
     case neutral
     case running
     case attention
+    case success
     case failed
     case verified
     case closed
@@ -441,7 +442,7 @@ struct TaskDecisionDockPresentation: Equatable {
         } else {
             title = "Result ready"
             icon = "checkmark.circle.fill"
-            tone = .attention
+            tone = .success
         }
 
         return TaskDecisionDockPresentation(

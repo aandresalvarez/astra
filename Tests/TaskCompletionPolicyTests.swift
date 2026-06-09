@@ -21,6 +21,7 @@ struct TaskCompletionPolicyTests {
         #expect(decision.shouldBlockCompletion)
         #expect(decision.gate == .validationContract)
         #expect(decision.stopReason == "validation_contract_failed")
+        #expect(decision.typedStopReason == .validationContractFailed)
         #expect(decision.userVisibleMessage == "Validation contract failed.")
         #expect(decision.auditFields["outcome"] == "failed")
     }
@@ -46,6 +47,7 @@ struct TaskCompletionPolicyTests {
         #expect(decision.shouldBlockCompletion)
         #expect(decision.gate == .deliverableVerification)
         #expect(decision.stopReason == "no_usable_result")
+        #expect(decision.typedStopReason == .noUsableResult)
         #expect(decision.userVisibleMessage == "No artifact found.")
     }
 
@@ -64,7 +66,32 @@ struct TaskCompletionPolicyTests {
         #expect(decision.shouldBlockCompletion)
         #expect(decision.gate == .inferredValidation)
         #expect(decision.stopReason == "inferred_validation_failed")
+        #expect(decision.typedStopReason == .inferredValidationFailed)
         #expect(decision.userVisibleMessage == "Automatic verification failed: Required inferred proof failed.")
+    }
+
+    @Test("Completion blocked event payload encodes typed decision context")
+    func completionBlockedEventPayloadEncodesTypedDecisionContext() throws {
+        let decision = TaskCompletionPolicyDecision.block(
+            gate: .manualArtifactRequirement,
+            stopReason: .noUsableResult,
+            userVisibleMessage: "Missing artifact.",
+            auditFields: ["has_artifact": "false"]
+        )
+
+        let payload = TaskCompletionBlockedEventPayload(decision: decision)
+        let encoded = try #require(tryEncodedPayload(payload))
+        let event = TaskEvent(
+            task: AgentTask(title: "Payload", goal: "Encode typed payload"),
+            eventType: TaskEventTypes.System.error,
+            payload: encoded
+        )
+
+        let decoded = try #require(tryDecodedPayload(event, as: TaskCompletionBlockedEventPayload.self))
+        #expect(decoded == payload)
+        #expect(decoded.gate == "manual_artifact_requirement")
+        #expect(decoded.stopReason == "no_usable_result")
+        #expect(decoded.auditFields["has_artifact"] == "false")
     }
 
     @Test("manual completion policy blocks standalone artifact tasks without artifacts")
@@ -95,5 +122,23 @@ struct TaskCompletionPolicyTests {
         let schema = ASTRASchema.current
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
+    }
+
+    private func tryEncodedPayload<T: Encodable>(_ payload: T) -> String? {
+        switch TaskEvent.encodePayload(payload) {
+        case .success(let encoded):
+            encoded
+        case .failure:
+            nil
+        }
+    }
+
+    private func tryDecodedPayload<T: Decodable>(_ event: TaskEvent, as type: T.Type) -> T? {
+        switch event.decodePayload(as: type, expecting: TaskEventTypes.System.error) {
+        case .success(let payload):
+            payload
+        case .failure:
+            nil
+        }
     }
 }

@@ -1055,6 +1055,14 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     private var browserToolUseIDs: Set<String> = []
     private var browserShellIDs: Set<String> = []
     private var toolUseContextsByID: [String: ToolUseContext] = [:]
+    /// Insertion order for `toolUseContextsByID`, used to evict the oldest
+    /// entries so the keyed map can't grow unbounded across a long run.
+    private var toolUseContextOrder: [String] = []
+    /// Cap on retained keyed tool-use contexts. A tool_result almost always
+    /// follows its tool_use within the same turn, so this is far more than
+    /// needed; a result for an evicted (very old) id falls back to
+    /// `recentToolUseContexts.last`, exactly as it does today on a miss.
+    private static let maxTrackedToolUseContexts = 256
     private var recentToolUseContexts: [ToolUseContext] = []
     private var sawGoogleDocsVisiblePageRead = false
     private var ignoredGoogleDocsFullReadRequirementAfterVisibleRead = false
@@ -1329,7 +1337,17 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             summary: Self.toolUseSummary(name: name, input: input)
         )
         if !id.isEmpty {
+            if toolUseContextsByID[id] == nil {
+                toolUseContextOrder.append(id)
+            }
             toolUseContextsByID[id] = context
+            if toolUseContextOrder.count > Self.maxTrackedToolUseContexts {
+                let overflow = toolUseContextOrder.count - Self.maxTrackedToolUseContexts
+                for evictedID in toolUseContextOrder.prefix(overflow) {
+                    toolUseContextsByID.removeValue(forKey: evictedID)
+                }
+                toolUseContextOrder.removeFirst(overflow)
+            }
         }
         recentToolUseContexts.append(context)
         if recentToolUseContexts.count > 8 {

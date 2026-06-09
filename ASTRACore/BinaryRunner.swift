@@ -2,7 +2,8 @@ import Foundation
 
 /// Result of running an external binary: captured stdout/stderr plus a
 /// discriminated outcome that distinguishes a clean exit from a signalled
-/// exit, a timeout kill, or a failure to launch (e.g. binary missing).
+/// exit, a timeout kill, caller cancellation, or a failure to launch
+/// (e.g. binary missing).
 ///
 /// `RunResult` is intentionally simple — it's what the runner gives back,
 /// not a semantic classification of what the binary "meant." Higher layers
@@ -14,6 +15,8 @@ public struct RunResult: Sendable, Equatable {
         case exited(code: Int32)
         /// Process was killed because it exceeded the timeout.
         case timedOut
+        /// Process was killed because the caller task was cancelled.
+        case cancelled
         /// Process could not be launched — usually means the path does not
         /// resolve to an executable. Distinct from a binary that launches
         /// and then errors out, which is `.exited(code:)` with non-zero.
@@ -23,17 +26,65 @@ public struct RunResult: Sendable, Equatable {
     public let outcome: Outcome
     public let stdout: String
     public let stderr: String
+    public let exitCode: Int32?
+    public let launchError: String?
+    public let timedOut: Bool
+    public let cancelled: Bool
+    public let elapsedTime: TimeInterval
 
-    public init(outcome: Outcome, stdout: String, stderr: String) {
+    public init(outcome: Outcome, stdout: String, stderr: String, elapsedTime: TimeInterval = 0) {
         self.outcome = outcome
         self.stdout = stdout
         self.stderr = stderr
+        self.elapsedTime = elapsedTime
+        switch outcome {
+        case .exited(let code):
+            self.exitCode = code
+            self.launchError = nil
+            self.timedOut = false
+            self.cancelled = false
+        case .timedOut:
+            self.exitCode = nil
+            self.launchError = nil
+            self.timedOut = true
+            self.cancelled = false
+        case .cancelled:
+            self.exitCode = nil
+            self.launchError = nil
+            self.timedOut = false
+            self.cancelled = true
+        case .launchFailed(let reason):
+            self.exitCode = nil
+            self.launchError = reason
+            self.timedOut = false
+            self.cancelled = false
+        }
+    }
+
+    public static func exited(code: Int32, stdout: String, stderr: String, elapsedTime: TimeInterval = 0) -> RunResult {
+        RunResult(outcome: .exited(code: code), stdout: stdout, stderr: stderr, elapsedTime: elapsedTime)
+    }
+
+    public static func timedOut(stdout: String, stderr: String, elapsedTime: TimeInterval = 0) -> RunResult {
+        RunResult(outcome: .timedOut, stdout: stdout, stderr: stderr, elapsedTime: elapsedTime)
+    }
+
+    public static func cancelled(stdout: String, stderr: String, elapsedTime: TimeInterval = 0) -> RunResult {
+        RunResult(outcome: .cancelled, stdout: stdout, stderr: stderr, elapsedTime: elapsedTime)
+    }
+
+    public static func launchFailed(
+        _ reason: String,
+        stdout: String = "",
+        stderr: String = "",
+        elapsedTime: TimeInterval = 0
+    ) -> RunResult {
+        RunResult(outcome: .launchFailed(reason), stdout: stdout, stderr: stderr, elapsedTime: elapsedTime)
     }
 
     /// Convenience: did the process exit cleanly with status 0?
     public var isSuccess: Bool {
-        if case .exited(code: 0) = outcome { return true }
-        return false
+        exitCode == 0
     }
 }
 
@@ -82,28 +133,52 @@ public struct ProcessBinaryRunner: BinaryRunner {
         timeout: TimeInterval,
         environment: [String: String]?
     ) async -> RunResult {
-        let cancellation = ProcessCancellationBox()
-        return await withTaskCancellationHandler(operation: {
+        await run(
+            path: path,
+            args: args,
+            timeout: timeout,
+            environment: environment,
+            currentDirectory: nil
+        )
+    }
+
+    public func run(
+        path: String,
+        args: [String],
+        timeout: TimeInterval,
+        environment: [String: String]?,
+        currentDirectory: String?
+    ) async -> RunResult {
+        let state = ProcessRunState()
+        return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
-                // Guard against a continuation being resumed twice if both the
-                // process-termination callback and the timeout fire close
-                // together. We keep the first result and drop the rest.
-                let state = ContinuationState(continuation: continuation)
+                if state.setContinuation(continuation) {
+                    return
+                }
 
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: path)
                 process.arguments = args
+                if let currentDirectory {
+                    process.currentDirectoryURL = URL(fileURLWithPath: currentDirectory, isDirectory: true)
+                }
                 if let env = environment {
                     process.environment = env
+                }
+                state.setProcess(process)
+                if state.isFinished {
+                    return
                 }
 
                 let stdoutPipe = Pipe()
                 let stderrPipe = Pipe()
                 process.standardOutput = stdoutPipe
                 process.standardError = stderrPipe
+                process.standardInput = FileHandle.nullDevice
 
                 let stdoutCollector = PipeCollector()
                 let stderrCollector = PipeCollector()
+                let startedAt = Date()
                 stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
                     let data = handle.availableData
                     if data.isEmpty { return }
@@ -115,63 +190,77 @@ public struct ProcessBinaryRunner: BinaryRunner {
                     stderrCollector.append(data)
                 }
 
-                process.terminationHandler = { proc in
-                    cancellation.clear(process)
+                let cleanupPipes = {
                     stdoutPipe.fileHandleForReading.readabilityHandler = nil
                     stderrPipe.fileHandleForReading.readabilityHandler = nil
+                }
+
+                process.terminationHandler = { proc in
+                    cleanupPipes()
                     // Drain whatever's left after the process exits.
                     let tailOut = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
                     if !tailOut.isEmpty { stdoutCollector.append(tailOut) }
                     let tailErr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
                     if !tailErr.isEmpty { stderrCollector.append(tailErr) }
 
+                    let elapsed = Date().timeIntervalSince(startedAt)
+                    let outcome: RunResult.Outcome = timeout > 0 && elapsed >= timeout
+                        ? .timedOut
+                        : .exited(code: proc.terminationStatus)
                     state.finish(
-                        outcome: .exited(code: proc.terminationStatus),
+                        outcome: outcome,
                         stdout: stdoutCollector.string,
-                        stderr: stderrCollector.string
+                        stderr: stderrCollector.string,
+                        elapsedTime: elapsed
                     )
                 }
 
                 do {
                     try process.run()
-                    cancellation.set(process)
-                    if Task.isCancelled {
-                        cancellation.terminate()
-                    }
                 } catch {
+                    cleanupPipes()
                     state.finish(
                         outcome: .launchFailed(error.localizedDescription),
                         stdout: "",
-                        stderr: ""
+                        stderr: "",
+                        elapsedTime: Date().timeIntervalSince(startedAt)
                     )
+                    return
+                }
+                if state.stopIfFinished(process) {
                     return
                 }
 
                 // Timeout enforcement. DispatchSourceTimer would work but we're
-                // already inside a structured continuation — a detached Task is
-                // simpler and cancellable.
-                Task {
+                // already inside a structured continuation — a Task is simple
+                // and cancellable once the process finishes first.
+                let timeoutTask = Task {
                     try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                    guard !Task.isCancelled else { return }
                     guard process.isRunning else { return }
-                    // Polite first, then forceful. terminate() sends SIGTERM;
-                    // if the process hasn't exited after 500ms we SIGKILL.
-                    process.terminate()
-                    try? await Task.sleep(nanoseconds: 500_000_000)
-                    if process.isRunning {
-                        kill(process.processIdentifier, SIGKILL)
-                    }
-                    // Stamp the outcome as a timeout even though the termination
-                    // handler will still fire. First one wins (see state.finish).
+                    // Stamp timeout before terminating so a fast SIGTERM exit
+                    // cannot be misclassified as a normal status-15 exit.
                     state.finish(
                         outcome: .timedOut,
                         stdout: stdoutCollector.string,
-                        stderr: stderrCollector.string
+                        stderr: stderrCollector.string,
+                        elapsedTime: Date().timeIntervalSince(startedAt)
                     )
+                    // Polite first, then forceful. terminate() sends SIGTERM;
+                    // if the process hasn't exited after 500ms we SIGKILL.
+                    process.terminate()
+                    Task {
+                        try? await Task.sleep(nanoseconds: 500_000_000)
+                        if process.isRunning {
+                            kill(process.processIdentifier, SIGKILL)
+                        }
+                    }
                 }
+                state.setTimeoutTask(timeoutTask)
             }
-        }, onCancel: {
-            cancellation.terminate()
-        })
+        } onCancel: {
+            state.cancel()
+        }
     }
 }
 
@@ -197,29 +286,97 @@ private final class PipeCollector: @unchecked Sendable {
     }
 }
 
-private final class ProcessCancellationBox: @unchecked Sendable {
+/// Wraps process lifecycle state so only the first terminal result wins.
+/// Prevents "resumed twice" crashes when termination, timeout, and caller
+/// cancellation race.
+private final class ProcessRunState: @unchecked Sendable {
     private let lock = NSLock()
+    private var continuation: CheckedContinuation<RunResult, Never>?
     private var process: Process?
+    private var timeoutTask: Task<Void, Never>?
+    private var didFinish = false
 
-    func set(_ process: Process) {
+    func setContinuation(_ continuation: CheckedContinuation<RunResult, Never>) -> Bool {
+        lock.lock()
+        self.continuation = continuation
+        let alreadyFinished = didFinish
+        lock.unlock()
+        if alreadyFinished {
+            finish(outcome: .cancelled, stdout: "", stderr: "", elapsedTime: 0)
+        }
+        return alreadyFinished
+    }
+
+    func setProcess(_ process: Process) {
         lock.lock()
         self.process = process
+        let shouldTerminate = didFinish
         lock.unlock()
-    }
-
-    func clear(_ process: Process) {
-        lock.lock()
-        if self.process === process {
-            self.process = nil
+        if shouldTerminate {
+            terminate(process)
         }
-        lock.unlock()
     }
 
-    func terminate() {
+    func setTimeoutTask(_ task: Task<Void, Never>) {
         lock.lock()
-        let process = process
+        let shouldCancel = didFinish
+        if shouldCancel {
+            lock.unlock()
+            task.cancel()
+        } else {
+            timeoutTask = task
+            lock.unlock()
+        }
+    }
+
+    func stopIfFinished(_ process: Process) -> Bool {
+        lock.lock()
+        let shouldTerminate = didFinish
         lock.unlock()
-        guard let process, process.isRunning else { return }
+        if shouldTerminate {
+            terminate(process)
+        }
+        return shouldTerminate
+    }
+
+    var isFinished: Bool {
+        lock.lock()
+        let value = didFinish
+        lock.unlock()
+        return value
+    }
+
+    func cancel() {
+        let processToTerminate: Process?
+        lock.lock()
+        processToTerminate = process
+        lock.unlock()
+        finish(outcome: .cancelled, stdout: "", stderr: "", elapsedTime: 0)
+        if let processToTerminate {
+            terminate(processToTerminate)
+        }
+    }
+
+    func finish(outcome: RunResult.Outcome, stdout: String, stderr: String, elapsedTime: TimeInterval) {
+        lock.lock()
+        let cont = continuation
+        continuation = nil
+        didFinish = true
+        process = nil
+        let task = timeoutTask
+        timeoutTask = nil
+        lock.unlock()
+        task?.cancel()
+        cont?.resume(returning: RunResult(
+            outcome: outcome,
+            stdout: stdout,
+            stderr: stderr,
+            elapsedTime: elapsedTime
+        ))
+    }
+
+    private func terminate(_ process: Process) {
+        guard process.isRunning else { return }
         process.terminate()
         Task {
             try? await Task.sleep(nanoseconds: 500_000_000)
@@ -227,24 +384,5 @@ private final class ProcessCancellationBox: @unchecked Sendable {
                 kill(process.processIdentifier, SIGKILL)
             }
         }
-    }
-}
-
-/// Wraps a CheckedContinuation so only the first `finish(...)` wins.
-/// Prevents "resumed twice" crashes when termination and timeout race.
-private final class ContinuationState: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<RunResult, Never>?
-
-    init(continuation: CheckedContinuation<RunResult, Never>) {
-        self.continuation = continuation
-    }
-
-    func finish(outcome: RunResult.Outcome, stdout: String, stderr: String) {
-        lock.lock()
-        let cont = continuation
-        continuation = nil
-        lock.unlock()
-        cont?.resume(returning: RunResult(outcome: outcome, stdout: stdout, stderr: stderr))
     }
 }

@@ -1013,7 +1013,7 @@ struct ComposerToolbar: View {
     }
 
     private func modelDisplayName(_ model: String) -> String {
-        model.trimmingCharacters(in: .whitespacesAndNewlines)
+        RuntimeModelDisplayName.displayName(model)
     }
 
     private func runtimeModels(for runtime: AgentRuntimeID) -> [String] {
@@ -1135,6 +1135,9 @@ struct ComposerToolbar: View {
         case .copilotCLI: "Copilot"
         case .antigravityCLI: "Antigravity"
         case .localMLX: LocalModelSettingsStore.experimentalToolsEnabled() ? "Local Agent" : "Local Chat"
+        case .codexCLI: "Codex"
+        case .cursorCLI: "Cursor"
+        case .openCodeCLI: "OpenCode"
         default: runtime.displayName
         }
     }

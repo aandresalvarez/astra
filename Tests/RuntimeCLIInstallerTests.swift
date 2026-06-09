@@ -96,4 +96,40 @@ struct RuntimeCLIInstallerTests {
         #expect(result.detail?.contains("| bash") == false)
         #expect(await runner.recordedCalls().isEmpty)
     }
+
+    @Test("Cursor installer uses official guidance")
+    func cursorInstallerUsesOfficialGuidance() async {
+        let runner = StubBinaryRunner()
+        let installer = RuntimeCLIInstaller(
+            runner: runner,
+            detectExecutable: { _ in "" }
+        )
+
+        #expect(installer.plan(for: .cursorCLI) == nil)
+
+        let result = await installer.install(runtime: .cursorCLI)
+        #expect(!result.succeeded)
+        #expect(result.plan == nil)
+        #expect(result.detail?.contains("Install Cursor CLI") == true)
+        #expect(result.detail?.contains("cursor-agent login") == true)
+        #expect(await runner.recordedCalls().isEmpty)
+    }
+
+    @Test("OpenCode installer uses official guidance")
+    func openCodeInstallerUsesOfficialGuidance() async {
+        let runner = StubBinaryRunner()
+        let installer = RuntimeCLIInstaller(
+            runner: runner,
+            detectExecutable: { _ in "" }
+        )
+
+        #expect(installer.plan(for: .openCodeCLI) == nil)
+
+        let result = await installer.install(runtime: .openCodeCLI)
+        #expect(!result.succeeded)
+        #expect(result.plan == nil)
+        #expect(result.detail?.contains("Install OpenCode") == true)
+        #expect(result.detail?.contains("opencode auth login") == true)
+        #expect(await runner.recordedCalls().isEmpty)
+    }
 }

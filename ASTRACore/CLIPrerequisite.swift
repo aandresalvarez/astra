@@ -104,6 +104,36 @@ public enum CommonCLIPrerequisites {
         authHint: "Run `agy` once and complete Google Sign-In when prompted."
     )
 
+    public static let codex = CLIPrerequisite(
+        binary: "codex",
+        livenessArgs: ["--version"],
+        displayName: "Codex CLI",
+        purpose: "Runs tasks through OpenAI Codex CLI.",
+        installURL: URL(string: "https://developers.openai.com/codex/cli"),
+        installHint: "Install Codex CLI, then run `codex login` to authenticate.",
+        authHint: "Run `codex login`, or verify the current login with `codex doctor`."
+    )
+
+    public static let cursor = CLIPrerequisite(
+        binary: "cursor-agent",
+        livenessArgs: ["--version"],
+        displayName: "Cursor CLI",
+        purpose: "Runs tasks through Cursor Agent CLI.",
+        installURL: URL(string: "https://cursor.com/cli"),
+        installHint: "Install Cursor CLI, then run `cursor-agent login` to authenticate.",
+        authHint: "Run `cursor-agent login`, or verify the current login with `cursor-agent status`."
+    )
+
+    public static let openCode = CLIPrerequisite(
+        binary: "opencode",
+        livenessArgs: ["--version"],
+        displayName: "OpenCode CLI",
+        purpose: "Runs tasks through OpenCode CLI.",
+        installURL: URL(string: "https://opencode.ai/docs/cli"),
+        installHint: "Install OpenCode, then run `opencode auth login` to authenticate.",
+        authHint: "Run `opencode auth login`, or verify providers with `opencode auth list`."
+    )
+
     public static let githubCLI = CLIPrerequisite(
         binary: "gh",
         displayName: "GitHub CLI",

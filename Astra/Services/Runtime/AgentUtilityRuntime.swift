@@ -5,7 +5,11 @@ struct AgentUtilityRuntimeConfiguration: Equatable {
     static let defaultTimeoutSeconds: TimeInterval = 60
 
     var runtime: AgentRuntimeID
-    var model: String
+    private var normalizedModel: String
+    var model: String {
+        get { normalizedModel }
+        set { normalizedModel = RuntimeModelAvailability.normalizedModel(newValue, for: runtime) }
+    }
     var timeoutSeconds: TimeInterval
     private var providerSettings: AgentRuntimeProviderSettings
 
@@ -29,7 +33,7 @@ struct AgentUtilityRuntimeConfiguration: Equatable {
             resolvedSettings.setHomeDirectory(copilotHome, for: .copilotCLI)
         }
         self.runtime = runtime
-        self.model = RuntimeModelAvailability.normalizedModel(model ?? "", for: runtime)
+        self.normalizedModel = RuntimeModelAvailability.normalizedModel(model ?? "", for: runtime)
         self.timeoutSeconds = timeoutSeconds
         self.providerSettings = resolvedSettings
     }

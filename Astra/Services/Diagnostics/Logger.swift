@@ -193,6 +193,10 @@ enum AuditEvent: String, CaseIterable {
     case isolationPrepared = "isolation.prepared"
     case isolationCleanedUp = "isolation.cleaned_up"
     case isolationFailed = "isolation.failed"
+    case sandboxApplied = "sandbox.applied"
+    case sandboxSkipped = "sandbox.skipped"
+    case sandboxFallback = "sandbox.fallback"
+    case sandboxFailed = "sandbox.failed"
     case gitBranchCreated = "git.branch_created"
     case gitStageFile = "git.stage_file"
     case gitUnstageFile = "git.unstage_file"
@@ -532,7 +536,7 @@ enum AppLogger {
                   let line = String(data: data, encoding: .utf8)
             else { return }
             appendToFile(line + "\n", at: url)
-            cleanupOldLogs()
+            cleanupOldLogsThrottledOnFileQueue()
         }
     }
 
@@ -561,6 +565,22 @@ enum AppLogger {
     /// Serial queue for all file I/O to prevent interleaved writes.
     private static let fileQueue = DispatchQueue(label: "com.astra.logfile")
 
+    private static var lastCleanupAt: Date?
+    private static let cleanupThrottleInterval: TimeInterval = 60
+
+    /// Throttled retention cleanup for the hot per-line paths. `cleanupOldLogs`
+    /// enumerates the whole log directory and stats each file, which is wasteful
+    /// to repeat on every emitted line; once a minute is ample for pruning by
+    /// age. Must be called on `fileQueue` (single-threaded access keeps
+    /// `lastCleanupAt` race-free without a lock).
+    private static func cleanupOldLogsThrottledOnFileQueue(now: Date = Date()) {
+        if let last = lastCleanupAt, now.timeIntervalSince(last) < cleanupThrottleInterval {
+            return
+        }
+        lastCleanupAt = now
+        cleanupOldLogs(now: now)
+    }
+
     private static func emit(_ level: LogLevel, _ message: String, category: String, taskID: UUID?) {
         let entry = LogEntry(level: level, category: category, message: message, taskID: taskID)
 
@@ -586,7 +606,7 @@ enum AppLogger {
                 rotateFileIfNeeded(taskLog)
                 appendToFile(line, at: taskLog)
             }
-            cleanupOldLogs()
+            cleanupOldLogsThrottledOnFileQueue()
         }
 
         // Live callback — dispatch to main thread for UI safety

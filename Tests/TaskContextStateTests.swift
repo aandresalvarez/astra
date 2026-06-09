@@ -39,6 +39,29 @@ struct TaskContextStateTests {
         #expect(result.path == path)
         #expect(result.state == nil)
         #expect(result.errorDescription?.contains("current:") == true)
+        #expect(result.decodeDiagnostic?.status == .decodeFailed)
+        #expect(result.decodeDiagnostic?.typeName == "TaskContextState")
+        #expect(result.decodeDiagnostic?.errorDescription?.isEmpty == false)
+    }
+
+    @Test("loadResult reports structured current-state coding path diagnostics")
+    func loadResultReportsStructuredCodingPathDiagnostics() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let path = (root as NSString).appendingPathComponent(TaskContextStateManager.jsonFileName)
+        let encoded = try JSONEncoder().encode(minimalState())
+        var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object["updatedAt"] = 42
+        let malformed = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+        try malformed.write(to: URL(fileURLWithPath: path))
+
+        let result = TaskContextStateManager.loadResult(taskFolder: root)
+
+        #expect(result.status == .decodeFailed)
+        #expect(result.state == nil)
+        #expect(result.decodeDiagnostic?.status == .decodeFailed)
+        #expect(result.decodeDiagnostic?.codingPath == "updatedAt")
+        #expect(result.errorDescription?.contains("current:") == true)
     }
 
     @Test("saveState returns structured success and writes both state files")
@@ -138,6 +161,7 @@ struct TaskContextStateTests {
         let state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
         #expect(state.startingRequest == "Original exploratory request")
         #expect(state.currentObjective == "Edited execution goal")
+        #expect(state.standingInstructions == nil) // no follow-ups → nil, not []
     }
 
     @Test("turn numbering follows saved state and deterministic output paths")
@@ -181,6 +205,103 @@ struct TaskContextStateTests {
         #expect(state.turns.map(\.outputFile) == ["outputs/turn_001.md", "outputs/turn_002.md"])
     }
 
+    @Test("completed run clears prior permission blocker from current state")
+    func completedRunClearsPriorPermissionBlockerFromCurrentState() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Permission Resume", primaryPath: root)
+        let task = AgentTask(title: "Resume", goal: "who are you?", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        task.status = .pendingUser
+        let blockedRun = TaskRun(task: task)
+        blockedRun.status = .failed
+        blockedRun.stopReason = "permission_approval_required"
+        blockedRun.completedAt = Date()
+        context.insert(blockedRun)
+        context.insert(TaskEvent(
+            task: task,
+            type: "permission.approval.requested",
+            payload: "Permission requested for tool: Bash(gh pr list *)",
+            run: blockedRun
+        ))
+        TaskContextStateManager.recordTurn(task: task, run: blockedRun, message: "do i have open prs to review?")
+
+        var blockedState = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        #expect(blockedState.mode == .blocked)
+        #expect(blockedState.blockers.contains { $0.contains("gh pr list") })
+
+        task.status = .completed
+        let completedRun = TaskRun(task: task)
+        completedRun.status = .completed
+        completedRun.stopReason = "completed"
+        completedRun.output = "You have one open PR to review."
+        completedRun.completedAt = Date()
+        context.insert(completedRun)
+        TaskContextStateManager.recordTurn(
+            task: task,
+            run: completedRun,
+            message: "ASTRA approved one-time runtime permission for this run: shell(gh:pr list *)"
+        )
+
+        blockedState = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        #expect(blockedState.mode == .completed)
+        #expect(blockedState.blockers.isEmpty)
+        #expect(blockedState.blockerFacts.isEmpty)
+        #expect(blockedState.turns.first?.blockers.contains { $0.contains("gh pr list") } == true)
+        #expect(blockedState.turns.last?.blockers.isEmpty == true)
+    }
+
+    @Test("follow-up user instructions are retained verbatim past the transcript window")
+    func standingInstructionsRetainFollowUpDirectives() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Standing", primaryPath: root)
+        let task = AgentTask(title: "Export", goal: "Build the export feature", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        // First message → pinned as startingRequest, excluded from standing list.
+        let messages: [(Double, String)] = [
+            (1, "Build the export feature"),
+            (2, "Never modify the auth module"),
+            (3, "ok proceed"),
+            (4, "Output must be CSV not JSON"),
+            (5, "no") // bare negation: a meaningful course-correction, must be kept
+        ]
+        for (ts, text) in messages {
+            let event = TaskEvent(task: task, type: "user.message", payload: text)
+            event.timestamp = Date(timeIntervalSince1970: ts)
+            context.insert(event)
+        }
+        // Many later turns push the follow-ups out of the recent-transcript window;
+        // the standing list reads all user messages regardless, so they survive.
+        for index in 0..<20 {
+            let event = TaskEvent(task: task, type: "agent.response", payload: "progress \(index)")
+            event.timestamp = Date(timeIntervalSince1970: Double(100 + index))
+            context.insert(event)
+        }
+
+        TaskContextStateManager.refresh(task: task)
+
+        let state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        let instructions = (state.standingInstructions ?? []).map(\.text)
+        #expect(instructions == ["Never modify the auth module", "Output must be CSV not JSON", "no"])
+        #expect(!instructions.contains("Build the export feature")) // pinned as startingRequest
+        #expect(!instructions.contains("ok proceed"))               // trimmed acknowledgement
+        #expect(state.startingRequest == "Build the export feature")
+
+        let prompt = try #require(TaskContextStateManager.promptContext(for: task))
+        #expect(prompt.contains("Standing user instructions"))
+        #expect(prompt.contains("Never modify the auth module"))
+        #expect(prompt.contains("Output must be CSV not JSON"))
+    }
+
     @Test("approved plans refresh state with explicit planning mode and approved goal")
     func planApprovalRecordsApprovedGoal() throws {
         let root = try temporaryRoot()
@@ -208,6 +329,45 @@ struct TaskContextStateTests {
         #expect(state.approvedGoal == "Add a local current-state checkpoint for ASTRA threads")
         #expect(state.decisions.contains("Approved goal: Add a local current-state checkpoint for ASTRA threads"))
         #expect(state.nextLikelyAction == "Continue with plan step: Add state file")
+    }
+
+    @Test("unreconciled draft plan goal does not re-anchor the objective")
+    func draftPlanGoalDivergenceDoesNotReanchorObjective() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Divergence", primaryPath: root)
+        let task = AgentTask(title: "Goal drift", goal: "Original task goal", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        let draftPlan = TaskPlanPayload(
+            title: "Drifted plan",
+            goal: "Drifted plan goal",
+            steps: [TaskPlanPayloadStep(id: "s1", title: "Do work")]
+        )
+        // Draft only — not approved, and task.goal is not synced to the plan goal.
+        TaskPlanService.recordCreated(draftPlan, task: task, modelContext: context)
+        TaskContextStateManager.refresh(task: task)
+
+        let draftState = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        #expect(draftState.currentObjective == "Original task goal")
+        #expect(draftState.objective.currentObjective == "Original task goal")
+        let note = try #require(draftState.objectiveDivergenceNote)
+        #expect(note.contains("Drifted plan goal"))
+
+        let prompt = try #require(TaskContextStateManager.promptContext(for: task))
+        #expect(prompt.contains("Current objective: Original task goal"))
+        #expect(prompt.contains("Objective reconciliation:"))
+
+        // Approving reconciles the goal: the plan goal becomes authoritative and the note clears.
+        TaskPlanService.recordApproved(draftPlan, task: task, modelContext: context)
+        TaskContextStateManager.refresh(task: task)
+
+        let approvedState = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        #expect(approvedState.currentObjective == "Drifted plan goal")
+        #expect(approvedState.objectiveDivergenceNote == nil)
     }
 
     @Test("context capsule records validation contract summary")
@@ -1119,6 +1279,8 @@ struct TaskContextStateTests {
             correctiveWork: nil,
             sourcePointers: [],
             nextLikelyAction: nil,
+            objectiveDivergenceNote: nil,
+            standingInstructions: nil,
             turns: [],
             updatedAt: "2026-06-05T00:00:00Z"
         )

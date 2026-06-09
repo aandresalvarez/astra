@@ -1,4 +1,5 @@
 import Testing
+import Foundation
 @testable import ASTRA
 
 @Suite("Shelf Browser Panel Layout")
@@ -25,5 +26,32 @@ struct ShelfBrowserPanelLayoutTests {
     func stackedBrowserToolbarHasEnoughHeightForTwoRows() {
         #expect(ShelfBrowserToolbarLayout.stacked.height > ShelfBrowserToolbarLayout.regular.height)
         #expect(ShelfBrowserToolbarLayout.compact.height == ShelfBrowserToolbarLayout.regular.height)
+    }
+
+    @MainActor
+    @Test("browser session reuse preserves explicit adapter enablement")
+    func browserSessionReusePreservesExplicitAdapterEnablement() {
+        ShelfBrowserBridgeRegistry.shared.reset()
+        let store = ShelfBrowserSessionStore()
+        let taskID = UUID()
+
+        let first = store.session(
+            for: taskID,
+            pinnedToTask: true,
+            enabledBrowserAdapters: [BrowserSiteAdapterID.github]
+        )
+        #expect(ShelfBrowserBridgeRegistry.shared.promptState(for: taskID).enabledBrowserAdapters == [
+            BrowserSiteAdapterID.github
+        ])
+
+        let reused = store.session(
+            for: taskID,
+            pinnedToTask: true,
+            enabledBrowserAdapters: [BrowserSiteAdapterID.github]
+        )
+        #expect(first === reused)
+        #expect(ShelfBrowserBridgeRegistry.shared.promptState(for: taskID).enabledBrowserAdapters == [
+            BrowserSiteAdapterID.github
+        ])
     }
 }

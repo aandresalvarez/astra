@@ -4,160 +4,6 @@ import SwiftData
 import UniformTypeIdentifiers
 import ASTRACore
 
-enum CatalogFocus: String {
-    case all
-    case skills
-    case connectors
-    case tools
-    case templates
-
-    var title: String {
-        switch self {
-        case .all: "Manage Capabilities"
-        case .skills: "Manage Capabilities"
-        case .connectors: "Manage Capabilities"
-        case .tools: "Manage Capabilities"
-        case .templates: "Manage Capabilities"
-        }
-    }
-
-    var subtitle: String {
-        switch self {
-        case .all: "Approved capabilities for this workspace"
-        case .skills: "Approved capabilities with skills"
-        case .connectors: "Approved capabilities with connectors"
-        case .tools: "Approved capabilities with tools"
-        case .templates: "Approved capabilities with templates"
-        }
-    }
-
-    var searchPlaceholder: String {
-        switch self {
-        case .all: "Search capabilities..."
-        case .skills: "Search skill capabilities..."
-        case .connectors: "Search connector capabilities..."
-        case .tools: "Search tool capabilities..."
-        case .templates: "Search template capabilities..."
-        }
-    }
-
-    var emptyTitle: String {
-        switch self {
-        case .all: "No approved capabilities found"
-        case .skills: "No approved skill capabilities found"
-        case .connectors: "No approved connector capabilities found"
-        case .tools: "No approved tool capabilities found"
-        case .templates: "No approved template capabilities found"
-        }
-    }
-
-    func matches(_ package: PluginPackage) -> Bool {
-        switch self {
-        case .all:
-            true
-        case .skills:
-            !package.skills.isEmpty
-        case .connectors:
-            !package.connectors.isEmpty
-        case .tools:
-            !package.localTools.isEmpty
-        case .templates:
-            !package.templates.isEmpty
-        }
-    }
-}
-
-enum CapabilityManagementPresentation {
-    case modal
-    case embedded
-}
-
-private enum CatalogApprovalFilter: String, CaseIterable, Identifiable {
-    case all
-    case approved
-    case draft
-    case deprecated
-    case blocked
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .all: "Any approval"
-        case .approved: "Approved"
-        case .draft: "Draft"
-        case .deprecated: "Deprecated"
-        case .blocked: "Blocked"
-        }
-    }
-
-    var status: CapabilityApprovalStatus? {
-        switch self {
-        case .all: nil
-        case .approved: .approved
-        case .draft: .draft
-        case .deprecated: .deprecated
-        case .blocked: .blocked
-        }
-    }
-}
-
-private enum CatalogRiskFilter: String, CaseIterable, Identifiable {
-    case all
-    case low
-    case medium
-    case high
-    case restricted
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .all: "Any risk"
-        case .low: "Low risk"
-        case .medium: "Medium risk"
-        case .high: "High risk"
-        case .restricted: "Restricted"
-        }
-    }
-
-    var riskLevel: CapabilityRiskLevel? {
-        switch self {
-        case .all: nil
-        case .low: .low
-        case .medium: .medium
-        case .high: .high
-        case .restricted: .restricted
-        }
-    }
-}
-
-struct CapabilityGalleryLayout {
-    static func columnCount(for presentation: CapabilityManagementPresentation) -> Int {
-        1
-    }
-}
-
-private struct PluginCatalogPresentationState {
-    let focusedPackages: [PluginPackage]
-    let filteredPackages: [PluginPackage]
-    let enabledCount: Int
-    let categoryCounts: [String: Int]
-    let visibleCategories: [String]
-}
-
-enum PluginCatalogSearch {
-    static func matches(_ package: PluginPackage, query: String) -> Bool {
-        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !normalizedQuery.isEmpty else { return true }
-
-        return package.name.lowercased().contains(normalizedQuery) ||
-            package.description.lowercased().contains(normalizedQuery) ||
-            package.contentSummary.lowercased().contains(normalizedQuery) ||
-            package.tags.contains { $0.lowercased().contains(normalizedQuery) }
-    }
-}
-
 private struct CapabilityDetailSection: Identifiable {
     let id: String
     let title: String
@@ -192,17 +38,6 @@ private struct CapabilityImportReview: Identifiable {
     }
 }
 
-enum CapabilityImportPresentation {
-    static func overviewDescription(for package: PluginPackage, contentSummary: String) -> String {
-        let description = package.description.trimmingCharacters(in: .whitespacesAndNewlines)
-        return description.isEmpty ? "No description provided." : description
-    }
-
-    static func shouldShowContentSummary(for package: PluginPackage) -> Bool {
-        !package.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-}
-
 struct PluginCatalogView: View {
     var workspace: Workspace
     var catalog: PluginCatalog
@@ -226,8 +61,8 @@ struct PluginCatalogView: View {
 
     @State private var searchText = ""
     @State private var selectedCategory: String?
-    @State private var selectedApprovalFilter: CatalogApprovalFilter = .all
-    @State private var selectedRiskFilter: CatalogRiskFilter = .all
+    @State private var selectedApprovalFilter: CapabilityCatalogApprovalFilter = .all
+    @State private var selectedRiskFilter: CapabilityCatalogRiskFilter = .all
     @State private var showNeedsAttentionOnly = false
     @State private var showEnabledOnly = false
     @State private var installingPackage: PluginPackage?
@@ -273,22 +108,6 @@ struct PluginCatalogView: View {
         )
     }
 
-    private var galleryColumns: [GridItem] {
-        [
-            GridItem(
-                .adaptive(minimum: isEmbedded ? 430 : 520, maximum: 620),
-                spacing: 12,
-                alignment: .top
-            )
-        ]
-    }
-
-    private var detailComponentColumns: [GridItem] {
-        [
-            GridItem(.adaptive(minimum: 250, maximum: 390), spacing: 10, alignment: .top)
-        ]
-    }
-
     private var presentationState: PluginCatalogPresentationState {
         PerformanceTelemetry.measure(
             "catalog_state_build",
@@ -300,55 +119,18 @@ struct PluginCatalogView: View {
                 "category_filter": selectedCategory ?? "none"
             ]
         ) {
-            let inventory = capabilityInventoryPackages
-            let focused = inventory.filter { focus.matches($0) }
-            var categoryCounts: [String: Int] = [:]
-            var visibleCategories: [String] = []
-            for package in focused {
-                categoryCounts[package.category, default: 0] += 1
-                if categoryCounts[package.category] == 1 {
-                    visibleCategories.append(package.category)
-                }
-            }
-
-            var filtered = focused
-            if let selectedCategory {
-                filtered = filtered.filter { $0.category == selectedCategory }
-            }
-            if let status = selectedApprovalFilter.status {
-                filtered = filtered.filter { package in
-                    CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext).governance.approvalStatus == status
-                }
-            }
-            if let riskLevel = selectedRiskFilter.riskLevel {
-                filtered = filtered.filter { package in
-                    CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext).governance.riskLevel == riskLevel
-                }
-            }
-            if showNeedsAttentionOnly {
-                filtered = filtered.filter { package in
-                    let decision = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext)
-                    return !decision.blockers.isEmpty || !decision.warnings.isEmpty || requiresSetupFlow(package)
-                }
-            }
-            if showEnabledOnly {
-                filtered = filtered.filter { packageState($0).isEnabled }
-            }
-            let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            if !query.isEmpty {
-                filtered = filtered.filter { PluginCatalogSearch.matches($0, query: query) }
-            }
-
-            let enabledCount = focused.reduce(0) { count, package in
-                count + (packageState(package).isEnabled ? 1 : 0)
-            }
-
-            return PluginCatalogPresentationState(
-                focusedPackages: focused,
-                filteredPackages: filtered,
-                enabledCount: enabledCount,
-                categoryCounts: categoryCounts,
-                visibleCategories: visibleCategories
+            PluginCatalogPresentation.makeState(
+                packages: capabilityInventoryPackages,
+                focus: focus,
+                selectedCategory: selectedCategory,
+                approvalFilter: selectedApprovalFilter,
+                riskFilter: selectedRiskFilter,
+                showsNeedsAttentionOnly: showNeedsAttentionOnly,
+                showsEnabledOnly: showEnabledOnly,
+                searchText: searchText,
+                policyContext: catalogPolicyContext,
+                isEnabled: { packageState($0).isEnabled },
+                requiresSetup: { requiresSetupFlow($0) }
             )
         }
     }
@@ -385,8 +167,7 @@ struct PluginCatalogView: View {
                     header(state)
                 }
                 searchAndActions
-                categoryStrip(state)
-                catalogFilterStrip
+                catalogScopeStrip(state)
 
                 Divider()
 
@@ -408,13 +189,9 @@ struct PluginCatalogView: View {
                     Spacer()
                 } else {
                     ScrollView {
-                        LazyVGrid(columns: galleryColumns, alignment: .leading, spacing: 12) {
-                            ForEach(state.filteredPackages) { package in
-                                packageCard(package)
-                            }
-                        }
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 14)
+                        capabilityGroupedList(state)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 12)
                     }
                 }
             }
@@ -694,107 +471,199 @@ struct PluginCatalogView: View {
         .help("Import a local capability package JSON")
     }
 
-    // MARK: - Category Strip
+    // MARK: - Catalog List
 
-    private func categoryStrip(_ state: PluginCatalogPresentationState) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                categoryChip(nil, label: "All", count: state.focusedPackages.count)
-                ForEach(state.visibleCategories, id: \.self) { cat in
-                    categoryChip(cat, label: cat, count: state.categoryCounts[cat] ?? 0)
+    private func catalogScopeStrip(_ state: PluginCatalogPresentationState) -> some View {
+        HStack(spacing: 10) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    catalogScopeChip(
+                        label: "All",
+                        count: state.focusedPackages.count,
+                        isSelected: selectedCategory == nil &&
+                            selectedApprovalFilter == .all &&
+                            selectedRiskFilter == .all &&
+                            !showNeedsAttentionOnly &&
+                            !showEnabledOnly
+                    ) {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            selectedCategory = nil
+                            selectedApprovalFilter = .all
+                            selectedRiskFilter = .all
+                            showNeedsAttentionOnly = false
+                            showEnabledOnly = false
+                        }
+                    }
+
+                    catalogScopeChip(
+                        label: "Needs attention",
+                        count: needsAttentionCount(in: state.focusedPackages),
+                        isSelected: showNeedsAttentionOnly
+                    ) {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            selectedCategory = nil
+                            showNeedsAttentionOnly = true
+                            showEnabledOnly = false
+                        }
+                    }
+
+                    catalogScopeChip(
+                        label: "Enabled",
+                        count: state.enabledCount,
+                        isSelected: showEnabledOnly
+                    ) {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            selectedCategory = nil
+                            showEnabledOnly = true
+                            showNeedsAttentionOnly = false
+                        }
+                    }
+
+                    ForEach(state.visibleCategories, id: \.self) { category in
+                        catalogScopeChip(
+                            label: category,
+                            count: state.categoryCounts[category] ?? 0,
+                            isSelected: selectedCategory == category &&
+                                !showNeedsAttentionOnly &&
+                                !showEnabledOnly
+                        ) {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                selectedCategory = category
+                                showNeedsAttentionOnly = false
+                                showEnabledOnly = false
+                            }
+                        }
+                    }
                 }
             }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 8)
+
+            catalogFilterMenu
         }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 8)
     }
 
-    private func categoryChip(_ category: String?, label: String, count: Int) -> some View {
-        let isSelected = selectedCategory == category
+    private func catalogScopeChip(
+        label: String,
+        count: Int,
+        isSelected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
         let shape = RoundedRectangle(cornerRadius: 6, style: .continuous)
-        return Button {
-            withAnimation(.easeInOut(duration: 0.15)) {
-                selectedCategory = category
-            }
-        } label: {
+        return Button(action: action) {
             HStack(spacing: 4) {
                 Text(label)
-                    .font(Stanford.caption(12))
-                    .fontWeight(isSelected ? .semibold : .regular)
+                    .font(Stanford.caption(12).weight(isSelected ? .semibold : .regular))
                 Text("\(count)")
-                    .font(Stanford.caption(10))
-                    .foregroundStyle(isSelected ? Stanford.lagunita.opacity(0.7) : Color.secondary)
+                    .font(Stanford.caption(10).weight(.medium))
+                    .foregroundStyle(isSelected ? Stanford.lagunita.opacity(0.72) : Color.secondary)
             }
             .padding(.horizontal, 9)
             .padding(.vertical, 5)
-            .background(shape.fill(isSelected ? Stanford.lagunita.opacity(0.10) : Color.primary.opacity(0.035)))
             .foregroundStyle(isSelected ? Stanford.lagunita : Color.primary)
+            .background(shape.fill(isSelected ? Stanford.lagunita.opacity(0.10) : Color.primary.opacity(0.03)))
             .overlay {
-                shape.stroke(isSelected ? Stanford.lagunita.opacity(0.22) : Color.primary.opacity(0.04), lineWidth: 1)
+                shape.stroke(isSelected ? Stanford.lagunita.opacity(0.24) : Color.primary.opacity(0.04), lineWidth: 1)
             }
         }
         .buttonStyle(.plain)
     }
 
-    private var catalogFilterStrip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                Picker("Approval", selection: $selectedApprovalFilter) {
-                    ForEach(CatalogApprovalFilter.allCases) { filter in
-                        Text(filter.label).tag(filter)
-                    }
+    private var catalogFilterMenu: some View {
+        Menu {
+            Picker("Approval", selection: $selectedApprovalFilter) {
+                ForEach(CapabilityCatalogApprovalFilter.allCases) { filter in
+                    Text(filter.label).tag(filter)
                 }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .frame(width: 132)
-
-                Picker("Risk", selection: $selectedRiskFilter) {
-                    ForEach(CatalogRiskFilter.allCases) { filter in
-                        Text(filter.label).tag(filter)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .frame(width: 116)
-
-                Toggle(isOn: $showNeedsAttentionOnly) {
-                    Label("Needs attention", systemImage: "exclamationmark.triangle")
-                        .font(Stanford.caption(11).weight(.medium))
-                }
-                .toggleStyle(.button)
-                .controlSize(.small)
-
-                Toggle(isOn: $showEnabledOnly) {
-                    Label("Enabled", systemImage: "checkmark.circle")
-                        .font(Stanford.caption(11).weight(.medium))
-                }
-                .toggleStyle(.button)
-                .controlSize(.small)
             }
-            .padding(.horizontal, 18)
-            .padding(.bottom, 8)
+            Picker("Risk", selection: $selectedRiskFilter) {
+                ForEach(CapabilityCatalogRiskFilter.allCases) { filter in
+                    Text(filter.label).tag(filter)
+                }
+            }
+            Divider()
+            Toggle("Needs attention", isOn: $showNeedsAttentionOnly)
+            Toggle("Enabled only", isOn: $showEnabledOnly)
+        } label: {
+            Label(catalogFilterLabel, systemImage: "line.3.horizontal.decrease.circle")
+                .font(Stanford.caption(12).weight(.medium))
+        }
+        .menuStyle(.button)
+        .fixedSize()
+        .help("Filter capabilities by approval, risk, setup, or enabled state")
+    }
+
+    private var catalogFilterLabel: String {
+        var count = 0
+        if selectedApprovalFilter != .all { count += 1 }
+        if selectedRiskFilter != .all { count += 1 }
+        if showNeedsAttentionOnly { count += 1 }
+        if showEnabledOnly { count += 1 }
+        return count == 0 ? "Filters" : "Filters \(count)"
+    }
+
+    private func needsAttentionCount(in packages: [PluginPackage]) -> Int {
+        packages.filter { package in
+            let decision = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext)
+            return requiresSetupFlow(package) || decision.requiresApproval || !decision.warnings.isEmpty || !decision.blockers.isEmpty
+        }.count
+    }
+
+    private func capabilityGroupedList(_ state: PluginCatalogPresentationState) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            ForEach(state.groupedPackages, id: \.kind.rawValue) { group in
+                capabilityGroupSection(group)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private func capabilityGroupSection(_ group: CapabilityCatalogPackageGroup) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+            // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
+            HStack(alignment: .top, spacing: 6) {
+                Text(group.kind.title)
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text("\(group.packages.count)")
+                    .font(Stanford.caption(10).weight(.medium))
+                    .foregroundStyle(.tertiary)
+                Spacer(minLength: 0)
+                Text(group.kind.subtitle)
+                    .font(Stanford.caption(10))
+                    .foregroundStyle(.tertiary)
+            }
+
+            VStack(spacing: 0) {
+                ForEach(Array(group.packages.enumerated()), id: \.element.id) { index, package in
+                    capabilityCatalogRow(package)
+                    if index < group.packages.count - 1 {
+                        Divider()
+                            .padding(.leading, 42)
+                    }
+                }
+            }
+            .background(Color.primary.opacity(0.018))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.primary.opacity(0.055), lineWidth: 1)
+            }
         }
     }
 
-    // MARK: - Package Card
-
-    private func packageCard(_ package: PluginPackage) -> some View {
+    private func capabilityCatalogRow(_ package: PluginPackage) -> some View {
         let state = packageState(package)
         let enabled = state.isEnabled
         let needsSetup = requiresSetupFlow(package)
-        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
 
-        return VStack(alignment: .leading, spacing: 11) {
+        return HStack(alignment: .center, spacing: 12) {
             Button {
                 openPackageEditor(package.id)
             } label: {
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: package.icon)
-                        .font(Stanford.ui(16, weight: .medium))
-                        .foregroundStyle(enabled ? Stanford.lagunita : .secondary)
-                        .frame(width: 30, height: 30)
-                        .background((enabled ? Stanford.lagunita : Color.secondary).opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                HStack(alignment: .center, spacing: 12) {
+                    capabilityIconTile(package, isEnabled: enabled)
 
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 6) {
@@ -802,12 +671,10 @@ struct PluginCatalogView: View {
                                 .font(Stanford.body(14).weight(.semibold))
                                 .foregroundStyle(.primary)
                                 .lineLimit(1)
-                                .layoutPriority(1)
-
                             if needsSetup {
                                 Image(systemName: "key.fill")
                                     .font(Stanford.ui(9, weight: .semibold))
-                                    .foregroundStyle(Stanford.poppy.opacity(0.7))
+                                    .foregroundStyle(Stanford.poppy.opacity(0.72))
                                     .help("Requires configuration")
                             }
                         }
@@ -815,79 +682,66 @@ struct PluginCatalogView: View {
                         Text(package.description.isEmpty ? package.contentSummary : package.description)
                             .font(Stanford.caption(12))
                             .foregroundStyle(.secondary)
-                            .lineLimit(2)
+                            .lineLimit(1)
                             .truncationMode(.tail)
+
+                        Text(capabilityRowMetadata(package, needsSetup: needsSetup))
+                            .font(Stanford.caption(10).weight(.medium))
+                            .foregroundStyle(capabilityRowMetadataColor(package, needsSetup: needsSetup))
+                            .lineLimit(1)
                     }
-
-                    Spacer(minLength: 0)
-
-                    Image(systemName: "chevron.right")
-                        .font(Stanford.ui(10, weight: .semibold))
-                        .foregroundStyle(.quaternary)
-                        .padding(.top, 4)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
-            packageCardFooter(package, enabled: enabled, needsSetup: needsSetup)
+            Spacer(minLength: 12)
+
+            packageActionRow(package, enabled: enabled)
+
+            Image(systemName: "chevron.right")
+                .font(Stanford.ui(10, weight: .semibold))
+                .foregroundStyle(.quaternary)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 12)
-        .frame(minHeight: 92, alignment: .topLeading)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background {
-            shape.fill(enabled ? Color.primary.opacity(0.018) : Color(nsColor: .controlBackgroundColor))
-        }
-        .overlay {
-            shape.stroke(enabled ? Color.primary.opacity(0.045) : Color.primary.opacity(0.075), lineWidth: 1)
-        }
-        .clipShape(shape)
+        .padding(.vertical, 10)
+        .frame(minHeight: 68, alignment: .center)
     }
 
-    private func packageCardFooter(_ package: PluginPackage, enabled: Bool, needsSetup: Bool) -> some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .center, spacing: 8) {
-                packageBadgeRow(package, needsSetup: needsSetup)
-                Spacer(minLength: 8)
-                packageActionRow(package, enabled: enabled)
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                packageBadgeRow(package, needsSetup: needsSetup)
-                HStack {
-                    Spacer(minLength: 0)
-                    packageActionRow(package, enabled: enabled)
-                }
-            }
-        }
+    private func capabilityIconTile(_ package: PluginPackage, isEnabled: Bool) -> some View {
+        Image(systemName: package.icon)
+            .font(Stanford.ui(15, weight: .medium))
+            .foregroundStyle(isEnabled ? Stanford.lagunita : .secondary)
+            .frame(width: 30, height: 30)
+            .background((isEnabled ? Stanford.lagunita : Color.secondary).opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
-    private func packageBadgeRow(_ package: PluginPackage, needsSetup: Bool) -> some View {
-        HStack(alignment: .center, spacing: 8) {
-            Text(package.category)
-                .font(Stanford.caption(10).weight(.medium))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3)
-                .background(Color.primary.opacity(0.04))
-                .clipShape(Capsule())
-
-            if needsSetup {
-                Text("Setup required")
-                    .font(Stanford.caption(10).weight(.medium))
-                    .foregroundStyle(Stanford.poppy)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(Stanford.poppy.opacity(0.08))
-                    .clipShape(Capsule())
-            }
-
-            governanceBadge(package)
-            riskBadge(package)
+    private func capabilityRowMetadata(_ package: PluginPackage, needsSetup: Bool) -> String {
+        let decision = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext)
+        var parts: [String] = []
+        if let attention = CapabilityRowPresentation.attentionLabel(needsSetup: needsSetup, decision: decision) {
+            parts.append(attention)
         }
-        .lineLimit(1)
+        parts.append(capabilityApprovalLabel(decision.governance.approvalStatus))
+        parts.append("\(capabilityRiskLabel(decision.governance.riskLevel)) risk")
+        return parts.joined(separator: " · ")
+    }
+
+    private func capabilityRowMetadataColor(_ package: PluginPackage, needsSetup: Bool) -> Color {
+        let decision = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext)
+        if CapabilityRowPresentation.attentionLabel(needsSetup: needsSetup, decision: decision) != nil {
+            return Stanford.poppy
+        }
+        switch decision.governance.riskLevel {
+        case .restricted:
+            return Stanford.cardinalRed
+        case .high:
+            return Stanford.poppy
+        case .low, .medium:
+            return .secondary
+        }
     }
 
     private func packageActionRow(_ package: PluginPackage, enabled: Bool) -> some View {
@@ -1025,14 +879,15 @@ struct PluginCatalogView: View {
             "base_url_override_count": String(baseURLOverrides.count)
         ])
         do {
-            try CapabilityInstaller().install(
+            try CapabilityCatalogActionService().enable(
                 package,
-                into: workspace,
+                workspace: workspace,
                 modelContext: modelContext,
                 credentialInputs: credentialInputs,
                 configInputs: configInputs,
                 baseURLOverrides: baseURLOverrides,
                 policyContext: catalogPolicyContext,
+                source: "configure",
                 traceID: traceID
             )
             onInstall?(package)
@@ -1040,15 +895,6 @@ struct PluginCatalogView: View {
             onCatalogChanged?()
         } catch {
             installError = error.localizedDescription
-            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
-                "source": "configure",
-                "trace_id": traceID,
-                "package_id": package.id,
-                "package_name": package.name,
-                "package_version": package.version,
-                "workspace_id": workspace.id.uuidString,
-                "error_type": String(describing: type(of: error))
-            ], level: .error)
         }
     }
 
@@ -1131,7 +977,7 @@ struct PluginCatalogView: View {
             "workspace_id": workspace.id.uuidString
         ])
         do {
-            let result = try CapabilityPackageCreationService().create(
+            let result = try CapabilityCatalogActionService().create(
                 package,
                 enableHere: enableHere,
                 sourceURL: sourceURL,
@@ -1140,32 +986,22 @@ struct PluginCatalogView: View {
                 policyContext: catalogPolicyContext,
                 traceID: traceID
             )
-            if result.approvalRecord != nil {
+            if result.approvalRecordChanged {
                 approvalRevision += 1
             }
-            if enableHere {
-                onInstall?(result.package)
+            if let installedPackage = result.installedPackage {
+                onInstall?(installedPackage)
             }
             catalog.loadApprovedCapabilities()
             onCatalogChanged?()
         } catch {
             installError = error.localizedDescription
-            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
-                "source": enableHere ? "create_and_enable" : "create_install_only",
-                "trace_id": traceID,
-                "package_id": package.id,
-                "package_name": package.name,
-                "package_version": package.version,
-                "workspace_id": workspace.id.uuidString,
-                "source_json_path": sourceURL?.path ?? "",
-                "error_type": String(describing: type(of: error))
-            ], level: .error)
         }
     }
 
     private func removeCapabilityPackage(_ package: PluginPackage) {
         do {
-            _ = try CapabilityUninstaller().remove(package, modelContext: modelContext)
+            _ = try CapabilityCatalogActionService().remove(package, modelContext: modelContext)
             if activeFocusedPackageID == package.id {
                 closePackageEditor()
             }
@@ -1250,9 +1086,9 @@ struct PluginCatalogView: View {
         let state = packageState(package)
         let detailSections = capabilityDetailSections(package)
 
-        return VStack(alignment: .leading, spacing: 10) {
-            VStack(alignment: .leading, spacing: 12) {
-                policyStatusSection(package)
+        return VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 14) {
+                capabilityDetailStatusSummary(package)
                 capabilityAdminReviewSection(package)
 
                 // Show local checks first when the package declares prerequisites.
@@ -1263,7 +1099,7 @@ struct PluginCatalogView: View {
                 capabilityDetailOverview(package)
 
                 if !detailSections.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 6) {
                         HStack {
                             Text("Capability contents")
                                 .font(Stanford.caption(11).weight(.semibold))
@@ -1277,10 +1113,16 @@ struct PluginCatalogView: View {
                                 .foregroundStyle(.tertiary)
                         }
 
-                        LazyVGrid(columns: detailComponentColumns, alignment: .leading, spacing: 10) {
+                        VStack(spacing: 0) {
                             ForEach(detailSections) { section in
-                                capabilityDetailSectionCard(section)
+                                capabilityDetailSectionRows(section)
                             }
+                        }
+                        .background(Color.primary.opacity(0.018))
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(Color.primary.opacity(0.055), lineWidth: 1)
                         }
                     }
                 }
@@ -1310,72 +1152,48 @@ struct PluginCatalogView: View {
 
     private func capabilityDetailOverview(_ package: PluginPackage) -> some View {
         let governance = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext).governance
+        let values = [
+            "Source \(package.author)",
+            "Version v\(package.version)",
+            "Approval \(capabilityApprovalLabel(governance.approvalStatus))",
+            "Risk \(capabilityRiskLabel(governance.riskLevel))",
+            requiresSetupFlow(package) ? "Setup required" : "Setup ready"
+        ]
 
-        return HStack(alignment: .top, spacing: 10) {
-            overviewPill(icon: "person.circle", title: "Source", value: package.author)
-            overviewPill(icon: "tag", title: "Version", value: "v\(package.version)")
-            overviewPill(
-                icon: "checkmark.shield",
-                title: "Approval",
-                value: capabilityApprovalLabel(governance.approvalStatus),
-                color: approvalColor(governance.approvalStatus)
-            )
-            overviewPill(
-                icon: "gauge.medium",
-                title: "Risk",
-                value: capabilityRiskLabel(governance.riskLevel),
-                color: riskColor(governance.riskLevel)
-            )
-
-            if requiresSetupFlow(package) {
-                overviewPill(
-                    icon: "key.fill",
-                    title: "Setup",
-                    value: "Required",
-                    color: Stanford.poppy
-                )
-            } else {
-                overviewPill(
-                    icon: "checkmark.seal",
-                    title: "Setup",
-                    value: "Ready",
-                    color: Stanford.paloAltoGreen
-                )
-            }
-
-            Spacer(minLength: 0)
-        }
+        return Text(values.joined(separator: "  ·  "))
+            .font(Stanford.caption(11).weight(.medium))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .help(values.joined(separator: "\n"))
     }
 
-    private func overviewPill(
-        icon: String,
-        title: String,
-        value: String,
-        color: Color = Stanford.coolGrey
-    ) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: icon)
-                .font(Stanford.ui(11, weight: .semibold))
-                .foregroundStyle(color)
-                .frame(width: 14)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(Stanford.ui(9, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                    .textCase(.uppercase)
-                Text(value)
-                    .font(Stanford.caption(11).weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+    private func capabilityDetailStatusSummary(_ package: PluginPackage) -> some View {
+        let decision = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext)
+        let summary = capabilityRowMetadata(package, needsSetup: requiresSetupFlow(package))
+        let messages = decision.blockerMessages + decision.warnings.map(\.message)
+
+        return VStack(alignment: .leading, spacing: 6) {
+            Text(summary)
+                .font(Stanford.caption(12).weight(.semibold))
+                .foregroundStyle(capabilityRowMetadataColor(package, needsSetup: requiresSetupFlow(package)))
+
+            if !messages.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(Array(messages.prefix(4).enumerated()), id: \.offset) { _, message in
+                        HStack(alignment: .top, spacing: 6) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(Stanford.ui(8, weight: .semibold))
+                                .foregroundStyle(decision.blockers.isEmpty ? Stanford.poppy.opacity(0.75) : Stanford.poppy)
+                                .frame(width: 12)
+                            Text(message)
+                                .font(Stanford.caption(11))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
             }
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 6)
-        .liquidSurface(
-            cornerRadius: Stanford.railCompactCardCornerRadius,
-            fallbackFill: Color.primary.opacity(0.018),
-            fallbackStrokeOpacity: 0.045
-        )
     }
 
     private func capabilityContentsSummary(_ package: PluginPackage) -> String {
@@ -1531,45 +1349,6 @@ struct PluginCatalogView: View {
         }
     }
 
-    private func policyStatusSection(_ package: PluginPackage) -> some View {
-        let decision = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext)
-
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                governanceBadge(package)
-                riskBadge(package)
-                if decision.requiresApproval {
-                    Text("Approval required")
-                        .font(Stanford.caption(10).weight(.medium))
-                        .foregroundStyle(Stanford.poppy)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(Stanford.poppy.opacity(0.08))
-                        .clipShape(Capsule())
-                }
-                Spacer(minLength: 0)
-            }
-
-            let messages = decision.blockerMessages + decision.warnings.map(\.message)
-            if !messages.isEmpty {
-                VStack(alignment: .leading, spacing: 3) {
-                    ForEach(Array(messages.prefix(4).enumerated()), id: \.offset) { _, message in
-                        HStack(alignment: .top, spacing: 5) {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .font(Stanford.ui(8, weight: .semibold))
-                                .foregroundStyle(decision.blockers.isEmpty ? Stanford.poppy.opacity(0.75) : Stanford.poppy)
-                                .frame(width: 12)
-                            Text(message)
-                                .font(Stanford.caption(10))
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     private func capabilityAdminReviewSection(_ package: PluginPackage) -> some View {
         let decision = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext)
         let approvalStore = CapabilityApprovalStore()
@@ -1640,28 +1419,6 @@ struct PluginCatalogView: View {
         }
     }
 
-    private func governanceBadge(_ package: PluginPackage) -> some View {
-        let status = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext).governance.approvalStatus
-        return Text(capabilityApprovalLabel(status))
-            .font(Stanford.caption(10).weight(.medium))
-            .foregroundStyle(approvalColor(status))
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(approvalColor(status).opacity(0.08))
-            .clipShape(Capsule())
-    }
-
-    private func riskBadge(_ package: PluginPackage) -> some View {
-        let risk = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext).governance.riskLevel
-        return Text("\(capabilityRiskLabel(risk)) risk")
-            .font(Stanford.caption(10).weight(.medium))
-            .foregroundStyle(riskColor(risk))
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(riskColor(risk).opacity(0.08))
-            .clipShape(Capsule())
-    }
-
     private func capabilityApprovalLabel(_ status: CapabilityApprovalStatus) -> String {
         switch status {
         case .approved: return "Approved"
@@ -1680,89 +1437,62 @@ struct PluginCatalogView: View {
         }
     }
 
-    private func approvalColor(_ status: CapabilityApprovalStatus) -> Color {
-        switch status {
-        case .approved: return Stanford.paloAltoGreen
-        case .draft: return Stanford.poppy
-        case .deprecated: return Stanford.driftwood
-        case .blocked: return Stanford.cardinalRed
-        }
-    }
-
-    private func riskColor(_ risk: CapabilityRiskLevel) -> Color {
-        switch risk {
-        case .low: return Stanford.paloAltoGreen
-        case .medium: return Stanford.coolGrey
-        case .high: return Stanford.poppy
-        case .restricted: return Stanford.cardinalRed
-        }
-    }
-
-    private func capabilityDetailSectionCard(_ section: CapabilityDetailSection) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .top, spacing: 8) {
+    private func capabilityDetailSectionRows(_ section: CapabilityDetailSection) -> some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top, spacing: 10) {
                 Image(systemName: section.icon)
-                    .font(Stanford.ui(15, weight: .semibold))
+                    .font(Stanford.ui(14, weight: .semibold))
                     .foregroundStyle(section.color)
-                    .frame(width: 28, height: 28)
-                    .background(section.color.opacity(0.1))
-                    .clipShape(RoundedRectangle(cornerRadius: 7))
+                    .frame(width: 30, height: 30)
+                    .background(section.color.opacity(0.09))
+                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
 
-                VStack(alignment: .leading, spacing: 1) {
+                VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         Text(section.title)
-                            .font(Stanford.body(12).weight(.semibold))
-                            .foregroundStyle(Stanford.black)
+                            .font(Stanford.body(13).weight(.semibold))
+                            .foregroundStyle(.primary)
                         Text("\(section.items.count)")
-                            .font(Stanford.caption(9).weight(.semibold))
-                            .foregroundStyle(section.color)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(section.color.opacity(0.1))
-                            .clipShape(Capsule())
+                            .font(Stanford.caption(10).weight(.medium))
+                            .foregroundStyle(.secondary)
                     }
                     Text(section.subtitle)
-                        .font(Stanford.caption(10))
+                        .font(Stanford.caption(11))
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                        .lineLimit(1)
                 }
 
                 Spacer(minLength: 0)
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
 
-            Divider().opacity(0.35)
+            ForEach(section.items) { item in
+                Divider()
+                    .padding(.leading, 52)
+                HStack(alignment: .center, spacing: 10) {
+                    Image(systemName: item.icon)
+                        .font(Stanford.ui(10, weight: .medium))
+                        .foregroundStyle(section.color.opacity(0.82))
+                        .frame(width: 30)
 
-            VStack(alignment: .leading, spacing: 7) {
-                ForEach(section.items) { item in
-                    HStack(alignment: .top, spacing: 7) {
-                        Image(systemName: item.icon)
-                            .font(Stanford.ui(10, weight: .medium))
-                            .foregroundStyle(section.color.opacity(0.8))
-                            .frame(width: 14, height: 14)
-
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(item.title)
-                                .font(Stanford.caption(11).weight(.semibold))
-                                .foregroundStyle(.primary)
-                                .lineLimit(1)
-                            Text(item.detail)
-                                .font(Stanford.caption(10))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-
-                        Spacer(minLength: 0)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(item.title)
+                            .font(Stanford.caption(12).weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Text(item.detail)
+                            .font(Stanford.caption(11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
+
+                    Spacer(minLength: 0)
                 }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
             }
         }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .liquidSurface(
-            cornerRadius: Stanford.railCompactCardCornerRadius,
-            fallbackFill: Color.primary.opacity(0.018),
-            fallbackStrokeOpacity: 0.055
-        )
     }
 
     @ViewBuilder
@@ -1816,7 +1546,9 @@ struct PluginCatalogView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Divider().opacity(0.35)
 
-                HStack(alignment: .firstTextBaseline) {
+                // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+                // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
+                HStack(alignment: .top) {
                     Text("Configure resources")
                         .font(Stanford.caption(11).weight(.semibold))
                         .foregroundStyle(.secondary)
@@ -1829,10 +1561,16 @@ struct PluginCatalogView: View {
                         .foregroundStyle(.tertiary)
                 }
 
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 245, maximum: 360), spacing: 8, alignment: .top)], alignment: .leading, spacing: 8) {
+                VStack(spacing: 0) {
                     ForEach(links) { link in
                         capabilityConfigurationLinkCard(link)
                     }
+                }
+                .background(Color.primary.opacity(0.018))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(Color.primary.opacity(0.055), lineWidth: 1)
                 }
             }
         }
@@ -1914,12 +1652,6 @@ struct PluginCatalogView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .liquidSurface(
-            cornerRadius: Stanford.railCompactCardCornerRadius,
-            interactive: true,
-            fallbackFill: Color.primary.opacity(0.018),
-            fallbackStrokeOpacity: 0.055
-        )
     }
 
     private func browserAdapterDisplayName(_ adapter: String) -> String {
@@ -2201,10 +1933,6 @@ struct PluginInstallSheet: View {
 
     private let validationPreflightCache = PreflightCache()
 
-    private var allConnectorHints: [(connector: PluginConnector, credentials: [PluginConnector.CredentialHint], configs: [PluginConnector.ConfigHint])] {
-        package.connectors.map { ($0, $0.credentialHints, $0.configHints) }
-    }
-
     private var requiresValidation: Bool {
         package.requiresSetup || !package.prerequisites.isEmpty
     }
@@ -2249,14 +1977,11 @@ struct PluginInstallSheet: View {
             Divider()
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    setupStepperSection
-
+                VStack(alignment: .leading, spacing: 16) {
                     if !copyableSetupSourceWorkspaces.isEmpty {
                         copySetupSection
                     }
 
-                    // Configuration fields per connector
                     ForEach(package.connectors, id: \.name) { connector in
                         connectorSetupSection(connector)
                     }
@@ -2293,6 +2018,7 @@ struct PluginInstallSheet: View {
                 Button("Cancel") {
                     onDismiss()
                 }
+                .buttonStyle(.bordered)
                 .keyboardShortcut(.cancelAction)
 
                 if requiresValidation {
@@ -2309,6 +2035,8 @@ struct PluginInstallSheet: View {
                             Text(isValidatingSetup ? "Validating" : "Validate Connection")
                         }
                     }
+                    .buttonStyle(.bordered)
+                    .tint(Stanford.lagunita)
                     .disabled(isValidatingSetup)
                     .help("Run the same connector and CLI checks ASTRA uses before tasks run.")
                 }
@@ -2326,7 +2054,7 @@ struct PluginInstallSheet: View {
             }
             .padding(20)
         }
-        .frame(width: 500, height: 560)
+        .frame(width: 560, height: 600)
         .onAppear {
             // Pre-populate base URLs from connector defaults
             for conn in package.connectors {
@@ -2369,68 +2097,27 @@ struct PluginInstallSheet: View {
             "base_url_override_count": String(baseURLValues.count)
         ])
         do {
-            try CapabilityInstaller().install(
+            try CapabilityCatalogActionService().enable(
                 package,
-                into: workspace,
+                workspace: workspace,
                 modelContext: modelContext,
                 credentialInputs: credentialValues,
                 configInputs: installConfigValues,
                 baseURLOverrides: baseURLValues,
                 policyContext: policyContext,
+                source: "setup_sheet",
                 traceID: traceID
             )
             onInstalled(package)
         } catch {
             installError = error.localizedDescription
-            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
-                "source": "setup_sheet",
-                "trace_id": traceID,
-                "package_id": package.id,
-                "package_name": package.name,
-                "package_version": package.version,
-                "workspace_id": workspace.id.uuidString,
-                "error_type": String(describing: type(of: error))
-            ], level: .error)
         }
-    }
-
-    private var setupStepperSection: some View {
-        HStack(spacing: 8) {
-            setupStep(number: "1", title: "Fill", detail: package.connectors.isEmpty ? "No fields" : "Required fields")
-            setupStep(number: "2", title: "Validate", detail: package.prerequisites.isEmpty ? "Connection" : "Setup checks")
-            setupStep(number: "3", title: "Enable", detail: "Ready for chat")
-        }
-    }
-
-    private func setupStep(number: String, title: String, detail: String) -> some View {
-        HStack(spacing: 8) {
-            Text(number)
-                .font(Stanford.caption(10).weight(.bold))
-                .foregroundStyle(.white)
-                .frame(width: 18, height: 18)
-                .background(Stanford.lagunita)
-                .clipShape(Circle())
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(Stanford.caption(11).weight(.semibold))
-                    .foregroundStyle(Stanford.black)
-                Text(detail)
-                    .font(Stanford.caption(10))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.primary.opacity(0.035))
-        .clipShape(RoundedRectangle(cornerRadius: 9))
     }
 
     private var copySetupSection: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 9) {
+        // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+        // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
+        HStack(alignment: .top, spacing: 9) {
             Image(systemName: copiedSetupSourceName == nil ? "square.on.square" : "checkmark.circle.fill")
                 .font(Stanford.ui(12, weight: .medium))
                 .foregroundStyle(copiedSetupSourceName == nil ? Stanford.lagunita : Stanford.paloAltoGreen)
@@ -2782,30 +2469,39 @@ struct PluginInstallSheet: View {
     // MARK: - Connector Setup Section
 
     private func connectorSetupSection(_ connector: PluginConnector) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            // Connector header
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 13) {
+            HStack(alignment: .top, spacing: 10) {
                 Image(systemName: connector.icon)
                     .font(Stanford.ui(14, weight: .medium))
-                    .foregroundStyle(Stanford.paloAltoGreen)
-                    .frame(width: 26, height: 26)
-                    .background(Stanford.paloAltoGreen.opacity(0.1))
-                    .clipShape(RoundedRectangle(cornerRadius: 7))
+                    .foregroundStyle(Stanford.lagunita)
+                    .frame(width: 30, height: 30)
+                    .background(Stanford.lagunita.opacity(0.09))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
 
-                Text(connector.name)
-                    .font(Stanford.body(14))
-                    .fontWeight(.semibold)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(connector.name)
+                        .font(Stanford.body(14).weight(.semibold))
+                        .foregroundStyle(Stanford.black)
+                        .lineLimit(1)
+                    if !connector.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text(connector.description)
+                            .font(Stanford.caption(11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                }
 
-                Text(connector.authMethod.replacingOccurrences(of: "_", with: " "))
+                Spacer(minLength: 8)
+
+                Text(CapabilitySetupPresentation.authMethodLabel(connector.authMethod))
                     .font(Stanford.caption(10))
                     .foregroundStyle(Stanford.coolGrey)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
                     .background(Color.primary.opacity(0.04))
                     .clipShape(Capsule())
             }
 
-            // Base URL
             if !connector.baseURL.isEmpty {
                 if isPlaceholderBaseURL(connector.baseURL) {
                     baseURLField(for: connector)
@@ -2821,97 +2517,123 @@ struct PluginInstallSheet: View {
                 }
             }
 
-            // Credentials
             if !connector.credentialHints.isEmpty {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(spacing: 5) {
-                        Image(systemName: "key.fill")
-                            .font(Stanford.ui(10))
-                            .foregroundStyle(Stanford.poppy)
-                        Text("Credentials")
-                            .font(Stanford.caption(11))
-                            .fontWeight(.medium)
-                            .foregroundStyle(.secondary)
-                        Text("stored in Keychain")
-                            .font(Stanford.caption(10))
-                            .foregroundStyle(.tertiary)
-                    }
-
+                setupInputGroup(
+                    title: "Credentials",
+                    subtitle: "Stored in Keychain",
+                    icon: "key.fill",
+                    color: Stanford.poppy
+                ) {
                     ForEach(connector.credentialHints, id: \.key) { hint in
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(hint.key)
-                                .font(Stanford.ui(12, design: .monospaced))
-                                .fontWeight(.medium)
-                            SecureField(credentialPlaceholder(for: hint), text: Binding(
-                                get: { credentialValues[hint.key] ?? "" },
-                                set: {
-                                    credentialValues[hint.key] = $0
-                                    resetValidation()
-                                }
-                            ))
-                            .textFieldStyle(.roundedBorder)
-                            .font(Stanford.ui(13, design: .monospaced))
-                            .help(hint.hint)
-                        }
+                        credentialField(for: hint)
                     }
                 }
-                .padding(12)
-                .background(Stanford.poppy.opacity(0.04))
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(Stanford.poppy.opacity(0.12), lineWidth: 1)
-                )
             }
 
-            // Config
             if !connector.configHints.isEmpty {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(spacing: 5) {
-                        Image(systemName: "slider.horizontal.3")
-                            .font(Stanford.ui(10))
-                            .foregroundStyle(Stanford.lagunita)
-                        Text("Configuration")
-                            .font(Stanford.caption(11))
-                            .fontWeight(.medium)
-                            .foregroundStyle(.secondary)
-                    }
-
+                setupInputGroup(
+                    title: "Configuration",
+                    subtitle: "Connector settings",
+                    icon: "slider.horizontal.3",
+                    color: Stanford.lagunita
+                ) {
                     ForEach(connector.configHints, id: \.key) { hint in
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(hint.key)
-                                .font(Stanford.ui(12, design: .monospaced))
-                                .fontWeight(.medium)
-                            TextField(configPlaceholder(for: hint), text: Binding(
-                                get: { configValues[hint.key] ?? "" },
-                                set: {
-                                    configValues[hint.key] = $0
-                                    resetValidation()
-                                }
-                            ))
-                            .textFieldStyle(.roundedBorder)
-                            .font(Stanford.ui(13, design: .monospaced))
-                            .help(hint.hint)
-                        }
+                        configField(for: hint)
                     }
                 }
             }
         }
         .padding(14)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(Color.primary.opacity(0.018))
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                .stroke(Color.primary.opacity(0.055), lineWidth: 1)
         )
+    }
+
+    private func setupInputGroup<Content: View>(
+        title: String,
+        subtitle: String,
+        icon: String,
+        color: Color,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(Stanford.ui(10, weight: .semibold))
+                    .foregroundStyle(color)
+                    .frame(width: 16)
+                Text(title)
+                    .font(Stanford.caption(11).weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(subtitle)
+                    .font(Stanford.caption(10))
+                    .foregroundStyle(.tertiary)
+                Spacer(minLength: 0)
+            }
+
+            content()
+        }
+        .padding(.top, 2)
+    }
+
+    private func credentialField(for hint: PluginConnector.CredentialHint) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            setupFieldHeader(for: hint.key)
+            SecureField(CapabilitySetupPresentation.credentialPlaceholder(for: hint), text: Binding(
+                get: { credentialValues[hint.key] ?? "" },
+                set: {
+                    credentialValues[hint.key] = $0
+                    resetValidation()
+                }
+            ))
+            .textFieldStyle(.roundedBorder)
+            .font(Stanford.body(13))
+            .help(hint.hint)
+        }
+    }
+
+    private func configField(for hint: PluginConnector.ConfigHint) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            setupFieldHeader(for: hint.key)
+            TextField(CapabilitySetupPresentation.configPlaceholder(for: hint), text: Binding(
+                get: { configValues[hint.key] ?? "" },
+                set: {
+                    configValues[hint.key] = $0
+                    resetValidation()
+                }
+            ))
+            .textFieldStyle(.roundedBorder)
+            .font(Stanford.body(13))
+            .help(hint.hint)
+        }
+    }
+
+    private func setupFieldHeader(for key: String) -> some View {
+        // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+        // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
+        HStack(alignment: .top, spacing: 6) {
+            Text(CapabilitySetupPresentation.fieldLabel(for: key))
+                .font(Stanford.caption(11).weight(.semibold))
+                .foregroundStyle(Stanford.black)
+            if let helper = CapabilitySetupPresentation.fieldHelper(for: key) {
+                Text(helper)
+                    .font(Stanford.ui(10, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 0)
+        }
     }
 
     private func baseURLField(for connector: PluginConnector) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Base URL")
-                .font(Stanford.caption(11))
-                .fontWeight(.medium)
-                .foregroundStyle(.secondary)
+            Text(CapabilitySetupPresentation.baseURLLabel(for: connector))
+                .font(Stanford.caption(11).weight(.semibold))
+                .foregroundStyle(Stanford.black)
             TextField(connector.baseURL, text: Binding(
                 get: { baseURLValues[connector.name] ?? connector.baseURL },
                 set: {
@@ -2920,32 +2642,8 @@ struct PluginInstallSheet: View {
                 }
             ))
             .textFieldStyle(.roundedBorder)
-            .font(Stanford.ui(13, design: .monospaced))
+            .font(Stanford.body(13))
         }
     }
 
-    private func credentialPlaceholder(for hint: PluginConnector.CredentialHint) -> String {
-        let key = hint.key.lowercased()
-        if key.contains("email") {
-            return "name@company.com"
-        }
-        if key.contains("token") || key.contains("key") {
-            return "Paste API token"
-        }
-        return hint.hint
-    }
-
-    private func configPlaceholder(for hint: PluginConnector.ConfigHint) -> String {
-        let key = hint.key.lowercased()
-        if hint.isList || key.contains("projects") {
-            return "ENG, OPS"
-        }
-        if key.contains("region") {
-            return "us-central1"
-        }
-        if key.contains("project") {
-            return "Project ID"
-        }
-        return hint.hint
-    }
 }

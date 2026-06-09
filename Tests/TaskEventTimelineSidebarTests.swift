@@ -403,9 +403,89 @@ struct SidebarGroupingTests {
         #expect(SidebarLeanPresentation.sidebarTaskTitlesUsePrefixPrimaryPresentation)
         #expect(SidebarLeanPresentation.workspaceStarsMoveToTrailingEdge)
         #expect(SidebarLeanPresentation.workspaceMetadataAndActionsShareTrailingSlot)
-        #expect(SidebarLeanPresentation.selectedWorkspaceChildrenUseGuide)
+        #expect(!SidebarLeanPresentation.selectedWorkspaceChildrenUseGuide)
         #expect(SidebarLeanPresentation.sidebarTaskStatusesShowExceptionsOnly)
         #expect(SidebarLeanPresentation.pinnedPreviewLimit == 5)
+        #expect(SidebarLeanPresentation.childTaskListLeadingPadding == 0)
+        #expect(SidebarLeanPresentation.childTaskContentLeadingPadding == 0)
+        #expect(!SidebarThreadRowLayout.isActionableStatus(.completed))
+        #expect(SidebarThreadRowLayout.isActionableStatus(.running))
+        #expect(SidebarThreadRowLayout.showsStatusIcon(for: .completed, isHovered: false, isSelected: false) == false)
+        #expect(SidebarThreadRowLayout.showsStatusIcon(for: .completed, isHovered: true, isSelected: false))
+        #expect(SidebarThreadRowLayout.showsStatusIcon(for: .completed, isHovered: false, isSelected: true))
+        #expect(SidebarThreadRowLayout.showsStatusIcon(for: .running, isHovered: false, isSelected: false))
+        #expect(SidebarThreadRowLayout.restingTitleLeadingOffset(
+            childListPadding: SidebarLeanPresentation.childTaskListLeadingPadding,
+            contentLeadingPadding: SidebarLeanPresentation.childTaskContentLeadingPadding,
+            status: .completed
+        ) == 8)
+        #expect(SidebarThreadRowLayout.titleFontSize == 14)
+    }
+
+    @Test("Sidebar collapses before the expanded rail can clip trailing metadata")
+    func sidebarColumnCollapsesBeforeTrailingMetadataClips() {
+        let readableTitleWidth: CGFloat = 200
+        let workspaceRowFixedChrome =
+            SidebarLeanPresentation.workspaceRowTrailingSlotWidth
+            + 17 // folder icon width
+            + 7 // workspace row icon/title spacing
+            + 8 // horizontal row padding
+
+        #expect(SidebarColumnLayout.expandedMinimumWidth == 310)
+        #expect(SidebarColumnLayout.expandedIdealWidth >= SidebarColumnLayout.expandedMinimumWidth)
+        #expect(SidebarColumnLayout.expandedMaximumWidth >= SidebarColumnLayout.expandedIdealWidth)
+        #expect(SidebarColumnLayout.collapseEdge == .leading)
+        #expect(SidebarColumnLayout.collapseUsesRightPanelMotion)
+        #expect(SidebarColumnLayout.expandedMinimumWidth - workspaceRowFixedChrome >= readableTitleWidth)
+
+        #expect(SidebarColumnLayout.shouldCollapseExpandedSidebar(width: 0) == false)
+        #expect(SidebarColumnLayout.shouldCollapseExpandedSidebar(
+            width: SidebarColumnLayout.expandedMinimumWidth - 0.5
+        ) == true)
+        #expect(SidebarColumnLayout.shouldCollapseExpandedSidebar(
+            width: SidebarColumnLayout.expandedMinimumWidth
+        ) == false)
+        #expect(SidebarColumnLayout.shouldCollapseVisibleSplitWidth(.infinity) == false)
+        #expect(SidebarColumnLayout.shouldCollapseVisibleSplitWidth(.nan) == false)
+        #expect(SidebarColumnLayout.shouldCollapseVisibleSplitWidth(
+            SidebarColumnLayout.expandedMinimumWidth - 1
+        ) == true)
+        #expect(SidebarColumnLayout.shouldCollapseVisibleSplitWidth(
+            SidebarColumnLayout.expandedMinimumWidth - 1,
+            isRevealInProgress: true
+        ) == false)
+        #expect(SidebarColumnLayout.shouldCollapseVisibleSplitWidth(
+            SidebarColumnLayout.expandedMinimumWidth
+        ) == false)
+        #expect(SidebarColumnLayout.shouldCompleteSidebarReveal(width: 0) == false)
+        #expect(SidebarColumnLayout.shouldCompleteSidebarReveal(
+            width: SidebarColumnLayout.expandedMinimumWidth - 1
+        ) == false)
+        #expect(SidebarColumnLayout.shouldCompleteSidebarReveal(
+            width: SidebarColumnLayout.expandedMinimumWidth
+        ) == true)
+        #expect(SidebarRevealSettlingPolicy.fallbackDelayNanoseconds > 0)
+
+        let firstRevision = SidebarRevealSettlingPolicy.nextRevision(after: 0)
+        let secondRevision = SidebarRevealSettlingPolicy.nextRevision(after: firstRevision)
+        #expect(firstRevision != secondRevision)
+        #expect(SidebarRevealSettlingPolicy.shouldBeginReveal(isRevealInProgress: false))
+        #expect(!SidebarRevealSettlingPolicy.shouldBeginReveal(isRevealInProgress: true))
+        #expect(SidebarRevealSettlingPolicy.shouldClearReveal(
+            scheduledRevision: firstRevision,
+            currentRevision: firstRevision,
+            isRevealInProgress: true
+        ))
+        #expect(!SidebarRevealSettlingPolicy.shouldClearReveal(
+            scheduledRevision: firstRevision,
+            currentRevision: secondRevision,
+            isRevealInProgress: true
+        ))
+        #expect(!SidebarRevealSettlingPolicy.shouldClearReveal(
+            scheduledRevision: firstRevision,
+            currentRevision: firstRevision,
+            isRevealInProgress: false
+        ))
     }
 }
 

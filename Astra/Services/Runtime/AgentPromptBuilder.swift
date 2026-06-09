@@ -116,10 +116,6 @@ private struct PromptContextText: Sendable {
 
 @MainActor
 enum AgentPromptBuilder {
-    private static let recentSessionOutputFileLimit = 6
-    private static let recentSessionFullOutputFileLimit = 4
-    private static let recentSessionFullOutputMaxCharacters = 8_000
-    private static let olderSessionOutputMaxCharacters = 2_000
     private static let contextSourceIndexOutputFileLimit = 12
     private static let contextSourceIndexArtifactLimit = 12
     private static let fallbackRunResponseLimit = 8
@@ -148,12 +144,13 @@ enum AgentPromptBuilder {
 
     private static func buildPromptSections(for task: AgentTask) -> [PromptContextSection] {
         buildPromptSections(
-            using: initialRunSectionProviders,
+            using: PromptContextSectionProviderRegistry.providerIDs(for: .initialRun),
             context: PromptContextSectionProviderContext(
                 mode: .initialRun,
                 task: task,
                 followUpMessage: "",
-                capabilityScope: TaskCapabilityResolver(task: task).promptScope()
+                capabilityScope: TaskCapabilityResolver(task: task).promptScope(),
+                ioSnapshot: .empty
             )
         )
     }
@@ -312,13 +309,16 @@ enum AgentPromptBuilder {
 
             let relativePath = relativeTaskFolderPath(for: task, taskDir: taskDir)
             let artifactDirective = standaloneArtifactDirective(for: task, relativePath: relativePath, taskDir: taskDir)
+            let stateHistoryDirective = stateHistoryOwnershipDirective(for: task)
+            let stateReadDirective = providerStateReadDirective(for: task)
             if let relativePath {
                 appendSection("""
                 Task Output Folder: \(relativePath)
                 Absolute path: \(taskDir)
                 This directory already exists. Save output files, reports, or artifacts there using the relative path when writing from the current working directory. Do not create the folder yourself.
                 For standalone generated files or artifacts requested by the user, such as web pages, scripts, reports, documents, or demo apps, create them in this task output folder by default. Only write to workspace or project files when the user explicitly names that target path or asks you to modify the project.
-                ASTRA owns state/history files in this folder, including current_state.json, current_state.md, session_history.md, diagnostics/, and outputs/turn_*.md. Read them for context when needed, but do not create, edit, overwrite, or use them as deliverables.
+                \(stateHistoryDirective)
+                \(stateReadDirective)
                 For informational tasks, summaries, reviews, lookups, and status checks, return the useful answer in chat. Do not only write intermediate JSON, logs, or scratch files unless the user asked for a file artifact.
                 \(artifactDirective)
                 """, kind: .currentGoal, to: &sections, sourcePointers: taskFolderSourcePointers(task))
@@ -327,12 +327,25 @@ enum AgentPromptBuilder {
                 Task Output Folder: \(taskDir)
                 This directory already exists. Save output files, reports, or artifacts there. Do not create the folder yourself.
                 For standalone generated files or artifacts requested by the user, such as web pages, scripts, reports, documents, or demo apps, create them in this task output folder by default. Only write to workspace or project files when the user explicitly names that target path or asks you to modify the project.
-                ASTRA owns state/history files in this folder, including current_state.json, current_state.md, session_history.md, diagnostics/, and outputs/turn_*.md. Read them for context when needed, but do not create, edit, overwrite, or use them as deliverables.
+                \(stateHistoryDirective)
+                \(stateReadDirective)
                 For informational tasks, summaries, reviews, lookups, and status checks, return the useful answer in chat. Do not only write intermediate JSON, logs, or scratch files unless the user asked for a file artifact.
                 \(artifactDirective)
                 """, kind: .currentGoal, to: &sections, sourcePointers: taskFolderSourcePointers(task))
             }
         }
+    }
+
+    private static func stateHistoryOwnershipDirective(for task: AgentTask) -> String {
+        if task.resolvedRuntimeID == .openCodeCLI {
+            return "ASTRA owns internal state/history files in this folder. Treat that state as already summarized in this prompt; do not create, edit, overwrite, or use ASTRA-owned state/history files as deliverables."
+        }
+        return "ASTRA owns state/history files in this folder, including current_state.json, current_state.md, session_history.md, diagnostics/, and outputs/turn_*.md. Read them for context when needed, but do not create, edit, overwrite, or use them as deliverables."
+    }
+
+    private static func providerStateReadDirective(for task: AgentTask) -> String {
+        guard task.resolvedRuntimeID == .openCodeCLI else { return "" }
+        return "For OpenCode, use the inline Context Capsule, Context Source Index, and transcript in this prompt before asking for any task-state file access. Do not request external_directory approval just to inspect ASTRA state/history files."
     }
 
     private static func standaloneArtifactDirective(
@@ -811,10 +824,15 @@ enum AgentPromptBuilder {
     static func buildFreshFollowUpPromptAssembly(
         message: String,
         task: AgentTask,
-        budgetProfile: PromptContextBudgetProfile = .standard
+        budgetProfile: PromptContextBudgetProfile = .standard,
+        ioSnapshot: PromptContextIOSnapshot? = nil
     ) -> PromptAssemblyManifest {
         assemblePrompt(
-            buildFreshFollowUpPromptSections(message: message, task: task),
+            buildFreshFollowUpPromptSections(
+                message: message,
+                task: task,
+                ioSnapshot: ioSnapshot ?? PromptContextIOSnapshotLoader.snapshot(for: task)
+            ),
             mode: .followUp,
             budgetProfile: budgetProfile
         )
@@ -822,72 +840,84 @@ enum AgentPromptBuilder {
 
     private static func buildFreshFollowUpPromptSections(
         message: String,
-        task: AgentTask
+        task: AgentTask,
+        ioSnapshot: PromptContextIOSnapshot
     ) -> [PromptContextSection] {
         buildPromptSections(
-            using: followUpSectionProviders,
+            using: PromptContextSectionProviderRegistry.providerIDs(for: .followUp),
             context: PromptContextSectionProviderContext(
                 mode: .followUp,
                 task: task,
                 followUpMessage: message,
-                capabilityScope: TaskCapabilityResolver(task: task).promptScope(contextText: message)
+                capabilityScope: TaskCapabilityResolver(task: task).promptScope(contextText: message),
+                ioSnapshot: ioSnapshot
             )
         )
     }
 
     static func promptSectionProviderIDs(for mode: PromptAssemblyMode) -> [PromptContextSectionProviderID] {
-        switch mode {
-        case .initialRun:
-            initialRunSectionProviders.map(\.id)
-        case .followUp:
-            followUpSectionProviders.map(\.id)
-        }
+        PromptContextSectionProviderRegistry.providerIDs(for: mode)
     }
 
-    private static let initialRunSectionProviders: [any PromptContextSectionProvider] = [
-        AgentTeamSectionProvider(),
-        CurrentTaskSectionProvider(),
-        ThreadStateSectionProvider(),
-        WorkspaceInstructionsSectionProvider(),
-        WorkspaceMemoriesSectionProvider(),
-        RecentTasksSectionProvider(),
-        WorkspaceEnvironmentSectionProvider(),
-        TaskOutputFolderSectionProvider(),
-        InitialTaskDetailsSectionProvider(),
-        CapabilitySectionProvider(),
-        BrowserSectionProvider(),
-        DocumentReaderSectionProvider(),
-        AstraRunProtocolSectionProvider(),
-        CurrentTaskReminderSectionProvider()
-    ]
-
-    private static let followUpSectionProviders: [any PromptContextSectionProvider] = [
-        FollowUpIntroSectionProvider(),
-        ThreadStateSectionProvider(),
-        ContextSourceIndexSectionProvider(),
-        NativeContinuationSectionProvider(),
-        ConversationHistorySectionProvider(),
-        ChangedFilesSectionProvider(),
-        TaskOutputFolderSectionProvider(),
-        FollowUpContextSectionProvider(),
-        CapabilitySectionProvider(),
-        BrowserSectionProvider(),
-        WorkspaceMemoriesSectionProvider(),
-        AstraRunProtocolSectionProvider(),
-        HistoryLookupRuleSectionProvider(),
-        FollowUpRequestSectionProvider()
-    ]
-
     private static func buildPromptSections(
-        using providers: [any PromptContextSectionProvider],
+        using providerIDs: [PromptContextSectionProviderID],
         context: PromptContextSectionProviderContext
     ) -> [PromptContextSection] {
         var sections: [PromptContextSection] = []
         var state = PromptContextSectionProviderState()
-        for provider in providers {
-            provider.appendSections(for: context, state: &state, to: &sections)
+        for providerID in providerIDs {
+            sectionProvider(for: providerID).appendSections(for: context, state: &state, to: &sections)
         }
         return sections
+    }
+
+    private static func sectionProvider(for id: PromptContextSectionProviderID) -> any PromptContextSectionProvider {
+        switch id {
+        case .agentTeam:
+            AgentTeamSectionProvider()
+        case .currentTask:
+            CurrentTaskSectionProvider()
+        case .followUpIntro:
+            FollowUpIntroSectionProvider()
+        case .threadState:
+            ThreadStateSectionProvider()
+        case .contextSourceIndex:
+            ContextSourceIndexSectionProvider()
+        case .nativeContinuation:
+            NativeContinuationSectionProvider()
+        case .conversationHistory:
+            ConversationHistorySectionProvider()
+        case .changedFiles:
+            ChangedFilesSectionProvider()
+        case .workspaceInstructions:
+            WorkspaceInstructionsSectionProvider()
+        case .memories:
+            WorkspaceMemoriesSectionProvider()
+        case .recentTasks:
+            RecentTasksSectionProvider()
+        case .workspaceEnvironment:
+            WorkspaceEnvironmentSectionProvider()
+        case .taskOutputFolder:
+            TaskOutputFolderSectionProvider()
+        case .taskDetails:
+            InitialTaskDetailsSectionProvider()
+        case .followUpContext:
+            FollowUpContextSectionProvider()
+        case .capabilities:
+            CapabilitySectionProvider()
+        case .browser:
+            BrowserSectionProvider()
+        case .documentReader:
+            DocumentReaderSectionProvider()
+        case .astraRunProtocol:
+            AstraRunProtocolSectionProvider()
+        case .historyLookupRule:
+            HistoryLookupRuleSectionProvider()
+        case .followUpRequest:
+            FollowUpRequestSectionProvider()
+        case .currentTaskReminder:
+            CurrentTaskReminderSectionProvider()
+        }
     }
 
     private struct AgentTeamSectionProvider: PromptContextSectionProvider {
@@ -1007,7 +1037,7 @@ enum AgentPromptBuilder {
             let task = context.task
             let folder = TaskWorkspaceAccess(task: task).taskFolder
             if !folder.isEmpty {
-                if let transcript = buildRecentConversationTranscriptWithSources(for: task) {
+                if let transcript = context.ioSnapshot.recentConversationTranscript {
                     appendSection(
                         "Recent conversation transcript (exact recent turns from this task):\n\(transcript.text)",
                         kind: .recentTranscript,
@@ -1015,17 +1045,13 @@ enum AgentPromptBuilder {
                         sourcePointers: transcript.sourcePointers
                     )
                     state.includedExactSessionTranscript = true
-                } else {
-                    let historyPath = SessionHistoryManager.historyPath(taskFolder: folder)
-                    if let history = try? String(contentsOfFile: historyPath, encoding: .utf8) {
-                        let trimmed = recentSessionHistorySummary(from: history)
-                        appendSection(
-                            "Session History (prior turns):\n\(trimmed)",
-                            kind: .recentTranscript,
-                            to: &sections,
-                            sourcePointers: [sourcePointer(label: "session history", target: historyPath)]
-                        )
-                    }
+                } else if let history = context.ioSnapshot.sessionHistorySummary {
+                    appendSection(
+                        "Session History (prior turns):\n\(history.text)",
+                        kind: .recentTranscript,
+                        to: &sections,
+                        sourcePointers: history.sourcePointers
+                    )
                 }
             }
 
@@ -1322,10 +1348,18 @@ enum AgentPromptBuilder {
             state _: inout PromptContextSectionProviderState,
             to sections: inout [PromptContextSection]
         ) {
-            appendSection("""
-            History Lookup Rule:
-            If this follow-up asks about prior decisions, previous attempts, old failures, changed files, "what we decided", "what happened before", or exact earlier wording, read the referenced current state, session history, or turn output files before answering.
-            """, kind: .threadState, to: &sections, sourcePointers: taskStateSourcePointers(context.task))
+            if context.task.resolvedRuntimeID == .openCodeCLI {
+                appendSection("""
+                History Lookup Rule:
+                Use the thread state already included in this prompt before answering questions about prior decisions, previous attempts, old failures, changed files, "what we decided", "what happened before", or exact earlier wording.
+                If exact raw wording is required but task-state files are outside OpenCode's working directory, answer from the inline Context Capsule, Context Source Index, and transcript instead of requesting external_directory approval.
+                """, kind: .threadState, to: &sections, sourcePointers: taskStateSourcePointers(context.task))
+            } else {
+                appendSection("""
+                History Lookup Rule:
+                If this follow-up asks about prior decisions, previous attempts, old failures, changed files, "what we decided", "what happened before", or exact earlier wording, read the referenced current state, session history, or turn output files before answering.
+                """, kind: .threadState, to: &sections, sourcePointers: taskStateSourcePointers(context.task))
+            }
         }
     }
 
@@ -1383,77 +1417,12 @@ enum AgentPromptBuilder {
     }
 
     static func buildRecentConversationTranscript(for task: AgentTask) -> String? {
-        buildRecentConversationTranscriptWithSources(for: task)?.text
-    }
-
-    private static func buildRecentConversationTranscriptWithSources(for task: AgentTask) -> PromptContextText? {
-        let folder = TaskWorkspaceAccess(task: task).taskFolder
-        guard !folder.isEmpty else { return nil }
-        return recentSessionOutputTranscript(taskFolder: folder)
+        PromptContextIOSnapshotLoader.recentConversationTranscript(for: task)
     }
 
     private enum TextBound {
         case prefix
         case suffix
-    }
-
-    private static func recentSessionOutputTranscript(taskFolder: String) -> PromptContextText? {
-        let turnFiles = outputTurnFilePaths(taskFolder: taskFolder)
-            .suffix(recentSessionOutputFileLimit)
-
-        guard !turnFiles.isEmpty else { return nil }
-
-        let transcriptSections = turnFiles.enumerated().compactMap { offset, path -> String? in
-            guard let text = try? String(contentsOfFile: path, encoding: .utf8),
-                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                return nil
-            }
-            let recentIndex = turnFiles.count - offset
-            let maxCharacters = recentIndex <= recentSessionFullOutputFileLimit
-                ? recentSessionFullOutputMaxCharacters
-                : olderSessionOutputMaxCharacters
-            let excerpt = boundedText(text, maxCharacters: maxCharacters, keeping: .prefix)
-            return "--- \((path as NSString).lastPathComponent) ---\n\(excerpt)"
-        }
-
-        guard !transcriptSections.isEmpty else { return nil }
-        let sourcePointers = turnFiles.map {
-            sourcePointer(label: "turn output", target: $0)
-        } + [sourcePointer(label: "session history", target: SessionHistoryManager.historyPath(taskFolder: taskFolder))]
-        return PromptContextText(
-            text: transcriptSections.joined(separator: "\n\n"),
-            sourcePointers: sourcePointers
-        )
-    }
-
-    private static func outputTurnFilePaths(taskFolder: String) -> [String] {
-        let outputDirectory = (taskFolder as NSString).appendingPathComponent("outputs")
-        guard let urls = try? FileManager.default.contentsOfDirectory(
-            at: URL(fileURLWithPath: outputDirectory),
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else { return [] }
-
-        return urls
-            .filter { url in
-                let name = url.lastPathComponent
-                return name.hasPrefix("turn_") && name.hasSuffix(".md")
-            }
-            .map(\.path)
-            .sorted { ($0 as NSString).lastPathComponent < ($1 as NSString).lastPathComponent }
-    }
-
-    private static func recentSessionHistorySummary(from history: String) -> String {
-        let marker = "\n## Turn "
-        let pieces = history.components(separatedBy: marker)
-        guard pieces.count > 1 else {
-            return boundedText(history, maxCharacters: 4_000, keeping: .suffix)
-        }
-
-        let header = pieces[0]
-        let recentTurns = pieces.dropFirst().suffix(recentSessionOutputFileLimit).map { "## Turn " + $0 }
-        let summary = ([header] + recentTurns).joined(separator: "\n")
-        return boundedText(summary, maxCharacters: 8_000, keeping: .suffix)
     }
 
     private static func followUpContextRuns(for task: AgentTask) -> [TaskRun] {
@@ -1535,7 +1504,11 @@ enum AgentPromptBuilder {
         if !folder.isEmpty {
             let historyPath = SessionHistoryManager.historyPath(taskFolder: folder)
             if FileManager.default.fileExists(atPath: historyPath) {
-                contextParts.append("Session history: \(historyPath)")
+                if task.resolvedRuntimeID == .openCodeCLI {
+                    contextParts.append("Session history is summarized inline in Context Capsule v2 and the recent transcript.")
+                } else {
+                    contextParts.append("Session history: \(historyPath)")
+                }
             }
         }
 
@@ -1563,6 +1536,30 @@ enum AgentPromptBuilder {
 
     private static func contextSourceIndex(for task: AgentTask) -> PromptContextText? {
         let folder = TaskWorkspaceAccess(task: task).taskFolder
+        if task.resolvedRuntimeID == .openCodeCLI {
+            var pointers: [PromptContextSourcePointer] = []
+            if !folder.isEmpty {
+                let stateJSONPath = (folder as NSString).appendingPathComponent(TaskContextStateManager.jsonFileName)
+                let stateMarkdownPath = (folder as NSString).appendingPathComponent(TaskContextStateManager.markdownFileName)
+                let historyPath = SessionHistoryManager.historyPath(taskFolder: folder)
+                pointers.append(sourcePointer(label: "canonical current state JSON", target: stateJSONPath))
+                pointers.append(sourcePointer(label: "current state markdown", target: stateMarkdownPath))
+                if FileManager.default.fileExists(atPath: historyPath) {
+                    pointers.append(sourcePointer(label: "session history", target: historyPath))
+                }
+                for path in PromptContextIOSnapshotLoader.outputTurnFilePaths(taskFolder: folder)
+                    .suffix(contextSourceIndexOutputFileLimit) {
+                    pointers.append(sourcePointer(label: "turn output", target: path))
+                }
+            }
+            return PromptContextText(
+                text: """
+                Context Source Index:
+                ASTRA has already inlined the compact state, recent transcript, and latest output needed for this follow-up. Use those inline sections as the source of truth for OpenCode; do not tool-read ASTRA task-state files unless the user explicitly asks for raw file contents and the path is inside OpenCode's working directory.
+                """,
+                sourcePointers: pointers
+            )
+        }
         var lines = [
             "Context Source Index:",
             "Use this index for just-in-time retrieval. Read exact files/history/artifacts before relying on omitted details, old decisions, failed commands, verification evidence, generated outputs, or exact prior wording."
@@ -1573,6 +1570,7 @@ enum AgentPromptBuilder {
             let stateJSONPath = (folder as NSString).appendingPathComponent(TaskContextStateManager.jsonFileName)
             let stateMarkdownPath = (folder as NSString).appendingPathComponent(TaskContextStateManager.markdownFileName)
             let historyPath = SessionHistoryManager.historyPath(taskFolder: folder)
+            let forkManifestPath = TaskForkManifestService.manifestPath(taskFolder: folder)
 
             lines.append("- Canonical state JSON: \(stateJSONPath)")
             lines.append("- Canonical state Markdown: \(stateMarkdownPath)")
@@ -1584,13 +1582,41 @@ enum AgentPromptBuilder {
                 pointers.append(sourcePointer(label: "session history", target: historyPath))
             }
 
-            let turnOutputs = outputTurnFilePaths(taskFolder: folder)
+            let turnOutputs = PromptContextIOSnapshotLoader.outputTurnFilePaths(taskFolder: folder)
                 .suffix(contextSourceIndexOutputFileLimit)
             if !turnOutputs.isEmpty {
                 lines.append("- Turn outputs:")
                 for path in turnOutputs {
                     lines.append("  - \((path as NSString).lastPathComponent): \(path)")
                     pointers.append(sourcePointer(label: "turn output", target: path))
+                }
+            }
+
+            if let forkManifest = TaskForkManifestService.load(taskFolder: folder) {
+                lines.append("- Fork manifest: \(forkManifestPath)")
+                lines.append("  - Source task: \(forkManifest.sourceTaskID.uuidString)")
+                lines.append("  - Checkpoint run: \(forkManifest.checkpointRunID.uuidString)")
+                if let warning = TaskForkManifestService.sourceAvailabilityWarning(for: forkManifest) {
+                    lines.append("  - Warning: \(warning)")
+                }
+                pointers.append(sourcePointer(label: "fork manifest", target: forkManifestPath))
+                if let historyPath = forkManifest.checkpointSessionHistoryPath {
+                    lines.append("  - Fork-local checkpoint history: \(historyPath)")
+                    pointers.append(sourcePointer(label: "fork checkpoint history", target: historyPath))
+                }
+                if !forkManifest.sourceOutputFiles.isEmpty {
+                    lines.append("  - Source checkpoint outputs:")
+                    for ref in forkManifest.sourceOutputFiles.suffix(contextSourceIndexOutputFileLimit) {
+                        lines.append("    - \((ref.sourcePath as NSString).lastPathComponent): \(ref.localCopyPath ?? ref.sourcePath)")
+                        pointers.append(sourcePointer(label: "source checkpoint output", target: ref.localCopyPath ?? ref.sourcePath))
+                    }
+                }
+                if !forkManifest.sourceArtifacts.isEmpty {
+                    lines.append("  - Source checkpoint artifacts:")
+                    for ref in forkManifest.sourceArtifacts.suffix(contextSourceIndexArtifactLimit) {
+                        lines.append("    - \((ref.sourcePath as NSString).lastPathComponent): \(ref.localCopyPath ?? ref.sourcePath)")
+                        pointers.append(sourcePointer(label: "source checkpoint artifact", target: ref.localCopyPath ?? ref.sourcePath))
+                    }
                 }
             }
 

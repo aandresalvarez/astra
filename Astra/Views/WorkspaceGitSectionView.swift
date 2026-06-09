@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import ASTRAGitContracts
 
 // MARK: - Repository Panel (Git Panel v3)
 //
@@ -46,6 +47,7 @@ struct WorkspaceGitTransientPresentationState: Equatable {
 
 struct WorkspaceGitSectionView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject var viewModel = WorkspaceGitViewModel()
     let workspace: Workspace
     var selectedTask: AgentTask?
@@ -93,6 +95,16 @@ struct WorkspaceGitSectionView: View {
         .onAppear {
             viewModel.setup(for: workspace, selectedTask: selectedTask)
             clearTransientRepositoryPresentation()
+        }
+        .onDisappear {
+            viewModel.pauseRefresh()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                viewModel.resumeRefresh()
+            } else {
+                viewModel.pauseRefresh()
+            }
         }
         .onChange(of: selectedTask?.id) {
             viewModel.setup(for: workspace, selectedTask: selectedTask)
@@ -404,7 +416,7 @@ struct WorkspaceGitSectionView: View {
                     rowTitle("Repository")
                     Text(viewModel.activeSelectionScopeLabel)
                         .font(Stanford.caption(10).weight(.medium))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Stanford.textTertiary)
                         .lineLimit(1)
                 }
 
@@ -418,9 +430,12 @@ struct WorkspaceGitSectionView: View {
                         .truncationMode(.middle)
                     Text(viewModel.selectedRepositorySubtitle)
                         .font(Stanford.caption(10))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Stanford.textTertiary)
                         .lineLimit(1)
-                        .truncationMode(.middle)
+                        // Head-truncate so the meaningful tail (…/repo) always
+                        // survives instead of clipping mid-word ("Addition...ode/astra").
+                        .truncationMode(.head)
+                        .help(viewModel.selectedRepositoryFullPath ?? viewModel.selectedRepositorySubtitle)
                 }
 
                 rowDisclosureChevron
@@ -1598,7 +1613,9 @@ private struct DiffLineRow: View {
     let minimumWidth: CGFloat
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+        // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
+        HStack(alignment: .top, spacing: 8) {
             Text(prefix)
                 .font(Stanford.ui(11, design: .monospaced))
                 .foregroundStyle(prefixColor)

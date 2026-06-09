@@ -1,10 +1,13 @@
 import Foundation
 import SwiftData
+import ASTRACore
 
 struct AgentRuntimeLaunchPreflightResult: Sendable, Equatable {
     enum Status: String, Sendable {
         case taskFolderPrepared
         case taskFolderCreateFailed
+        case runtimeReadinessPassed
+        case runtimeReadinessFailed
         case capabilityRuntimeResourcesPassed
         case capabilityRuntimeResourcesMissing
         case connectorPreflightPassed
@@ -19,9 +22,9 @@ struct AgentRuntimeLaunchPreflightResult: Sendable, Equatable {
 
     var didPass: Bool {
         switch status {
-        case .taskFolderPrepared, .capabilityRuntimeResourcesPassed, .connectorPreflightPassed:
+        case .taskFolderPrepared, .runtimeReadinessPassed, .capabilityRuntimeResourcesPassed, .connectorPreflightPassed:
             return true
-        case .taskFolderCreateFailed, .capabilityRuntimeResourcesMissing, .connectorPreflightFailed:
+        case .taskFolderCreateFailed, .runtimeReadinessFailed, .capabilityRuntimeResourcesMissing, .connectorPreflightFailed:
             return false
         }
     }
@@ -96,7 +99,7 @@ enum AgentRuntimeLaunchPreflight {
         phase: String,
         contextText: String
     ) async -> AgentRuntimeLaunchPreflightResult {
-        let capabilityResult = preflightCapabilitiesBeforeLaunchResult(
+        let capabilityResult = await preflightCapabilitiesBeforeLaunchResultWithPrerequisiteChecks(
             task: task,
             run: run,
             modelContext: modelContext,
@@ -200,12 +203,79 @@ enum AgentRuntimeLaunchPreflight {
         ).didPass
     }
 
+    static func preflightRuntimeReadinessBeforeLaunchResult(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String,
+        report: RuntimeReadinessReport
+    ) -> AgentRuntimeLaunchPreflightResult {
+        let blockedChecks = report.checks.filter { $0.state == .blocked }
+        var fields: [String: String] = [
+            "source": "runtime_readiness_preflight",
+            "phase": phase,
+            "runtime": task.resolvedRuntimeID.rawValue,
+            "readiness_state": report.state.rawValue,
+            "blocked_check_count": String(blockedChecks.count)
+        ]
+
+        guard let blocked = blockedChecks.first else {
+            fields["diagnostic_result"] = AgentRuntimeLaunchPreflightResult.Status.runtimeReadinessPassed.rawValue
+            AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: fields, level: .debug)
+            return AgentRuntimeLaunchPreflightResult(
+                status: .runtimeReadinessPassed,
+                phase: phase,
+                reason: nil,
+                detail: nil,
+                auditFields: fields
+            )
+        }
+
+        fields["diagnostic_result"] = AgentRuntimeLaunchPreflightResult.Status.runtimeReadinessFailed.rawValue
+        fields["blocked_check_id"] = blocked.id
+        fields["blocked_check_title"] = blocked.title
+        let message = runtimeReadinessFailureMessage(blocked)
+        finishPreLaunchFailure(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            reason: "runtime_readiness_failed",
+            payload: message
+        )
+        return AgentRuntimeLaunchPreflightResult(
+            status: .runtimeReadinessFailed,
+            phase: phase,
+            reason: "runtime_readiness_failed",
+            detail: blocked.detail,
+            auditFields: fields
+        )
+    }
+
+    static func preflightRuntimeReadinessBeforeLaunch(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String,
+        configuration: RuntimeReadinessConfiguration,
+        readinessService: RuntimeReadinessService = RuntimeReadinessService()
+    ) async -> Bool {
+        let report = await readinessService.check(configuration: configuration)
+        return preflightRuntimeReadinessBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: phase,
+            report: report
+        ).didPass
+    }
+
     static func preflightCapabilitiesBeforeLaunchResult(
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
         phase: String,
-        contextText: String = ""
+        contextText: String = "",
+        prerequisiteStatuses: [String: HealthStatus] = [:]
     ) -> AgentRuntimeLaunchPreflightResult {
         let policyContext = task.workspace.map {
             CapabilityCatalogPolicyContext.workspaceUser(
@@ -215,6 +285,7 @@ enum AgentRuntimeLaunchPreflight {
         }
         let issues = CapabilityRuntimeIntegrityService.issues(
             for: task,
+            prerequisiteStatuses: prerequisiteStatuses,
             policyContext: policyContext,
             scope: .providerLaunch(contextText: contextText)
         )
@@ -259,6 +330,72 @@ enum AgentRuntimeLaunchPreflight {
         )
     }
 
+    static func preflightCapabilitiesBeforeLaunchResultWithPrerequisiteChecks(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String,
+        contextText: String = "",
+        preflightCache: PreflightCache = PreflightCache()
+    ) async -> AgentRuntimeLaunchPreflightResult {
+        let prerequisiteStatuses = await prerequisiteStatusesBeforeLaunch(
+            task: task,
+            contextText: contextText,
+            preflightCache: preflightCache
+        )
+        return preflightCapabilitiesBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: phase,
+            contextText: contextText,
+            prerequisiteStatuses: prerequisiteStatuses
+        )
+    }
+
+    private static func prerequisiteStatusesBeforeLaunch(
+        task: AgentTask,
+        contextText: String,
+        preflightCache: PreflightCache
+    ) async -> [String: HealthStatus] {
+        let packages = CapabilityRuntimeResourceMatcher.packageDefinitions()
+        let enabledPackageIDs = Set(task.workspace?.enabledCapabilityIDs ?? [])
+        let resolvedScope = TaskCapabilityResolver(task: task).resolvedScope(.providerLaunch(contextText: contextText))
+        let selectedSkillNames = Set(
+            resolvedScope.behaviorSkills.map(\.name)
+                .map(CapabilityRuntimeResourceMatcher.normalizedName)
+        )
+        var statuses: [String: HealthStatus] = [:]
+
+        for package in packages where shouldProbePrerequisites(
+            package,
+            enabledPackageIDs: enabledPackageIDs,
+            selectedSkillNames: selectedSkillNames
+        ) {
+            let packageStatuses = await CapabilityHealthService.prerequisiteStatuses(
+                for: package,
+                cache: preflightCache
+            )
+            statuses.merge(packageStatuses) { _, new in new }
+        }
+
+        return statuses
+    }
+
+    private static func shouldProbePrerequisites(
+        _ package: PluginPackage,
+        enabledPackageIDs: Set<String>,
+        selectedSkillNames: Set<String>
+    ) -> Bool {
+        if enabledPackageIDs.contains(package.id) {
+            return true
+        }
+        let packageSkillNames = Set(
+            package.skills.map { CapabilityRuntimeResourceMatcher.normalizedName($0.name) }
+        )
+        return !packageSkillNames.isDisjoint(with: selectedSkillNames)
+    }
+
     static func preflightCapabilitiesBeforeLaunch(
         task: AgentTask,
         run: TaskRun,
@@ -275,6 +412,15 @@ enum AgentRuntimeLaunchPreflight {
         ).didPass
     }
 
+    private static func runtimeReadinessFailureMessage(_ check: RuntimeReadinessCheck) -> String {
+        let remediation = check.remediation.map { "\n\n\($0)" } ?? ""
+        return """
+        \(check.title) check failed before the agent ran:
+
+        \(check.detail)\(remediation)
+        """
+    }
+
     static func finishPreLaunchFailure(
         task: AgentTask,
         run: TaskRun,
@@ -283,7 +429,7 @@ enum AgentRuntimeLaunchPreflight {
         payload: String
     ) {
         run.status = .failed
-        run.stopReason = reason
+        run.typedStopReason = TaskRunStopReason.custom(reason)
         run.completedAt = Date()
         task.status = .failed
         task.updatedAt = Date()

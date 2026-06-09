@@ -169,6 +169,45 @@ struct TaskDeliverableVerificationServiceTests {
         #expect(TaskCompletionPolicy.decide(deliverableVerification: result).canComplete)
     }
 
+    @Test("deliverable event payload round trips through typed decoder")
+    func deliverableEventPayloadRoundTripsThroughTypedDecoder() throws {
+        let runID = UUID()
+        let result = TaskDeliverableVerificationResult(
+            version: 1,
+            profile: .standaloneWebArtifact,
+            level: .syntaxVerified,
+            status: "passed",
+            canComplete: true,
+            requiresHumanReview: false,
+            summary: "Verified index.html.",
+            checks: [
+                TaskDeliverableCheck(
+                    id: "javascript.syntax",
+                    title: "JavaScript syntax",
+                    status: .passed,
+                    summary: "Syntax passed.",
+                    path: "index.html"
+                )
+            ],
+            evidencePaths: ["index.html"],
+            runID: runID,
+            verifiedAt: Date(timeIntervalSince1970: 1_700)
+        )
+
+        let encoded = TaskDeliverableVerificationService.encode(result)
+        switch TaskDeliverableVerificationService.decodeResult(encoded) {
+        case .success(let decoded):
+            #expect(decoded.profile == .standaloneWebArtifact)
+            #expect(decoded.level == .syntaxVerified)
+            #expect(decoded.status == "passed")
+            #expect(decoded.runID == runID)
+            #expect(decoded.verifiedAt == Date(timeIntervalSince1970: 1_700))
+            #expect(decoded.checks.first?.id == "javascript.syntax")
+        case .failure(let error):
+            Issue.record("Expected deliverable payload to decode, got \(error)")
+        }
+    }
+
     private func makeFixture(goal: String) throws -> (
         root: String,
         container: ModelContainer,

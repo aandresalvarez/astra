@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import ASTRA
+import ASTRAGitContracts
 
 @Suite("Git Authoring Service")
 struct GitAuthoringServiceTests {

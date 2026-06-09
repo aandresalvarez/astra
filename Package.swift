@@ -18,9 +18,19 @@ let package = Package(
         .package(url: "https://github.com/swiftlang/swift-markdown.git", from: "0.8.0")
     ],
     targets: [
+        // Tiny Obj-C shim: lets Swift recover from AppKit calls that raise
+        // NSException (e.g. NSSplitView pane mutations mid-layout-transition).
+        .target(
+            name: "AstraObjCSupport",
+            path: "AstraObjCSupport"
+        ),
         .target(
             name: "ASTRACore",
             path: "ASTRACore"
+        ),
+        .target(
+            name: "ASTRAGitContracts",
+            path: "ASTRAGitContracts"
         ),
         .target(
             name: "MailToolSupport",
@@ -54,13 +64,14 @@ let package = Package(
         .target(
             name: "ASTRA",
             dependencies: [
+                "AstraObjCSupport",
                 "ASTRACore",
+                "ASTRAGitContracts",
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "Markdown", package: "swift-markdown")
             ],
             path: "Astra",
             resources: [
-                .process("Assets.xcassets"),
                 .copy("Resources/AppIcon.icns"),
                 .copy("Resources/AppIconDev.icns"),
                 .copy("Resources/Capabilities"),
@@ -75,7 +86,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ASTRATests",
-            dependencies: ["ASTRA", "ASTRACore"],
+            dependencies: ["ASTRA", "ASTRACore", "ASTRAGitContracts"],
             path: "Tests"
         )
     ]

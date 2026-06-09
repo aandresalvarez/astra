@@ -195,12 +195,16 @@ struct AgentRuntimeLaunchPreflightTests {
         #expect(!FileManager.default.fileExists(atPath: (root as NSString).appendingPathComponent("docs")))
         #expect(!FileManager.default.fileExists(atPath: (taskFolder as NSString).appendingPathComponent("docs")))
         let event = try #require(task.events.first { $0.type == "astra.artifact_preflight" })
-        let data = try #require(event.payload.data(using: .utf8))
-        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        let rejectedPaths = try #require(object["rejectedPaths"] as? [String])
-        let skippedPaths = try #require(object["skippedPaths"] as? [String])
-        #expect(rejectedPaths.contains("../escape/result.md"))
-        #expect(skippedPaths.contains("docs/workspace.md"))
+        switch event.decodePayload(
+            as: TaskArtifactPreflightEventPayload.self,
+            expecting: TaskEventTypes.System.astraArtifactPreflight
+        ) {
+        case .success(let payload):
+            #expect(payload.rejectedPaths.contains("../escape/result.md"))
+            #expect(payload.skippedPaths.contains("docs/workspace.md"))
+        case .failure(let error):
+            Issue.record("Expected typed artifact preflight payload, got \(error)")
+        }
     }
 
     @Test("Prepare task folder failure marks task failed before provider launch")
@@ -251,6 +255,55 @@ struct AgentRuntimeLaunchPreflightTests {
         #expect(run.completedAt != nil)
         #expect(task.unreadAt != nil)
         #expect(task.events.contains { $0.type == "error" && $0.run?.id == run.id && $0.payload == "Connector failed" })
+    }
+
+    @Test("Runtime readiness preflight surfaces provider authentication remediation")
+    func runtimeReadinessPreflightSurfacesAuthRemediation() async throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Provider Auth", primaryPath: NSTemporaryDirectory())
+        let task = AgentTask(
+            title: "Who are you",
+            goal: "who are you?",
+            workspace: workspace,
+            runtime: .openCodeCLI
+        )
+        task.status = .running
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        let blockedReport = RuntimeReadinessReport(checks: [
+            RuntimeReadinessCheck(
+                id: "opencode-account",
+                title: "OpenCode account",
+                detail: "No OpenCode credentials are configured.",
+                state: .blocked,
+                remediation: "Run `opencode auth login`, then retry."
+            )
+        ])
+
+        let result = AgentRuntimeLaunchPreflight.preflightRuntimeReadinessBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "run",
+            report: blockedReport
+        )
+
+        #expect(!result.didPass)
+        #expect(result.status == .runtimeReadinessFailed)
+        #expect(result.reason == "runtime_readiness_failed")
+        #expect(task.status == .failed)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "runtime_readiness_failed")
+        #expect(task.events.contains {
+            $0.type == "error" &&
+                $0.run?.id == run.id &&
+                $0.payload.contains("OpenCode account check failed before the agent ran") &&
+                $0.payload.contains("No OpenCode credentials are configured.") &&
+                $0.payload.contains("opencode auth login")
+        })
     }
 
     @Test("Capability preflight blocks selected package skill without required connector")
@@ -583,6 +636,16 @@ struct AgentRuntimeStreamDiagnosticsTests {
         let fields = AgentRuntimeStreamDiagnostics.unknownEventShapeFields(raw: "not-json")
 
         #expect(fields["raw_length"] == "8")
+        #expect(fields["decode_error"] == "data_corrupted")
+        #expect(fields["top_level_keys"] == nil)
+    }
+
+    @Test("Unknown event shape fields report malformed top-level payload")
+    func unknownEventShapeFieldsReportMalformedTopLevelPayload() {
+        let fields = AgentRuntimeStreamDiagnostics.unknownEventShapeFields(raw: #"["event"]"#)
+
+        #expect(fields["raw_length"] == "9")
+        #expect(fields["decode_error"] == "type_mismatch")
         #expect(fields["top_level_keys"] == nil)
     }
 }

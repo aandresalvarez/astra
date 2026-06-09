@@ -5,14 +5,7 @@ import ASTRACore
 struct NewTaskView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
-
-    @AppStorage("defaultModel") private var defaultModel = TaskExecutionDefaults.model
-    @AppStorage("defaultRuntimeID") private var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
-    @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
-    @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
-    @AppStorage(AppStorageKeys.runtimeModelCacheRevision) private var runtimeModelCacheRevision = 0
-    @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultBudget = TaskExecutionDefaults.tokenBudget
-    @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var defaultAgentPolicyLevelRaw = AgentPolicyLevel.review.rawValue
+    @EnvironmentObject private var appSettings: AppSettingsSnapshotStore
     var workspace: Workspace?
 
     @State private var title = ""
@@ -200,13 +193,7 @@ struct NewTaskView: View {
                 globalDefaultRaw: settings.defaultPolicyLevelRaw
             ).userFacingLevel.rawValue
         }
-        .onChange(of: claudeAvailableModels) {
-            alignModelWithRuntimeCache()
-        }
-        .onChange(of: copilotAvailableModels) {
-            alignModelWithRuntimeCache()
-        }
-        .onChange(of: runtimeModelCacheRevision) {
+        .onChange(of: appSettings.runtimeSettings.modelCacheSignature) {
             alignModelWithRuntimeCache()
         }
     }
@@ -223,17 +210,7 @@ struct NewTaskView: View {
     }
 
     private var runtimeSettingsSnapshot: RuntimeSettingsSnapshot {
-        RuntimeSettingsSnapshotStore.runtimeSnapshot(
-            defaultRuntimeID: defaultRuntimeID,
-            defaultModel: defaultModel,
-            defaultBudget: defaultBudget,
-            skipPermissions: false,
-            defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
-            cachedClaudeModelsJSON: claudeAvailableModels,
-            cachedCopilotModelsJSON: copilotAvailableModels,
-            runtimeModelCacheRevision: runtimeModelCacheRevision,
-            providerSnapshot: RuntimeSettingsSnapshotStore.providerSnapshot()
-        )
+        appSettings.runtimeSettings
     }
 
     private func alignModelWithRuntimeCache() {

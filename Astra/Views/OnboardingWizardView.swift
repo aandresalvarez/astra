@@ -347,10 +347,10 @@ struct OnboardingWizardView: View {
 
     @Environment(\.preflightCache) private var preflightCache
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @AppStorage("defaultRuntimeID") private var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
-    @AppStorage("claudePath") private var claudePath = ""
-    @AppStorage("copilotPath") private var copilotPath = ""
-    @AppStorage("workspacesRoot") private var workspacesRoot = ""
+    @AppStorage(AppStorageKeys.defaultRuntimeID) private var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
+    @AppStorage(AppStorageKeys.claudePath) private var claudePath = ""
+    @AppStorage(AppStorageKeys.copilotPath) private var copilotPath = ""
+    @AppStorage(AppStorageKeys.workspacesRoot) private var workspacesRoot = ""
     @AppStorage(AppStorageKeys.onboardingEnabledCapabilityIDs) private var onboardingEnabledCapabilityIDsRaw = ""
     @AppStorage(AppStorageKeys.claudeProvider) private var claudeProviderRaw = ClaudeProvider.anthropic.rawValue
     @AppStorage(AppStorageKeys.claudeVertexProjectID) private var claudeVertexProjectID = ""

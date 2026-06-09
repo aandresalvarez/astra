@@ -223,7 +223,10 @@ struct AntigravityCLIRuntimeTests {
         #expect(review.generatedConfigPreview == "--sandbox")
         #expect(review.usesBroadProviderPermissions == false)
         #expect(review.diagnostics.contains { $0.id == "antigravity.fine-grained-provider-native-gap" })
-        #expect(adapter.providerGrantStrings(for: [.tool(name: "Write")]).isEmpty)
+        #expect(adapter.providerGrantStrings(for: [.tool(name: "Write")]) == ["Write"])
+        #expect(adapter.providerGrantStrings(for: [.shellCommand(executable: "gh", pattern: "pr list *")]) == [
+            "shell(gh:pr list *)"
+        ])
 
         let autonomous = adapter.render(policy: .preset(.autonomous), context: context)
         #expect(autonomous.cliArgumentsSummary == ["--dangerously-skip-permissions"])

@@ -83,7 +83,13 @@ enum TaskGeneratedFiles {
         if rel == "diagnostics" || rel.hasPrefix("diagnostics/") {
             return false
         }
+        if rel == "fork_sources/history" || rel.hasPrefix("fork_sources/history/") {
+            return false
+        }
         if name == "current_state.json" || name == "current_state.md" {
+            return false
+        }
+        if name == TaskForkManifest.fileName {
             return false
         }
         if name.hasPrefix("turn_") && name.hasSuffix(".md") {
@@ -192,7 +198,7 @@ enum TaskGeneratedFiles {
         return nil
     }
 
-    static func shouldAutoLoadHTMLPreview(currentBrowserURL: String, targetPath: String) -> Bool {
+    static func shouldLoadGeneratedHTMLOnUserOpen(currentBrowserURL: String, targetPath: String) -> Bool {
         let trimmed = currentBrowserURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
               trimmed.lowercased() != "about:blank" else {

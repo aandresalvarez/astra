@@ -203,6 +203,12 @@ struct TaskContextState: Codable, Sendable, Equatable {
     var correctiveWork: [CorrectiveWorkSummary]?
     var sourcePointers: [SourcePointer]
     var nextLikelyAction: String?
+    /// Set when an unreconciled plan goal diverges from the task goal; surfaced in
+    /// the capsule so the drift cannot silently re-anchor the objective.
+    var objectiveDivergenceNote: String?
+    /// Recent follow-up user messages, kept close to as-typed, so mid-conversation
+    /// instructions survive past the transcript window (first message excluded).
+    var standingInstructions: [ContextFact]?
     var turns: [Turn]
     var updatedAt: String
 }
@@ -221,6 +227,7 @@ struct TaskContextStateLoadResult: Equatable, Sendable {
     var path: String
     var state: TaskContextState?
     var errorDescription: String?
+    var decodeDiagnostic: StructuredJSONDecodeDiagnostic?
 
     var didLoad: Bool {
         state != nil
@@ -254,6 +261,8 @@ enum TaskContextStateManager {
     private static let maxTurns = 12
     private static let maxListItems = 20
     private static let maxPromptTurns = 4
+    private static let maxStandingInstructions = 8
+    private static let standingInstructionCharacterLimit = 280
     private static let promptBlockCharacterLimit = 6_000
 
     private struct LegacyTaskContextState: Decodable {
@@ -295,8 +304,11 @@ enum TaskContextStateManager {
     @MainActor
     static func refresh(task: AgentTask) {
         guard let folder = ensureTaskFolder(for: task) else { return }
-        var state = load(taskFolder: folder) ?? initialState(for: task)
+        let existing = load(taskFolder: folder)
+        var state = existing ?? initialState(for: task)
         updateDerivedFields(&state, task: task, latestRun: latestRun(for: task))
+        // No-op refresh (common on task open) — skip the encode + two file writes. See perf audit.
+        guard existing != state else { return }
         state.updatedAt = timestamp(Date())
         save(state, taskFolder: folder, taskID: task.id)
     }
@@ -314,7 +326,8 @@ enum TaskContextStateManager {
                 status: .missingFile,
                 path: url.path,
                 state: nil,
-                errorDescription: nil
+                errorDescription: nil,
+                decodeDiagnostic: nil
             )
         }
 
@@ -326,54 +339,61 @@ enum TaskContextStateManager {
                 status: .unreadableFile,
                 path: url.path,
                 state: nil,
-                errorDescription: error.localizedDescription
+                errorDescription: error.localizedDescription,
+                decodeDiagnostic: nil
             )
         }
 
-        let decoder = JSONDecoder()
-        do {
-            let decoded = try decoder.decode(TaskContextState.self, from: data)
+        let currentResult = StructuredJSONDecoder.decode(TaskContextState.self, from: data)
+        if let decoded = currentResult.value {
             if decoded.schemaVersion == schemaVersion {
                 return TaskContextStateLoadResult(
                     status: .loadedCurrent,
                     path: url.path,
                     state: decoded,
-                    errorDescription: nil
+                    errorDescription: nil,
+                    decodeDiagnostic: currentResult.diagnostic
                 )
             }
             return TaskContextStateLoadResult(
                 status: .unsupportedSchema,
                 path: url.path,
                 state: nil,
-                errorDescription: "Unsupported Context Capsule schema version \(decoded.schemaVersion)."
+                errorDescription: "Unsupported Context Capsule schema version \(decoded.schemaVersion).",
+                decodeDiagnostic: currentResult.diagnostic
             )
-        } catch {
-            let currentDecodeError = error.localizedDescription
-            do {
-                let legacy = try decoder.decode(LegacyTaskContextState.self, from: data)
-                guard legacy.schemaVersion == 1 else {
-                    return TaskContextStateLoadResult(
-                        status: .unsupportedSchema,
-                        path: url.path,
-                        state: nil,
-                        errorDescription: "Unsupported legacy Context Capsule schema version \(legacy.schemaVersion)."
-                    )
-                }
+        }
+
+        let legacyResult = StructuredJSONDecoder.decode(LegacyTaskContextState.self, from: data)
+        if let legacy = legacyResult.value {
+            guard legacy.schemaVersion == 1 else {
                 return TaskContextStateLoadResult(
-                    status: .migratedLegacy,
-                    path: url.path,
-                    state: migrateLegacyState(legacy, taskFolder: taskFolder),
-                    errorDescription: nil
-                )
-            } catch {
-                return TaskContextStateLoadResult(
-                    status: .decodeFailed,
+                    status: .unsupportedSchema,
                     path: url.path,
                     state: nil,
-                    errorDescription: "current: \(currentDecodeError); legacy: \(error.localizedDescription)"
+                    errorDescription: "Unsupported legacy Context Capsule schema version \(legacy.schemaVersion).",
+                    decodeDiagnostic: legacyResult.diagnostic
                 )
             }
+            return TaskContextStateLoadResult(
+                status: .migratedLegacy,
+                path: url.path,
+                state: migrateLegacyState(legacy, taskFolder: taskFolder),
+                errorDescription: nil,
+                decodeDiagnostic: legacyResult.diagnostic
+            )
         }
+
+        return TaskContextStateLoadResult(
+            status: .decodeFailed,
+            path: url.path,
+            state: nil,
+            errorDescription: [
+                currentResult.diagnostic.errorDescription.map { "current: \($0)" },
+                legacyResult.diagnostic.errorDescription.map { "legacy: \($0)" }
+            ].compactMap { $0 }.joined(separator: "; "),
+            decodeDiagnostic: currentResult.diagnostic
+        )
     }
 
     static func load(taskFolder: String) -> TaskContextState? {
@@ -386,12 +406,19 @@ enum TaskContextStateManager {
 
         var lines: [String] = []
         lines.append("Context Capsule v2:")
-        lines.append("- Treat this capsule as the authoritative compact task state. Use transcript, history, and output files as supporting evidence when exact prior wording or details are needed.")
+        if task.resolvedRuntimeID == .openCodeCLI {
+            lines.append("- Treat this capsule as the authoritative compact task state. Use the inline transcript and summaries in this prompt as supporting evidence before requesting task-state file access.")
+        } else {
+            lines.append("- Treat this capsule as the authoritative compact task state. Use transcript, history, and output files as supporting evidence when exact prior wording or details are needed.")
+        }
         lines.append("Thread Intent:")
         lines.append("- Mode: \(state.mode.rawValue)")
         if let checkpoint = checkpointSummary(for: task) {
             lines.append("Checkpoint:")
             lines.append("- \(boundedInline(checkpoint, maxCharacters: 420))")
+            if let warning = TaskForkManifestService.sourceAvailabilityWarning(for: task) {
+                lines.append("- \(boundedInline(warning, maxCharacters: 240))")
+            }
         }
         if !state.objective.startingRequest.isEmpty {
             lines.append("- Starting request: \(boundedInline(state.objective.startingRequest, maxCharacters: 240))")
@@ -402,8 +429,17 @@ enum TaskContextStateManager {
         if let approvedGoal = state.objective.approvedGoal, !approvedGoal.isEmpty {
             lines.append("- Approved goal: \(boundedInline(approvedGoal, maxCharacters: 320))")
         }
+        if let divergence = state.objectiveDivergenceNote, !divergence.isEmpty {
+            lines.append("- Objective reconciliation: \(boundedInline(divergence, maxCharacters: 320))")
+        }
         appendFactList("Constraints", state.constraints, to: &lines, limit: 6)
         appendFactList("Acceptance criteria", state.acceptanceCriteria, to: &lines, limit: 6)
+        appendFactList(
+            "Standing user instructions (recent follow-up directives; treat as binding unless superseded)",
+            state.standingInstructions ?? [],
+            to: &lines,
+            limit: maxStandingInstructions
+        )
         appendValidationContract(state.validationContract, to: &lines, limit: 8)
         if let testCommand = state.testCommand, !testCommand.isEmpty {
             lines.append("- Test command: \(boundedInline(testCommand, maxCharacters: 320))")
@@ -442,8 +478,13 @@ enum TaskContextStateManager {
             }
         }
 
-        lines.append("- Canonical state file: \(folder)/\(jsonFileName)")
-        lines.append("- Read \(folder)/\(markdownFileName) or referenced turn outputs if this follow-up depends on older decisions, failures, changed files, or exact prior wording.")
+        if task.resolvedRuntimeID == .openCodeCLI {
+            lines.append("- Canonical ASTRA state is already inlined in this capsule for OpenCode.")
+            lines.append("- Use this inline capsule and recent transcript unless the user explicitly asks for raw file contents.")
+        } else {
+            lines.append("- Canonical state file: \(folder)/\(jsonFileName)")
+            lines.append("- Read \(folder)/\(markdownFileName) or referenced turn outputs if this follow-up depends on older decisions, failures, changed files, or exact prior wording.")
+        }
 
         let block = lines.joined(separator: "\n")
         return block.count > promptBlockCharacterLimit
@@ -490,8 +531,12 @@ enum TaskContextStateManager {
         if let approvedGoal = state.approvedGoal, !approvedGoal.isEmpty {
             parts.append("- Approved goal: \(approvedGoal)")
         }
+        if let divergence = state.objectiveDivergenceNote, !divergence.isEmpty {
+            parts.append("- Objective reconciliation: \(divergence)")
+        }
         appendMarkdownFacts("Constraints", state.constraints, to: &parts)
         appendMarkdownFacts("Acceptance Criteria", state.acceptanceCriteria, to: &parts)
+        appendMarkdownFacts("Standing User Instructions", state.standingInstructions ?? [], to: &parts)
         appendMarkdownValidationContract(state.validationContract, to: &parts)
         if let testCommand = state.testCommand, !testCommand.isEmpty {
             parts.append("")
@@ -573,6 +618,8 @@ enum TaskContextStateManager {
             correctiveWork: nil,
             sourcePointers: [sourcePointer(kind: "task", id: task.id.uuidString, summary: "Task context")],
             nextLikelyAction: nil,
+            objectiveDivergenceNote: nil,
+            standingInstructions: nil,
             turns: [],
             updatedAt: timestamp(Date())
         )
@@ -589,12 +636,21 @@ enum TaskContextStateManager {
             state.startingRequest,
             task.goal
         )
+        // Only adopt the plan goal as the objective when reconciled (plan approved/
+        // executing/completed, or goals match); otherwise keep task.goal and note it.
+        let trimmedPlanGoal = (planState.plan?.goal ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let planGoalReconciled = trimmedPlanGoal.isEmpty
+            || [.approved, .executing, .completed].contains(planState.lifecycleStatus)
+            || trimmedPlanGoal.caseInsensitiveCompare(task.goal.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame
         state.currentObjective = firstNonEmpty(
-            planState.plan?.goal,
+            planGoalReconciled ? planState.plan?.goal : nil,
             state.approvedGoal,
             task.goal,
             state.startingRequest
         )
+        state.objectiveDivergenceNote = (!trimmedPlanGoal.isEmpty && !planGoalReconciled)
+            ? "Draft plan goal differs from the task goal; using the task goal as the objective until reconciled. Draft plan goal: \(boundedInline(trimmedPlanGoal, maxCharacters: 240))"
+            : nil
 
         if let plan = planState.plan {
             switch planState.lifecycleStatus {
@@ -617,15 +673,9 @@ enum TaskContextStateManager {
             let detail = step.detail.trimmingCharacters(in: .whitespacesAndNewlines)
             return detail.isEmpty ? "Blocked step: \(step.title)" : "Blocked step: \(step.title) - \(detail)"
         } ?? []
-        let eventBlockers = task.events
-            .filter { ["error", "permission.denied", "permission.approval.requested", "budget.exceeded"].contains($0.type) }
-            .sorted { $0.timestamp > $1.timestamp }
-            .prefix(6)
-            .map { boundedInline($0.payload, maxCharacters: 220) }
-        state.blockers = dedupeKeepingOrder(planBlockers + Array(eventBlockers) + state.blockers, limit: maxListItems)
-        if state.mode != .blocked {
-            state.blockers = state.blockers.filter { !$0.isEmpty }.prefixArray(maxListItems)
-        }
+        let eventBlockers = activeEventBlockers(task: task, latestRun: latestRun, mode: state.mode)
+        let eventBlockerMessages = eventBlockers.map { boundedInline($0.payload, maxCharacters: 220) }
+        state.blockers = dedupeKeepingOrder(planBlockers + eventBlockerMessages, limit: maxListItems)
 
         let changedFiles = task.runs
             .sorted { $0.startedAt < $1.startedAt }
@@ -642,9 +692,11 @@ enum TaskContextStateManager {
         state.acceptanceCriteria = task.acceptanceCriteria.map {
             contextFact($0, sourcePointers: [sourcePointer(kind: "task", id: task.id.uuidString, summary: "Task acceptance criterion")])
         }
+        let standing = standingUserInstructions(for: task)
+        state.standingInstructions = standing.isEmpty ? nil : standing
         state.testCommand = normalizedTestCommand(task)
         state.decisionFacts = decisionFacts(for: state, task: task, planState: planState)
-        state.blockerFacts = blockerFacts(for: task, planBlockers: planBlockers)
+        state.blockerFacts = blockerFacts(for: task, planBlockers: planBlockers, eventBlockers: eventBlockers)
         state.changedFiles = changedFileReferences(for: task, discoveredFiles: discoveredTaskOutputFiles)
         state.artifacts = artifactReferences(for: task, discoveredFiles: discoveredTaskOutputFiles)
         state.verification = verificationState(task: task, latestRun: latestRun, artifacts: state.artifacts)
@@ -825,6 +877,8 @@ enum TaskContextStateManager {
             correctiveWork: nil,
             sourcePointers: sourcePointers,
             nextLikelyAction: legacy.nextLikelyAction,
+            objectiveDivergenceNote: nil,
+            standingInstructions: nil,
             turns: legacy.turns,
             updatedAt: legacy.updatedAt
         )
@@ -908,13 +962,13 @@ enum TaskContextStateManager {
     @MainActor
     private static func blockerFacts(
         for task: AgentTask,
-        planBlockers: [String]
+        planBlockers: [String],
+        eventBlockers: [TaskEvent]
     ) -> [TaskContextState.ContextFact] {
         var facts = planBlockers.map {
             contextFact($0, sourcePointers: [sourcePointer(kind: "plan", id: nil, summary: "Blocked plan step")])
         }
-        let eventFacts = task.events
-            .filter { ["error", "permission.denied", "permission.approval.requested", "budget.exceeded"].contains($0.type) }
+        let eventFacts = eventBlockers
             .sorted { $0.timestamp > $1.timestamp }
             .prefix(6)
             .map { event in
@@ -925,6 +979,24 @@ enum TaskContextStateManager {
             }
         facts.append(contentsOf: eventFacts)
         return dedupeFacts(facts, limit: maxListItems)
+    }
+
+    @MainActor
+    private static func activeEventBlockers(
+        task: AgentTask,
+        latestRun: TaskRun?,
+        mode: TaskThreadMode
+    ) -> [TaskEvent] {
+        guard mode == .blocked else { return [] }
+        let blockingTypes = ["error", "permission.denied", "permission.approval.requested", "budget.exceeded"]
+        let events = task.events
+            .filter { blockingTypes.contains($0.type) }
+            .sorted { $0.timestamp > $1.timestamp }
+        guard let latestRun else {
+            return Array(events.prefix(6))
+        }
+        let latestRunEvents = events.filter { $0.run?.id == latestRun.id }
+        return Array((latestRunEvents.isEmpty ? events : latestRunEvents).prefix(6))
     }
 
     @MainActor
@@ -1428,6 +1500,7 @@ enum TaskContextStateManager {
         if let checkpointPointer = checkpointSourcePointer(for: task) {
             pointers.append(checkpointPointer)
         }
+        pointers += TaskForkManifestService.sourcePointers(for: task)
         pointers += state.verification.evidence
         if let validationContract = state.validationContract {
             pointers += validationContract.sourcePointers
@@ -1488,6 +1561,53 @@ enum TaskContextStateManager {
             .sorted { $0.timestamp > $1.timestamp }
             .prefix(6)
             .flatMap { questionSentences(in: $0.payload) }
+    }
+
+    /// Recent follow-up user messages, kept close to as-typed (whitespace-collapsed,
+    /// length-capped), so a mid-conversation constraint survives past the transcript
+    /// window. Excludes the first message (pinned as startingRequest) and bare
+    /// acknowledgements; everything else is retained for the model to weigh.
+    @MainActor
+    private static func standingUserInstructions(for task: AgentTask) -> [TaskContextState.ContextFact] {
+        let userMessages = task.events
+            .filter { $0.type == "user.message" || $0.type == TaskPlanConversationEventTypes.userMessage }
+            .sorted { $0.timestamp < $1.timestamp }
+        guard userMessages.count > 1 else { return [] }
+
+        var facts: [TaskContextState.ContextFact] = []
+        var seen = Set<String>()
+        // Most recent first so the newest follow-ups win the bounded slots.
+        for event in userMessages.dropFirst().reversed() {
+            // Bound once (built directly, not via contextFact, to avoid double-bounding).
+            let text = boundedInline(event.payload, maxCharacters: standingInstructionCharacterLimit)
+            guard !text.isEmpty, !isLowSignalAcknowledgement(text) else { continue }
+            guard seen.insert(text.lowercased()).inserted else { continue }
+            facts.append(TaskContextState.ContextFact(
+                text: text,
+                sourcePointers: [eventSource(event, summary: "User follow-up instruction")],
+                confidence: "follow_up"
+            ))
+            if facts.count >= maxStandingInstructions { break }
+        }
+        return facts.reversed()
+    }
+
+    /// True only when *every* word is a filler/ack token (e.g. "ok", "ok proceed").
+    /// Any non-filler word keeps the message. Bare yes/no are deliberately NOT filler
+    /// — a lone "no" is often a real course-correction this feature must not drop.
+    private static func isLowSignalAcknowledgement(_ text: String) -> Bool {
+        let tokens = text
+            .lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+        guard !tokens.isEmpty else { return true }
+        let fillerWords: Set<String> = [
+            "ok", "okay", "k", "kk", "thanks", "thank", "you", "ty",
+            "proceed", "continue", "go", "ahead", "do", "it",
+            "sure", "great", "perfect", "nice", "cool", "done", "lgtm", "please",
+            "now", "then", "sounds", "good", "sg", "ack", "got", "fine"
+        ]
+        return tokens.allSatisfy { fillerWords.contains($0) }
     }
 
     private static func inferredMode(

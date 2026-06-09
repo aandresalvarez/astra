@@ -425,9 +425,88 @@ struct AgentTaskPropertyTests {
         #expect(presentation.summary == "Not automatically verified")
         #expect(hiddenPresentation == nil)
     }
+
+    @Test("verification loader uses injected reader away from the main actor")
+    @MainActor
+    func verificationLoaderUsesInjectedReaderAwayFromMainActor() async throws {
+        let probe = VerificationReaderProbe(verification: TaskContextState.Verification(
+            status: "passed",
+            strategy: "run_tests",
+            command: "swift test",
+            summary: "Verified by injected reader",
+            evidence: [],
+            updatedAt: nil,
+            completionVerified: true,
+            artifactStatus: "none recorded"
+        ))
+        let reader = TaskVerificationStateReader { taskFolder in
+            probe.record(taskFolder: taskFolder, calledOnMainThread: Thread.isMainThread)
+        }
+
+        let presentation = try #require(await TaskVerificationPresentationLoader.presentation(
+            isFinished: true,
+            taskFolder: "/tmp/injected-verification-reader",
+            stateReader: reader
+        ))
+
+        #expect(presentation.title == "Verification passed")
+        #expect(probe.recordedTaskFolders == ["/tmp/injected-verification-reader"])
+        #expect(probe.calledOnMainThread == [false])
+    }
+
+    @Test("verification loader skips IO reader for unfinished or empty requests")
+    func verificationLoaderSkipsIOReaderForUnfinishedOrEmptyRequests() async {
+        let probe = VerificationReaderProbe(verification: nil)
+        let reader = TaskVerificationStateReader { taskFolder in
+            probe.record(taskFolder: taskFolder, calledOnMainThread: Thread.isMainThread)
+        }
+
+        let unfinished = await TaskVerificationPresentationLoader.presentation(
+            isFinished: false,
+            taskFolder: "/tmp/unfinished",
+            stateReader: reader
+        )
+        let emptyFolder = await TaskVerificationPresentationLoader.presentation(
+            isFinished: true,
+            taskFolder: "",
+            stateReader: reader
+        )
+
+        #expect(unfinished == nil)
+        #expect(emptyFolder == nil)
+        #expect(probe.recordedTaskFolders.isEmpty)
+        #expect(probe.calledOnMainThread.isEmpty)
+    }
 }
 
 // MARK: - TaskRun & StoredFileChange
+
+private final class VerificationReaderProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let verification: TaskContextState.Verification?
+    private var taskFolders: [String] = []
+    private var mainThreadCalls: [Bool] = []
+
+    init(verification: TaskContextState.Verification?) {
+        self.verification = verification
+    }
+
+    var recordedTaskFolders: [String] {
+        lock.withLock { taskFolders }
+    }
+
+    var calledOnMainThread: [Bool] {
+        lock.withLock { mainThreadCalls }
+    }
+
+    func record(taskFolder: String, calledOnMainThread: Bool) -> TaskContextState.Verification? {
+        lock.withLock {
+            taskFolders.append(taskFolder)
+            mainThreadCalls.append(calledOnMainThread)
+        }
+        return verification
+    }
+}
 
 @Suite("TaskRun file changes")
 struct TaskRunFileChangeTests {

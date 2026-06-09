@@ -29,6 +29,12 @@ enum Stanford {
     static let readingTextLightHex: UInt = 0x2E2D29
     static let readingTextDarkHex: UInt = 0xE7E1D8
     static let warmCanvasLightHex: UInt = 0xF8F6F2
+    /// Representative dark content surface — the value AppKit's
+    /// `textBackgroundColor` resolves to in dark mode, where panel/empty-state
+    /// text actually sits. Used as the dark-mode contrast reference in tests
+    /// (a real surface, not pure black, which would be misleadingly lenient
+    /// for light-on-dark text).
+    static let warmCanvasDarkHex: UInt = 0x1E1E1E
     static let readingText = Color(
         light: readingTextLightHex,  // warm charcoal for long-form reading
         dark:  readingTextDarkHex    // warm off-white tuned for dark surfaces
@@ -36,6 +42,22 @@ enum Stanford {
 
     // MARK: - Secondary Colors
     static let coolGrey = Color.secondary
+
+    // Tuned low-emphasis text with an AA contrast floor. System `.secondary` /
+    // `.tertiary` go too pale on white in light mode (the repo path subtitle
+    // and "needs setup" descriptions were sub-AA). BOTH tokens back small
+    // (10–12pt) normal-weight text, so BOTH must clear WCAG AA (4.5:1) — there
+    // is no "large text" 3:1 exemption here. They clear 4.5:1 against white and
+    // the warm light canvas, and against the representative dark canvas
+    // (`warmCanvasDarkHex`); `textSecondary` is the higher-emphasis grey,
+    // `textTertiary` the lower. Kept warm to match `readingText`. ThemeTests
+    // pins both at 4.5:1 in both appearances.
+    static let textSecondaryLightHex: UInt = 0x5B5A57  // warm charcoal-grey, ~6:1 on white
+    static let textSecondaryDarkHex: UInt = 0xB7B2A9   // ~7.9:1 on the dark canvas
+    static let textSecondary = Color(light: textSecondaryLightHex, dark: textSecondaryDarkHex)
+    static let textTertiaryLightHex: UInt = 0x6E6B66   // warm grey, ≥4.5:1 on white + warm canvas
+    static let textTertiaryDarkHex: UInt = 0x938E85    // ~5.1:1 on the dark canvas (0x1E1E1E)
+    static let textTertiary = Color(light: textTertiaryLightHex, dark: textTertiaryDarkHex)
     static let paloAltoGreen = Color(
         light: 0x175E54,  // Stanford green (very dark)
         dark:  0x7AD4BC   // mid-green that holds up on dark
@@ -101,7 +123,13 @@ enum Stanford {
     static let diffAdded = paloAltoGreen
     static let diffRemoved = errorRed
     static let tools = plum
-    static let interactive = sky
+    // Canonical interaction accent for the whole app. The scene-level
+    // `.tint(Stanford.interactive)` in ASTRAApp flows this into every
+    // default-tinted control (pills, segmented pickers, focus rings), so
+    // `interactive`, `focusRing`, and `link` deliberately share one hue.
+    // `cardinalRed` is reserved for the brand mark and genuine errors;
+    // `sky` remains available as `statusInfo`.
+    static let interactive = lagunita
     static let scrim = Color.black
     static let focusRing = lagunita
     static let link = lagunita
@@ -354,7 +382,7 @@ struct StanfordButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
     var isPrimary: Bool = true
-    var color: Color = Stanford.lagunita
+    var color: Color = Stanford.interactive
 
     func makeBody(configuration: Configuration) -> some View {
         let shape = RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)

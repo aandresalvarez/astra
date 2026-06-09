@@ -120,6 +120,8 @@ struct AsyncProcessRunnerTests {
             #expect(code != 0)
         case .timedOut:
             break
+        case .cancelled:
+            break
         case .launchFailed(let reason):
             Issue.record("Expected cancellation to terminate /bin/sleep, got launch failure: \(reason)")
         }

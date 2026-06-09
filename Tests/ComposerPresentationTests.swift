@@ -151,4 +151,55 @@ struct ComposerPresentationTests {
         )
         #expect(unrelated == nil)
     }
+
+    @Test("task composer slash options are centralized")
+    func taskComposerSlashOptionsAreCentralized() {
+        #expect(TaskComposerCoordinator.shouldShowSlashMenu(messageText: "/rem"))
+        #expect(!TaskComposerCoordinator.shouldShowSlashMenu(messageText: "/remember this"))
+
+        #expect(TaskComposerCoordinator.visibleSlashOptions(messageText: "/r") == [
+            TaskComposerSlashOption(id: .remember, command: "/remember "),
+            TaskComposerSlashOption(id: .routine, command: "/routine "),
+            TaskComposerSlashOption(id: .recap, command: "/recap")
+        ])
+        #expect(TaskComposerCoordinator.visibleSlashOptions(messageText: "/sch") == [
+            TaskComposerSlashOption(id: .routine, command: "/routine ")
+        ])
+        #expect(TaskComposerSlashOption(id: .recap, command: "/recap").executesImmediately)
+    }
+
+    @Test("task composer send action classifies commands and attachments")
+    func taskComposerSendActionClassifiesCommandsAndAttachments() {
+        #expect(TaskComposerCoordinator.sendAction(messageText: "   ", attachedFiles: []) == .none)
+        #expect(TaskComposerCoordinator.sendAction(messageText: "/remember  prefer concise PRs  ", attachedFiles: []) == .remember("prefer concise PRs"))
+        #expect(TaskComposerCoordinator.sendAction(messageText: "/recap please", attachedFiles: []) == .recap)
+        #expect(TaskComposerCoordinator.sendAction(messageText: "/routine every morning", attachedFiles: []) == .routine(instructions: "every morning"))
+        #expect(TaskComposerCoordinator.sendAction(messageText: "/schedule", attachedFiles: []) == .routine(instructions: nil))
+        #expect(TaskComposerCoordinator.sendAction(messageText: "Review this", attachedFiles: ["/tmp/a.txt", "/tmp/b.png"]) == .message("""
+        Review this
+
+        Attached files:
+        - /tmp/a.txt
+        - /tmp/b.png
+        """))
+    }
+
+    @Test("task composer runtime update normalizes selected runtime model")
+    func taskComposerRuntimeUpdateNormalizesSelectedRuntimeModel() {
+        let cacheJSON = #"{"runtimeID":"copilot_cli","models":["gpt-5.1"],"checkedAt":0,"authority":"authoritative"}"#
+        let update = TaskComposerCoordinator.runtimeUpdate(
+            previousRuntime: AgentRuntimeID.claudeCode.rawValue,
+            selectedRuntime: AgentRuntimeID.copilotCLI.rawValue,
+            currentModel: AgentRuntimeAdapterRegistry.defaultModel(for: .claudeCode),
+            cache: RuntimeModelAvailabilityCache(
+                cachedClaudeModelsJSON: "",
+                cachedCopilotModelsJSON: cacheJSON
+            )
+        )
+
+        #expect(update.previousRuntime == AgentRuntimeID.claudeCode.rawValue)
+        #expect(update.runtime == AgentRuntimeID.copilotCLI.rawValue)
+        #expect(update.resolvedModel == "gpt-5.1")
+        #expect(update.modelChanged)
+    }
 }

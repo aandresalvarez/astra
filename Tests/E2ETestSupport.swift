@@ -66,6 +66,30 @@ enum E2ETestSupport {
                 expectsStructuredToolEvents: false,
                 expectsResultCallback: false,
                 supportsWorkspaceArtifacts: true
+            ),
+            RuntimeCase(
+                runtimeID: .cursorCLI,
+                model: environment["REAL_CURSOR_MODEL"] ?? AgentRuntimeAdapterRegistry.defaultModel(for: .cursorCLI),
+                directoryNameComponent: "cursor",
+                expectsSessionID: true,
+                expectsUsageStats: true,
+                expectsCostUSD: true,
+                expectsTeamEvents: false,
+                expectsStructuredToolEvents: true,
+                expectsResultCallback: true,
+                supportsWorkspaceArtifacts: true
+            ),
+            RuntimeCase(
+                runtimeID: .openCodeCLI,
+                model: environment["REAL_OPENCODE_MODEL"] ?? AgentRuntimeAdapterRegistry.defaultModel(for: .openCodeCLI),
+                directoryNameComponent: "opencode",
+                expectsSessionID: true,
+                expectsUsageStats: false,
+                expectsCostUSD: false,
+                expectsTeamEvents: false,
+                expectsStructuredToolEvents: true,
+                expectsResultCallback: true,
+                supportsWorkspaceArtifacts: true
             )
         ]
         let requested = (environment["RUN_E2E_RUNTIME"] ?? "")
@@ -182,6 +206,18 @@ enum E2ETestSupport {
             }
             worker.setExecutablePath(resolvedPath, for: .localMLX)
             worker.setHomeDirectory(resolvedModelDirectory, for: .localMLX)
+        case .cursorCLI:
+            let path = RuntimePathResolver.detectCursorPath()
+            guard FileManager.default.isExecutableFile(atPath: path) else {
+                throw E2ETestSupportError.missingExecutable("cursor-agent")
+            }
+            worker.setExecutablePath(path, for: .cursorCLI)
+        case .openCodeCLI:
+            let path = RuntimePathResolver.detectOpenCodePath()
+            guard FileManager.default.isExecutableFile(atPath: path) else {
+                throw E2ETestSupportError.missingExecutable("opencode")
+            }
+            worker.setExecutablePath(path, for: .openCodeCLI)
         default:
             throw E2ETestSupportError.missingExecutable(runtimeID.rawValue)
         }
@@ -319,14 +355,16 @@ private actor E2ELiveProviderGate {
 
 @Suite("E2E live provider gate")
 struct E2ELiveProviderGateTests {
-    @Test("Runtime cases include optional Local MLX and support runtime filtering")
-    func runtimeCasesIncludeOptionalLocalMLXAndSupportFiltering() {
+    @Test("Runtime cases include Antigravity, Cursor, OpenCode, optional Local MLX, and support runtime filtering")
+    func runtimeCasesIncludeOptionalLocalMLXCursorOpenCodeAndSupportFiltering() {
         let allCases = E2ETestSupport.runtimeCases(environment: [:])
-        #expect(allCases.map(\.runtimeID) == [.claudeCode, .copilotCLI, .antigravityCLI])
+        #expect(allCases.map(\.runtimeID) == [.claudeCode, .copilotCLI, .antigravityCLI, .cursorCLI, .openCodeCLI])
         #expect(E2ETestSupport.artifactRuntimeCases(environment: [:]).map(\.runtimeID) == [
             .claudeCode,
             .copilotCLI,
-            .antigravityCLI
+            .antigravityCLI,
+            .cursorCLI,
+            .openCodeCLI
         ])
 
         let filteredByID = E2ETestSupport.runtimeCases(environment: [
@@ -350,11 +388,25 @@ struct E2ELiveProviderGateTests {
             "RUN_E2E_RUNTIME": "local_mlx"
         ]).isEmpty)
 
+        let filteredByCursorName = E2ETestSupport.runtimeCases(environment: [
+            "RUN_E2E_RUNTIME": "cursor",
+            "REAL_CURSOR_MODEL": "Cursor Test Model"
+        ])
+        #expect(filteredByCursorName.map(\.runtimeID) == [.cursorCLI])
+        #expect(filteredByCursorName.first?.model == "Cursor Test Model")
+
+        let filteredByOpenCodeName = E2ETestSupport.runtimeCases(environment: [
+            "RUN_E2E_RUNTIME": "opencode",
+            "REAL_OPENCODE_MODEL": "OpenCode Test Model"
+        ])
+        #expect(filteredByOpenCodeName.map(\.runtimeID) == [.openCodeCLI])
+        #expect(filteredByOpenCodeName.first?.model == "OpenCode Test Model")
+
         let allWithLocal = E2ETestSupport.runtimeCases(environment: ["RUN_E2E_LOCAL_MLX": "1"])
-        #expect(allWithLocal.map(\.runtimeID) == [.claudeCode, .copilotCLI, .antigravityCLI, .localMLX])
+        #expect(allWithLocal.map(\.runtimeID) == [.claudeCode, .copilotCLI, .antigravityCLI, .cursorCLI, .openCodeCLI, .localMLX])
 
         let unknownFilter = E2ETestSupport.runtimeCases(environment: ["RUN_E2E_RUNTIME": "not-a-runtime"])
-        #expect(unknownFilter.map(\.runtimeID) == [.claudeCode, .copilotCLI, .antigravityCLI])
+        #expect(unknownFilter.map(\.runtimeID) == [.claudeCode, .copilotCLI, .antigravityCLI, .cursorCLI, .openCodeCLI])
 
         #expect(!E2ETestSupport.localMLXAgentE2EEnabled(environment: ["RUN_E2E": "1"]))
         #expect(!E2ETestSupport.localMLXAgentE2EEnabled(environment: ["RUN_E2E_LOCAL_MLX_AGENT": "1"]))

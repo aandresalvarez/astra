@@ -96,6 +96,78 @@ struct BrowserBridgeSecurityTests {
         #expect(batch.snapshotLimit == 12)
     }
 
+    @Test("Bridge command router recognizes every published action")
+    func bridgeCommandRouterRecognizesEveryPublishedAction() throws {
+        let actions = ShelfBrowserBridgeCommandRouter.actionMetadata(
+            canUseGoogleDriveOpen: false,
+            googleDriveOpenDefaultTimeoutSeconds: 24
+        )
+
+        for action in actions {
+            let method = try #require(action["method"] as? String)
+            let path = try #require(action["path"] as? String)
+            #expect(
+                ShelfBrowserBridgeCommandRouter.route(method: method, path: path) != nil,
+                "Missing route for \(method) \(path)"
+            )
+        }
+
+        #expect(ShelfBrowserBridgeCommandRouter.route(method: "get", path: "/actions") == .actions)
+        #expect(ShelfBrowserBridgeCommandRouter.route(method: "POST", path: "/missing") == nil)
+    }
+
+    @Test("Bridge command router centralizes request accounting policy")
+    func bridgeCommandRouterCentralizesRequestAccountingPolicy() throws {
+        let unaccountedRoutes: Set<ShelfBrowserBridgeRoute> = [
+            .health,
+            .actions,
+            .trace,
+            .benchmark
+        ]
+
+        for route in ShelfBrowserBridgeRoute.allCases {
+            #expect(route.isFlightRecorded == !unaccountedRoutes.contains(route))
+            #expect(route.isRunGuarded == !unaccountedRoutes.contains(route))
+            #expect(route.isAvailableWhenBridgeDisabled == (route == .health || route == .actions))
+        }
+    }
+
+    @Test("Bridge command router enforces route methods")
+    func bridgeCommandRouterEnforcesRouteMethods() throws {
+        #expect(ShelfBrowserBridgeCommandRouter.route(method: "POST", path: "/health") == nil)
+        #expect(ShelfBrowserBridgeCommandRouter.route(method: "GET", path: "/navigate") == nil)
+        #expect(ShelfBrowserBridgeCommandRouter.route(method: "GET", path: "/click") == nil)
+        #expect(ShelfBrowserBridgeCommandRouter.route(method: "POST", path: "/snapshot") == nil)
+    }
+
+    @Test("Bridge actions response preserves metadata contract")
+    func bridgeActionsResponsePreservesMetadataContract() throws {
+        let response = ShelfBrowserBridgeCommandRouter.actionsResponse(
+            backend: "controlled Chromium profile",
+            capabilities: ["actions", "google.drive.open"],
+            canUseGoogleDriveOpen: true,
+            googleDriveOpenDefaultTimeoutSeconds: 24
+        )
+
+        #expect(response["ok"] as? Bool == true)
+        #expect(response["backend"] as? String == "controlled Chromium profile")
+        #expect(response["actionMetadataVersion"] as? Int == 1)
+        #expect(response["capabilities"] as? [String] == ["actions", "google.drive.open"])
+
+        let actions = try #require(response["actions"] as? [[String: Any]])
+        let paths = Set(actions.compactMap { $0["path"] as? String })
+        #expect(paths.contains("/actions"))
+        #expect(paths.contains("/googleDriveOpen"))
+
+        let driveOpen = try #require(actions.first { ($0["path"] as? String) == "/googleDriveOpen" })
+        #expect(driveOpen["enabled"] as? Bool == true)
+        #expect(driveOpen["adapterID"] as? String == BrowserSiteAdapterID.googleDrive)
+
+        let body = try #require(driveOpen["body"] as? [String: Any])
+        #expect(body["name"] as? String == "Untitled document")
+        #expect(body["timeoutSeconds"] as? Double == 24)
+    }
+
     private func httpGet(_ url: URL, token: String?) async throws -> (statusCode: Int, body: String) {
         var request = URLRequest(url: url)
         if let token {

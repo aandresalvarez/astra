@@ -39,24 +39,40 @@ enum Formatters {
         if interval < 604800 { return "\(Int(interval / 86400))d" }
         // 1 week to 1 year — show "Apr 17"
         if interval < 31_536_000 {
-            let f = DateFormatter()
-            f.dateFormat = "MMM d"
-            return f.string(from: date)
+            return monthDayFormatter.string(from: date)
         }
         // Older — include the year.
+        return monthDayYearFormatter.string(from: date)
+    }
+
+    /// Cached "MMM d" formatter for `relativeShort(_:)`. DateFormatter is
+    /// expensive to allocate; reads are thread-safe once configured.
+    private static let monthDayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MMM d"
+        return f
+    }()
+
+    /// Cached "MMM d, yyyy" formatter for `relativeShort(_:)` on older dates.
+    private static let monthDayYearFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "MMM d, yyyy"
-        return f.string(from: date)
-    }
+        return f
+    }()
 
     /// Long-form timestamp suitable for a tooltip / accessibility hint
     /// when a UI surface only shows `relativeShort(_:)`.
     static func fullDate(_ date: Date) -> String {
+        return fullDateFormatter.string(from: date)
+    }
+
+    /// Cached long-date / short-time formatter for `fullDate(_:)` tooltips.
+    private static let fullDateFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateStyle = .long
         f.timeStyle = .short
-        return f.string(from: date)
-    }
+        return f
+    }()
 
     /// Middle-ellipsize identifier-like tokens (long, contain `. _ - /`) so
     /// compact rows preserve both the recognizable prefix and useful suffix.
@@ -82,21 +98,14 @@ enum Formatters {
     /// Compact task-title presentation for navigation rows. Generic task verbs
     /// become a quiet prefix so the object phrase stays scannable.
     static func sidebarTaskTitlePresentation(
-        _ text: String,
-        maxDisplayCharacters: Int = 40
+        _ text: String
     ) -> SidebarTaskTitlePresentation {
         let normalized = normalizedSidebarTaskTitle(text)
         let (prefix, primarySource) = sidebarTaskPrefixAndPrimary(normalized)
-        let primaryBudget = if let prefix {
-            max(12, maxDisplayCharacters - prefix.count - 3)
-        } else {
-            maxDisplayCharacters
-        }
-        let primary = compactSidebarTaskTitle(primarySource, maxCharacters: primaryBudget)
 
         return SidebarTaskTitlePresentation(
             prefix: prefix,
-            primary: primary.isEmpty ? normalized : primary,
+            primary: primarySource.isEmpty ? normalized : primarySource,
             fullTitle: text
         )
     }
@@ -105,7 +114,17 @@ enum Formatters {
     /// `sidebarTaskTitlePresentation(_:)` in SwiftUI rows so the action prefix
     /// can be visually de-emphasized.
     static func sidebarTaskTitle(_ text: String, maxCharacters: Int = 32) -> String {
-        sidebarTaskTitlePresentation(text, maxDisplayCharacters: maxCharacters).displayTitle
+        let normalized = normalizedSidebarTaskTitle(text)
+        let (prefix, primarySource) = sidebarTaskPrefixAndPrimary(normalized)
+        let primaryBudget = if let prefix {
+            max(12, maxCharacters - prefix.count - 3)
+        } else {
+            maxCharacters
+        }
+        let primary = compactSidebarTaskTitle(primarySource, maxCharacters: primaryBudget)
+
+        guard let prefix, !prefix.isEmpty else { return primary }
+        return "\(prefix) · \(primary)"
     }
 
     private static let sidebarTaskActionPrefixes: Set<String> = [
@@ -143,10 +162,22 @@ enum Formatters {
     private static let sidebarTaskLeadingArticles: Set<String> = ["a", "an", "the"]
 
     private static func normalizedSidebarTaskTitle(_ text: String) -> String {
-        shortenIdentifierTokens(text)
+        let normalized = shortenIdentifierTokens(text)
             .components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
             .joined(separator: " ")
+        return collapsedRepeatedSidebarTitle(normalized)
+    }
+
+    private static func collapsedRepeatedSidebarTitle(_ text: String) -> String {
+        let characters = Array(text)
+        guard characters.count >= 8, characters.count.isMultiple(of: 2) else { return text }
+
+        let midpoint = characters.count / 2
+        let firstHalf = String(characters[..<midpoint])
+        let secondHalf = String(characters[midpoint...])
+        guard firstHalf == secondHalf, firstHalf.contains(" ") else { return text }
+        return firstHalf
     }
 
     private static func sidebarTaskPrefixAndPrimary(_ normalized: String) -> (String?, String) {

@@ -494,6 +494,83 @@ struct BuildPromptTests {
         #expect(Set(providers).count == providers.count)
     }
 
+    @Test("AgentPromptBuilder uses extracted prompt section provider registry")
+    func promptBuilderUsesExtractedPromptSectionProviderRegistry() {
+        #expect(
+            AgentPromptBuilder.promptSectionProviderIDs(for: .initialRun)
+                == PromptContextSectionProviderRegistry.providerIDs(for: .initialRun)
+        )
+        #expect(
+            AgentPromptBuilder.promptSectionProviderIDs(for: .followUp)
+                == PromptContextSectionProviderRegistry.providerIDs(for: .followUp)
+        )
+    }
+
+    @Test("OpenCode follow-up prompt uses inline thread state instead of task-folder file reads")
+    func openCodeFollowUpPromptUsesInlineThreadStateInsteadOfTaskFolderFileReads() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "OpenCode Prompt", primaryPath: "/tmp/opencode-prompt")
+        ctx.insert(ws)
+        let task = AgentTask(
+            title: "OpenCode follow-up",
+            goal: "check my open prs in github",
+            workspace: ws,
+            model: "opencode/big-pickle",
+            runtime: .openCodeCLI
+        )
+        task.runtimeID = AgentRuntimeID.openCodeCLI.rawValue
+        ctx.insert(task)
+        let run = TaskRun(task: task)
+        run.status = .failed
+        run.stopReason = "no_usable_result"
+        run.output = "The prior run stopped while trying to read ASTRA task state."
+        run.completedAt = Date()
+        ctx.insert(run)
+        AgentRuntimeRunPersistence.recordSessionTurn(
+            task: task,
+            run: run,
+            message: "check my open prs in github"
+        )
+
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
+            message: "retry the last request",
+            task: task
+        )
+
+        #expect(prompt.contains("History Lookup Rule:"))
+        #expect(prompt.contains("Use the thread state already included in this prompt"))
+        #expect(!prompt.contains("read the referenced current state"))
+        #expect(!prompt.contains("Read them for context when needed"))
+        #expect(!prompt.contains("use the read tool for ASTRA state/history files instead of Bash"))
+        #expect(!prompt.contains("current_state.md"))
+        #expect(!prompt.contains("current_state.json"))
+        #expect(!prompt.contains("session_history.md"))
+    }
+
+    @Test("Multi-root follow-up prompt keeps explicit task-state lookup guidance")
+    func multiRootFollowUpPromptKeepsExplicitTaskStateLookupGuidance() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Claude Prompt", primaryPath: "/tmp/claude-prompt")
+        ctx.insert(ws)
+        let task = AgentTask(
+            title: "Claude follow-up",
+            goal: "review prior task decisions",
+            workspace: ws
+        )
+        task.runtimeID = AgentRuntimeID.claudeCode.rawValue
+        ctx.insert(task)
+
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
+            message: "what did we decide?",
+            task: task
+        )
+
+        #expect(prompt.contains("History Lookup Rule:"))
+        #expect(prompt.contains("read the referenced current state"))
+    }
+
     @Test("Prompt includes goal")
     func includesGoal() throws {
         let container = try makeContainer()
@@ -571,6 +648,33 @@ struct BuildPromptTests {
         #expect(prompt.contains("Task Output Folder:"))
         #expect(!prompt.contains("Artifact delivery contract:"))
         #expect(!prompt.contains("Create the first useful deliverable promptly"))
+    }
+
+    @Test("OpenCode prompt steers task state reads to inline context")
+    func openCodePromptSteersTaskStateReadsToInlineContext() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Test", primaryPath: "/tmp/prompt-opencode")
+        ctx.insert(ws)
+        let task = AgentTask(
+            title: "Say hello",
+            goal: "hi, how are you?",
+            workspace: ws,
+            model: "opencode/big-pickle",
+            runtime: .openCodeCLI
+        )
+        ctx.insert(task)
+        try ctx.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(prompt.contains("For OpenCode, use the inline Context Capsule"))
+        #expect(prompt.contains("Do not request external_directory approval just to inspect ASTRA state/history files."))
+        #expect(!prompt.contains("use the read tool for ASTRA state/history files instead of Bash"))
+        #expect(!prompt.contains("Read them for context when needed"))
+        #expect(!prompt.contains("current_state.md"))
+        #expect(!prompt.contains("current_state.json"))
+        #expect(!prompt.contains("session_history.md"))
     }
 
     @Test("Prompt keeps current task explicit before context and at current-goal section end")
@@ -785,6 +889,76 @@ struct BuildPromptTests {
         #expect(prompt.contains("Recent conversation transcript"))
         #expect(prompt.contains(exactDraft))
         #expect(prompt.contains("User's follow-up request:\nrevise the draft"))
+    }
+
+    @Test("Follow-up prompt assembly uses supplied IO snapshot")
+    func followUpPromptAssemblyUsesSuppliedIOSnapshot() throws {
+        let root = NSTemporaryDirectory() + "prompt-followup-injected-snapshot-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Injected Snapshot", primaryPath: root)
+        ctx.insert(ws)
+        let task = AgentTask(title: "T", goal: "Use injected state", workspace: ws)
+        ctx.insert(task)
+        try ctx.save()
+        _ = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+
+        let injected = PromptContextIOSnapshot(
+            recentConversationTranscript: PromptContextSnapshotText(
+                text: "INJECTED_EXACT_TRANSCRIPT",
+                sourcePointers: [PromptContextSourcePointer(label: "test transcript", target: "memory")]
+            ),
+            sessionHistorySummary: PromptContextSnapshotText(
+                text: "SHOULD_NOT_BE_USED_WHEN_EXACT_TRANSCRIPT_EXISTS",
+                sourcePointers: [PromptContextSourcePointer(label: "test history", target: "memory")]
+            )
+        )
+
+        let manifest = AgentPromptBuilder.buildFreshFollowUpPromptAssembly(
+            message: "continue",
+            task: task,
+            ioSnapshot: injected
+        )
+
+        #expect(manifest.prompt.contains("Recent conversation transcript"))
+        #expect(manifest.prompt.contains("INJECTED_EXACT_TRANSCRIPT"))
+        #expect(!manifest.prompt.contains("SHOULD_NOT_BE_USED_WHEN_EXACT_TRANSCRIPT_EXISTS"))
+        #expect(manifest.sections.contains { section in
+            section.sourcePointers.contains(PromptContextSourcePointer(label: "test transcript", target: "memory"))
+        })
+    }
+
+    @Test("Prompt IO snapshot loader owns turn output and session history reads")
+    func promptIOSnapshotLoaderOwnsTurnOutputAndSessionHistoryReads() throws {
+        let folder = NSTemporaryDirectory() + "prompt-io-snapshot-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: folder) }
+        let outputs = (folder as NSString).appendingPathComponent("outputs")
+        try FileManager.default.createDirectory(atPath: outputs, withIntermediateDirectories: true)
+
+        let turnPath = (outputs as NSString).appendingPathComponent("turn_001.md")
+        try "LOADER_TURN_OUTPUT".write(toFile: turnPath, atomically: true, encoding: .utf8)
+        try """
+        # Session
+
+        ## Turn 1
+        LOADER_SESSION_HISTORY
+        """.write(
+            toFile: SessionHistoryManager.historyPath(taskFolder: folder),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let snapshot = PromptContextIOSnapshotLoader.snapshot(taskFolder: folder)
+
+        #expect(snapshot.recentConversationTranscript?.text.contains("LOADER_TURN_OUTPUT") == true)
+        #expect(snapshot.recentConversationTranscript?.sourcePointers.contains { pointer in
+            pointer.label == "turn output"
+                && (pointer.target as NSString).lastPathComponent == (turnPath as NSString).lastPathComponent
+        } == true)
+        #expect(snapshot.sessionHistorySummary?.text.contains("LOADER_SESSION_HISTORY") == true)
     }
 
     @Test("Follow-up prompt includes context source index for just-in-time retrieval")

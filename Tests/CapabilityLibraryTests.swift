@@ -474,43 +474,4 @@ struct CapabilityLibraryTests {
         let iconURL = try #require(bundle.url(forResource: "AppIcon", withExtension: "icns"))
         #expect(FileManager.default.fileExists(atPath: iconURL.path))
     }
-
-    @Test("local catalog source reads installed capability packages")
-    @MainActor
-    func localCatalogSourceReadsInstalledPackages() throws {
-        let root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("astra-capability-source-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: root) }
-
-        let library = CapabilityLibrary(directory: root)
-        let package = PluginPackage(
-            id: "stanford.redcap.qa",
-            name: "REDCap QA",
-            icon: "checklist",
-            description: "Validate REDCap exports",
-            author: "Stanford",
-            category: "Research",
-            tags: ["redcap"],
-            version: "1.0.0",
-            skills: [],
-            connectors: [],
-            localTools: [],
-            templates: []
-        )
-        try library.install(package)
-
-        let source = LocalCapabilityCatalogSource(library: library)
-        #expect(source.id == "local")
-        #expect(try source.packages().map(\.id) == [package.id])
-        #expect(try source.packages().first?.sourceMetadata?.kind == "local")
-    }
-
-    @Test("built-in catalog source exposes built-in packages")
-    @MainActor
-    func builtInCatalogSourceReadsBuiltIns() throws {
-        let source = BuiltInCapabilityCatalogSource()
-        #expect(source.id == "built-in")
-        #expect(try !source.packages().isEmpty)
-        #expect(try source.packages().allSatisfy { $0.sourceMetadata == .builtIn() })
-    }
 }

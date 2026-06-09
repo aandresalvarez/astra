@@ -29,11 +29,14 @@ final class PendingTaskCollector: @unchecked Sendable {
 /// enqueue work immediately from background pipe callbacks.
 final class OrderedMainActorTaskQueue: @unchecked Sendable {
     private let lock = NSLock()
-    private var tasks: [Task<Void, Never>] = []
+    // Ordering is maintained by chaining each task off `tail`; we only need a
+    // running count, not the full handle array (which grew per stream event and
+    // was never drained).
+    private var enqueuedCount = 0
     private var tail: Task<Void, Never>?
 
     var count: Int {
-        lock.lock(); defer { lock.unlock() }; return tasks.count
+        lock.lock(); defer { lock.unlock() }; return enqueuedCount
     }
 
     func add(_ operation: @escaping @MainActor () -> Void) {
@@ -45,7 +48,7 @@ final class OrderedMainActorTaskQueue: @unchecked Sendable {
             }
             operation()
         }
-        tasks.append(task)
+        enqueuedCount += 1
         tail = task
         lock.unlock()
     }

@@ -126,9 +126,53 @@ struct ThemeTests {
 
     @Test("Chat reading text meets paragraph contrast targets")
     func chatReadingTextMeetsContrastTargets() {
+        // Dark mode is checked against the real content surface
+        // (warmCanvasDarkHex ≈ textBackgroundColor / cardBackground, where
+        // reading text sits), not pure black — black is misleadingly lenient
+        // for light-on-dark text.
         #expect(contrastRatio(Stanford.readingTextLightHex, 0xFFFFFF) >= 4.5)
         #expect(contrastRatio(Stanford.readingTextLightHex, Stanford.warmCanvasLightHex) >= 4.5)
-        #expect(contrastRatio(Stanford.readingTextDarkHex, 0x000000) >= 4.5)
+        #expect(contrastRatio(Stanford.readingTextDarkHex, Stanford.warmCanvasDarkHex) >= 4.5)
+    }
+
+    @Test("Low-emphasis text tokens clear WCAG AA (4.5:1) in both modes")
+    func secondaryTextMeetsContrastTargets() {
+        // Both tokens back small (10–12pt) normal-weight text, so both must
+        // clear AA (4.5:1) — there's no large-text 3:1 exemption here. Dark
+        // mode is checked against the representative dark content surface
+        // (warmCanvasDarkHex), NOT pure black: light-on-dark text has its
+        // LOWEST contrast on the lightest real surface, so black would be a
+        // misleadingly lenient reference.
+        #expect(contrastRatio(Stanford.textSecondaryLightHex, 0xFFFFFF) >= 4.5)
+        #expect(contrastRatio(Stanford.textSecondaryLightHex, Stanford.warmCanvasLightHex) >= 4.5)
+        #expect(contrastRatio(Stanford.textSecondaryDarkHex, Stanford.warmCanvasDarkHex) >= 4.5)
+
+        #expect(contrastRatio(Stanford.textTertiaryLightHex, 0xFFFFFF) >= 4.5)
+        #expect(contrastRatio(Stanford.textTertiaryLightHex, Stanford.warmCanvasLightHex) >= 4.5)
+        #expect(contrastRatio(Stanford.textTertiaryDarkHex, Stanford.warmCanvasDarkHex) >= 4.5)
+    }
+
+    @Test("The interaction accent is one hue (interactive == focusRing == link == lagunita)")
+    func interactionAccentIsUnified() {
+        // A0/A2: the scene-level tint and every interactive control should
+        // resolve to a single accent. cardinalRed is reserved for the brand
+        // mark and errors, so it must NOT be the interaction accent.
+        for appearance: NSAppearance.Name in [.aqua, .darkAqua] {
+            guard
+                let interactive = resolve(Stanford.interactive, appearance: appearance),
+                let focusRing = resolve(Stanford.focusRing, appearance: appearance),
+                let link = resolve(Stanford.link, appearance: appearance),
+                let lagunita = resolve(Stanford.lagunita, appearance: appearance),
+                let cardinal = resolve(Stanford.cardinalRed, appearance: appearance)
+            else {
+                Issue.record("Could not resolve accent tokens in \(appearance)")
+                continue
+            }
+            #expect(approximatelyEqual(interactive, focusRing), "interactive != focusRing in \(appearance)")
+            #expect(approximatelyEqual(interactive, link), "interactive != link in \(appearance)")
+            #expect(approximatelyEqual(interactive, lagunita), "interactive != lagunita in \(appearance)")
+            #expect(!approximatelyEqual(interactive, cardinal), "interactive must not be cardinalRed in \(appearance)")
+        }
     }
 
     @Test("Bundled Stanford typography fonts are packaged")
