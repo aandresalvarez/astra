@@ -587,17 +587,21 @@ struct ContentView: View {
             )
             .frame(width: 0, height: 0)
         }
-        .navigationSplitViewColumnWidth(
-            min: SidebarColumnLayout.expandedMinimumWidth,
-            ideal: SidebarColumnLayout.expandedIdealWidth,
-            max: SidebarColumnLayout.expandedMaximumWidth
-        )
         .clipped()
         // The leading titlebar accessory (AstraLeadingCommandBar) owns the only
         // sidebar toggle; drop NavigationSplitView's built-in one.
         .toolbar(removing: .sidebarToggle)
         .transition(sidebarCollapseTransition)
         .animation(sidebarCollapseAnimation, value: presentation.columnVisibility)
+        // MUST stay the outermost modifier on the column root: with `.clipped()`
+        // interposed between this and `.toolbar(removing:)`, NavigationSplitView
+        // drops the whole min/ideal/max spec — the divider then drags to any
+        // width and the sub-minimum guard collapse fires mid-drag.
+        .navigationSplitViewColumnWidth(
+            min: SidebarColumnLayout.expandedMinimumWidth,
+            ideal: SidebarColumnLayout.expandedIdealWidth,
+            max: SidebarColumnLayout.expandedMaximumWidth
+        )
     }
 
     private var detailArea: some View {
