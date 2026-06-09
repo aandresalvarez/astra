@@ -97,16 +97,15 @@ struct ClaudeModelAvailabilityService {
             // `initialize` handshake reports the models the *spawned runs*
             // can actually use (OAuth subscription, enterprise policy, …),
             // consumes no tokens, and needs no API key.
-            if let models = await cliReportedModels(configuration: configuration) {
+            let probe = await cliReportedModels(configuration: configuration)
+            if case .models(let models) = probe {
                 return .available(models: models)
             }
             switch await anthropicAPIModels() {
             case .available(let models):
                 return .available(models: models)
             case .unavailable(let reason):
-                return .unavailable(
-                    reason: "Claude CLI did not report a model list from its initialize handshake. \(reason)"
-                )
+                return .unavailable(reason: "\(probe.failureDescription) \(reason)")
             }
         case .vertex:
             let models = RuntimeModelAvailability.cleanProviderModels([
@@ -127,10 +126,10 @@ struct ClaudeModelAvailabilityService {
     /// `supportedModels()`. Local, zero tokens, entitlement-aware.
     private func cliReportedModels(
         configuration: ClaudeModelAvailabilityConfiguration
-    ) async -> [RuntimeModelDetail]? {
+    ) async -> ClaudeCLIModelProbeOutcome {
         let configured = configuration.executablePath.trimmingCharacters(in: .whitespacesAndNewlines)
         let executable = configured.isEmpty ? detectExecutable() : configured
-        guard !executable.isEmpty, isExecutable(executable) else { return nil }
+        guard !executable.isEmpty, isExecutable(executable) else { return .executableUnavailable }
 
         let request = #"{"type":"control_request","request_id":"astra-model-availability","request":{"subtype":"initialize"}}"# + "\n"
         let result = await runner.run(
@@ -142,7 +141,10 @@ struct ClaudeModelAvailabilityService {
         )
         // Parse whatever arrived even on a non-zero exit or timeout kill —
         // the response line may already be in the captured output.
-        return Self.parseInitializeModels(from: result.stdout)
+        guard let models = Self.parseInitializeModels(from: result.stdout) else {
+            return .noModelList
+        }
+        return .models(models)
     }
 
     /// Extracts models (ID plus display metadata) from a stream-json
@@ -234,6 +236,26 @@ private struct AnthropicModelsResponse: Decodable {
     }
 
     var data: [Model]
+}
+
+/// Distinguishes "the CLI could not be run at all" from "it ran but no
+/// usable model list came back", so the surfaced reason points at the
+/// actual problem instead of always blaming the handshake.
+private enum ClaudeCLIModelProbeOutcome {
+    case models([RuntimeModelDetail])
+    case executableUnavailable
+    case noModelList
+
+    var failureDescription: String {
+        switch self {
+        case .models:
+            return ""
+        case .executableUnavailable:
+            return "No runnable Claude CLI was found for a local model-list check."
+        case .noModelList:
+            return "The Claude CLI initialize handshake did not return a model list."
+        }
+    }
 }
 
 /// Shape of the CLI's `{"type":"control_response",...}` line answering an

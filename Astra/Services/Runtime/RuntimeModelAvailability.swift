@@ -27,8 +27,9 @@ struct RuntimeModelAvailabilitySnapshot: Codable, Equatable, Sendable {
     var checkedAt: Date
     var authority: RuntimeModelAvailabilityAuthority
     var hasExplicitAuthority: Bool
-    /// Display lookup table keyed by model value. `models` stays the
-    /// canonical list; absent in snapshots written before this field.
+    /// Optional display metadata for entries in `models`, matched by
+    /// `value`. `models` stays the canonical list; absent in snapshots
+    /// written before this field existed.
     var details: [RuntimeModelDetail]?
 
     init(

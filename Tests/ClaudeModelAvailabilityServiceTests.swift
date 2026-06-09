@@ -197,11 +197,33 @@ struct ClaudeModelAvailabilityServiceTests {
 
         if case .unavailable(let reason) = result {
             #expect(reason.contains("ANTHROPIC_API_KEY"))
-            #expect(reason.contains("Claude CLI"))
+            #expect(reason.contains("No runnable Claude CLI"))
         } else {
             Issue.record("Expected missing CLI + missing API key to be unavailable.")
         }
         #expect(await http.recordedRequests().isEmpty)
+    }
+
+    @Test("CLI that runs without a model list blames the handshake, not the binary")
+    func cliWithoutModelListBlamesHandshake() async {
+        let service = ClaudeModelAvailabilityService(
+            runner: ClaudeProbeStubBinaryRunner(result: .exited(code: 0, stdout: "not json\n", stderr: "")),
+            httpClient: StubModelAvailabilityHTTPClient(),
+            environment: { [:] },
+            detectExecutable: { "/opt/test/claude" },
+            isExecutable: { _ in true }
+        )
+
+        let result = await service.availableModels(
+            configuration: ClaudeModelAvailabilityConfiguration(provider: .anthropic)
+        )
+
+        if case .unavailable(let reason) = result {
+            #expect(reason.contains("initialize handshake did not return a model list"))
+            #expect(!reason.contains("No runnable Claude CLI"))
+        } else {
+            Issue.record("Expected junk CLI output + missing API key to be unavailable.")
+        }
     }
 
     @Test("Vertex model availability uses configured aliases")
