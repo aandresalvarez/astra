@@ -965,10 +965,15 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         authHint: "Run `claude /login` or set `ANTHROPIC_API_KEY`.",
         prerequisite: CommonCLIPrerequisites.claude,
         defaultModel: "claude-sonnet-4-6",
+        // Pre-probe fallback only; the CLI initialize handshake replaces
+        // this list at app launch. Aliases track the CLI's current models
+        // instead of rotting like pinned IDs; the pinned default stays for
+        // no-cache resolution and cross-runtime bleed detection.
         defaultModels: [
-            "claude-opus-4-6",
-            "claude-sonnet-4-6",
-            "claude-haiku-4-5-20251001"
+            "default",
+            "sonnet",
+            "haiku",
+            "claude-sonnet-4-6"
         ],
         supportsAstraRunProtocol: true,
         supportsNativeContinuation: true
@@ -1061,6 +1066,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         let result = await ClaudeModelAvailabilityService().refreshAndPersist(
             configuration: ClaudeModelAvailabilityConfiguration(
                 provider: configuration.claudeProvider,
+                executablePath: configuration.executablePath(for: id),
                 vertexOpusModel: configuration.vertexOpusModel,
                 vertexSonnetModel: configuration.vertexSonnetModel,
                 vertexHaikuModel: configuration.vertexHaikuModel
@@ -1071,7 +1077,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             return RuntimeReadinessCheck(
                 id: "claude-models",
                 title: "Claude models",
-                detail: "Available: \(models.joined(separator: ", "))",
+                detail: "Available: \(models.map(\.value).joined(separator: ", "))",
                 state: .ready,
                 remediation: nil
             )
@@ -2478,8 +2484,11 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         return RuntimeReadinessReport(checks: checks)
     }
 
-    func modelAvailabilityCheck(configuration _: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {
-        let models = AntigravityCLIRuntime.availableModelNames()
+    func modelAvailabilityCheck(configuration: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {
+        let configuredPath = configuration.executablePath(for: id)
+        let executable = configuredPath.isEmpty ? AntigravityCLIRuntime.detectPath() : configuredPath
+        let models = AntigravityCLIRuntime.modelNames(executablePath: executable)
+            ?? AntigravityCLIRuntime.availableModelNames()
         RuntimeModelAvailability.persistAvailableModels(models, for: id, authority: modelAvailabilityAuthority)
         return RuntimeReadinessCheck(
             id: "antigravity-models",

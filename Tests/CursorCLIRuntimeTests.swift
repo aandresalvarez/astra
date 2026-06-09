@@ -20,22 +20,22 @@ struct CursorCLIRuntimeTests {
         #expect(CursorCLIRuntime.defaultModelName() == "composer-2.5-fast")
     }
 
-    @Test("Cursor model list parser extracts model IDs")
-    func cursorModelListParserExtractsModelIDs() {
+    @Test("Cursor model list parser extracts IDs and display names")
+    func cursorModelListParserExtractsIDsAndDisplayNames() {
         let output = """
         Available models
 
-        auto - Auto
+        auto - Auto (current)
         composer-2.5-fast - Composer 2.5 Fast (default)
         gpt-5.5-medium - GPT-5.5 Fast
 
         Tip: use --model <id> to switch.
         """
 
-        #expect(CursorCLIRuntime.parseModelNames(output) == [
-            "auto",
-            "composer-2.5-fast",
-            "gpt-5.5-medium"
+        #expect(CursorCLIRuntime.parseModelDetails(output) == [
+            RuntimeModelDetail(value: "auto", displayName: "Auto"),
+            RuntimeModelDetail(value: "composer-2.5-fast", displayName: "Composer 2.5 Fast"),
+            RuntimeModelDetail(value: "gpt-5.5-medium", displayName: "GPT-5.5 Fast")
         ])
     }
 

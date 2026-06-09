@@ -2,23 +2,32 @@ import Foundation
 import ASTRACore
 
 enum ClaudeModelAvailabilityResult: Equatable, Sendable {
-    case available(models: [String])
+    case available(models: [RuntimeModelDetail])
     case unavailable(reason: String)
+
+    /// Raw `--model` values, in provider order.
+    var modelValues: [String] {
+        guard case .available(let models) = self else { return [] }
+        return models.map(\.value)
+    }
 }
 
 struct ClaudeModelAvailabilityConfiguration: Equatable, Sendable {
     var provider: ClaudeProvider
+    var executablePath: String
     var vertexOpusModel: String
     var vertexSonnetModel: String
     var vertexHaikuModel: String
 
     init(
         provider: ClaudeProvider,
+        executablePath: String = "",
         vertexOpusModel: String = "",
         vertexSonnetModel: String = "",
         vertexHaikuModel: String = ""
     ) {
         self.provider = provider
+        self.executablePath = executablePath
         self.vertexOpusModel = vertexOpusModel
         self.vertexSonnetModel = vertexSonnetModel
         self.vertexHaikuModel = vertexHaikuModel
@@ -26,18 +35,32 @@ struct ClaudeModelAvailabilityConfiguration: Equatable, Sendable {
 }
 
 struct ClaudeModelAvailabilityService {
+    private let runner: any BinaryRunner
     private let httpClient: any ModelAvailabilityHTTPClient
     private let timeout: TimeInterval
+    private let cliProbeTimeout: TimeInterval
     private let environment: @Sendable () -> [String: String]
+    private let detectExecutable: @Sendable () -> String
+    private let isExecutable: @Sendable (String) -> Bool
 
     init(
+        runner: any BinaryRunner = ProcessBinaryRunner(),
         httpClient: any ModelAvailabilityHTTPClient = URLSessionModelAvailabilityHTTPClient(),
         timeout: TimeInterval = 5,
-        environment: @escaping @Sendable () -> [String: String] = { ProcessInfo.processInfo.environment }
+        cliProbeTimeout: TimeInterval = 15,
+        environment: @escaping @Sendable () -> [String: String] = { ProcessInfo.processInfo.environment },
+        detectExecutable: @escaping @Sendable () -> String = { RuntimePathResolver.detectClaudePath() },
+        isExecutable: @escaping @Sendable (String) -> Bool = {
+            FileManager.default.isExecutableFile(atPath: $0)
+        }
     ) {
+        self.runner = runner
         self.httpClient = httpClient
         self.timeout = timeout
+        self.cliProbeTimeout = cliProbeTimeout
         self.environment = environment
+        self.detectExecutable = detectExecutable
+        self.isExecutable = isExecutable
     }
 
     func refreshAndPersist(
@@ -47,7 +70,7 @@ struct ClaudeModelAvailabilityService {
         let result = await availableModels(configuration: configuration)
         switch result {
         case .available(let models):
-            RuntimeModelAvailability.persistAvailableModels(models, for: .claudeCode, defaults: defaults)
+            RuntimeModelAvailability.persistAvailableModelDetails(models, for: .claudeCode, defaults: defaults)
             AppLogger.audit(.runtimeModelAvailability, category: "Worker", fields: [
                 "runtime": AgentRuntimeID.claudeCode.rawValue,
                 "provider": configuration.provider.rawValue,
@@ -70,7 +93,20 @@ struct ClaudeModelAvailabilityService {
     func availableModels(configuration: ClaudeModelAvailabilityConfiguration) async -> ClaudeModelAvailabilityResult {
         switch configuration.provider {
         case .anthropic:
-            return await anthropicAPIModels()
+            // Primary source: the authenticated CLI itself. Its stream-json
+            // `initialize` handshake reports the models the *spawned runs*
+            // can actually use (OAuth subscription, enterprise policy, …),
+            // consumes no tokens, and needs no API key.
+            let probe = await cliReportedModels(configuration: configuration)
+            if case .models(let models) = probe {
+                return .available(models: models)
+            }
+            switch await anthropicAPIModels() {
+            case .available(let models):
+                return .available(models: models)
+            case .unavailable(let reason):
+                return .unavailable(reason: "\(probe.failureDescription) \(reason)")
+            }
         case .vertex:
             let models = RuntimeModelAvailability.cleanProviderModels([
                 configuration.vertexOpusModel,
@@ -80,14 +116,68 @@ struct ClaudeModelAvailabilityService {
             guard !models.isEmpty else {
                 return .unavailable(reason: "No Claude Vertex model aliases are configured.")
             }
-            return .available(models: models)
+            return .available(models: models.map { RuntimeModelDetail(value: $0) })
         }
+    }
+
+    /// Asks the Claude CLI for the models available to its current login by
+    /// sending an `initialize` control request over stream-json and reading
+    /// the response — the same handshake the official Agent SDK uses for
+    /// `supportedModels()`. Local, zero tokens, entitlement-aware.
+    private func cliReportedModels(
+        configuration: ClaudeModelAvailabilityConfiguration
+    ) async -> ClaudeCLIModelProbeOutcome {
+        let configured = configuration.executablePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let executable = configured.isEmpty ? detectExecutable() : configured
+        guard !executable.isEmpty, isExecutable(executable) else { return .executableUnavailable }
+
+        let request = #"{"type":"control_request","request_id":"astra-model-availability","request":{"subtype":"initialize"}}"# + "\n"
+        let result = await runner.run(
+            path: executable,
+            args: ["--print", "--verbose", "--input-format", "stream-json", "--output-format", "stream-json"],
+            timeout: cliProbeTimeout,
+            environment: nil,
+            stdin: Data(request.utf8)
+        )
+        // Parse whatever arrived even on a non-zero exit or timeout kill —
+        // the response line may already be in the captured output.
+        guard let models = Self.parseInitializeModels(from: result.stdout) else {
+            return .noModelList
+        }
+        return .models(models)
+    }
+
+    /// Extracts models (ID plus display metadata) from a stream-json
+    /// `initialize` control response. Tolerates unrelated lines (system
+    /// events, partial writes) before and after the response line.
+    /// Returns nil when no usable list is found.
+    static func parseInitializeModels(from output: String) -> [RuntimeModelDetail]? {
+        for line in output.split(separator: "\n") {
+            guard let data = line.data(using: .utf8),
+                  let envelope = try? JSONDecoder().decode(InitializeControlResponse.self, from: data),
+                  envelope.type == "control_response",
+                  envelope.response.subtype == "success",
+                  let models = envelope.response.response?.models else {
+                continue
+            }
+            let cleaned = RuntimeModelAvailability.cleanProviderModelDetails(models.map { model in
+                RuntimeModelDetail(
+                    value: model.value,
+                    displayName: model.displayName,
+                    description: model.description
+                )
+            })
+            if !cleaned.isEmpty {
+                return cleaned
+            }
+        }
+        return nil
     }
 
     private func anthropicAPIModels() async -> ClaudeModelAvailabilityResult {
         guard let apiKey = anthropicAPIKey() else {
             return .unavailable(
-                reason: "No ANTHROPIC_API_KEY is available for a non-generating Anthropic model-list check. Claude Code login does not expose a safe local model-list command."
+                reason: "No ANTHROPIC_API_KEY is available for the Anthropic API model-list fallback."
             )
         }
 
@@ -105,7 +195,9 @@ struct ClaudeModelAvailabilityService {
                 return .unavailable(reason: "Anthropic model check failed with HTTP \(response.statusCode).")
             }
             let decoded = try JSONDecoder().decode(AnthropicModelsResponse.self, from: data)
-            let models = RuntimeModelAvailability.cleanProviderModels(decoded.data.map(\.id))
+            let models = RuntimeModelAvailability.cleanProviderModelDetails(decoded.data.map { model in
+                RuntimeModelDetail(value: model.id, displayName: model.displayName)
+            })
             guard !models.isEmpty else {
                 return .unavailable(reason: "Anthropic returned no models for this API key.")
             }
@@ -135,7 +227,55 @@ struct ClaudeModelAvailabilityService {
 private struct AnthropicModelsResponse: Decodable {
     struct Model: Decodable {
         var id: String
+        var displayName: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case id
+            case displayName = "display_name"
+        }
     }
 
     var data: [Model]
+}
+
+/// Distinguishes "the CLI could not be run at all" from "it ran but no
+/// usable model list came back", so the surfaced reason points at the
+/// actual problem instead of always blaming the handshake.
+private enum ClaudeCLIModelProbeOutcome {
+    case models([RuntimeModelDetail])
+    case executableUnavailable
+    case noModelList
+
+    var failureDescription: String {
+        switch self {
+        case .models:
+            return ""
+        case .executableUnavailable:
+            return "No runnable Claude CLI was found for a local model-list check."
+        case .noModelList:
+            return "The Claude CLI initialize handshake did not return a model list."
+        }
+    }
+}
+
+/// Shape of the CLI's `{"type":"control_response",...}` line answering an
+/// `initialize` control request. Only the fields we read are declared.
+private struct InitializeControlResponse: Decodable {
+    struct Response: Decodable {
+        struct Payload: Decodable {
+            struct ModelInfo: Decodable {
+                var value: String
+                var displayName: String?
+                var description: String?
+            }
+
+            var models: [ModelInfo]?
+        }
+
+        var subtype: String
+        var response: Payload?
+    }
+
+    var type: String
+    var response: Response
 }

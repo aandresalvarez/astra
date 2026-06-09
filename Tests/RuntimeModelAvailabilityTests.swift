@@ -340,6 +340,72 @@ struct RuntimeModelAvailabilityTests {
         #expect(creation.mainTask.model == AgentRuntimeAdapterRegistry.defaultModel(for: .copilotCLI))
     }
 
+    @Test("Model details persist and resolve display names")
+    func modelDetailsPersistAndResolveDisplayNames() {
+        let (defaults, suiteName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        RuntimeModelAvailability.persistAvailableModelDetails(
+            [
+                RuntimeModelDetail(value: " default ", displayName: " Default (recommended) ", description: "Opus 4.8 with 1M context"),
+                RuntimeModelDetail(value: "sonnet[1m]", displayName: "Sonnet (1M context)"),
+                RuntimeModelDetail(value: "sonnet[1m]", displayName: "Duplicate ignored"),
+                RuntimeModelDetail(value: "plain-id", displayName: "   ")
+            ],
+            for: .claudeCode,
+            defaults: defaults,
+            checkedAt: Date(timeIntervalSince1970: 12)
+        )
+
+        #expect(RuntimeModelAvailability.models(for: .claudeCode, defaults: defaults) == [
+            "default",
+            "sonnet[1m]",
+            "plain-id"
+        ])
+
+        let cache = RuntimeModelAvailabilityCache(
+            cachedClaudeModelsJSON: defaults.string(forKey: AppStorageKeys.claudeAvailableModels) ?? "",
+            cachedCopilotModelsJSON: ""
+        )
+        #expect(RuntimeModelAvailability.displayName(for: "default", runtime: .claudeCode, cache: cache) == "Default (recommended)")
+        #expect(RuntimeModelAvailability.displayName(for: "sonnet[1m]", runtime: .claudeCode, cache: cache) == "Sonnet (1M context)")
+        #expect(RuntimeModelAvailability.displayName(for: "plain-id", runtime: .claudeCode, cache: cache) == "plain-id")
+        #expect(RuntimeModelAvailability.modelDescription(for: "default", runtime: .claudeCode, cache: cache) == "Opus 4.8 with 1M context")
+        #expect(RuntimeModelAvailability.modelDescription(for: "sonnet[1m]", runtime: .claudeCode, cache: cache) == nil)
+    }
+
+    @Test("Values-only persistence and legacy snapshots fall back to raw IDs")
+    func valuesOnlyPersistenceFallsBackToRawIDs() {
+        let (defaults, suiteName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        RuntimeModelAvailability.persistAvailableModels(
+            ["claude-sonnet-4-6"],
+            for: .claudeCode,
+            defaults: defaults,
+            checkedAt: Date(timeIntervalSince1970: 13)
+        )
+        let cache = RuntimeModelAvailabilityCache(
+            cachedClaudeModelsJSON: defaults.string(forKey: AppStorageKeys.claudeAvailableModels) ?? "",
+            cachedCopilotModelsJSON: ""
+        )
+        #expect(RuntimeModelAvailability.displayName(for: "claude-sonnet-4-6", runtime: .claudeCode, cache: cache) == "claude-sonnet-4-6")
+
+        // Snapshot JSON written before the `details` field existed.
+        let legacy = """
+        {"runtimeID":"\(AgentRuntimeID.claudeCode.rawValue)","models":["claude-sonnet-4-6","legacy-model"],"checkedAt":740000000,"authority":"authoritative"}
+        """
+        let legacyCache = RuntimeModelAvailabilityCache(
+            cachedClaudeModelsJSON: legacy,
+            cachedCopilotModelsJSON: ""
+        )
+        #expect(RuntimeModelAvailability.models(for: .claudeCode, cache: legacyCache) == [
+            "claude-sonnet-4-6",
+            "legacy-model"
+        ])
+        #expect(RuntimeModelAvailability.displayName(for: "legacy-model", runtime: .claudeCode, cache: legacyCache) == "legacy-model")
+    }
+
     private func makeDefaults() -> (UserDefaults, String) {
         let suiteName = "RuntimeModelAvailabilityTests-\(UUID().uuidString)"
         return (UserDefaults(suiteName: suiteName)!, suiteName)

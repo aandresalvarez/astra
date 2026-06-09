@@ -49,6 +49,31 @@ enum AntigravityCLIRuntime {
         uniqueModels([configuredModel(settingsURL: settingsURL)].compactMap { $0 } + bundledModelNames)
     }
 
+    static func modelNames(executablePath: String) -> [String]? {
+        guard FileManager.default.isExecutableFile(atPath: executablePath),
+              let output = runProbe(executablePath: executablePath, args: ["models"], timeoutSeconds: 8) else {
+            return nil
+        }
+        let models = parseModelNames(output)
+        return models.isEmpty ? nil : models
+    }
+
+    /// Parses `agy models` output: one model per line. The strings double as
+    /// the `--model` value and the display name; parentheticals like
+    /// "(Thinking)" or "(Low)" are part of the model identity, not selection
+    /// markers, so lines are kept verbatim.
+    static func parseModelNames(_ output: String) -> [String] {
+        let lines = output
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { line in
+                guard !line.isEmpty else { return false }
+                let lower = line.lowercased()
+                return !lower.hasPrefix("available models") && !lower.hasPrefix("tip:")
+            }
+        return RuntimeModelAvailability.cleanProviderModels(lines)
+    }
+
     static func configuredModel(settingsURL: URL = settingsURL()) -> String? {
         guard let data = try? Data(contentsOf: settingsURL),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -276,6 +301,44 @@ enum AntigravityCLIRuntime {
 
     private static func printTimeoutArgument(_ timeoutSeconds: TimeInterval) -> String {
         "\(max(1, Int(timeoutSeconds)))s"
+    }
+
+    private static func runProbe(executablePath: String, args: [String], timeoutSeconds: TimeInterval) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = args
+        process.environment = RuntimeProcessEnvironment.enriched(extraVariables: ["NO_COLOR": "1"])
+
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        let semaphore = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in semaphore.signal() }
+
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+
+        let result = semaphore.wait(timeout: .now() + timeoutSeconds)
+        guard result == .success else {
+            process.terminate()
+            return nil
+        }
+        guard process.terminationStatus == 0 else {
+            return nil
+        }
+
+        let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
+        let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
+        let output = (String(data: outputData, encoding: .utf8) ?? "")
+            + "\n"
+            + (String(data: errorData, encoding: .utf8) ?? "")
+        return output
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func uniqueNonEmptyPaths(_ paths: [String]) -> [String] {
