@@ -157,20 +157,20 @@ struct WindowChromeConfigurator: NSViewRepresentable {
             return height > 0 ? height : nil
         }
 
-        /// The title bar height changes when the window enters/exits full screen
-        /// (and, defensively, on any resize); re-center the bar when it does.
+        /// The title bar height only changes when the window enters or leaves full
+        /// screen (plain resizes don't move it); re-center the bar when it does.
         private func observeTitleBarChanges(of window: NSWindow) {
             let center = NotificationCenter.default
             let names: [NSNotification.Name] = [
-                NSWindow.didResizeNotification,
                 NSWindow.didEnterFullScreenNotification,
                 NSWindow.didExitFullScreenNotification
             ]
             for name in names {
-                // Delivered on `.main` (the main actor); assert that so the
-                // @MainActor `refreshBar()` call is statically sound.
                 let token = center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.refreshBar() }
+                    // Hop onto the main actor explicitly instead of asserting the
+                    // delivery context, so this can't trap if the notification is
+                    // ever delivered off the main-actor executor.
+                    Task { @MainActor in self?.refreshBar() }
                 }
                 observers.append(token)
             }
@@ -179,6 +179,16 @@ struct WindowChromeConfigurator: NSViewRepresentable {
         deinit {
             let center = NotificationCenter.default
             observers.forEach(center.removeObserver)
+            // Detach the accessory too, so a recreated representable can't leave a
+            // duplicate or orphaned accessory on the window. Hop to the main actor
+            // for the AppKit call, capturing the values rather than the
+            // deallocating `self`.
+            guard let accessory, let window = hostedWindow else { return }
+            Task { @MainActor in
+                if let index = window.titlebarAccessoryViewControllers.firstIndex(of: accessory) {
+                    window.removeTitlebarAccessoryViewController(at: index)
+                }
+            }
         }
     }
 }
