@@ -10,6 +10,9 @@ struct CodexCLICommandPlan: Equatable {
 
 enum CodexCLIRuntime {
     static let executableName = "codex"
+    // Codex CLI has no model enumeration command (`--model` is free-form),
+    // so this curated list is the only source. Refresh it from
+    // https://developers.openai.com/codex/models when OpenAI ships models.
     static let bundledModelNames = [
         "gpt-5.5",
         "gpt-5.4",
