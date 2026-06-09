@@ -612,8 +612,7 @@ struct ContentView: View {
             onDeleteWorkspace: deleteWorkspace,
             onRenameWorkspace: beginRenamingWorkspace,
             onNewSchedule: showNewSchedule,
-            onEditSchedule: beginEditingSchedule,
-            isSearchActive: $isSearchActive
+            onEditSchedule: beginEditingSchedule
         )
     }
 
@@ -642,6 +641,9 @@ struct ContentView: View {
             max: SidebarColumnLayout.expandedMaximumWidth
         )
         .clipped()
+        // The leading titlebar accessory (AstraLeadingCommandBar) owns the only
+        // sidebar toggle; drop NavigationSplitView's built-in one.
+        .toolbar(removing: .sidebarToggle)
         .transition(sidebarCollapseTransition)
         .animation(sidebarCollapseAnimation, value: splitVisibility)
     }
@@ -696,44 +698,45 @@ struct ContentView: View {
         )
     }
 
+    /// Keeps ⌘F toggling search even though the visible search button lives in
+    /// the leading titlebar accessory (`AstraLeadingCommandBar`), which sits
+    /// outside the window's key responder chain where a `.keyboardShortcut`
+    /// can't fire. The button stays in the SwiftUI hierarchy (so the shortcut
+    /// registers) but is made invisible with a zero-size clear label + opacity(0).
+    private var searchHotkey: some View {
+        Button(action: { isSearchActive.toggle() }) { Color.clear.frame(width: 0, height: 0) }
+            .buttonStyle(.plain)
+            .keyboardShortcut("f", modifiers: .command)
+            .opacity(0)
+            .accessibilityHidden(true)
+    }
+
     // Split out of `body` so each modifier chain stays small enough for the
     // SwiftUI type-checker. `body` adds only the .onChange / .sheet tail.
     private var rootLayoutWithChrome: some View {
         rootLayout
         .frame(minHeight: 600)
         .accessibilityIdentifier("MainContentView")
-        .astraWindowChrome()
+        // Installs the leading titlebar accessory (AstraLeadingCommandBar):
+        // sidebar toggle + search pinned beside the traffic lights in every layout.
+        .astraWindowChrome(
+            isSearchActive: $isSearchActive,
+            isSidebarToggleHovered: $isSidebarToggleHovered,
+            isSidebarHidden: isSidebarColumnHidden,
+            onToggleSidebar: toggleSidebarColumn
+        )
+        .background(searchHotkey)
         .astraHiddenToolbarBackground()
         // Right-rail toggle. Attached to the NavigationSplitView root so
         // .primaryAction lands at the WINDOW's trailing edge — past the
         // inspector column — instead of at the inspector boundary
         // (where attaching to .detail or to the inspector content put it).
         .toolbar {
-            if shouldUseDetailOnlyCompactLayout {
-                ToolbarItem(placement: .navigation) {
-                    AstraToolbarCommandCluster {
-                        Button(action: revealSidebarFromCompactLayout) {
-                            AstraToolbarCommandIcon(systemImage: "sidebar.left", isActive: false)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Show sidebar and close the right panel")
-                        .accessibilityIdentifier("CompactShowSidebarButton")
-                        .accessibilityLabel("Show sidebar")
-                        // Hovering the show-sidebar toggle peeks the collapsed sidebar
-                        // (click still fully reveals it). SidebarPeekContainer observes
-                        // this hover state. Replaces the old full-height leading-edge
-                        // sensor, which opened the peek whenever the pointer drifted to
-                        // the window's left margin.
-                        .onHover { isSidebarToggleHovered = $0 }
-                        // SwiftUI may not emit onHover(false) when the toolbar button is
-                        // removed (e.g. the compact layout exits while the pointer is over
-                        // it), which would strand the peek open while the column stays
-                        // hidden. Reset the hover state on disappearance.
-                        .onDisappear { isSidebarToggleHovered = false }
-                    }
-                }
-            }
-
+            // Sidebar toggle + search live in the leading titlebar accessory
+            // (AstraLeadingCommandBar, installed by astraWindowChrome) — pinned
+            // beside the traffic lights in every layout. It feeds the hover-to-peek
+            // state (isSidebarToggleHovered); the native split-view toggle is
+            // suppressed on `sidebarArea` via `.toolbar(removing: .sidebarToggle)`.
             ContentToolbar(
                 appUpdateController: appUpdateController,
                 onCheckForUpdates: appUpdateController.checkForUpdatesFromButton
@@ -1158,6 +1161,23 @@ struct ContentView: View {
             setActiveWorkspaceCanvasItem(nil, remember: true)
             isWorkspaceRightRailVisible = false
             splitVisibility = .all
+        }
+    }
+
+    /// Backs the leading titlebar-accessory sidebar toggle. When the column is
+    /// showing, collapse it (`.detailOnly`); when it's hidden, reveal it —
+    /// deferring to `revealSidebarFromCompactLayout` in the compact layout, where
+    /// the sidebar and a right panel can't share the width, so revealing closes it.
+    private func toggleSidebarColumn() {
+        guard isSidebarColumnHidden else {
+            animatePanelChange { splitVisibility = .detailOnly }
+            return
+        }
+        if shouldUseDetailOnlyCompactLayout {
+            revealSidebarFromCompactLayout()
+        } else {
+            beginSidebarRevealSettling()
+            animatePanelChange { splitVisibility = .all }
         }
     }
 

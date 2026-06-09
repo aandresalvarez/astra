@@ -23,7 +23,6 @@ struct TaskSidebarContainerView: View {
     var onRenameWorkspace: ((Workspace) -> Void)?
     var onNewSchedule: (() -> Void)?
     var onEditSchedule: ((TaskSchedule) -> Void)?
-    @Binding var isSearchActive: Bool
 
     var body: some View {
         TaskSidebarView(
@@ -46,8 +45,7 @@ struct TaskSidebarContainerView: View {
             onDeleteWorkspace: onDeleteWorkspace,
             onRenameWorkspace: onRenameWorkspace,
             onNewSchedule: onNewSchedule,
-            onEditSchedule: onEditSchedule,
-            isSearchActive: $isSearchActive
+            onEditSchedule: onEditSchedule
         )
     }
 }
@@ -207,7 +205,6 @@ enum SidebarRevealSettlingPolicy {
 }
 
 private struct SidebarTopToolbar: View {
-    @Binding var isSearchActive: Bool
     let showsWorkspaceActions: Bool
     var onNewWorkspace: (() -> Void)?
     var onImportWorkspace: (() -> Void)?
@@ -217,16 +214,11 @@ private struct SidebarTopToolbar: View {
     }
 
     var body: some View {
-        AstraToolbarCommandCluster {
-            Button { isSearchActive.toggle() } label: {
-                AstraToolbarCommandIcon(systemImage: "magnifyingglass", isActive: isSearchActive)
-            }
-            .buttonStyle(.plain)
-            .help("Search (⌘F)")
-            .keyboardShortcut("f", modifiers: .command)
-            .accessibilityLabel("Search")
-
-            if showsAddWorkspaceMenu {
+        // Search moved to the leading titlebar accessory (AstraLeadingCommandBar).
+        // Only the workspace-list add menu remains; render nothing when it doesn't
+        // apply so the column toolbar stays empty rather than padded.
+        if showsAddWorkspaceMenu {
+            AstraToolbarCommandCluster {
                 Menu {
                     if let onNewWorkspace {
                         Button(action: onNewWorkspace) {
@@ -301,7 +293,6 @@ struct TaskSidebarView: View {
     var onRenameWorkspace: ((Workspace) -> Void)?
     var onNewSchedule: (() -> Void)?
     var onEditSchedule: ((TaskSchedule) -> Void)?
-    @Binding var isSearchActive: Bool
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -436,7 +427,6 @@ struct TaskSidebarView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 SidebarTopToolbar(
-                    isSearchActive: $isSearchActive,
                     showsWorkspaceActions: selectedWorkspace == nil,
                     onNewWorkspace: onNewWorkspace,
                     onImportWorkspace: onImportWorkspace
