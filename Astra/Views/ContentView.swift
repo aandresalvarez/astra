@@ -701,7 +701,8 @@ struct ContentView: View {
     /// Keeps ⌘F toggling search even though the visible search button lives in
     /// the leading titlebar accessory (`AstraLeadingCommandBar`), which sits
     /// outside the window's key responder chain where a `.keyboardShortcut`
-    /// can't fire. Rendered zero-size/transparent in the SwiftUI hierarchy.
+    /// can't fire. The button stays in the SwiftUI hierarchy (so the shortcut
+    /// registers) but is made invisible with a zero-size clear label + opacity(0).
     private var searchHotkey: some View {
         Button(action: { isSearchActive.toggle() }) { Color.clear.frame(width: 0, height: 0) }
             .buttonStyle(.plain)

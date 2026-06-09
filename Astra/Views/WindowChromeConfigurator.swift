@@ -52,10 +52,12 @@ struct WindowChromeConfigurator: NSViewRepresentable {
             coordinator.installLeadingCommands(in: window, makeBar: makeBar)
 
             // SwiftUI can attach the toolbar after the representable first appears.
+            // Reuse the coordinator's current builder (pass none) so this delayed
+            // retry can't overwrite a newer one captured by a later update.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak view, weak coordinator] in
                 guard let view, let coordinator, let window = view.window else { return }
                 Self.configure(window)
-                coordinator.installLeadingCommands(in: window, makeBar: makeBar)
+                coordinator.installLeadingCommands(in: window)
             }
         }
     }
@@ -78,11 +80,10 @@ struct WindowChromeConfigurator: NSViewRepresentable {
         window.toolbarStyle = .unified
     }
 
-    /// Holds the titlebar accessory + its hosting view across SwiftUI updates so
-    /// the accessory is installed exactly once and only its root view refreshes.
     /// Owns the leading titlebar accessory and keeps its hosted command bar sized
     /// to the title bar, so the icons stay centered on the traffic lights as the
-    /// title bar height changes (e.g. entering/exiting full screen).
+    /// title bar height changes (e.g. entering/exiting full screen). Reinstalls on
+    /// a new window if the view is reparented (window tabbing/untabbing).
     @MainActor
     final class Coordinator {
         private var hostingView: NSHostingView<AstraLeadingCommandBar>?
@@ -93,9 +94,14 @@ struct WindowChromeConfigurator: NSViewRepresentable {
 
         func installLeadingCommands(
             in window: NSWindow,
-            makeBar: @escaping (CGFloat?) -> AstraLeadingCommandBar
+            makeBar: ((CGFloat?) -> AstraLeadingCommandBar)? = nil
         ) {
-            self.makeBar = makeBar
+            // Adopt a builder only when a fresh one is supplied. The delayed retry
+            // (and the full-screen observer) pass nil and reuse the stored builder,
+            // so a block scheduled by an earlier SwiftUI update can't clobber a
+            // newer builder — and its stale binding values — over it.
+            if let makeBar { self.makeBar = makeBar }
+            guard let builder = self.makeBar else { return }
 
             // Already installed in this same window → just refresh the bar.
             if hostingView != nil, hostedWindow === window {
@@ -112,7 +118,7 @@ struct WindowChromeConfigurator: NSViewRepresentable {
             }
 
             self.hostedWindow = window
-            let host = NSHostingView(rootView: makeBar(titleBarHeight(of: window)))
+            let host = NSHostingView(rootView: builder(titleBarHeight(of: window)))
             host.frame = NSRect(origin: .zero, size: host.fittingSize)
 
             let controller = NSTitlebarAccessoryViewController()
@@ -148,6 +154,9 @@ struct WindowChromeConfigurator: NSViewRepresentable {
         private func refreshBar() {
             guard let host = hostingView, let window = hostedWindow, let makeBar else { return }
             host.rootView = makeBar(titleBarHeight(of: window))
+            // Force the layout pass before reading fittingSize, so the size
+            // reflects the just-assigned root view rather than a cached one.
+            host.layoutSubtreeIfNeeded()
             host.frame.size = host.fittingSize
         }
 
