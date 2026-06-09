@@ -257,7 +257,7 @@ enum TaskContextStateManager {
     static let jsonFileName = "current_state.json"
     static let markdownFileName = "current_state.md"
 
-    private static let schemaVersion = 2
+    static let schemaVersion = 2
     private static let maxTurns = 12
     private static let maxListItems = 20
     private static let maxPromptTurns = 4
@@ -285,7 +285,7 @@ enum TaskContextStateManager {
     @MainActor
     static func recordTurn(task: AgentTask, run: TaskRun, message: String) {
         guard let folder = ensureTaskFolder(for: task) else { return }
-        var state = load(taskFolder: folder) ?? initialState(for: task)
+        var state = TaskContextStateRecovery.recoverState(taskFolder: folder, taskID: task.id) ?? initialState(for: task)
         updateDerivedFields(&state, task: task, latestRun: run)
 
         let turn = makeTurn(
@@ -304,7 +304,7 @@ enum TaskContextStateManager {
     @MainActor
     static func refresh(task: AgentTask) {
         guard let folder = ensureTaskFolder(for: task) else { return }
-        let existing = load(taskFolder: folder)
+        let existing = TaskContextStateRecovery.recoverState(taskFolder: folder, taskID: task.id)
         var state = existing ?? initialState(for: task)
         updateDerivedFields(&state, task: task, latestRun: latestRun(for: task))
         // No-op refresh (common on task open) — skip the encode + two file writes. See perf audit.
@@ -478,18 +478,23 @@ enum TaskContextStateManager {
             }
         }
 
+        // Recovery pointers must survive truncation (prompt-assembly invariant:
+        // "truncation must preserve a pointer"); reserve the tail, truncate only body.
+        var tail: [String] = []
         if task.resolvedRuntimeID == .openCodeCLI {
-            lines.append("- Canonical ASTRA state is already inlined in this capsule for OpenCode.")
-            lines.append("- Use this inline capsule and recent transcript unless the user explicitly asks for raw file contents.")
+            tail.append("- Canonical ASTRA state is already inlined in this capsule for OpenCode.")
+            tail.append("- Use this inline capsule and recent transcript unless the user explicitly asks for raw file contents.")
         } else {
-            lines.append("- Canonical state file: \(folder)/\(jsonFileName)")
-            lines.append("- Read \(folder)/\(markdownFileName) or referenced turn outputs if this follow-up depends on older decisions, failures, changed files, or exact prior wording.")
+            tail.append("- Canonical state file: \(folder)/\(jsonFileName)")
+            tail.append("- Read \(folder)/\(markdownFileName) or referenced turn outputs if this follow-up depends on older decisions, failures, changed files, or exact prior wording.")
         }
 
-        let block = lines.joined(separator: "\n")
-        return block.count > promptBlockCharacterLimit
-            ? String(block.prefix(promptBlockCharacterLimit)) + "\n... (thread intent truncated)"
-            : block
+        let body = lines.joined(separator: "\n")
+        let tailBlock = tail.joined(separator: "\n")
+        let bodyLimit = promptBlockCharacterLimit - tailBlock.count - 1
+        guard body.count > bodyLimit else { return body + "\n" + tailBlock }
+        let notice = "\n... (thread intent truncated)"
+        return String(body.prefix(max(0, bodyLimit - notice.count))) + notice + "\n" + tailBlock
     }
 
     static func promptDiagnosticsFields(task: AgentTask, prompt: String, phase: String) -> [String: String] {
@@ -1792,15 +1797,15 @@ enum TaskContextStateManager {
             event.type == TaskValidationEventTypes.contractOverridden {
             return true
         }
-        let payload = event.payload.lowercased()
         if event.type == "task.completed" {
-            return payload.contains("tests passed") || payload.contains("ai check passed")
+            return ValidationOutcomeMarker.testsPassed.matches(event.payload)
+                || ValidationOutcomeMarker.aiCheckPassed.matches(event.payload)
         }
         guard event.type == "error" else { return false }
-        return payload.contains("tests failed")
-            || payload.contains("validation error")
-            || payload.contains("ai check flagged")
-            || payload.contains("ai check error")
+        return ValidationOutcomeMarker.testsFailed.matches(event.payload)
+            || ValidationOutcomeMarker.validationError.matches(event.payload)
+            || ValidationOutcomeMarker.aiCheckFlagged.matches(event.payload)
+            || ValidationOutcomeMarker.aiCheckError.matches(event.payload)
     }
 
     private static func isDeliverableVerificationEvent(_ event: TaskEvent) -> Bool {
@@ -1831,11 +1836,11 @@ enum TaskContextStateManager {
         if event.type == TaskValidationEventTypes.contractOverridden {
             return "overridden"
         }
-        let payload = event.payload.lowercased()
         if event.type == "task.completed" {
             return "passed"
         }
-        if payload.contains("validation error") || payload.contains("ai check error") {
+        if ValidationOutcomeMarker.validationError.matches(event.payload)
+            || ValidationOutcomeMarker.aiCheckError.matches(event.payload) {
             return "error"
         }
         return "failed"
@@ -2240,10 +2245,4 @@ enum TaskContextStateManager {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
     }()
-}
-
-private extension Array {
-    func prefixArray(_ maxLength: Int) -> [Element] {
-        Array(prefix(maxLength))
-    }
 }

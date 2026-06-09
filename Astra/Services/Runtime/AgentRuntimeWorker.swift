@@ -889,15 +889,15 @@ final class AgentRuntimeWorker {
                         switch testResult {
                         case .passed(let details):
                             task.status = .completed
-                            let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.completed, payload: "Tests passed. \(String(details.prefix(300)))", run: run)
+                            let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.completed, payload: "\(ValidationOutcomeMarker.testsPassed.rawValue). \(String(details.prefix(300)))", run: run)
                             modelContext.insert(event)
                         case .failed(let details):
                             task.status = .failed
-                            let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "Tests failed:\n\(String(details.prefix(500)))", run: run)
+                            let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "\(ValidationOutcomeMarker.testsFailed.rawValue):\n\(String(details.prefix(500)))", run: run)
                             modelContext.insert(event)
                         case .error(let msg):
                             task.status = .pendingUser
-                            let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "Validation error: \(msg). Needs manual review.", run: run)
+                            let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "\(ValidationOutcomeMarker.validationError.rawValue): \(msg). Needs manual review.", run: run)
                             modelContext.insert(event)
                         }
                     case .aiCheck:
@@ -918,15 +918,15 @@ final class AgentRuntimeWorker {
                         switch aiResult {
                         case .passed(let details):
                             task.status = .completed
-                            let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.completed, payload: "AI check passed. \(String(details.prefix(300)))", run: run)
+                            let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.completed, payload: "\(ValidationOutcomeMarker.aiCheckPassed.rawValue). \(String(details.prefix(300)))", run: run)
                             modelContext.insert(event)
                         case .failed(let details):
                             task.status = .pendingUser
-                            let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "AI check flagged issues:\n\(String(details.prefix(500)))", run: run)
+                            let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "\(ValidationOutcomeMarker.aiCheckFlagged.rawValue) issues:\n\(String(details.prefix(500)))", run: run)
                             modelContext.insert(event)
                         case .error(let msg):
                             task.status = .pendingUser
-                            let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "AI check error: \(msg). Needs manual review.", run: run)
+                            let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "\(ValidationOutcomeMarker.aiCheckError.rawValue): \(msg). Needs manual review.", run: run)
                             modelContext.insert(event)
                         }
                     }
