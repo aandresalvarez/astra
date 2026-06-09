@@ -172,7 +172,16 @@ struct GoogleDriveConnectorSearchService {
 
             let maxBytes = min(max(arguments["max_bytes"]?.intValue ?? 4_000, 1), 12_000)
             let clipped = contentData.prefix(maxBytes)
-            let text = String(data: clipped, encoding: .utf8) ?? "File content is not UTF-8 text; metadata only."
+            // Clipping to maxBytes can sever a multi-byte UTF-8 scalar at the boundary; step
+            // back up to 3 bytes to a valid boundary so truncated text still renders instead of
+            // being misreported as non-UTF-8.
+            var text = "File content is not UTF-8 text; metadata only."
+            for trailingDrop in 0...min(3, clipped.count) {
+                if let decoded = String(data: clipped.dropLast(trailingDrop), encoding: .utf8) {
+                    text = decoded
+                    break
+                }
+            }
             return .success(GoogleDriveFileReadSummary(
                 id: metadata.id,
                 name: metadata.name,
