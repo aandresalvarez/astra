@@ -159,6 +159,40 @@ struct SubAgentPermissionsTests {
         #expect(restoredAllow.contains("Grep(*)"))
         #expect(restoredJSON?["hooks"] == nil)
     }
+
+    @Test("Unsupported template hook types (e.g. SessionStart) are not injected")
+    @MainActor func unsupportedHookTypesAreDropped() throws {
+        let dir = NSTemporaryDirectory() + "subagent-hooks-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+
+        let hooksJSON = """
+        {
+          "SessionStart": [
+            { "hooks": [ { "type": "command", "command": "exit 1" } ] }
+          ],
+          "PostToolUse": [
+            {
+              "matcher": "Write",
+              "hooks": [ { "type": "command", "command": "echo ok" } ]
+            }
+          ]
+        }
+        """
+        let backup = ClaudeSettingsStore.injectTemplateHooks(hooksJSON: hooksJSON, workspacePath: dir)
+
+        let settingsPath = (dir as NSString)
+            .appendingPathComponent(".claude/settings.local.json")
+        let data = try Data(contentsOf: URL(fileURLWithPath: settingsPath))
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let hooks = json?["hooks"] as? [String: [[String: Any]]]
+        // The startup hook that could abort the session must be dropped...
+        #expect(hooks?["SessionStart"] == nil)
+        // ...while the editor-supported hook type is still injected.
+        #expect((hooks?["PostToolUse"] ?? []).count == 1)
+
+        ClaudeSettingsStore.restoreTemplateHooks(hooksJSON: hooksJSON, workspacePath: dir, backup: backup)
+    }
 }
 
 // MARK: - Task deliverable expectation

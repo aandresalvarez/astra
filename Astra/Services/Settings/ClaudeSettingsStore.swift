@@ -94,6 +94,13 @@ enum ClaudeSettingsStore {
         return string
     }
 
+    /// Hook event types ASTRA's template editor can author (mirrors
+    /// `TaskTemplate.TemplateHooks` CodingKeys). Any other type in a template's
+    /// raw JSON — notably a startup hook like `SessionStart` — is not injected.
+    private static let injectableHookTypes: Set<String> = [
+        "PreToolUse", "PostToolUse", "Stop", "Notification"
+    ]
+
     static func injectTemplateHooks(
         hooksJSON: String,
         workspacePath: String,
@@ -112,6 +119,16 @@ enum ClaudeSettingsStore {
 
         var existingHooks = settings["hooks"] as? [String: [[String: Any]]] ?? [:]
         for (hookType, entries) in hooks {
+            // Only inject the hook types ASTRA's editor models. A raw/imported
+            // template could otherwise smuggle in a startup hook (e.g. SessionStart)
+            // that aborts the Claude Code session before any response is produced.
+            guard Self.injectableHookTypes.contains(hookType) else {
+                AppLogger.warning(
+                    "Dropped unsupported template hook type '\(hookType)' before launch.",
+                    category: "ClaudeSettings"
+                )
+                continue
+            }
             guard let entries = entries as? [[String: Any]] else { continue }
             var current = existingHooks[hookType] ?? []
             for entry in entries {
