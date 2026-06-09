@@ -1233,6 +1233,206 @@ struct TaskContextStateTests {
         #expect(Int(fields["output_latest_chars"] ?? "0", radix: 10) ?? 0 > 0)
     }
 
+    @Test("oversized capsule truncates the body but preserves the recovery pointer")
+    func oversizedCapsulePreservesRecoveryPointer() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Truncate", primaryPath: root)
+        let task = AgentTask(title: "Big capsule", goal: "Stress the prompt budget", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+
+        func longFacts(_ tag: String, _ count: Int) -> [TaskContextState.ContextFact] {
+            (0..<count).map { index in
+                TaskContextState.ContextFact(
+                    text: String(repeating: "\(tag)\(index) ", count: 60),
+                    sourcePointers: [],
+                    confidence: "derived"
+                )
+            }
+        }
+
+        // Fill multiple capped sections so the rendered body far exceeds the 6_000-char
+        // block budget and forces the truncation path.
+        var state = minimalState()
+        state.constraints = longFacts("constraint", 6)
+        state.acceptanceCriteria = longFacts("criterion", 6)
+        state.standingInstructions = longFacts("standing", 8)
+        state.decisionFacts = longFacts("decision", 6)
+        state.changedFiles = (0..<8).map { index in
+            TaskContextState.ChangedFile(
+                path: "/repo/" + String(repeating: "segment\(index)/", count: 30) + "file.swift",
+                changeType: "edit",
+                sourcePointers: []
+            )
+        }
+        #expect(TaskContextStateManager.saveState(state, taskFolder: folder).didSave)
+
+        let prompt = try #require(TaskContextStateManager.promptContext(for: task))
+        #expect(prompt.contains("... (thread intent truncated)"))   // truncation path was exercised
+        #expect(prompt.contains("- Canonical state file: \(folder)/\(TaskContextStateManager.jsonFileName)"))
+        // The recovery tail is the literal end of the block — proof it was not the casualty.
+        #expect(prompt.hasSuffix("exact prior wording."))
+    }
+
+    @Test("decode failure quarantines the corrupt state file instead of silently discarding it")
+    func decodeFailureQuarantinesCorruptState() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Recover", primaryPath: root)
+        let task = AgentTask(title: "Corrupt", goal: "Survive a corrupt capsule", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let jsonPath = (folder as NSString).appendingPathComponent(TaskContextStateManager.jsonFileName)
+        try "{ not valid json".write(toFile: jsonPath, atomically: true, encoding: .utf8)
+
+        // refresh() recomputes derived state; it must NOT overwrite the unreadable file
+        // in place — the original bytes are preserved under a quarantine name.
+        TaskContextStateManager.refresh(task: task)
+
+        let fileManager = FileManager.default
+        let quarantined = try fileManager.contentsOfDirectory(atPath: folder)
+            .filter { $0.hasPrefix("current_state.corrupt-") && $0.hasSuffix(".json") }
+        #expect(quarantined.count == 1)
+        let quarantinePath = (folder as NSString).appendingPathComponent(try #require(quarantined.first))
+        #expect(try String(contentsOfFile: quarantinePath, encoding: .utf8) == "{ not valid json")
+        // The task recovered to a fresh, valid capsule rather than staying blocked.
+        #expect(TaskContextStateManager.loadResult(taskFolder: folder).status == .loadedCurrent)
+    }
+
+    @Test("a newer-schema capsule is backed up and its content is reused instead of discarded")
+    func newerSchemaCapsuleIsPreservedAsDegradedRead() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Future", primaryPath: root)
+        let task = AgentTask(title: "Newer", goal: "Open a capsule from a newer build", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let jsonPath = (folder as NSString).appendingPathComponent(TaskContextStateManager.jsonFileName)
+
+        // Structurally a current capsule, but stamped with a schema this build predates.
+        var future = minimalState()
+        future.schemaVersion = 99
+        future.currentObjective = "Objective written by a newer build"
+        try JSONEncoder().encode(future).write(to: URL(fileURLWithPath: jsonPath))
+
+        // A plain load rejects the unknown version outright...
+        #expect(TaskContextStateManager.loadResult(taskFolder: folder).status == .unsupportedSchema)
+
+        // ...but recovery backs up the original and reuses its readable content.
+        let recovered = try #require(TaskContextStateRecovery.recoverState(taskFolder: folder, taskID: task.id))
+        #expect(recovered.currentObjective == "Objective written by a newer build") // not blanked
+        #expect(recovered.schemaVersion == TaskContextStateManager.schemaVersion)    // re-labeled to current
+        let backups = try FileManager.default.contentsOfDirectory(atPath: folder)
+            .filter { $0.hasPrefix("current_state.v99-backup") }
+        #expect(backups.count == 1)
+        // A second recovery does not pile up duplicate backups.
+        _ = TaskContextStateRecovery.recoverState(taskFolder: folder, taskID: task.id)
+        let backupsAfter = try FileManager.default.contentsOfDirectory(atPath: folder)
+            .filter { $0.hasPrefix("current_state.v99-backup") }
+        #expect(backupsAfter.count == 1)
+    }
+
+    @Test("verification classification stays coupled to the producer's outcome markers")
+    func verificationClassificationFollowsOutcomeMarkers() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Verify", primaryPath: root)
+        let task = AgentTask(title: "Classify", goal: "Classify validation outcomes", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        // Build the payload exactly as AgentRuntimeWorker does — from the shared marker.
+        // If producer and consumer ever drift, this classification flips and the test fails.
+        let passEvent = TaskEvent(task: task, type: "task.completed",
+                                  payload: "\(ValidationOutcomeMarker.testsPassed.rawValue). 42 examples")
+        passEvent.timestamp = Date(timeIntervalSince1970: 10)
+        context.insert(passEvent)
+        TaskContextStateManager.refresh(task: task)
+        var state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        #expect(state.verification.status == "passed")
+        #expect(state.verification.completionVerified)
+
+        // A later AI-check error must reclassify to "error" via the aiCheckError marker.
+        let errorEvent = TaskEvent(task: task, type: "error",
+                                   payload: "\(ValidationOutcomeMarker.aiCheckError.rawValue): model timed out. Needs manual review.")
+        errorEvent.timestamp = Date(timeIntervalSince1970: 20)
+        context.insert(errorEvent)
+        TaskContextStateManager.refresh(task: task)
+        state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        #expect(state.verification.status == "error")
+        #expect(!state.verification.completionVerified)
+    }
+
+    @Test("prompt block surfaces every populated section within budget and renders deterministically")
+    func promptBlockCoversSectionsWithinBudget() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Snapshot", primaryPath: root)
+        let task = AgentTask(title: "Rich", goal: "Render a fully-populated capsule", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        #expect(TaskContextStateManager.saveState(CapsuleSnapshotTests.richState(), taskFolder: folder).didSave)
+
+        let prompt = try #require(TaskContextStateManager.promptContext(for: task))
+
+        // Every populated section must reach the model-facing block.
+        for marker in [
+            "Context Capsule v2:", "Current objective:", "Approved goal:", "Constraints:",
+            "Acceptance criteria:", "Standing user instructions", "Validation contract: passed",
+            "Decisions:", "Blockers:", "Files changed:", "Verification: passed", "Artifacts:",
+            "Latest handoff:", "Corrective work:", "Next likely action:", "Recent state turns:"
+        ] {
+            #expect(prompt.contains(marker), "prompt block missing section: \(marker)")
+        }
+        #expect(prompt.count <= 6_000) // mirrors TaskContextStateManager.promptBlockCharacterLimit
+        #expect(prompt.contains("- Canonical state file: \(folder)/\(TaskContextStateManager.jsonFileName)"))
+        // Deterministic for a stable state + budget (prompt-assembly invariant).
+        #expect(TaskContextStateManager.promptContext(for: task) == prompt)
+    }
+
+    @Test("repeated quarantines in the same second do not overwrite each other")
+    func repeatedQuarantinesArePreserved() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Quarantine", primaryPath: root)
+        let task = AgentTask(title: "Repeat", goal: "Survive repeated corruption", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let jsonPath = (folder as NSString).appendingPathComponent(TaskContextStateManager.jsonFileName)
+
+        try "{ corrupt one".write(toFile: jsonPath, atomically: true, encoding: .utf8)
+        TaskContextStateManager.refresh(task: task) // quarantine #1, then fresh save
+        try "{ corrupt two".write(toFile: jsonPath, atomically: true, encoding: .utf8)
+        TaskContextStateManager.refresh(task: task) // quarantine #2, same wall-clock second
+
+        let quarantined = try FileManager.default.contentsOfDirectory(atPath: folder)
+            .filter { $0.hasPrefix("current_state.corrupt-") && $0.hasSuffix(".json") }
+        #expect(quarantined.count == 2) // neither overwrote the other
+        var preserved: Set<String> = []
+        for name in quarantined {
+            preserved.insert(try String(contentsOfFile: (folder as NSString).appendingPathComponent(name), encoding: .utf8))
+        }
+        #expect(preserved == ["{ corrupt one", "{ corrupt two"])
+    }
+
     private func temporaryRoot() throws -> String {
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-context-state-\(UUID().uuidString)", isDirectory: true)
