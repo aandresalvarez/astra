@@ -190,12 +190,13 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
     func modelAvailabilityCheck(configuration: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {
         let configuredPath = configuration.executablePath(for: id)
         let executable = configuredPath.isEmpty ? CursorCLIRuntime.detectPath() : configuredPath
-        let models = CursorCLIRuntime.modelNames(executablePath: executable) ?? CursorCLIRuntime.availableModelNames()
-        RuntimeModelAvailability.persistAvailableModels(models, for: id, authority: modelAvailabilityAuthority)
+        let models = CursorCLIRuntime.modelDetails(executablePath: executable)
+            ?? CursorCLIRuntime.availableModelNames().map { RuntimeModelDetail(value: $0) }
+        RuntimeModelAvailability.persistAvailableModelDetails(models, for: id, authority: modelAvailabilityAuthority)
         return RuntimeReadinessCheck(
             id: "cursor-models",
             title: "Cursor models",
-            detail: "Available: \(models.joined(separator: ", "))",
+            detail: "Available: \(models.map(\.value).joined(separator: ", "))",
             state: .ready,
             remediation: nil
         )
