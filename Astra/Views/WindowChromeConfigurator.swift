@@ -83,6 +83,7 @@ struct WindowChromeConfigurator: NSViewRepresentable {
     @MainActor
     final class Coordinator {
         private var hostingView: NSHostingView<AstraLeadingCommandBar>?
+        private var accessory: NSTitlebarAccessoryViewController?
         private weak var hostedWindow: NSWindow?
         private var makeBar: ((CGFloat?) -> AstraLeadingCommandBar)?
         private var observers: [NSObjectProtocol] = []
@@ -92,24 +93,50 @@ struct WindowChromeConfigurator: NSViewRepresentable {
             makeBar: @escaping (CGFloat?) -> AstraLeadingCommandBar
         ) {
             self.makeBar = makeBar
-            self.hostedWindow = window
 
-            if hostingView != nil {
+            // Already installed in this same window → just refresh the bar.
+            if hostingView != nil, hostedWindow === window {
                 refreshBar()
                 return
             }
 
+            // The view was reparented into a different NSWindow (e.g. window
+            // tabbing / "Move Tab to New Window") or the old window went away.
+            // Detach the stale accessory + observers before reinstalling, so the
+            // new window gets the controls and no orphan is left behind.
+            if hostingView != nil {
+                teardown()
+            }
+
+            self.hostedWindow = window
             let host = NSHostingView(rootView: makeBar(titleBarHeight(of: window)))
             host.frame = NSRect(origin: .zero, size: host.fittingSize)
 
-            let accessory = NSTitlebarAccessoryViewController()
-            accessory.layoutAttribute = .leading
-            accessory.view = host
-            window.addTitlebarAccessoryViewController(accessory)
+            let controller = NSTitlebarAccessoryViewController()
+            controller.layoutAttribute = .leading
+            controller.view = host
+            window.addTitlebarAccessoryViewController(controller)
             hostingView = host
+            accessory = controller
 
             observeTitleBarChanges(of: window)
             refreshBar()
+        }
+
+        /// Removes the accessory + title-bar observers from the currently hosted
+        /// window so the controls can be reinstalled on a new one (window
+        /// tabbing/untabbing). No-op for the accessory if its window is already
+        /// gone — AppKit drops the accessory when the window deallocates.
+        private func teardown() {
+            if let accessory, let window = hostedWindow,
+               let index = window.titlebarAccessoryViewControllers.firstIndex(of: accessory) {
+                window.removeTitlebarAccessoryViewController(at: index)
+            }
+            accessory = nil
+            hostingView = nil
+            let center = NotificationCenter.default
+            observers.forEach(center.removeObserver)
+            observers.removeAll()
         }
 
         /// Rebuilds the bar at the current measured title bar height and resizes
