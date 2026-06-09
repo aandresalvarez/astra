@@ -43,14 +43,17 @@ struct WindowChromeConfigurator: NSViewRepresentable {
     private func configureSoon(from view: NSView, context: Context) {
         let makeBar = makeCommandBar
         let coordinator = context.coordinator
-        DispatchQueue.main.async {
-            guard let window = view.window else { return }
+        // Capture view/coordinator weakly: if the representable is torn down (or
+        // the window closes) before these blocks run, bail out instead of keeping
+        // them alive or re-installing the accessory after teardown.
+        DispatchQueue.main.async { [weak view, weak coordinator] in
+            guard let view, let coordinator, let window = view.window else { return }
             Self.configure(window)
             coordinator.installLeadingCommands(in: window, makeBar: makeBar)
 
             // SwiftUI can attach the toolbar after the representable first appears.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak window] in
-                guard let window else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak view, weak coordinator] in
+                guard let view, let coordinator, let window = view.window else { return }
                 Self.configure(window)
                 coordinator.installLeadingCommands(in: window, makeBar: makeBar)
             }
