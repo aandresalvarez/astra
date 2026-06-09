@@ -46,7 +46,11 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
         // Strip benign provider warnings (e.g. deprecation notices) so they never
         // become the surfaced cause or defeat the noVisibleOutput branch below.
         let meaningful = strippingBenignWarnings(raw)
-        let warningOnly = !raw.isEmpty && meaningful.isEmpty
+        // "Warning only" requires actual (non-whitespace) stderr that reduced to
+        // nothing after stripping benign warnings — a blank line or trailing
+        // newline must not count as a warning.
+        let hadStderr = !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let warningOnly = hadStderr && meaningful.isEmpty
         let redacted = LogSanitizer.sanitize(meaningful, maxLength: 800)
         // Keyword classification (auth/model/quota/...) still inspects the FULL
         // output so a real error embedded alongside a warning is matched first.
