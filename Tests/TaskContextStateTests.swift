@@ -1331,6 +1331,36 @@ struct TaskContextStateTests {
         #expect(!state.verification.completionVerified)
     }
 
+    @Test("prompt block surfaces every populated section within budget and renders deterministically")
+    func promptBlockCoversSectionsWithinBudget() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Snapshot", primaryPath: root)
+        let task = AgentTask(title: "Rich", goal: "Render a fully-populated capsule", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        #expect(TaskContextStateManager.saveState(CapsuleSnapshotTests.richState(), taskFolder: folder).didSave)
+
+        let prompt = try #require(TaskContextStateManager.promptContext(for: task))
+
+        // Every populated section must reach the model-facing block.
+        for marker in [
+            "Context Capsule v2:", "Current objective:", "Approved goal:", "Constraints:",
+            "Acceptance criteria:", "Standing user instructions", "Validation contract: passed",
+            "Decisions:", "Blockers:", "Files changed:", "Verification: passed", "Artifacts:",
+            "Latest handoff:", "Corrective work:", "Next likely action:", "Recent state turns:"
+        ] {
+            #expect(prompt.contains(marker), "prompt block missing section: \(marker)")
+        }
+        #expect(prompt.count <= 6_000) // mirrors TaskContextStateManager.promptBlockCharacterLimit
+        #expect(prompt.contains("- Canonical state file: \(folder)/\(TaskContextStateManager.jsonFileName)"))
+        // Deterministic for a stable state + budget (prompt-assembly invariant).
+        #expect(TaskContextStateManager.promptContext(for: task) == prompt)
+    }
+
     private func temporaryRoot() throws -> String {
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-context-state-\(UUID().uuidString)", isDirectory: true)
