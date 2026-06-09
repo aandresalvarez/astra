@@ -74,60 +74,29 @@ private struct ShelfBoundaryMetricsPreferenceKey: PreferenceKey {
     }
 }
 
-private struct CompactPanelLayoutObserver: View {
-    let width: CGFloat
-    let splitVisibility: NavigationSplitViewVisibility
-    let activeCanvasItem: WorkspaceCanvasItem?
-    let isRightRailVisible: Bool
-    let workspaceID: UUID?
+/// Reports window width and right-panel presence to `SidebarPresentationModel`.
+/// A background `GeometryReader` measures the full content width; both signals are
+/// pure proposals — the model alone turns them into sidebar visibility.
+private struct SidebarLayoutObserver: ViewModifier {
+    let hasRightSidePanel: Bool
     let onWidthChanged: (CGFloat) -> Void
-    let onSplitVisibilityChanged: () -> Void
-    let onPanelStateChanged: () -> Void
-    var body: some View {
-        Color.clear
-            .onAppear {
-                onWidthChanged(width)
-            }
-            .onChange(of: width) {
-                onWidthChanged(width)
-            }
-            .onChange(of: splitVisibility) {
-                onSplitVisibilityChanged()
-            }
-            .onChange(of: activeCanvasItem) {
-                onPanelStateChanged()
-            }
-            .onChange(of: isRightRailVisible) {
-                onPanelStateChanged()
-            }
-            .onChange(of: workspaceID) {
-                onPanelStateChanged()
-            }
-    }
-}
+    let onRightSidePanelChanged: (Bool) -> Void
 
-private struct CompactPanelLayoutCoordinator: ViewModifier {
-    let splitVisibility: NavigationSplitViewVisibility
-    let activeCanvasItem: WorkspaceCanvasItem?
-    let isRightRailVisible: Bool
-    let workspaceID: UUID?
-    let onWidthChanged: (CGFloat) -> Void
-    let onSplitVisibilityChanged: () -> Void
-    let onPanelStateChanged: () -> Void
     func body(content: Content) -> some View {
         content
             .background {
                 GeometryReader { proxy in
-                    CompactPanelLayoutObserver(
-                        width: proxy.size.width,
-                        splitVisibility: splitVisibility,
-                        activeCanvasItem: activeCanvasItem,
-                        isRightRailVisible: isRightRailVisible,
-                        workspaceID: workspaceID,
-                        onWidthChanged: onWidthChanged,
-                        onSplitVisibilityChanged: onSplitVisibilityChanged,
-                        onPanelStateChanged: onPanelStateChanged
-                    )
+                    Color.clear
+                        .onAppear {
+                            onWidthChanged(proxy.size.width)
+                            onRightSidePanelChanged(hasRightSidePanel)
+                        }
+                        .onChange(of: proxy.size.width) {
+                            onWidthChanged(proxy.size.width)
+                        }
+                        .onChange(of: hasRightSidePanel) {
+                            onRightSidePanelChanged(hasRightSidePanel)
+                        }
                 }
             }
     }
@@ -294,17 +263,16 @@ struct ContentView: View {
     @AppStorage(WorkspaceRecoveryService.recoveryNoticeKey) private var recoveryNotice = ""
     @State private var activeWorkspaceCanvasItem: WorkspaceCanvasItem?
     @State private var browserToolbarEngine = ShelfBrowserEngine.embedded
-    @State private var splitVisibility: NavigationSplitViewVisibility = .all
-    @State private var responsiveLayoutWidth: CGFloat = 0
-    @State private var didAutoHideSidebarForCompactPanels = false
-    @State private var isSidebarRevealInProgress = false
-    @State private var sidebarRevealRevision = 0
-    @State private var sidebarRevealTimeoutTask: Task<Void, Never>?
-    // MARK: Sidebar Peek
-    /// Hover state of the show-sidebar toggle, which drives the hover-to-peek overlay
-    /// (`SidebarPeekContainer`). That container owns the rest of the peek state and
-    /// never mutates `splitVisibility`, so it can't feed the collapse/reveal loop that
-    /// `SidebarSplitViewGuard` suppresses.
+    // MARK: Sidebar Presentation
+    /// The single owner of sidebar visibility — docked column, floating overlay
+    /// drawer, or collapsed. Replaces the former `splitVisibility` @State plus the
+    /// responsive/reveal-settling flags; every width probe and the AppKit split
+    /// guard now *propose* changes through this model instead of racing on
+    /// `splitVisibility` directly.
+    @StateObject private var presentation = SidebarPresentationModel()
+    private let sidebarTitlebarCommands = SidebarTitlebarCommandBridge.shared
+    /// Hover state of the show-sidebar toggle, which drives the transient
+    /// hover-preview of the overlay drawer (`SidebarPeekContainer`).
     @State private var isSidebarToggleHovered = false
     @State private var cachedHasCanvasContent = false
     /// Run-once guard for the deferred Sparkle update probe. handleAppear can
@@ -503,28 +471,11 @@ struct ContentView: View {
         activeWorkspaceCanvasItem != nil
     }
 
-    private var compactPanelMutualExclusionWidth: CGFloat {
-        PanelLayoutGeometry.compactPanelMutualExclusionWidth
-    }
-
-    private var isCompactPanelLayout: Bool {
-        PanelLayoutGeometry.isCompactPanelLayout(width: responsiveLayoutWidth)
-    }
-
+    /// Whether a right-side panel (the workspace inspector rail or a canvas shelf)
+    /// is currently presented. Fed into `SidebarPresentationModel` so it can decide
+    /// whether the sidebar docks alongside it or presents as an overlay drawer.
     private var hasRightSidePanelPresented: Bool {
         activeWorkspaceCanvasItem != nil || (effectiveWorkspace != nil && isWorkspaceRightRailVisible)
-    }
-
-    private var shouldUseDetailOnlyCompactLayout: Bool {
-        isCompactPanelLayout && hasRightSidePanelPresented
-    }
-
-    /// True when the sidebar column is not occupying layout — either manually
-    /// collapsed inside the split view (`.detailOnly`) or hidden by the
-    /// responsive compact path. Gates the hover-to-peek overlay (opened by hovering
-    /// the show-sidebar toggle).
-    private var isSidebarColumnHidden: Bool {
-        shouldUseDetailOnlyCompactLayout || splitVisibility == .detailOnly
     }
 
     private var panelTransitionAnimation: Animation? {
@@ -559,29 +510,26 @@ struct ContentView: View {
         )
     }
 
-    private var compactPanelLayoutCoordinator: CompactPanelLayoutCoordinator {
-        CompactPanelLayoutCoordinator(
-            splitVisibility: splitVisibility,
-            activeCanvasItem: activeWorkspaceCanvasItem,
-            isRightRailVisible: isWorkspaceRightRailVisible,
-            workspaceID: effectiveWorkspaceID,
-            onWidthChanged: handleResponsiveLayoutWidthChanged,
-            onSplitVisibilityChanged: handleSplitVisibilityChanged,
-            onPanelStateChanged: handleRightSidePanelStateChanged
+    /// Feeds window width and right-panel presence into the presentation model.
+    /// The model is the only thing that turns those inputs into sidebar visibility.
+    private var sidebarLayoutObserver: SidebarLayoutObserver {
+        SidebarLayoutObserver(
+            hasRightSidePanel: hasRightSidePanelPresented,
+            onWidthChanged: { presentation.setResponsiveWidth($0) },
+            onRightSidePanelChanged: { presentation.setHasRightSidePanel($0) }
         )
     }
 
-    @ViewBuilder
+    /// The split view is ALWAYS mounted — the sidebar is hidden by collapsing the
+    /// column (`columnVisibility`), never by swapping the whole layout out. That
+    /// keeps the `NavigationSplitView` (the sole renderer of the column-visibility
+    /// binding) live at all times, so a "show sidebar" can never be a dead write.
     private var rootLayout: some View {
-        if shouldUseDetailOnlyCompactLayout {
-            detailArea
-        } else {
-            splitLayout
-        }
+        splitLayout
     }
 
     private var splitLayout: some View {
-        NavigationSplitView(columnVisibility: $splitVisibility) {
+        NavigationSplitView(columnVisibility: presentation.columnVisibilityBinding()) {
             sidebarArea
         } detail: {
             detailArea
@@ -589,9 +537,10 @@ struct ContentView: View {
         .navigationSplitViewStyle(.balanced)
     }
 
-    /// The sidebar's content, free of any `NavigationSplitView` sizing
-    /// modifiers, so it can be reused verbatim by both the real column
-    /// (`sidebarArea`) and the floating peek overlay (`SidebarPeekPanel`).
+    /// The sidebar's content, free of any `NavigationSplitView` sizing modifiers,
+    /// so it can be reused verbatim by both the docked column (`sidebarArea`) and
+    /// the floating overlay drawer (`SidebarPeekContainer`) — both wrapping it in
+    /// the same `SidebarSurface` so the two never diverge in style.
     private var sidebarContent: some View {
         TaskSidebarContainerView(
             selectedTask: selectedTaskBinding,
@@ -617,21 +566,24 @@ struct ContentView: View {
     }
 
     private var sidebarArea: some View {
-        sidebarContent
+        SidebarSurface(style: .docked) {
+            sidebarContent
+        }
         .background {
             GeometryReader { proxy in
                 Color.clear
                     .onAppear {
-                        handleSidebarColumnWidthChanged(proxy.size.width)
+                        presentation.noteColumnWidth(proxy.size.width)
                     }
                     .onChange(of: proxy.size.width) {
-                        handleSidebarColumnWidthChanged(proxy.size.width)
+                        presentation.noteColumnWidth(proxy.size.width)
                     }
             }
             SidebarSplitViewGuard(
                 minimumExpandedWidth: SidebarColumnLayout.expandedMinimumWidth,
-                isRevealInProgress: isSidebarRevealInProgress,
-                onCollapse: collapseSidebarForCompressedSplit
+                isRevealInProgress: presentation.isSettling,
+                onReadableWidth: { presentation.noteReadableSplitSubviewWidth($0) },
+                onCollapse: { presentation.proposeCompressedCollapse() }
             )
             .frame(width: 0, height: 0)
         }
@@ -645,7 +597,7 @@ struct ContentView: View {
         // sidebar toggle; drop NavigationSplitView's built-in one.
         .toolbar(removing: .sidebarToggle)
         .transition(sidebarCollapseTransition)
-        .animation(sidebarCollapseAnimation, value: splitVisibility)
+        .animation(sidebarCollapseAnimation, value: presentation.columnVisibility)
     }
 
     private var detailArea: some View {
@@ -721,9 +673,9 @@ struct ContentView: View {
         // sidebar toggle + search pinned beside the traffic lights in every layout.
         .astraWindowChrome(
             isSearchActive: $isSearchActive,
+            sidebarCommands: sidebarTitlebarCommands,
             isSidebarToggleHovered: $isSidebarToggleHovered,
-            isSidebarHidden: isSidebarColumnHidden,
-            onToggleSidebar: toggleSidebarColumn
+            isSidebarHidden: presentation.isSidebarHidden
         )
         .background(searchHotkey)
         .astraHiddenToolbarBackground()
@@ -757,7 +709,7 @@ struct ContentView: View {
             }
         }
         .shelfBoundaryOverlay()
-        .modifier(compactPanelLayoutCoordinator)
+        .modifier(sidebarLayoutObserver)
         .overlay {
             if isSearchActive {
                 SearchPanelOverlayContainer(
@@ -770,9 +722,11 @@ struct ContentView: View {
         }
         .overlay(alignment: .topLeading) {
             SidebarPeekContainer(
-                isColumnHidden: isSidebarColumnHidden,
+                mode: presentation.mode,
                 isTriggerHovered: isSidebarToggleHovered,
-                reduceMotion: reduceMotion
+                width: presentation.sidebarWidth,
+                reduceMotion: reduceMotion,
+                onDismiss: { presentation.dismissOverlay() }
             ) {
                 sidebarContent
             }
@@ -802,6 +756,12 @@ struct ContentView: View {
                 animatePanelChange {
                     setActiveWorkspaceCanvasItem(nil, remember: false)
                 }
+            }
+            // Opening a task while the sidebar is a too-narrow overlay drawer
+            // dismisses the drawer so the detail area is visible (no-op when the
+            // sidebar is docked or already collapsed).
+            if hasOpenTaskThread {
+                presentation.handleSelectionCommitted()
             }
         }
         .onChange(of: activeWorkspaceCanvasItem) {
@@ -913,7 +873,13 @@ struct ContentView: View {
         }
         .id(uiScale)
         .onAppear {
+            sidebarTitlebarCommands.installSidebarToggleHandler {
+                handleSidebarToggle()
+            }
             handleAppear()
+        }
+        .onDisappear {
+            sidebarTitlebarCommands.clearSidebarToggleHandler()
         }
         .onChange(of: executionSettingsSignature) { applySettings() }
         .background {
@@ -1037,37 +1003,17 @@ struct ContentView: View {
         }
     }
 
-    private func handleResponsiveLayoutWidthChanged(_ width: CGFloat) {
-        responsiveLayoutWidth = width
-        reconcileCompactPanelLayout(for: width)
-    }
-
-    private func handleSidebarColumnWidthChanged(_ width: CGFloat) {
-        if isSidebarRevealInProgress,
-           SidebarColumnLayout.shouldCompleteSidebarReveal(width: width) {
-            finishSidebarRevealSettling()
+    private func handleSidebarToggle() {
+        guard presentation.shouldClearRightSidePanelBeforeReveal else {
+            presentation.toggle()
+            return
         }
 
-        guard splitVisibility != .detailOnly else { return }
-        guard SidebarColumnLayout.shouldCollapseExpandedSidebar(
-            width: width,
-            isRevealInProgress: isSidebarRevealInProgress
-        ) else { return }
-
-        collapseSidebarForCompressedSplit()
-    }
-
-    private func collapseSidebarForCompressedSplit() {
-        guard splitVisibility != .detailOnly else { return }
-
-        finishSidebarRevealSettling()
-        withAnimation(sidebarCollapseAnimation) {
-            splitVisibility = .detailOnly
+        animatePanelChange {
+            setActiveWorkspaceCanvasItem(nil, remember: true)
+            isWorkspaceRightRailVisible = false
+            presentation.revealAfterClearingRightSidePanel()
         }
-    }
-
-    private func handleRightSidePanelStateChanged() {
-        reconcileCompactPanelLayout()
     }
 
     private func handleSelectedTaskCanvasSignatureChanged() {
@@ -1085,126 +1031,6 @@ struct ContentView: View {
         refreshQueryShelfAvailabilityForSelectedTask()
         refreshGeneratedHTMLAvailabilityForSelectedTask()
         restoreRememberedWorkspaceCanvasItemIfAvailable()
-    }
-
-    private func reconcileCompactPanelLayout(for width: CGFloat? = nil) {
-        let currentWidth = width ?? responsiveLayoutWidth
-        guard currentWidth > 0 else { return }
-
-        guard currentWidth < compactPanelMutualExclusionWidth else {
-            if didAutoHideSidebarForCompactPanels {
-                didAutoHideSidebarForCompactPanels = false
-                if splitVisibility == .detailOnly {
-                    withAnimation(panelTransitionAnimation) {
-                        splitVisibility = .all
-                    }
-                }
-            }
-            return
-        }
-
-        guard hasRightSidePanelPresented else {
-            if didAutoHideSidebarForCompactPanels {
-                didAutoHideSidebarForCompactPanels = false
-                if splitVisibility == .detailOnly {
-                    withAnimation(panelTransitionAnimation) {
-                        splitVisibility = .all
-                    }
-                }
-            }
-            return
-        }
-        guard PanelLayoutGeometry.shouldAutoHideSidebarForCompactPanels(
-            width: currentWidth,
-            hasRightSidePanelPresented: hasRightSidePanelPresented,
-            isSidebarDetailOnly: splitVisibility == .detailOnly,
-            isSidebarRevealInProgress: isSidebarRevealInProgress
-        ) else { return }
-
-        didAutoHideSidebarForCompactPanels = true
-        withAnimation(panelTransitionAnimation) {
-            splitVisibility = .detailOnly
-        }
-    }
-
-    private func handleSplitVisibilityChanged() {
-        if splitVisibility != .detailOnly,
-           SidebarRevealSettlingPolicy.shouldBeginReveal(isRevealInProgress: isSidebarRevealInProgress) {
-            beginSidebarRevealSettling()
-        }
-
-        guard isCompactPanelLayout else {
-            if splitVisibility != .detailOnly {
-                didAutoHideSidebarForCompactPanels = false
-            }
-            return
-        }
-
-        guard splitVisibility != .detailOnly else { return }
-        guard hasRightSidePanelPresented else { return }
-
-        didAutoHideSidebarForCompactPanels = false
-        hideRightSidePanelsForCompactSidebar()
-    }
-
-    private func hideRightSidePanelsForCompactSidebar() {
-        animatePanelChange {
-            setActiveWorkspaceCanvasItem(nil, remember: true)
-            isWorkspaceRightRailVisible = false
-        }
-    }
-
-    private func revealSidebarFromCompactLayout() {
-        didAutoHideSidebarForCompactPanels = false
-        beginSidebarRevealSettling()
-        animatePanelChange {
-            setActiveWorkspaceCanvasItem(nil, remember: true)
-            isWorkspaceRightRailVisible = false
-            splitVisibility = .all
-        }
-    }
-
-    /// Backs the leading titlebar-accessory sidebar toggle. When the column is
-    /// showing, collapse it (`.detailOnly`); when it's hidden, reveal it —
-    /// deferring to `revealSidebarFromCompactLayout` in the compact layout, where
-    /// the sidebar and a right panel can't share the width, so revealing closes it.
-    private func toggleSidebarColumn() {
-        guard isSidebarColumnHidden else {
-            animatePanelChange { splitVisibility = .detailOnly }
-            return
-        }
-        if shouldUseDetailOnlyCompactLayout {
-            revealSidebarFromCompactLayout()
-        } else {
-            beginSidebarRevealSettling()
-            animatePanelChange { splitVisibility = .all }
-        }
-    }
-
-    private func beginSidebarRevealSettling() {
-        sidebarRevealRevision = SidebarRevealSettlingPolicy.nextRevision(after: sidebarRevealRevision)
-        let scheduledRevision = sidebarRevealRevision
-        isSidebarRevealInProgress = true
-        sidebarRevealTimeoutTask?.cancel()
-        sidebarRevealTimeoutTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: SidebarRevealSettlingPolicy.fallbackDelayNanoseconds)
-            guard SidebarRevealSettlingPolicy.shouldClearReveal(
-                scheduledRevision: scheduledRevision,
-                currentRevision: sidebarRevealRevision,
-                isRevealInProgress: isSidebarRevealInProgress
-            ) else { return }
-
-            isSidebarRevealInProgress = false
-            sidebarRevealTimeoutTask = nil
-            reconcileCompactPanelLayout()
-        }
-    }
-
-    private func finishSidebarRevealSettling() {
-        sidebarRevealRevision = SidebarRevealSettlingPolicy.nextRevision(after: sidebarRevealRevision)
-        isSidebarRevealInProgress = false
-        sidebarRevealTimeoutTask?.cancel()
-        sidebarRevealTimeoutTask = nil
     }
 
     private func setRightRailPresented(_ isPresented: Bool) {
