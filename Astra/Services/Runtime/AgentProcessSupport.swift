@@ -240,6 +240,26 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         }
     }
 
+    /// Sends a control message over the dedicated control stream WITHOUT closing the write end,
+    /// so a long-lived `serve` helper can receive multiple messages (run/cancel/shutdown) across a
+    /// session. Unlike `requestCancellation`, this neither terminates the process nor closes fd 4.
+    /// Returns false if there is no control stream or it has already been closed.
+    @discardableResult
+    func sendControl(_ message: LocalModelControlMessage) -> Bool {
+        guard let controlPipe else { return false }
+        lock.lock()
+        let closed = controlWriteClosed
+        lock.unlock()
+        guard !closed else { return false }
+        guard let data = try? JSONEncoder().encode(message) else { return false }
+        return writeAll(data + Data([0x0a]), to: controlPipe.fileHandleForWriting.fileDescriptor)
+    }
+
+    /// Closes the control write end, ending a persistent `serve` session's input stream.
+    func closeControl() {
+        closeControlWriteIfNeeded()
+    }
+
     func terminate() {
         let ids = currentIDs()
         guard ids.isRunning else { return }

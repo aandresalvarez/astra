@@ -616,15 +616,38 @@ public struct LocalModelControlMessage: Codable, Sendable, Equatable {
     public var v: Int
     public var type: String
     public var reason: String?
+    /// Correlates a control message with the in-flight turn in a persistent `serve` session.
+    public var requestID: String?
+    /// For `type == "run"`: path to the serialized `LocalModelRunRequest` for this turn.
+    public var requestFile: String?
 
-    public init(v: Int = 1, type: String, reason: String? = nil) {
+    public init(
+        v: Int = 1,
+        type: String,
+        reason: String? = nil,
+        requestID: String? = nil,
+        requestFile: String? = nil
+    ) {
         self.v = v
         self.type = type
         self.reason = reason
+        self.requestID = requestID
+        self.requestFile = requestFile
     }
 
     public static func cancel(reason: String) -> LocalModelControlMessage {
         LocalModelControlMessage(type: "cancel", reason: reason)
+    }
+
+    /// Asks a long-lived `serve` helper to run one turn whose request body is serialized at
+    /// `requestFile`. Emitted envelopes carry the matching `requestID` so the app can demux them.
+    public static func run(requestID: String, requestFile: String) -> LocalModelControlMessage {
+        LocalModelControlMessage(type: "run", requestID: requestID, requestFile: requestFile)
+    }
+
+    /// Asks a long-lived `serve` helper to exit cleanly.
+    public static func shutdown() -> LocalModelControlMessage {
+        LocalModelControlMessage(type: "shutdown")
     }
 }
 
@@ -851,6 +874,8 @@ public struct LocalModelProtocolEnvelope: Codable, Sendable, Equatable {
     public var v: Int
     public var type: String
     public var sessionID: String?
+    /// Identifies which turn this envelope belongs to in a persistent `serve` session.
+    public var requestID: String?
     public var model: String?
     public var text: String?
     public var summary: String?
@@ -881,6 +906,7 @@ public struct LocalModelProtocolEnvelope: Codable, Sendable, Equatable {
         v: Int = 1,
         type: String,
         sessionID: String? = nil,
+        requestID: String? = nil,
         model: String? = nil,
         text: String? = nil,
         summary: String? = nil,
@@ -910,6 +936,7 @@ public struct LocalModelProtocolEnvelope: Codable, Sendable, Equatable {
         self.v = v
         self.type = type
         self.sessionID = sessionID
+        self.requestID = requestID
         self.model = model
         self.text = text
         self.summary = summary
