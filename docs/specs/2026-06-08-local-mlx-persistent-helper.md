@@ -12,7 +12,7 @@ non-`astra` worktree directory, so it must be built from the canonical checkout 
 - `Tools/AstraLocalModelNative/.../main.swift` — the `run` path calls `MLXLMCommon.loadModelContainer`
   on **every** invocation, generates once, emits `completed`, optionally idles for `keepWarmTTL`, then
   the process **exits**.
-- `Astra/Services/LocalAgentOrchestrator.swift:3782` — `runProcess` spawns a fresh
+- `Astra/Services/Runtime/LocalAgentOrchestrator.swift:3782` — `runProcess` spawns a fresh
   `AgentExecutionScopedProcess` per call; the loop at `:768` (`for turn in 1...maxTurns`) calls it once
   per turn. Net: **N cold multi-GB model loads** + **O(N²) prompt re-tokenization**.
   `keepWarmTTLSeconds` (`:3754`) is plumbed but inert across turns.

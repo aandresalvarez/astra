@@ -1831,11 +1831,11 @@ struct LocalModelRuntimeTests {
             encoding: .utf8
         )
         let runtimeSource = try String(
-            contentsOf: repoRoot.appendingPathComponent("Astra/Services/LocalModelRuntime.swift"),
+            contentsOf: repoRoot.appendingPathComponent("Astra/Services/Runtime/LocalModelRuntime.swift"),
             encoding: .utf8
         )
         let orchestratorSource = try String(
-            contentsOf: repoRoot.appendingPathComponent("Astra/Services/LocalAgentOrchestrator.swift"),
+            contentsOf: repoRoot.appendingPathComponent("Astra/Services/Runtime/LocalAgentOrchestrator.swift"),
             encoding: .utf8
         )
 
@@ -2091,7 +2091,7 @@ struct LocalModelRuntimeTests {
         }
 
         let source = try String(
-            contentsOf: repoRoot.appendingPathComponent("Astra/Services/LocalAgentOrchestrator.swift"),
+            contentsOf: repoRoot.appendingPathComponent("Astra/Services/Runtime/LocalAgentOrchestrator.swift"),
             encoding: .utf8
         )
         let brokerSwitch = sourceSlice(source, from: "func execute(\n        callID", to: "    private func readFile")
@@ -2583,7 +2583,7 @@ struct LocalModelRuntimeTests {
         #expect(LocalAgentBetaSoakStore.samples(defaults: defaults).isEmpty)
 
         let orchestratorSource = try String(
-            contentsOf: repoRoot.appendingPathComponent("Astra/Services/LocalAgentOrchestrator.swift"),
+            contentsOf: repoRoot.appendingPathComponent("Astra/Services/Runtime/LocalAgentOrchestrator.swift"),
             encoding: .utf8
         )
         #expect(orchestratorSource.contains("LocalAgentBetaSoakStore.recordRuntimeSample"))
@@ -2997,7 +2997,7 @@ struct LocalModelRuntimeTests {
             encoding: .utf8
         )
         let localModelRuntimeSource = try String(
-            contentsOf: repoRoot.appendingPathComponent("Astra/Services/LocalModelRuntime.swift"),
+            contentsOf: repoRoot.appendingPathComponent("Astra/Services/Runtime/LocalModelRuntime.swift"),
             encoding: .utf8
         )
 
