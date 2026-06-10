@@ -190,10 +190,45 @@ final class AgentRuntimeWorker {
     ) async {
         let stateAfterRun = TaskPlanService.reconstruct(for: task)
         let currentStepStatus = stateAfterRun.plan?.steps.first(where: { $0.id == step.id })?.status
+        let lastRun = task.runs.sorted { $0.startedAt < $1.startedAt }.last
+
+        // Checkpoint: a finished process is a claim, not evidence. Resolve the
+        // step's declared required outputs before recording it done — even a
+        // provider-emitted completion marker doesn't outrank a missing output.
+        // Provider-skipped steps are exempt (their outputs legitimately don't
+        // exist), and a provider-reported blocker takes priority below so its
+        // actionable detail isn't shadowed by a generic checkpoint message.
+        let checkpoint = PlanStepCheckpointVerifier.verify(step: step, plan: plan, task: task)
+        let latestBlockIsCheckpointImposed = PlanStepCheckpointVerifier.latestBlockIsCheckpointImposed(
+            task: task,
+            stepID: step.id
+        )
+        let providerReportedBlock = currentStepStatus == .blocked && !latestBlockIsCheckpointImposed
+        if currentStepStatus != .skipped, !providerReportedBlock, !checkpoint.missingRequiredPaths.isEmpty {
+            let message = PlanStepCheckpointVerifier.recordCheckpointBlock(
+                step: step,
+                missing: checkpoint.missingRequiredPaths,
+                plan: plan,
+                task: task,
+                run: lastRun,
+                modelContext: modelContext
+            )
+            pauseApprovedPlanForUser(task: task, modelContext: modelContext, message: message, run: lastRun)
+            return
+        }
+
         let shouldFallbackComplete: Bool = {
             switch currentStepStatus {
-            case .done, .skipped, .blocked:
+            case .done, .skipped:
                 return false
+            case .blocked:
+                // Only ASTRA's own checkpoint blocks are liftable by evidence:
+                // a retried step whose required outputs now exist completes.
+                // Provider-reported blockers carry meaning the filesystem
+                // can't refute and still need an explicit completion marker.
+                return latestBlockIsCheckpointImposed
+                    && checkpoint.isVerified
+                    && !checkpoint.verifiedPaths.isEmpty
             case .pending, .running, nil:
                 return true
             }
@@ -206,9 +241,9 @@ final class AgentRuntimeWorker {
                 status: .done,
                 task: task,
                 modelContext: modelContext,
-                run: task.runs.sorted { $0.startedAt < $1.startedAt }.last,
+                run: lastRun,
                 title: step.title,
-                summary: "Completed approved step: \(step.title)"
+                summary: "Completed approved step: \(step.title).\(checkpoint.completionEvidence)"
             )
         }
 
@@ -259,6 +294,23 @@ final class AgentRuntimeWorker {
                     ? "Plan blocked. Fix the blocker, then approve the plan again to retry."
                     : "Plan blocked at \(blockedStep.title): \(blockedStep.detail)",
                 run: task.runs.sorted { $0.startedAt < $1.startedAt }.last
+            )
+            return
+        }
+
+        // Single-run plans have no intermediate run boundaries, so the output
+        // checkpoint for every step lands here instead.
+        if let message = PlanStepCheckpointVerifier.recordFullPlanCheckpointBlocks(
+            plan: refreshedPlan,
+            task: task,
+            run: task.runs.sorted(by: { $0.startedAt < $1.startedAt }).last,
+            modelContext: modelContext
+        ) {
+            pauseApprovedPlanForUser(
+                task: task,
+                modelContext: modelContext,
+                message: message,
+                run: task.runs.sorted(by: { $0.startedAt < $1.startedAt }).last
             )
             return
         }
