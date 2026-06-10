@@ -577,7 +577,8 @@ final class AgentRuntimeWorker {
             currentRun: run,
             runtimeAdapter: runtimeAdapter,
             phase: auditPhase,
-            currentLaunchSignature: launchSignature
+            currentLaunchSignature: launchSignature,
+            grantNeutralizingStrings: Self.signatureGrantStrings(for: manifest)
         )
         Self.recordProviderLaunchSignature(
             launchSignature,
@@ -640,6 +641,14 @@ final class AgentRuntimeWorker {
             contextText: providerLaunchContextText,
             nativeContinuationSessionID: nativeContinuationSessionID,
             runID: run.id,
+            liveApprovalsEnabled: liveApprovalsEnabled,
+            onInteractiveAsk: Self.interactiveAskHandler(
+                runtime: selectedRuntime,
+                task: task,
+                run: run,
+                modelContext: modelContext,
+                pendingEvents: pendingEvents
+            ),
             onLine: { line, parsesJSONLines in
                 PerformanceSignposts.processStreamLine {
                     streamTelemetry?.recordRawLine(parsesJSONLines: parsesJSONLines)
@@ -1519,12 +1528,12 @@ final class AgentRuntimeWorker {
         let runtimeID: String
         let model: String
         let policyLevel: String
-        let policyScope: String
+        var policyScope: String
         let providerAdapterVersion: Int
         let permissionMode: String
-        let allowedTools: [String]
-        let askFirstTools: [String]
-        let deniedTools: [String]
+        var allowedTools: [String]
+        var askFirstTools: [String]
+        var deniedTools: [String]
         let allowedShellPatterns: [String]
         let askFirstShellPatterns: [String]
         let deniedShellPatterns: [String]
@@ -1572,13 +1581,43 @@ final class AgentRuntimeWorker {
         }
     }
 
+    // Approval grants accumulate inside a task, so signatures are compared
+    // modulo grant-derived entries: otherwise the first post-approval turn
+    // always reads as a policy change and drops the provider session.
+    private static func grantNeutralizedSignatureValue(
+        _ payload: ProviderLaunchSignaturePayload,
+        grantStrings: Set<String>
+    ) -> String {
+        guard !grantStrings.isEmpty else { return payload.signatureValue }
+        let grantKeys = Set(grantStrings.map(canonicalToolKey))
+        var neutral = payload
+        neutral.allowedTools = payload.allowedTools.filter { !grantStrings.contains($0) }
+        neutral.askFirstTools = payload.askFirstTools.filter { !grantKeys.contains(canonicalToolKey($0)) }
+        neutral.deniedTools = payload.deniedTools.filter { !grantKeys.contains(canonicalToolKey($0)) }
+        neutral.policyScope = "grant_neutral"
+        return neutral.signatureValue
+    }
+
+    private static func canonicalToolKey(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func signatureGrantStrings(for manifest: RunPermissionManifest) -> Set<String> {
+        guard !manifest.approvalGrants.isEmpty else { return [] }
+        return Set(
+            PermissionBroker.providerGrantStrings(for: manifest.approvalGrants, runtime: manifest.providerID)
+                + PermissionBroker.providerRuntimeGrantStrings(for: manifest.approvalGrants, runtime: manifest.providerID)
+        )
+    }
+
     @MainActor
     private static func nativeContinuationSessionID(
         for task: AgentTask,
         currentRun: TaskRun,
         runtimeAdapter: any AgentRuntimeDescriptorReadiness,
         phase: String,
-        currentLaunchSignature: ProviderLaunchSignaturePayload
+        currentLaunchSignature: ProviderLaunchSignaturePayload,
+        grantNeutralizingStrings: Set<String> = []
     ) -> NativeContinuationDecision {
         guard phase == "resume",
               runtimeAdapter.descriptor.supportsNativeContinuation else {
@@ -1602,7 +1641,9 @@ final class AgentRuntimeWorker {
             return NativeContinuationDecision(sessionID: nil, skipReason: "missing_previous_launch_signature", signatureMatched: false)
         }
 
-        guard previousSignature.signatureValue == currentLaunchSignature.signatureValue else {
+        let previousValue = grantNeutralizedSignatureValue(previousSignature, grantStrings: grantNeutralizingStrings)
+        let currentValue = grantNeutralizedSignatureValue(currentLaunchSignature, grantStrings: grantNeutralizingStrings)
+        guard previousValue == currentValue else {
             return NativeContinuationDecision(sessionID: nil, skipReason: "launch_signature_changed", signatureMatched: false)
         }
 
@@ -1992,5 +2033,10 @@ final class AgentRuntimeWorker {
     /// the composer security gate can opt into autonomous runs for trusted work.
     var skipPermissions: Bool = false
     var permissionPolicy: PermissionPolicy = .restricted
+
+    /// Routes provider permission prompts through ASTRA mid-run (stdio control
+    /// protocol) for providers that support it, instead of failing the run and
+    /// relaunching after approval.
+    var liveApprovalsEnabled: Bool = true
 
 }

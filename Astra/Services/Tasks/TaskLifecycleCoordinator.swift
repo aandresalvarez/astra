@@ -286,6 +286,13 @@ final class TaskLifecycleCoordinator {
         modelContext.insert(event)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
 
+        // A live in-flight ask means the provider process is still alive and
+        // blocked on this decision: answer it over the control channel instead
+        // of relaunching a new run. The recorded grants cover later turns.
+        if InFlightPermissionCenter.shared.resolveAll(taskID: task.id, approved: true) > 0 {
+            return Task {}
+        }
+
         let resumeMessage = PermissionBroker.resumeMessage(
             providerID: runtime,
             grants: taskScopedGrants,
@@ -323,6 +330,16 @@ final class TaskLifecycleCoordinator {
         )
         modelContext.insert(event)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+
+        // Live in-flight ask: answer the waiting provider process instead of
+        // relaunching a new run.
+        if InFlightPermissionCenter.shared.resolveAll(taskID: task.id, approved: true) > 0 {
+            AppLogger.audit(.taskApproved, category: "UI", taskID: task.id, fields: [
+                "approval_type": "runtime_permission_live",
+                "approval_scope": "once"
+            ])
+            return Task {}
+        }
 
         let runtime = task.resolvedRuntimeID
         let approvedGrants = Self.approvedRuntimePermissionGrants(for: task)

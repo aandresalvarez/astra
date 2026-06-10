@@ -49,6 +49,9 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
 
     let stdoutPipe = Pipe()
     let stderrPipe = Pipe()
+    // Created only when the provider speaks a stdin control protocol; other
+    // providers keep inheriting the parent's stdin unchanged.
+    private let stdinPipe: Pipe?
     var terminationHandler: ((AgentExecutionScopedProcess) -> Void)?
 
     var stdoutFileHandle: FileHandle { stdoutPipe.fileHandleForReading }
@@ -70,12 +73,21 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         executablePath: String,
         arguments: [String],
         currentDirectory: String,
-        environment: [String: String]
+        environment: [String: String],
+        providesStdinChannel: Bool = false
     ) {
         self.executablePath = executablePath
         self.arguments = arguments
         self.currentDirectory = currentDirectory
         self.environment = environment
+        self.stdinPipe = providesStdinChannel ? Pipe() : nil
+    }
+
+    /// Writes one line to the child's stdin. Safe to call after the child has
+    /// exited; a broken pipe is swallowed.
+    func writeStdinLine(_ line: String) {
+        guard let stdinPipe, let data = (line + "\n").data(using: .utf8) else { return }
+        try? stdinPipe.fileHandleForWriting.write(contentsOf: data)
     }
 
     func run() throws {
@@ -101,6 +113,14 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
                   operation: "posix_spawn_file_actions_addclose(stdout_read)")
         try check(posix_spawn_file_actions_addclose(&actions, stderrPipe.fileHandleForReading.fileDescriptor),
                   operation: "posix_spawn_file_actions_addclose(stderr_read)")
+        if let stdinPipe {
+            try check(posix_spawn_file_actions_adddup2(&actions, stdinPipe.fileHandleForReading.fileDescriptor, STDIN_FILENO),
+                      operation: "posix_spawn_file_actions_adddup2(stdin)")
+            try check(posix_spawn_file_actions_addclose(&actions, stdinPipe.fileHandleForReading.fileDescriptor),
+                      operation: "posix_spawn_file_actions_addclose(stdin_read)")
+            try check(posix_spawn_file_actions_addclose(&actions, stdinPipe.fileHandleForWriting.fileDescriptor),
+                      operation: "posix_spawn_file_actions_addclose(stdin_write)")
+        }
         try addWorkingDirectory(to: &actions)
 
         let flags = Int16(POSIX_SPAWN_SETPGROUP)
@@ -132,6 +152,7 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
 
         stdoutPipe.fileHandleForWriting.closeFile()
         stderrPipe.fileHandleForWriting.closeFile()
+        stdinPipe?.fileHandleForReading.closeFile()
 
         lock.lock()
         processID = childPID
@@ -192,6 +213,8 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         }
 
         cleanupResidualProcessGroup()
+
+        stdinPipe?.fileHandleForWriting.closeFile()
 
         lock.lock()
         status = exitStatus

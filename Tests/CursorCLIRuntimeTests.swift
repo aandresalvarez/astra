@@ -284,4 +284,27 @@ struct CursorCLIRuntimeTests {
         #expect(render.diagnostics.contains { $0.id == "cursor_cli.fine-grained-provider-native-gap" })
         #expect(render.usesBroadProviderPermissions == false)
     }
+
+    @Test("Cursor does not advertise ask-first support and flags brokered asks")
+    func cursorAskModeIsBrokeredNotProviderNative() {
+        let features = CursorPolicyAdapter().supportedFeatures
+        #expect(features.supportsAskFirstMode == false)
+        #expect(features.supportsInteractiveCallbacks == false)
+
+        let render = CursorPolicyAdapter().render(
+            policy: .preset(.review),
+            context: PolicyRenderContext(
+                runtimeID: .cursorCLI,
+                model: "composer-2.5-fast",
+                workspacePath: "/tmp/workspace",
+                additionalPaths: [],
+                requestedAllowedTools: ["Read", "Bash"],
+                localToolCommands: [],
+                environmentKeyNames: [],
+                credentialLabels: [],
+                providerFeatures: features
+            )
+        )
+        #expect(render.diagnostics.contains { $0.id == "cursor_cli.ask-checkpoints-brokered" })
+    }
 }
