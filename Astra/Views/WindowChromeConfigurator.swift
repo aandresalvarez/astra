@@ -150,7 +150,10 @@ struct WindowChromeConfigurator: NSViewRepresentable {
             }
 
             self.hostedWindow = window
-            let host = NSHostingView(rootView: builder(state.titleBarHeight))
+            // FullScreenSafe: a plain NSHostingView here crashes the app when
+            // SwiftUI invalidates constraints during the enter-full-screen
+            // display cycle (see FullScreenSafeHostingView).
+            let host = FullScreenSafeHostingView(rootView: builder(state.titleBarHeight))
             host.frame = NSRect(origin: .zero, size: host.fittingSize)
 
             let controller = NSTitlebarAccessoryViewController()
