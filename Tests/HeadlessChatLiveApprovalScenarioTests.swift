@@ -80,13 +80,15 @@ extension HeadlessChatScenarioTests {
               *'"behavior":"allow"'*)
                 printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Pushed after live approval"}]}}'
                 printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Pushed after live approval","usage":{"input_tokens":3,"output_tokens":5}}'
-                exit 0
                 ;;
               *)
                 printf '%s\\n' '{"type":"result","subtype":"success","is_error":true,"duration_ms":12,"num_turns":1,"result":"denied","usage":{"input_tokens":1,"output_tokens":1}}'
-                exit 1
                 ;;
             esac
+            # Like the real CLI in stream-json input mode: after the result,
+            # keep reading stdin and exit only on EOF.
+            while IFS= read -r _; do :; done
+            exit 0
             """, argsFile: argsFile)
         )
 
@@ -152,6 +154,9 @@ extension HeadlessChatScenarioTests {
             printf '%s\\n' "$response_line" >> \(Self.shQuote(stdinFile.path))
             printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Skipped the cleanup step after the decline."}]}}'
             printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Skipped the cleanup step after the decline.","usage":{"input_tokens":3,"output_tokens":5}}'
+            # Like the real CLI in stream-json input mode: after the result,
+            # keep reading stdin and exit only on EOF.
+            while IFS= read -r _; do :; done
             exit 0
             """)
         )
