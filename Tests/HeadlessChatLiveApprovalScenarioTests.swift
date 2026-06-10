@@ -45,9 +45,12 @@ struct LiveApprovalControlProtocolTests {
             taskID: taskID,
             ask: InFlightPermissionCenter.PendingAsk(requestID: "r1", toolName: "Bash", inputSummary: nil)
         )
-        while center.pendingAsks(taskID: taskID).isEmpty {
+        var ticks = 0
+        while center.pendingAsks(taskID: taskID).isEmpty, ticks < 400 {
             try? await Task.sleep(nanoseconds: 5_000_000)
+            ticks += 1
         }
+        #expect(!center.pendingAsks(taskID: taskID).isEmpty)
         #expect(center.pendingAsks(taskID: taskID).first?.toolName == "Bash")
         #expect(center.resolveAll(taskID: taskID, approved: true) == 1)
         let approved = await decision
