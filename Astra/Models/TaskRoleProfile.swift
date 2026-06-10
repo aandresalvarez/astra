@@ -37,11 +37,11 @@ enum TaskRoleID: String, CaseIterable, Codable, Identifiable, Sendable {
 
     var symbolName: String {
         switch self {
-        case .planner: "list.bullet.clipboard"
-        case .worker: "hammer"
-        case .verifier: "checkmark.seal"
-        case .browserTester: "safari"
-        case .summarizer: "text.alignleft"
+        case .planner: "clipboard.fill"
+        case .worker: "hammer.fill"
+        case .verifier: "checkmark.seal.fill"
+        case .browserTester: "safari.fill"
+        case .summarizer: "doc.text.fill"
         }
     }
 }

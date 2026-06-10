@@ -62,11 +62,11 @@ public enum AgentPolicyLevel: String, Codable, CaseIterable, Identifiable, Senda
     public var symbolName: String {
         switch self {
         case .locked: "lock.fill"
-        case .review: "lock.shield.fill"
+        case .review: "shield.righthalf.filled"
         case .build: "hammer.fill"
         case .network: "network"
-        case .autonomous: "exclamationmark.shield.fill"
-        case .custom: "slider.horizontal.3"
+        case .autonomous: "shield.checkered"
+        case .custom: "slider.horizontal.2.square.on.square"
         }
     }
 

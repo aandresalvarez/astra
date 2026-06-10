@@ -297,7 +297,7 @@ struct TaskDecisionDockPresentation: Equatable {
                         id: "plan.mode",
                         title: "Execution mode",
                         summary: $0,
-                        systemImage: "slider.horizontal.3",
+                        systemImage: "slider.horizontal.2.square.on.square",
                         tone: .neutral
                     )
                 }
