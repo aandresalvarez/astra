@@ -1644,6 +1644,9 @@ enum AgentPromptBuilder {
               !context.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return
         }
+        // Re-reads the capsule JSON the render above already loaded; the file
+        // is small and per-follow-up, and a combined render+state API would
+        // grow TaskContextStateManager past its fitness budget.
         let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
         if let evictionNotice = CapsuleSelectionPressure.promptNotice(forTaskFolder: taskFolder) {
             context += "\n" + evictionNotice

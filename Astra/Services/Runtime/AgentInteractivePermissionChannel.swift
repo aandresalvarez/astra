@@ -207,7 +207,10 @@ extension AgentRuntimeWorker {
                 )
             )
             pendingEvents.add {
-                if approved, task.status == .pendingUser {
+                // The provider continues after allow AND deny alike, so the
+                // pause always lifts; the run-status guard keeps this from
+                // resurrecting a task whose run already finished.
+                if task.status == .pendingUser, run.status == .running {
                     task.status = .running
                     task.updatedAt = Date()
                 }

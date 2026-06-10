@@ -32,7 +32,7 @@ enum PromptContextIOSnapshotLoader {
         guard !taskFolder.isEmpty else { return .empty }
         return PromptContextIOSnapshot(
             recentConversationTranscript: recentSessionOutputTranscript(taskFolder: taskFolder, window: window),
-            sessionHistorySummary: sessionHistorySummary(taskFolder: taskFolder)
+            sessionHistorySummary: sessionHistorySummary(taskFolder: taskFolder, window: window)
         )
     }
 
@@ -77,14 +77,17 @@ enum PromptContextIOSnapshotLoader {
         )
     }
 
-    private static func sessionHistorySummary(taskFolder: String) -> PromptContextSnapshotText? {
+    private static func sessionHistorySummary(
+        taskFolder: String,
+        window: TranscriptWindow
+    ) -> PromptContextSnapshotText? {
         let historyPath = SessionHistoryManager.historyPath(taskFolder: taskFolder)
         guard let history = try? String(contentsOfFile: historyPath, encoding: .utf8),
               !history.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return nil
         }
         return PromptContextSnapshotText(
-            text: recentSessionHistorySummary(from: history),
+            text: recentSessionHistorySummary(from: history, window: window),
             sourcePointers: [PromptContextSourcePointer(label: "session history", target: historyPath)]
         )
     }
@@ -106,7 +109,7 @@ enum PromptContextIOSnapshotLoader {
             .sorted { ($0 as NSString).lastPathComponent < ($1 as NSString).lastPathComponent }
     }
 
-    private static func recentSessionHistorySummary(from history: String) -> String {
+    private static func recentSessionHistorySummary(from history: String, window: TranscriptWindow) -> String {
         let marker = "\n## Turn "
         let pieces = history.components(separatedBy: marker)
         guard pieces.count > 1 else {
@@ -114,9 +117,9 @@ enum PromptContextIOSnapshotLoader {
         }
 
         let header = pieces[0]
-        let recentTurns = pieces.dropFirst().suffix(TranscriptWindow.standard.fileLimit).map { "## Turn " + $0 }
+        let recentTurns = pieces.dropFirst().suffix(window.fileLimit).map { "## Turn " + $0 }
         let summary = ([header] + recentTurns).joined(separator: "\n")
-        return boundedText(summary, maxCharacters: 8_000, keeping: .suffix)
+        return boundedText(summary, maxCharacters: window.fullOutputMaxCharacters, keeping: .suffix)
     }
 
     private enum TextBound {

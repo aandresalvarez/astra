@@ -132,4 +132,52 @@ extension HeadlessChatScenarioTests {
         #expect(stdin.contains("\"behavior\":\"allow\""))
         #expect(stdin.contains("\"request_id\":\"req-live-1\""))
     }
+
+    @Test("Claude live ask denial answers the process and lifts the pause")
+    func claudeLiveAskDenialAnswersProcessAndLiftsPause() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let stdinFile = harness.rootURL.appendingPathComponent("claude-live-deny-stdin.txt")
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            IFS= read -r first_line
+            printf '%s\\n' '{"type":"system","subtype":"init","session_id":"live-deny-sess","model":"claude-sonnet-4-6"}'
+            printf '%s\\n' '{"type":"control_request","request_id":"req-deny-1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"rm -rf build"}}}'
+            IFS= read -r response_line
+            printf '%s\\n' "$response_line" >> \(Self.shQuote(stdinFile.path))
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Skipped the cleanup step after the decline."}]}}'
+            printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Skipped the cleanup step after the decline.","usage":{"input_tokens":3,"output_tokens":5}}'
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(runtime: .claudeCode, goal: "Tidy the build folder", model: "claude-sonnet-4-6")
+        let worker = harness.makeWorker(
+            runtime: .claudeCode,
+            executablePath: claudePath,
+            liveApprovals: true
+        )
+
+        let runHandle = Task { await harness.execute(task: task, worker: worker) }
+        var ticks = 0
+        while InFlightPermissionCenter.shared.pendingAsks(taskID: task.id).isEmpty, ticks < 200 {
+            try await Task.sleep(nanoseconds: 50_000_000)
+            ticks += 1
+        }
+        #expect(!InFlightPermissionCenter.shared.pendingAsks(taskID: task.id).isEmpty)
+
+        InFlightPermissionCenter.shared.resolveAll(taskID: task.id, approved: false)
+        _ = await runHandle.value
+
+        let stdin = try String(contentsOf: stdinFile, encoding: .utf8)
+        #expect(stdin.contains("\"behavior\":\"deny\""))
+        #expect(stdin.contains("\"request_id\":\"req-deny-1\""))
+        // The provider kept going after the decline; the live-ask pause must
+        // not leave the finished task parked in pendingUser.
+        #expect(task.events.contains { $0.type == "system.info" && $0.payload.contains("declined") })
+        #expect(task.runs.count == 1)
+        #expect(task.status == .completed)
+    }
 }

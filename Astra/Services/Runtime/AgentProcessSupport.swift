@@ -116,6 +116,8 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         if let stdinPipe {
             try check(posix_spawn_file_actions_adddup2(&actions, stdinPipe.fileHandleForReading.fileDescriptor, STDIN_FILENO),
                       operation: "posix_spawn_file_actions_adddup2(stdin)")
+            try check(posix_spawn_file_actions_addclose(&actions, stdinPipe.fileHandleForReading.fileDescriptor),
+                      operation: "posix_spawn_file_actions_addclose(stdin_read)")
             try check(posix_spawn_file_actions_addclose(&actions, stdinPipe.fileHandleForWriting.fileDescriptor),
                       operation: "posix_spawn_file_actions_addclose(stdin_write)")
         }
