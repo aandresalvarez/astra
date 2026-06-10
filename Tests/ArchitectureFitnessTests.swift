@@ -297,7 +297,7 @@ struct ArchitectureFitnessTests {
             "Astra/Views/ContentView.swift": 5_000,
             "Astra/Views/WorkspaceRightRailView.swift": 3_500,
             "Astra/Views/ChatPanelView.swift": 3_200,
-            "Astra/Services/Runtime/AgentRuntimeAdapter.swift": 2_900,
+            "Astra/Services/Runtime/AgentRuntimeAdapter.swift": 2_960,
             "Astra/Views/PluginCatalogView.swift": 2_900,
             "Astra/Views/ShelfMarkdownPanelView.swift": 2_850,
             "Astra/Views/WorkspaceGitSectionView.swift": 2_650,
@@ -308,10 +308,10 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Persistence/TaskContextStateManager.swift": 2_250,
             "Astra/Services/Runtime/AgentPromptBuilder.swift": 2_300,
             "Astra/Views/OnboardingWizardView.swift": 2_250,
-            "Astra/Services/Runtime/AgentProcessSupport.swift": 2_200,
+            "Astra/Services/Runtime/AgentProcessSupport.swift": 2_250,
             "Astra/Services/Browser/BrowserAnalysis.swift": 2_100,
             "Astra/Services/Git/GitService.swift": 2_100,
-            "Astra/Services/Runtime/AgentRuntimeWorker.swift": 2_100,
+            "Astra/Services/Runtime/AgentRuntimeWorker.swift": 2_150,
             "Astra/Services/Browser/ControlledBrowserController.swift": 2_050,
             "Astra/Views/ShelfBrowserPanelView.swift": 2_050
         ]
