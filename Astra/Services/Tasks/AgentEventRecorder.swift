@@ -61,6 +61,16 @@ enum AgentEventRecordingPresentation {
             let suffixStart = incomingText.index(incomingText.startIndex, offsetBy: existingOutput.count)
             return String(incomingText[suffixStart...])
         }
+        // Partial-message providers re-send the streamed text as one complete
+        // envelope. Protocol-marker stripping can shift whitespace between the
+        // two copies, so a whitespace-insensitive repeat of the tail is an echo
+        // of what the deltas already recorded, not new output.
+        let normalizedIncoming = incomingText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedExisting = existingOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !normalizedIncoming.isEmpty,
+           normalizedExisting == normalizedIncoming || normalizedExisting.hasSuffix(normalizedIncoming) {
+            return ""
+        }
         return incomingText
     }
 
