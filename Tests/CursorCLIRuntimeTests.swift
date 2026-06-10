@@ -20,22 +20,22 @@ struct CursorCLIRuntimeTests {
         #expect(CursorCLIRuntime.defaultModelName() == "composer-2.5-fast")
     }
 
-    @Test("Cursor model list parser extracts model IDs")
-    func cursorModelListParserExtractsModelIDs() {
+    @Test("Cursor model list parser extracts IDs and display names")
+    func cursorModelListParserExtractsIDsAndDisplayNames() {
         let output = """
         Available models
 
-        auto - Auto
+        auto - Auto (current)
         composer-2.5-fast - Composer 2.5 Fast (default)
         gpt-5.5-medium - GPT-5.5 Fast
 
         Tip: use --model <id> to switch.
         """
 
-        #expect(CursorCLIRuntime.parseModelNames(output) == [
-            "auto",
-            "composer-2.5-fast",
-            "gpt-5.5-medium"
+        #expect(CursorCLIRuntime.parseModelDetails(output) == [
+            RuntimeModelDetail(value: "auto", displayName: "Auto"),
+            RuntimeModelDetail(value: "composer-2.5-fast", displayName: "Composer 2.5 Fast"),
+            RuntimeModelDetail(value: "gpt-5.5-medium", displayName: "GPT-5.5 Fast")
         ])
     }
 
@@ -283,5 +283,28 @@ struct CursorCLIRuntimeTests {
         #expect(render.generatedConfigPreview.contains("--force") == false)
         #expect(render.diagnostics.contains { $0.id == "cursor_cli.fine-grained-provider-native-gap" })
         #expect(render.usesBroadProviderPermissions == false)
+    }
+
+    @Test("Cursor does not advertise ask-first support and flags brokered asks")
+    func cursorAskModeIsBrokeredNotProviderNative() {
+        let features = CursorPolicyAdapter().supportedFeatures
+        #expect(features.supportsAskFirstMode == false)
+        #expect(features.supportsInteractiveCallbacks == false)
+
+        let render = CursorPolicyAdapter().render(
+            policy: .preset(.review),
+            context: PolicyRenderContext(
+                runtimeID: .cursorCLI,
+                model: "composer-2.5-fast",
+                workspacePath: "/tmp/workspace",
+                additionalPaths: [],
+                requestedAllowedTools: ["Read", "Bash"],
+                localToolCommands: [],
+                environmentKeyNames: [],
+                credentialLabels: [],
+                providerFeatures: features
+            )
+        )
+        #expect(render.diagnostics.contains { $0.id == "cursor_cli.ask-checkpoints-brokered" })
     }
 }

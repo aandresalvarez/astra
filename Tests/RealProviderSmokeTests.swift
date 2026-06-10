@@ -37,6 +37,32 @@ struct RealProviderSmokeTests {
     }
 
     @Test(
+        "Real Claude CLI reports its model list via the initialize handshake",
+        .enabled(if: realProviderSmokeEnabled, "Set RUN_REAL_PROVIDERS=1 to run account-backed provider smoke tests")
+    )
+    func realClaudeCLIModelDiscovery() async throws {
+        let claudePath = try #require(Self.findExecutable("claude"))
+
+        // Empty environment removes the ANTHROPIC_API_KEY fallback, so a
+        // result here can only have come from the CLI's own login — the
+        // exact scenario that used to dead-end on hardcoded defaults.
+        let service = ClaudeModelAvailabilityService(environment: { [:] })
+        let result = await service.availableModels(
+            configuration: ClaudeModelAvailabilityConfiguration(
+                provider: .anthropic,
+                executablePath: claudePath
+            )
+        )
+
+        guard case .available(let models) = result else {
+            Issue.record("Expected CLI-reported models, got \(result)")
+            return
+        }
+        print("claude CLI models: \(models.map { "\($0.value) → \($0.displayName ?? "(no display name)")" })")
+        #expect(!models.isEmpty)
+    }
+
+    @Test(
         "Real backend switches from Claude to Copilot mid-thread",
         .enabled(if: realProviderSmokeEnabled, "Set RUN_REAL_PROVIDERS=1 to run account-backed provider smoke tests")
     )

@@ -20,7 +20,8 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         prerequisite: CommonCLIPrerequisites.codex,
         defaultModel: CodexCLIRuntime.defaultModelName(),
         defaultModels: CodexCLIRuntime.availableModelNames(),
-        supportsAstraRunProtocol: true
+        supportsAstraRunProtocol: true,
+        supportsNativeContinuation: true
     )
     let readinessCheckID = "codex-cli"
     let budgetProfile = AgentRuntimeBudgetProfile(runtime: .codexCLI, launchOverheadTokens: 0)
@@ -187,6 +188,19 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         )
     }
 
+    func installPlan(detectExecutable: @Sendable (String) -> String) -> RuntimeCLIInstallPlan? {
+        guard let npm = detectedExecutable(named: "npm", detectExecutable: detectExecutable) else {
+            return nil
+        }
+        return RuntimeCLIInstallPlan(
+            runtime: id,
+            installerName: "npm",
+            executablePath: npm,
+            arguments: ["install", "-g", "@openai/codex"],
+            displayCommand: "npm install -g @openai/codex"
+        )
+    }
+
     func modelAvailabilityCheck(configuration _: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {
         let models = CodexCLIRuntime.availableModelNames()
         RuntimeModelAvailability.persistAvailableModels(models, for: id, authority: modelAvailabilityAuthority)
@@ -232,7 +246,8 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
             providerHomeDirectory: context.providerHomeDirectory,
             pathPrefix: pathPrefix,
             includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task)
-                || taskEnv["ASTRA_BROWSER_URL"] != nil
+                || taskEnv["ASTRA_BROWSER_URL"] != nil,
+            resumeSessionID: context.nativeContinuationSessionID
         )
 
         return AgentRuntimeProcessLaunchPlan(
@@ -265,9 +280,16 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "task_env_count": String(taskEnv.count),
                 "uses_json": String(plan.arguments.contains("--json")),
                 "uses_cd": String(plan.arguments.contains("--cd")),
-                "uses_skip_git_repo_check": String(plan.arguments.contains("--skip-git-repo-check"))
+                "uses_skip_git_repo_check": String(plan.arguments.contains("--skip-git-repo-check")),
+                "uses_native_continuation": String(context.nativeContinuationSessionID != nil)
             ]
         )
+    }
+
+    func shouldClearStaleSessionOnFailure(phase: String, result: AgentProcessResult) -> Bool {
+        guard phase == "resume" else { return false }
+        let error = result.error?.lowercased() ?? ""
+        return error.contains("session") && (error.contains("not found") || error.contains("no such"))
     }
 
     func parseProcessEvents(line: String, parsesJSONLines: Bool) -> [ParsedEvent] {

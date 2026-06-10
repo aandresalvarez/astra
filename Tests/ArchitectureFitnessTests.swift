@@ -253,6 +253,41 @@ struct ArchitectureFitnessTests {
         #expect(!railView.contains("struct CapabilityRailPackagePresentation"))
     }
 
+    @Test("Docked sidebar keeps its column width spec outermost")
+    func dockedSidebarKeepsColumnWidthSpecOutermost() throws {
+        let root = try repositoryRoot()
+        let contentView = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/ContentView.swift"),
+            encoding: .utf8
+        )
+
+        let bodyStart = try #require(contentView.range(of: "private var sidebarArea: some View {"))
+        let searchTail = contentView[bodyStart.upperBound...]
+        let bodyEnd = try #require(searchTail.range(of: "\n    private var "))
+        let sidebarArea = searchTail[..<bodyEnd.lowerBound]
+
+        let widthSpec = try #require(
+            sidebarArea.range(of: ".navigationSplitViewColumnWidth("),
+            "The docked sidebar column must declare min/ideal/max widths."
+        )
+
+        // Regression guard for the unconstrained-resize bug: wrappers interposed
+        // between the width spec and the column root (notably `.clipped()` before
+        // `.toolbar(removing:)`) make NavigationSplitView drop min/ideal/max
+        // entirely — the divider then drags to any width. The spec must be the
+        // outermost modifier in the chain.
+        for wrapper in [".clipped()", ".toolbar(removing: .sidebarToggle)", ".transition(", ".animation("] {
+            let range = try #require(
+                sidebarArea.range(of: wrapper),
+                "Expected \(wrapper) in sidebarArea; update this test if the chain changed."
+            )
+            #expect(
+                range.upperBound <= widthSpec.lowerBound,
+                "\(wrapper) must be applied before .navigationSplitViewColumnWidth so the width spec stays outermost."
+            )
+        }
+    }
+
     @Test("Large owner files stay within current debt budgets")
     func largeOwnerFilesStayWithinCurrentDebtBudgets() throws {
         let root = try repositoryRoot()

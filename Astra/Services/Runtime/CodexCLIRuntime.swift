@@ -10,6 +10,9 @@ struct CodexCLICommandPlan: Equatable {
 
 enum CodexCLIRuntime {
     static let executableName = "codex"
+    // Codex CLI has no model enumeration command (`--model` is free-form),
+    // so this curated list is the only source. Refresh it from
+    // https://developers.openai.com/codex/models when OpenAI ships models.
     static let bundledModelNames = [
         "gpt-5.5",
         "gpt-5.4",
@@ -40,16 +43,23 @@ enum CodexCLIRuntime {
         taskEnvironment: [String: String],
         providerHomeDirectory: String = "",
         pathPrefix: [String] = [],
-        includeAstraToolsPath: Bool = false
+        includeAstraToolsPath: Bool = false,
+        resumeSessionID: String? = nil
     ) -> CodexCLICommandPlan {
         let providerModel = resolvedModelName(model)
-        var args = [
-            "exec",
+        // No `--ephemeral`: native continuation needs the session persisted so a
+        // follow-up turn can `exec resume` it. CODEX_HOME scoping (below) keeps
+        // ASTRA-run sessions out of the user's own Codex history when configured.
+        var args = ["exec"]
+        if let resumeSessionID = resumeSessionID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !resumeSessionID.isEmpty {
+            args += ["resume", resumeSessionID]
+        }
+        args += [
             "--json",
             "--color", "never",
             "--ignore-user-config",
             "--ignore-rules",
-            "--ephemeral",
             "--model", providerModel,
             "--cd", workspacePath
         ]

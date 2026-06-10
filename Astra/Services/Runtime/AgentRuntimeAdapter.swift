@@ -649,6 +649,7 @@ struct AgentRuntimeProcessLaunchContext {
     let contextText: String
     let nativeContinuationSessionID: String?
     let runID: UUID?
+    let liveApprovalsEnabled: Bool
 
     init(
         prompt: String,
@@ -663,7 +664,8 @@ struct AgentRuntimeProcessLaunchContext {
         phase: String = "run",
         contextText: String = "",
         nativeContinuationSessionID: String? = nil,
-        runID: UUID? = nil
+        runID: UUID? = nil,
+        liveApprovalsEnabled: Bool = false
     ) {
         self.prompt = prompt
         self.task = task
@@ -678,6 +680,7 @@ struct AgentRuntimeProcessLaunchContext {
         self.contextText = contextText
         self.nativeContinuationSessionID = nativeContinuationSessionID
         self.runID = runID
+        self.liveApprovalsEnabled = liveApprovalsEnabled
     }
 }
 
@@ -710,6 +713,39 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
     let directoriesToCreate: [String]
     let providerDetectedFields: [String: String]
     let commandPlannedFields: [String: String]
+    var interactiveAsk: AgentRuntimeInteractiveAskPlan?
+
+    init(
+        runtime: AgentRuntimeID,
+        executablePath: String,
+        arguments: [String],
+        currentDirectory: String,
+        environment: [String: String],
+        browserShimDirectory: String?,
+        providerVersion: String?,
+        eventStream: AgentRuntimeProcessEventStream = .standardOutput,
+        controlStream: AgentRuntimeProcessControlStream = .none,
+        parsesJSONLines: Bool,
+        directoriesToCreate: [String] = [],
+        providerDetectedFields: [String: String] = [:],
+        commandPlannedFields: [String: String] = [:],
+        interactiveAsk: AgentRuntimeInteractiveAskPlan? = nil
+    ) {
+        self.runtime = runtime
+        self.executablePath = executablePath
+        self.arguments = arguments
+        self.currentDirectory = currentDirectory
+        self.environment = environment
+        self.browserShimDirectory = browserShimDirectory
+        self.providerVersion = providerVersion
+        self.eventStream = eventStream
+        self.controlStream = controlStream
+        self.parsesJSONLines = parsesJSONLines
+        self.directoriesToCreate = directoriesToCreate
+        self.providerDetectedFields = providerDetectedFields
+        self.commandPlannedFields = commandPlannedFields
+        self.interactiveAsk = interactiveAsk
+    }
 }
 
 enum AgentRuntimeProcessEventStream: Equatable, Sendable {
@@ -1019,10 +1055,15 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         authHint: "Run `claude /login` or set `ANTHROPIC_API_KEY`.",
         prerequisite: CommonCLIPrerequisites.claude,
         defaultModel: "claude-sonnet-4-6",
+        // Pre-probe fallback only; the CLI initialize handshake replaces
+        // this list at app launch. Aliases track the CLI's current models
+        // instead of rotting like pinned IDs; the pinned default stays for
+        // no-cache resolution and cross-runtime bleed detection.
         defaultModels: [
-            "claude-opus-4-6",
-            "claude-sonnet-4-6",
-            "claude-haiku-4-5-20251001"
+            "default",
+            "sonnet",
+            "haiku",
+            "claude-sonnet-4-6"
         ],
         supportsAstraRunProtocol: true,
         supportsNativeContinuation: true
@@ -1115,6 +1156,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         let result = await ClaudeModelAvailabilityService().refreshAndPersist(
             configuration: ClaudeModelAvailabilityConfiguration(
                 provider: configuration.claudeProvider,
+                executablePath: configuration.executablePath(for: id),
                 vertexOpusModel: configuration.vertexOpusModel,
                 vertexSonnetModel: configuration.vertexSonnetModel,
                 vertexHaikuModel: configuration.vertexHaikuModel
@@ -1125,7 +1167,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             return RuntimeReadinessCheck(
                 id: "claude-models",
                 title: "Claude models",
-                detail: "Available: \(models.joined(separator: ", "))",
+                detail: "Available: \(models.map(\.value).joined(separator: ", "))",
                 state: .ready,
                 remediation: nil
             )
@@ -1197,13 +1239,24 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             permissionPolicy: effectivePermissionPolicy
         )
         let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
-        var args = [
-            "-p",
-            context.prompt
-        ]
+        // Live approvals use the stdio control protocol, which requires
+        // stream-json input — the prompt then travels over stdin instead of
+        // the positional argument.
+        let interactiveAsk: AgentRuntimeInteractiveAskPlan? = {
+            guard context.liveApprovalsEnabled,
+                  effectivePermissionPolicy != .autonomous,
+                  let initialMessage = ClaudeControlProtocol.initialUserMessage(prompt: context.prompt) else {
+                return nil
+            }
+            return AgentRuntimeInteractiveAskPlan(initialStdinMessage: initialMessage)
+        }()
+        var args = interactiveAsk == nil ? ["-p", context.prompt] : ["-p"]
         if let sessionID = context.nativeContinuationSessionID,
            !sessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             args += ["--resume", sessionID]
+        }
+        if interactiveAsk != nil {
+            args += ["--input-format", "stream-json", "--permission-prompt-tool", "stdio"]
         }
         args += [
             "--model",
@@ -1278,8 +1331,10 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
                 "max_turns": String(context.task.maxTurns),
                 "supports_native_continuation": String(descriptor.supportsNativeContinuation),
                 "uses_native_continuation": String(context.nativeContinuationSessionID != nil),
-                "native_session_prefix": context.nativeContinuationSessionID.map { String($0.prefix(8)) } ?? "none"
-            ]
+                "native_session_prefix": context.nativeContinuationSessionID.map { String($0.prefix(8)) } ?? "none",
+                "uses_live_approvals": String(interactiveAsk != nil)
+            ],
+            interactiveAsk: interactiveAsk
         )
     }
 
@@ -2532,8 +2587,11 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         return RuntimeReadinessReport(checks: checks)
     }
 
-    func modelAvailabilityCheck(configuration _: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {
-        let models = AntigravityCLIRuntime.availableModelNames()
+    func modelAvailabilityCheck(configuration: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {
+        let configuredPath = configuration.executablePath(for: id)
+        let executable = configuredPath.isEmpty ? AntigravityCLIRuntime.detectPath() : configuredPath
+        let models = AntigravityCLIRuntime.modelNames(executablePath: executable)
+            ?? AntigravityCLIRuntime.availableModelNames()
         RuntimeModelAvailability.persistAvailableModels(models, for: id, authority: modelAvailabilityAuthority)
         return RuntimeReadinessCheck(
             id: "antigravity-models",

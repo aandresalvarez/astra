@@ -36,6 +36,23 @@ struct CapsuleSelectionPressure: Equatable {
         ])
     }
 
+    /// One-line prompt notice when cap-based selection dropped capsule items, so the
+    /// agent knows compacted context exists instead of assuming it saw everything.
+    static func promptNotice(forTaskFolder folder: String) -> String? {
+        guard !folder.isEmpty, let state = TaskContextStateManager.load(taskFolder: folder) else { return nil }
+        return promptNotice(for: state)
+    }
+
+    static func promptNotice(for state: TaskContextState) -> String? {
+        let pressure = measure(state)
+        guard pressure.anyEviction else { return nil }
+        let sections = pressure.evictingSections
+            .map { "\($0.name) (\($0.evicted) dropped)" }
+            .sorted()
+            .joined(separator: ", ")
+        return "- Capsule eviction notice: \(pressure.totalEvicted) older item(s) fell out of this capsule: \(sections). Read the canonical state files or session history before treating absent details as nonexistent."
+    }
+
     /// Render-time diagnostics merged into `promptDiagnosticsFields`. `prompt` is the
     /// assembled prompt; the capsule budget is "bound" when its block truncated.
     static func fields(forTaskFolder folder: String, prompt: String) -> [String: String] {

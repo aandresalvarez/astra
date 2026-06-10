@@ -132,6 +132,8 @@ final class AgentRuntimeProcessRunner {
         contextText: String = "",
         nativeContinuationSessionID: String? = nil,
         runID: UUID? = nil,
+        liveApprovalsEnabled: Bool = false,
+        onInteractiveAsk: ((AgentInteractiveAskRequest) async -> Bool)? = nil,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
         let launchContext = AgentRuntimeProcessLaunchContext(
@@ -147,7 +149,8 @@ final class AgentRuntimeProcessRunner {
             phase: phase,
             contextText: contextText,
             nativeContinuationSessionID: nativeContinuationSessionID,
-            runID: runID
+            runID: runID,
+            liveApprovalsEnabled: liveApprovalsEnabled && onInteractiveAsk != nil
         )
         if let sharedStateKey = adapter.sharedLaunchStateKey(context: launchContext) {
             do {
@@ -177,6 +180,7 @@ final class AgentRuntimeProcessRunner {
                 permissionManifest: permissionManifest,
                 budgetEnforcementMode: budgetEnforcementMode,
                 timeoutSeconds: timeoutSeconds,
+                onInteractiveAsk: onInteractiveAsk,
                 onLine: onLine
             )
             await AgentRuntimeSharedStateGate.shared.release(sharedStateKey)
@@ -197,6 +201,7 @@ final class AgentRuntimeProcessRunner {
             permissionManifest: permissionManifest,
             budgetEnforcementMode: budgetEnforcementMode,
             timeoutSeconds: timeoutSeconds,
+            onInteractiveAsk: onInteractiveAsk,
             onLine: onLine
         )
     }
@@ -209,6 +214,7 @@ final class AgentRuntimeProcessRunner {
         permissionManifest: RunPermissionManifest?,
         budgetEnforcementMode: BudgetEnforcementMode,
         timeoutSeconds: TimeInterval,
+        onInteractiveAsk: ((AgentInteractiveAskRequest) async -> Bool)? = nil,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
         let tokenBudget = Self.effectiveTokenBudget(for: task)
@@ -251,7 +257,8 @@ final class AgentRuntimeProcessRunner {
                 currentDirectory: plan.currentDirectory,
                 environment: plan.environment,
                 dedicatedEventFileDescriptor: plan.eventStream.dedicatedFileDescriptor,
-                dedicatedControlFileDescriptor: plan.controlStream.dedicatedFileDescriptor
+                dedicatedControlFileDescriptor: plan.controlStream.dedicatedFileDescriptor,
+                providesStdinChannel: plan.interactiveAsk != nil
             )
 
             let errorOutput = AgentLockedBuffer()
@@ -274,6 +281,17 @@ final class AgentRuntimeProcessRunner {
             let handleLine: (String) -> Void = { line in
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { return }
+                if plan.interactiveAsk != nil,
+                   let control = ClaudeControlProtocol.controlRequest(from: trimmed) {
+                    Self.answerControlRequest(
+                        control,
+                        process: process,
+                        monitor: monitor,
+                        taskID: taskID,
+                        onInteractiveAsk: onInteractiveAsk
+                    )
+                    return
+                }
                 onLine(line, plan.parsesJSONLines)
                 for parsed in adapter.parseProcessEvents(line: line, parsesJSONLines: plan.parsesJSONLines) {
                     for filtered in eventPipeline.process(parsed) {
@@ -315,6 +333,7 @@ final class AgentRuntimeProcessRunner {
             }
 
             process.terminationHandler = { proc in
+                InFlightPermissionCenter.shared.failAll(taskID: taskID)
                 proc.stdoutFileHandle.readabilityHandler = nil
                 proc.stderrFileHandle.readabilityHandler = nil
                 proc.eventFileHandle.readabilityHandler = nil
@@ -379,8 +398,59 @@ final class AgentRuntimeProcessRunner {
                 return
             }
 
+            if let interactiveAsk = plan.interactiveAsk {
+                process.writeStdinLine(interactiveAsk.initialStdinMessage)
+            }
             currentProcess = process
             monitor.startWatchdog(process: process)
+        }
+    }
+
+    /// Answers a provider control request. `can_use_tool` asks are routed to the
+    /// worker's hook (which surfaces them in the UI and awaits the user); every
+    /// other subtype gets an immediate error response so the provider never
+    /// blocks on an unanswered request. A heartbeat keeps the idle watchdog from
+    /// killing the run while the user decides.
+    private static func answerControlRequest(
+        _ control: ClaudeControlProtocol.ControlRequest,
+        process: AgentExecutionScopedProcess,
+        monitor: AgentProcessMonitor,
+        taskID: UUID,
+        onInteractiveAsk: ((AgentInteractiveAskRequest) async -> Bool)?
+    ) {
+        guard control.subtype == "can_use_tool", let onInteractiveAsk else {
+            if let response = ClaudeControlProtocol.errorResponse(
+                requestID: control.requestID,
+                message: "ASTRA does not handle control requests of subtype \(control.subtype)."
+            ) {
+                process.writeStdinLine(response)
+            }
+            return
+        }
+        let request = AgentInteractiveAskRequest(
+            requestID: control.requestID,
+            toolName: control.toolName ?? "Tool",
+            inputSummary: control.inputSummary
+        )
+        let heartbeat = Task.detached {
+            while !Task.isCancelled {
+                monitor.recordActivity()
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
+            }
+        }
+        Task.detached {
+            let approved = await onInteractiveAsk(request)
+            heartbeat.cancel()
+            monitor.recordActivity()
+            let response = approved
+                ? ClaudeControlProtocol.allowResponse(for: control)
+                : ClaudeControlProtocol.denyResponse(
+                    for: control,
+                    message: "The user declined this action in ASTRA. Continue without it or propose an alternative."
+                )
+            if let response {
+                process.writeStdinLine(response)
+            }
         }
     }
 

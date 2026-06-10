@@ -170,6 +170,28 @@ struct AntigravityCLIRuntimeTests {
         ) != nil)
     }
 
+    @Test("Model list parser keeps agy models lines verbatim")
+    func modelListParserKeepsAgyModelsLinesVerbatim() {
+        let output = """
+        Gemini 3.5 Flash (Medium)
+        Gemini 3.5 Flash (High)
+
+        Claude Opus 4.6 (Thinking)
+        GPT-OSS 120B (Medium)
+        Claude Opus 4.6 (Thinking)
+        Tip: use --model to switch.
+        """
+
+        #expect(AntigravityCLIRuntime.parseModelNames(output) == [
+            "Gemini 3.5 Flash (Medium)",
+            "Gemini 3.5 Flash (High)",
+            "Claude Opus 4.6 (Thinking)",
+            "GPT-OSS 120B (Medium)"
+        ])
+        #expect(AntigravityCLIRuntime.parseModelNames("") == [])
+        #expect(AntigravityCLIRuntime.parseModelNames("Available models\n") == [])
+    }
+
     @Test("Model settings expose configured and bundled model choices")
     func modelSettingsExposeConfiguredAndBundledModelChoices() throws {
         let settingsURL = FileManager.default.temporaryDirectory

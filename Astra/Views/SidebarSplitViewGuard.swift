@@ -14,12 +14,14 @@ import SwiftUI
 struct SidebarSplitViewGuard: NSViewRepresentable {
     let minimumExpandedWidth: CGFloat
     let isRevealInProgress: Bool
+    let onReadableWidth: (CGFloat) -> Void
     let onCollapse: () -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             minimumExpandedWidth: minimumExpandedWidth,
             isRevealInProgress: isRevealInProgress,
+            onReadableWidth: onReadableWidth,
             onCollapse: onCollapse
         )
     }
@@ -33,6 +35,7 @@ struct SidebarSplitViewGuard: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.minimumExpandedWidth = minimumExpandedWidth
         context.coordinator.isRevealInProgress = isRevealInProgress
+        context.coordinator.onReadableWidth = onReadableWidth
         context.coordinator.onCollapse = onCollapse
         configureSoon(from: nsView, coordinator: context.coordinator)
     }
@@ -47,6 +50,7 @@ struct SidebarSplitViewGuard: NSViewRepresentable {
     final class Coordinator {
         var minimumExpandedWidth: CGFloat
         var isRevealInProgress: Bool
+        var onReadableWidth: (CGFloat) -> Void
         var onCollapse: () -> Void
 
         private weak var observedSplitView: NSSplitView?
@@ -58,10 +62,12 @@ struct SidebarSplitViewGuard: NSViewRepresentable {
         init(
             minimumExpandedWidth: CGFloat,
             isRevealInProgress: Bool,
+            onReadableWidth: @escaping (CGFloat) -> Void,
             onCollapse: @escaping () -> Void
         ) {
             self.minimumExpandedWidth = minimumExpandedWidth
             self.isRevealInProgress = isRevealInProgress
+            self.onReadableWidth = onReadableWidth
             self.onCollapse = onCollapse
         }
 
@@ -152,6 +158,13 @@ struct SidebarSplitViewGuard: NSViewRepresentable {
         private func enforceReadableSidebarWidth() {
             guard let sidebarWidth = observedSidebarSubview?.frame.width else { return }
             guard sidebarWidth.isFinite else { return }
+            if SidebarColumnLayout.shouldCompleteSidebarReveal(
+                width: sidebarWidth,
+                minimumExpandedWidth: minimumExpandedWidth
+            ) {
+                onReadableWidth(sidebarWidth)
+                return
+            }
             guard SidebarColumnLayout.shouldCollapseVisibleSplitWidth(
                 sidebarWidth,
                 minimumExpandedWidth: minimumExpandedWidth,

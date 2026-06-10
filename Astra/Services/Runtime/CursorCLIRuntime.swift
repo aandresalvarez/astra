@@ -111,17 +111,20 @@ enum CursorCLIRuntime {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    static func modelNames(executablePath: String) -> [String]? {
+    static func modelDetails(executablePath: String) -> [RuntimeModelDetail]? {
         guard FileManager.default.isExecutableFile(atPath: executablePath),
               let output = runProbe(executablePath: executablePath, args: ["models"], timeoutSeconds: 8) else {
             return nil
         }
-        let models = parseModelNames(output)
+        let models = parseModelDetails(output)
         return models.isEmpty ? nil : models
     }
 
-    static func parseModelNames(_ output: String) -> [String] {
-        var models: [String] = []
+    /// Parses `cursor-agent models` output: one `id - Display Name` pair per
+    /// line. Trailing "(default)"/"(current)" markers describe the CLI's own
+    /// selection state, not the model, so they are stripped from the name.
+    static func parseModelDetails(_ output: String) -> [RuntimeModelDetail] {
+        var models: [RuntimeModelDetail] = []
         for rawLine in output.split(whereSeparator: \.isNewline).map(String.init) {
             let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !line.isEmpty,
@@ -131,11 +134,14 @@ enum CursorCLIRuntime {
                 continue
             }
             let id = String(line[..<separator.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !id.isEmpty {
-                models.append(id)
+            guard !id.isEmpty else { continue }
+            var name = String(line[separator.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            for marker in ["(default)", "(current)"] where name.hasSuffix(marker) {
+                name = String(name.dropLast(marker.count)).trimmingCharacters(in: .whitespacesAndNewlines)
             }
+            models.append(RuntimeModelDetail(value: id, displayName: name.isEmpty ? nil : name))
         }
-        return RuntimeModelAvailability.cleanProviderModels(models)
+        return RuntimeModelAvailability.cleanProviderModelDetails(models)
     }
 
     static func parseEvents(line: String, parsesJSONLines: Bool) -> [ParsedEvent] {

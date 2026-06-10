@@ -231,6 +231,7 @@ struct AgentPolicyTests {
         #expect(render.generatedConfigPreview.contains("Bash(*)"))
         #expect(!render.usesBroadProviderPermissions)
         #expect(render.diagnostics.contains { $0.id == "claude.shell-deny-provider-native-gap" })
+        #expect(!render.diagnostics.contains { $0.id == "claude.ask-checkpoints-brokered" })
     }
 
     @Test("Copilot autonomous render uses allow-all only when capability supports it")
