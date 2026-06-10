@@ -52,6 +52,7 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     // Created only when the provider speaks a stdin control protocol; other
     // providers keep inheriting the parent's stdin unchanged.
     private let stdinPipe: Pipe?
+    private var stdinClosed = false
     var terminationHandler: ((AgentExecutionScopedProcess) -> Void)?
 
     var stdoutFileHandle: FileHandle { stdoutPipe.fileHandleForReading }
@@ -87,7 +88,23 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     /// exited; a broken pipe is swallowed.
     func writeStdinLine(_ line: String) {
         guard let stdinPipe, let data = (line + "\n").data(using: .utf8) else { return }
+        lock.lock()
+        let closed = stdinClosed
+        lock.unlock()
+        guard !closed else { return }
         try? stdinPipe.fileHandleForWriting.write(contentsOf: data)
+    }
+
+    /// Signals end-of-conversation: stream-json providers keep waiting for the
+    /// next stdin message after a turn, so EOF is what lets them exit.
+    func closeStdinChannel() {
+        guard let stdinPipe else { return }
+        lock.lock()
+        let alreadyClosed = stdinClosed
+        stdinClosed = true
+        lock.unlock()
+        guard !alreadyClosed else { return }
+        stdinPipe.fileHandleForWriting.closeFile()
     }
 
     func run() throws {
@@ -214,7 +231,7 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
 
         cleanupResidualProcessGroup()
 
-        stdinPipe?.fileHandleForWriting.closeFile()
+        closeStdinChannel()
 
         lock.lock()
         status = exitStatus
