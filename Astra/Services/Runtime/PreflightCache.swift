@@ -51,6 +51,12 @@ public actor PreflightCache {
             semantic: prereq.semantic
         )
         let fresh = normalizedStatus(checked, for: prereq)
+        // A probe interrupted by caller cancellation is not a real result —
+        // caching it would publish "unresponsive: cancelled" for 30s and
+        // make an installed runtime look broken to every other consumer.
+        guard !Task.isCancelled else {
+            return entries[prereq.id]?.status ?? fresh
+        }
         entries[prereq.id] = Entry(status: fresh, checkedAt: now())
         return fresh
     }

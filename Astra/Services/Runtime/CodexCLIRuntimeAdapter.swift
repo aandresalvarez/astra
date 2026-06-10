@@ -187,6 +187,19 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         )
     }
 
+    func installPlan(detectExecutable: @Sendable (String) -> String) -> RuntimeCLIInstallPlan? {
+        guard let npm = detectedExecutable(named: "npm", detectExecutable: detectExecutable) else {
+            return nil
+        }
+        return RuntimeCLIInstallPlan(
+            runtime: id,
+            installerName: "npm",
+            executablePath: npm,
+            arguments: ["install", "-g", "@openai/codex"],
+            displayCommand: "npm install -g @openai/codex"
+        )
+    }
+
     func modelAvailabilityCheck(configuration _: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {
         let models = CodexCLIRuntime.availableModelNames()
         RuntimeModelAvailability.persistAvailableModels(models, for: id, authority: modelAvailabilityAuthority)

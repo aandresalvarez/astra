@@ -210,7 +210,18 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
     private static func userMessage(for category: AgentRuntimeFailureCategory, runtime: AgentRuntimeID, model: String) -> String {
         switch category {
         case .authenticationFailed:
-            return "\(runtime.displayName) could not authenticate. Re-authenticate the CLI or verify the token/provider credentials configured for this model."
+            // Same remediation source as the onboarding Runtime step, so a
+            // task-time auth failure points at the exact sign-in command
+            // instead of a generic re-authenticate hint.
+            let provider = ClaudeProvider(
+                rawValue: UserDefaults.standard.string(forKey: AppStorageKeys.claudeProvider) ?? ""
+            ) ?? .anthropic
+            let auth = RuntimeRemediationCatalog.remediation(for: runtime, claudeProvider: provider).auth
+            var message = "\(runtime.displayName) could not authenticate. Run `\(auth.displayCommand)` in Terminal, or verify the token/provider credentials configured for this model."
+            if let instruction = auth.instruction {
+                message += " \(instruction)"
+            }
+            return message
         case .modelUnavailable:
             return "\(runtime.displayName) could not use model `\(model)`. The model may be unavailable for this account, organization policy, CLI version, quota tier, or provider configuration."
         case .quotaExceeded:

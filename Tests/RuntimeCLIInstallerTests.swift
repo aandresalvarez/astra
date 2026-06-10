@@ -115,21 +115,96 @@ struct RuntimeCLIInstallerTests {
         #expect(await runner.recordedCalls().isEmpty)
     }
 
-    @Test("OpenCode installer uses official guidance")
-    func openCodeInstallerUsesOfficialGuidance() async {
+    @Test("OpenCode install prefers Homebrew before npm")
+    func openCodeInstallPrefersHomebrew() async {
         let runner = StubBinaryRunner()
-        let installer = RuntimeCLIInstaller(
-            runner: runner,
-            detectExecutable: { _ in "" }
+        await runner.setResponse(
+            forKey: "/opt/homebrew/bin/brew install opencode",
+            result: RunResult(outcome: .exited(code: 0), stdout: "installed\n", stderr: "")
         )
 
-        #expect(installer.plan(for: .openCodeCLI) == nil)
+        let installer = RuntimeCLIInstaller(
+            runner: runner,
+            detectExecutable: { binary in
+                switch binary {
+                case "brew": "/opt/homebrew/bin/brew"
+                case "npm": "/opt/homebrew/bin/npm"
+                default: ""
+                }
+            }
+        )
+
+        #expect(installer.plan(for: .openCodeCLI)?.displayCommand == "brew install opencode")
 
         let result = await installer.install(runtime: .openCodeCLI)
+        #expect(result.succeeded)
+        #expect(result.plan?.installerName == "Homebrew")
+    }
+
+    @Test("OpenCode install falls back to npm when Homebrew is absent")
+    func openCodeInstallFallsBackToNPM() {
+        let installer = RuntimeCLIInstaller(
+            runner: StubBinaryRunner(),
+            detectExecutable: { binary in binary == "npm" ? "/usr/local/bin/npm" : "" }
+        )
+        let plan = installer.plan(for: .openCodeCLI)
+        #expect(plan?.displayCommand == "npm install -g opencode-ai")
+        #expect(plan?.installerName == "npm")
+    }
+
+    @Test("Codex installs via npm")
+    func codexInstallsViaNPM() {
+        let installer = RuntimeCLIInstaller(
+            runner: StubBinaryRunner(),
+            detectExecutable: { binary in binary == "npm" ? "/opt/homebrew/bin/npm" : "" }
+        )
+        let plan = installer.plan(for: .codexCLI)
+        #expect(plan?.displayCommand == "npm install -g @openai/codex")
+        #expect(plan?.executablePath == "/opt/homebrew/bin/npm")
+    }
+
+    @Test("Install failures keep a multi-line log tail for the output disclosure")
+    func installFailureKeepsLogTail() async {
+        let runner = StubBinaryRunner()
+        let longStderr = (1...80).map { "npm ERR! line \($0)" }.joined(separator: "\n")
+        await runner.setResponse(
+            forKey: "/opt/homebrew/bin/npm install -g @anthropic-ai/claude-code",
+            result: RunResult(outcome: .exited(code: 1), stdout: "", stderr: longStderr)
+        )
+        let installer = RuntimeCLIInstaller(
+            runner: runner,
+            detectExecutable: { binary in binary == "npm" ? "/opt/homebrew/bin/npm" : "" }
+        )
+
+        let result = await installer.install(runtime: .claudeCode)
+
         #expect(!result.succeeded)
-        #expect(result.plan == nil)
-        #expect(result.detail?.contains("Install OpenCode") == true)
-        #expect(result.detail?.contains("opencode auth login") == true)
-        #expect(await runner.recordedCalls().isEmpty)
+        let log = result.fullLog ?? ""
+        #expect(log.contains("\n"), "log tail must preserve newlines")
+        #expect(log.hasSuffix("npm ERR! line 80"))
+        #expect(log.count <= 2_000)
+    }
+
+    @Test("npm EACCES failures get a targeted permission hint")
+    func eaccesFailureGetsPermissionHint() async {
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/opt/homebrew/bin/npm install -g @anthropic-ai/claude-code",
+            result: RunResult(
+                outcome: .exited(code: 243),
+                stdout: "",
+                stderr: "npm ERR! Error: EACCES: permission denied, mkdir '/usr/local/lib/node_modules'"
+            )
+        )
+        let installer = RuntimeCLIInstaller(
+            runner: runner,
+            detectExecutable: { binary in binary == "npm" ? "/opt/homebrew/bin/npm" : "" }
+        )
+
+        let result = await installer.install(runtime: .claudeCode)
+
+        #expect(!result.succeeded)
+        #expect(result.detail?.contains("denied write access") == true)
+        #expect(RuntimeCLIInstaller.permissionFailureHint(in: "all good") == nil)
     }
 }

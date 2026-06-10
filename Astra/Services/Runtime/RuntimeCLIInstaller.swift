@@ -15,6 +15,26 @@ struct RuntimeCLIInstallResult: Sendable, Equatable {
     let succeeded: Bool
     let summary: String
     let detail: String?
+    /// Tail of the installer's raw output (newlines preserved) for a
+    /// "Show output" disclosure — the one-line `detail` truncates away
+    /// the actionable part of npm EACCES / brew failures.
+    var fullLog: String?
+
+    init(
+        runtime: AgentRuntimeID,
+        plan: RuntimeCLIInstallPlan?,
+        succeeded: Bool,
+        summary: String,
+        detail: String?,
+        fullLog: String? = nil
+    ) {
+        self.runtime = runtime
+        self.plan = plan
+        self.succeeded = succeeded
+        self.summary = summary
+        self.detail = detail
+        self.fullLog = fullLog
+    }
 }
 
 struct RuntimeCLIInstaller: Sendable {
@@ -63,7 +83,8 @@ struct RuntimeCLIInstaller: Sendable {
                 plan: plan,
                 succeeded: false,
                 summary: "\(runtime.displayName) install failed.",
-                detail: installFailureDetail(result)
+                detail: installFailureDetail(result),
+                fullLog: installLogTail(result)
             )
         }
 
@@ -103,6 +124,9 @@ struct RuntimeCLIInstaller: Sendable {
             return "Could not launch installer: \(reason)"
         case .exited(let code):
             let evidence = result.stderr.isEmpty ? result.stdout : result.stderr
+            if let hint = Self.permissionFailureHint(in: evidence) {
+                return hint
+            }
             let compact = evidence
                 .replacingOccurrences(of: "\n", with: " ")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -111,5 +135,26 @@ struct RuntimeCLIInstaller: Sendable {
             }
             return "Installer exited with status \(code): \(String(compact.prefix(220)))"
         }
+    }
+
+    /// npm global installs commonly fail with EACCES when the global
+    /// prefix is root-owned; the actionable advice lives in the stderr
+    /// tail that the 220-char summary would cut off.
+    static func permissionFailureHint(in output: String) -> String? {
+        let lower = output.lowercased()
+        guard lower.contains("eacces") || lower.contains("permission denied") else {
+            return nil
+        }
+        return "The installer was denied write access (npm's global prefix isn't writable). "
+            + "Install Node via Homebrew or fix npm's prefix, then retry."
+    }
+
+    private func installLogTail(_ result: RunResult, maxLength: Int = 2_000) -> String? {
+        let combined = [result.stdout, result.stderr]
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !combined.isEmpty else { return nil }
+        return String(combined.suffix(maxLength))
     }
 }
