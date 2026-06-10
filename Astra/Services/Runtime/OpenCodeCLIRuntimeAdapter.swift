@@ -184,6 +184,28 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
         )
     }
 
+    func installPlan(detectExecutable: @Sendable (String) -> String) -> RuntimeCLIInstallPlan? {
+        if let brew = detectedExecutable(named: "brew", detectExecutable: detectExecutable) {
+            return RuntimeCLIInstallPlan(
+                runtime: id,
+                installerName: "Homebrew",
+                executablePath: brew,
+                arguments: ["install", "opencode"],
+                displayCommand: "brew install opencode"
+            )
+        }
+        guard let npm = detectedExecutable(named: "npm", detectExecutable: detectExecutable) else {
+            return nil
+        }
+        return RuntimeCLIInstallPlan(
+            runtime: id,
+            installerName: "npm",
+            executablePath: npm,
+            arguments: ["install", "-g", "opencode-ai"],
+            displayCommand: "npm install -g opencode-ai"
+        )
+    }
+
     func modelAvailabilityCheck(configuration: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {
         let configuredPath = configuration.executablePath(for: id)
         let executable = configuredPath.isEmpty ? OpenCodeCLIRuntime.detectPath() : configuredPath
