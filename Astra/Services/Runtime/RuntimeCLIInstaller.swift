@@ -83,7 +83,7 @@ struct RuntimeCLIInstaller: Sendable {
                 plan: plan,
                 succeeded: false,
                 summary: "\(runtime.displayName) install failed.",
-                detail: installFailureDetail(result),
+                detail: installFailureDetail(result, plan: plan),
                 fullLog: installLogTail(result)
             )
         }
@@ -114,7 +114,7 @@ struct RuntimeCLIInstaller: Sendable {
             : descriptor.installHint
     }
 
-    private func installFailureDetail(_ result: RunResult) -> String {
+    private func installFailureDetail(_ result: RunResult, plan: RuntimeCLIInstallPlan) -> String {
         switch result.outcome {
         case .timedOut:
             return "Install timed out after \(Int(timeout))s."
@@ -124,7 +124,7 @@ struct RuntimeCLIInstaller: Sendable {
             return "Could not launch installer: \(reason)"
         case .exited(let code):
             let evidence = result.stderr.isEmpty ? result.stdout : result.stderr
-            if let hint = Self.permissionFailureHint(in: evidence) {
+            if let hint = Self.permissionFailureHint(in: evidence, plan: plan) {
                 return hint
             }
             let compact = evidence
@@ -137,16 +137,26 @@ struct RuntimeCLIInstaller: Sendable {
         }
     }
 
-    /// npm global installs commonly fail with EACCES when the global
-    /// prefix is root-owned; the actionable advice lives in the stderr
-    /// tail that the 220-char summary would cut off.
-    static func permissionFailureHint(in output: String) -> String? {
+    /// Targeted hint when the installer was denied write access. The
+    /// remedy differs by installer (npm wants a writable global prefix;
+    /// Homebrew wants ownership fixes), so the hint is gated on the plan
+    /// — otherwise a Homebrew "permission denied" surfaces npm advice.
+    static func permissionFailureHint(in output: String, plan: RuntimeCLIInstallPlan) -> String? {
         let lower = output.lowercased()
         guard lower.contains("eacces") || lower.contains("permission denied") else {
             return nil
         }
-        return "The installer was denied write access (npm's global prefix isn't writable). "
-            + "Install Node via Homebrew or fix npm's prefix, then retry."
+        switch plan.installerName.lowercased() {
+        case "npm":
+            return "The installer was denied write access (npm's global prefix isn't writable). "
+                + "Install Node via Homebrew or fix npm's prefix, then retry."
+        case "homebrew":
+            return "The installer was denied write access. "
+                + "Run `brew doctor` and check Homebrew's prefix ownership, then retry."
+        default:
+            return "The installer was denied write access. "
+                + "Check the destination's permissions or run the command manually in Terminal."
+        }
     }
 
     private func installLogTail(_ result: RunResult, maxLength: Int = 2_000) -> String? {

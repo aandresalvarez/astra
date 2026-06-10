@@ -619,7 +619,10 @@ struct RuntimeSetupSection: View {
             pasteboard.clearContents()
             pasteboard.setString(commandToCopy, forType: .string)
             copiedCommand = commandToCopy
-            Task {
+            // @State mutations must happen on the main actor — without
+            // this hop SwiftUI logs a runtime warning and races the
+            // button's body. Capture the value to compare against.
+            Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 1_800_000_000)
                 if copiedCommand == commandToCopy { copiedCommand = nil }
             }

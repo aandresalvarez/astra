@@ -205,6 +205,30 @@ struct RuntimeCLIInstallerTests {
 
         #expect(!result.succeeded)
         #expect(result.detail?.contains("denied write access") == true)
-        #expect(RuntimeCLIInstaller.permissionFailureHint(in: "all good") == nil)
+        #expect(result.detail?.contains("npm's global prefix") == true)
+
+        let npmPlan = RuntimeCLIInstallPlan(
+            runtime: .claudeCode,
+            installerName: "npm",
+            executablePath: "/opt/homebrew/bin/npm",
+            arguments: ["install", "-g", "x"],
+            displayCommand: "npm install -g x"
+        )
+        let brewPlan = RuntimeCLIInstallPlan(
+            runtime: .copilotCLI,
+            installerName: "Homebrew",
+            executablePath: "/opt/homebrew/bin/brew",
+            arguments: ["install", "x"],
+            displayCommand: "brew install x"
+        )
+        #expect(RuntimeCLIInstaller.permissionFailureHint(in: "all good", plan: npmPlan) == nil)
+        #expect(RuntimeCLIInstaller.permissionFailureHint(
+            in: "Error: Permission denied @ rb_sysopen",
+            plan: brewPlan
+        )?.contains("brew doctor") == true)
+        #expect(RuntimeCLIInstaller.permissionFailureHint(
+            in: "EACCES: permission denied",
+            plan: brewPlan
+        )?.contains("npm") == false, "Homebrew failures must not surface npm-specific guidance")
     }
 }
