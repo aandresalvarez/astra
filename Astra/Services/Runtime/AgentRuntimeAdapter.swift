@@ -639,6 +639,7 @@ struct AgentRuntimeProcessLaunchContext {
     let contextText: String
     let nativeContinuationSessionID: String?
     let runID: UUID?
+    let liveApprovalsEnabled: Bool
 
     init(
         prompt: String,
@@ -653,7 +654,8 @@ struct AgentRuntimeProcessLaunchContext {
         phase: String = "run",
         contextText: String = "",
         nativeContinuationSessionID: String? = nil,
-        runID: UUID? = nil
+        runID: UUID? = nil,
+        liveApprovalsEnabled: Bool = false
     ) {
         self.prompt = prompt
         self.task = task
@@ -668,6 +670,7 @@ struct AgentRuntimeProcessLaunchContext {
         self.contextText = contextText
         self.nativeContinuationSessionID = nativeContinuationSessionID
         self.runID = runID
+        self.liveApprovalsEnabled = liveApprovalsEnabled
     }
 }
 
@@ -698,6 +701,35 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
     let directoriesToCreate: [String]
     let providerDetectedFields: [String: String]
     let commandPlannedFields: [String: String]
+    var interactiveAsk: AgentRuntimeInteractiveAskPlan?
+
+    init(
+        runtime: AgentRuntimeID,
+        executablePath: String,
+        arguments: [String],
+        currentDirectory: String,
+        environment: [String: String],
+        browserShimDirectory: String?,
+        providerVersion: String?,
+        parsesJSONLines: Bool,
+        directoriesToCreate: [String] = [],
+        providerDetectedFields: [String: String] = [:],
+        commandPlannedFields: [String: String] = [:],
+        interactiveAsk: AgentRuntimeInteractiveAskPlan? = nil
+    ) {
+        self.runtime = runtime
+        self.executablePath = executablePath
+        self.arguments = arguments
+        self.currentDirectory = currentDirectory
+        self.environment = environment
+        self.browserShimDirectory = browserShimDirectory
+        self.providerVersion = providerVersion
+        self.parsesJSONLines = parsesJSONLines
+        self.directoriesToCreate = directoriesToCreate
+        self.providerDetectedFields = providerDetectedFields
+        self.commandPlannedFields = commandPlannedFields
+        self.interactiveAsk = interactiveAsk
+    }
 }
 
 enum AgentRuntimeRecordingMode {
@@ -1149,13 +1181,24 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             permissionPolicy: effectivePermissionPolicy
         )
         let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
-        var args = [
-            "-p",
-            context.prompt
-        ]
+        // Live approvals use the stdio control protocol, which requires
+        // stream-json input — the prompt then travels over stdin instead of
+        // the positional argument.
+        let interactiveAsk: AgentRuntimeInteractiveAskPlan? = {
+            guard context.liveApprovalsEnabled,
+                  effectivePermissionPolicy != .autonomous,
+                  let initialMessage = ClaudeControlProtocol.initialUserMessage(prompt: context.prompt) else {
+                return nil
+            }
+            return AgentRuntimeInteractiveAskPlan(initialStdinMessage: initialMessage)
+        }()
+        var args = interactiveAsk == nil ? ["-p", context.prompt] : ["-p"]
         if let sessionID = context.nativeContinuationSessionID,
            !sessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             args += ["--resume", sessionID]
+        }
+        if interactiveAsk != nil {
+            args += ["--input-format", "stream-json", "--permission-prompt-tool", "stdio"]
         }
         args += [
             "--model",
@@ -1230,8 +1273,10 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
                 "max_turns": String(context.task.maxTurns),
                 "supports_native_continuation": String(descriptor.supportsNativeContinuation),
                 "uses_native_continuation": String(context.nativeContinuationSessionID != nil),
-                "native_session_prefix": context.nativeContinuationSessionID.map { String($0.prefix(8)) } ?? "none"
-            ]
+                "native_session_prefix": context.nativeContinuationSessionID.map { String($0.prefix(8)) } ?? "none",
+                "uses_live_approvals": String(interactiveAsk != nil)
+            ],
+            interactiveAsk: interactiveAsk
         )
     }
 

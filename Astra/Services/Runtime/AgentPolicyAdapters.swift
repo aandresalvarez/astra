@@ -535,7 +535,9 @@ struct CursorPolicyAdapter: ProviderPolicyAdapter {
         ProviderPolicyFeatures(
             supportsAllowTools: false,
             supportsDenyTools: false,
-            supportsAskFirstMode: true,
+            // Cursor CLI only exposes sandbox/force flags; it cannot surface
+            // ask-first checkpoints back to ASTRA, so do not advertise them.
+            supportsAskFirstMode: false,
             supportsPathScoping: false,
             supportsURLAllowlist: false,
             supportsURLDenylist: false,
@@ -1254,6 +1256,19 @@ private func diagnostics(for policy: AgentPolicy, context: PolicyRenderContext) 
             message: "This provider render cannot mark injected environment keys as secrets.",
             affectedCapability: "credentials",
             remediation: "Remove credential injection or use a provider/version with secret env support."
+        ))
+    }
+    let usesAskCheckpoints = policy.level == .review
+        || !policy.askFirstTools.isEmpty
+        || !policy.askFirstShellPatterns.isEmpty
+    if usesAskCheckpoints, !context.providerFeatures.supportsInteractiveCallbacks {
+        diagnostics.append(PolicyDiagnostic(
+            id: "\(context.runtimeID.rawValue).ask-checkpoints-brokered",
+            severity: .warning,
+            title: "Ask checkpoints are brokered by ASTRA",
+            message: "\(context.runtimeID.displayName) cannot ask for live approval mid-run. Blocked actions pause the task; approving resumes it in a new provider run.",
+            affectedCapability: "permissions",
+            remediation: "Approve requested permissions when the task pauses, or pick a runtime with live approval support for ask-heavy work."
         ))
     }
     if policy.level == .autonomous {

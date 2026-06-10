@@ -1,19 +1,37 @@
 import Foundation
 
 enum PromptContextIOSnapshotLoader {
-    private static let recentSessionOutputFileLimit = 6
-    private static let recentSessionFullOutputFileLimit = 4
-    private static let recentSessionFullOutputMaxCharacters = 8_000
-    private static let olderSessionOutputMaxCharacters = 2_000
+    /// How much raw turn history a rebuilt follow-up prompt may carry. Runtimes
+    /// without provider-native session resume depend entirely on this window for
+    /// multi-turn coherence, so they get the wider preset.
+    struct TranscriptWindow: Sendable, Equatable {
+        var fileLimit: Int
+        var fullOutputFileLimit: Int
+        var fullOutputMaxCharacters: Int
+        var olderOutputMaxCharacters: Int
 
-    static func snapshot(for task: AgentTask) -> PromptContextIOSnapshot {
-        snapshot(taskFolder: TaskWorkspaceAccess(task: task).taskFolder)
+        static let standard = TranscriptWindow(
+            fileLimit: 6,
+            fullOutputFileLimit: 4,
+            fullOutputMaxCharacters: 8_000,
+            olderOutputMaxCharacters: 2_000
+        )
+        static let extended = TranscriptWindow(
+            fileLimit: 12,
+            fullOutputFileLimit: 8,
+            fullOutputMaxCharacters: 12_000,
+            olderOutputMaxCharacters: 3_000
+        )
     }
 
-    static func snapshot(taskFolder: String) -> PromptContextIOSnapshot {
+    static func snapshot(for task: AgentTask, window: TranscriptWindow = .standard) -> PromptContextIOSnapshot {
+        snapshot(taskFolder: TaskWorkspaceAccess(task: task).taskFolder, window: window)
+    }
+
+    static func snapshot(taskFolder: String, window: TranscriptWindow = .standard) -> PromptContextIOSnapshot {
         guard !taskFolder.isEmpty else { return .empty }
         return PromptContextIOSnapshot(
-            recentConversationTranscript: recentSessionOutputTranscript(taskFolder: taskFolder),
+            recentConversationTranscript: recentSessionOutputTranscript(taskFolder: taskFolder, window: window),
             sessionHistorySummary: sessionHistorySummary(taskFolder: taskFolder)
         )
     }
@@ -22,9 +40,12 @@ enum PromptContextIOSnapshotLoader {
         snapshot(for: task).recentConversationTranscript?.text
     }
 
-    private static func recentSessionOutputTranscript(taskFolder: String) -> PromptContextSnapshotText? {
+    private static func recentSessionOutputTranscript(
+        taskFolder: String,
+        window: TranscriptWindow
+    ) -> PromptContextSnapshotText? {
         let turnFiles = outputTurnFilePaths(taskFolder: taskFolder)
-            .suffix(recentSessionOutputFileLimit)
+            .suffix(window.fileLimit)
 
         guard !turnFiles.isEmpty else { return nil }
 
@@ -34,9 +55,9 @@ enum PromptContextIOSnapshotLoader {
                 return nil
             }
             let recentIndex = turnFiles.count - offset
-            let maxCharacters = recentIndex <= recentSessionFullOutputFileLimit
-                ? recentSessionFullOutputMaxCharacters
-                : olderSessionOutputMaxCharacters
+            let maxCharacters = recentIndex <= window.fullOutputFileLimit
+                ? window.fullOutputMaxCharacters
+                : window.olderOutputMaxCharacters
             let excerpt = boundedText(text, maxCharacters: maxCharacters, keeping: .prefix)
             return "--- \((path as NSString).lastPathComponent) ---\n\(excerpt)"
         }
@@ -93,7 +114,7 @@ enum PromptContextIOSnapshotLoader {
         }
 
         let header = pieces[0]
-        let recentTurns = pieces.dropFirst().suffix(recentSessionOutputFileLimit).map { "## Turn " + $0 }
+        let recentTurns = pieces.dropFirst().suffix(TranscriptWindow.standard.fileLimit).map { "## Turn " + $0 }
         let summary = ([header] + recentTurns).joined(separator: "\n")
         return boundedText(summary, maxCharacters: 8_000, keeping: .suffix)
     }

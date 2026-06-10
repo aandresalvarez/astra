@@ -1,0 +1,135 @@
+import Foundation
+import SwiftData
+import Testing
+@testable import ASTRA
+import ASTRACore
+
+@Suite("Live approval control protocol")
+struct LiveApprovalControlProtocolTests {
+    @Test("control request parses and responses encode allow, deny, and error")
+    func controlRequestRoundTrip() throws {
+        let line = """
+        {"type":"control_request","request_id":"req-42","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"git push"}}}
+        """
+        let request = try #require(ClaudeControlProtocol.controlRequest(from: line))
+        #expect(request.requestID == "req-42")
+        #expect(request.subtype == "can_use_tool")
+        #expect(request.toolName == "Bash")
+        #expect(request.inputSummary?.contains("git push") == true)
+
+        let allow = try #require(ClaudeControlProtocol.allowResponse(for: request))
+        #expect(allow.contains("\"type\":\"control_response\""))
+        #expect(allow.contains("\"request_id\":\"req-42\""))
+        #expect(allow.contains("\"behavior\":\"allow\""))
+        #expect(allow.contains("git push"))
+
+        let deny = try #require(ClaudeControlProtocol.denyResponse(for: request, message: "user declined"))
+        #expect(deny.contains("\"behavior\":\"deny\""))
+        #expect(deny.contains("user declined"))
+
+        let error = try #require(ClaudeControlProtocol.errorResponse(requestID: "req-42", message: "unsupported"))
+        #expect(error.contains("\"subtype\":\"error\""))
+
+        #expect(ClaudeControlProtocol.controlRequest(from: "{\"type\":\"assistant\"}") == nil)
+
+        let message = try #require(ClaudeControlProtocol.initialUserMessage(prompt: "Do the thing"))
+        #expect(message.contains("\"type\":\"user\""))
+        #expect(message.contains("Do the thing"))
+    }
+
+    @Test("permission center resolves and fails pending asks")
+    func permissionCenterResolvesPendingAsks() async {
+        let center = InFlightPermissionCenter()
+        let taskID = UUID()
+        async let decision = center.awaitDecision(
+            taskID: taskID,
+            ask: InFlightPermissionCenter.PendingAsk(requestID: "r1", toolName: "Bash", inputSummary: nil)
+        )
+        while center.pendingAsks(taskID: taskID).isEmpty {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        #expect(center.pendingAsks(taskID: taskID).first?.toolName == "Bash")
+        #expect(center.resolveAll(taskID: taskID, approved: true) == 1)
+        let approved = await decision
+        #expect(approved)
+        #expect(center.resolveAll(taskID: taskID, approved: true) == 0)
+    }
+}
+
+extension HeadlessChatScenarioTests {
+    @Test("Claude live ask pauses the task and approval resumes the same process")
+    func claudeLiveAskPausesAndApprovalResumesSameProcess() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsFile = harness.rootURL.appendingPathComponent("claude-live-args.txt")
+        let stdinFile = harness.rootURL.appendingPathComponent("claude-live-stdin.txt")
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            IFS= read -r first_line
+            printf '%s\\n' "$first_line" >> \(Self.shQuote(stdinFile.path))
+            printf '%s\\n' '{"type":"system","subtype":"init","session_id":"live-approval-sess","model":"claude-sonnet-4-6"}'
+            printf '%s\\n' '{"type":"control_request","request_id":"req-live-1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"git push origin main"}}}'
+            IFS= read -r response_line
+            printf '%s\\n' "$response_line" >> \(Self.shQuote(stdinFile.path))
+            case "$response_line" in
+              *'"behavior":"allow"'*)
+                printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Pushed after live approval"}]}}'
+                printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Pushed after live approval","usage":{"input_tokens":3,"output_tokens":5}}'
+                exit 0
+                ;;
+              *)
+                printf '%s\\n' '{"type":"result","subtype":"success","is_error":true,"duration_ms":12,"num_turns":1,"result":"denied","usage":{"input_tokens":1,"output_tokens":1}}'
+                exit 1
+                ;;
+            esac
+            """, argsFile: argsFile)
+        )
+
+        let task = harness.makeTask(runtime: .claudeCode, goal: "Push the release branch", model: "claude-sonnet-4-6")
+        let worker = harness.makeWorker(
+            runtime: .claudeCode,
+            executablePath: claudePath,
+            liveApprovals: true
+        )
+
+        let runHandle = Task { await harness.execute(task: task, worker: worker) }
+
+        var ticks = 0
+        while InFlightPermissionCenter.shared.pendingAsks(taskID: task.id).isEmpty, ticks < 200 {
+            try await Task.sleep(nanoseconds: 50_000_000)
+            ticks += 1
+        }
+        let pendingAsk = try #require(InFlightPermissionCenter.shared.pendingAsks(taskID: task.id).first)
+        #expect(pendingAsk.toolName == "Bash")
+        #expect(pendingAsk.inputSummary?.contains("git push origin main") == true)
+
+        ticks = 0
+        while task.status != .pendingUser, ticks < 100 {
+            try await Task.sleep(nanoseconds: 50_000_000)
+            ticks += 1
+        }
+        #expect(task.status == .pendingUser)
+        #expect(task.events.contains { $0.type == "permission.approval.requested" })
+
+        InFlightPermissionCenter.shared.resolveAll(taskID: task.id, approved: true)
+        _ = await runHandle.value
+
+        #expect(task.status == .completed)
+        #expect(task.runs.count == 1)
+        #expect(task.runs.first?.output == "Pushed after live approval")
+        #expect(task.sessionId == "live-approval-sess")
+        #expect(task.events.contains { $0.type == "system.info" && $0.payload.contains("Live permission approved") })
+
+        let args = try String(contentsOf: argsFile, encoding: .utf8)
+        #expect(args.contains("--permission-prompt-tool"))
+        #expect(args.contains("stream-json"))
+        #expect(!args.contains("Push the release branch"))
+
+        let stdin = try String(contentsOf: stdinFile, encoding: .utf8)
+        #expect(stdin.contains("Push the release branch"))
+        #expect(stdin.contains("\"behavior\":\"allow\""))
+        #expect(stdin.contains("\"request_id\":\"req-live-1\""))
+    }
+}

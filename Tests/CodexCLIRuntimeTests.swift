@@ -111,12 +111,48 @@ struct CodexCLIRuntimeTests {
         #expect(plan.arguments.contains("--skip-git-repo-check"))
         #expect(plan.arguments.contains("--ignore-user-config"))
         #expect(plan.arguments.contains("--ignore-rules"))
-        #expect(plan.arguments.contains("--ephemeral"))
+        // Sessions must persist (no --ephemeral) so follow-ups can `exec resume`.
+        #expect(plan.arguments.contains("--ephemeral") == false)
+        #expect(plan.arguments.contains("resume") == false)
         #expect(plan.arguments.last == "Summarize the repo")
         #expect(plan.environment["CODEX_HOME"] == "/tmp/codex-home")
         #expect(plan.environment["NO_COLOR"] == "1")
         #expect(plan.environment["ASTRA_TASK_ID"] == "task-1")
         #expect(plan.parsesJSONLines)
+    }
+
+    @Test("Codex follow-up resumes the persisted session by thread id")
+    func codexFollowUpResumesPersistedSession() throws {
+        let plan = CodexCLIRuntime.buildCommand(
+            executablePath: "/opt/codex",
+            prompt: "Continue the work",
+            model: "gpt-5.5",
+            workspacePath: "/tmp/workspace",
+            additionalPaths: [],
+            permissionPolicy: .restricted,
+            timeoutSeconds: 60,
+            taskEnvironment: [:],
+            resumeSessionID: "thread-abc-123"
+        )
+
+        #expect(plan.arguments.starts(with: ["exec", "resume", "thread-abc-123", "--json"]))
+        #expect(plan.arguments.contains("--ephemeral") == false)
+        #expect(plan.arguments.last == "Continue the work")
+
+        let adapter = CodexCLIRuntimeAdapter()
+        #expect(adapter.descriptor.supportsNativeContinuation)
+        #expect(adapter.shouldClearStaleSessionOnFailure(
+            phase: "resume",
+            result: AgentProcessResult(exitCode: 1, error: "error: Session not found")
+        ))
+        #expect(!adapter.shouldClearStaleSessionOnFailure(
+            phase: "resume",
+            result: AgentProcessResult(exitCode: 1, error: "network timeout")
+        ))
+        #expect(!adapter.shouldClearStaleSessionOnFailure(
+            phase: "run",
+            result: AgentProcessResult(exitCode: 1, error: "session not found")
+        ))
     }
 
     @Test("Codex autonomous policy grants full access without interactive approvals")

@@ -23,6 +23,20 @@ struct CapsuleSelectionPressureTests {
         #expect(pressure.totalEvicted == 3)
     }
 
+    @Test("prompt notice surfaces eviction and stays silent under caps")
+    func promptNoticeSurfacesEviction() {
+        var state = CapsuleSnapshotTests.richState() // within every cap
+        #expect(CapsuleSelectionPressure.promptNotice(for: state) == nil)
+
+        state.turns = (0..<7).map {
+            TaskContextState.Turn(turn: $0, ask: "a", summary: "s", filesChanged: [], blockers: [],
+                                  outputFile: nil, runStatus: "completed", completedAt: nil)
+        }
+        let notice = CapsuleSelectionPressure.promptNotice(for: state)
+        #expect(notice?.contains("Capsule eviction notice") == true)
+        #expect(notice?.contains("turns (3 dropped)") == true)
+    }
+
     /// One-shot measurement over real on-disk capsules. Renders each through the exact
     /// production prompt path and reports the budget-bind + eviction distribution.
     /// Env-gated so CI never depends on machine-local data:

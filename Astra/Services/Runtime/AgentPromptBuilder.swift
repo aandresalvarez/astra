@@ -36,6 +36,9 @@ struct PromptContextBudgetProfile: Sendable, Equatable {
     var supportingContextTokens: Int = 4_000
 
     static let standard = PromptContextBudgetProfile()
+    // Runtimes without provider-native session resume rely entirely on the
+    // rebuilt prompt for continuity, so they get a wider transcript window.
+    static let extendedTranscript = PromptContextBudgetProfile(recentTranscriptTokens: 28_000)
 
     func tokenBudget(for kind: PromptContextSectionKind) -> Int {
         switch kind {
@@ -210,7 +213,7 @@ enum AgentPromptBuilder {
         message: String,
         task: AgentTask,
         plan: TaskPlanPayload,
-        budgetProfile: PromptContextBudgetProfile = .standard
+        budgetProfile: PromptContextBudgetProfile? = nil
     ) -> String {
         var prompt = buildFreshFollowUpPrompt(message: message, task: task, budgetProfile: budgetProfile)
         prompt += "\n\n" + approvedPlanExecutionInstructions(plan: plan, userRequest: message)
@@ -761,7 +764,7 @@ enum AgentPromptBuilder {
     static func buildFreshFollowUpPrompt(
         message: String,
         task: AgentTask,
-        budgetProfile: PromptContextBudgetProfile = .standard
+        budgetProfile: PromptContextBudgetProfile? = nil
     ) -> String {
         buildFreshFollowUpPromptAssembly(
             message: message,
@@ -770,20 +773,32 @@ enum AgentPromptBuilder {
         ).prompt
     }
 
+    static func continuityBudgetProfile(for runtime: AgentRuntimeID) -> PromptContextBudgetProfile {
+        AgentRuntimeAdapterRegistry.supportsNativeContinuation(for: runtime) ? .standard : .extendedTranscript
+    }
+
+    static func continuityTranscriptWindow(for runtime: AgentRuntimeID) -> PromptContextIOSnapshotLoader.TranscriptWindow {
+        AgentRuntimeAdapterRegistry.supportsNativeContinuation(for: runtime) ? .standard : .extended
+    }
+
     static func buildFreshFollowUpPromptAssembly(
         message: String,
         task: AgentTask,
-        budgetProfile: PromptContextBudgetProfile = .standard,
+        budgetProfile: PromptContextBudgetProfile? = nil,
         ioSnapshot: PromptContextIOSnapshot? = nil
     ) -> PromptAssemblyManifest {
-        assemblePrompt(
+        let runtime = task.resolvedRuntimeID
+        return assemblePrompt(
             buildFreshFollowUpPromptSections(
                 message: message,
                 task: task,
-                ioSnapshot: ioSnapshot ?? PromptContextIOSnapshotLoader.snapshot(for: task)
+                ioSnapshot: ioSnapshot ?? PromptContextIOSnapshotLoader.snapshot(
+                    for: task,
+                    window: continuityTranscriptWindow(for: runtime)
+                )
             ),
             mode: .followUp,
-            budgetProfile: budgetProfile
+            budgetProfile: budgetProfile ?? continuityBudgetProfile(for: runtime)
         )
     }
 
@@ -1625,9 +1640,13 @@ enum AgentPromptBuilder {
     }
 
     private static func appendThreadIntentContext(for task: AgentTask, to sections: inout [PromptContextSection]) {
-        guard let context = TaskContextStateManager.refreshedPromptContext(for: task),
+        guard var context = TaskContextStateManager.refreshedPromptContext(for: task),
               !context.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return
+        }
+        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
+        if let evictionNotice = CapsuleSelectionPressure.promptNotice(forTaskFolder: taskFolder) {
+            context += "\n" + evictionNotice
         }
         appendSection(
             context,

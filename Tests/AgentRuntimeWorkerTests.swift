@@ -995,6 +995,38 @@ struct BuildPromptTests {
         #expect(snapshot.sessionHistorySummary?.text.contains("LOADER_SESSION_HISTORY") == true)
     }
 
+    @Test("Transcript window widens for runtimes without native continuation")
+    func transcriptWindowWidensWithoutNativeContinuation() throws {
+        let folder = NSTemporaryDirectory() + "prompt-io-window-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: folder) }
+        let outputs = (folder as NSString).appendingPathComponent("outputs")
+        try FileManager.default.createDirectory(atPath: outputs, withIntermediateDirectories: true)
+        for turn in 1...9 {
+            let path = (outputs as NSString).appendingPathComponent(String(format: "turn_%03d.md", turn))
+            try "WINDOW_TURN_\(turn)_OUTPUT".write(toFile: path, atomically: true, encoding: .utf8)
+        }
+
+        let standard = PromptContextIOSnapshotLoader.snapshot(taskFolder: folder, window: .standard)
+        let extended = PromptContextIOSnapshotLoader.snapshot(taskFolder: folder, window: .extended)
+
+        #expect(standard.recentConversationTranscript?.text.contains("WINDOW_TURN_3_OUTPUT") == false)
+        #expect(standard.recentConversationTranscript?.text.contains("WINDOW_TURN_4_OUTPUT") == true)
+        #expect(extended.recentConversationTranscript?.text.contains("WINDOW_TURN_1_OUTPUT") == true)
+        #expect(extended.recentConversationTranscript?.text.contains("WINDOW_TURN_9_OUTPUT") == true)
+
+        // Claude and Codex resume provider sessions natively; the rest depend
+        // entirely on the rebuilt prompt and get the wider window.
+        #expect(AgentPromptBuilder.continuityBudgetProfile(for: .claudeCode) == .standard)
+        #expect(AgentPromptBuilder.continuityBudgetProfile(for: .codexCLI) == .standard)
+        #expect(AgentPromptBuilder.continuityBudgetProfile(for: .cursorCLI) == .extendedTranscript)
+        #expect(AgentPromptBuilder.continuityTranscriptWindow(for: .claudeCode) == .standard)
+        #expect(AgentPromptBuilder.continuityTranscriptWindow(for: .copilotCLI) == .extended)
+        #expect(
+            PromptContextBudgetProfile.extendedTranscript.recentTranscriptTokens
+                > PromptContextBudgetProfile.standard.recentTranscriptTokens
+        )
+    }
+
     @Test("Follow-up prompt includes context source index for just-in-time retrieval")
     func followUpPromptIncludesContextSourceIndexForRetrieval() throws {
         let root = NSTemporaryDirectory() + "prompt-followup-source-index-\(UUID().uuidString)"

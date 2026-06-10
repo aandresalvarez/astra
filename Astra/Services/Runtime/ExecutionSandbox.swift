@@ -474,7 +474,8 @@ enum ExecutionSandbox {
             parsesJSONLines: plan.parsesJSONLines,
             directoriesToCreate: plan.directoriesToCreate,
             providerDetectedFields: plan.providerDetectedFields,
-            commandPlannedFields: plan.commandPlannedFields
+            commandPlannedFields: plan.commandPlannedFields,
+            interactiveAsk: plan.interactiveAsk
         )
     }
 }

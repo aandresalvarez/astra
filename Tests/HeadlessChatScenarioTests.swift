@@ -208,11 +208,15 @@ final class HeadlessChatHarness {
     func makeWorker(
         runtime: AgentRuntimeID,
         executablePath: String,
-        permissionPolicy: PermissionPolicy = .restricted
+        permissionPolicy: PermissionPolicy = .restricted,
+        liveApprovals: Bool = false
     ) -> AgentRuntimeWorker {
         let worker = AgentRuntimeWorker()
         worker.timeoutSeconds = 10
         worker.permissionPolicy = permissionPolicy
+        // Most scenario fakes assert on argv prompt delivery; live approvals
+        // switch Claude to stdin delivery, so tests opt in explicitly.
+        worker.liveApprovalsEnabled = liveApprovals
         switch runtime {
         case .claudeCode:
             worker.claudePath = executablePath
@@ -237,6 +241,7 @@ final class HeadlessChatHarness {
         let worker = AgentRuntimeWorker()
         worker.timeoutSeconds = 10
         worker.permissionPolicy = permissionPolicy
+        worker.liveApprovalsEnabled = false
         worker.claudePath = claudePath
         worker.copilotPath = copilotPath
         worker.copilotHome = rootURL.appendingPathComponent("copilot-home", isDirectory: true).path
