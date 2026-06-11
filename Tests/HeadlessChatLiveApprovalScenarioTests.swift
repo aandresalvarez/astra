@@ -334,5 +334,8 @@ extension HeadlessChatScenarioTests {
 
         let stdin = try String(contentsOf: stdinFile, encoding: .utf8)
         #expect(stdin.contains("\"behavior\":\"deny\""))
+        // The provider sees the policy reason, not the "user declined" message.
+        #expect(stdin.contains("Blocked by ASTRA policy"))
+        #expect(!stdin.contains("user declined"))
     }
 }

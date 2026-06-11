@@ -159,33 +159,23 @@ struct AgentRuntimePolicyGuard: Sendable {
         guard !toolName.isEmpty else { return .ask }
         let command = rawCommand?.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        // Deny wins over everything: explicit denied tools, then denied shell
-        // patterns (rm/sudo/git push/...).
-        if toolMatches(toolName, command: command, candidates: manifest.providerRender.deniedTools) {
-            return .denied
-        }
-        if isShellTool(toolName) || (command != nil && !isFileTool(toolName) && !isNetworkTool(toolName)),
-           validateDeniedShellCommand(command: command, toolName: toolName) != nil {
-            return .denied
-        }
-
-        // Already allowed by the rendered policy → no ask needed.
-        let allowed = toolMatches(
-            toolName,
+        // Route through the guard's own post-hoc evaluation so the live
+        // decision is identical to what would terminate the run otherwise — no
+        // partial reimplementation that could miss allowedShellPatterns,
+        // ask-first shell patterns, or the "not in allow-list" deny. A nil
+        // violation means the guard would allow; a violation flagged
+        // requiresApproval is ask-first; any other violation is a deny the
+        // guard would enforce, so it must NOT be auto-approved.
+        let observed = PolicyObservedEvent(
+            kind: .toolUse,
+            toolName: toolName,
             command: command,
-            candidates: manifest.providerRender.allowedTools,
-            shellMatchMode: .allActionableSegments
+            summary: command
         )
-        if allowed { return .allowed }
-
-        // Ask-first tool/command → the ask card (Ask) or auto-approve (Auto).
-        if requiresApproval(toolName: toolName, command: command) {
-            return .ask
+        guard let violation = validateObservedAction(observed, request: nil) else {
+            return .allowed
         }
-
-        // Not allowed and not explicitly ask-first: default to ask rather than
-        // silently allowing — the provider chose to ask, so honor that.
-        return .ask
+        return violation.requiresApproval ? .ask : .denied
     }
 
     func violation(for parsed: ParsedEvent) -> AgentRuntimePolicyViolation? {

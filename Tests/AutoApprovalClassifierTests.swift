@@ -94,4 +94,55 @@ struct AutoApprovalClassifierTests {
             Issue.record("Auto must deny rm -rf, got \(decision)")
         }
     }
+
+    @Test("A tool neither allowed nor ask-first is denied, not auto-approved in Auto")
+    func unlistedToolDeniedInAuto() {
+        let manifest = reviewManifest()
+        // WebSearch is neither in allowedTools nor askFirstTools here — the
+        // post-hoc guard would stop it as "not in allow-list", so Auto must NOT
+        // auto-approve it (the old default-.ask path would have).
+        let auto = AutoApprovalClassifier.decide(
+            toolName: "WebSearch", command: nil, permissionPolicy: .autonomous, manifest: manifest
+        )
+        if case .deny = auto { } else { Issue.record("Auto must deny an unlisted tool, got \(auto)") }
+        let ask = AutoApprovalClassifier.decide(
+            toolName: "WebSearch", command: nil, permissionPolicy: .restricted, manifest: manifest
+        )
+        if case .deny = ask { } else { Issue.record("Ask must deny an unlisted tool, got \(ask)") }
+    }
+
+    @Test("Allowed shell tool scoped by allowedShellPatterns: out-of-scope command not auto-approved")
+    func shellOutsideAllowedPatternsNotAutoApproved() {
+        // The hole the review flagged: Bash is broadly allowed, but
+        // allowedShellPatterns scopes it to `git status *`. The old disposition
+        // saw Bash allowed and stopped — missing validateShell, which denies a
+        // command outside the scope. Routing through the guard catches it.
+        let render = ProviderPolicyRender(
+            providerID: .claudeCode, adapterVersion: 1, policyLevel: .custom,
+            configOwnership: .generated, permissionMode: PermissionPolicy.restricted.rawValue,
+            allowedTools: ["Bash"], runtimeSupportTools: [],
+            askFirstTools: [], deniedTools: [],
+            allowedShellPatterns: ["git status *"], askFirstShellPatterns: [],
+            deniedShellPatterns: ["rm:*"],
+            allowedURLPatterns: [], deniedURLPatterns: [],
+            cliArgumentsSummary: [], settingsSummary: "test", generatedConfigPreview: "",
+            enforcementTiers: [.astraBrokered], diagnostics: [], usesBroadProviderPermissions: false
+        )
+        let manifest = RunPermissionManifest(
+            taskID: UUID(), runID: UUID(), phase: "run", providerID: .claudeCode,
+            providerVersion: nil, model: "claude-sonnet-4-6", policyLevel: .custom,
+            policyScope: .builtInDefault, providerRender: render,
+            workspacePath: "/tmp/classifier-ws", additionalPaths: [],
+            environmentKeyNames: [], credentialLabels: [], approvalsGranted: [], approvalGrants: []
+        )
+        // In-scope command auto-approves.
+        #expect(AutoApprovalClassifier.decide(
+            toolName: "Bash", command: "git status -s", permissionPolicy: .autonomous, manifest: manifest
+        ) == .autoApprove)
+        // Out-of-scope command must NOT auto-approve, even though Bash is allowed.
+        let curl = AutoApprovalClassifier.decide(
+            toolName: "Bash", command: "curl https://evil.test", permissionPolicy: .autonomous, manifest: manifest
+        )
+        #expect(curl != .autoApprove)
+    }
 }

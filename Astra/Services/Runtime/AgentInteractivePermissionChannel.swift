@@ -13,6 +13,19 @@ struct AgentRuntimeInteractiveAskPlan: Equatable {
     let initialStdinMessage: String
 }
 
+/// The answer to a live ask, carrying the deny reason so the provider sees the
+/// actual cause (ASTRA policy vs the user declining) instead of always "the
+/// user declined".
+enum InteractiveAskOutcome: Sendable, Equatable {
+    case allow
+    case deny(message: String)
+
+    var isAllowed: Bool {
+        if case .allow = self { return true }
+        return false
+    }
+}
+
 /// A `can_use_tool` ask decoded from the provider's control stream.
 struct AgentInteractiveAskRequest: Sendable {
     let requestID: String
@@ -289,7 +302,7 @@ extension AgentRuntimeWorker {
         manifest: RunPermissionManifest?,
         modelContext: ModelContext,
         pendingEvents: OrderedMainActorTaskQueue
-    ) -> ((AgentInteractiveAskRequest) async -> Bool) {
+    ) -> ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome) {
         let taskID = task.id
         return { ask in
             // Classify the ask against ASTRA policy before deciding whether to
@@ -297,9 +310,14 @@ extension AgentRuntimeWorker {
             // denies the deny-list; Ask forwards. No manifest → forward (the
             // safe default, matching pre-classifier behavior).
             let decision = manifest.map {
+                // Only the extracted bare shell command goes into policy
+                // matching — never the JSON-encoded inputSummary, which would
+                // miss shell deny/allow patterns and misclassify non-shell
+                // asks (Write/WebFetch) as "commands". Non-shell asks match by
+                // tool name with a nil command.
                 AutoApprovalClassifier.decide(
                     toolName: ask.toolName,
-                    command: ask.commandText ?? ask.inputSummary,
+                    command: ask.commandText,
                     permissionPolicy: permissionPolicy,
                     manifest: $0
                 )
@@ -324,7 +342,7 @@ extension AgentRuntimeWorker {
                     ))
                     try? modelContext.save()
                 }
-                return true
+                return .allow
             case .deny(let reason):
                 pendingEvents.add {
                     modelContext.insert(TaskEvent(
@@ -343,7 +361,8 @@ extension AgentRuntimeWorker {
                     ))
                     try? modelContext.save()
                 }
-                return false
+                // The provider sees the actual policy reason, not "user declined".
+                return .deny(message: "Blocked by ASTRA policy: \(reason)")
             case .forwardToUser:
                 break
             }
@@ -409,6 +428,8 @@ extension AgentRuntimeWorker {
                 try? modelContext.save()
             }
             return approved
+                ? .allow
+                : .deny(message: "The user declined this action in ASTRA. Continue without it or propose an alternative.")
         }
     }
 }
