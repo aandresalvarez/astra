@@ -700,11 +700,9 @@ final class AgentRuntimeWorker {
             runID: run.id,
             liveApprovalsEnabled: liveApprovalsEnabled,
             onInteractiveAsk: Self.interactiveAskHandler(
-                runtime: selectedRuntime,
-                task: task,
-                run: run,
-                modelContext: modelContext,
-                pendingEvents: pendingEvents
+                runtime: selectedRuntime, task: task, run: run,
+                permissionPolicy: runPermissionPolicy, manifest: manifest,
+                modelContext: modelContext, pendingEvents: pendingEvents
             ),
             onLine: { line, parsesJSONLines in
                 PerformanceSignposts.processStreamLine {
