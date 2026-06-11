@@ -1,5 +1,6 @@
 import AppKit
 import AstraObjCSupport
+import os
 import SwiftUI
 
 /// `NSHostingView` whose constraint invalidation survives AppKit's
@@ -17,7 +18,12 @@ import SwiftUI
 /// cycle has finished.
 @MainActor
 final class FullScreenSafeHostingView<Content: View>: NSHostingView<Content> {
+    private static var trapLogger: Logger {
+        Logger(subsystem: "com.coral.ASTRA", category: "WindowChrome")
+    }
+
     private var retryScheduled = false
+    private var trappedCount = 0
 
     override var needsUpdateConstraints: Bool {
         get { super.needsUpdateConstraints }
@@ -25,7 +31,12 @@ final class FullScreenSafeHostingView<Content: View>: NSHostingView<Content> {
             let raised = AstraExceptionTrap.catching {
                 super.needsUpdateConstraints = newValue
             }
-            guard raised != nil, newValue, !retryScheduled else { return }
+            guard let raised, newValue, !retryScheduled else { return }
+            trappedCount += 1
+            // Visible in Console: a steadily climbing count means something is
+            // invalidating constraints mid-display-cycle in a loop, not a
+            // one-off full-screen transition.
+            Self.trapLogger.warning("Titlebar accessory constraint invalidation trapped (count \(self.trappedCount, privacy: .public)): \(raised.name.rawValue, privacy: .public)")
             retryScheduled = true
             DispatchQueue.main.async { [weak self] in
                 self?.retryDeferredConstraintInvalidation()
