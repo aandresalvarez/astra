@@ -155,8 +155,10 @@ struct AgentRuntimePolicyGuard: Sendable {
     }
 
     func disposition(toolName rawTool: String, command rawCommand: String?) -> CommandDisposition {
+        // Don't special-case an empty tool name: pass it through so
+        // validateObservedAction returns its "unnamed tool use" deny, instead
+        // of returning .ask here (which Auto would auto-approve — a bypass).
         let toolName = rawTool.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !toolName.isEmpty else { return .ask }
         let command = rawCommand?.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // Route through the guard's own post-hoc evaluation so the live

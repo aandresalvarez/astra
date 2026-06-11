@@ -95,6 +95,19 @@ struct AutoApprovalClassifierTests {
         }
     }
 
+    @Test("An empty/whitespace tool name is denied, not auto-approved in Auto")
+    func emptyToolNameDeniedInAuto() {
+        let manifest = reviewManifest()
+        for name in ["", "   ", "\n\t"] {
+            let decision = AutoApprovalClassifier.decide(
+                toolName: name, command: nil, permissionPolicy: .autonomous, manifest: manifest
+            )
+            if case .deny = decision { } else {
+                Issue.record("empty tool name \(name.debugDescription) must deny in Auto, got \(decision)")
+            }
+        }
+    }
+
     @Test("A tool neither allowed nor ask-first is denied, not auto-approved in Auto")
     func unlistedToolDeniedInAuto() {
         let manifest = reviewManifest()

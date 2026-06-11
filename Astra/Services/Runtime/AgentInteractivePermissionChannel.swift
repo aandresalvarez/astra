@@ -31,9 +31,10 @@ struct AgentInteractiveAskRequest: Sendable {
     let requestID: String
     let toolName: String
     let inputSummary: String?
-    /// The bare command for shell tools, extracted from the structured input
-    /// (the `command` key), so policy matching sees `git push …` rather than
-    /// the JSON-encoded `inputSummary`. Nil for non-shell tools.
+    /// The bare command extracted from the structured input's `command`/`cmd`
+    /// key, so policy matching sees `git push …` rather than the JSON-encoded
+    /// `inputSummary`. Nil when the input has no such key (e.g. file/web tools,
+    /// which carry a path/url instead).
     let commandText: String?
 
     init(requestID: String, toolName: String, inputSummary: String?, commandText: String? = nil) {
@@ -356,7 +357,9 @@ extension AgentRuntimeWorker {
                     modelContext.insert(TaskEvent(
                         task: task,
                         eventType: TaskEventTypes.Tool.permissionDenied,
-                        payload: "Denied \(ask.toolName): \(reason)",
+                        // Match AgentEventRecorder's canonical phrasing so UI /
+                        // telemetry parse all permission.denied events uniformly.
+                        payload: "Permission denied for tool: \(ask.toolName). \(reason)",
                         run: run
                     ))
                     try? modelContext.save()
