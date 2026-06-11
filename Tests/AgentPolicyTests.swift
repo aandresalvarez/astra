@@ -666,7 +666,8 @@ struct AgentPolicyTests {
             "bq query $'select * from dataset.table'",
             "cat <<EOF\nsecret\nEOF",
             "curl https://example.com <<< token",
-            "git status `cat ~/.ssh/id_ed25519`"
+            "git status `cat ~/.ssh/id_ed25519`",
+            "git status \\\n--short"
         ]
 
         for command in unsupported {
@@ -687,6 +688,16 @@ struct AgentPolicyTests {
         #expect(matcher.compiledPatternCount == 1)
         #expect(matcher.matches("git status", pattern: "git stat?s"))
         #expect(matcher.compiledPatternCount == 2)
+    }
+
+    @Test("Wildcard pattern matcher bounds compiled regex cache")
+    func wildcardPatternMatcherBoundsCompiledRegexCache() {
+        let matcher = WildcardPatternMatcher()
+
+        for index in 0..<300 {
+            #expect(matcher.matches("value-\(index)", pattern: "value-\(index)"))
+        }
+        #expect(matcher.compiledPatternCount <= 256)
     }
 
     @Test("Task scoped approval grants exclude risky shell commands")

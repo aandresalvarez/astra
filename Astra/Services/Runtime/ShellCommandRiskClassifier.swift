@@ -325,6 +325,9 @@ enum ShellCommandRiskClassifier {
                 : nil
 
             if escaped {
+                if character == "\n" || character == "\r" {
+                    return true
+                }
                 escaped = false
                 continue
             }

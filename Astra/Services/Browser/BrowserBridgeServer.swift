@@ -160,12 +160,12 @@ final class BrowserBridgeServer: @unchecked Sendable {
             }
 
             if let request = Self.parseRequest(from: buffer) {
-                guard self.rateLimiter.allowsRequest() else {
-                    self.send(.json(["ok": false, "error": "browser_bridge_rate_limited"], statusCode: 429), on: connection)
-                    return
-                }
                 guard self.isAuthorized(request) else {
                     self.send(.json(["ok": false, "error": "unauthorized_browser_bridge_request"], statusCode: 403), on: connection)
+                    return
+                }
+                guard self.rateLimiter.allowsRequest() else {
+                    self.send(.json(["ok": false, "error": "browser_bridge_rate_limited"], statusCode: 429), on: connection)
                     return
                 }
                 Task {

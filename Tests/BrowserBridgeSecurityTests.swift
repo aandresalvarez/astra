@@ -65,6 +65,29 @@ struct BrowserBridgeSecurityTests {
         #expect(limiter.allowsRequest())
     }
 
+    @Test("Unauthorized bridge requests do not consume the authorized request limiter")
+    func unauthorizedBridgeRequestsDoNotConsumeAuthorizedLimiter() async throws {
+        let endpoint = LockedEndpoint()
+        let limiter = BrowserBridgeRateLimiter(maxRequests: 1, window: 60)
+        let server = BrowserBridgeServer(
+            requiredAccessToken: "session-token",
+            rateLimiter: limiter,
+            route: { _ in .json(["ok": true]) },
+            onEndpointChanged: { value in
+                Task { await endpoint.set(value) }
+            }
+        )
+        server.start()
+        defer { server.stop() }
+
+        let baseURL = try await endpoint.waitForURL()
+        let unauthorized = try await httpGet(baseURL.appendingPathComponent("health"), token: "wrong-token")
+        #expect(unauthorized.statusCode == 403)
+
+        let authorized = try await httpGet(baseURL.appendingPathComponent("health"), token: "session-token")
+        #expect(authorized.statusCode == 200)
+    }
+
     @Test("Bridge command contracts normalize decoded targeting fields")
     func bridgeCommandContractsNormalizeDecodedTargetingFields() throws {
         let clickJSON = Data("""

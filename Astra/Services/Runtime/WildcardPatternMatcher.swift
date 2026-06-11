@@ -5,10 +5,13 @@ final class WildcardPatternMatcher: @unchecked Sendable {
 
     private let lock = NSLock()
     private var compiledPatterns: [String: NSRegularExpression] = [:]
+    private var insertionOrder: [String] = []
     private let maxPatternLength: Int
+    private let maxCachedPatterns: Int
 
-    init(maxPatternLength: Int = 512) {
+    init(maxPatternLength: Int = 512, maxCachedPatterns: Int = 256) {
         self.maxPatternLength = maxPatternLength
+        self.maxCachedPatterns = maxCachedPatterns
     }
 
     var compiledPatternCount: Int {
@@ -42,7 +45,16 @@ final class WildcardPatternMatcher: @unchecked Sendable {
             lock.unlock()
             return existing
         }
+        guard maxCachedPatterns > 0 else {
+            lock.unlock()
+            return compiled
+        }
+        while compiledPatterns.count >= maxCachedPatterns, let oldest = insertionOrder.first {
+            insertionOrder.removeFirst()
+            compiledPatterns.removeValue(forKey: oldest)
+        }
         compiledPatterns[pattern] = compiled
+        insertionOrder.append(pattern)
         lock.unlock()
         return compiled
     }
