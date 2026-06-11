@@ -1183,9 +1183,23 @@ struct ChatPanelView: View {
         return "Goal Mode"
     }
 
+    private var actionBarPlanMode: TaskPlanExecutionMode {
+        // Prefer the draft task's runtime (the worker role selection can
+        // differ from the composer default) so the label matches the mode
+        // that will actually execute.
+        if let draftTask {
+            return PlanCheckpointPolicy.executionMode(for: draftTask, skipPermissions: skipPermissions)
+        }
+        return PlanCheckpointPolicy.executionMode(
+            runtime: AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime,
+            skipPermissions: skipPermissions
+        )
+    }
+
     private var actionBarPrimaryTitle: String {
         if approvedDraftPlan != nil {
-            return skipPermissions ? "Run Full Plan" : "Approve Next Step"
+            if skipPermissions { return "Run Full Plan" }
+            return actionBarPlanMode == .fullPlan ? "Run Plan with Live Approvals" : "Approve Next Step"
         }
         if pendingPlan != nil {
             return "Approve Plan"
@@ -1195,7 +1209,8 @@ struct ChatPanelView: View {
 
     private var actionBarPrimaryIcon: String {
         if approvedDraftPlan != nil {
-            return skipPermissions ? "play.fill" : "checkmark.circle.fill"
+            if skipPermissions { return "play.fill" }
+            return actionBarPlanMode == .fullPlan ? "play.circle.fill" : "checkmark.circle.fill"
         }
         if pendingPlan != nil {
             return "checkmark.circle.fill"
@@ -1785,7 +1800,7 @@ struct ChatPanelView: View {
         showPlanCanvasIfNeeded(for: task)
 
         Task {
-            let mode: TaskPlanExecutionMode = skipPermissions ? .fullPlan : .nextStep
+            let mode = PlanCheckpointPolicy.executionMode(for: task, skipPermissions: skipPermissions)
             await taskQueue?.executeApprovedPlan(task: task, plan: plan, mode: mode, modelContext: modelContext) { _ in }
             await MainActor.run {
                 _ = WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
