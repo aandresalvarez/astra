@@ -3494,6 +3494,7 @@ struct TaskMainView: View {
             runtimePermission: runtimePermissionState,
             executableApprovedPlan: executableApprovedPlan,
             skipPermissions: skipPermissions,
+            planExecutionMode: planCheckpointExecutionMode,
             canOpenPlan: onOpenPlan != nil,
             isPlanCanvasVisible: isPlanCanvasVisible,
             canRunApprovedPlan: taskQueue != nil,
@@ -3912,7 +3913,7 @@ struct TaskMainView: View {
             onOpenPlan?(task)
         case .runApprovedPlan:
             guard let plan = executableApprovedPlan else { return }
-            runApprovedPlan(plan, mode: skipPermissions ? .fullPlan : .nextStep)
+            runApprovedPlan(plan, mode: planCheckpointExecutionMode)
         case .runTask:
             onRunTask?(task)
         case .retry:
@@ -3994,14 +3995,14 @@ struct TaskMainView: View {
         }
     }
 
+    private var planCheckpointExecutionMode: TaskPlanExecutionMode { PlanCheckpointPolicy.executionMode(for: task, skipPermissions: skipPermissions) }
+
     private func planDecisionDock(_ plan: TaskPlanPayload) -> some View {
         let nextStep = TaskPlanService.nextExecutableStep(in: plan)
-        let mode: TaskPlanExecutionMode = skipPermissions ? .fullPlan : .nextStep
-        let title = skipPermissions ? "Run remaining plan" : "Approve next step"
+        let mode = planCheckpointExecutionMode
+        let title = PlanCheckpointPolicy.approveActionTitle(mode: mode, skipPermissions: skipPermissions)
         let detail = nextStep.map { "Next: \($0.title)" } ?? plan.title
-        let modeLabel = skipPermissions
-            ? "Auto mode runs every remaining step."
-            : "Ask mode runs one approved step, then pauses again."
+        let modeLabel = PlanCheckpointPolicy.modeLabel(mode: mode, skipPermissions: skipPermissions)
         let tint = skipPermissions ? Stanford.poppy : Stanford.paloAltoGreen
 
         return taskDecisionSurface(
