@@ -173,6 +173,7 @@ enum AgentEventCompactor {
              "budget.exceeded",
              "permission.denied",
              "permission.approval.requested",
+             "permission.request.resolved",
              "error",
              "task.completed",
              "task.cancelled",

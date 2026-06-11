@@ -494,10 +494,12 @@ final class TaskLifecycleCoordinator {
             .max { $0.timestamp < $1.timestamp }
         guard let latestRequest else { return false }
 
-        let latestApproval = task.events
-            .filter { $0.type == "task.approved" }
+        // Closing events: a relaunch approval OR a live-ask resolution (the
+        // deny path emits no task.approved but still closes the request).
+        let latestClose = task.events
+            .filter { $0.type == "task.approved" || $0.type == "permission.request.resolved" }
             .max { $0.timestamp < $1.timestamp }
-        return latestApproval.map { latestRequest.timestamp > $0.timestamp } ?? true
+        return latestClose.map { latestRequest.timestamp > $0.timestamp } ?? true
     }
 
     func deleteTask(_ task: AgentTask) -> Workspace? {

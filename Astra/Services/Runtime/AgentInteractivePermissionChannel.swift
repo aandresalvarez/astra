@@ -108,6 +108,23 @@ enum ClaudeControlProtocol {
     }
 }
 
+/// Payload for a `permission.request.resolved` event.
+struct PermissionRequestResolution: Codable, Equatable {
+    var requestID: String
+    var approved: Bool
+    var toolName: String
+
+    var payloadString: String {
+        (try? JSONEncoder().encode(self)).flatMap { String(data: $0, encoding: .utf8) }
+            ?? "{\"requestID\":\"\(requestID)\",\"approved\":\(approved)}"
+    }
+
+    static func decode(from payload: String) -> PermissionRequestResolution? {
+        guard let data = payload.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(PermissionRequestResolution.self, from: data)
+    }
+}
+
 /// Pending in-flight asks keyed by task, bridging the provider's blocked
 /// control request to the user's approve action in the UI. Approving resolves
 /// the waiting continuation; the legacy pause-and-relaunch path is skipped.
@@ -142,9 +159,33 @@ final class InFlightPermissionCenter: @unchecked Sendable {
         return waiters[taskID]?.map(\.ask) ?? []
     }
 
+    /// Resolves a single pending ask by request id. Returns true if one was
+    /// found and resolved. Concurrent asks on the same task (a provider that
+    /// batches, or interleaved tool calls) get independent answers — only
+    /// `resolveAll` collapses them, and that is reserved for process death.
+    @discardableResult
+    func resolve(taskID: UUID, requestID: String, approved: Bool) -> Bool {
+        lock.lock()
+        guard var taskWaiters = waiters[taskID],
+              let index = taskWaiters.firstIndex(where: { $0.ask.requestID == requestID }) else {
+            lock.unlock()
+            return false
+        }
+        let waiter = taskWaiters.remove(at: index)
+        if taskWaiters.isEmpty {
+            waiters.removeValue(forKey: taskID)
+        } else {
+            waiters[taskID] = taskWaiters
+        }
+        lock.unlock()
+        waiter.continuation.resume(returning: approved)
+        return true
+    }
+
     /// Resolves every pending ask for the task. Returns how many were resolved
     /// so callers can distinguish an in-flight approval from the legacy
-    /// pause-and-relaunch approval.
+    /// pause-and-relaunch approval. Used by the UI (which approves "the open
+    /// request" without tracking ids) and for process-death cleanup.
     @discardableResult
     func resolveAll(taskID: UUID, approved: Bool) -> Int {
         lock.lock()
@@ -214,15 +255,26 @@ extension AgentRuntimeWorker {
                     task.status = .running
                     task.updatedAt = Date()
                 }
-                let resolution = TaskEvent(
+                // Closes the open-request card: a denied live ask never emits
+                // task.approved, so without this the card would linger.
+                modelContext.insert(TaskEvent(
+                    task: task,
+                    eventType: TaskEventTypes.Tool.permissionRequestResolved,
+                    payload: PermissionRequestResolution(
+                        requestID: ask.requestID,
+                        approved: approved,
+                        toolName: ask.toolName
+                    ).payloadString,
+                    run: run
+                ))
+                modelContext.insert(TaskEvent(
                     task: task,
                     eventType: TaskEventTypes.System.info,
                     payload: approved
                         ? "Live permission approved for \(ask.toolName); the provider continues in the same session."
                         : "Live permission for \(ask.toolName) was declined or the run ended; the provider continues without it.",
                     run: run
-                )
-                modelContext.insert(resolution)
+                ))
                 try? modelContext.save()
             }
             return approved
