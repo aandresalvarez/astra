@@ -57,6 +57,107 @@ struct LiveApprovalControlProtocolTests {
         #expect(approved)
         #expect(center.resolveAll(taskID: taskID, approved: true) == 0)
     }
+
+    @Test("permission center resolves concurrent asks independently by request id")
+    func permissionCenterResolvesByRequestID() async {
+        let center = InFlightPermissionCenter()
+        let taskID = UUID()
+        async let d1 = center.awaitDecision(
+            taskID: taskID, ask: InFlightPermissionCenter.PendingAsk(requestID: "r1", toolName: "Bash", inputSummary: nil)
+        )
+        async let d2 = center.awaitDecision(
+            taskID: taskID, ask: InFlightPermissionCenter.PendingAsk(requestID: "r2", toolName: "Write", inputSummary: nil)
+        )
+        var ticks = 0
+        while center.pendingAsks(taskID: taskID).count < 2, ticks < 400 {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+            ticks += 1
+        }
+        #expect(center.pendingAsks(taskID: taskID).count == 2)
+
+        // Approve r2, deny r1 — each gets its own answer, neither collapses.
+        #expect(center.resolve(taskID: taskID, requestID: "r2", approved: true))
+        let a2 = await d2
+        #expect(a2)
+        #expect(center.pendingAsks(taskID: taskID).count == 1)
+
+        #expect(center.resolve(taskID: taskID, requestID: "r1", approved: false))
+        let a1 = await d1
+        #expect(!a1)
+        #expect(center.pendingAsks(taskID: taskID).isEmpty)
+
+        // Unknown id resolves nothing.
+        #expect(!center.resolve(taskID: taskID, requestID: "missing", approved: true))
+    }
+
+    @Test("PermissionRequestResolution round-trips through its payload")
+    func permissionRequestResolutionRoundTrips() throws {
+        let resolution = PermissionRequestResolution(requestID: "req-9", approved: false, toolName: "Bash")
+        let decoded = try #require(PermissionRequestResolution.decode(from: resolution.payloadString))
+        #expect(decoded == resolution)
+    }
+
+    @Test("permission.request.resolved closes the open-request dock state")
+    func resolvedEventClosesOpenRequest() {
+        let base = Date(timeIntervalSince1970: 1000)
+        let requested = TaskRuntimePermissionState.Event(
+            type: "permission.approval.requested",
+            payload: liveRequestPayload(requestID: "r1", toolName: "Bash"),
+            timestamp: base
+        )
+        // Still open with only the request.
+        #expect(TaskRuntimePermissionState.build(events: [requested]).hasOpenApprovalRequest)
+
+        // A later resolution (deny, no task.approved) for the SAME id closes it.
+        let resolved = TaskRuntimePermissionState.Event(
+            type: "permission.request.resolved",
+            payload: PermissionRequestResolution(requestID: "r1", approved: false, toolName: "Bash").payloadString,
+            timestamp: base.addingTimeInterval(1)
+        )
+        #expect(!TaskRuntimePermissionState.build(events: [requested, resolved]).hasOpenApprovalRequest)
+    }
+
+    @Test("out-of-order resolution of one ask doesn't hide another pending ask")
+    func outOfOrderResolutionKeepsOtherAskOpen() {
+        let base = Date(timeIntervalSince1970: 1000)
+        let events: [RuntimePermissionOpenState.Event] = [
+            .init(type: "permission.approval.requested", payload: liveRequestPayload(requestID: "rA", toolName: "Bash"), timestamp: base),
+            .init(type: "permission.approval.requested", payload: liveRequestPayload(requestID: "rB", toolName: "Write"), timestamp: base.addingTimeInterval(1)),
+            // B resolves first; A is still pending. The old timestamp logic
+            // would have wrongly closed the card here.
+            .init(type: "permission.request.resolved", payload: PermissionRequestResolution(requestID: "rB", approved: true, toolName: "Write").payloadString, timestamp: base.addingTimeInterval(2))
+        ]
+        #expect(RuntimePermissionOpenState.hasOpenRequest(events: events))
+
+        // Resolving A too closes the card.
+        let closed = events + [
+            RuntimePermissionOpenState.Event(type: "permission.request.resolved", payload: PermissionRequestResolution(requestID: "rA", approved: false, toolName: "Bash").payloadString, timestamp: base.addingTimeInterval(3))
+        ]
+        #expect(!RuntimePermissionOpenState.hasOpenRequest(events: closed))
+    }
+
+    @Test("legacy request without requestID still closes on task.approved")
+    func legacyRequestClosesOnApproval() {
+        let base = Date(timeIntervalSince1970: 1000)
+        let requested = RuntimePermissionOpenState.Event(
+            type: "permission.approval.requested", payload: "{}", timestamp: base
+        )
+        #expect(RuntimePermissionOpenState.hasOpenRequest(events: [requested]))
+        let approved = RuntimePermissionOpenState.Event(
+            type: "task.approved", payload: "Task approved by user.", timestamp: base.addingTimeInterval(1)
+        )
+        #expect(!RuntimePermissionOpenState.hasOpenRequest(events: [requested, approved]))
+    }
+
+    private func liveRequestPayload(requestID: String, toolName: String) -> String {
+        PermissionBroker.approvalPayloadString(
+            providerID: .claudeCode,
+            request: .providerNativePrompt(toolName: toolName, context: nil),
+            reason: "test",
+            grants: [],
+            requestID: requestID
+        )
+    }
 }
 
 extension HeadlessChatScenarioTests {
@@ -188,6 +289,11 @@ extension HeadlessChatScenarioTests {
         // The provider kept going after the decline; the live-ask pause must
         // not leave the finished task parked in pendingUser.
         #expect(task.events.contains { $0.type == "system.info" && $0.payload.contains("declined") })
+        // The deny path emits no task.approved, so the resolved event is what
+        // closes the open-request card.
+        let resolvedEvent = try #require(task.events.first { $0.type == "permission.request.resolved" })
+        let resolution = try #require(PermissionRequestResolution.decode(from: resolvedEvent.payload))
+        #expect(!resolution.approved)
         #expect(task.runs.count == 1)
         #expect(task.status == .completed)
     }

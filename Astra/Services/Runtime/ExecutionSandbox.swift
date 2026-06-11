@@ -79,6 +79,15 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
     /// opt in to layer ASTRA's Seatbelt over them for defense-in-depth.
     static let nativeSandboxRuntimes: Set<AgentRuntimeID> = [.codexCLI, .cursorCLI, .antigravityCLI]
 
+    /// Providers that drop their own confinement in autonomous mode (the
+    /// `--dangerously-bypass…` / `--force --sandbox disabled` /
+    /// `--dangerously-skip-permissions` flags) AND are not wrapped by default.
+    /// In autonomous, their native sandbox is off, so ASTRA must wrap them or
+    /// the most dangerous mode runs with no kernel boundary at all. Because the
+    /// provider sandbox is bypassed here, wrapping is NOT double-confinement.
+    static let autonomousForcedWrapRuntimes: Set<AgentRuntimeID> =
+        nativeSandboxRuntimes.union([.openCodeCLI])
+
     /// Single source of truth for the unset-defaults behavior. `current(...)`
     /// (which reads `UserDefaults`) and the `SettingsView` `@AppStorage`
     /// declarations both derive their defaults from these, so the resolved
@@ -131,6 +140,14 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
         var wrappedRuntimes = defaultWrappedRuntimes
         if layerNative {
             wrappedRuntimes.formUnion(nativeSandboxRuntimes)
+        }
+        // In autonomous mode the self-sandboxing providers
+        // (autonomousForcedWrapRuntimes) bypass their own confinement, so
+        // ASTRA's wrap is their only remaining boundary — force it on for them
+        // regardless of the layering toggle. Claude/Copilot are already in
+        // defaultWrappedRuntimes.
+        if permissionPolicy == .autonomous {
+            wrappedRuntimes.formUnion(autonomousForcedWrapRuntimes)
         }
 
         return ExecutionSandboxSettings(

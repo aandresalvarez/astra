@@ -30,10 +30,14 @@ struct TaskRuntimePermissionState {
             .max { $0.timestamp < $1.timestamp }
         guard let latestRequest else { return .empty }
 
-        let latestApproval = events
-            .filter { $0.type == "task.approved" }
-            .max { $0.timestamp < $1.timestamp }
-        let hasOpenRequest = latestApproval.map { latestRequest.timestamp > $0.timestamp } ?? true
+        // Correlate live asks by requestID so an out-of-order resolution of one
+        // ask never hides another still-pending one (legacy pause-and-relaunch
+        // requests fall back to the task.approved timestamp).
+        let hasOpenRequest = RuntimePermissionOpenState.hasOpenRequest(
+            events: events.map {
+                RuntimePermissionOpenState.Event(type: $0.type, payload: $0.payload, timestamp: $0.timestamp)
+            }
+        )
         let structured = PermissionBroker.structuredApprovalGrants(from: latestRequest.payload)
         let grants = structured.isEmpty ? PermissionBroker.legacyApprovalGrants(from: latestRequest.payload) : structured
 
