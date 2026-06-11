@@ -1,3 +1,5 @@
+import Foundation
+
 enum PromptUntrustedDataBlock {
     static func render(title: String, marker: String, content: String) -> String {
         """
