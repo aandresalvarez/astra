@@ -374,7 +374,8 @@ enum SpecEngine {
             AppLogger.audit(.specExtractionFailed, category: "Worker", fields: [
                 "exit_code": String(result.exitCode),
                 "source": "single_input",
-                "runtime": utilityRuntime.runtime.rawValue
+                "runtime": utilityRuntime.runtime.rawValue,
+                "error": String(result.failureDetail.prefix(200))
             ], level: .error)
             return .failure(.providerError("Exit code \(result.exitCode): \(result.failureDetail)"))
         }
@@ -461,7 +462,7 @@ enum SpecEngine {
                 "exit_code": String(result.exitCode),
                 "source": "chat",
                 "runtime": utilityRuntime.runtime.rawValue,
-                "error": String(result.error.prefix(200))
+                "error": String(result.failureDetail.prefix(200))
             ], level: .error)
             return .failure(.providerError("Exit code \(result.exitCode): \(result.failureDetail)"))
         }

@@ -86,7 +86,7 @@ struct AgentUtilityRunResult: Equatable {
         let trimmedError = error.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedError.isEmpty { return String(trimmedError.prefix(300)) }
         let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmedOutput.isEmpty ? "the provider produced no output" : String(trimmedOutput.suffix(300))
+        return trimmedOutput.isEmpty ? "The provider produced no output." : String(trimmedOutput.suffix(300))
     }
 }
 
