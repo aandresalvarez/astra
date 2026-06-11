@@ -1217,13 +1217,13 @@ extension TaskThreadSnapshotTests {
 
         let planUser = makeEvent(
             task: task,
-            type: "plan.user.message",
+            type: TaskPlanConversationEventTypes.userMessage,
             payload: "Create a report page",
             timestamp: Date(timeIntervalSince1970: 101)
         )
         let planAssistant = makeEvent(
             task: task,
-            type: "plan.assistant.message",
+            type: TaskPlanConversationEventTypes.assistantMessage,
             payload: "Two quick questions before you approve",
             timestamp: Date(timeIntervalSince1970: 102)
         )
@@ -1242,7 +1242,7 @@ extension TaskThreadSnapshotTests {
             }
         }
         #expect(userBubbles.count == 1)
-        if case .planUserMessage(let text, _) = userBubbles.first {
+        if let firstBubble = userBubbles.first, case .planUserMessage(let text, _) = firstBubble {
             #expect(text == "Create a report page")
         } else {
             Issue.record("expected the plan user message to be the only user bubble")
@@ -1255,7 +1255,7 @@ extension TaskThreadSnapshotTests {
         task.createdAt = Date(timeIntervalSince1970: 100)
         let planUser = makeEvent(
             task: task,
-            type: "plan.user.message",
+            type: TaskPlanConversationEventTypes.userMessage,
             payload: "A narrower refinement",
             timestamp: Date(timeIntervalSince1970: 101)
         )
