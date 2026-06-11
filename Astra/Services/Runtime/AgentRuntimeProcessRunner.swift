@@ -293,6 +293,12 @@ final class AgentRuntimeProcessRunner {
                     for filtered in eventPipeline.process(parsed) {
                         _ = monitor.processEvent(filtered, process: process)
                     }
+                    // Stream-json input providers wait for the next stdin
+                    // message after a turn ends; EOF on the terminal result is
+                    // what lets the process exit.
+                    if plan.interactiveAsk != nil, case .result = parsed {
+                        process.closeStdinChannel()
+                    }
                 }
                 if let message = adapter.blockingProcessPermissionMessage(
                     line: line,
