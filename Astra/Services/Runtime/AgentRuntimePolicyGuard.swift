@@ -143,6 +143,51 @@ struct AgentRuntimePolicyGuard: Sendable {
         return requested.isSubset(of: Set(manifest.approvalGrants))
     }
 
+    /// How the effective policy treats a (tool, command) pair, independent of
+    /// any provider's own opinion. Lets a live-ask broker apply the *same*
+    /// allow/ask/deny rules ASTRA enforces post-hoc — one source of truth, so
+    /// auto-approval in Auto mode and the ask card in Ask mode can't drift from
+    /// what the guard would have flagged.
+    enum CommandDisposition: Equatable {
+        case allowed
+        case ask
+        case denied
+    }
+
+    func disposition(toolName rawTool: String, command rawCommand: String?) -> CommandDisposition {
+        let toolName = rawTool.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !toolName.isEmpty else { return .ask }
+        let command = rawCommand?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Deny wins over everything: explicit denied tools, then denied shell
+        // patterns (rm/sudo/git push/...).
+        if toolMatches(toolName, command: command, candidates: manifest.providerRender.deniedTools) {
+            return .denied
+        }
+        if isShellTool(toolName) || (command != nil && !isFileTool(toolName) && !isNetworkTool(toolName)),
+           validateDeniedShellCommand(command: command, toolName: toolName) != nil {
+            return .denied
+        }
+
+        // Already allowed by the rendered policy → no ask needed.
+        let allowed = toolMatches(
+            toolName,
+            command: command,
+            candidates: manifest.providerRender.allowedTools,
+            shellMatchMode: .allActionableSegments
+        )
+        if allowed { return .allowed }
+
+        // Ask-first tool/command → the ask card (Ask) or auto-approve (Auto).
+        if requiresApproval(toolName: toolName, command: command) {
+            return .ask
+        }
+
+        // Not allowed and not explicitly ask-first: default to ask rather than
+        // silently allowing — the provider chose to ask, so honor that.
+        return .ask
+    }
+
     func violation(for parsed: ParsedEvent) -> AgentRuntimePolicyViolation? {
         let adapter = ProviderPolicyAdapterRegistry.adapter(for: manifest.providerID)
         guard !manifest.providerRender.usesBroadProviderPermissions,

@@ -410,7 +410,8 @@ final class AgentRuntimeProcessRunner {
         let request = AgentInteractiveAskRequest(
             requestID: control.requestID,
             toolName: control.toolName ?? "Tool",
-            inputSummary: control.inputSummary
+            inputSummary: control.inputSummary,
+            commandText: control.commandText
         )
         let heartbeat = Task.detached {
             while !Task.isCancelled {
