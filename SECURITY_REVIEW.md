@@ -1,6 +1,6 @@
 # ASTRA Security Review
 **Date:** 2026-06-09
-**Scope:** Full codebase audit — `/Users/alvaro/Documents/Code/astra`
+**Scope:** Full repository codebase audit
 **Areas covered:** Secrets handling, process execution, data persistence, network/API, policy enforcement, prompt injection, MCP/plugin interactions
 
 ---
