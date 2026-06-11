@@ -214,3 +214,17 @@ struct SpecEngineTests {
         #expect(extractJSON(from: padded) == "{\"title\": \"test\"}")
     }
 }
+
+@Suite("Utility run failure detail")
+struct UtilityRunFailureDetailTests {
+    @Test("stderr wins, stdout fallback, empty fallback")
+    func failureDetailFallbacks() {
+        #expect(AgentUtilityRunResult(exitCode: 1, output: "out", error: "real error").failureDetail == "real error")
+        #expect(AgentUtilityRunResult(
+            exitCode: 1,
+            output: "API Error: Usage credits required for 1M context",
+            error: "  \n"
+        ).failureDetail == "API Error: Usage credits required for 1M context")
+        #expect(AgentUtilityRunResult(exitCode: 1, output: "", error: "").failureDetail == "the provider produced no output")
+    }
+}

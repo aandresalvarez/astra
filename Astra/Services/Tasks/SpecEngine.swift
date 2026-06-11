@@ -376,7 +376,7 @@ enum SpecEngine {
                 "source": "single_input",
                 "runtime": utilityRuntime.runtime.rawValue
             ], level: .error)
-            return .failure(.providerError("Exit code \(result.exitCode): \(result.error.prefix(200))"))
+            return .failure(.providerError("Exit code \(result.exitCode): \(result.failureDetail)"))
         }
 
         return await parseSpecWithRetry(
@@ -463,7 +463,7 @@ enum SpecEngine {
                 "runtime": utilityRuntime.runtime.rawValue,
                 "error": String(result.error.prefix(200))
             ], level: .error)
-            return .failure(.providerError("Exit code \(result.exitCode): \(result.error.prefix(200))"))
+            return .failure(.providerError("Exit code \(result.exitCode): \(result.failureDetail)"))
         }
 
         return .success(result.output)
@@ -594,7 +594,7 @@ enum SpecEngine {
         )
 
         guard result.exitCode == 0 else {
-            return .failure(.providerError("Exit code \(result.exitCode): \(result.error.prefix(200))"))
+            return .failure(.providerError("Exit code \(result.exitCode): \(result.failureDetail)"))
         }
 
         return await parseSpecWithRetry(
@@ -740,7 +740,7 @@ enum SpecEngine {
         )
 
         guard result.exitCode == 0 else {
-            return .failure(.providerError("Exit code \(result.exitCode): \(result.error.prefix(200))"))
+            return .failure(.providerError("Exit code \(result.exitCode): \(result.failureDetail)"))
         }
 
         let jsonString = extractJSON(from: result.output)
