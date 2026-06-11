@@ -115,13 +115,63 @@ struct PermissionRequestResolution: Codable, Equatable {
     var toolName: String
 
     var payloadString: String {
-        (try? JSONEncoder().encode(self)).flatMap { String(data: $0, encoding: .utf8) }
-            ?? "{\"requestID\":\"\(requestID)\",\"approved\":\(approved)}"
+        // Encoding a fixed-shape Codable can't realistically fail, but never
+        // hand-roll the fallback: an interpolated requestID with a quote or
+        // backslash would emit invalid JSON that the open-request logic then
+        // can't decode. A safe sentinel is better than a malformed payload.
+        (try? JSONEncoder().encode(self)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
     }
 
     static func decode(from payload: String) -> PermissionRequestResolution? {
         guard let data = payload.data(using: .utf8) else { return nil }
         return try? JSONDecoder().decode(PermissionRequestResolution.self, from: data)
+    }
+}
+
+/// Whether a runtime permission card should still be shown, correct under
+/// concurrent and out-of-order resolutions. Shared by the decision dock and the
+/// lifecycle coordinator so the two can't drift.
+enum RuntimePermissionOpenState {
+    /// Minimal event shape the open-state check needs.
+    struct Event {
+        let type: String
+        let payload: String
+        let timestamp: Date
+    }
+
+    static func hasOpenRequest(events: [Event]) -> Bool {
+        let requests = events.filter { $0.type == "permission.approval.requested" }
+        guard !requests.isEmpty else { return false }
+
+        // Live asks carry a requestID and are closed by a matching
+        // permission.request.resolved — correlate by id so resolving ask B
+        // never closes the still-open ask A.
+        let resolvedIDs = Set(
+            events
+                .filter { $0.type == "permission.request.resolved" }
+                .compactMap { PermissionRequestResolution.decode(from: $0.payload)?.requestID }
+        )
+        for request in requests {
+            guard let id = PermissionApprovalEventPayload.decoded(from: request.payload)?.requestID else {
+                continue // legacy request — handled by the timestamp path below
+            }
+            if !resolvedIDs.contains(id) {
+                return true // an un-resolved live ask is still open
+            }
+        }
+
+        // Legacy pause-and-relaunch requests (no requestID) are closed by a
+        // later task.approved.
+        let legacyRequests = requests.filter {
+            PermissionApprovalEventPayload.decoded(from: $0.payload)?.requestID == nil
+        }
+        guard let latestLegacy = legacyRequests.max(by: { $0.timestamp < $1.timestamp }) else {
+            return false // all requests were live and resolved
+        }
+        let latestApproval = events
+            .filter { $0.type == "task.approved" }
+            .max { $0.timestamp < $1.timestamp }
+        return latestApproval.map { latestLegacy.timestamp > $0.timestamp } ?? true
     }
 }
 
@@ -225,7 +275,8 @@ extension AgentRuntimeWorker {
                 request: request,
                 reason: "The provider paused for permission before running this action.",
                 providerDetail: ask.inputSummary,
-                grants: grants
+                grants: grants,
+                requestID: ask.requestID
             )
             pendingEvents.add {
                 let event = TaskEvent(
