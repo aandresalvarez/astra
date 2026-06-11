@@ -1207,3 +1207,72 @@ extension TaskThreadSnapshotTests {
         #expect(latestActivity.toolResults.last?.payload == "result 99-19")
     }
 }
+
+extension TaskThreadSnapshotTests {
+    @Test("Plan-created task does not render the goal bubble twice")
+    func planCreatedTaskDoesNotDuplicateGoalBubble() {
+        let createdAt = Date(timeIntervalSince1970: 100)
+        let task = makeTask(goal: "Create a report page")
+        task.createdAt = createdAt
+
+        let planUser = makeEvent(
+            task: task,
+            type: "plan.user.message",
+            payload: "Create a report page",
+            timestamp: Date(timeIntervalSince1970: 101)
+        )
+        let planAssistant = makeEvent(
+            task: task,
+            type: "plan.assistant.message",
+            payload: "Two quick questions before you approve",
+            timestamp: Date(timeIntervalSince1970: 102)
+        )
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: [planUser, planAssistant],
+            runs: []
+        )
+
+        let userBubbles = snapshot.conversationItems.filter {
+            switch $0 {
+            case .userMessage, .planUserMessage: return true
+            default: return false
+            }
+        }
+        #expect(userBubbles.count == 1)
+        if case .planUserMessage(let text, _) = userBubbles.first {
+            #expect(text == "Create a report page")
+        } else {
+            Issue.record("expected the plan user message to be the only user bubble")
+        }
+    }
+
+    @Test("Distinct goal keeps the synthesized goal bubble alongside plan messages")
+    func distinctGoalKeepsGoalBubble() {
+        let task = makeTask(goal: "Broader objective")
+        task.createdAt = Date(timeIntervalSince1970: 100)
+        let planUser = makeEvent(
+            task: task,
+            type: "plan.user.message",
+            payload: "A narrower refinement",
+            timestamp: Date(timeIntervalSince1970: 101)
+        )
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: [planUser],
+            runs: []
+        )
+
+        let userBubbles = snapshot.conversationItems.filter {
+            switch $0 {
+            case .userMessage, .planUserMessage: return true
+            default: return false
+            }
+        }
+        #expect(userBubbles.count == 2)
+    }
+}
