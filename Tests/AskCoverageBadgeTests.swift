@@ -65,12 +65,34 @@ struct AskCoverageBadgeTests {
         )
         #expect(!badge.hasLiveApprovals)
         #expect(badge.tier == .providerManaged)
-        #expect(badge.hasKernelFloor) // P0 guarantees the floor in autonomous
+        // Autonomous escalates best-effort → strict (P0), so the strict floor
+        // holds here. A user-set .off would still opt out — escalation only lifts
+        // best-effort, it doesn't override a deliberately disabled sandbox.
+        #expect(badge.hasKernelFloor)
+    }
+
+    @Test("Best-effort enforcement is not a guaranteed floor (it can silently fall back)")
+    func bestEffortEnforcementNoGuaranteedFloor() {
+        // shouldWrap(claudeCode) is true, but enforcement is best-effort: the
+        // Seatbelt wrap can fall back to an unconfined run when it can't apply, so
+        // the badge must not claim a floor or the Guaranteed tier — only strict
+        // enforcement is a hard kernel guarantee.
+        let bestEffort = ExecutionSandboxSettings(
+            enforcement: .bestEffort, wrappedRuntimes: [.claudeCode], allowNetwork: true
+        )
+        let badge = AskCoverageBadge.resolve(
+            runtime: .claudeCode,
+            permissionPolicy: .restricted,
+            sandboxSettings: bestEffort
+        )
+        #expect(badge.hasLiveApprovals)
+        #expect(!badge.hasKernelFloor)
+        #expect(badge.tier == .bestEffort)
     }
 
     @Test("Every tier has a non-empty label, symbol, and detail")
     func presentationComplete() {
-        for policy in [PermissionPolicy.restricted, .autonomous] {
+        for policy in [PermissionPolicy.restricted, .interactive, .autonomous] {
             for runtime in [AgentRuntimeID.claudeCode, .codexCLI, .copilotCLI] {
                 let badge = AskCoverageBadge.resolve(
                     runtime: runtime,
