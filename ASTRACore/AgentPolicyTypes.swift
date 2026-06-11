@@ -842,6 +842,7 @@ public enum PermissionGrant: Codable, Equatable, Sendable, Hashable {
     case shellCommand(executable: String, pattern: String)
     case filePath(path: String, access: String)
     case networkPattern(pattern: String)
+    case browserAction(action: String, target: String)
     case providerTool(name: String)
 
     public var displayName: String {
@@ -854,6 +855,8 @@ public enum PermissionGrant: Codable, Equatable, Sendable, Hashable {
             "\(access):\(path)"
         case .networkPattern(let pattern):
             "network(\(pattern))"
+        case .browserAction(let action, let target):
+            "browser(\(action):\(target))"
         case .providerTool(let name):
             name
         }

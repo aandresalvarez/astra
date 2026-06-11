@@ -502,4 +502,77 @@ struct AgentUtilityRuntimeTests {
         #expect(result.exitCode == 0)
         #expect(result.output == "Goal plan ready")
     }
+
+    @Test("Local MLX utility runtime runs a text-only prompt through the helper")
+    func localMLXUtilityRuntimeRunsTextOnlyPromptThroughHelper() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-utility-local-mlx-\(UUID().uuidString)", isDirectory: true)
+        let fakeHelper = root.appendingPathComponent("astra-local-model")
+        let argsFile = root.appendingPathComponent("args.txt")
+        let requestCapture = root.appendingPathComponent("request.json")
+        let envCapture = root.appendingPathComponent("env.txt")
+        let modelDirectory = root.appendingPathComponent("model", isDirectory: true)
+        try FileManager.default.createDirectory(at: modelDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let script = """
+        #!/bin/sh
+        printf '%s\\n' "$@" > '\(argsFile.path)'
+        printf '%s\\n' "$ASTRA_LOCAL_MODEL_EXPERIMENTAL_TOOLS" > '\(envCapture.path)'
+        request=""
+        while [ "$#" -gt 0 ]; do
+          if [ "$1" = "--request-file" ]; then
+            shift
+            request="$1"
+            cp "$request" '\(requestCapture.path)'
+          fi
+          shift
+        done
+        printf '%s\\n' '{"v":1,"type":"phase","message":"Loading local utility model."}'
+        printf '%s\\n' '{"v":1,"type":"text","text":"Local utility response"}'
+        printf '%s\\n' '{"v":1,"type":"stats","inputTokens":4,"outputTokens":3}'
+        printf '%s\\n' '{"v":1,"type":"completed","summary":"Completed summary"}'
+        exit 0
+        """
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try writeExecutableScript(at: fakeHelper, contents: script)
+
+        var settings = AgentRuntimeProviderSettings()
+        settings.setExecutablePath(fakeHelper.path, for: .localMLX)
+        settings.setHomeDirectory(modelDirectory.path, for: .localMLX)
+
+        let result = await AgentUtilityRuntimeRunner.runPrompt(
+            "Summarize the pasted paragraph.",
+            workspacePath: root.path,
+            configuration: AgentUtilityRuntimeConfiguration(
+                runtime: .localMLX,
+                model: LocalMLXRuntime.defaultModel,
+                providerSettings: settings
+            ),
+            toolMode: .readOnly
+        )
+
+        #expect(result.exitCode == 0)
+        #expect(result.output == "Local utility response")
+        #expect(result.error.isEmpty)
+
+        let args = try String(contentsOf: argsFile, encoding: .utf8)
+        #expect(args.contains("run"))
+        #expect(args.contains("--request-file"))
+        #expect(try String(contentsOf: envCapture, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines) == "0")
+
+        let request = try JSONDecoder().decode(
+            LocalModelRunRequest.self,
+            from: Data(contentsOf: requestCapture)
+        )
+        #expect(request.prompt == "Summarize the pasted paragraph.")
+        #expect(request.model == LocalMLXRuntime.defaultModel)
+        #expect(request.modelDirectory == modelDirectory.path)
+        #expect(request.permissionMode == PermissionPolicy.restricted.rawValue)
+        #expect(request.experimentalToolsEnabled == false)
+        #expect(request.keepWarmTTLSeconds == 0)
+        #expect(request.messages.first?.role == "system")
+        #expect(request.messages.first?.content.contains("Private Local Chat utility") == true)
+        #expect(request.messages.first?.content.contains("Do not claim you used files") == true)
+    }
 }

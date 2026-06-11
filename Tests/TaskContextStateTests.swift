@@ -825,6 +825,50 @@ struct TaskContextStateTests {
         #expect(task.artifacts.filter { $0.path == indexPath }.count == 1)
     }
 
+    @Test("context capsule ignores Local Agent request payloads")
+    func contextCapsuleIgnoresLocalAgentRequestPayloads() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Local Agent Internals", primaryPath: root)
+        let task = AgentTask(
+            title: "Local Agent branch test",
+            goal: "List available branches",
+            workspace: workspace
+        )
+        context.insert(workspace)
+        context.insert(task)
+
+        let run = TaskRun(task: task)
+        run.status = .completed
+        run.stopReason = "completed"
+        run.output = "No external artifact was created."
+        run.completedAt = Date()
+        task.status = .completed
+        context.insert(run)
+
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let requestDirectory = URL(fileURLWithPath: folder, isDirectory: true)
+            .appendingPathComponent(".local-agent", isDirectory: true)
+        try FileManager.default.createDirectory(at: requestDirectory, withIntermediateDirectories: true)
+        let requestPath = requestDirectory.appendingPathComponent("request-\(UUID().uuidString).json").path
+        try #"{"model":"Qwen/Qwen3-4B-MLX-4bit","messages":[]}"#.write(
+            toFile: requestPath,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        TaskContextStateManager.recordTurn(task: task, run: run, message: "List branches")
+
+        let state = try #require(TaskContextStateManager.load(taskFolder: folder))
+        #expect(!state.filesChanged.contains(requestPath))
+        #expect(!state.changedFiles.contains { $0.path == requestPath })
+        #expect(!state.artifacts.contains { $0.path == requestPath })
+        #expect(!task.artifacts.contains { $0.path == requestPath })
+        #expect(state.verification.artifactStatus == "none recorded")
+    }
+
     @Test("artifact persistence canonicalizes relative and absolute task output paths")
     func artifactPersistenceCanonicalizesRelativeAndAbsoluteTaskOutputPaths() throws {
         let root = try temporaryRoot()

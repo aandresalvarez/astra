@@ -38,7 +38,7 @@ extension ProviderPolicyAdapter {
                 return name.trimmingCharacters(in: .whitespacesAndNewlines)
             case .shellCommand(let executable, let pattern):
                 return "shell(\(executable):\(pattern))"
-            case .filePath, .networkPattern:
+            case .filePath, .networkPattern, .browserAction:
                 return nil
             }
         }
@@ -144,7 +144,7 @@ struct ClaudePolicyAdapter: ProviderPolicyAdapter {
                 return canonicalClaudeToolName(name)
             case .shellCommand(let executable, let pattern):
                 return claudeShellGrant(executable: executable, pattern: pattern)
-            case .filePath, .networkPattern:
+            case .filePath, .networkPattern, .browserAction:
                 return nil
             }
         })
@@ -331,7 +331,7 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
                 return canonicalCopilotToolName(name)
             case .shellCommand(let executable, let pattern):
                 return "shell(\(executable):\(pattern))"
-            case .filePath, .networkPattern:
+            case .filePath, .networkPattern, .browserAction:
                 return nil
             }
         })
@@ -696,10 +696,108 @@ private enum BrokeredProviderGrantStrings {
                 return name.trimmingCharacters(in: .whitespacesAndNewlines)
             case .shellCommand(let executable, let pattern):
                 return "shell(\(executable):\(pattern))"
-            case .filePath, .networkPattern:
+            case .filePath, .networkPattern, .browserAction:
                 return nil
             }
         })
+    }
+}
+
+struct LocalModelPolicyAdapter: ProviderPolicyAdapter {
+    let providerID: AgentRuntimeID = .localMLX
+    let adapterVersion = 1
+
+    var supportedFeatures: ProviderPolicyFeatures {
+        ProviderPolicyFeatures(
+            supportsAllowTools: false,
+            supportsDenyTools: false,
+            supportsAskFirstMode: true,
+            supportsPathScoping: true,
+            supportsURLAllowlist: false,
+            supportsURLDenylist: false,
+            supportsSecretEnvRedaction: false,
+            supportsGeneratedSettingsFile: false,
+            supportsPerRunFlags: true,
+            supportsInteractiveCallbacks: true,
+            supportsManagedSettings: true,
+            supportsMachineReadableEvents: true,
+            supportsBroadAllowAll: false
+        )
+    }
+
+    func render(policy: AgentPolicy, context: PolicyRenderContext) -> ProviderPolicyRender {
+        let permissionPolicy = PermissionPolicy.fromAgentPolicyLevel(policy.level)
+        var diagnostics = diagnostics(for: policy, context: context)
+        diagnostics = diagnostics.map { diagnostic in
+            guard diagnostic.id == "\(providerID.rawValue).secret-redaction-unsupported" else {
+                return diagnostic
+            }
+            return PolicyDiagnostic(
+                id: diagnostic.id,
+                severity: .warning,
+                title: "Credential redaction is ASTRA-managed",
+                message: "Local MLX runs inside ASTRA's helper process, so ASTRA records credential key names and redacts task history without provider-native secret flags.",
+                affectedCapability: "credentials",
+                remediation: "Use Local MLX only with trusted workspaces when credential capabilities are enabled, or disable unused credential capabilities for this workspace."
+            )
+        }
+        let hasFineGrainedRules = !policy.allowedTools.isEmpty
+            || !policy.askFirstTools.isEmpty
+            || !policy.deniedTools.isEmpty
+            || !policy.allowedShellPatterns.isEmpty
+            || !policy.askFirstShellPatterns.isEmpty
+            || !policy.deniedShellPatterns.isEmpty
+            || !policy.allowedURLPatterns.isEmpty
+            || !policy.deniedURLPatterns.isEmpty
+        if hasFineGrainedRules {
+            diagnostics.append(PolicyDiagnostic(
+                id: "local-mlx.astra-brokered-policy",
+                severity: .info,
+                title: "Local policy is ASTRA-brokered",
+                message: "Local MLX models do not receive provider-native tool grants; ASTRA must broker and record all tool execution.",
+                affectedCapability: "permissions",
+                remediation: "Keep experimental local tools disabled until the ASTRA tool broker is enabled for this provider."
+            ))
+        }
+        if permissionPolicy == .autonomous {
+            diagnostics.append(PolicyDiagnostic(
+                id: "local-mlx.autonomous-no-provider-bypass",
+                severity: .warning,
+                title: "Auto mode stays brokered",
+                message: "Local MLX has no separate provider permission bypass. Auto mode only changes ASTRA's broker policy.",
+                affectedCapability: "autonomous"
+            ))
+        }
+
+        return ProviderPolicyRender(
+            providerID: providerID,
+            adapterVersion: adapterVersion,
+            policyLevel: policy.level,
+            configOwnership: .generated,
+            permissionMode: permissionPolicy.rawValue,
+            allowedTools: policy.allowedTools,
+            askFirstTools: policy.askFirstTools,
+            deniedTools: policy.deniedTools,
+            allowedShellPatterns: policy.allowedShellPatterns,
+            askFirstShellPatterns: policy.askFirstShellPatterns,
+            deniedShellPatterns: policy.deniedShellPatterns,
+            allowedURLPatterns: policy.allowedURLPatterns,
+            deniedURLPatterns: policy.deniedURLPatterns,
+            cliArgumentsSummary: ["ASTRA-brokered policy"],
+            settingsSummary: "Local model provider uses ASTRA-brokered permissions only",
+            generatedConfigPreview: #"{"enforcement":"astra_brokered"}"#,
+            enforcementTiers: [.astraBrokered],
+            diagnostics: diagnostics,
+            usesBroadProviderPermissions: false
+        )
+    }
+
+    func providerGrantStrings(for _: [PermissionGrant]) -> [String] {
+        []
+    }
+
+    func providerRuntimeGrantStrings(for _: [PermissionGrant]) -> [String] {
+        []
     }
 }
 

@@ -285,4 +285,3 @@ struct TaskCheckpointPresentationTests {
         TaskRunSnapshot(input: TaskRunSnapshotInput(run: run))
     }
 }
-

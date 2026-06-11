@@ -44,6 +44,114 @@ struct ComposerPresentationTests {
         #expect(ComposerToolbarPresentation.permissionModeUsesFlatChrome == true)
     }
 
+    @Test("provider menu shows registered providers after readiness loads")
+    func providerMenuShowsRegisteredProvidersAfterReadinessLoads() {
+        let runtimes: [AgentRuntimeID] = [.claudeCode, .copilotCLI, .localMLX]
+        let loaded = ComposerToolbarPresentation.providerMenuRuntimes(
+            from: [
+                .claudeCode: .ready,
+                .copilotCLI: .blocked,
+                .localMLX: .warning
+            ],
+            registeredRuntimes: runtimes
+        )
+
+        #expect(ComposerToolbarPresentation.providerMenuRuntimes(from: [:], registeredRuntimes: runtimes).isEmpty)
+        #expect(loaded == runtimes)
+        #expect(ComposerToolbarPresentation.runtimeMenuStatusLabel(for: .ready) == "Ready")
+        #expect(ComposerToolbarPresentation.runtimeMenuStatusLabel(for: .warning) == "Review")
+        #expect(ComposerToolbarPresentation.runtimeMenuStatusLabel(for: .blocked) == "Setup needed")
+        #expect(ComposerToolbarPresentation.runtimeMenuDisplayName(.localMLX, localAgentEnabled: false) == "Local MLX (Local Chat)")
+        #expect(ComposerToolbarPresentation.runtimeMenuDisplayName(.localMLX, localAgentEnabled: true) == "Local MLX (Local Agent)")
+        #expect(ComposerToolbarPresentation.runtimeMenuDisplayName(.claudeCode) == "Claude Code")
+    }
+
+    @Test("provider menu explains Local Chat and Local Agent scope")
+    func providerMenuExplainsLocalChatAndLocalAgentScope() {
+        let chatHelp = ComposerToolbarPresentation.runtimeMenuHelp(
+            .localMLX,
+            state: .ready,
+            model: "Qwen/Qwen3-4B-MLX-4bit",
+            budget: 1_000,
+            enforcementMode: .warning,
+            localAgentEnabled: false
+        )
+        #expect(chatHelp.contains("Private Local Chat"))
+        #expect(chatHelp.contains("analyzes text you provide"))
+        #expect(chatHelp.contains("cannot use ASTRA tools"))
+        #expect(chatHelp.contains("artifacts"))
+
+        let agentHelp = ComposerToolbarPresentation.runtimeMenuHelp(
+            .localMLX,
+            state: .ready,
+            model: "Qwen/Qwen3-4B-MLX-4bit",
+            budget: 1_000,
+            enforcementMode: .warning,
+            localAgentEnabled: true,
+            localAgentCapabilities: .all
+        )
+        #expect(agentHelp.contains("Local Agent is experimental"))
+        #expect(agentHelp.contains("enabled ASTRA-brokered tools"))
+        #expect(agentHelp.contains("scoped file edits"))
+        #expect(agentHelp.contains("shell commands"))
+        #expect(agentHelp.contains("network fetches"))
+        #expect(agentHelp.contains("browser clicks"))
+        #expect(agentHelp.contains("browser typing"))
+        #expect(agentHelp.contains("Other browser page changes remain disabled"))
+
+        let setupHelp = ComposerToolbarPresentation.runtimeMenuHelp(
+            .localMLX,
+            state: .blocked,
+            model: "Qwen/Qwen3-4B-MLX-4bit",
+            budget: 1_000,
+            enforcementMode: .warning,
+            localAgentEnabled: true
+        )
+        #expect(setupHelp.contains("Local MLX (Local Agent) setup is not ready"))
+    }
+
+    @Test("Local MLX task status explains chat and agent stops")
+    func localMLXTaskStatusExplainsChatAndAgentStops() {
+        let chatBlocked = ComposerToolbarPresentation.localMLXTaskStatusOverride(
+            taskStatus: .pendingUser,
+            runStatus: .failed,
+            stopReason: TextOnlyRuntimeGuard.stopReason
+        )
+        #expect(chatBlocked?.label == "Local Chat")
+        #expect(chatBlocked?.help.contains("text-only") == true)
+
+        let approval = ComposerToolbarPresentation.localMLXTaskStatusOverride(
+            taskStatus: .pendingUser,
+            runStatus: .failed,
+            stopReason: "permission_approval_required"
+        )
+        #expect(approval?.label == "Approval needed")
+        #expect(approval?.help.contains("Local Agent") == true)
+
+        let missingObservation = ComposerToolbarPresentation.localMLXTaskStatusOverride(
+            taskStatus: .pendingUser,
+            runStatus: .failed,
+            stopReason: "local_agent_missing_tool_observation"
+        )
+        #expect(missingObservation?.label == "Blocked")
+        #expect(missingObservation?.help.contains("tool observation") == true)
+
+        let toolBudget = ComposerToolbarPresentation.localMLXTaskStatusOverride(
+            taskStatus: .pendingUser,
+            runStatus: .failed,
+            stopReason: "local_agent_tool_budget_exceeded"
+        )
+        #expect(toolBudget?.label == "Tool budget")
+        #expect(toolBudget?.help.contains("tool-call limit") == true)
+
+        let unrelated = ComposerToolbarPresentation.localMLXTaskStatusOverride(
+            taskStatus: .failed,
+            runStatus: .failed,
+            stopReason: "provider_exit"
+        )
+        #expect(unrelated == nil)
+    }
+
     @Test("task composer slash options are centralized")
     func taskComposerSlashOptionsAreCentralized() {
         #expect(TaskComposerCoordinator.shouldShowSlashMenu(messageText: "/rem"))

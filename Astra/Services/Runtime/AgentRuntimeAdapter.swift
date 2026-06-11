@@ -444,6 +444,10 @@ struct AgentRuntimeAdapterCatalog {
         descriptor(for: runtime).supportsAstraRunProtocol
     }
 
+    func executionCapabilities(for runtime: AgentRuntimeID) -> AgentRuntimeExecutionCapabilities {
+        descriptor(for: runtime).executionCapabilities
+    }
+
     func supportsNativeContinuation(for runtime: AgentRuntimeID) -> Bool {
         descriptor(for: runtime).supportsNativeContinuation
     }
@@ -492,7 +496,8 @@ struct AgentRuntimeAdapterCatalog {
             authHint: "",
             defaultModel: "default",
             defaultModels: ["default"],
-            supportsAstraRunProtocol: false
+            supportsAstraRunProtocol: false,
+            executionCapabilities: .textOnly
         )
     }
 }
@@ -526,7 +531,8 @@ enum BuiltInAgentRuntimeAdapterProviders {
             AntigravityCLIRuntimeAdapterProvider(),
             CodexCLIRuntimeAdapterProvider(),
             CursorCLIRuntimeAdapterProvider(),
-            OpenCodeCLIRuntimeAdapterProvider()
+            OpenCodeCLIRuntimeAdapterProvider(),
+            LocalMLXRuntimeAdapterProvider()
         ]
     }
 }
@@ -579,6 +585,10 @@ enum AgentRuntimeAdapterRegistry {
 
     static func supportsAstraRunProtocol(for runtime: AgentRuntimeID) -> Bool {
         liveCatalog.supportsAstraRunProtocol(for: runtime)
+    }
+
+    static func executionCapabilities(for runtime: AgentRuntimeID) -> AgentRuntimeExecutionCapabilities {
+        liveCatalog.executionCapabilities(for: runtime)
     }
 
     static func supportsNativeContinuation(for runtime: AgentRuntimeID) -> Bool {
@@ -697,6 +707,8 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
     let environment: [String: String]
     let browserShimDirectory: String?
     let providerVersion: String?
+    var eventStream: AgentRuntimeProcessEventStream = .standardOutput
+    var controlStream: AgentRuntimeProcessControlStream = .none
     let parsesJSONLines: Bool
     let directoriesToCreate: [String]
     let providerDetectedFields: [String: String]
@@ -711,6 +723,8 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
         environment: [String: String],
         browserShimDirectory: String?,
         providerVersion: String?,
+        eventStream: AgentRuntimeProcessEventStream = .standardOutput,
+        controlStream: AgentRuntimeProcessControlStream = .none,
         parsesJSONLines: Bool,
         directoriesToCreate: [String] = [],
         providerDetectedFields: [String: String] = [:],
@@ -724,11 +738,55 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
         self.environment = environment
         self.browserShimDirectory = browserShimDirectory
         self.providerVersion = providerVersion
+        self.eventStream = eventStream
+        self.controlStream = controlStream
         self.parsesJSONLines = parsesJSONLines
         self.directoriesToCreate = directoriesToCreate
         self.providerDetectedFields = providerDetectedFields
         self.commandPlannedFields = commandPlannedFields
         self.interactiveAsk = interactiveAsk
+    }
+}
+
+enum AgentRuntimeProcessEventStream: Equatable, Sendable {
+    case standardOutput
+    case fileDescriptor(Int32)
+
+    var dedicatedFileDescriptor: Int32? {
+        if case .fileDescriptor(let fd) = self {
+            return fd
+        }
+        return nil
+    }
+
+    var diagnosticLabel: String {
+        switch self {
+        case .standardOutput:
+            return "stdout"
+        case .fileDescriptor(let fd):
+            return "fd\(fd)"
+        }
+    }
+}
+
+enum AgentRuntimeProcessControlStream: Equatable, Sendable {
+    case none
+    case fileDescriptor(Int32)
+
+    var dedicatedFileDescriptor: Int32? {
+        if case .fileDescriptor(let fd) = self {
+            return fd
+        }
+        return nil
+    }
+
+    var diagnosticLabel: String {
+        switch self {
+        case .none:
+            return "none"
+        case .fileDescriptor(let fd):
+            return "fd\(fd)"
+        }
     }
 }
 

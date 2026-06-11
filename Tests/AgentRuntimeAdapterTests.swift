@@ -328,6 +328,16 @@ struct AgentRuntimeAdapterTests {
 
     @Test("Adapter readiness check IDs match service reports")
     func adapterReadinessCheckIDsMatchServiceReports() async {
+        let previousLocalProviderGate = UserDefaults.standard.object(forKey: LocalModelSettingsStore.providerEnabledKey)
+        UserDefaults.standard.set(true, forKey: LocalModelSettingsStore.providerEnabledKey)
+        defer {
+            if let previousLocalProviderGate {
+                UserDefaults.standard.set(previousLocalProviderGate, forKey: LocalModelSettingsStore.providerEnabledKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: LocalModelSettingsStore.providerEnabledKey)
+            }
+        }
+
         let runner = StubBinaryRunner()
         await runner.setResponse(
             forKey: "/opt/claude --version",

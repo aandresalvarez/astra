@@ -74,6 +74,9 @@ enum TaskGeneratedFiles {
         if rel == ".runtime-bin" || rel.hasPrefix(".runtime-bin/") {
             return false
         }
+        if rel == ".local-agent" || rel.hasPrefix(".local-agent/") {
+            return false
+        }
         if rel == "turns" || rel.hasPrefix("turns/") {
             return false
         }

@@ -148,6 +148,8 @@ public enum CodexStreamEventParser {
                 numTurns: nil,
                 isError: true
             )
+        case .diagnostic:
+            return nil
         case .fileChange:
             return nil
         case .unknown:

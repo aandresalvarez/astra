@@ -14,6 +14,7 @@ enum E2ETestSupport {
         let expectsTeamEvents: Bool
         let expectsStructuredToolEvents: Bool
         let expectsResultCallback: Bool
+        let supportsWorkspaceArtifacts: Bool
 
         var description: String {
             runtimeID.displayName
@@ -24,8 +25,12 @@ enum E2ETestSupport {
         runtimeCases(environment: ProcessInfo.processInfo.environment)
     }
 
+    static var artifactRuntimeCases: [RuntimeCase] {
+        artifactRuntimeCases(environment: ProcessInfo.processInfo.environment)
+    }
+
     static func runtimeCases(environment: [String: String]) -> [RuntimeCase] {
-        let cases = [
+        var cases = [
             RuntimeCase(
                 runtimeID: .claudeCode,
                 model: environment["REAL_CLAUDE_MODEL"] ?? AgentRuntimeAdapterRegistry.defaultModel(for: .claudeCode),
@@ -35,7 +40,8 @@ enum E2ETestSupport {
                 expectsCostUSD: true,
                 expectsTeamEvents: true,
                 expectsStructuredToolEvents: true,
-                expectsResultCallback: true
+                expectsResultCallback: true,
+                supportsWorkspaceArtifacts: true
             ),
             RuntimeCase(
                 runtimeID: .copilotCLI,
@@ -46,7 +52,8 @@ enum E2ETestSupport {
                 expectsCostUSD: false,
                 expectsTeamEvents: false,
                 expectsStructuredToolEvents: true,
-                expectsResultCallback: true
+                expectsResultCallback: true,
+                supportsWorkspaceArtifacts: true
             ),
             RuntimeCase(
                 runtimeID: .antigravityCLI,
@@ -57,7 +64,8 @@ enum E2ETestSupport {
                 expectsCostUSD: false,
                 expectsTeamEvents: false,
                 expectsStructuredToolEvents: false,
-                expectsResultCallback: false
+                expectsResultCallback: false,
+                supportsWorkspaceArtifacts: true
             ),
             RuntimeCase(
                 runtimeID: .cursorCLI,
@@ -68,7 +76,8 @@ enum E2ETestSupport {
                 expectsCostUSD: true,
                 expectsTeamEvents: false,
                 expectsStructuredToolEvents: true,
-                expectsResultCallback: true
+                expectsResultCallback: true,
+                supportsWorkspaceArtifacts: true
             ),
             RuntimeCase(
                 runtimeID: .openCodeCLI,
@@ -79,12 +88,30 @@ enum E2ETestSupport {
                 expectsCostUSD: false,
                 expectsTeamEvents: false,
                 expectsStructuredToolEvents: true,
-                expectsResultCallback: true
+                expectsResultCallback: true,
+                supportsWorkspaceArtifacts: true
             )
         ]
         let requested = (environment["RUN_E2E_RUNTIME"] ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
+        if shouldIncludeLocalMLX(environment: environment, requested: requested) {
+            cases.append(RuntimeCase(
+                runtimeID: .localMLX,
+                model: environmentValue(
+                    ["REAL_LOCAL_MLX_MODEL", "ASTRA_LOCAL_MODEL_ID"],
+                    environment: environment
+                ) ?? AgentRuntimeAdapterRegistry.defaultModel(for: .localMLX),
+                directoryNameComponent: "local_mlx",
+                expectsSessionID: true,
+                expectsUsageStats: true,
+                expectsCostUSD: false,
+                expectsTeamEvents: false,
+                expectsStructuredToolEvents: false,
+                expectsResultCallback: true,
+                supportsWorkspaceArtifacts: false
+            ))
+        }
         guard !requested.isEmpty else { return cases }
         let filtered = cases.filter { runtimeCase in
             runtimeCase.runtimeID.rawValue.lowercased() == requested
@@ -95,6 +122,17 @@ enum E2ETestSupport {
             return cases
         }
         return filtered
+    }
+
+    static func artifactRuntimeCases(environment: [String: String]) -> [RuntimeCase] {
+        let cases = runtimeCases(environment: environment).filter(\.supportsWorkspaceArtifacts)
+        let requested = (environment["RUN_E2E_RUNTIME"] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if cases.isEmpty, !requested.isEmpty {
+            fputs("RUN_E2E_RUNTIME '\(requested)' has no workspace-artifact E2E case; run the text-only runtime E2E for this provider.\n", stderr)
+        }
+        return cases
     }
 
     @MainActor
@@ -123,6 +161,7 @@ enum E2ETestSupport {
         worker: AgentRuntimeWorker,
         temporaryRootPath: String?
     ) throws {
+        let environment = ProcessInfo.processInfo.environment
         switch runtimeID {
         case .claudeCode:
             let path = RuntimePathResolver.detectClaudePath()
@@ -145,6 +184,28 @@ enum E2ETestSupport {
                 throw E2ETestSupportError.missingExecutable("agy")
             }
             worker.setExecutablePath(path, for: .antigravityCLI)
+        case .localMLX:
+            let path = environmentValue(
+                ["REAL_LOCAL_MLX_HELPER", "ASTRA_LOCAL_MODEL_HELPER"],
+                environment: environment
+            ) ?? RuntimeProviderSettingsStore.executablePath(for: .localMLX)
+            let resolvedPath = path.isEmpty ? LocalMLXRuntime.detectPath() : path
+            guard FileManager.default.isExecutableFile(atPath: resolvedPath) else {
+                throw E2ETestSupportError.missingExecutable(LocalMLXRuntime.executableName)
+            }
+            let modelDirectory = environmentValue(
+                ["REAL_LOCAL_MLX_MODEL_DIR", "ASTRA_LOCAL_MODEL_DIR"],
+                environment: environment
+            ) ?? RuntimeProviderSettingsStore.homeDirectory(for: .localMLX)
+            let resolvedModelDirectory = modelDirectory.isEmpty
+                ? LocalModelSettingsStore.modelDirectory()
+                : modelDirectory
+            guard !resolvedModelDirectory.isEmpty,
+                  FileManager.default.fileExists(atPath: resolvedModelDirectory) else {
+                throw E2ETestSupportError.missingModelDirectory(resolvedModelDirectory)
+            }
+            worker.setExecutablePath(resolvedPath, for: .localMLX)
+            worker.setHomeDirectory(resolvedModelDirectory, for: .localMLX)
         case .cursorCLI:
             let path = RuntimePathResolver.detectCursorPath()
             guard FileManager.default.isExecutableFile(atPath: path) else {
@@ -175,6 +236,43 @@ enum E2ETestSupport {
             "astra.complete"
         ]
         return !eventTypes.isDisjoint(with: progressEventTypes)
+    }
+
+    static func localMLXAgentE2EEnabled(environment: [String: String]) -> Bool {
+        environment["RUN_E2E"] != nil && environment["RUN_E2E_LOCAL_MLX_AGENT"] != nil
+    }
+
+    static func localMLXAgentHighRiskE2EEnabled(environment: [String: String]) -> Bool {
+        localMLXAgentE2EEnabled(environment: environment)
+            && environment["RUN_E2E_LOCAL_MLX_AGENT_HIGH_RISK"] != nil
+    }
+
+    static func localMLXHardwareValidationE2EEnabled(environment: [String: String]) -> Bool {
+        environment["RUN_E2E"] != nil && environment["RUN_E2E_LOCAL_MLX_HARDWARE"] != nil
+    }
+
+    private static func shouldIncludeLocalMLX(environment: [String: String], requested: String) -> Bool {
+        if environment["RUN_E2E_LOCAL_MLX"] != nil {
+            return true
+        }
+        return requested == AgentRuntimeID.localMLX.rawValue.lowercased()
+            || requested == "local_mlx"
+            || requested == "local-mlx"
+            || requested == "local"
+            || requested == "mlx"
+    }
+
+    private static func environmentValue(
+        _ names: [String],
+        environment: [String: String]
+    ) -> String? {
+        for name in names {
+            let value = environment[name]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !value.isEmpty {
+                return value
+            }
+        }
+        return nil
     }
 
     static func withLiveProviderSlot<T>(_ operation: () async throws -> T) async throws -> T {
@@ -257,10 +355,17 @@ private actor E2ELiveProviderGate {
 
 @Suite("E2E live provider gate")
 struct E2ELiveProviderGateTests {
-    @Test("Runtime cases include Antigravity, Cursor, OpenCode, and support runtime filtering")
-    func runtimeCasesIncludeAntigravityCursorOpenCodeAndSupportFiltering() {
+    @Test("Runtime cases include Antigravity, Cursor, OpenCode, optional Local MLX, and support runtime filtering")
+    func runtimeCasesIncludeOptionalLocalMLXCursorOpenCodeAndSupportFiltering() {
         let allCases = E2ETestSupport.runtimeCases(environment: [:])
         #expect(allCases.map(\.runtimeID) == [.claudeCode, .copilotCLI, .antigravityCLI, .cursorCLI, .openCodeCLI])
+        #expect(E2ETestSupport.artifactRuntimeCases(environment: [:]).map(\.runtimeID) == [
+            .claudeCode,
+            .copilotCLI,
+            .antigravityCLI,
+            .cursorCLI,
+            .openCodeCLI
+        ])
 
         let filteredByID = E2ETestSupport.runtimeCases(environment: [
             "RUN_E2E_RUNTIME": "antigravity_cli",
@@ -271,6 +376,17 @@ struct E2ELiveProviderGateTests {
 
         let filteredByName = E2ETestSupport.runtimeCases(environment: ["RUN_E2E_RUNTIME": "antigravity"])
         #expect(filteredByName.map(\.runtimeID) == [.antigravityCLI])
+
+        let localByID = E2ETestSupport.runtimeCases(environment: [
+            "RUN_E2E_RUNTIME": "local_mlx",
+            "REAL_LOCAL_MLX_MODEL": "local-test-model"
+        ])
+        #expect(localByID.map(\.runtimeID) == [.localMLX])
+        #expect(localByID.first?.model == "local-test-model")
+        #expect(localByID.first?.supportsWorkspaceArtifacts == false)
+        #expect(E2ETestSupport.artifactRuntimeCases(environment: [
+            "RUN_E2E_RUNTIME": "local_mlx"
+        ]).isEmpty)
 
         let filteredByCursorName = E2ETestSupport.runtimeCases(environment: [
             "RUN_E2E_RUNTIME": "cursor",
@@ -286,8 +402,23 @@ struct E2ELiveProviderGateTests {
         #expect(filteredByOpenCodeName.map(\.runtimeID) == [.openCodeCLI])
         #expect(filteredByOpenCodeName.first?.model == "OpenCode Test Model")
 
+        let allWithLocal = E2ETestSupport.runtimeCases(environment: ["RUN_E2E_LOCAL_MLX": "1"])
+        #expect(allWithLocal.map(\.runtimeID) == [.claudeCode, .copilotCLI, .antigravityCLI, .cursorCLI, .openCodeCLI, .localMLX])
+
         let unknownFilter = E2ETestSupport.runtimeCases(environment: ["RUN_E2E_RUNTIME": "not-a-runtime"])
         #expect(unknownFilter.map(\.runtimeID) == [.claudeCode, .copilotCLI, .antigravityCLI, .cursorCLI, .openCodeCLI])
+
+        #expect(!E2ETestSupport.localMLXAgentE2EEnabled(environment: ["RUN_E2E": "1"]))
+        #expect(!E2ETestSupport.localMLXAgentE2EEnabled(environment: ["RUN_E2E_LOCAL_MLX_AGENT": "1"]))
+        #expect(E2ETestSupport.localMLXAgentE2EEnabled(environment: [
+            "RUN_E2E": "1",
+            "RUN_E2E_LOCAL_MLX_AGENT": "1"
+        ]))
+        #expect(!E2ETestSupport.localMLXHardwareValidationE2EEnabled(environment: ["RUN_E2E": "1"]))
+        #expect(E2ETestSupport.localMLXHardwareValidationE2EEnabled(environment: [
+            "RUN_E2E": "1",
+            "RUN_E2E_LOCAL_MLX_HARDWARE": "1"
+        ]))
     }
 
     @Test("Queued live provider waiters finish when cancelled")
@@ -400,11 +531,16 @@ private func taskFinishesWithinTimeout<T>(_ task: Task<T, Error>, nanoseconds: U
 
 enum E2ETestSupportError: Error, CustomStringConvertible {
     case missingExecutable(String)
+    case missingModelDirectory(String)
 
     var description: String {
         switch self {
         case .missingExecutable(let name):
             "Missing required E2E executable: \(name)"
+        case .missingModelDirectory(let path):
+            path.isEmpty
+                ? "Missing required Local MLX model directory. Set REAL_LOCAL_MLX_MODEL_DIR."
+                : "Missing required Local MLX model directory: \(path)"
         }
     }
 }
