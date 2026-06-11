@@ -29,14 +29,14 @@ Three layers, in dependency order:
 
 ## P0 — Close the Auto-mode floor hole *(must land first)*
 
-**Problem.** In autonomous (Auto) mode, Codex / Cursor / Antigravity run with their own sandbox **disabled** (`--dangerously-bypass-approvals-and-sandbox`, `--force --sandbox disabled`, `--dangerously-skip-permissions`) **and** are not in `defaultWrappedRuntimes` (`[.claudeCode, .copilotCLI]`). So Auto mode on those three has *no gate at all* — neither vendor nor ASTRA. Every later phase claims "there's a floor"; today that claim is hollow for half the fleet.
+**Problem.** In autonomous (Auto) mode, Codex / Cursor / Antigravity / OpenCode run with their own sandbox/permission gate **disabled** (`--dangerously-bypass-approvals-and-sandbox`, `--force --sandbox disabled`, `--dangerously-skip-permissions`) **and** are not in `defaultWrappedRuntimes` (`[.claudeCode, .copilotCLI]`). So Auto mode on those four has *no gate at all* — neither vendor nor ASTRA. Every later phase claims "there's a floor"; today that claim is hollow for those runtimes.
 
 **Change.**
 - `ExecutionSandbox.swift`: when `permissionPolicy == .autonomous` and enforcement is on, force `wrappedRuntimes` to include the native-sandbox runtimes (Codex/Cursor/Antigravity/OpenCode) regardless of the `layerNative` user toggle — Auto must never run a provider with both gates off. The escalation hook already exists at `ExecutionSandboxSettings.current` (`bestEffort` → `strict` for autonomous); add the wrapped-set union beside it.
 - Verify the Seatbelt profile (`makeProfile`) actually applies when layered over a provider whose own sandbox is bypassed (the bypass flag affects the *provider's* sandbox, not our outer `sandbox-exec` wrapper — confirm with a behavioral test that a write outside the writable allowlist is denied).
 
 **Files:** `Astra/Services/Runtime/ExecutionSandbox.swift`, `Tests/ExecutionSandboxTests.swift`.
-**Test:** autonomous Codex/Cursor/Antigravity runs are wrapped; a write outside the workspace is kernel-denied; a write inside is allowed.
+**Test:** autonomous Codex/Cursor/Antigravity/OpenCode runs are wrapped; a write outside the workspace is kernel-denied; a write inside is allowed.
 **Risk:** layering Seatbelt over a provider's own (now-bypassed) sandbox could interact badly — needs a real run per provider, not just unit tests. Gate behind the existing enforcement preference so it's reversible.
 
 ---

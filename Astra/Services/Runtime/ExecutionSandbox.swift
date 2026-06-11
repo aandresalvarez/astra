@@ -141,9 +141,11 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
         if layerNative {
             wrappedRuntimes.formUnion(nativeSandboxRuntimes)
         }
-        // Autonomous bypasses every provider's own sandbox, so ASTRA's wrap is
-        // the only remaining boundary — force it on for the providers that
-        // would otherwise run unconfined, regardless of the layering toggle.
+        // In autonomous mode the self-sandboxing providers
+        // (autonomousForcedWrapRuntimes) bypass their own confinement, so
+        // ASTRA's wrap is their only remaining boundary — force it on for them
+        // regardless of the layering toggle. Claude/Copilot are already in
+        // defaultWrappedRuntimes.
         if permissionPolicy == .autonomous {
             wrappedRuntimes.formUnion(autonomousForcedWrapRuntimes)
         }
