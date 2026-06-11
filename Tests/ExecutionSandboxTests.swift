@@ -218,9 +218,17 @@ struct ExecutionSandboxTests {
         #expect(base.shouldWrap(runtime: .copilotCLI))
         #expect(!base.shouldWrap(runtime: .codexCLI))
 
-        // Autonomous escalates best-effort to strict.
+        // Autonomous escalates best-effort to strict AND force-wraps the
+        // providers that bypass their own sandbox in that mode, so none runs
+        // without a kernel boundary even with native layering off.
         let auto = ExecutionSandboxSettings.current(permissionPolicy: .autonomous, defaults: defaults)
         #expect(auto.enforcement == .strict)
+        #expect(auto.shouldWrap(runtime: .codexCLI))
+        #expect(auto.shouldWrap(runtime: .cursorCLI))
+        #expect(auto.shouldWrap(runtime: .antigravityCLI))
+        #expect(auto.shouldWrap(runtime: .openCodeCLI))
+        #expect(auto.shouldWrap(runtime: .claudeCode))
+        #expect(auto.shouldWrap(runtime: .copilotCLI))
 
         // Offline + layering over self-sandboxing providers.
         defaults.set(ExecutionSandboxEnforcement.strict.rawValue, forKey: AppStorageKeys.sandboxEnforcement)

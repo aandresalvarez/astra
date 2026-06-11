@@ -489,17 +489,13 @@ final class TaskLifecycleCoordinator {
     }
 
     private func hasOpenRuntimePermissionApprovalRequest(_ task: AgentTask) -> Bool {
-        let latestRequest = task.events
-            .filter { $0.type == "permission.approval.requested" }
-            .max { $0.timestamp < $1.timestamp }
-        guard let latestRequest else { return false }
-
-        // Closing events: a relaunch approval OR a live-ask resolution (the
-        // deny path emits no task.approved but still closes the request).
-        let latestClose = task.events
-            .filter { $0.type == "task.approved" || $0.type == "permission.request.resolved" }
-            .max { $0.timestamp < $1.timestamp }
-        return latestClose.map { latestRequest.timestamp > $0.timestamp } ?? true
+        // Correlate live asks by requestID (out-of-order resolutions can't hide
+        // a still-pending ask); legacy requests fall back to task.approved.
+        RuntimePermissionOpenState.hasOpenRequest(
+            events: task.events.map {
+                RuntimePermissionOpenState.Event(type: $0.type, payload: $0.payload, timestamp: $0.timestamp)
+            }
+        )
     }
 
     func deleteTask(_ task: AgentTask) -> Workspace? {
