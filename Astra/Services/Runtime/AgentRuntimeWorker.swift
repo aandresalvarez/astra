@@ -767,6 +767,8 @@ final class AgentRuntimeWorker {
                     runtime: selectedRuntime,
                     task: task,
                     run: run,
+                    permissionPolicy: runPermissionPolicy,
+                    manifest: manifest,
                     modelContext: modelContext,
                     pendingEvents: pendingEvents
                 ),

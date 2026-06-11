@@ -133,7 +133,7 @@ final class AgentRuntimeProcessRunner {
         nativeContinuationSessionID: String? = nil,
         runID: UUID? = nil,
         liveApprovalsEnabled: Bool = false,
-        onInteractiveAsk: ((AgentInteractiveAskRequest) async -> Bool)? = nil,
+        onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
         let launchContext = AgentRuntimeProcessLaunchContext(
@@ -214,7 +214,7 @@ final class AgentRuntimeProcessRunner {
         permissionManifest: RunPermissionManifest?,
         budgetEnforcementMode: BudgetEnforcementMode,
         timeoutSeconds: TimeInterval,
-        onInteractiveAsk: ((AgentInteractiveAskRequest) async -> Bool)? = nil,
+        onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
         let tokenBudget = Self.effectiveTokenBudget(for: task)
@@ -422,7 +422,7 @@ final class AgentRuntimeProcessRunner {
         process: AgentExecutionScopedProcess,
         monitor: AgentProcessMonitor,
         taskID: UUID,
-        onInteractiveAsk: ((AgentInteractiveAskRequest) async -> Bool)?
+        onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)?
     ) {
         guard control.subtype == "can_use_tool", let onInteractiveAsk else {
             if let response = ClaudeControlProtocol.errorResponse(
@@ -436,7 +436,8 @@ final class AgentRuntimeProcessRunner {
         let request = AgentInteractiveAskRequest(
             requestID: control.requestID,
             toolName: control.toolName ?? "Tool",
-            inputSummary: control.inputSummary
+            inputSummary: control.inputSummary,
+            commandText: control.commandText
         )
         let heartbeat = Task.detached {
             while !Task.isCancelled {
@@ -445,15 +446,16 @@ final class AgentRuntimeProcessRunner {
             }
         }
         Task.detached {
-            let approved = await onInteractiveAsk(request)
+            let outcome = await onInteractiveAsk(request)
             heartbeat.cancel()
             monitor.recordActivity()
-            let response = approved
-                ? ClaudeControlProtocol.allowResponse(for: control)
-                : ClaudeControlProtocol.denyResponse(
-                    for: control,
-                    message: "The user declined this action in ASTRA. Continue without it or propose an alternative."
-                )
+            let response: String?
+            switch outcome {
+            case .allow:
+                response = ClaudeControlProtocol.allowResponse(for: control)
+            case .deny(let message):
+                response = ClaudeControlProtocol.denyResponse(for: control, message: message)
+            }
             if let response {
                 process.writeStdinLine(response)
             }
