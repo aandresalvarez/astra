@@ -108,6 +108,73 @@ enum ClaudeControlProtocol {
     }
 }
 
+/// Payload for a `permission.request.resolved` event.
+struct PermissionRequestResolution: Codable, Equatable {
+    var requestID: String
+    var approved: Bool
+    var toolName: String
+
+    var payloadString: String {
+        // Encoding a fixed-shape Codable can't realistically fail, but never
+        // hand-roll the fallback: an interpolated requestID with a quote or
+        // backslash would emit invalid JSON that the open-request logic then
+        // can't decode. A safe sentinel is better than a malformed payload.
+        (try? JSONEncoder().encode(self)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+    }
+
+    static func decode(from payload: String) -> PermissionRequestResolution? {
+        guard let data = payload.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(PermissionRequestResolution.self, from: data)
+    }
+}
+
+/// Whether a runtime permission card should still be shown, correct under
+/// concurrent and out-of-order resolutions. Shared by the decision dock and the
+/// lifecycle coordinator so the two can't drift.
+enum RuntimePermissionOpenState {
+    /// Minimal event shape the open-state check needs.
+    struct Event {
+        let type: String
+        let payload: String
+        let timestamp: Date
+    }
+
+    static func hasOpenRequest(events: [Event]) -> Bool {
+        let requests = events.filter { $0.type == "permission.approval.requested" }
+        guard !requests.isEmpty else { return false }
+
+        // Live asks carry a requestID and are closed by a matching
+        // permission.request.resolved — correlate by id so resolving ask B
+        // never closes the still-open ask A.
+        let resolvedIDs = Set(
+            events
+                .filter { $0.type == "permission.request.resolved" }
+                .compactMap { PermissionRequestResolution.decode(from: $0.payload)?.requestID }
+        )
+        for request in requests {
+            guard let id = PermissionApprovalEventPayload.decoded(from: request.payload)?.requestID else {
+                continue // legacy request — handled by the timestamp path below
+            }
+            if !resolvedIDs.contains(id) {
+                return true // an un-resolved live ask is still open
+            }
+        }
+
+        // Legacy pause-and-relaunch requests (no requestID) are closed by a
+        // later task.approved.
+        let legacyRequests = requests.filter {
+            PermissionApprovalEventPayload.decoded(from: $0.payload)?.requestID == nil
+        }
+        guard let latestLegacy = legacyRequests.max(by: { $0.timestamp < $1.timestamp }) else {
+            return false // all requests were live and resolved
+        }
+        let latestApproval = events
+            .filter { $0.type == "task.approved" }
+            .max { $0.timestamp < $1.timestamp }
+        return latestApproval.map { latestLegacy.timestamp > $0.timestamp } ?? true
+    }
+}
+
 /// Pending in-flight asks keyed by task, bridging the provider's blocked
 /// control request to the user's approve action in the UI. Approving resolves
 /// the waiting continuation; the legacy pause-and-relaunch path is skipped.
@@ -142,9 +209,33 @@ final class InFlightPermissionCenter: @unchecked Sendable {
         return waiters[taskID]?.map(\.ask) ?? []
     }
 
+    /// Resolves a single pending ask by request id. Returns true if one was
+    /// found and resolved. Concurrent asks on the same task (a provider that
+    /// batches, or interleaved tool calls) get independent answers — only
+    /// `resolveAll` collapses them, and that is reserved for process death.
+    @discardableResult
+    func resolve(taskID: UUID, requestID: String, approved: Bool) -> Bool {
+        lock.lock()
+        guard var taskWaiters = waiters[taskID],
+              let index = taskWaiters.firstIndex(where: { $0.ask.requestID == requestID }) else {
+            lock.unlock()
+            return false
+        }
+        let waiter = taskWaiters.remove(at: index)
+        if taskWaiters.isEmpty {
+            waiters.removeValue(forKey: taskID)
+        } else {
+            waiters[taskID] = taskWaiters
+        }
+        lock.unlock()
+        waiter.continuation.resume(returning: approved)
+        return true
+    }
+
     /// Resolves every pending ask for the task. Returns how many were resolved
     /// so callers can distinguish an in-flight approval from the legacy
-    /// pause-and-relaunch approval.
+    /// pause-and-relaunch approval. Used by the UI (which approves "the open
+    /// request" without tracking ids) and for process-death cleanup.
     @discardableResult
     func resolveAll(taskID: UUID, approved: Bool) -> Int {
         lock.lock()
@@ -184,7 +275,8 @@ extension AgentRuntimeWorker {
                 request: request,
                 reason: "The provider paused for permission before running this action.",
                 providerDetail: ask.inputSummary,
-                grants: grants
+                grants: grants,
+                requestID: ask.requestID
             )
             pendingEvents.add {
                 let event = TaskEvent(
@@ -214,15 +306,26 @@ extension AgentRuntimeWorker {
                     task.status = .running
                     task.updatedAt = Date()
                 }
-                let resolution = TaskEvent(
+                // Closes the open-request card: a denied live ask never emits
+                // task.approved, so without this the card would linger.
+                modelContext.insert(TaskEvent(
+                    task: task,
+                    eventType: TaskEventTypes.Tool.permissionRequestResolved,
+                    payload: PermissionRequestResolution(
+                        requestID: ask.requestID,
+                        approved: approved,
+                        toolName: ask.toolName
+                    ).payloadString,
+                    run: run
+                ))
+                modelContext.insert(TaskEvent(
                     task: task,
                     eventType: TaskEventTypes.System.info,
                     payload: approved
                         ? "Live permission approved for \(ask.toolName); the provider continues in the same session."
                         : "Live permission for \(ask.toolName) was declined or the run ended; the provider continues without it.",
                     run: run
-                )
-                modelContext.insert(resolution)
+                ))
                 try? modelContext.save()
             }
             return approved

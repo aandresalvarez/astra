@@ -83,6 +83,7 @@ struct ArchitectureFitnessTests {
             "mission.milestone.created": .lifecycle,
             "permission.approval.requested": .system,
             "permission.denied": .tool,
+            "permission.request.resolved": .system,
             "permission.grant.task": .system,
             "plan.approved": .lifecycle,
             "plan.assistant.message": .conversation,
