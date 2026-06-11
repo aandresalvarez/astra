@@ -36,6 +36,6 @@ struct FullScreenSafeHostingViewTests {
             encoding: .utf8
         )
         #expect(source.contains("FullScreenSafeHostingView(rootView:"))
-        #expect(!source.contains("= NSHostingView(rootView:"))
+        #expect(!source.contains("NSHostingView(rootView:"))
     }
 }

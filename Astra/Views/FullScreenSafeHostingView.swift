@@ -17,8 +17,9 @@ import SwiftUI
 /// here converts it into a retry on the next main-loop turn, after the display
 /// cycle has finished.
 // File-scope because generic types cannot hold static stored properties.
+// Subsystem follows the running bundle so dev/beta channels filter correctly.
 private let fullScreenSafeHostingTrapLogger = Logger(
-    subsystem: "com.coral.ASTRA",
+    subsystem: Bundle.main.bundleIdentifier ?? "ASTRA",
     category: "WindowChrome"
 )
 
