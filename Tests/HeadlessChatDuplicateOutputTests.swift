@@ -47,7 +47,7 @@ extension HeadlessChatScenarioTests {
         let run = try #require(task.runs.first)
         // The fake never creates the artifact, so the task pauses for review;
         // the run itself must complete cleanly.
-        #expect(run.status == .completed, "stopReason=\(run.stopReason ?? "nil")")
+        #expect(run.status == .completed, "stopReason=\(run.stopReason)")
         let occurrences = run.output.components(separatedBy: answer).count - 1
         #expect(occurrences == 1, "run.output recorded the answer \(occurrences)x: \(run.output)")
         let completeEvents = task.events.filter { $0.type == "astra.complete" }
