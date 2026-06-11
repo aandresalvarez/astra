@@ -150,7 +150,10 @@ struct WindowChromeConfigurator: NSViewRepresentable {
             }
 
             self.hostedWindow = window
-            let host = NSHostingView(rootView: builder(state.titleBarHeight))
+            // FullScreenSafe: a plain NSHostingView here crashes the app when
+            // SwiftUI invalidates constraints during the enter-full-screen
+            // display cycle (see FullScreenSafeHostingView).
+            let host = FullScreenSafeHostingView(rootView: builder(state.titleBarHeight))
             host.frame = NSRect(origin: .zero, size: host.fittingSize)
 
             let controller = NSTitlebarAccessoryViewController()
@@ -209,7 +212,12 @@ struct WindowChromeConfigurator: NSViewRepresentable {
             // Force the layout pass before reading fittingSize, so the size
             // reflects the just-assigned root view rather than a cached one.
             host.layoutSubtreeIfNeeded()
-            host.frame.size = host.fittingSize
+            // Sub-point size changes aren't visible but do trigger a full
+            // toolbar relayout, which can ping-pong with the measurement above.
+            let fitting = host.fittingSize
+            if abs(host.frame.width - fitting.width) >= 0.5 || abs(host.frame.height - fitting.height) >= 0.5 {
+                host.frame.size = fitting
+            }
             lastCommandBarState = state
         }
 
@@ -232,8 +240,11 @@ struct WindowChromeConfigurator: NSViewRepresentable {
         /// in: the window's total height minus its laid-out content area. `nil`
         /// until the window is measurable (`> 0`), so the bar falls back to its
         /// intrinsic height and re-centers once the measurement is available.
+        /// Rounded to whole points: mid-layout sub-point flutter would otherwise
+        /// count as a state change and rebuild the bar every cycle, visibly
+        /// shifting the rest of the toolbar back and forth.
         private func titleBarHeight(of window: NSWindow) -> CGFloat? {
-            let height = window.frame.height - window.contentLayoutRect.height
+            let height = (window.frame.height - window.contentLayoutRect.height).rounded()
             return height > 0 ? height : nil
         }
 

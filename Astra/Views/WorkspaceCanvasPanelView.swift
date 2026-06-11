@@ -327,7 +327,7 @@ struct WorkspaceCanvasPanelView: View {
             Button {
                 skipPermissions = false
             } label: {
-                Label("Ask mode - pause before each step", systemImage: "checkmark.shield")
+                Label("Ask mode - keep approval checkpoints", systemImage: "checkmark.shield")
             }
         } label: {
             HStack(spacing: 4) {
@@ -345,7 +345,7 @@ struct WorkspaceCanvasPanelView: View {
         .menuIndicator(.hidden)
         .buttonStyle(.plain)
         .fixedSize()
-        .help("Choose whether the plan runs automatically or pauses for review.")
+        .help("Auto mode runs without pausing. Ask mode keeps approval checkpoints: live approvals on runtimes that support them, one approved step per run otherwise.")
     }
 
     private var planMetaLine: some View {

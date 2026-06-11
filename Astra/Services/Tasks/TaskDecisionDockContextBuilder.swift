@@ -57,6 +57,9 @@ enum TaskDecisionDockContextBuilder {
         var runtimePermission: TaskRuntimePermissionState
         var executableApprovedPlan: TaskPlanPayload?
         var skipPermissions: Bool
+        // Capability-tiered checkpoint mode for the approved plan; nil falls
+        // back to the legacy skipPermissions-only derivation.
+        var planExecutionMode: TaskPlanExecutionMode? = nil
         var canOpenPlan: Bool
         var isPlanCanvasVisible: Bool
         var canRunApprovedPlan: Bool
@@ -94,13 +97,14 @@ enum TaskDecisionDockContextBuilder {
     static func context(_ input: Input) -> TaskDecisionDockPresentation.Context {
         let plan = input.executableApprovedPlan
         let nextStep = plan.flatMap { TaskPlanService.nextExecutableStep(in: $0) }
-        let planActionTitle = plan == nil ? nil : (input.skipPermissions ? "Run remaining plan" : "Approve next step")
+        let planMode = input.planExecutionMode ?? (input.skipPermissions ? .fullPlan : .nextStep)
+        let planActionTitle = plan == nil
+            ? nil
+            : PlanCheckpointPolicy.approveActionTitle(mode: planMode, skipPermissions: input.skipPermissions)
         let planActionDetail = plan.map { nextStep.map { "Next: \($0.title)" } ?? $0.title }
         let planModeLabel = plan == nil
             ? nil
-            : (input.skipPermissions
-                ? "Auto mode runs every remaining step."
-                : "Ask mode runs one approved step, then pauses again.")
+            : PlanCheckpointPolicy.modeLabel(mode: planMode, skipPermissions: input.skipPermissions)
 
         return TaskDecisionDockPresentation.Context(
             status: input.status,
