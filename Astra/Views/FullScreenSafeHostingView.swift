@@ -16,12 +16,14 @@ import SwiftUI
 /// a crash. The raise unwinds through this view's own setter frame, so trapping
 /// here converts it into a retry on the next main-loop turn, after the display
 /// cycle has finished.
+// File-scope because generic types cannot hold static stored properties.
+private let fullScreenSafeHostingTrapLogger = Logger(
+    subsystem: "com.coral.ASTRA",
+    category: "WindowChrome"
+)
+
 @MainActor
 final class FullScreenSafeHostingView<Content: View>: NSHostingView<Content> {
-    private static var trapLogger: Logger {
-        Logger(subsystem: "com.coral.ASTRA", category: "WindowChrome")
-    }
-
     private var retryScheduled = false
     private var trappedCount = 0
 
@@ -36,9 +38,9 @@ final class FullScreenSafeHostingView<Content: View>: NSHostingView<Content> {
             // Visible in Console: a steadily climbing count means something is
             // invalidating constraints mid-display-cycle in a loop, not a
             // one-off full-screen transition.
-            Self.trapLogger.warning("Titlebar accessory constraint invalidation trapped (count \(self.trappedCount, privacy: .public)): \(raised.name.rawValue, privacy: .public)")
+            fullScreenSafeHostingTrapLogger.warning("Titlebar accessory constraint invalidation trapped (count \(self.trappedCount, privacy: .public)): \(raised.name.rawValue, privacy: .public)")
             retryScheduled = true
-            DispatchQueue.main.async { [weak self] in
+            Task { @MainActor [weak self] in
                 self?.retryDeferredConstraintInvalidation()
             }
         }

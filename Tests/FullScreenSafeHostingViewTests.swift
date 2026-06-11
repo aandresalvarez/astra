@@ -6,7 +6,10 @@ import Testing
 @Suite("Full-screen safe hosting view")
 @MainActor
 struct FullScreenSafeHostingViewTests {
-    @Test("constraint invalidation round-trips through the exception trap")
+    // The AppKit display-cycle exception itself can't be raised headlessly, so
+    // this exercises the override's happy path: repeated invalidation through
+    // the trapped setter must keep working and never wedge.
+    @Test("trapped setter keeps accepting constraint invalidation")
     func constraintInvalidationRoundTrips() {
         let host = FullScreenSafeHostingView(rootView: Text("titlebar"))
 
