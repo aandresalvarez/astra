@@ -175,8 +175,7 @@ struct AgentQueryBriefGenerator: QueryBriefGenerating {
         )
 
         guard result.exitCode == 0 else {
-            let message = result.error.trimmingCharacters(in: .whitespacesAndNewlines)
-            throw QueryBriefGenerationError.providerFailed(message.isEmpty ? "Exit code \(result.exitCode)" : String(message.prefix(400)))
+            throw QueryBriefGenerationError.providerFailed("Exit code \(result.exitCode): \(result.failureDetail)")
         }
 
         guard let brief = QueryBriefParser.parse(from: result.output) else {

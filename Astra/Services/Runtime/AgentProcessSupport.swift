@@ -66,8 +66,14 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     private let eventPipe: Pipe?
     private let controlPipe: Pipe?
     // Created only when the provider speaks a stdin control protocol; other
-    // providers keep inheriting the parent's stdin unchanged.
+    // providers keep inheriting the parent's stdin unchanged. Writes and the
+    // close run on different threads (approval tasks vs the stdout handler
+    // closing on `.result`), so handle operations serialize under their own
+    // lock — separate from `lock` so a large stdin write can't stall
+    // process-state reads like isRunning/terminate.
     private let stdinPipe: Pipe?
+    private let stdinLock = NSLock()
+    private var stdinClosed = false
     var terminationHandler: ((AgentExecutionScopedProcess) -> Void)?
 
     var stdoutFileHandle: FileHandle { stdoutPipe.fileHandleForReading }
@@ -109,10 +115,25 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     }
 
     /// Writes one line to the child's stdin. Safe to call after the child has
-    /// exited; a broken pipe is swallowed.
+    /// exited; a broken pipe is swallowed. Serialized with the close so a
+    /// write can never race the handle being closed.
     func writeStdinLine(_ line: String) {
         guard let stdinPipe, let data = (line + "\n").data(using: .utf8) else { return }
+        stdinLock.lock()
+        defer { stdinLock.unlock() }
+        guard !stdinClosed else { return }
         try? stdinPipe.fileHandleForWriting.write(contentsOf: data)
+    }
+
+    /// Signals end-of-conversation: stream-json providers keep waiting for the
+    /// next stdin message after a turn, so EOF is what lets them exit.
+    func closeStdinChannel() {
+        guard let stdinPipe else { return }
+        stdinLock.lock()
+        defer { stdinLock.unlock() }
+        guard !stdinClosed else { return }
+        stdinClosed = true
+        stdinPipe.fileHandleForWriting.closeFile()
     }
 
     func run() throws {
@@ -393,7 +414,7 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         cleanupResidualProcessGroup()
         closeControlWriteIfNeeded()
 
-        stdinPipe?.fileHandleForWriting.closeFile()
+        closeStdinChannel()
 
         lock.lock()
         status = exitStatus

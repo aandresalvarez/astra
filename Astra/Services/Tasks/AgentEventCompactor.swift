@@ -175,6 +175,7 @@ enum AgentEventCompactor {
              "permission.approval.requested",
              "local_agent.watchdog",
              "local_agent.metrics",
+             "permission.request.resolved",
              "error",
              "task.completed",
              "task.cancelled",

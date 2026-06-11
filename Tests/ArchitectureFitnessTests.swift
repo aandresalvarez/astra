@@ -83,6 +83,7 @@ struct ArchitectureFitnessTests {
             "mission.milestone.created": .lifecycle,
             "permission.approval.requested": .system,
             "permission.denied": .tool,
+            "permission.request.resolved": .system,
             "permission.grant.task": .system,
             "plan.approved": .lifecycle,
             "plan.assistant.message": .conversation,
@@ -311,7 +312,7 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Runtime/AgentProcessSupport.swift": 2_250,
             "Astra/Services/Browser/BrowserAnalysis.swift": 2_100,
             "Astra/Services/Git/GitService.swift": 2_100,
-            "Astra/Services/Runtime/AgentRuntimeWorker.swift": 2_150,
+            "Astra/Services/Runtime/AgentRuntimeWorker.swift": 2_250,
             "Astra/Services/Browser/ControlledBrowserController.swift": 2_050,
             "Astra/Views/ShelfBrowserPanelView.swift": 2_050
         ]

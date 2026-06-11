@@ -61,7 +61,37 @@ enum AgentEventRecordingPresentation {
             let suffixStart = incomingText.index(incomingText.startIndex, offsetBy: existingOutput.count)
             return String(incomingText[suffixStart...])
         }
+        // Partial-message providers re-send the streamed text as one complete
+        // envelope. Protocol-marker stripping can shift whitespace between the
+        // two copies, so a whitespace-insensitive repeat of the whole output is
+        // an echo of what the deltas already recorded, not new output.
+        let normalizedIncoming = incomingText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedExisting = existingOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !normalizedIncoming.isEmpty, normalizedExisting == normalizedIncoming {
+            return ""
+        }
+        // Multi-message turns: a later message can land between an earlier
+        // message's deltas and its envelope echo, so the echo is no longer the
+        // output's tail — and the echo can concatenate segments that were
+        // recorded as separate chunks, shifting interior whitespace. Compare
+        // with all whitespace runs collapsed; a substantial chunk whose
+        // collapsed text already appears in the collapsed output (tail or
+        // interior) is an echo. The length floor keeps short legitimate
+        // repeats ("Done.") appendable.
+        let collapsedIncoming = whitespaceCollapsed(normalizedIncoming)
+        if collapsedIncoming.count >= echoLengthFloor,
+           whitespaceCollapsed(normalizedExisting).contains(collapsedIncoming) {
+            return ""
+        }
         return incomingText
+    }
+
+    private static let echoLengthFloor = 80
+
+    private static func whitespaceCollapsed(_ text: String) -> String {
+        text.components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
     }
 
     static func permissionReasonSummary(_ reason: String) -> String {

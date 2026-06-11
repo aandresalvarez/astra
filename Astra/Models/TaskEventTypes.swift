@@ -71,6 +71,10 @@ enum TaskEventTypes {
         static let result: TaskEventType = "tool.result"
         static let permissionDenied: TaskEventType = "permission.denied"
         static let permissionApprovalRequested: TaskEventType = "permission.approval.requested"
+        /// Emitted when a live in-flight ask is answered (allow or deny) without
+        /// a `task.approved` (the deny path, and any provider whose answer
+        /// resolves the same running process). Closes the open-request card.
+        static let permissionRequestResolved: TaskEventType = "permission.request.resolved"
         static let permissionGrantTask: TaskEventType = "permission.grant.task"
     }
 

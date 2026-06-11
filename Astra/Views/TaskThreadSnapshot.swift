@@ -741,10 +741,18 @@ struct TaskThreadSnapshot: Sendable {
         activityByRunID: [UUID: TaskRunActivity],
         protocolByRunID: [UUID: TaskRunProtocolState]
     ) -> [TaskConversationItem] {
-        var items: [TaskConversationItem] = [
-            .userMessage(text: goal, timestamp: createdAt)
-        ]
         let conversationEvents = events.filter(Self.isVisibleConversationEvent)
+        // Plan-created tasks record the user's ask as a plan.user.message
+        // event with the same text as the goal; synthesizing the goal bubble
+        // on top of it would show the prompt twice.
+        let trimmedGoal = goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let planEchoesGoal = conversationEvents.contains {
+            $0.type == TaskPlanConversationEventTypes.userMessage
+                && $0.payload.trimmingCharacters(in: .whitespacesAndNewlines) == trimmedGoal
+        }
+        var items: [TaskConversationItem] = planEchoesGoal
+            ? []
+            : [.userMessage(text: goal, timestamp: createdAt)]
         let visibleRuns = runs.filter {
             shouldShowAgentResponse(
                 for: $0,

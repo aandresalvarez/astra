@@ -886,6 +886,11 @@ public struct PermissionApprovalEventPayload: Codable, Equatable, Sendable {
     public var decision: PermissionDecision
     public var grants: [PermissionGrant]
     public var displayMessage: String
+    /// Correlation id for a live in-flight ask. Lets the open-request UI pair
+    /// this request with its `permission.request.resolved` event even when
+    /// several asks are pending concurrently. Nil for the legacy
+    /// pause-and-relaunch path (closed by `task.approved`).
+    public var requestID: String?
 
     public init(
         brokerVersion: Int,
@@ -893,7 +898,8 @@ public struct PermissionApprovalEventPayload: Codable, Equatable, Sendable {
         request: PermissionRequest,
         decision: PermissionDecision,
         grants: [PermissionGrant],
-        displayMessage: String
+        displayMessage: String,
+        requestID: String? = nil
     ) {
         self.brokerVersion = brokerVersion
         self.providerID = providerID
@@ -901,6 +907,7 @@ public struct PermissionApprovalEventPayload: Codable, Equatable, Sendable {
         self.decision = decision
         self.grants = grants
         self.displayMessage = displayMessage
+        self.requestID = requestID
     }
 
     public static func decoded(from payload: String) -> PermissionApprovalEventPayload? {

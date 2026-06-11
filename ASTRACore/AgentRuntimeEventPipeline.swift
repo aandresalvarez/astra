@@ -10,6 +10,7 @@ public struct AgentRuntimeEventPipeline: Sendable {
     private var astraFilter = AstraRunProtocolTextFilter()
     private var reasoningFilter = LocalModelReasoningFilter()
     private var invalidAstraEventCount = 0
+    private var emittedValidProtocolEvents: [AstraRunProtocolParsedEvent] = []
 
     public init(supportsAstraRunProtocol: Bool, stripsReasoningTags: Bool = false) {
         self.supportsAstraRunProtocol = supportsAstraRunProtocol
@@ -101,7 +102,17 @@ public struct AgentRuntimeEventPipeline: Sendable {
     }
 
     private mutating func shouldEmit(protocolEvent event: AstraRunProtocolParsedEvent) -> Bool {
-        guard case .invalid = event else { return true }
+        guard case .invalid = event else {
+            // Providers that stream partial messages deliver the same assistant
+            // text twice (deltas, then the complete envelope), so the same
+            // marker parses twice — and in multi-message turns the echo can
+            // arrive after other markers. A marker identical to one already
+            // emitted this run is a transport echo, not a new instruction
+            // (every marker type is idempotent for identical payloads).
+            if emittedValidProtocolEvents.contains(event) { return false }
+            emittedValidProtocolEvents.append(event)
+            return true
+        }
         guard invalidAstraEventCount < AstraRunProtocolLimits.maxInvalidEventsPerRun else {
             return false
         }

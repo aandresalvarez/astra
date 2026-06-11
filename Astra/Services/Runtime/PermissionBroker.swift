@@ -43,14 +43,16 @@ enum PermissionBroker {
         request: PermissionRequest,
         reason: String,
         providerDetail: String? = nil,
-        grants: [PermissionGrant]
+        grants: [PermissionGrant],
+        requestID: String? = nil
     ) -> String {
         let payload = approvalPayload(
             providerID: providerID,
             request: request,
             reason: reason,
             providerDetail: providerDetail,
-            grants: grants
+            grants: grants,
+            requestID: requestID
         )
         return TaskEvent.payloadString(
             payload,
@@ -64,7 +66,8 @@ enum PermissionBroker {
         request: PermissionRequest,
         reason: String,
         providerDetail: String? = nil,
-        grants: [PermissionGrant]
+        grants: [PermissionGrant],
+        requestID: String? = nil
     ) -> PermissionApprovalEventPayload {
         let grants = sanitizeGrants(grants)
         let message = approvalMessage(
@@ -81,7 +84,8 @@ enum PermissionBroker {
             request: request,
             decision: decision,
             grants: grants,
-            displayMessage: message
+            displayMessage: message,
+            requestID: requestID
         )
     }
 
