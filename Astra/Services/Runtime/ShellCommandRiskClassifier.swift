@@ -23,6 +23,7 @@ enum ShellCommandRiskClassifier {
     }
 
     static func assessment(forShellSegment segment: String) -> Assessment? {
+        guard !containsUnsupportedShellSyntax(segment) else { return nil }
         let tokens = shellTokens(segment)
         guard let rawExecutable = tokens.first,
               let executable = shellApprovalRoot(rawExecutable) else {
@@ -309,6 +310,64 @@ enum ShellCommandRiskClassifier {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
             }
             .filter { !$0.isEmpty }
+    }
+
+    private static func containsUnsupportedShellSyntax(_ segment: String) -> Bool {
+        var inSingleQuote = false
+        var inDoubleQuote = false
+        var escaped = false
+        let characters = Array(segment)
+
+        for index in characters.indices {
+            let character = characters[index]
+            let next = characters.index(after: index) < characters.endIndex
+                ? characters[characters.index(after: index)]
+                : nil
+
+            if escaped {
+                escaped = false
+                continue
+            }
+
+            if character == "\\" && !inSingleQuote {
+                escaped = true
+                continue
+            }
+
+            if character == "'" && !inDoubleQuote {
+                inSingleQuote.toggle()
+                continue
+            }
+
+            if character == "\"" && !inSingleQuote {
+                inDoubleQuote.toggle()
+                continue
+            }
+
+            guard !inSingleQuote else { continue }
+
+            if character == "\n" || character == "\r" || character == "`" {
+                return true
+            }
+
+            if !inDoubleQuote, character == ";" || character == "|" || character == "&" {
+                return true
+            }
+
+            if character == "$", next == "(" || next == "'" || next == "\"" {
+                return true
+            }
+
+            if !inDoubleQuote, character == "<", next == "(" || next == "<" {
+                return true
+            }
+
+            if !inDoubleQuote, character == ">", next == "(" {
+                return true
+            }
+        }
+
+        return inSingleQuote || inDoubleQuote || escaped
     }
 
     private static func shellApprovalRoot(_ root: String) -> String? {

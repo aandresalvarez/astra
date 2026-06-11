@@ -327,7 +327,7 @@ extension HeadlessChatScenarioTests {
         #expect(args.contains("write"))
         #expect(args.contains("create"))
         #expect(args.contains("ASTRA review mode approved only the next plan step"))
-        #expect(args.contains("Execute exactly this approved step and stop: step-1"))
+        #expect(args.contains("Execute exactly the approved step whose ID is step-1"))
         #expect(args.contains("Do not execute later plan steps"))
         #expect(task.status == .pendingUser)
         #expect(task.runs.first?.output == "review plan executed")
@@ -386,7 +386,7 @@ extension HeadlessChatScenarioTests {
 
         let finalState = TaskPlanService.reconstruct(for: task)
         let secondPromptArgs = try String(contentsOf: argsURL, encoding: .utf8)
-        #expect(secondPromptArgs.contains("Execute exactly this approved step and stop: step-2"))
+        #expect(secondPromptArgs.contains("Execute exactly the approved step whose ID is step-2"))
         #expect(task.status == .completed)
         #expect(task.runs.count == 2)
         #expect(finalState.lifecycleStatus == .completed)

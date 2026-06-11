@@ -1253,25 +1253,7 @@ struct AgentRuntimePolicyGuard: Sendable {
     }
 
     private static func wildcardMatch(_ value: String, pattern: String) -> Bool {
-        guard !pattern.isEmpty else { return false }
-        if pattern == "*" { return true }
-
-        var regex = "^"
-        for scalar in pattern.unicodeScalars {
-            switch scalar {
-            case "*":
-                regex += ".*"
-            case "?":
-                regex += "."
-            default:
-                regex += NSRegularExpression.escapedPattern(for: String(scalar))
-            }
-        }
-        regex += "$"
-
-        guard let compiled = try? NSRegularExpression(pattern: regex) else { return false }
-        let range = NSRange(value.startIndex..<value.endIndex, in: value)
-        return compiled.firstMatch(in: value, range: range) != nil
+        WildcardPatternMatcher.shared.matches(value, pattern: pattern)
     }
 
     static func commandHintFromShellPermissionToolName(_ toolName: String) -> String? {

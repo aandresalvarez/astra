@@ -41,7 +41,7 @@ struct KeychainSecretStore: SecretStore {
                 kSecAttrAccount as String: key,
                 kSecValueData as String: data,
                 kSecAttrComment as String: label ?? "Astra credential",
-                kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked,
+                kSecAttrAccessible as String: KeychainCredentialPolicy.accessibility,
             ]
             if let label { addQuery[kSecAttrLabel as String] = label }
             return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess

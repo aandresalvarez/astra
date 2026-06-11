@@ -37,6 +37,34 @@ struct BrowserBridgeResponse {
     }
 }
 
+final class BrowserBridgeRateLimiter: @unchecked Sendable {
+    private let lock = NSLock()
+    private let maxRequests: Int
+    private let window: TimeInterval
+    private let now: () -> Date
+    private var requestTimes: [Date] = []
+
+    init(maxRequests: Int = 120, window: TimeInterval = 1, now: @escaping () -> Date = Date.init) {
+        self.maxRequests = maxRequests
+        self.window = window
+        self.now = now
+    }
+
+    func allowsRequest() -> Bool {
+        guard maxRequests > 0, window > 0 else { return false }
+
+        lock.lock()
+        defer { lock.unlock() }
+
+        let current = now()
+        let cutoff = current.addingTimeInterval(-window)
+        requestTimes.removeAll { $0 <= cutoff }
+        guard requestTimes.count < maxRequests else { return false }
+        requestTimes.append(current)
+        return true
+    }
+}
+
 final class BrowserBridgeServer: @unchecked Sendable {
     typealias RouteHandler = @Sendable (BrowserBridgeRequest) async -> BrowserBridgeResponse
     typealias EndpointHandler = @Sendable (String?) -> Void
@@ -45,14 +73,17 @@ final class BrowserBridgeServer: @unchecked Sendable {
     private let route: RouteHandler
     private let onEndpointChanged: EndpointHandler
     private let requiredAccessToken: String?
+    private let rateLimiter: BrowserBridgeRateLimiter
     private var listener: NWListener?
 
     init(
         requiredAccessToken: String? = nil,
+        rateLimiter: BrowserBridgeRateLimiter = BrowserBridgeRateLimiter(),
         route: @escaping RouteHandler,
         onEndpointChanged: @escaping EndpointHandler
     ) {
         self.requiredAccessToken = requiredAccessToken?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.rateLimiter = rateLimiter
         self.route = route
         self.onEndpointChanged = onEndpointChanged
     }
@@ -129,6 +160,10 @@ final class BrowserBridgeServer: @unchecked Sendable {
             }
 
             if let request = Self.parseRequest(from: buffer) {
+                guard self.rateLimiter.allowsRequest() else {
+                    self.send(.json(["ok": false, "error": "browser_bridge_rate_limited"], statusCode: 429), on: connection)
+                    return
+                }
                 guard self.isAuthorized(request) else {
                     self.send(.json(["ok": false, "error": "unauthorized_browser_bridge_request"], statusCode: 403), on: connection)
                     return
@@ -221,6 +256,7 @@ final class BrowserBridgeServer: @unchecked Sendable {
         case 403: return "Forbidden"
         case 404: return "Not Found"
         case 413: return "Payload Too Large"
+        case 429: return "Too Many Requests"
         default: return "OK"
         }
     }

@@ -142,7 +142,7 @@ enum MacOSPermissionDiagnostics {
         addQuery[kSecValueData as String] = data
         addQuery[kSecAttrLabel as String] = "ASTRA permission check"
         addQuery[kSecAttrComment as String] = "Temporary ASTRA Keychain readiness check"
-        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
+        addQuery[kSecAttrAccessible as String] = KeychainCredentialPolicy.accessibility
 
         let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
         guard addStatus == errSecSuccess else {

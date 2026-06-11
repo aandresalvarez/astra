@@ -88,6 +88,21 @@ struct CapabilityPackageValidatorTests {
         #expect(collisionReport.blockers.map(\.code).contains(.duplicatePackageFilename))
     }
 
+    @Test("package identity rejects case-only installed ID collisions")
+    func packageIdentityRejectsCaseOnlyInstalledIDCollisions() {
+        let installed = [makePackage(id: "local.casepkg", governance: .localDraft())]
+        let casedReplacement = makePackage(id: "Local.CasePkg", governance: .localDraft())
+
+        let report = CapabilityPackageValidator.validate(
+            package: casedReplacement,
+            installedPackages: installed,
+            allowReplacingExistingPackageID: true,
+            checkPrerequisites: false
+        )
+
+        #expect(report.blockers.map(\.code).contains(.duplicatePackageID))
+    }
+
     @Test("package identity rejects whitespace punctuation unicode and malformed semver")
     func packageIdentityRejectsUnsafeLiterals() {
         let invalidIDs = [

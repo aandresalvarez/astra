@@ -69,7 +69,8 @@ enum ConnectorSecurityPolicy {
     }
 
     private static func requiresProtectedTransport(authMethod: String, credentialKeys: [String]) -> Bool {
-        !credentialKeys.isEmpty
+        let normalizedAuth = authMethod.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalizedAuth != "none" || !credentialKeys.isEmpty
     }
 
     private static func isLoopbackHost(_ host: String?) -> Bool {

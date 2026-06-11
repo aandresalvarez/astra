@@ -9,7 +9,26 @@
 
 ASTRA has a well-considered security architecture. Defense is layered: Seatbelt sandboxing wraps provider processes, a permission broker sanitizes all grants, shell commands are risk-classified before execution, credentials go through Keychain, and plugin packages must pass a validator before installation. The patterns are generally correct.
 
-Three findings stand out as needing immediate attention: a silent failure in plugin signature generation that can produce undetectable tampered payloads, a simplistic shell tokenizer used for risk classification that can be bypassed with crafted quoting, and a gap in HTTPS enforcement that misses connectors whose credentials come from environment variables rather than declared credential keys. Everything else ranges from minor hardening opportunities to informational notes.
+This review originally identified critical, high, medium, and low-severity hardening work. All actionable findings in this document have been remediated on this branch; the detailed findings remain below as the audit trail.
+
+## Remediation Summary
+
+| Finding | Status | Resolution |
+| --- | --- | --- |
+| C1 | Resolved | Plugin signing now throws on provider failure and rejects empty signatures. |
+| H1 | Resolved | Shell approval classification now refuses unsupported shell constructs instead of granting reusable approvals. |
+| H2 | Resolved | Connector transport policy now requires HTTPS or loopback HTTP for every non-`none` auth method, including env-var credentials. |
+| H3 | Resolved | Wildcard policy matching now uses a cached matcher instead of compiling regexes on every evaluation. |
+| M1 | Resolved | Keychain credential items use `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`. |
+| M2 | Resolved | Session history redaction now covers shorter explicit secrets plus common GitHub, AWS, and Anthropic token formats. |
+| M3 | Resolved | Copy isolation now writes to a permission-restricted ASTRA scratch root and deletes copies during cleanup. |
+| M4 | Resolved | Approved plan JSON and step JSON are framed as untrusted data blocks in prompts. |
+| M5 | Resolved | Workspace memories are framed as untrusted data blocks in prompts. |
+| L1 | No action required | Loopback-only HTTP bridge remains token protected and local-only. |
+| L2 | No action required | Existing loopback handling remains acceptable for the documented threat model. |
+| L3 | Resolved | Workspace lock keys now normalize symlinks before serialization. |
+| L4 | Resolved | Package identity collision checks now reject case-only ID collisions. |
+| L5 | Resolved | Browser bridge request handling now includes burst rate limiting. |
 
 ---
 

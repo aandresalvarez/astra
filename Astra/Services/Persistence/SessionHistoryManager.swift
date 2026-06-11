@@ -141,7 +141,7 @@ enum SessionHistoryManager {
         let normalizedRedactions = Set(
             redactions
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { $0.count >= 4 }
+                .filter { $0.count >= 2 }
         ).sorted { $0.count > $1.count }
 
         for secret in normalizedRedactions where !secret.isEmpty {
@@ -150,6 +150,10 @@ enum SessionHistoryManager {
 
         let replacements: [(String, String)] = [
             (#"(?i)(authorization:\s*(?:bearer|basic)\s+)[^\s`"]+"#, "$1[REDACTED]"),
+            (#"\bgithub_pat_[A-Za-z0-9_]+\b"#, "[REDACTED]"),
+            (#"\bgh[pousr]_[A-Za-z0-9_]+\b"#, "[REDACTED]"),
+            (#"\bAKIA[0-9A-Z]{16}\b"#, "[REDACTED]"),
+            (#"\bsk-ant-[A-Za-z0-9_\-]+\b"#, "[REDACTED]"),
             (#"(?i)\b(sk-[A-Za-z0-9_\-]+)\b"#, "[REDACTED]"),
             (#"(?i)\b(api[_-]?key|token|secret|password)\s*[:=]\s*([^\s,;]+)"#, "$1=[REDACTED]")
         ]

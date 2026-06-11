@@ -48,6 +48,23 @@ struct BrowserBridgeSecurityTests {
         #expect(body.contains(#""ok" : true"#) || body.contains(#""ok":true"#))
     }
 
+    @Test("Bridge rate limiter blocks bursts and refills after the window")
+    func bridgeRateLimiterBlocksBurstsAndRefills() {
+        let clock = RateLimitClock(now: Date(timeIntervalSince1970: 100))
+        let limiter = BrowserBridgeRateLimiter(
+            maxRequests: 2,
+            window: 1,
+            now: { clock.now }
+        )
+
+        #expect(limiter.allowsRequest())
+        #expect(limiter.allowsRequest())
+        #expect(!limiter.allowsRequest())
+
+        clock.now = Date(timeIntervalSince1970: 101.1)
+        #expect(limiter.allowsRequest())
+    }
+
     @Test("Bridge command contracts normalize decoded targeting fields")
     func bridgeCommandContractsNormalizeDecodedTargetingFields() throws {
         let clickJSON = Data("""
@@ -200,4 +217,12 @@ private actor LockedEndpoint {
 
 private enum BrowserBridgeSecurityTestError: Error {
     case endpointUnavailable
+}
+
+private final class RateLimitClock {
+    var now: Date
+
+    init(now: Date) {
+        self.now = now
+    }
 }
