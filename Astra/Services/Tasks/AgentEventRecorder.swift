@@ -73,13 +73,22 @@ enum AgentEventRecordingPresentation {
         }
         // Multi-message turns: a later message can land between an earlier
         // message's deltas and its envelope echo, so the echo is no longer the
-        // output's tail. A substantial chunk that already appears verbatim in
-        // the output is an echo; the length floor keeps short legitimate
-        // repeats ("Done.") appendable.
-        if normalizedIncoming.count >= 80, normalizedExisting.contains(normalizedIncoming) {
+        // output's tail — and the echo can concatenate segments that were
+        // recorded as separate chunks, shifting interior whitespace. Compare
+        // with all whitespace runs collapsed; a substantial chunk whose
+        // collapsed text already appears in the collapsed output is an echo.
+        // The length floor keeps short legitimate repeats ("Done.") appendable.
+        let collapsedIncoming = whitespaceCollapsed(normalizedIncoming)
+        if collapsedIncoming.count >= 80, whitespaceCollapsed(normalizedExisting).contains(collapsedIncoming) {
             return ""
         }
         return incomingText
+    }
+
+    private static func whitespaceCollapsed(_ text: String) -> String {
+        text.components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
     }
 
     static func permissionReasonSummary(_ reason: String) -> String {

@@ -68,6 +68,10 @@ extension HeadlessChatScenarioTests {
         let marker = #"ASTRA_EVENT {\"v\":1,\"type\":\"complete\",\"summary\":\"Report ready\"}"#
         let first = "The report page is ready with a styled summary section and color-coded status badges."
         let second = "Both validation assertions are satisfied by the generated file."
+        // The echo re-sends already-recorded content with different interior
+        // whitespace (newline became spaces) and a fragment of the prior
+        // message glued on — the shape observed in dev task D4E9A905.
+        let firstEcho = first.replacingOccurrences(of: " styled ", with: "  styled  ")
         let claudePath = try harness.writeExecutable(
             named: "claude",
             script: Self.claudeScript(body: """
@@ -75,7 +79,7 @@ extension HeadlessChatScenarioTests {
             printf '%s\\n' '{"type":"system","subtype":"init","session_id":"echo-sess","model":"claude-sonnet-4-6"}'
             printf '%s\\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"\(marker)\\n\\n\(first)"}}}'
             printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"\(second)"}]}}'
-            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"\(marker)\\n\\n\(first)"}]}}'
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"\(marker)\\n\\n\(firstEcho)"}]}}'
             printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"done","usage":{"input_tokens":5,"output_tokens":9}}'
             while IFS= read -r _; do :; done
             exit 0
@@ -89,9 +93,15 @@ extension HeadlessChatScenarioTests {
 
         let run = try #require(task.runs.first)
         #expect(run.status == .completed)
-        #expect(run.output.components(separatedBy: first).count - 1 == 1,
+        // Compare whitespace-collapsed so the echo's shifted spacing can't
+        // hide a duplicate from the assertion.
+        let collapsedOutput = run.output
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        #expect(collapsedOutput.components(separatedBy: first).count - 1 == 1,
                 "echoed first message duplicated: \(run.output)")
-        #expect(run.output.components(separatedBy: second).count - 1 == 1)
+        #expect(collapsedOutput.components(separatedBy: second).count - 1 == 1)
         #expect(task.events.filter { $0.type == "astra.complete" }.count == 1)
     }
 }
