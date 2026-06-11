@@ -13,11 +13,36 @@ struct AgentRuntimeInteractiveAskPlan: Equatable {
     let initialStdinMessage: String
 }
 
+/// The answer to a live ask, carrying the deny reason so the provider sees the
+/// actual cause (ASTRA policy vs the user declining) instead of always "the
+/// user declined".
+enum InteractiveAskOutcome: Sendable, Equatable {
+    case allow
+    case deny(message: String)
+
+    var isAllowed: Bool {
+        if case .allow = self { return true }
+        return false
+    }
+}
+
 /// A `can_use_tool` ask decoded from the provider's control stream.
 struct AgentInteractiveAskRequest: Sendable {
     let requestID: String
     let toolName: String
     let inputSummary: String?
+    /// The bare command extracted from the structured input's `command`/`cmd`
+    /// key, so policy matching sees `git push …` rather than the JSON-encoded
+    /// `inputSummary`. Nil when the input has no such key (e.g. file/web tools,
+    /// which carry a path/url instead).
+    let commandText: String?
+
+    init(requestID: String, toolName: String, inputSummary: String?, commandText: String? = nil) {
+        self.requestID = requestID
+        self.toolName = toolName
+        self.inputSummary = inputSummary
+        self.commandText = commandText
+    }
 }
 
 enum ClaudeControlProtocol {
@@ -27,6 +52,17 @@ enum ClaudeControlProtocol {
         let toolName: String?
         let inputJSON: [String: Any]?
         let inputSummary: String?
+
+        /// The bare shell command from the structured input, if present.
+        var commandText: String? {
+            for key in ["command", "cmd"] {
+                if let value = inputJSON?[key] as? String,
+                   !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return value
+                }
+            }
+            return nil
+        }
     }
 
     static func initialUserMessage(prompt: String) -> String? {
@@ -263,11 +299,84 @@ extension AgentRuntimeWorker {
         runtime: AgentRuntimeID,
         task: AgentTask,
         run: TaskRun,
+        permissionPolicy: PermissionPolicy,
+        manifest: RunPermissionManifest?,
         modelContext: ModelContext,
         pendingEvents: OrderedMainActorTaskQueue
-    ) -> ((AgentInteractiveAskRequest) async -> Bool) {
+    ) -> ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome) {
         let taskID = task.id
         return { ask in
+            // Classify the ask against ASTRA policy before deciding whether to
+            // interrupt the user. Auto auto-approves inside the envelope and
+            // denies the deny-list; Ask forwards. No manifest → forward (the
+            // safe default, matching pre-classifier behavior).
+            let decision = manifest.map {
+                // Only the extracted bare shell command goes into policy
+                // matching — never the JSON-encoded inputSummary, which would
+                // miss shell deny/allow patterns and misclassify non-shell
+                // asks (Write/WebFetch) as "commands". Non-shell asks match by
+                // tool name with a nil command.
+                AutoApprovalClassifier.decide(
+                    toolName: ask.toolName,
+                    command: ask.commandText,
+                    permissionPolicy: permissionPolicy,
+                    manifest: $0
+                )
+            } ?? .forwardToUser
+
+            switch decision {
+            case .autoApprove:
+                pendingEvents.add {
+                    modelContext.insert(TaskEvent(
+                        task: task,
+                        eventType: TaskEventTypes.Tool.permissionRequestResolved,
+                        payload: PermissionRequestResolution(
+                            requestID: ask.requestID, approved: true, toolName: ask.toolName
+                        ).payloadString,
+                        run: run
+                    ))
+                    modelContext.insert(TaskEvent(
+                        task: task,
+                        eventType: TaskEventTypes.System.info,
+                        payload: "Auto-approved \(ask.toolName) (inside the active policy envelope).",
+                        run: run
+                    ))
+                    try? modelContext.save()
+                }
+                return .allow
+            case .deny(let reason):
+                pendingEvents.add {
+                    modelContext.insert(TaskEvent(
+                        task: task,
+                        eventType: TaskEventTypes.Tool.permissionRequestResolved,
+                        payload: PermissionRequestResolution(
+                            requestID: ask.requestID, approved: false, toolName: ask.toolName
+                        ).payloadString,
+                        run: run
+                    ))
+                    // Recorded as system.info, NOT permission.denied: this is a
+                    // gracefully-handled policy denial (the provider is told no
+                    // and continues), not an unmet runtime permission prompt.
+                    // shouldPauseForRuntimePermissionApproval pauses any failed
+                    // run carrying a permission.denied event, so using that type
+                    // here would wrongly surface an approval card if the run
+                    // later exited non-zero for an unrelated reason. The denial
+                    // is already recorded by the permission.request.resolved
+                    // event above.
+                    modelContext.insert(TaskEvent(
+                        task: task,
+                        eventType: TaskEventTypes.System.info,
+                        payload: "Auto-denied \(ask.toolName) by ASTRA policy: \(reason)",
+                        run: run
+                    ))
+                    try? modelContext.save()
+                }
+                // The provider sees the actual policy reason, not "user declined".
+                return .deny(message: "Blocked by ASTRA policy: \(reason)")
+            case .forwardToUser:
+                break
+            }
+
             let request = PermissionBroker.providerNativePromptRequest(toolName: ask.toolName, context: ask.inputSummary)
             let grants = PermissionBroker.approvalGrants(for: request)
             let payload = PermissionBroker.approvalPayloadString(
@@ -329,6 +438,8 @@ extension AgentRuntimeWorker {
                 try? modelContext.save()
             }
             return approved
+                ? .allow
+                : .deny(message: "The user declined this action in ASTRA. Continue without it or propose an alternative.")
         }
     }
 }
