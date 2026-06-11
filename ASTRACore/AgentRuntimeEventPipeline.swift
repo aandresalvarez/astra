@@ -8,7 +8,7 @@ public struct AgentRuntimeEventPipeline: Sendable {
     private let supportsAstraRunProtocol: Bool
     private var astraFilter = AstraRunProtocolTextFilter()
     private var invalidAstraEventCount = 0
-    private var lastValidProtocolEvent: AstraRunProtocolParsedEvent?
+    private var emittedValidProtocolEvents: [AstraRunProtocolParsedEvent] = []
 
     public init(supportsAstraRunProtocol: Bool) {
         self.supportsAstraRunProtocol = supportsAstraRunProtocol
@@ -66,10 +66,12 @@ public struct AgentRuntimeEventPipeline: Sendable {
         guard case .invalid = event else {
             // Providers that stream partial messages deliver the same assistant
             // text twice (deltas, then the complete envelope), so the same
-            // marker parses twice. A repeat of the last emitted marker is a
-            // transport echo, not a new instruction.
-            if event == lastValidProtocolEvent { return false }
-            lastValidProtocolEvent = event
+            // marker parses twice — and in multi-message turns the echo can
+            // arrive after other markers. A marker identical to one already
+            // emitted this run is a transport echo, not a new instruction
+            // (every marker type is idempotent for identical payloads).
+            if emittedValidProtocolEvents.contains(event) { return false }
+            emittedValidProtocolEvents.append(event)
             return true
         }
         guard invalidAstraEventCount < AstraRunProtocolLimits.maxInvalidEventsPerRun else {

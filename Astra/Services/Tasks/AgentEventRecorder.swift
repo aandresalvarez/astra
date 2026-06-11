@@ -71,6 +71,14 @@ enum AgentEventRecordingPresentation {
            normalizedExisting == normalizedIncoming || normalizedExisting.hasSuffix(normalizedIncoming) {
             return ""
         }
+        // Multi-message turns: a later message can land between an earlier
+        // message's deltas and its envelope echo, so the echo is no longer the
+        // output's tail. A substantial chunk that already appears verbatim in
+        // the output is an echo; the length floor keeps short legitimate
+        // repeats ("Done.") appendable.
+        if normalizedIncoming.count >= 80, normalizedExisting.contains(normalizedIncoming) {
+            return ""
+        }
         return incomingText
     }
 
