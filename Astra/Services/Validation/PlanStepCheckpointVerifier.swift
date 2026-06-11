@@ -76,7 +76,8 @@ enum PlanStepCheckpointVerifier {
     }
 
     /// Records a checkpoint-imposed block for the step and returns the pause
-    /// message for the user.
+    /// message for the user. The text travels in `reason` so the blocked step
+    /// surfaces it as its detail in the plan UI.
     @MainActor
     static func recordCheckpointBlock(
         step: TaskPlanPayloadStep,
@@ -87,7 +88,7 @@ enum PlanStepCheckpointVerifier {
         modelContext: ModelContext
     ) -> String {
         let missingList = missing.joined(separator: ", ")
-        TaskPlanService.recordStepProgress(
+        _ = TaskPlanService.recordStepProgress(
             type: TaskPlanEventTypes.stepBlocked,
             planID: plan.planID,
             stepID: step.id,
@@ -96,9 +97,9 @@ enum PlanStepCheckpointVerifier {
             modelContext: modelContext,
             run: run,
             title: step.title,
-            summary: "\(checkpointBlockSummaryPrefix) required outputs missing — \(missingList)"
+            reason: "\(checkpointBlockSummaryPrefix) required outputs missing — \(missingList)"
         )
-        return "Plan step \"\(step.title)\" finished without its required outputs (\(missingList), expected in the task folder). Approve the step again to retry, or adjust the plan step."
+        return "Plan step \"\(step.title)\" finished without its required outputs (\(missingList)). Approve the step again to retry, or adjust the plan step."
     }
 
     /// Verifies all steps at the full-plan run boundary; records blocks for
@@ -128,13 +129,23 @@ enum PlanStepCheckpointVerifier {
     }
 
     /// Whether the most recent blocked record for this step was stamped by the
-    /// checkpoint itself (as opposed to a provider-reported blocker).
+    /// checkpoint itself (as opposed to a provider-reported blocker). Matches
+    /// on the decoded payload's stepID — substring matching would confuse
+    /// step IDs that prefix each other ("step-1" vs "step-10").
     @MainActor
     static func latestBlockIsCheckpointImposed(task: AgentTask, stepID: String) -> Bool {
         let latestBlock = task.events
-            .filter { $0.type == TaskPlanEventTypes.stepBlocked && $0.payload.contains(stepID) }
+            .filter { $0.type == TaskPlanEventTypes.stepBlocked }
+            .compactMap { event -> (timestamp: Date, payload: TaskPlanProgressPayload)? in
+                guard let data = event.payload.data(using: .utf8),
+                      let payload = try? JSONDecoder().decode(TaskPlanProgressPayload.self, from: data),
+                      payload.stepID == stepID else { return nil }
+                return (event.timestamp, payload)
+            }
             .max { $0.timestamp < $1.timestamp }
-        return latestBlock?.payload.contains(checkpointBlockSummaryPrefix) == true
+        guard let payload = latestBlock?.payload else { return false }
+        return payload.reason?.hasPrefix(checkpointBlockSummaryPrefix) == true
+            || payload.summary?.hasPrefix(checkpointBlockSummaryPrefix) == true
     }
 
     static func verify(
@@ -174,9 +185,17 @@ enum PlanStepCheckpointVerifier {
                 // The final validation pass accepts artifacts in the task
                 // folder or the working tree; mirror that here so a step can't
                 // block on a path the end-of-plan check would accept.
-                return Check(path: path, kind: .file, roots: [taskFolder, workspacePath])
+                let kind: TaskPlanArtifactKind = artifactTypeLooksDirectory(assertion.expectedArtifactType)
+                    ? .directory
+                    : .file
+                return Check(path: path, kind: kind, roots: [taskFolder, workspacePath])
             }
         }
+
+        // The same path can be declared as a step output and a contract
+        // artifact; verifying it twice would double it in the evidence list.
+        var seenPaths = Set<String>()
+        checks = checks.filter { seenPaths.insert($0.path).inserted }
 
         for check in checks {
             switch check.kind {
@@ -216,11 +235,23 @@ enum PlanStepCheckpointVerifier {
     ) -> Bool {
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory) else { return false }
-        guard kind == .directory else { return true }
+        guard kind == .directory else {
+            // A directory at a path declared as a file is not the declared
+            // output (the preflight may have mkdir'd it).
+            return !isDirectory.boolValue
+        }
         // Required directories are pre-created empty by the artifact preflight,
         // so bare existence proves nothing — content does.
         guard isDirectory.boolValue else { return false }
         return ((try? fileManager.contentsOfDirectory(atPath: path)) ?? []).isEmpty == false
+    }
+
+    /// Mirrors TaskExecutionArtifactPreparer's directory detection for
+    /// contract artifact assertions (the original helper is private there).
+    private static func artifactTypeLooksDirectory(_ value: String?) -> Bool {
+        guard let value else { return false }
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return ["directory", "folder", "dir"].contains(normalized)
     }
 
     /// Resolves `relativePath` under `root` and rejects traversal outside it.

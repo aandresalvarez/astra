@@ -1184,7 +1184,13 @@ struct ChatPanelView: View {
     }
 
     private var actionBarPlanMode: TaskPlanExecutionMode {
-        PlanCheckpointPolicy.executionMode(
+        // Prefer the draft task's runtime (the worker role selection can
+        // differ from the composer default) so the label matches the mode
+        // that will actually execute.
+        if let draftTask {
+            return PlanCheckpointPolicy.executionMode(for: draftTask, skipPermissions: skipPermissions)
+        }
+        return PlanCheckpointPolicy.executionMode(
             runtime: AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime,
             skipPermissions: skipPermissions
         )

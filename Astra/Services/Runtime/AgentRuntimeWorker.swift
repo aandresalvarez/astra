@@ -245,6 +245,15 @@ final class AgentRuntimeWorker {
                 title: step.title,
                 summary: "Completed approved step: \(step.title).\(checkpoint.completionEvidence)"
             )
+        } else if currentStepStatus == .done, !checkpoint.verifiedPaths.isEmpty {
+            // The provider's own completion marker recorded the step; keep the
+            // checkpoint's evidence in the log alongside it.
+            modelContext.insert(TaskEvent(
+                task: task,
+                eventType: TaskEventTypes.System.info,
+                payload: "Step checkpoint verified for \"\(step.title)\":\(checkpoint.completionEvidence)",
+                run: lastRun
+            ))
         }
 
         let refreshedPlan = TaskPlanService.reconstruct(for: task).plan ?? plan
@@ -300,18 +309,14 @@ final class AgentRuntimeWorker {
 
         // Single-run plans have no intermediate run boundaries, so the output
         // checkpoint for every step lands here instead.
+        let lastRun = task.runs.sorted(by: { $0.startedAt < $1.startedAt }).last
         if let message = PlanStepCheckpointVerifier.recordFullPlanCheckpointBlocks(
             plan: refreshedPlan,
             task: task,
-            run: task.runs.sorted(by: { $0.startedAt < $1.startedAt }).last,
+            run: lastRun,
             modelContext: modelContext
         ) {
-            pauseApprovedPlanForUser(
-                task: task,
-                modelContext: modelContext,
-                message: message,
-                run: task.runs.sorted(by: { $0.startedAt < $1.startedAt }).last
-            )
+            pauseApprovedPlanForUser(task: task, modelContext: modelContext, message: message, run: lastRun)
             return
         }
 

@@ -38,12 +38,15 @@ enum PlanCheckpointPolicy {
         return tier(for: runtime) == .liveApprovals ? .fullPlan : .nextStep
     }
 
-    /// Resolves the runtime the same way the worker will at launch, so the
-    /// mode shown and sent by the UI can't diverge from what executes.
+    /// Resolves the runtime the same way the worker will at launch
+    /// (registered-adapter mapping with the default-runtime fallback), so the
+    /// mode shown and sent by the UI can't diverge from what executes. Uses
+    /// the registry directly: constructing an AgentRuntimeConfiguration here
+    /// would run executable path detection on every SwiftUI evaluation.
     @MainActor
     static func executionMode(for task: AgentTask, skipPermissions: Bool) -> TaskPlanExecutionMode {
         executionMode(
-            runtime: AgentRuntimeConfiguration().selectedRuntime(for: task),
+            runtime: AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: task.runtimeID),
             skipPermissions: skipPermissions
         )
     }
