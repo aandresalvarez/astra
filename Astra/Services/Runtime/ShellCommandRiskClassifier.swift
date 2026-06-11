@@ -361,11 +361,7 @@ enum ShellCommandRiskClassifier {
                 return true
             }
 
-            if !inDoubleQuote, character == "<", next == "(" || next == "<" {
-                return true
-            }
-
-            if !inDoubleQuote, character == ">", next == "(" {
+            if !inDoubleQuote, (character == "<" || character == ">") {
                 return true
             }
         }

@@ -550,8 +550,8 @@ struct AgentPolicyTests {
         #expect(PermissionBroker.resumeMessage(providerID: .copilotCLI, grants: grants).contains("Start shell calls with the approved executable"))
     }
 
-    @Test("Broker ignores shell line continuations and quoted parser text when choosing approval grants")
-    func brokerIgnoresShellLineContinuationsAndQuotedParserText() {
+    @Test("Broker ignores line continuations, redirections, and quoted parser text when choosing grants")
+    func brokerIgnoresLineContinuationsRedirectionsAndQuotedParserText() {
         let request = PermissionRequest.shell(
             command: """
             mkdir -p .astra/tasks/57096337 && \\
@@ -567,7 +567,7 @@ struct AgentPolicyTests {
         let providerGrants = PermissionBroker.providerGrantStrings(for: grants, runtime: .copilotCLI)
         let resumeMessage = PermissionBroker.resumeMessage(providerID: .copilotCLI, grants: grants)
 
-        #expect(grants.contains(.shellCommand(executable: "gh", pattern: "search prs *")))
+        #expect(!grants.contains(.shellCommand(executable: "gh", pattern: "search prs *")))
         #expect(grants.contains(.shellCommand(executable: "gh", pattern: "pr view *")))
         #expect(!providerGrants.contains { $0.contains("shell(\\:") })
         #expect(!providerGrants.contains { $0.contains("author:") })
@@ -666,6 +666,8 @@ struct AgentPolicyTests {
             "bq query $'select * from dataset.table'",
             "cat <<EOF\nsecret\nEOF",
             "curl https://example.com <<< token",
+            "gh api < ~/.ssh/id_ed25519",
+            "gh api > response.json",
             "git status `cat ~/.ssh/id_ed25519`",
             "git status \\\n--short"
         ]
