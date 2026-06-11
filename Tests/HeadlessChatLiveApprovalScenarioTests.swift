@@ -328,7 +328,10 @@ extension HeadlessChatScenarioTests {
         _ = await harness.execute(task: task, worker: worker)
 
         #expect(InFlightPermissionCenter.shared.pendingAsks(taskID: task.id).isEmpty)
-        #expect(task.events.contains { $0.type == "permission.denied" && $0.payload.contains("Bash") })
+        // Recorded as system.info, not permission.denied: a graceful policy
+        // denial must not feed the failed-run pause heuristic.
+        #expect(task.events.contains { $0.type == "system.info" && $0.payload.contains("Auto-denied") })
+        #expect(!task.events.contains { $0.type == "permission.denied" })
         #expect(!task.events.contains { $0.type == "permission.approval.requested" })
         #expect(task.status == .completed)
 
@@ -337,5 +340,38 @@ extension HeadlessChatScenarioTests {
         // The provider sees the policy reason, not the "user declined" message.
         #expect(stdin.contains("Blocked by ASTRA policy"))
         #expect(!stdin.contains("user declined"))
+    }
+
+    @Test("Policy-denied live ask whose run later fails does not surface an approval card")
+    func policyDeniedLiveAskThenUnrelatedFailureDoesNotPauseForApproval() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        // Auto-denies a deny-listed ask (handled gracefully), then exits
+        // non-zero for an UNRELATED reason. The old permission.denied event
+        // would have made shouldPauseForRuntimePermissionApproval surface a
+        // bogus approval card on this failure.
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            IFS= read -r first_line
+            printf '%s\\n' '{"type":"system","subtype":"init","session_id":"deny-then-fail-sess","model":"claude-sonnet-4-6"}'
+            printf '%s\\n' '{"type":"control_request","request_id":"req-deny-fail","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"git push origin main"}}}'
+            IFS= read -r _response
+            printf '%s\\n' 'unrelated provider crash' >&2
+            exit 7
+            """)
+        )
+
+        let task = harness.makeTask(runtime: .claudeCode, goal: "Publish the branch", model: "claude-sonnet-4-6")
+        let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath, liveApprovals: true)
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        // The run failed, but the failure was not permission-related, so no
+        // approval card / pendingUser-for-permission should appear.
+        #expect(!task.events.contains { $0.type == "permission.approval.requested" })
+        #expect(!task.events.contains { $0.type == "permission.denied" })
+        #expect(InFlightPermissionCenter.shared.pendingAsks(taskID: task.id).isEmpty)
     }
 }
