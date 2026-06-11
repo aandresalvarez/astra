@@ -52,7 +52,8 @@ extension HeadlessChatScenarioTests {
         #expect(occurrences == 1, "run.output recorded the answer \(occurrences)x: \(run.output)")
         let completeEvents = task.events.filter { $0.type == "astra.complete" }
         #expect(completeEvents.count == 1, "astra.complete recorded \(completeEvents.count)x")
-        let responseChunks = task.events.filter { $0.type == "conversation.agent_response" }
+        let responseChunks = task.events.filter { $0.type == "agent.response" }
+        #expect(!responseChunks.isEmpty)
         #expect(responseChunks.count <= 2)
     }
 

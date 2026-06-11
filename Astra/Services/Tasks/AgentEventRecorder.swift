@@ -63,12 +63,11 @@ enum AgentEventRecordingPresentation {
         }
         // Partial-message providers re-send the streamed text as one complete
         // envelope. Protocol-marker stripping can shift whitespace between the
-        // two copies, so a whitespace-insensitive repeat of the tail is an echo
-        // of what the deltas already recorded, not new output.
+        // two copies, so a whitespace-insensitive repeat of the whole output is
+        // an echo of what the deltas already recorded, not new output.
         let normalizedIncoming = incomingText.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedExisting = existingOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !normalizedIncoming.isEmpty,
-           normalizedExisting == normalizedIncoming || normalizedExisting.hasSuffix(normalizedIncoming) {
+        if !normalizedIncoming.isEmpty, normalizedExisting == normalizedIncoming {
             return ""
         }
         // Multi-message turns: a later message can land between an earlier
@@ -76,14 +75,18 @@ enum AgentEventRecordingPresentation {
         // output's tail — and the echo can concatenate segments that were
         // recorded as separate chunks, shifting interior whitespace. Compare
         // with all whitespace runs collapsed; a substantial chunk whose
-        // collapsed text already appears in the collapsed output is an echo.
-        // The length floor keeps short legitimate repeats ("Done.") appendable.
+        // collapsed text already appears in the collapsed output (tail or
+        // interior) is an echo. The length floor keeps short legitimate
+        // repeats ("Done.") appendable.
         let collapsedIncoming = whitespaceCollapsed(normalizedIncoming)
-        if collapsedIncoming.count >= 80, whitespaceCollapsed(normalizedExisting).contains(collapsedIncoming) {
+        if collapsedIncoming.count >= echoLengthFloor,
+           whitespaceCollapsed(normalizedExisting).contains(collapsedIncoming) {
             return ""
         }
         return incomingText
     }
+
+    private static let echoLengthFloor = 80
 
     private static func whitespaceCollapsed(_ text: String) -> String {
         text.components(separatedBy: .whitespacesAndNewlines)
