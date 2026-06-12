@@ -186,9 +186,12 @@ struct CapabilityLibrary {
             package.sourceMetadata = .localLibrary()
         }
 
-        // The cannot-be-removed protection applies only to genuine curated
-        // built-ins; a file merely claiming built-in kind is local content.
-        if package.sourceMetadata?.kind == "built-in", trustedBuiltInIDs.contains(package.id) {
+        // The trust boundary is the curated built-in ID set, never the disk
+        // metadata: keying off `sourceMetadata.kind` would let a tampered
+        // file flip its own `kind` to "local" and remove a genuine built-in.
+        // A file merely claiming built-in kind whose ID is not curated is
+        // local content and remains removable.
+        if trustedBuiltInIDs.contains(package.id) {
             throw RemovalError.builtInPackage(package.name)
         }
 

@@ -30,12 +30,15 @@ enum MCPEnvironmentKeyPolicy {
     /// Permission strings are composed as `mcp__<server>__<tool>`; names
     /// containing `__`, whitespace, or other separators could collide or be
     /// parsed differently by the CLI than ASTRA intends.
+    private static let permissionNameRule =
+        "must start with a letter or digit, use only letters, digits, dots, hyphens, or underscores, and contain no double underscore (the mcp__ permission delimiter)"
+
     static func invalidNameReason(server: PluginMCPServer) -> String? {
         if !isValidPermissionName(server.id) {
-            return "server id \"\(server.id)\" must use letters, digits, dots, or single hyphens/underscores"
+            return "server id \"\(server.id)\" \(permissionNameRule)"
         }
         for tool in server.allowedTools + server.excludedTools where !isValidPermissionName(tool) {
-            return "tool name \"\(tool)\" must use letters, digits, dots, or single hyphens/underscores"
+            return "tool name \"\(tool)\" \(permissionNameRule)"
         }
         return nil
     }

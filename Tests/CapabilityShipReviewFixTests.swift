@@ -218,6 +218,29 @@ struct BuiltInGovernanceFromDefinitionTests {
         #expect(loaded.governance.approvalStatus == curated.governance.approvalStatus)
         #expect(loaded.governance.requiresAdminApproval == curated.governance.requiresAdminApproval)
     }
+
+    @Test("A curated built-in stays removal-protected even if its on-disk kind is tampered to local")
+    func tamperedBuiltInKindStaysProtected() throws {
+        let root = try fixBatchTempDirectory(named: "astra-tamper-builtin-remove")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = CapabilityLibrary(directory: root)
+        try library.syncApprovedPackages(PluginCatalog.builtInPackages)
+
+        // Tamper the on-disk source metadata to claim local content, which
+        // would bypass a kind-based removal guard.
+        let url = library.packageURL(for: "security-auditor")
+        var tampered = try #require(library.installedPackage(id: "security-auditor"))
+        tampered.sourceMetadata = .localLibrary()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        try encoder.encode(tampered).write(to: url)
+
+        // Removal is gated on the curated ID set, not disk metadata.
+        #expect(throws: CapabilityLibrary.RemovalError.self) {
+            try library.removePackage(id: "security-auditor")
+        }
+        #expect(FileManager.default.fileExists(atPath: url.path))
+    }
 }
 
 @Suite("Install Rollback Existence Awareness")
