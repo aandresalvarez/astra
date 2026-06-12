@@ -3,9 +3,10 @@ import SwiftUI
 // Real brand marks for capability rows. The app ships no asset catalog and the
 // custom bundling step makes one fragile, so brand glyphs are rendered from
 // their vector path data directly into a SwiftUI `Path`. The path strings are
-// the official single-colour marks from Simple Icons (CC0 / public domain); the
-// trademarks belong to their owners and are used here only to identify the
-// integration each capability talks to.
+// the official single-colour marks from Simple Icons (CC0 / public domain),
+// with one exception: `microsoft365` is an in-house geometric mark (Simple
+// Icons carries no Microsoft glyphs). The trademarks belong to their owners and
+// are used here only to identify the integration each capability talks to.
 //
 // Marks are monochrome (they inherit `foregroundStyle`), which keeps them
 // legible in both light and dark mode and consistent with the SF Symbol icons
@@ -24,6 +25,9 @@ enum BrandMark: String, CaseIterable {
     case notion
     case linear
     case gitlab
+    /// In-house geometric mark (Simple Icons carries no Microsoft glyphs);
+    /// ported verbatim from the previous hand-coded `Microsoft365MarkShape`.
+    case microsoft365
 
     /// Resolve a capability's brand from its identifier and display name. Returns
     /// nil when the capability has no well-known mark (it then keeps its SF
@@ -50,6 +54,9 @@ enum BrandMark: String, CaseIterable {
             || haystack.contains("bigquery") || haystack.contains("gcp") { return .googleCloud }
         if haystack.contains("claude") || haystack.contains("anthropic") { return .claude }
         if haystack.contains("openai") || haystack.contains("codex") || haystack.contains("gpt") { return .openai }
+        if haystack.contains("microsoft") || haystack.contains("office 365") || haystack.contains("office365") {
+            return .microsoft365
+        }
         return nil
     }
 
@@ -80,6 +87,8 @@ enum BrandMark: String, CaseIterable {
             return "M2.886 4.18A11.982 11.982 0 0 1 11.99 0C18.624 0 24 5.376 24 12.009c0 3.64-1.62 6.903-4.18 9.105L2.887 4.18ZM1.817 5.626l16.556 16.556c-.524.33-1.075.62-1.65.866L.951 7.277c.247-.575.537-1.126.866-1.65ZM.322 9.163l14.515 14.515c-.71.172-1.443.282-2.195.322L0 11.358a12 12 0 0 1 .322-2.195Zm-.17 4.862 9.823 9.824a12.02 12.02 0 0 1-9.824-9.824Z"
         case .gitlab:
             return "m23.6004 9.5927-.0337-.0862L20.3.9814a.851.851 0 0 0-.3362-.405.8748.8748 0 0 0-.9997.0539.8748.8748 0 0 0-.29.4399l-2.2055 6.748H7.5375l-2.2057-6.748a.8573.8573 0 0 0-.29-.4412.8748.8748 0 0 0-.9997-.0537.8585.8585 0 0 0-.3362.4049L.4332 9.5015l-.0325.0862a6.0657 6.0657 0 0 0 2.0119 7.0105l.0113.0087.03.0213 4.976 3.7264 2.462 1.8633 1.4995 1.1321a1.0085 1.0085 0 0 0 1.2197 0l1.4995-1.1321 2.4619-1.8633 5.006-3.7489.0125-.01a6.0682 6.0682 0 0 0 2.0094-7.003z"
+        case .microsoft365:
+            return "M12 1.2L21.12 6L21.12 18L12 22.8L2.88 18L2.88 6ZM7.68 7.44L12 5.28L16.32 7.44L16.32 16.56L12 18.72L7.68 16.56Z"
         }
     }
 

@@ -27,6 +27,7 @@ struct BrandMarkTests {
         #expect(BrandMark.resolve(id: "gcloud-workflow", name: "Google Cloud") == .googleCloud)
         #expect(BrandMark.resolve(id: "x", name: "BigQuery Analyst") == .googleCloud)
         #expect(BrandMark.resolve(id: "google-drive-browser", name: "Google Drive Browser") == .googleDrive)
+        #expect(BrandMark.resolve(id: "x", name: "Microsoft 365 Mail") == .microsoft365)
         #expect(BrandMark.resolve(id: "security-auditor", name: "Security Auditor") == nil)
         #expect(BrandMark.resolve(id: "redcap-workflow", name: "REDCap Workflow") == nil)
         // The bare "gh" alias matches only as a standalone token, never inside
@@ -35,6 +36,16 @@ struct BrandMarkTests {
         #expect(BrandMark.resolve(id: "x", name: "gh helper") == .github)
         #expect(BrandMark.resolve(id: "x", name: "High priority sync") == nil)
         #expect(BrandMark.resolve(id: "x", name: "Walkthrough recorder") == nil)
+    }
+
+    @Test("catalog brand icons map onto shared, parseable marks")
+    func catalogBrandIconsMapOntoSharedMarks() {
+        // The presentation-layer enum delegates artwork to BrandMark. Iterating
+        // allCases means a future CapabilityBrandIcon case is covered here
+        // automatically: its mapped mark must parse to real geometry.
+        for icon in CapabilityBrandIcon.allCases {
+            #expect(!icon.brandMark.path.isEmpty, "\(icon) maps to an unparseable mark")
+        }
     }
 
     @Test("parser rejects unsupported commands so callers can fall back")
