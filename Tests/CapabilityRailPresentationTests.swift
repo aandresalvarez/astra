@@ -279,7 +279,10 @@ struct CapabilityRailPresentationTests {
         #expect(WorkspaceSetupChecklistPresentation.workspaceRootReferenceRole == "Reference")
         #expect(WorkspaceSetupChecklistPresentation.userConfiguredFolderCount([]) == 0)
         #expect(WorkspaceSetupChecklistPresentation.userConfiguredFolderCount(["  "]) == 0)
-        #expect(WorkspaceSetupChecklistPresentation.folderState(additionalPaths: []) == .missing)
+        #expect(WorkspaceSetupChecklistPresentation.folderState(
+            primaryPath: "/Users/alvaro/Documents/Astra Dev/Workspaces/pr",
+            additionalPaths: []
+        ) == .missing)
         #expect(WorkspaceSetupChecklistPresentation.folderSubtitle(
             primaryPath: "/Users/alvaro/Documents/Astra Dev/Workspaces/pr",
             additionalPaths: []
@@ -292,9 +295,10 @@ struct CapabilityRailPresentationTests {
             "/Users/alvaro/Documents/Code/astra",
             " /Users/alvaro/Documents/Code/artana-evidence-platform "
         ]) == 2)
-        #expect(WorkspaceSetupChecklistPresentation.folderState(additionalPaths: [
-            "/Users/alvaro/Documents/Code/astra"
-        ]) == .configured)
+        #expect(WorkspaceSetupChecklistPresentation.folderState(
+            primaryPath: "/Users/alvaro/Documents/Astra Dev/Workspaces/pr",
+            additionalPaths: ["/Users/alvaro/Documents/Code/astra"]
+        ) == .configured)
         #expect(WorkspaceSetupChecklistPresentation.folderSubtitle(
             primaryPath: "/Users/alvaro/Documents/Astra Dev/Workspaces/pr",
             additionalPaths: ["/Users/alvaro/Documents/Code/astra"]
@@ -306,5 +310,35 @@ struct CapabilityRailPresentationTests {
                 "/Users/alvaro/Documents/Code/artana-evidence-platform"
             ]
         ) == "2 added folders")
+    }
+
+    @Test("workspace folder setup normalizes added paths before counting")
+    func workspaceFolderSetupNormalizesAddedPathsBeforeCounting() {
+        #expect(WorkspaceSetupChecklistPresentation.userConfiguredFolderCount([
+            "/tmp/astra-review/docs",
+            "/tmp/astra-review/./docs",
+            " /tmp/astra-review/docs/ "
+        ]) == 1)
+        #expect(WorkspaceSetupChecklistPresentation.folderSubtitle(
+            primaryPath: "/Users/alvaro/Documents/Astra Dev/Workspaces/pr",
+            additionalPaths: [
+                "/tmp/astra-review/docs",
+                "/tmp/astra-review/./docs",
+                " /tmp/astra-review/docs/ "
+            ]
+        ) == "1 added folder")
+    }
+
+    @Test("workspace folder setup surfaces missing root even with added paths")
+    func workspaceFolderSetupSurfacesMissingRootEvenWithAddedPaths() {
+        #expect(WorkspaceSetupChecklistPresentation.shouldShowWorkspaceRootMissingMessage(primaryPath: " ") == true)
+        #expect(WorkspaceSetupChecklistPresentation.folderState(
+            primaryPath: " ",
+            additionalPaths: ["/Users/alvaro/Documents/Code/astra"]
+        ) == .missing)
+        #expect(WorkspaceSetupChecklistPresentation.folderSubtitle(
+            primaryPath: " ",
+            additionalPaths: ["/Users/alvaro/Documents/Code/astra"]
+        ) == "No workspace root selected.")
     }
 }

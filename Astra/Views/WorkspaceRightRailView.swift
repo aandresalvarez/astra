@@ -56,6 +56,8 @@ enum WorkspaceSetupChecklistPresentation {
     static let detailPreviewLimit = 4
     static let workspaceRootReferenceTitle = "Workspace root"
     static let workspaceRootReferenceRole = "Reference"
+    static let missingWorkspaceRootSubtitle = "No workspace root selected."
+    static let emptyFolderSubtitle = "Add extra folders for this workspace"
 
     enum State: Equatable {
         case configured
@@ -73,20 +75,29 @@ enum WorkspaceSetupChecklistPresentation {
         configured == 0 ? "Empty" : "\(configured) of \(total) configured"
     }
 
+    static func shouldShowWorkspaceRootMissingMessage(primaryPath: String) -> Bool {
+        WorkspacePathPresentation.standardizedPath(primaryPath).isEmpty
+    }
+
+    static func userConfiguredFolderDescriptors(_ additionalPaths: [String]) -> [WorkspacePathDescriptor] {
+        WorkspacePathPresentation.descriptors(primaryPath: "", additionalPaths: additionalPaths)
+    }
+
     static func userConfiguredFolderCount(_ additionalPaths: [String]) -> Int {
-        additionalPaths
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .count
+        userConfiguredFolderDescriptors(additionalPaths).count
     }
 
-    static func folderState(additionalPaths: [String]) -> State {
-        userConfiguredFolderCount(additionalPaths) > 0 ? .configured : .missing
+    static func folderState(primaryPath: String, additionalPaths: [String]) -> State {
+        guard !shouldShowWorkspaceRootMissingMessage(primaryPath: primaryPath) else { return .missing }
+        return userConfiguredFolderCount(additionalPaths) > 0 ? State.configured : State.missing
     }
 
-    static func folderSubtitle(primaryPath _: String, additionalPaths: [String]) -> String {
+    static func folderSubtitle(primaryPath: String, additionalPaths: [String]) -> String {
+        guard !shouldShowWorkspaceRootMissingMessage(primaryPath: primaryPath) else {
+            return missingWorkspaceRootSubtitle
+        }
         let count = userConfiguredFolderCount(additionalPaths)
-        guard count > 0 else { return "Add extra folders for this workspace" }
+        guard count > 0 else { return emptyFolderSubtitle }
         return "\(count) added \(count == 1 ? "folder" : "folders")"
     }
 
@@ -1670,7 +1681,10 @@ struct WorkspaceRightRailView: View {
         case .memory:
             workspace.memories.isEmpty ? .missing : .configured
         case .folders:
-            WorkspaceSetupChecklistPresentation.folderState(additionalPaths: workspace.additionalPaths)
+            WorkspaceSetupChecklistPresentation.folderState(
+                primaryPath: workspace.primaryPath,
+                additionalPaths: workspace.additionalPaths
+            )
         case .remoteAccess:
             sshConnections.isEmpty ? .missing : .configured
         case .routines:
@@ -1920,17 +1934,16 @@ struct WorkspaceRightRailView: View {
 
     private var foldersSetupDetails: some View {
         VStack(alignment: .leading, spacing: 8) {
-            let hasWorkspaceRoot = !workspace.primaryPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            let additionalDescriptors = WorkspacePathPresentation.descriptors(
-                primaryPath: "",
-                additionalPaths: workspace.additionalPaths
-            )
+            let isWorkspaceRootMissing = WorkspaceSetupChecklistPresentation
+                .shouldShowWorkspaceRootMissingMessage(primaryPath: workspace.primaryPath)
+            let additionalDescriptors = WorkspaceSetupChecklistPresentation
+                .userConfiguredFolderDescriptors(workspace.additionalPaths)
 
-            if !hasWorkspaceRoot, additionalDescriptors.isEmpty {
-                setupEmptyDetail("No workspace root selected.")
+            if isWorkspaceRootMissing {
+                setupEmptyDetail(WorkspaceSetupChecklistPresentation.missingWorkspaceRootSubtitle)
             }
 
-            if hasWorkspaceRoot {
+            if !isWorkspaceRootMissing {
                 setupFolderRow(
                     title: WorkspaceSetupChecklistPresentation.workspaceRootReferenceTitle,
                     roleLabel: WorkspaceSetupChecklistPresentation.workspaceRootReferenceRole,
