@@ -56,6 +56,12 @@
     "visibility" : "everyone"
   },
   "icon" : "cloud",
+  "iconDescriptor" : {
+    "fallbackSystemName" : "cloud",
+    "kind" : "asset",
+    "monochromePreferred" : false,
+    "value" : "assets/google-cloud.svg"
+  },
   "id" : "gcloud-workflow",
   "isTrusted" : false,
   "localTools" : [
