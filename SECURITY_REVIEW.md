@@ -244,3 +244,32 @@ The original priority order has been completed on this branch:
 7. **H3** — Wildcard matching now uses a cached matcher.
 8. **M1** — Connector credentials now use `ThisDeviceOnly` keychain accessibility.
 9. **L4** — Package ID collision checks now reject case-only collisions.
+
+---
+
+## 2026-06-11 Capabilities Remediation Addendum
+
+The capabilities subsystem was re-reviewed and remediated (see
+`docs/specs/2026-06-11-capabilities-remediation-plan.md`):
+
+- **Signing model replaced.** `PluginSigning` (Ed25519) and the
+  `signature`/`isTrusted` package fields were removed — they were never
+  verified at load and implied guarantees the app did not make (the prior
+  C1 fix hardened a module with no production callers). Package integrity
+  is now solely the SHA-256 digest bound to `CapabilityApprovalStore`
+  records, enforced at policy-decision time.
+- **Load-time governance clamping.** `CapabilityLibrary` clamps
+  self-declared governance for any package ID outside the curated built-in
+  set (forged `approved`/`built-in`/`remote-approved` claims load as draft
+  local; forged built-ins also lose removal protection). Forged-fixture
+  regression tests live in `Tests/CapabilityLifecycleHardeningTests.swift`.
+- **Keychain teardown ordering.** Disable/uninstall wipe credentials only
+  after the SwiftData save succeeds, so a failed save cannot strand
+  configured-looking records with no credentials.
+- **MCP delivery gating.** Capability MCP servers reach Claude Code via a
+  per-launch `--mcp-config` rendered with `${KEY}` env indirection (no
+  secrets on disk) plus `--strict-mcp-config` so repository `.mcp.json`
+  files cannot bypass catalog governance; stdio commands are preflighted.
+- **Env injection boundaries.** Browser-bridge env contributions are
+  allowlisted to `ASTRA_BROWSER_*`; legacy bare connector env names emit
+  deprecation audits ahead of removal.

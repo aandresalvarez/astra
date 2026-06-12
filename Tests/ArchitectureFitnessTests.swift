@@ -222,6 +222,33 @@ struct ArchitectureFitnessTests {
         #expect(view.contains("CapabilityCatalogActionService("))
     }
 
+    @Test("Admin policy contexts come only from the currentUser factory")
+    func adminPolicyContextsComeOnlyFromCurrentUserFactory() throws {
+        // Single-user admin semantics live in exactly one place:
+        // CapabilityCatalogPolicyContext.currentUser. A scattered
+        // `isAdmin: true` literal is how a future non-admin mode ships
+        // half-broken.
+        let root = try repositoryRoot()
+        let astraRoot = root.appendingPathComponent("Astra")
+        let enumerator = FileManager.default.enumerator(
+            at: astraRoot,
+            includingPropertiesForKeys: nil
+        )
+        var offenders: [String] = []
+        while let url = enumerator?.nextObject() as? URL {
+            guard url.pathExtension == "swift" else { continue }
+            guard let contents = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            guard contents.contains("isAdmin: true") else { continue }
+            if url.lastPathComponent != "CapabilityCatalogPolicy.swift" {
+                offenders.append(url.lastPathComponent)
+            }
+        }
+        #expect(
+            offenders.isEmpty,
+            "Use CapabilityCatalogPolicyContext.currentUser instead of literal isAdmin contexts: \(offenders.joined(separator: ", "))"
+        )
+    }
+
     @Test("Plugin catalog import presentation lives with catalog presentation contracts")
     func pluginCatalogImportPresentationLivesWithCatalogPresentationContracts() throws {
         let root = try repositoryRoot()

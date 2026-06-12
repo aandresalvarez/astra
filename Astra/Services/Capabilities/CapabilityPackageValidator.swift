@@ -23,6 +23,7 @@ struct CapabilityPackageValidationIssue: Equatable, Identifiable {
         case unsafeMCPServer
         case missingPrerequisite
         case emptyPayload
+        case packageUpdate
     }
 
     var severity: Severity
@@ -128,7 +129,7 @@ enum CapabilityPackageValidator {
         validateLocalTools(package.localTools, issues: &issues)
         validateConnectors(package.connectors, issues: &issues)
         validateBrowserAdapters(package.browserAdapters, issues: &issues)
-        validateMCPServers(package.mcpServers, issues: &issues)
+        validateMCPServers(in: package, issues: &issues)
         validatePrerequisites(
             package.prerequisites,
             checkPrerequisites: checkPrerequisites,
@@ -180,13 +181,8 @@ enum CapabilityPackageValidator {
             ))
         }
 
-        package.governance.approvalStatus = .draft
-        package.governance.visibility = .adminOnly
-        package.governance.requiresAdminApproval = true
-        package.governance.requiresExplicitUserConsent = true
-        package.governance.approvedBy = nil
-        package.governance.approvedAt = nil
-        if package.governance.policyNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        CapabilityGovernanceNormalizer.clampToLocalDraft(&package)
+        if package.governance.policyNotes == CapabilityGovernanceNormalizer.defaultDraftPolicyNote {
             package.governance.policyNotes = "Local capability package imported from JSON and pending review."
         }
     }
@@ -228,13 +224,34 @@ enum CapabilityPackageValidator {
         let normalizedID = package.id.lowercased()
         if let duplicate = installedPackages.first(where: { $0.id.lowercased() == normalizedID }),
            !allowReplacingExistingPackageID || duplicate.id != package.id {
-            issues.append(issue(
-                .blocker,
-                .duplicatePackageID,
-                "Package already installed",
-                "A capability with ID \(duplicate.id) already exists. Remove it before importing a replacement.",
-                component: package.id
-            ))
+            // A strictly newer version of an installed local package imports
+            // as an update: the file is replaced, the digest changes, and the
+            // package returns to draft until re-approved. Built-ins and
+            // same-or-older versions stay blocked.
+            let incomingVersion = SemanticVersion(string: package.version)
+            let installedVersion = SemanticVersion(string: duplicate.version)
+            let isNewerVersionOfSamePackage = duplicate.id == package.id
+                && duplicate.sourceMetadata?.kind != "built-in"
+                && incomingVersion != nil
+                && installedVersion != nil
+                && incomingVersion! > installedVersion!
+            if isNewerVersionOfSamePackage {
+                issues.append(issue(
+                    .warning,
+                    .packageUpdate,
+                    "Updates installed capability",
+                    "Replaces \(duplicate.id) \(duplicate.version) with \(package.version). The update imports as draft and needs review before it can run again.",
+                    component: package.id
+                ))
+            } else {
+                issues.append(issue(
+                    .blocker,
+                    .duplicatePackageID,
+                    "Package already installed",
+                    "A capability with ID \(duplicate.id) already exists. Remove it before importing a replacement.",
+                    component: package.id
+                ))
+            }
         }
 
         if let collision = installedPackages.first(where: {
@@ -375,10 +392,31 @@ enum CapabilityPackageValidator {
     }
 
     private static func validateMCPServers(
-        _ servers: [PluginMCPServer],
+        in package: PluginPackage,
         issues: inout [CapabilityPackageValidationIssue]
     ) {
-        for server in servers {
+        for server in package.mcpServers {
+            if let nameReason = MCPEnvironmentKeyPolicy.invalidNameReason(server: server) {
+                let name = displayName(server.displayName, fallback: server.id)
+                issues.append(issue(
+                    .blocker,
+                    .unsafeMCPServer,
+                    "Unsafe MCP server name",
+                    "\(name): \(nameReason).",
+                    component: name
+                ))
+            }
+            let undeclared = MCPEnvironmentKeyPolicy.undeclaredKeys(server: server, package: package)
+            if !undeclared.isEmpty {
+                let name = displayName(server.displayName, fallback: server.id)
+                issues.append(issue(
+                    .blocker,
+                    .unsafeMCPServer,
+                    "MCP server requests undeclared environment keys",
+                    "\(name) requests \(undeclared.joined(separator: ", ")), which this package does not declare via its connectors or skills. A server may only receive environment keys its own package configures.",
+                    component: name
+                ))
+            }
             if let reason = unsafeMCPServerReason(server) {
                 let name = displayName(server.displayName, fallback: server.id)
                 issues.append(issue(

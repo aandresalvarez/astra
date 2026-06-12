@@ -23,6 +23,21 @@ struct CapabilityCatalogActionService {
         self.uninstaller = CapabilityUninstaller(library: library)
     }
 
+    /// Writes the package's shareable source JSON to `url`. The exported
+    /// form resets governance to draft, so a recipient's import always goes
+    /// through their own review — sharing a capability never shares its
+    /// approval.
+    @discardableResult
+    func exportSource(_ package: PluginPackage, to url: URL) throws -> URL {
+        let destination = try CapabilityPackageSourceExporter().export(package, to: url)
+        AppLogger.audit(.workspaceExported, category: "Capabilities", fields: [
+            "source": "capability_source_export",
+            "package_id": package.id,
+            "package_version": package.version
+        ])
+        return destination
+    }
+
     @discardableResult
     func enable(
         _ package: PluginPackage,

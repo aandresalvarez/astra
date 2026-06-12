@@ -211,7 +211,7 @@ final class HeadlessChatHarness {
         permissionPolicy: PermissionPolicy = .restricted,
         liveApprovals: Bool = false
     ) -> AgentRuntimeWorker {
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.timeoutSeconds = 10
         worker.permissionPolicy = permissionPolicy
         // Most scenario fakes assert on argv prompt delivery; live approvals
@@ -238,7 +238,7 @@ final class HeadlessChatHarness {
         copilotPath: String,
         permissionPolicy: PermissionPolicy = .restricted
     ) -> AgentRuntimeWorker {
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.timeoutSeconds = 10
         worker.permissionPolicy = permissionPolicy
         worker.liveApprovalsEnabled = false

@@ -1171,7 +1171,7 @@ struct CopilotWorkerExecutionTests {
         try script.write(to: binURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binURL.path)
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.copilotPath = binURL.path
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
@@ -1231,7 +1231,7 @@ struct CopilotWorkerExecutionTests {
         context.insert(task)
         try context.save()
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.copilotPath = binURL.path
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
@@ -1298,7 +1298,7 @@ struct CopilotWorkerExecutionTests {
         try script.write(to: binURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binURL.path)
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.copilotPath = binURL.path
         worker.copilotHome = copilotHomeURL.path
         worker.timeoutSeconds = 30
@@ -1360,7 +1360,7 @@ struct CopilotWorkerExecutionTests {
         try script.write(to: binURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binURL.path)
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.copilotPath = binURL.path
         worker.copilotHome = copilotHomeURL.path
         worker.timeoutSeconds = 30
@@ -1430,7 +1430,7 @@ struct CopilotWorkerExecutionTests {
         try script.write(to: binURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binURL.path)
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.copilotPath = binURL.path
         worker.copilotHome = copilotHomeURL.path
         worker.timeoutSeconds = 30
@@ -1508,7 +1508,7 @@ struct CopilotWorkerExecutionTests {
         context.insert(task)
         try context.save()
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.copilotPath = binURL.path
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
@@ -1558,7 +1558,7 @@ struct CopilotWorkerExecutionTests {
         context.insert(task)
         try context.save()
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.copilotPath = binURL.path
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
@@ -1633,7 +1633,7 @@ struct CopilotWorkerExecutionTests {
         context.insert(task)
         try context.save()
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.copilotPath = binURL.path
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
@@ -1703,7 +1703,7 @@ struct CopilotWorkerExecutionTests {
         context.insert(task)
         try context.save()
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.copilotPath = binURL.path
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
@@ -1780,7 +1780,7 @@ struct CopilotWorkerExecutionTests {
         TaskPolicyStore.recordSelection(level: .autonomous, task: task, modelContext: context, source: "test")
         try context.save()
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.copilotPath = binURL.path
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
@@ -1882,7 +1882,7 @@ struct CopilotWorkerExecutionTests {
         TaskPolicyStore.recordSelection(level: .autonomous, task: task, modelContext: context, source: "test")
         try context.save()
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.copilotPath = binURL.path
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30

@@ -115,8 +115,29 @@ enum AgentRuntimeLaunchPreflight {
             task.title,
             contextText
         ].joined(separator: "\n")
+        let scopedConnectors = TaskCapabilityResolver(task: task).promptScope(contextText: contextText).connectors
+        // Service-agnostic credential presence check. Non-blocking — the
+        // agent may not need every projected connector — but a connector
+        // with declared, unloadable credentials must not fail silently.
+        let missingCredentials = ConnectorRuntimeProjection(connectors: scopedConnectors)
+            .missingCredentialKeysByConnector()
+        if !missingCredentials.isEmpty {
+            var warningFields = CapabilityAudit.taskContextFields(
+                source: "connector_credential_preflight",
+                task: task,
+                scope: .providerLaunch(contextText: contextText)
+            )
+            warningFields["phase"] = phase
+            warningFields["result"] = "credentials_missing"
+            warningFields["connector_names"] = CapabilityAudit.compactNames(missingCredentials.map(\.connector.name))
+            warningFields["missing_key_names"] = missingCredentials
+                .flatMap(\.missingKeys)
+                .sorted()
+                .joined(separator: ",")
+            AppLogger.audit(.connectorTested, category: "Worker", taskID: task.id, fields: warningFields, level: .warning, fieldMaxLength: 240)
+        }
         let connectors = ConnectorPreflightService.connectorsRequiringPreflight(
-            from: TaskCapabilityResolver(task: task).promptScope(contextText: contextText).connectors,
+            from: scopedConnectors,
             contextText: fullContext
         )
         let traceID = AuditTrace.make("connector-preflight")
@@ -300,7 +321,28 @@ enum AgentRuntimeLaunchPreflight {
             fields[key] = value
         }
 
-        guard !issues.isEmpty else {
+        // MCP servers are materialized only for runtimes that support them;
+        // for those, a stdio server whose command can't be resolved would
+        // fail opaquely mid-run, so it blocks the launch here instead.
+        let runtime = AgentRuntimeID(rawValue: task.runtimeID ?? "") ?? TaskExecutionDefaults.runtime
+        let mcpIssues: [MCPRuntimeProjection.PreflightIssue]
+        if AgentRuntimeAdapterRegistry.descriptor(for: runtime).supportsMCPServers {
+            mcpIssues = MCPRuntimeProjection.preflightIssues(
+                servers: MCPRuntimeProjection.enabledServers(
+                    for: task.workspace,
+                    packages: CapabilityRuntimeResourceMatcher.packageDefinitions(),
+                    approvalRecords: CapabilityApprovalStore().records()
+                )
+            )
+        } else {
+            mcpIssues = []
+        }
+        if !mcpIssues.isEmpty {
+            fields["result"] = "mcp_server_executable_missing"
+            fields["mcp_issue_count"] = String(mcpIssues.count)
+        }
+
+        guard !issues.isEmpty || !mcpIssues.isEmpty else {
             fields["diagnostic_result"] = AgentRuntimeLaunchPreflightResult.Status.capabilityRuntimeResourcesPassed.rawValue
             AppLogger.audit(.capabilityRuntimeIntegrity, category: "Worker", taskID: task.id, fields: fields, level: .debug, fieldMaxLength: 240)
             return AgentRuntimeLaunchPreflightResult(
@@ -308,6 +350,26 @@ enum AgentRuntimeLaunchPreflight {
                 phase: phase,
                 reason: nil,
                 detail: nil,
+                auditFields: fields
+            )
+        }
+
+        if issues.isEmpty {
+            let detail = mcpIssues.map(\.message).joined(separator: "\n")
+            fields["diagnostic_result"] = AgentRuntimeLaunchPreflightResult.Status.capabilityRuntimeResourcesMissing.rawValue
+            AppLogger.audit(.capabilityRuntimeIntegrity, category: "Worker", taskID: task.id, fields: fields, level: .error, fieldMaxLength: 240)
+            finishPreLaunchFailure(
+                task: task,
+                run: run,
+                modelContext: modelContext,
+                reason: "mcp_server_executable_missing",
+                payload: detail
+            )
+            return AgentRuntimeLaunchPreflightResult(
+                status: .capabilityRuntimeResourcesMissing,
+                phase: phase,
+                reason: "mcp_server_executable_missing",
+                detail: detail,
                 auditFields: fields
             )
         }
