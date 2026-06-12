@@ -320,6 +320,34 @@ struct CapabilityRailPresentationTests {
         ) == "Workspace root only")
     }
 
+    @Test("workspace folder detail rows show folder names instead of paths")
+    func workspaceFolderDetailRowsShowFolderNamesInsteadOfPaths() {
+        let rootDescriptor = WorkspacePathPresentation.descriptors(
+            primaryPath: "/Users/alvaro/Documents/Astra Dev/Workspaces/git",
+            additionalPaths: []
+        )[0]
+        let rootRow = WorkspaceSetupChecklistPresentation.folderDetailRow(for: rootDescriptor)
+
+        #expect(rootRow.title == "git")
+        #expect(rootRow.subtitle == "Workspace root")
+        #expect(rootRow.path == "/Users/alvaro/Documents/Astra Dev/Workspaces/git")
+        #expect(rootRow.copyPathHelp == "Copy folder path")
+        #expect(rootRow.canRemove == false)
+        #expect(rootRow.showsPathInBody == false)
+
+        let additionalDescriptor = WorkspaceSetupChecklistPresentation.userConfiguredFolderDescriptors([
+            "/Users/alvaro/Documents/Code/MacTools"
+        ])[0]
+        let additionalRow = WorkspaceSetupChecklistPresentation.folderDetailRow(for: additionalDescriptor)
+
+        #expect(additionalRow.title == "MacTools")
+        #expect(additionalRow.subtitle == "Additional folder")
+        #expect(additionalRow.path == "/Users/alvaro/Documents/Code/MacTools")
+        #expect(additionalRow.copyPathHelp == "Copy folder path")
+        #expect(additionalRow.canRemove == true)
+        #expect(additionalRow.showsPathInBody == false)
+    }
+
     @Test("workspace folder setup counts only added paths")
     func workspaceFolderSetupCountsOnlyAddedPaths() {
         #expect(WorkspaceSetupChecklistPresentation.userConfiguredFolderCount([

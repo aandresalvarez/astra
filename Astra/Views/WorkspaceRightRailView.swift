@@ -37,6 +37,15 @@ private enum WorkspaceSetupItem: Hashable {
     case routines
 }
 
+struct WorkspaceFolderDetailRowPresentation: Equatable {
+    let title: String
+    let subtitle: String
+    let path: String
+    let copyPathHelp: String
+    let canRemove: Bool
+    let showsPathInBody: Bool
+}
+
 enum WorkspaceSetupChecklistPresentation {
     static let sectionTitle = "Workspace setup"
     static let missingGroupTitle = "Needs setup"
@@ -59,6 +68,10 @@ enum WorkspaceSetupChecklistPresentation {
     static let addFolderActionTitle = "Add folder"
     static let workspaceRootReferenceTitle = "Workspace root"
     static let workspaceRootReferenceRole = "Reference"
+    static let workspaceRootFolderSubtitle = "Workspace root"
+    static let additionalFolderSubtitle = "Additional folder"
+    static let copyFolderPathHelp = "Copy folder path"
+    static let showsFolderPathInDetailRows = false
     static let missingWorkspaceRootSubtitle = "No workspace root selected."
     static let referenceOnlyFolderSubtitle = "Workspace root only"
 
@@ -101,6 +114,17 @@ enum WorkspaceSetupChecklistPresentation {
         return additionalPaths.filter { rawPath in
             WorkspacePathPresentation.standardizedPath(rawPath) != removedPath
         }
+    }
+
+    static func folderDetailRow(for descriptor: WorkspacePathDescriptor) -> WorkspaceFolderDetailRowPresentation {
+        WorkspaceFolderDetailRowPresentation(
+            title: descriptor.title,
+            subtitle: descriptor.role == .primary ? workspaceRootFolderSubtitle : additionalFolderSubtitle,
+            path: descriptor.path,
+            copyPathHelp: copyFolderPathHelp,
+            canRemove: descriptor.role == .additional,
+            showsPathInBody: showsFolderPathInDetailRows
+        )
     }
 
     static func folderState(primaryPath: String, additionalPaths: [String]) -> State {
@@ -1533,6 +1557,10 @@ struct WorkspaceRightRailView: View {
         VStack(alignment: .leading, spacing: 8) {
             let isWorkspaceRootMissing = WorkspaceSetupChecklistPresentation
                 .shouldShowWorkspaceRootMissingMessage(primaryPath: workspace.primaryPath)
+            let rootDescriptor = WorkspacePathPresentation.descriptors(
+                primaryPath: workspace.primaryPath,
+                additionalPaths: []
+            ).first
             let additionalDescriptors = WorkspaceSetupChecklistPresentation
                 .userConfiguredFolderDescriptors(workspace.additionalPaths)
 
@@ -1540,22 +1568,16 @@ struct WorkspaceRightRailView: View {
                 setupEmptyDetail(WorkspaceSetupChecklistPresentation.missingWorkspaceRootSubtitle)
             }
 
-            if !isWorkspaceRootMissing {
+            if !isWorkspaceRootMissing, let rootDescriptor {
                 setupFolderRow(
-                    title: WorkspaceSetupChecklistPresentation.workspaceRootReferenceTitle,
-                    roleLabel: WorkspaceSetupChecklistPresentation.workspaceRootReferenceRole,
-                    path: workspace.primaryPath,
-                    canRemove: false,
+                    WorkspaceSetupChecklistPresentation.folderDetailRow(for: rootDescriptor),
                     removeAction: nil
                 )
             }
 
             ForEach(additionalDescriptors) { descriptor in
                 setupFolderRow(
-                    title: descriptor.title,
-                    roleLabel: descriptor.roleLabel,
-                    path: descriptor.path,
-                    canRemove: true,
+                    WorkspaceSetupChecklistPresentation.folderDetailRow(for: descriptor),
                     removeAction: { removeAdditionalPaths(matching: descriptor.path) }
                 )
             }
@@ -1689,41 +1711,40 @@ struct WorkspaceRightRailView: View {
     }
 
     private func setupFolderRow(
-        title: String,
-        roleLabel: String,
-        path: String,
-        canRemove: Bool = false,
+        _ row: WorkspaceFolderDetailRowPresentation,
         removeAction: (() -> Void)? = nil
     ) -> some View {
         HStack(alignment: .center, spacing: 7) {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
-                    Text(title)
-                        .font(Stanford.caption(10).weight(.semibold))
-                        .foregroundStyle(.secondary)
+                    Text(row.title)
+                        .font(Stanford.caption(11).weight(.semibold))
+                        .foregroundStyle(.primary)
                         .lineLimit(1)
                         .truncationMode(.middle)
 
-                    Text(roleLabel)
+                    Text(row.subtitle)
                         .font(Stanford.caption(9).weight(.medium))
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                 }
 
-                Text(compactPath(path))
-                    .font(Stanford.mono(10))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(path)
+                if row.showsPathInBody {
+                    Text(compactPath(row.path))
+                        .font(Stanford.mono(10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
             .layoutPriority(1)
+            .help(row.path)
 
             Spacer(minLength: 0)
 
             Button {
                 NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(path, forType: .string)
+                NSPasteboard.general.setString(row.path, forType: .string)
             } label: {
                 Image(systemName: "doc.on.doc")
                     .font(Stanford.ui(10))
@@ -1731,13 +1752,13 @@ struct WorkspaceRightRailView: View {
                     .frame(width: 18, height: 22)
             }
             .buttonStyle(.plain)
-            .help("Copy path")
+            .help(row.copyPathHelp)
 
-            if canRemove, let removeAction {
+            if row.canRemove, let removeAction {
                 Button {
                     pendingRailDeletion = PendingRailDeletion(
                         title: "Remove folder?",
-                        message: "\(compactPath(path)) will no longer be available to the agent. The folder itself is not deleted.",
+                        message: "\(compactPath(row.path)) will no longer be available to the agent. The folder itself is not deleted.",
                         confirmTitle: "Remove",
                         perform: removeAction
                     )
@@ -1748,7 +1769,7 @@ struct WorkspaceRightRailView: View {
                         .frame(width: 18, height: 22)
                 }
                 .buttonStyle(.plain)
-                .help("Remove path")
+                .help("Remove folder")
             }
         }
         .padding(.horizontal, 7)
