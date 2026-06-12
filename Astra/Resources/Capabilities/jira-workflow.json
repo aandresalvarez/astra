@@ -60,7 +60,7 @@
   "iconDescriptor" : {
     "fallbackSystemName" : "list.bullet.clipboard",
     "kind" : "asset",
-    "monochromePreferred" : false,
+    "monochromePreferred" : true,
     "value" : "assets/jira.svg"
   },
   "id" : "jira-workflow",
