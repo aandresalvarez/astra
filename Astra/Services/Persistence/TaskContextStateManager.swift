@@ -634,8 +634,7 @@ enum TaskContextStateManager {
     @MainActor
     private static func updateDerivedFields(_ state: inout TaskContextState, task: AgentTask, latestRun: TaskRun?) {
         let planState = TaskPlanService.reconstruct(for: task)
-        let artifactReconciliation = TaskArtifactPersistenceService.reconcileTaskOutputArtifacts(for: task)
-        let discoveredTaskOutputFiles = artifactReconciliation.discoveredFiles
+        let discoveredTaskOutputFiles = TaskOutputDiscovery.files(for: task)
         state.mode = inferredMode(task: task, planState: planState, latestRun: latestRun)
         state.startingRequest = firstNonEmpty(
             firstConversationRequest(for: task),
