@@ -128,7 +128,8 @@ enum WorkspaceAppStudioContextBuilder {
     ) -> [WorkspaceAppStudioEventExcerpt] {
         events
             .filter { event in
-                event.type == "user.message" || event.type == "agent.response"
+                event.hasType(TaskEventTypes.Conversation.userMessage) ||
+                    event.hasType(TaskEventTypes.Conversation.agentResponse)
             }
             .sorted { lhs, rhs in
                 if lhs.timestamp != rhs.timestamp {

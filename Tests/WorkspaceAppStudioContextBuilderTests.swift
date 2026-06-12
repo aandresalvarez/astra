@@ -23,13 +23,13 @@ struct WorkspaceAppStudioContextBuilderTests {
         task.events = [
             studioEvent(
                 task: task,
-                type: "user.message",
+                eventType: TaskEventTypes.Conversation.userMessage,
                 payload: "Build this from sk-1234567890abcdef.",
                 timestamp: Date(timeIntervalSince1970: 2_001)
             ),
             studioEvent(
                 task: task,
-                type: "agent.response",
+                eventType: TaskEventTypes.Conversation.agentResponse,
                 payload: "I will keep password: hunter2 out of generated app context.",
                 timestamp: Date(timeIntervalSince1970: 2_002)
             )
@@ -134,9 +134,10 @@ struct WorkspaceAppStudioContextBuilderTests {
             workspace: workspace,
             updatedAt: Date(timeIntervalSince1970: 3_000),
             events: [
-                ("agent.response", "Second newest event", 3_002),
-                ("user.message", "Newest event", 3_003),
-                ("agent.response", "Older event", 3_001)
+                (TaskEventTypes.Conversation.agentResponse, "Second newest event", 3_002),
+                (TaskEventTypes.Tool.result, "Ignored tool event", 3_004),
+                (TaskEventTypes.Conversation.userMessage, "Newest event", 3_003),
+                (TaskEventTypes.Conversation.agentResponse, "Older event", 3_001)
             ],
             artifacts: [
                 ("summary.md", "Summary content", 3_002),
@@ -148,7 +149,7 @@ struct WorkspaceAppStudioContextBuilderTests {
             goal: "Earlier workflow",
             workspace: workspace,
             updatedAt: Date(timeIntervalSince1970: 2_000),
-            events: [("user.message", "Middle event", 2_001)],
+            events: [(TaskEventTypes.Conversation.userMessage, "Middle event", 2_001)],
             artifacts: [("middle.csv", "Middle content", 2_001)]
         )
         let oldest = task(
@@ -156,7 +157,7 @@ struct WorkspaceAppStudioContextBuilderTests {
             goal: "Stale workflow",
             workspace: workspace,
             updatedAt: Date(timeIntervalSince1970: 1_000),
-            events: [("user.message", "Old event", 1_001)],
+            events: [(TaskEventTypes.Conversation.userMessage, "Old event", 1_001)],
             artifacts: [("old.txt", "Old content", 1_001)]
         )
         workspace.tasks = [middle, oldest, newest]
@@ -186,11 +187,11 @@ struct WorkspaceAppStudioContextBuilderTests {
 
 private func studioEvent(
     task: AgentTask,
-    type: String,
+    eventType: TaskEventType,
     payload: String,
     timestamp: Date
 ) -> TaskEvent {
-    let event = TaskEvent(task: task, type: type, payload: payload)
+    let event = TaskEvent(task: task, eventType: eventType, payload: payload)
     event.timestamp = timestamp
     return event
 }
@@ -229,13 +230,13 @@ private func task(
     goal: String,
     workspace: Workspace,
     updatedAt: Date,
-    events: [(String, String, TimeInterval)],
+    events: [(TaskEventType, String, TimeInterval)],
     artifacts: [(String, String, TimeInterval)]
 ) -> AgentTask {
     let task = AgentTask(title: title, goal: goal, workspace: workspace)
     task.updatedAt = updatedAt
     task.events = events.map { type, payload, timestamp in
-        studioEvent(task: task, type: type, payload: payload, timestamp: Date(timeIntervalSince1970: timestamp))
+        studioEvent(task: task, eventType: type, payload: payload, timestamp: Date(timeIntervalSince1970: timestamp))
     }
     task.artifacts = artifacts.map { fileName, content, timestamp in
         let artifact = Artifact(

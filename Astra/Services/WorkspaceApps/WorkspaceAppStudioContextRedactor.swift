@@ -2,8 +2,13 @@ import Foundation
 
 enum WorkspaceAppStudioContextRedactor {
     private struct Rule {
-        var pattern: String
-        var replacement: String
+        let pattern: String
+        let replacement: String
+    }
+
+    private struct CompiledRule {
+        let regex: NSRegularExpression
+        let replacement: String
     }
 
     private static let rules: [Rule] = [
@@ -37,19 +42,24 @@ enum WorkspaceAppStudioContextRedactor {
         )
     ]
 
+    private static let compiledRules: [CompiledRule] = rules.map { rule in
+        do {
+            return CompiledRule(
+                regex: try NSRegularExpression(pattern: rule.pattern, options: []),
+                replacement: rule.replacement
+            )
+        } catch {
+            preconditionFailure("Invalid Workspace App Studio redaction pattern '\(rule.pattern)': \(error)")
+        }
+    }
+
     static func redact(_ rawValue: String) -> String {
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
 
-        return rules.reduce(trimmed) { current, rule in
-            guard let regex = try? NSRegularExpression(
-                pattern: rule.pattern,
-                options: []
-            ) else {
-                return current
-            }
+        return compiledRules.reduce(trimmed) { current, rule in
             let range = NSRange(current.startIndex..<current.endIndex, in: current)
-            return regex.stringByReplacingMatches(
+            return rule.regex.stringByReplacingMatches(
                 in: current,
                 options: [],
                 range: range,
