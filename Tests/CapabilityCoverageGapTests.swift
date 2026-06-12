@@ -166,4 +166,51 @@ struct DisableConnectorSharedClaimTests {
         #expect(!workspace.enabledCapabilityIDs.contains("alpha-conn"))
         #expect(workspace.enabledCapabilityIDs.contains("beta-conn"))
     }
+
+    @Test("Disabling a package with no workspace-scoped resources still persists")
+    func globalOnlyDisablePersists() throws {
+        let root = try disableTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = CapabilityLibrary(directory: root)
+        let schema = ASTRASchema.current
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
+        let context = container.mainContext
+        let workspace = Workspace(name: "Global Only", primaryPath: root.path)
+        context.insert(workspace)
+
+        // Skill-only package → installer creates a global skill, no
+        // workspace-scoped resource, so disable stages no keychain cleanup.
+        var package = PluginPackage(
+            id: "global-only", name: "Global Only", icon: "star", description: "d",
+            author: "a", category: "c", tags: [], version: "1.0.0",
+            skills: [PluginSkill(
+                name: "Global Skill", icon: "star", description: "s",
+                allowedTools: ["Read"], disallowedTools: [], customTools: [],
+                behaviorInstructions: "b", environmentKeys: [], environmentValues: []
+            )],
+            connectors: [], localTools: [], templates: []
+        )
+        package.governance = .builtInApproved(riskLevel: .low)
+        let installer = CapabilityInstaller(library: library, appVersion: SemanticVersion(1, 0, 0))
+        _ = try installer.install(package, into: workspace, modelContext: context)
+        #expect(workspace.enabledCapabilityIDs.contains("global-only"))
+
+        var persistCount = 0
+        CapabilityActivationDisabler().disable(
+            package,
+            in: workspace,
+            capabilities: WorkspaceCapabilities(
+                workspace: workspace,
+                globalSkills: try context.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true }))
+            ),
+            modelContext: context,
+            availablePackages: [package],
+            persist: { _, _ in persistCount += 1; return true }
+        )
+
+        // The save runs even though no keychain-backed resource was deleted.
+        #expect(persistCount == 1)
+        #expect(!workspace.enabledCapabilityIDs.contains("global-only"))
+    }
 }

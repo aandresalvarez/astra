@@ -39,6 +39,7 @@ enum CapabilityGovernanceNormalizer {
         package.governance.approvedAt = nil
         if package.governance.policyNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             package.governance.policyNotes = defaultDraftPolicyNote
+            changed = true
         }
         return changed
     }

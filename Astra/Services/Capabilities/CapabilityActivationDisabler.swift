@@ -90,9 +90,12 @@ struct CapabilityActivationDisabler {
 
         workspace.updatedAt = Date()
 
-        if pendingKeychainCleanups.isEmpty {
-            return result
-        }
+        // Always persist: disable mutates the workspace membership arrays
+        // (enabledCapabilityIDs / enabled-global IDs) even when no
+        // keychain-backed workspace resource is deleted — e.g. global-only
+        // or MCP-only packages. Skipping the save there would make the
+        // disable look applied in memory but never reach SwiftData / the
+        // exported config. Keychain cleanup stays gated on a successful save.
         if persist(workspace, modelContext) {
             pendingKeychainCleanups.forEach { $0() }
         } else {

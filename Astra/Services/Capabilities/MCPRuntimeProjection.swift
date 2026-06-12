@@ -86,7 +86,11 @@ enum MCPRuntimeProjection {
         guard let workspace else { return [] }
         let enabledPackageIDs = Set(workspace.enabledCapabilityIDs)
         guard !enabledPackageIDs.isEmpty else { return [] }
-        let context = CapabilityCatalogPolicyContext.workspaceUser(
+        // The run executes on behalf of the local user, who is the admin of
+        // their own catalog (single-user model). A non-admin context would
+        // drop an admin-only package's servers at launch even though the
+        // package is enabled — use the canonical currentUser factory.
+        let context = CapabilityCatalogPolicyContext.currentUser(
             workspace: workspace,
             approvalRecords: approvalRecords
         )
