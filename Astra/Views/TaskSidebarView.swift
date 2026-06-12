@@ -414,6 +414,7 @@ struct TaskSidebarView: View {
             }
         }
         .onAppear {
+            loadSidebarDisclosure()
             rebuildTaskIndex()
             rebuildSchedules()
             updateNewTaskNudge()
@@ -523,6 +524,7 @@ struct TaskSidebarView: View {
                 withAnimation(disclosureAnimation) {
                     isPinnedExpanded.toggle()
                 }
+                persistSidebarDisclosure()
             } label: {
                 HStack(spacing: 5) {
                     Text("Pinned")
@@ -853,6 +855,7 @@ struct TaskSidebarView: View {
                     withAnimation(disclosureAnimation) {
                         isSchedulesExpanded.toggle()
                     }
+                    persistSidebarDisclosure()
                 } label: {
                     HStack(spacing: 5) {
                         Text("Routines")
@@ -936,6 +939,7 @@ struct TaskSidebarView: View {
                     withAnimation(disclosureAnimation) {
                         isWorkspacesExpanded.toggle()
                     }
+                    persistSidebarDisclosure()
                 } label: {
                     HStack(spacing: 5) {
                         Text("Workspaces")
@@ -1278,12 +1282,41 @@ struct TaskSidebarView: View {
     private func expandWorkspace(_ workspace: Workspace) {
         collapsedWorkspaceIDs.remove(workspace.id)
         expandedWorkspaceIDs.insert(workspace.id)
+        persistSidebarDisclosure()
     }
 
     private func collapseWorkspace(_ workspace: Workspace) {
         expandedWorkspaceIDs.remove(workspace.id)
         collapsedWorkspaceIDs.insert(workspace.id)
         expandedWorkspaceTaskLists.remove(workspace.id)
+        persistSidebarDisclosure()
+    }
+
+    // Persist section and per-workspace expand/collapse choices so the sidebar
+    // reopens the way the user left it. Momentary state (drops, rename, nudge)
+    // stays ephemeral. UserDefaults-backed, not @AppStorage (fitness ratchet).
+    private func loadSidebarDisclosure() {
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: "taskSidebar.pinnedExpanded") != nil {
+            isPinnedExpanded = defaults.bool(forKey: "taskSidebar.pinnedExpanded")
+        }
+        if defaults.object(forKey: "taskSidebar.workspacesExpanded") != nil {
+            isWorkspacesExpanded = defaults.bool(forKey: "taskSidebar.workspacesExpanded")
+        }
+        if defaults.object(forKey: "taskSidebar.schedulesExpanded") != nil {
+            isSchedulesExpanded = defaults.bool(forKey: "taskSidebar.schedulesExpanded")
+        }
+        collapsedWorkspaceIDs = Set((defaults.array(forKey: "taskSidebar.collapsedWorkspaceIDs") as? [String] ?? []).compactMap(UUID.init))
+        expandedWorkspaceIDs = Set((defaults.array(forKey: "taskSidebar.expandedWorkspaceIDs") as? [String] ?? []).compactMap(UUID.init))
+    }
+
+    private func persistSidebarDisclosure() {
+        let defaults = UserDefaults.standard
+        defaults.set(isPinnedExpanded, forKey: "taskSidebar.pinnedExpanded")
+        defaults.set(isWorkspacesExpanded, forKey: "taskSidebar.workspacesExpanded")
+        defaults.set(isSchedulesExpanded, forKey: "taskSidebar.schedulesExpanded")
+        defaults.set(collapsedWorkspaceIDs.map(\.uuidString), forKey: "taskSidebar.collapsedWorkspaceIDs")
+        defaults.set(expandedWorkspaceIDs.map(\.uuidString), forKey: "taskSidebar.expandedWorkspaceIDs")
     }
 
     private func sidebarShowMoreButton(title: String, action: @escaping () -> Void) -> some View {
@@ -1730,7 +1763,7 @@ private struct WorkspaceRowActions: View {
             if workspace.isStarred {
                 Image(systemName: "star.fill")
                     .font(Stanford.ui(10, weight: .semibold))
-                    .foregroundStyle(Stanford.lagunita)
+                    .foregroundStyle(.secondary)
                     .frame(width: 16, height: 22)
                     .accessibilityLabel("Starred")
             }

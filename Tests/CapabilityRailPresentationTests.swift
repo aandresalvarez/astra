@@ -230,7 +230,7 @@ struct CapabilityRailPresentationTests {
         #expect(WorkspaceGitPanelPresentation.repositorySelectorRowMinHeight == 50)
         #expect(WorkspaceGitPanelPresentation.detailRowMinHeight == 44)
         #expect(WorkspaceGitPanelPresentation.detailRowMinHeight < CapabilityRailLayout.setupRowMinHeight)
-        #expect(WorkspaceGitPanelPresentation.showDetailsActionTitle == "Show all")
+        #expect(WorkspaceGitPanelPresentation.showDetailsActionTitle == "Show controls")
         #expect(WorkspaceGitPanelPresentation.hideDetailsActionTitle == "Hide")
     }
 

@@ -109,7 +109,7 @@ struct AgentPolicySheet: View {
                     factRow("Config source", value: render.configOwnership.displayName)
                     factRow("Enforcement", value: render.enforcementTiers.map(\.displayName).joined(separator: ", "))
                     factRow("Broad provider permissions", value: render.usesBroadProviderPermissions ? "Yes" : "No")
-                    policyListRow("Provider arguments", values: render.cliArgumentsSummary, color: Stanford.lagunita)
+                    policyListRow("Provider arguments", values: render.cliArgumentsSummary, color: Stanford.coolGrey)
                     Text(render.settingsSummary)
                         .font(Stanford.caption(12))
                         .foregroundStyle(.secondary)
@@ -702,6 +702,17 @@ struct AgentPolicySheet: View {
         .padding(.vertical, 3)
     }
 
+    /// Tint the non-tappable Ask-coverage glyph by how strong the guarantee
+    /// actually is — never the interactive accent, so a weak guarantee doesn't
+    /// read as a green light.
+    private func askCoverageTint(_ tier: AskCoverageBadge.Tier) -> Color {
+        switch tier {
+        case .guaranteed: Stanford.statusHealthy
+        case .bestEffort: Stanford.statusWarn
+        case .providerManaged: Stanford.statusInfo
+        }
+    }
+
     /// Honest, per-(runtime, policy) coverage statement so the sheet never
     /// implies the same Ask guarantee on every runtime. Derived from the same
     /// tier + sandbox logic the worker uses.
@@ -715,7 +726,7 @@ struct AgentPolicySheet: View {
             )
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: badge.symbolName)
-                    .foregroundStyle(Stanford.lagunita)
+                    .foregroundStyle(askCoverageTint(badge.tier))
                     .frame(width: 16)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Ask coverage: \(badge.label)")
