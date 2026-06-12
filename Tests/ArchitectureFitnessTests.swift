@@ -33,7 +33,8 @@ struct ArchitectureFitnessTests {
             "Runtime",
             "Settings",
             "Tasks",
-            "Validation"
+            "Validation",
+            "WorkspaceApps"
         ])
     }
 
