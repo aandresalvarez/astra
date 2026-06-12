@@ -71,6 +71,17 @@ enum WorkspaceSetupChecklistPresentation {
         configured == 0 ? "Empty" : "\(configured) of \(total) configured"
     }
 
+    /// Count metadata shown beneath the noun-first configured summary title.
+    static func configuredCountSubtitle(_ count: Int) -> String {
+        "\(count) configured"
+    }
+
+    /// Disclosure verb that names how many rows it reveals, so the affordance is
+    /// honest about its payload. Only ever rendered for count >= 2.
+    static func showAllActionTitle(_ count: Int) -> String {
+        "Show all (\(count))"
+    }
+
     static func configuredPreview(_ names: [String], limit: Int = 3) -> String {
         let cleanNames = names
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -148,6 +159,9 @@ struct WorkspaceRightRailView: View {
     @State private var newMemoryText = ""
     @State private var isMemoryComposerVisible = false
     @State private var expandedWorkspaceSetupItems: Set<WorkspaceSetupItem> = []
+    // Removing a configured folder or saved memory is destructive and was
+    // previously one stray tap away with no undo — gate both behind a confirm.
+    @State private var pendingRailDeletion: PendingRailDeletion?
     @State private var approvedCapabilityPackages: [PluginPackage] = PluginCatalog.builtInPackages
     @State private var capabilityError: String?
     @State private var capabilityPrerequisiteStatuses: [String: HealthStatus] = [:]
@@ -343,6 +357,14 @@ struct WorkspaceRightRailView: View {
     private var configurePanel: some View {
         let snapshot = capabilityRailSnapshot
 
+        // Once setup is complete the panel leads with the capabilities the
+        // workspace actually uses; while setup is pending it stays directly under
+        // the repository so onboarding is not buried. See sectionOrder(_:).
+        let order = WorkspaceRightRailPresentation.sectionOrder(hasPendingSetup: workspaceSetupMissingCount > 0)
+        let capabilitiesIndex = order.firstIndex(of: CapabilityRailSectionPresentation.sectionTitle) ?? Int.max
+        let setupIndex = order.firstIndex(of: WorkspaceSetupChecklistPresentation.sectionTitle) ?? Int.max
+        let leadWithCapabilities = capabilitiesIndex < setupIndex
+
         return VStack(alignment: .leading, spacing: panelSpacing) {
             if hasGitRepositories {
                 floatingContextSection {
@@ -356,12 +378,17 @@ struct WorkspaceRightRailView: View {
                 }
             }
 
-            floatingContextSection {
-                workspaceSetupChecklistPanel
+            if leadWithCapabilities {
+                capabilityHealthPanel(snapshot)
+                floatingContextSection {
+                    workspaceSetupChecklistPanel
+                }
+            } else {
+                floatingContextSection {
+                    workspaceSetupChecklistPanel
+                }
+                capabilityHealthPanel(snapshot)
             }
-
-            capabilityHealthPanel(snapshot)
-
         }
         .tint(Stanford.lagunita)
         .onAppear {
@@ -383,6 +410,15 @@ struct WorkspaceRightRailView: View {
             if !sshConnections.isEmpty {
                 isAccessCollapsed = false
             }
+        }
+        .onChange(of: isConfiguredWorkspaceSetupExpanded) { _, value in
+            RailDisclosureStore.setBool(value, workspaceDisclosureID, .configuredSetupExpanded)
+        }
+        .onChange(of: isReadyCapabilitiesExpanded) { _, value in
+            RailDisclosureStore.setBool(value, workspaceDisclosureID, .readyCapabilitiesExpanded)
+        }
+        .onChange(of: isDraftCapabilitiesExpanded) { _, value in
+            RailDisclosureStore.setBool(value, workspaceDisclosureID, .draftCapabilitiesExpanded)
         }
         .alert("Capability could not be updated", isPresented: Binding(
             get: { capabilityError != nil },
@@ -462,16 +498,23 @@ struct WorkspaceRightRailView: View {
     private var capabilityAddButton: some View {
         if let onManageCapabilities {
             Button(action: onManageCapabilities) {
-                VStack(alignment: .trailing, spacing: 1) {
-                    Text(CapabilityRailSectionPresentation.addActionTitle)
-                        .font(Stanford.ui(CapabilityRailLayout.sectionActionFontSize, weight: .semibold))
-                        .lineLimit(1)
+                HStack(spacing: 4) {
+                    if CapabilityRailSectionPresentation.addActionShowsPlusIcon {
+                        Image(systemName: "plus")
+                            .font(Stanford.ui(CapabilityRailLayout.sectionActionFontSize, weight: .semibold))
+                    }
 
-                    if !CapabilityRailSectionPresentation.addActionSubtitle.isEmpty {
-                        Text(CapabilityRailSectionPresentation.addActionSubtitle)
-                            .font(Stanford.caption(CapabilityRailLayout.sectionActionSubtitleFontSize))
-                            .foregroundStyle(.secondary)
+                    VStack(alignment: .trailing, spacing: 1) {
+                        Text(CapabilityRailSectionPresentation.addActionTitle)
+                            .font(Stanford.ui(CapabilityRailLayout.sectionActionFontSize, weight: .semibold))
                             .lineLimit(1)
+
+                        if !CapabilityRailSectionPresentation.addActionSubtitle.isEmpty {
+                            Text(CapabilityRailSectionPresentation.addActionSubtitle)
+                                .font(Stanford.caption(CapabilityRailLayout.sectionActionSubtitleFontSize))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
                     }
                 }
                 .foregroundStyle(Stanford.lagunita)
@@ -507,8 +550,8 @@ struct WorkspaceRightRailView: View {
                         items: snapshot.readyItems,
                         style: .ready,
                         isExpanded: $isReadyCapabilitiesExpanded,
-                        summaryTitle: CapabilityRailSectionPresentation.readySummaryTitle(count: snapshot.readyItems.count),
-                        summarySubtitle: capabilityPreview(snapshot.readyItems)
+                        summaryTitle: capabilityPreview(snapshot.readyItems),
+                        summarySubtitle: CapabilityRailSectionPresentation.readySummarySubtitle(count: snapshot.readyItems.count)
                     )
                 }
 
@@ -518,8 +561,8 @@ struct WorkspaceRightRailView: View {
                         items: snapshot.draftItems,
                         style: .draft,
                         isExpanded: $isDraftCapabilitiesExpanded,
-                        summaryTitle: CapabilityRailSectionPresentation.draftSummaryTitle(count: snapshot.draftItems.count),
-                        summarySubtitle: capabilityPreview(snapshot.draftItems)
+                        summaryTitle: capabilityPreview(snapshot.draftItems),
+                        summarySubtitle: CapabilityRailSectionPresentation.draftSummarySubtitle(count: snapshot.draftItems.count)
                     )
                 }
             }
@@ -536,21 +579,12 @@ struct WorkspaceRightRailView: View {
         case .attention:
             return "exclamationmark.triangle.fill"
         case .ready:
-            return "cloud"
+            return "checkmark.circle"
         case .draft:
             return "doc.text"
         }
     }
 
-    private func capabilitySummaryIconPresentation(
-        for style: CapabilityRailGroupStyle,
-        items: [RailCapabilityItem]
-    ) -> CapabilityIconPresentation {
-        CapabilityRailSectionPresentation.summaryIconPresentation(
-            for: items.map(capabilityIconPresentation),
-            fallbackSystemName: capabilitySummaryIcon(for: style)
-        )
-    }
 
     private func capabilitySummaryTint(for style: CapabilityRailGroupStyle) -> Color {
         switch style {
@@ -569,30 +603,36 @@ struct WorkspaceRightRailView: View {
         summaryTitle: String,
         summarySubtitle: String
     ) -> some View {
-        VStack(alignment: .leading, spacing: isCompact ? 8 : 10) {
+        // A "Show all (1)" summary that collapses a single row hides nothing worth
+        // hiding, so a lone item always renders expanded (the N >= 2 rule).
+        let showsExpanded = isExpanded.wrappedValue || items.count < 2
+
+        return VStack(alignment: .leading, spacing: isCompact ? 8 : 10) {
             capabilityGroupHeader(title, count: items.count, style: style)
 
-            if isExpanded.wrappedValue {
+            if showsExpanded {
                 capabilityRows(items, style: style)
-                Button {
-                    withAnimation(disclosureAnimation) {
-                        isExpanded.wrappedValue = false
+                if items.count >= 2 {
+                    Button {
+                        withAnimation(disclosureAnimation) {
+                            isExpanded.wrappedValue = false
+                        }
+                    } label: {
+                        Text(WorkspaceRightRailPresentation.hideActionTitle)
+                            .font(Stanford.caption(11).weight(.medium))
+                            .foregroundStyle(Stanford.lagunita)
+                            .padding(.leading, CapabilityRailLayout.dividerLeadingPadding(isCompact: isCompact))
+                            .padding(.vertical, 2)
                     }
-                } label: {
-                    Text("Hide")
-                        .font(Stanford.caption(11).weight(.medium))
-                        .foregroundStyle(Stanford.lagunita)
-                        .padding(.leading, CapabilityRailLayout.dividerLeadingPadding(isCompact: isCompact))
-                        .padding(.vertical, 2)
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             } else {
                 CapabilitySummaryRow(
-                    icon: capabilitySummaryIconPresentation(for: style, items: items),
+                    icon: capabilitySummaryIcon(for: style),
                     iconColor: capabilitySummaryTint(for: style),
                     title: summaryTitle,
                     subtitle: summarySubtitle,
-                    actionTitle: style == .ready ? "Show all" : nil,
+                    actionTitle: CapabilityRailSectionPresentation.showAllActionTitle(count: items.count),
                     action: {
                         withAnimation(disclosureAnimation) {
                             isExpanded.wrappedValue = true
@@ -796,7 +836,8 @@ struct WorkspaceRightRailView: View {
         let isHighlighted = item.readiness.level == .needsAttention
 
         return CapabilityRailRow(
-            icon: capabilityIconPresentation(for: item),
+            icon: WorkspaceContextIconography.capabilityIcon(name: item.name, fallback: item.icon),
+            brand: item.brand,
             title: capabilityDisplayName(item.name),
             subtitle: capabilityListSubtitle(for: item),
             color: item.color,
@@ -819,13 +860,6 @@ struct WorkspaceRightRailView: View {
                     .padding(.leading, 2)
             }
         }
-    }
-
-    private func capabilityIconPresentation(for item: RailCapabilityItem) -> CapabilityIconPresentation {
-        if case .package(let package) = item.source {
-            return .make(for: package)
-        }
-        return .make(name: item.name, fallbackSystemName: item.icon)
     }
 
     private var enabledPackageCount: Int {
@@ -1077,12 +1111,12 @@ struct WorkspaceRightRailView: View {
             readiness: readiness,
             presentation: presentation,
             source: .package(package),
-            skillNames: (package.skills.map(\.name) + state.linkedSkills.map(\.name)).uniqueSorted(),
-            connectorNames: (package.connectors.map(\.name) + state.linkedConnectors.map { $0.name.isEmpty ? "Untitled Connector" : $0.name }).uniqueSorted(),
-            toolNames: (package.localTools.map(\.name) + state.linkedTools.map { $0.name.isEmpty ? "Untitled Tool" : $0.name }).uniqueSorted(),
-            browserAdapterNames: package.browserAdapters.map(browserAdapterDisplayName).uniqueSorted(),
-            templateNames: package.templates.map(\.name).uniqueSorted(),
-            requirementNames: package.prerequisites.map(\.displayName).uniqueSorted()
+            skillNames: RailStringList.uniqueSorted(package.skills.map(\.name) + state.linkedSkills.map(\.name)),
+            connectorNames: RailStringList.uniqueSorted(package.connectors.map(\.name) + state.linkedConnectors.map { $0.name.isEmpty ? "Untitled Connector" : $0.name }),
+            toolNames: RailStringList.uniqueSorted(package.localTools.map(\.name) + state.linkedTools.map { $0.name.isEmpty ? "Untitled Tool" : $0.name }),
+            browserAdapterNames: RailStringList.uniqueSorted(package.browserAdapters.map(browserAdapterDisplayName)),
+            templateNames: RailStringList.uniqueSorted(package.templates.map(\.name)),
+            requirementNames: RailStringList.uniqueSorted(package.prerequisites.map(\.displayName))
         )
     }
 
@@ -1110,8 +1144,8 @@ struct WorkspaceRightRailView: View {
             presentation: presentation,
             source: .skill(skill),
             skillNames: [skill.name.isEmpty ? "Untitled Skill" : skill.name],
-            connectorNames: connectors.map { $0.name.isEmpty ? "Untitled Connector" : $0.name }.uniqueSorted(),
-            toolNames: tools.map { $0.name.isEmpty ? "Untitled Tool" : $0.name }.uniqueSorted(),
+            connectorNames: RailStringList.uniqueSorted(connectors.map { $0.name.isEmpty ? "Untitled Connector" : $0.name }),
+            toolNames: RailStringList.uniqueSorted(tools.map { $0.name.isEmpty ? "Untitled Tool" : $0.name }),
             browserAdapterNames: [],
             templateNames: [],
             requirementNames: []
@@ -1552,31 +1586,60 @@ struct WorkspaceRightRailView: View {
                 }
             }
         }
+        .confirmationDialog(
+            pendingRailDeletion?.title ?? "",
+            isPresented: Binding(
+                get: { pendingRailDeletion != nil },
+                set: { presented in if !presented { pendingRailDeletion = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: pendingRailDeletion
+        ) { deletion in
+            Button(deletion.confirmTitle, role: .destructive) {
+                deletion.perform()
+                pendingRailDeletion = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingRailDeletion = nil
+            }
+        } message: { deletion in
+            Text(deletion.message)
+        }
     }
 
     private var workspaceSetupConfiguredGroup: some View {
-        workspaceSetupGroup(WorkspaceSetupChecklistPresentation.configuredGroupTitle) {
-            if isConfiguredWorkspaceSetupExpanded {
+        // A lone configured item renders expanded — a "Show all (1)" summary that
+        // hides a single row is self-undermining, so the N >= 2 rule applies here
+        // exactly as it does for capabilities.
+        let count = workspaceSetupConfiguredCount
+        let showsExpanded = isConfiguredWorkspaceSetupExpanded || count < 2
+
+        return workspaceSetupGroup(WorkspaceSetupChecklistPresentation.configuredGroupTitle) {
+            if showsExpanded {
                 workspaceSetupRows(for: .configured)
-                Button {
-                    withAnimation(disclosureAnimation) {
-                        isConfiguredWorkspaceSetupExpanded = false
+                if count >= 2 {
+                    Button {
+                        withAnimation(disclosureAnimation) {
+                            isConfiguredWorkspaceSetupExpanded = false
+                        }
+                    } label: {
+                        Text(WorkspaceRightRailPresentation.hideActionTitle)
+                            .font(Stanford.caption(11).weight(.medium))
+                            .foregroundStyle(Stanford.lagunita)
+                            .padding(.leading, CapabilityRailLayout.dividerLeadingPadding(isCompact: isCompact))
+                            .padding(.vertical, 2)
                     }
-                } label: {
-                    Text("Hide")
-                        .font(Stanford.caption(11).weight(.medium))
-                        .foregroundStyle(Stanford.lagunita)
-                        .padding(.leading, CapabilityRailLayout.dividerLeadingPadding(isCompact: isCompact))
-                        .padding(.vertical, 2)
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             } else {
+                // Noun-first: the configured item names are the title, the count is
+                // metadata, and the accent-coloured verb carries the disclosure.
                 CapabilitySummaryRow(
                     icon: WorkspaceSetupChecklistPresentation.configuredSummaryIcon,
-                    iconColor: Stanford.lagunita,
-                    title: WorkspaceSetupChecklistPresentation.configuredSummaryTitle,
-                    subtitle: workspaceSetupConfiguredPreview,
-                    actionTitle: WorkspaceSetupChecklistPresentation.configuredSummaryActionTitle,
+                    iconColor: Stanford.statusHealthy,
+                    title: workspaceSetupConfiguredPreview,
+                    subtitle: WorkspaceSetupChecklistPresentation.configuredCountSubtitle(count),
+                    actionTitle: WorkspaceSetupChecklistPresentation.showAllActionTitle(count),
                     action: {
                         withAnimation(disclosureAnimation) {
                             isConfiguredWorkspaceSetupExpanded = true
@@ -1667,9 +1730,9 @@ struct WorkspaceRightRailView: View {
                 item: .instructions,
                 icon: "text.quote",
                 title: "Instructions",
-                subtitle: hasWorkspaceInstructions ? "Main task guidance is set" : "Add guidance for how tasks should run",
+                subtitle: hasWorkspaceInstructions ? "Main task guidance is set" : "Guidance for how tasks run",
                 state: workspaceSetupState(for: .instructions),
-                actionTitle: hasWorkspaceInstructions ? "Edit" : "Add",
+                actionTitle: hasWorkspaceInstructions ? "Edit" : "Write",
                 action: {
                     withAnimation(disclosureAnimation) {
                         _ = expandedWorkspaceSetupItems.insert(.instructions)
@@ -1684,7 +1747,7 @@ struct WorkspaceRightRailView: View {
                 icon: "text.badge.checkmark",
                 title: "Memory",
                 subtitle: workspace.memories.isEmpty
-                    ? "Save details the agent should remember"
+                    ? "Details the agent remembers"
                     : "\(workspace.memories.count) saved \(workspace.memories.count == 1 ? "detail" : "details")",
                 state: workspaceSetupState(for: .memory),
                 actionTitle: "Add",
@@ -1706,7 +1769,7 @@ struct WorkspaceRightRailView: View {
                     ? "No folder selected"
                     : "Primary \(compactPath(workspace.primaryPath))",
                 state: workspaceSetupState(for: .folders),
-                actionTitle: "Add",
+                actionTitle: workspaceFolderCount > 0 ? "Add" : "Choose…",
                 action: {
                     withAnimation(disclosureAnimation) {
                         _ = expandedWorkspaceSetupItems.insert(.folders)
@@ -1722,10 +1785,10 @@ struct WorkspaceRightRailView: View {
                 icon: "network",
                 title: "Remote access",
                 subtitle: sshConnections.isEmpty
-                    ? "Add remote servers the agent can access"
+                    ? "Servers the agent can reach"
                     : "\(sshConnections.count) configured \(sshConnections.count == 1 ? "server" : "servers")",
                 state: workspaceSetupState(for: .remoteAccess),
-                actionTitle: "Add",
+                actionTitle: sshConnections.isEmpty ? "Connect" : "Add",
                 action: onNewSSHConnection
             ) {
                 remoteAccessSetupDetails
@@ -1767,6 +1830,11 @@ struct WorkspaceRightRailView: View {
                             .font(Stanford.ui(CapabilityRailLayout.leadingIconFontSize, weight: .medium))
                             .foregroundStyle(setupChecklistIconColor(for: state))
                             .frame(width: CapabilityRailLayout.leadingIconFrame)
+                            .overlay(alignment: .bottomTrailing) {
+                                if state == .configured {
+                                    ConfiguredStatusDot()
+                                }
+                            }
 
                         VStack(alignment: .leading, spacing: CapabilityRailLayout.titleSubtitleSpacing) {
                             Text(title)
@@ -1777,8 +1845,9 @@ struct WorkspaceRightRailView: View {
                             Text(subtitle)
                                 .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize))
                                 .foregroundStyle(.secondary)
-                                .lineLimit(2)
+                                .lineLimit(1)
                                 .truncationMode(.tail)
+                                .help(subtitle)
                         }
                         .layoutPriority(1)
 
@@ -2035,7 +2104,7 @@ struct WorkspaceRightRailView: View {
                 )
 
             Button {
-                removeMemory(at: index)
+                requestMemoryDeletion(at: index)
             } label: {
                 Image(systemName: "trash")
                     .font(Stanford.ui(11, weight: .medium))
@@ -2093,7 +2162,14 @@ struct WorkspaceRightRailView: View {
             .help("Copy path")
 
             if canRemove, let removeAction {
-                Button(action: removeAction) {
+                Button {
+                    pendingRailDeletion = PendingRailDeletion(
+                        title: "Remove folder?",
+                        message: "\(compactPath(path)) will no longer be available to the agent. The folder itself is not deleted.",
+                        confirmTitle: "Remove",
+                        perform: removeAction
+                    )
+                } label: {
                     Image(systemName: "trash")
                         .font(Stanford.ui(11, weight: .medium))
                         .foregroundStyle(.tertiary)
@@ -2489,15 +2565,30 @@ struct WorkspaceRightRailView: View {
         }
     }
 
+    private var workspaceDisclosureID: String {
+        workspace.id.uuidString
+    }
+
     private func applyConfigureDefaults() {
         isAccessCollapsed = sshConnections.isEmpty && workspace.additionalPaths.isEmpty
         isSchedulesSectionCollapsed = workspace.schedules.isEmpty
         isContextCollapsed = false
         isToolsExpanded = false
         isTemplatesExpanded = false
-        isConfiguredWorkspaceSetupExpanded = false
         isMemoryComposerVisible = false
         expandedWorkspaceSetupItems = []
+
+        // Restore the section expand/collapse choices the user made last time in
+        // this workspace, so the panel does not forget its layout every session.
+        isConfiguredWorkspaceSetupExpanded = RailDisclosureStore.bool(
+            workspaceDisclosureID, .configuredSetupExpanded, default: false
+        )
+        isReadyCapabilitiesExpanded = RailDisclosureStore.bool(
+            workspaceDisclosureID, .readyCapabilitiesExpanded, default: false
+        )
+        isDraftCapabilitiesExpanded = RailDisclosureStore.bool(
+            workspaceDisclosureID, .draftCapabilitiesExpanded, default: false
+        )
     }
 
     private func addExtraFolder() {
@@ -2523,6 +2614,18 @@ struct WorkspaceRightRailView: View {
         markWorkspaceConfigurationChanged()
         newMemoryText = ""
         isMemoryComposerVisible = false
+    }
+
+    private func requestMemoryDeletion(at index: Int) {
+        guard workspace.memories.indices.contains(index) else { return }
+        let detail = workspace.memories[index].trimmingCharacters(in: .whitespacesAndNewlines)
+        let shown = detail.isEmpty ? "This saved detail" : "“\(detail.prefix(80))”"
+        pendingRailDeletion = PendingRailDeletion(
+            title: "Remove memory?",
+            message: "\(shown) will be removed from this workspace's memory.",
+            confirmTitle: "Remove",
+            perform: { removeMemory(at: index) }
+        )
     }
 
     private func removeMemory(at index: Int) {
@@ -2825,590 +2928,6 @@ struct WorkspaceRightRailView: View {
     }
 }
 
-private struct RailCountBadge: View {
-    let text: String
-
-    init(count: Int) {
-        self.text = "\(count)"
-    }
-
-    init(_ text: String) {
-        self.text = text
-    }
-
-    var body: some View {
-        Text(text)
-            .font(Stanford.caption(11).weight(.medium))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, Stanford.railBadgeHorizontalPadding)
-            .frame(minWidth: Stanford.railBadgeMinWidth, minHeight: Stanford.railBadgeHeight)
-            .background(Color.primary.opacity(0.05))
-            .clipShape(
-                RoundedRectangle(
-                    cornerRadius: Stanford.railBadgeCornerRadius,
-                    style: .continuous
-                )
-            )
-    }
-}
-
-private struct CapabilitySummaryRow: View {
-    let icon: CapabilityIconPresentation
-    let iconColor: Color
-    let title: String
-    let subtitle: String
-    let actionTitle: String?
-    let action: () -> Void
-
-    init(
-        icon: String,
-        iconColor: Color,
-        title: String,
-        subtitle: String,
-        actionTitle: String?,
-        action: @escaping () -> Void
-    ) {
-        self.init(
-            icon: CapabilityIconPresentation(kind: .systemSymbol(icon), fallbackSystemName: icon),
-            iconColor: iconColor,
-            title: title,
-            subtitle: subtitle,
-            actionTitle: actionTitle,
-            action: action
-        )
-    }
-
-    init(
-        icon: CapabilityIconPresentation,
-        iconColor: Color,
-        title: String,
-        subtitle: String,
-        actionTitle: String?,
-        action: @escaping () -> Void
-    ) {
-        self.icon = icon
-        self.iconColor = iconColor
-        self.title = title
-        self.subtitle = subtitle
-        self.actionTitle = actionTitle
-        self.action = action
-    }
-
-    var body: some View {
-        Button(action: action) {
-            HStack(alignment: .center, spacing: CapabilityRailLayout.leadingIconSpacing) {
-                CapabilityIconView(
-                    presentation: icon,
-                    size: CapabilityRailLayout.leadingIconFontSize,
-                    color: iconColor
-                )
-                    .frame(width: CapabilityRailLayout.leadingIconFrame)
-
-                VStack(alignment: .leading, spacing: CapabilityRailLayout.titleSubtitleSpacing) {
-                    Text(title)
-                        .font(Stanford.ui(CapabilityRailLayout.rowTitleFontSize, weight: .semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-
-                    Text(subtitle)
-                        .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .truncationMode(.tail)
-                }
-                .layoutPriority(1)
-
-                Spacer(minLength: 10)
-
-                if let actionTitle {
-                    Text(actionTitle)
-                        .font(Stanford.caption(CapabilityRailLayout.rowActionFontSize).weight(.medium))
-                        .foregroundStyle(Stanford.lagunita)
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .layoutPriority(2)
-                }
-
-                Image(systemName: "chevron.right")
-                    .font(Stanford.ui(CapabilityRailLayout.rowChevronFontSize, weight: .semibold))
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, minHeight: CapabilityRailLayout.summaryRowMinHeight, alignment: .leading)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-private struct CapabilityEmptyPrompt: View {
-    let title: String
-    let description: String
-    let actionTitle: String
-    let action: (() -> Void)?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(Stanford.caption(12).weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            Text(description)
-                .font(Stanford.caption(11))
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            if let action {
-                Button(action: action) {
-                    Text(actionTitle)
-                        .font(Stanford.caption(11).weight(.semibold))
-                        .foregroundStyle(Stanford.lagunita)
-                }
-                .buttonStyle(.plain)
-                .padding(.top, 1)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 5)
-    }
-}
-
-private struct CapabilityHierarchySummary: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            CapabilityHierarchyLine(
-                icon: "shippingbox",
-                title: "Package",
-                detail: "workspace switch"
-            )
-            CapabilityHierarchyLine(
-                icon: "text.quote",
-                title: "Skills",
-                detail: "instructions"
-            )
-            CapabilityHierarchyLine(
-                icon: "slider.horizontal.3",
-                title: "Connectors, tools, browser",
-                detail: "access and execution"
-            )
-        }
-    }
-}
-
-private struct CapabilityHierarchyLine: View {
-    let icon: String
-    let title: String
-    let detail: String
-
-    var body: some View {
-        HStack(spacing: 7) {
-            Image(systemName: icon)
-                .font(Stanford.ui(10, weight: .semibold))
-                .foregroundStyle(Stanford.lagunita)
-                .frame(width: 14)
-            Text(title)
-                .font(Stanford.caption(11).weight(.semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-            Spacer(minLength: 6)
-            Text(detail)
-                .font(Stanford.caption(10))
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
-        }
-    }
-}
-
-private struct CapabilityOverviewMetric: View {
-    let title: String
-    let value: String
-    let icon: String
-    let color: Color
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 4) {
-                Image(systemName: icon)
-                    .font(Stanford.ui(9, weight: .semibold))
-                    .foregroundStyle(color)
-                Text(value)
-                    .font(Stanford.caption(12).weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .monospacedDigit()
-            }
-            Text(title)
-                .font(Stanford.caption(10))
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-private struct CapabilityResourceScopeRow: View {
-    let title: String
-    let value: Int
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Text(title)
-                .font(Stanford.caption(11))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Spacer(minLength: 0)
-            Text("\(value)")
-                .font(Stanford.caption(11).weight(.semibold))
-                .foregroundStyle(.primary)
-                .monospacedDigit()
-        }
-    }
-}
-
-private struct CapabilityRailSnapshot {
-    let items: [RailCapabilityItem]
-    let attentionItems: [RailCapabilityItem]
-    let readyItems: [RailCapabilityItem]
-    let draftItems: [RailCapabilityItem]
-    let needsSetupCount: Int
-
-    init(
-        items: [RailCapabilityItem],
-        isDraft: (RailCapabilityItem) -> Bool
-    ) {
-        self.items = items
-        attentionItems = items.filter { $0.readiness.level == .needsAttention }
-        readyItems = items.filter { $0.readiness.level != .needsAttention && !isDraft($0) }
-        draftItems = items.filter(isDraft)
-        needsSetupCount = attentionItems.count
-    }
-}
-
-private struct RailCapabilityItem: Identifiable {
-    enum Source {
-        case package(PluginPackage)
-        case skill(Skill)
-    }
-
-    let id: String
-    let name: String
-    let icon: String
-    let summary: String
-    let color: Color
-    let isEnabled: Bool
-    let readiness: CapabilityReadiness
-    let presentation: CapabilityRailPackagePresentation
-    let source: Source
-    let skillNames: [String]
-    let connectorNames: [String]
-    let toolNames: [String]
-    let browserAdapterNames: [String]
-    let templateNames: [String]
-    let requirementNames: [String]
-}
-
-private struct CapabilityRailRow: View {
-    let icon: CapabilityIconPresentation
-    let title: String
-    let subtitle: String
-    let color: Color
-    let readiness: CapabilityReadiness
-    let statusLabel: String?
-    let statusColor: Color
-    let isEnabled: Bool
-    var isCompact = false
-    let onOpen: () -> Void
-
-    var body: some View {
-        Button(action: onOpen) {
-            HStack(spacing: CapabilityRailLayout.leadingIconSpacing) {
-                CapabilityIconView(
-                    presentation: icon,
-                    size: CapabilityRailLayout.leadingIconFontSize,
-                    color: isEnabled ? color : .secondary
-                )
-                    .frame(width: CapabilityRailLayout.leadingIconFrame)
-
-                VStack(alignment: .leading, spacing: CapabilityRailLayout.titleSubtitleSpacing) {
-                    HStack(spacing: 5) {
-                        Text(title.isEmpty ? "Untitled Capability" : title)
-                            .font(Stanford.ui(CapabilityRailLayout.rowTitleFontSize, weight: .semibold))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                            .layoutPriority(1)
-
-                        Spacer(minLength: 6)
-
-                        if let statusLabel {
-                            CapabilityStatusBadge(title: statusLabel, color: statusColor)
-                                .help(readiness.messages.joined(separator: "\n"))
-                                .accessibilityLabel(statusLabel)
-                        }
-                    }
-
-                    Text(subtitle.isEmpty ? "No details" : subtitle)
-                        .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-
-                Spacer(minLength: 0)
-
-                Image(systemName: "chevron.right")
-                    .font(Stanford.ui(CapabilityRailLayout.rowChevronFontSize, weight: .semibold))
-                    .foregroundStyle(Color.secondary.opacity(0.65))
-            }
-            .contentShape(Rectangle())
-            .frame(
-                maxWidth: .infinity,
-                minHeight: CapabilityRailLayout.rowMinHeight(isCompact: isCompact),
-                alignment: .leading
-            )
-        }
-        .buttonStyle(.plain)
-        .help(subtitle.isEmpty ? "Open details" : subtitle)
-    }
-}
-
-private struct CapabilityStatusBadge: View {
-    let title: String
-    let color: Color
-
-    var body: some View {
-        Text(title)
-            .font(Stanford.caption(11).weight(.medium))
-            .foregroundStyle(color)
-            .lineLimit(1)
-            .minimumScaleFactor(0.75)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(color.opacity(0.07))
-            .clipShape(Capsule())
-    }
-}
-
-private struct CapabilityRow: View {
-    let icon: String
-    let title: String
-    let subtitle: String
-    let color: Color
-    var trailing: String? = nil
-    var onTap: (() -> Void)? = nil
-
-    var body: some View {
-        Group {
-            if let onTap {
-                Button(action: onTap) {
-                    rowContent
-                }
-                .buttonStyle(.plain)
-            } else {
-                rowContent
-            }
-        }
-    }
-
-    private var rowContent: some View {
-        HStack(spacing: 9) {
-            Image(systemName: icon)
-                .font(Stanford.ui(12, weight: .medium))
-                .foregroundStyle(color)
-                .frame(width: 16)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(Stanford.caption(12).weight(.medium))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                Text(subtitle.isEmpty ? "No details" : subtitle)
-                    .font(Stanford.caption(10))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 8)
-
-            if let trailing, !trailing.isEmpty {
-                Text(trailing)
-                    .font(Stanford.caption(10))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-            } else if onTap != nil {
-                Image(systemName: "chevron.right")
-                    .font(Stanford.ui(10, weight: .semibold))
-                    .foregroundStyle(.quaternary)
-            }
-        }
-        .padding(.vertical, 5)
-        .padding(.leading, 2)
-        .padding(.trailing, 10)
-        .contentShape(Rectangle())
-    }
-}
-
-private struct CapabilityToggleRow: View {
-    let icon: String
-    let title: String
-    let subtitle: String
-    let color: Color
-    let isOn: Binding<Bool>
-
-    var body: some View {
-        HStack(spacing: 9) {
-            Image(systemName: icon)
-                .font(Stanford.ui(12, weight: .medium))
-                .foregroundStyle(isOn.wrappedValue ? color : .secondary)
-                .frame(width: 16)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(Stanford.caption(12).weight(.medium))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                Text(subtitle.isEmpty ? "No details" : subtitle)
-                    .font(Stanford.caption(10))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 10)
-
-            Toggle("", isOn: isOn)
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.mini)
-        }
-        .padding(.vertical, 5)
-        .padding(.leading, 2)
-        .padding(.trailing, 4)
-    }
-}
-
-private struct ResourceRow: View {
-    let icon: String
-    let title: String
-    let subtitle: String
-    let color: Color
-    var onEdit: (() -> Void)?
-
-    var body: some View {
-        Group {
-            if let onEdit {
-                Button(action: onEdit) {
-                    rowContent
-                }
-                .buttonStyle(.plain)
-            } else {
-                rowContent
-            }
-        }
-        .padding(Stanford.railCardPadding)
-        .frame(minHeight: Stanford.railResourceRowHeight, alignment: .leading)
-        .railCard(cornerRadius: Stanford.railCardCornerRadius)
-    }
-
-    private var rowContent: some View {
-        HStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(Stanford.ui(13, weight: .medium))
-                .foregroundStyle(color)
-                .frame(width: Stanford.railIconFrame, height: Stanford.railIconFrame)
-                .background(color.opacity(0.1))
-                .clipShape(RoundedRectangle(cornerRadius: Stanford.railCompactCardCornerRadius))
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(Stanford.body(13).weight(.medium))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                Text(subtitle.isEmpty ? "No details" : subtitle)
-                    .font(Stanford.caption(11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 0)
-
-            if onEdit != nil {
-                Image(systemName: "chevron.right")
-                    .font(Stanford.ui(10, weight: .semibold))
-                    .foregroundStyle(.quaternary)
-            }
-        }
-        .contentShape(Rectangle())
-    }
-}
-
-private extension Array where Element == String {
-    func uniqueSorted() -> [String] {
-        var seen = Set<String>()
-        return filter { value in
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            return !trimmed.isEmpty && seen.insert(trimmed).inserted
-        }
-        .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
-    }
-}
-
-private struct InlineActionRow: View {
-    let icon: String
-    let title: String
-    let tint: Color
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(Stanford.ui(11, weight: .semibold))
-                .foregroundStyle(tint)
-                .frame(width: 16)
-            Text(title)
-                .font(Stanford.caption(11).weight(.medium))
-                .foregroundStyle(tint)
-            Spacer()
-        }
-        .padding(.vertical, 5)
-        .contentShape(Rectangle())
-    }
-}
-
-private struct EmptyRailState: View {
-    let title: String
-    let description: String
-
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title)
-                .font(Stanford.body(13).weight(.medium))
-                .foregroundStyle(.secondary)
-            Text(description)
-                .font(Stanford.caption(11))
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(Stanford.railCardPadding)
-        .background(
-            RoundedRectangle(cornerRadius: Stanford.railCompactCardCornerRadius, style: .continuous)
-                .fill(emptyStateFill)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: Stanford.railCompactCardCornerRadius, style: .continuous)
-                .stroke(emptyStateStroke, lineWidth: 1)
-        }
-    }
-
-    private var emptyStateFill: Color {
-        colorScheme == .dark
-            ? Color.primary.opacity(0.04)
-            : Color.primary.opacity(0.025)
-    }
-
-    private var emptyStateStroke: Color {
-        Color.primary.opacity(colorScheme == .dark ? 0.055 : 0.075)
-    }
-}
 
 struct WorkspaceGitRepositoryScanInputs: Equatable {
     let primaryPath: String
@@ -3419,16 +2938,13 @@ struct WorkspaceGitRepositoryScanInputs: Equatable {
     }
 }
 
-private extension View {
-    func railCard(
-        cornerRadius: CGFloat = Stanford.railCardCornerRadius,
-        fill: Color = Color(nsColor: .windowBackgroundColor),
-        strokeOpacity: Double = 0.06
-    ) -> some View {
-        liquidSurface(
-            cornerRadius: cornerRadius,
-            fallbackFill: fill,
-            fallbackStrokeOpacity: strokeOpacity
-        )
-    }
+/// A staged destructive removal awaiting confirmation. Carries its own copy so
+/// the confirm dialog can describe exactly what it will delete and run the
+/// removal only on an explicit second tap.
+private struct PendingRailDeletion: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
+    let confirmTitle: String
+    let perform: () -> Void
 }
