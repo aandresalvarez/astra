@@ -770,6 +770,46 @@ struct TaskContextStateTests {
         #expect(state.verification.artifactStatus == "1 current")
     }
 
+    @Test("context capsule normalizes legacy artifact paths without mutating rows")
+    func contextCapsuleNormalizesLegacyArtifactPathsWithoutMutatingRows() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Legacy Artifact", primaryPath: root)
+        let task = AgentTask(
+            title: "Legacy artifact state",
+            goal: "Render current state without duplicate artifact references",
+            workspace: workspace
+        )
+        context.insert(workspace)
+        context.insert(task)
+
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let indexPath = (folder as NSString).appendingPathComponent("index.html")
+        try "<html>current</html>".write(toFile: indexPath, atomically: true, encoding: .utf8)
+        let relativePath = String(indexPath.dropFirst(root.count + 1))
+        let legacy = Artifact(task: task, type: "html", path: relativePath, version: 2)
+        legacy.type = "HTML"
+        context.insert(legacy)
+        task.artifacts.append(legacy)
+
+        TaskContextStateManager.refresh(task: task)
+
+        let state = try #require(TaskContextStateManager.load(taskFolder: folder))
+        #expect(state.artifacts.count == 1)
+        let reference = try #require(state.artifacts.first)
+        #expect(reference.path == indexPath)
+        #expect(reference.type == "html")
+        #expect(reference.version == 2)
+        #expect(!reference.isStale)
+        #expect(reference.sourcePointers.contains { $0.kind == "artifact" })
+        #expect(reference.sourcePointers.contains { $0.kind == "task_output_file" })
+        #expect(state.verification.artifactStatus == "1 current")
+        #expect(legacy.path == relativePath)
+        #expect(legacy.type == "HTML")
+    }
+
     @Test("context capsule discovers task output files when provider metadata is missing")
     func contextCapsuleDiscoversTaskOutputFilesWhenProviderMetadataIsMissing() throws {
         let root = try temporaryRoot()
