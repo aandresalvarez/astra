@@ -23,6 +23,7 @@ struct CapabilityPackageValidationIssue: Equatable, Identifiable {
         case unsafeMCPServer
         case missingPrerequisite
         case emptyPayload
+        case packageUpdate
     }
 
     var severity: Severity
@@ -223,13 +224,34 @@ enum CapabilityPackageValidator {
         let normalizedID = package.id.lowercased()
         if let duplicate = installedPackages.first(where: { $0.id.lowercased() == normalizedID }),
            !allowReplacingExistingPackageID || duplicate.id != package.id {
-            issues.append(issue(
-                .blocker,
-                .duplicatePackageID,
-                "Package already installed",
-                "A capability with ID \(duplicate.id) already exists. Remove it before importing a replacement.",
-                component: package.id
-            ))
+            // A strictly newer version of an installed local package imports
+            // as an update: the file is replaced, the digest changes, and the
+            // package returns to draft until re-approved. Built-ins and
+            // same-or-older versions stay blocked.
+            let incomingVersion = SemanticVersion(string: package.version)
+            let installedVersion = SemanticVersion(string: duplicate.version)
+            let isNewerVersionOfSamePackage = duplicate.id == package.id
+                && duplicate.sourceMetadata?.kind != "built-in"
+                && incomingVersion != nil
+                && installedVersion != nil
+                && incomingVersion! > installedVersion!
+            if isNewerVersionOfSamePackage {
+                issues.append(issue(
+                    .warning,
+                    .packageUpdate,
+                    "Updates installed capability",
+                    "Replaces \(duplicate.id) \(duplicate.version) with \(package.version). The update imports as draft and needs review before it can run again.",
+                    component: package.id
+                ))
+            } else {
+                issues.append(issue(
+                    .blocker,
+                    .duplicatePackageID,
+                    "Package already installed",
+                    "A capability with ID \(duplicate.id) already exists. Remove it before importing a replacement.",
+                    component: package.id
+                ))
+            }
         }
 
         if let collision = installedPackages.first(where: {

@@ -32,6 +32,26 @@ struct CapabilityCatalogPolicyContext: Equatable {
         Set(values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { !$0.isEmpty })
     }
 
+    /// Policy context for the person using this ASTRA install. ASTRA is a
+    /// single-user app today: the local user owns the machine and the
+    /// approval store, so they are the admin of their own catalog. This is
+    /// the ONLY place that assumption lives — a future multi-user or
+    /// MDM-managed mode changes admin resolution here, not at call sites.
+    /// Do not construct contexts with a literal `isAdmin: true` outside
+    /// this factory (enforced by an architecture fitness test).
+    static func currentUser(
+        workspace: Workspace,
+        currentAppVersion: SemanticVersion = SemanticVersion(string: AppBuildInfo.current.version) ?? SemanticVersion(0, 0, 0),
+        approvalRecords: [CapabilityApprovalRecord]
+    ) -> CapabilityCatalogPolicyContext {
+        workspaceUser(
+            workspace: workspace,
+            isAdmin: true,
+            currentAppVersion: currentAppVersion,
+            approvalRecords: approvalRecords
+        )
+    }
+
     static func workspaceUser(
         workspace: Workspace,
         userRoleIDs: Set<String> = [],

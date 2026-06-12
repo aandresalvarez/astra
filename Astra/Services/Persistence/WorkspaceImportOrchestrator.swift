@@ -63,9 +63,8 @@ struct ContentWorkspaceActionCoordinator {
         guard !packages.isEmpty else { return }
 
         let installer = CapabilityInstaller()
-        let policyContext = CapabilityCatalogPolicyContext.workspaceUser(
+        let policyContext = CapabilityCatalogPolicyContext.currentUser(
             workspace: workspace,
-            isAdmin: true,
             approvalRecords: CapabilityApprovalStore().records()
         )
         for package in packages {
