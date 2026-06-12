@@ -29,6 +29,11 @@ enum WorkspaceRightRailPresentation {
     static let headerIconFrame: CGFloat = 22
     static let headerTitleFontSize: CGFloat = 16
     static let headerSubtitleFontSize: CGFloat = 12
+
+    /// Collapse verb for the rail's own expandable groups (setup, capabilities).
+    /// Kept here rather than borrowing the git panel's constant so the rail and
+    /// git presentation layers stay independent.
+    static let hideActionTitle = "Hide"
 }
 
 enum CapabilityRailLayout {

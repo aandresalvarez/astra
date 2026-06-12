@@ -628,7 +628,7 @@ struct WorkspaceRightRailView: View {
                             isExpanded.wrappedValue = false
                         }
                     } label: {
-                        Text(WorkspaceGitPanelPresentation.hideDetailsActionTitle)
+                        Text(WorkspaceRightRailPresentation.hideActionTitle)
                             .font(Stanford.caption(11).weight(.medium))
                             .foregroundStyle(Stanford.lagunita)
                             .padding(.leading, CapabilityRailLayout.dividerLeadingPadding(isCompact: isCompact))
@@ -1121,12 +1121,12 @@ struct WorkspaceRightRailView: View {
             readiness: readiness,
             presentation: presentation,
             source: .package(package),
-            skillNames: (package.skills.map(\.name) + state.linkedSkills.map(\.name)).uniqueSorted(),
-            connectorNames: (package.connectors.map(\.name) + state.linkedConnectors.map { $0.name.isEmpty ? "Untitled Connector" : $0.name }).uniqueSorted(),
-            toolNames: (package.localTools.map(\.name) + state.linkedTools.map { $0.name.isEmpty ? "Untitled Tool" : $0.name }).uniqueSorted(),
-            browserAdapterNames: package.browserAdapters.map(browserAdapterDisplayName).uniqueSorted(),
-            templateNames: package.templates.map(\.name).uniqueSorted(),
-            requirementNames: package.prerequisites.map(\.displayName).uniqueSorted()
+            skillNames: RailStringList.uniqueSorted(package.skills.map(\.name) + state.linkedSkills.map(\.name)),
+            connectorNames: RailStringList.uniqueSorted(package.connectors.map(\.name) + state.linkedConnectors.map { $0.name.isEmpty ? "Untitled Connector" : $0.name }),
+            toolNames: RailStringList.uniqueSorted(package.localTools.map(\.name) + state.linkedTools.map { $0.name.isEmpty ? "Untitled Tool" : $0.name }),
+            browserAdapterNames: RailStringList.uniqueSorted(package.browserAdapters.map(browserAdapterDisplayName)),
+            templateNames: RailStringList.uniqueSorted(package.templates.map(\.name)),
+            requirementNames: RailStringList.uniqueSorted(package.prerequisites.map(\.displayName))
         )
     }
 
@@ -1154,8 +1154,8 @@ struct WorkspaceRightRailView: View {
             presentation: presentation,
             source: .skill(skill),
             skillNames: [skill.name.isEmpty ? "Untitled Skill" : skill.name],
-            connectorNames: connectors.map { $0.name.isEmpty ? "Untitled Connector" : $0.name }.uniqueSorted(),
-            toolNames: tools.map { $0.name.isEmpty ? "Untitled Tool" : $0.name }.uniqueSorted(),
+            connectorNames: RailStringList.uniqueSorted(connectors.map { $0.name.isEmpty ? "Untitled Connector" : $0.name }),
+            toolNames: RailStringList.uniqueSorted(tools.map { $0.name.isEmpty ? "Untitled Tool" : $0.name }),
             browserAdapterNames: [],
             templateNames: [],
             requirementNames: []
@@ -1633,7 +1633,7 @@ struct WorkspaceRightRailView: View {
                             isConfiguredWorkspaceSetupExpanded = false
                         }
                     } label: {
-                        Text(WorkspaceGitPanelPresentation.hideDetailsActionTitle)
+                        Text(WorkspaceRightRailPresentation.hideActionTitle)
                             .font(Stanford.caption(11).weight(.medium))
                             .foregroundStyle(Stanford.lagunita)
                             .padding(.leading, CapabilityRailLayout.dividerLeadingPadding(isCompact: isCompact))
@@ -2945,20 +2945,6 @@ struct WorkspaceGitRepositoryScanInputs: Equatable {
 
     func matches(primaryPath: String, additionalPaths: [String]) -> Bool {
         self.primaryPath == primaryPath && self.additionalPaths == additionalPaths
-    }
-}
-
-extension View {
-    func railCard(
-        cornerRadius: CGFloat = Stanford.railCardCornerRadius,
-        fill: Color = Color(nsColor: .windowBackgroundColor),
-        strokeOpacity: Double = 0.06
-    ) -> some View {
-        liquidSurface(
-            cornerRadius: cornerRadius,
-            fallbackFill: fill,
-            fallbackStrokeOpacity: strokeOpacity
-        )
     }
 }
 

@@ -354,7 +354,7 @@ struct RepositoryDiffPresentation {
     }
 }
 
-struct DiffLinesView: View {
+private struct DiffLinesView: View {
     let lines: [RepositoryDiffPresentation.Line]
     let minimumWidth: CGFloat
 
@@ -369,7 +369,7 @@ struct DiffLinesView: View {
     }
 }
 
-struct DiffLineRow: View {
+private struct DiffLineRow: View {
     let line: RepositoryDiffPresentation.Line
     let minimumWidth: CGFloat
 

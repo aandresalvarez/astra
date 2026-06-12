@@ -78,8 +78,9 @@ struct CapabilitySummaryRow: View {
                     Text(subtitle)
                         .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize))
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                        .lineLimit(1)
                         .truncationMode(.tail)
+                        .help(subtitle)
                 }
                 .layoutPriority(1)
 
@@ -510,10 +511,14 @@ struct ResourceRow: View {
     }
 }
 
-extension Array where Element == String {
-    func uniqueSorted() -> [String] {
+/// String-list helpers for rail capability summaries. Namespaced rather than a
+/// module-wide `Array<String>` extension so the behavior is discoverable and
+/// can't collide with similarly named helpers elsewhere.
+enum RailStringList {
+    /// Trim, drop blanks, de-duplicate, and case-insensitively sort.
+    static func uniqueSorted(_ values: [String]) -> [String] {
         var seen = Set<String>()
-        return filter { value in
+        return values.filter { value in
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
             return !trimmed.isEmpty && seen.insert(trimmed).inserted
         }
@@ -578,5 +583,22 @@ struct EmptyRailState: View {
 
     private var emptyStateStroke: Color {
         Color.primary.opacity(colorScheme == .dark ? 0.055 : 0.075)
+    }
+}
+
+extension View {
+    /// Card chrome shared by the rail's floating sections and the row components
+    /// above. Lives here, with the rows it dresses, rather than in a feature view
+    /// file so the extracted components don't implicitly depend on that file.
+    func railCard(
+        cornerRadius: CGFloat = Stanford.railCardCornerRadius,
+        fill: Color = Color(nsColor: .windowBackgroundColor),
+        strokeOpacity: Double = 0.06
+    ) -> some View {
+        liquidSurface(
+            cornerRadius: cornerRadius,
+            fallbackFill: fill,
+            fallbackStrokeOpacity: strokeOpacity
+        )
     }
 }
