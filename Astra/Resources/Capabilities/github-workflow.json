@@ -40,7 +40,7 @@
   "iconDescriptor" : {
     "fallbackSystemName" : "chevron.left.forwardslash.chevron.right",
     "kind" : "asset",
-    "monochromePreferred" : false,
+    "monochromePreferred" : true,
     "value" : "assets/github.svg"
   },
   "id" : "github-workflow",

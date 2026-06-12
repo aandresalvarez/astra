@@ -33,6 +33,9 @@ Review checklist:
 - Use `iconDescriptor` for package-owned icons. Built-in brand assets live under
   `assets/`, use relative paths such as `assets/github.svg`, and should include
   an SF Symbol `fallbackSystemName`.
+- Set `iconDescriptor.monochromePreferred` to `true` for single-color assets
+  that should tint with ASTRA's light/dark appearance. Reserve `false` for
+  full-color assets that should render with their original colors.
 - Keep vendored brand assets small, local, and source-attributed. Do not point
   package JSON at remote icon URLs.
 - Add or update focused tests when changing package schema, prerequisites, governance, or runtime activation behavior.

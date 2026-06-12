@@ -59,7 +59,7 @@
   "iconDescriptor" : {
     "fallbackSystemName" : "cloud",
     "kind" : "asset",
-    "monochromePreferred" : false,
+    "monochromePreferred" : true,
     "value" : "assets/google-cloud.svg"
   },
   "id" : "gcloud-workflow",
