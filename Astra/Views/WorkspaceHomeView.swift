@@ -29,7 +29,7 @@ enum WorkspaceHomePresentation {
     static let routinesUseSummaryRows = true
     static let instructionEditorStaysInsideContextCard = true
     static let rowIconFrame: CGFloat = 40
-    static let rowMinHeight: CGFloat = 72
+    static let rowMinHeight: CGFloat = 56
     static let rowSpacing: CGFloat = 14
     static let cardCornerRadius: CGFloat = 12
     static let minimumWelcomeRailWidth = WorkspaceHomeLayout.minimumPageRailWidth
@@ -44,7 +44,7 @@ struct WorkspaceInstructionBlock: Equatable {
 enum WorkspaceInstructionPresentation {
     static let emptyPromptTitle = "Tell the agent how you work"
     static let emptyPromptBody = "Add conventions, tone, and what to avoid. They apply to every task in this workspace."
-    static let emptyActionTitle = "Add instructions"
+    static let emptyActionTitle = "Write instructions"
     static let configuredSubtitle = "Workspace prompt"
     static let configuredFallbackSubtitle = "Workspace guidance configured"
     static let usesReadableExpandedBlocks = true
@@ -526,7 +526,7 @@ struct WorkspaceHomeView: View {
 
                 Spacer(minLength: 12)
 
-                Label(WorkspaceInstructionPresentation.emptyActionTitle, systemImage: "plus")
+                Text(WorkspaceInstructionPresentation.emptyActionTitle)
                     .font(Stanford.caption(12).weight(.semibold))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 11)
@@ -581,6 +581,7 @@ struct WorkspaceHomeView: View {
                         withAnimation(disclosureAnimation) {
                             isInstructionsExpanded.toggle()
                         }
+                        persistInstructionsExpanded(isInstructionsExpanded)
                     } label: {
                         HStack(spacing: 4) {
                             Text(isInstructionsExpanded ? "Hide" : "Read")
@@ -651,6 +652,7 @@ struct WorkspaceHomeView: View {
                         workspace.updatedAt = Date()
                         isEditingInstructions = false
                         isInstructionsExpanded = !workspace.instructions.isEmpty
+                        persistInstructionsExpanded(isInstructionsExpanded)
                     } label: {
                         Text("Save")
                             .font(Stanford.caption(12).weight(.semibold))
@@ -771,9 +773,8 @@ struct WorkspaceHomeView: View {
     }
 
     private var capabilityHeadline: String {
-        let count = capabilityCount
-        guard count > 0 else { return "No active capabilities" }
-        return "\(count) active \(count == 1 ? "capability" : "capabilities")"
+        // Lead with the noun; the count and breakdown are metadata in the subtitle.
+        "Capabilities"
     }
 
     private var instructionItemCount: Int {
@@ -795,9 +796,10 @@ struct WorkspaceHomeView: View {
         ].compactMap { $0 }
 
         guard !parts.isEmpty else {
-            return "Browse the library to add skills, connectors, and tools"
+            return "None active — browse the library to add skills, connectors, and tools"
         }
-        return parts.joined(separator: ", ")
+        let count = capabilityCount
+        return "\(count) active — \(parts.joined(separator: ", "))"
     }
 
     private var appStudioSubtitle: String {
@@ -827,7 +829,21 @@ struct WorkspaceHomeView: View {
         guard initializedInstructionsWorkspaceID != workspace.id else { return }
         initializedInstructionsWorkspaceID = workspace.id
         isEditingInstructions = false
-        isInstructionsExpanded = false
+        // Restore the user's last expand choice for this workspace rather than
+        // forcing it collapsed every appearance / workspace switch.
+        isInstructionsExpanded = loadInstructionsExpanded()
+    }
+
+    private func instructionsExpandedKey() -> String {
+        "workspaceHome.instructionsExpanded.\(workspace.id.uuidString)"
+    }
+
+    private func loadInstructionsExpanded() -> Bool {
+        UserDefaults.standard.bool(forKey: instructionsExpandedKey())
+    }
+
+    private func persistInstructionsExpanded(_ value: Bool) {
+        UserDefaults.standard.set(value, forKey: instructionsExpandedKey())
     }
 
     @ViewBuilder
@@ -880,12 +896,29 @@ private struct WorkspaceHomeSummaryRow<Trailing: View>: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: WorkspaceHomePresentation.rowSpacing) {
+            // A real Button, not a gesture, so the row body is a proper keyboard /
+            // accessibility tap target. The trailing controls stay separate.
+            if let onSelect {
+                Button(action: onSelect) { rowContent }
+                    .buttonStyle(.plain)
+            } else {
+                rowContent
+            }
+
+            trailing()
+                .layoutPriority(2)
+        }
+        .frame(maxWidth: .infinity, minHeight: WorkspaceHomePresentation.rowMinHeight, alignment: .leading)
+    }
+
+    private var rowContent: some View {
+        HStack(alignment: .center, spacing: WorkspaceHomePresentation.rowSpacing) {
             Image(systemName: icon)
                 .font(Stanford.ui(20, weight: .medium))
                 .foregroundStyle(iconColor)
                 .frame(width: WorkspaceHomePresentation.rowIconFrame)
 
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                     .font(Stanford.ui(16, weight: .semibold))
                     .foregroundStyle(.primary)
@@ -894,21 +927,15 @@ private struct WorkspaceHomeSummaryRow<Trailing: View>: View {
                 Text(subtitle)
                     .font(Stanford.caption(13))
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .lineLimit(1)
                     .truncationMode(.tail)
+                    .help(subtitle)
             }
             .layoutPriority(1)
 
             Spacer(minLength: 10)
-
-            trailing()
-                .layoutPriority(2)
         }
-        .frame(maxWidth: .infinity, minHeight: WorkspaceHomePresentation.rowMinHeight, alignment: .leading)
         .contentShape(Rectangle())
-        .onTapGesture {
-            onSelect?()
-        }
     }
 }
 
@@ -947,7 +974,7 @@ private struct WorkspaceScheduleSection: View {
                     .foregroundStyle(.primary)
                 Spacer()
                 Button(action: onNew) {
-                    Label("New", systemImage: "plus")
+                    Label("Add routine", systemImage: "plus")
                         .font(Stanford.caption(12))
                         .foregroundStyle(Stanford.lagunita)
                 }

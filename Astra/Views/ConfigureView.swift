@@ -350,10 +350,10 @@ private struct ConfigureSelectionCard<Content: View>: View {
 private struct ConfigureCardIcon: View {
     let systemName: String
     let color: Color
+    var brand: BrandMark? = nil
 
     var body: some View {
-        Image(systemName: systemName)
-            .font(Stanford.ui(14, weight: .medium))
+        CapabilityLeadingIcon(systemImage: systemName, brand: brand, pointSize: 14)
             .foregroundStyle(color)
             .frame(width: 28, height: 28)
             .background(color.opacity(0.08))
@@ -1129,19 +1129,23 @@ struct ConnectorsTabContent: View {
                                             .frame(maxWidth: .infinity, alignment: .leading)
                                             .buttonStyle(.plain)
 
-                                            Button("Duplicate") {
-                                                duplicateConnector(connector)
-                                            }
-                                            .font(Stanford.caption(12))
-                                            .buttonStyle(.bordered)
-                                            .controlSize(.small)
-
                                             Button(enabled ? "Disable" : "Enable") {
                                                 toggleGlobalConnector(connector)
                                             }
                                             .font(Stanford.caption(12))
                                             .buttonStyle(.bordered)
                                             .controlSize(.small)
+
+                                            Menu {
+                                                Button("Duplicate to workspace") {
+                                                    duplicateConnector(connector)
+                                                }
+                                            } label: {
+                                                Image(systemName: "ellipsis.circle")
+                                            }
+                                            .menuStyle(.borderlessButton)
+                                            .frame(width: 22)
+                                            .help("More actions")
                                         }
                                     }
                                 }
@@ -1220,9 +1224,11 @@ struct ConnectorsTabContent: View {
         let serviceLabel = connector.serviceType.replacingOccurrences(of: "_", with: " ").capitalized
         let authLabel = connector.authMethod.replacingOccurrences(of: "_", with: " ").capitalized
 
+        let brand = BrandMark.resolve(id: connector.serviceType, name: connector.name)
+
         return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
-                ConfigureCardIcon(systemName: connector.icon, color: ConfigureTab.connectors.color)
+                ConfigureCardIcon(systemName: connector.icon, color: ConfigureTab.connectors.color, brand: brand)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(connector.name.isEmpty ? "Untitled" : connector.name)
@@ -1236,17 +1242,15 @@ struct ConnectorsTabContent: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
+                        .help(subtitle)
                 }
             }
 
             HStack(spacing: 6) {
-                ConfigureCardChip(title: serviceLabel, color: ConfigureTab.connectors.color)
+                ConfigureCardChip(title: serviceLabel)
                 ConfigureCardChip(title: authLabel)
                 if !connector.credentialKeys.isEmpty {
                     ConfigureCardChip(title: "\(connector.credentialKeys.count) secret\(connector.credentialKeys.count == 1 ? "" : "s")")
-                }
-                if connector.isGlobal {
-                    ConfigureCardChip(title: "Shared", color: Stanford.poppy)
                 }
             }
         }
@@ -1411,24 +1415,23 @@ struct ToolsTabContent: View {
                                             .frame(maxWidth: .infinity, alignment: .leading)
                                             .buttonStyle(.plain)
 
-                                            Button {
-                                                duplicateTool(tool)
-                                            } label: {
-                                                Label("Duplicate", systemImage: "doc.on.doc")
-                                                    .font(Stanford.body(12))
+                                            Button(enabled ? "Disable" : "Enable") {
+                                                toggleGlobalTool(tool)
                                             }
+                                            .font(Stanford.caption(12))
                                             .buttonStyle(.bordered)
                                             .controlSize(.small)
 
-                                            Button {
-                                                toggleGlobalTool(tool)
+                                            Menu {
+                                                Button("Duplicate to workspace") {
+                                                    duplicateTool(tool)
+                                                }
                                             } label: {
-                                                Label(enabled ? "Disable" : "Enable", systemImage: enabled ? "checkmark.circle.fill" : "plus.circle")
-                                                    .font(Stanford.body(12))
+                                                Image(systemName: "ellipsis.circle")
                                             }
-                                            .buttonStyle(.bordered)
-                                            .controlSize(.small)
-                                            .tint(enabled ? ConfigureTab.tools.color : nil)
+                                            .menuStyle(.borderlessButton)
+                                            .frame(width: 22)
+                                            .help("More actions")
                                         }
                                     }
                                 }
@@ -1499,19 +1502,17 @@ struct ToolsTabContent: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
+                        .help(subtitle)
                 }
             }
 
             HStack(spacing: 6) {
-                ConfigureCardChip(title: typeLabel, color: ConfigureTab.tools.color)
+                ConfigureCardChip(title: typeLabel)
                 if !tool.command.isEmpty {
                     ConfigureCardChip(title: "Configured")
                 }
-                if tool.isGlobal {
-                    ConfigureCardChip(title: "Shared", color: ConfigureTab.tools.color)
-                    if workspace.enabledGlobalToolIDs.contains(tool.id.uuidString) {
-                        ConfigureCardChip(title: "Enabled here")
-                    }
+                if tool.isGlobal, workspace.enabledGlobalToolIDs.contains(tool.id.uuidString) {
+                    ConfigureCardChip(title: "Enabled here")
                 }
             }
         }
@@ -1772,19 +1773,17 @@ struct SkillsTabContent: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
+                        .help(subtitle)
                 }
             }
 
             HStack(spacing: 6) {
                 ConfigureCardChip(title: "\(skill.allowedTools.count) capabilities")
                 if !skill.connectors.isEmpty {
-                    ConfigureCardChip(title: "\(skill.connectors.count) connector\(skill.connectors.count == 1 ? "" : "s")", color: ConfigureTab.connectors.color)
+                    ConfigureCardChip(title: "\(skill.connectors.count) connector\(skill.connectors.count == 1 ? "" : "s")")
                 }
                 if !skill.localTools.isEmpty {
-                    ConfigureCardChip(title: "\(skill.localTools.count) tool\(skill.localTools.count == 1 ? "" : "s")", color: ConfigureTab.tools.color)
-                }
-                if skill.isGlobal {
-                    ConfigureCardChip(title: "Shared", color: Stanford.poppy)
+                    ConfigureCardChip(title: "\(skill.localTools.count) tool\(skill.localTools.count == 1 ? "" : "s")")
                 }
             }
         }
@@ -2337,6 +2336,8 @@ struct TemplateEditorView: View {
                                 .foregroundStyle(.tertiary)
                         }
                         .buttonStyle(.plain)
+                        .help("Remove variable {{\(variable.name)}}")
+                        .accessibilityLabel("Remove variable \(variable.name)")
                     }
                     .padding(8)
                     .background(Stanford.fog.opacity(0.5))

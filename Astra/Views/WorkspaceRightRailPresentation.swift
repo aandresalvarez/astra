@@ -1,17 +1,38 @@
-import Foundation
 import SwiftUI
 
 enum WorkspaceRightRailPresentation {
+    /// Order while a workspace still has setup to do: setup stays directly under
+    /// the repository so onboarding is not buried beneath the inventory.
     static let primarySectionOrder = [
         "Repository",
         WorkspaceSetupChecklistPresentation.sectionTitle,
         CapabilityRailSectionPresentation.sectionTitle
     ]
 
+    /// Order once setup is complete: the capabilities the workspace actually uses
+    /// rise above the now-compact configured-setup summary, so the panel leads
+    /// with where the user has invested rather than with finished chores.
+    static let steadyStateSectionOrder = [
+        "Repository",
+        CapabilityRailSectionPresentation.sectionTitle,
+        WorkspaceSetupChecklistPresentation.sectionTitle
+    ]
+
+    /// The section order to render for a workspace, chosen by whether any setup
+    /// item is still outstanding.
+    static func sectionOrder(hasPendingSetup: Bool) -> [String] {
+        hasPendingSetup ? primarySectionOrder : steadyStateSectionOrder
+    }
+
     static let headerIconFontSize: CGFloat = 15
     static let headerIconFrame: CGFloat = 22
     static let headerTitleFontSize: CGFloat = 16
     static let headerSubtitleFontSize: CGFloat = 12
+
+    /// Collapse verb for the rail's own expandable groups (setup, capabilities).
+    /// Kept here rather than borrowing the git panel's constant so the rail and
+    /// git presentation layers stay independent.
+    static let hideActionTitle = "Hide"
 }
 
 enum CapabilityRailLayout {
@@ -85,6 +106,22 @@ enum CapabilityRailSectionPresentation {
 
     static func draftSummaryTitle(count: Int) -> String {
         "\(count) draft \(count == 1 ? "capability" : "capabilities")"
+    }
+
+    /// Status + count metadata shown beneath the noun-first capability summary
+    /// title (the title carries the capability names).
+    static func readySummarySubtitle(count: Int) -> String {
+        "Ready · \(count)"
+    }
+
+    static func draftSummarySubtitle(count: Int) -> String {
+        "Draft · \(count)"
+    }
+
+    /// Disclosure verb that names how many rows it reveals. Only rendered for
+    /// count >= 2 — a lone capability renders expanded instead.
+    static func showAllActionTitle(count: Int) -> String {
+        "Show all (\(count))"
     }
 
     static func previewList(_ names: [String], limit: Int = 3) -> String {
