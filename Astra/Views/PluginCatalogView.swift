@@ -1292,7 +1292,7 @@ struct PluginCatalogView: View {
             sections.append(CapabilityDetailSection(
                 id: "mcp",
                 title: "MCP Servers",
-                subtitle: "Structured external tools and resources",
+                subtitle: CapabilityRuntimeSupportPresentation.mcpSupportSubtitle(),
                 icon: "server.rack",
                 color: Stanford.plum,
                 items: package.mcpServers.enumerated().map { index, server in

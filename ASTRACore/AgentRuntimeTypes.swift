@@ -86,6 +86,10 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
     public let defaultModels: [String]
     public let supportsAstraRunProtocol: Bool
     public let supportsNativeContinuation: Bool
+    /// Whether capability-package MCP servers are materialized into this
+    /// runtime's launches. Runtimes without support surface the skip
+    /// explicitly instead of silently dropping declared servers.
+    public let supportsMCPServers: Bool
 
     public init(
         id: AgentRuntimeID,
@@ -97,7 +101,8 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
         defaultModel: String? = nil,
         defaultModels: [String],
         supportsAstraRunProtocol: Bool,
-        supportsNativeContinuation: Bool = false
+        supportsNativeContinuation: Bool = false,
+        supportsMCPServers: Bool = false
     ) {
         self.id = id
         self.displayName = displayName
@@ -115,6 +120,7 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
         self.defaultModels = defaultModels
         self.supportsAstraRunProtocol = supportsAstraRunProtocol
         self.supportsNativeContinuation = supportsNativeContinuation
+        self.supportsMCPServers = supportsMCPServers
     }
 
 }

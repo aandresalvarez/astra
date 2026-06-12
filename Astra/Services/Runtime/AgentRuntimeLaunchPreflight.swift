@@ -300,7 +300,28 @@ enum AgentRuntimeLaunchPreflight {
             fields[key] = value
         }
 
-        guard !issues.isEmpty else {
+        // MCP servers are materialized only for runtimes that support them;
+        // for those, a stdio server whose command can't be resolved would
+        // fail opaquely mid-run, so it blocks the launch here instead.
+        let runtime = AgentRuntimeID(rawValue: task.runtimeID ?? "") ?? TaskExecutionDefaults.runtime
+        let mcpIssues: [MCPRuntimeProjection.PreflightIssue]
+        if AgentRuntimeAdapterRegistry.descriptor(for: runtime).supportsMCPServers {
+            mcpIssues = MCPRuntimeProjection.preflightIssues(
+                servers: MCPRuntimeProjection.enabledServers(
+                    for: task.workspace,
+                    packages: CapabilityRuntimeResourceMatcher.packageDefinitions(),
+                    approvalRecords: CapabilityApprovalStore().records()
+                )
+            )
+        } else {
+            mcpIssues = []
+        }
+        if !mcpIssues.isEmpty {
+            fields["result"] = "mcp_server_executable_missing"
+            fields["mcp_issue_count"] = String(mcpIssues.count)
+        }
+
+        guard !issues.isEmpty || !mcpIssues.isEmpty else {
             fields["diagnostic_result"] = AgentRuntimeLaunchPreflightResult.Status.capabilityRuntimeResourcesPassed.rawValue
             AppLogger.audit(.capabilityRuntimeIntegrity, category: "Worker", taskID: task.id, fields: fields, level: .debug, fieldMaxLength: 240)
             return AgentRuntimeLaunchPreflightResult(
@@ -308,6 +329,26 @@ enum AgentRuntimeLaunchPreflight {
                 phase: phase,
                 reason: nil,
                 detail: nil,
+                auditFields: fields
+            )
+        }
+
+        if issues.isEmpty {
+            let detail = mcpIssues.map(\.message).joined(separator: "\n")
+            fields["diagnostic_result"] = AgentRuntimeLaunchPreflightResult.Status.capabilityRuntimeResourcesMissing.rawValue
+            AppLogger.audit(.capabilityRuntimeIntegrity, category: "Worker", taskID: task.id, fields: fields, level: .error, fieldMaxLength: 240)
+            finishPreLaunchFailure(
+                task: task,
+                run: run,
+                modelContext: modelContext,
+                reason: "mcp_server_executable_missing",
+                payload: detail
+            )
+            return AgentRuntimeLaunchPreflightResult(
+                status: .capabilityRuntimeResourcesMissing,
+                phase: phase,
+                reason: "mcp_server_executable_missing",
+                detail: detail,
                 auditFields: fields
             )
         }
