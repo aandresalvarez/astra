@@ -239,6 +239,7 @@ struct CapabilityRailPresentationTests {
         #expect(WorkspaceSetupChecklistPresentation.summary(configured: 0, total: 4) == "Empty")
         #expect(WorkspaceSetupChecklistPresentation.summary(configured: 1, total: 4) == "1 of 4 configured")
         #expect(WorkspaceSetupChecklistPresentation.State.configured.label == "Configured")
+        #expect(WorkspaceSetupChecklistPresentation.State.reference.label == "Reference")
         #expect(WorkspaceSetupChecklistPresentation.State.missing.label == "Missing")
     }
 
@@ -246,6 +247,7 @@ struct CapabilityRailPresentationTests {
     func workspaceSetupRowsDiscloseConfigurationDetailsInline() {
         #expect(WorkspaceSetupChecklistPresentation.sectionTitle == "Workspace setup")
         #expect(WorkspaceSetupChecklistPresentation.missingGroupTitle == "Needs setup")
+        #expect(WorkspaceSetupChecklistPresentation.referenceGroupTitle == "Reference")
         #expect(WorkspaceSetupChecklistPresentation.configuredGroupTitle == "Configured")
         #expect(WorkspaceSetupChecklistPresentation.supportsInlineExpansion == true)
         #expect(WorkspaceSetupChecklistPresentation.supportsInlineEditing == true)
@@ -302,6 +304,8 @@ struct CapabilityRailPresentationTests {
 
     @Test("workspace folder setup treats primary path as reference")
     func workspaceFolderSetupTreatsPrimaryPathAsReference() {
+        #expect(WorkspaceSetupChecklistPresentation.folderAccessTitle == "Folder access")
+        #expect(WorkspaceSetupChecklistPresentation.addFolderActionTitle == "Add folder")
         #expect(WorkspaceSetupChecklistPresentation.workspaceRootReferenceTitle == "Workspace root")
         #expect(WorkspaceSetupChecklistPresentation.workspaceRootReferenceRole == "Reference")
         #expect(WorkspaceSetupChecklistPresentation.userConfiguredFolderCount([]) == 0)
@@ -309,11 +313,11 @@ struct CapabilityRailPresentationTests {
         #expect(WorkspaceSetupChecklistPresentation.folderState(
             primaryPath: "/Users/alvaro/Documents/Astra Dev/Workspaces/pr",
             additionalPaths: []
-        ) == .missing)
+        ) == .reference)
         #expect(WorkspaceSetupChecklistPresentation.folderSubtitle(
             primaryPath: "/Users/alvaro/Documents/Astra Dev/Workspaces/pr",
             additionalPaths: []
-        ) == "Add extra folders for this workspace")
+        ) == "Workspace root only")
     }
 
     @Test("workspace folder setup counts only added paths")

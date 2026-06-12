@@ -40,6 +40,7 @@ private enum WorkspaceSetupItem: Hashable {
 enum WorkspaceSetupChecklistPresentation {
     static let sectionTitle = "Workspace setup"
     static let missingGroupTitle = "Needs setup"
+    static let referenceGroupTitle = "Reference"
     static let configuredGroupTitle = "Configured"
     static let configuredSummaryTitle = "Configured items"
     static let configuredSummaryActionTitle = "Show all"
@@ -54,18 +55,22 @@ enum WorkspaceSetupChecklistPresentation {
     static let collapsedDisclosureIcon = "chevron.right"
     static let expandedDisclosureIcon = "chevron.down"
     static let detailPreviewLimit = 4
+    static let folderAccessTitle = "Folder access"
+    static let addFolderActionTitle = "Add folder"
     static let workspaceRootReferenceTitle = "Workspace root"
     static let workspaceRootReferenceRole = "Reference"
     static let missingWorkspaceRootSubtitle = "No workspace root selected."
-    static let emptyFolderSubtitle = "Add extra folders for this workspace"
+    static let referenceOnlyFolderSubtitle = "Workspace root only"
 
     enum State: Equatable {
         case configured
+        case reference
         case missing
 
         var label: String {
             switch self {
             case .configured: "Configured"
+            case .reference: "Reference"
             case .missing: "Missing"
             }
         }
@@ -89,7 +94,7 @@ enum WorkspaceSetupChecklistPresentation {
 
     static func folderState(primaryPath: String, additionalPaths: [String]) -> State {
         guard !shouldShowWorkspaceRootMissingMessage(primaryPath: primaryPath) else { return .missing }
-        return userConfiguredFolderCount(additionalPaths) > 0 ? State.configured : State.missing
+        return userConfiguredFolderCount(additionalPaths) > 0 ? State.configured : State.reference
     }
 
     static func folderSubtitle(primaryPath: String, additionalPaths: [String]) -> String {
@@ -97,7 +102,7 @@ enum WorkspaceSetupChecklistPresentation {
             return missingWorkspaceRootSubtitle
         }
         let count = userConfiguredFolderCount(additionalPaths)
-        guard count > 0 else { return emptyFolderSubtitle }
+        guard count > 0 else { return referenceOnlyFolderSubtitle }
         return "\(count) added \(count == 1 ? "folder" : "folders")"
     }
 
@@ -1117,6 +1122,12 @@ struct WorkspaceRightRailView: View {
                     }
                 }
 
+                if workspaceSetupReferenceCount > 0 {
+                    workspaceSetupGroup(WorkspaceSetupChecklistPresentation.referenceGroupTitle) {
+                        workspaceSetupRows(for: .reference)
+                    }
+                }
+
                 if workspaceSetupConfiguredCount > 0 {
                     workspaceSetupConfiguredGroup
                 }
@@ -1235,7 +1246,7 @@ struct WorkspaceRightRailView: View {
         case .memory:
             return "Memory"
         case .folders:
-            return "Folders"
+            return WorkspaceSetupChecklistPresentation.folderAccessTitle
         case .remoteAccess:
             return "Remote access"
         case .routines:
@@ -1303,7 +1314,7 @@ struct WorkspaceRightRailView: View {
             workspaceSetupChecklistRow(
                 item: .folders,
                 icon: "folder",
-                title: "Folders",
+                title: WorkspaceSetupChecklistPresentation.folderAccessTitle,
                 subtitle: WorkspaceSetupChecklistPresentation.folderSubtitle(
                     primaryPath: workspace.primaryPath,
                     additionalPaths: workspace.additionalPaths
@@ -1544,7 +1555,7 @@ struct WorkspaceRightRailView: View {
                 HStack(spacing: 5) {
                     Image(systemName: "plus")
                         .font(Stanford.ui(10, weight: .semibold))
-                    Text("Add path")
+                    Text(WorkspaceSetupChecklistPresentation.addFolderActionTitle)
                         .font(Stanford.caption(11).weight(.medium))
                 }
                 .foregroundStyle(Stanford.lagunita)
@@ -1799,21 +1810,15 @@ struct WorkspaceRightRailView: View {
     }
 
     private var workspaceSetupConfiguredCount: Int {
-        var count = 0
-        if hasWorkspaceInstructions { count += 1 }
-        if !workspace.memories.isEmpty { count += 1 }
-        if WorkspaceSetupChecklistPresentation.userConfiguredFolderCount(workspace.additionalPaths) > 0 { count += 1 }
-        if !sshConnections.isEmpty { count += 1 }
-        if !workspace.schedules.isEmpty { count += 1 }
-        return count
+        workspaceSetupRowItems(for: .configured).count
+    }
+
+    private var workspaceSetupReferenceCount: Int {
+        workspaceSetupRowItems(for: .reference).count
     }
 
     private var workspaceSetupMissingCount: Int {
-        workspaceSetupTotalCount - workspaceSetupConfiguredCount
-    }
-
-    private var workspaceSetupTotalCount: Int {
-        4 + (workspace.schedules.isEmpty ? 0 : 1)
+        workspaceSetupRowItems(for: .missing).count
     }
 
     // MARK: - Access Section
