@@ -58,6 +58,10 @@ struct CapabilityInstaller {
             AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: fields, level: .warning)
             throw InstallationError.blocked(blockers)
         }
+        // Snapshot the pre-install library state so a failed enable can be
+        // compensated instead of leaving an orphaned or overwritten file.
+        let packageURL = library.packageURL(for: package.id)
+        let previousPackageData = try? Data(contentsOf: packageURL)
         do {
             try library.install(package)
         } catch {
@@ -68,17 +72,28 @@ struct CapabilityInstaller {
             AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: fields, level: .error)
             throw error
         }
-        let result = try enable(
-            package,
-            in: workspace,
-            modelContext: modelContext,
-            credentialInputs: credentialInputs,
-            configInputs: configInputs,
-            baseURLOverrides: baseURLOverrides,
-            policyContext: effectivePolicyContext,
-            auditSource: "install",
-            traceID: traceID
-        )
+        let result: InstallationResult
+        do {
+            result = try enable(
+                package,
+                in: workspace,
+                modelContext: modelContext,
+                credentialInputs: credentialInputs,
+                configInputs: configInputs,
+                baseURLOverrides: baseURLOverrides,
+                policyContext: effectivePolicyContext,
+                auditSource: "install",
+                traceID: traceID
+            )
+        } catch {
+            Self.restoreLibraryFile(previousData: previousPackageData, at: packageURL)
+            var fields = capabilityFields(for: package, workspace: workspace, source: "install")
+            if let traceID { fields["trace_id"] = traceID }
+            fields["result"] = "enable_failed_library_rolled_back"
+            fields["restored_previous_file"] = previousPackageData == nil ? "false" : "true"
+            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: fields, level: .error)
+            throw error
+        }
         var installedFields = [
             "package_id": package.id,
             "package_name": package.name,
@@ -131,7 +146,7 @@ struct CapabilityInstaller {
         let packageEnvironmentKeys = package.skills.flatMap(\.environmentKeys)
 
         for pluginSkill in package.skills {
-            let skill = upsertGlobalSkill(
+            let skill = try upsertGlobalSkill(
                 pluginSkill,
                 package: package,
                 modelContext: modelContext,
@@ -169,13 +184,13 @@ struct CapabilityInstaller {
                     extraConfigKeys: packageEnvironmentKeys,
                     baseURL: baseURL
                 )
-                removeMatchingGlobalConnectorActivation(
+                try removeMatchingGlobalConnectorActivation(
                     pluginConnector,
                     from: workspace,
                     modelContext: modelContext
                 )
             } else {
-                connector = upsertGlobalConnector(
+                connector = try upsertGlobalConnector(
                     pluginConnector,
                     package: package,
                     modelContext: modelContext,
@@ -193,7 +208,7 @@ struct CapabilityInstaller {
         }
 
         for pluginTool in package.localTools {
-            let tool = upsertGlobalTool(pluginTool, package: package, modelContext: modelContext)
+            let tool = try upsertGlobalTool(pluginTool, package: package, modelContext: modelContext)
             if let primarySkill, tool.skill == nil {
                 tool.skill = primarySkill
             }
@@ -235,6 +250,18 @@ struct CapabilityInstaller {
         )
     }
 
+    /// Compensation for a failed enable after the library file was written:
+    /// restore the pre-install bytes, or remove the file if this was a fresh
+    /// install, so the catalog never shows an installed-but-never-enabled
+    /// package.
+    static func restoreLibraryFile(previousData: Data?, at url: URL) {
+        if let previousData {
+            try? previousData.write(to: url, options: [.atomic])
+        } else {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
     private func capabilityFields(
         for package: PluginPackage,
         workspace: Workspace,
@@ -259,8 +286,8 @@ struct CapabilityInstaller {
         package: PluginPackage,
         modelContext: ModelContext,
         configInputs: [String: String]
-    ) -> Skill {
-        let skill = existingGlobalSkill(named: pluginSkill.name, modelContext: modelContext) ?? Skill(
+    ) throws -> Skill {
+        let skill = try existingGlobalSkill(named: pluginSkill.name, modelContext: modelContext) ?? Skill(
             name: pluginSkill.name,
             icon: pluginSkill.icon,
             skillDescription: pluginSkill.description,
@@ -314,8 +341,8 @@ struct CapabilityInstaller {
         configInputs: [String: String],
         extraConfigKeys: [String],
         baseURL: String
-    ) -> Connector {
-        let connector = existingGlobalConnector(
+    ) throws -> Connector {
+        let connector = try existingGlobalConnector(
             name: pluginConnector.name,
             serviceType: pluginConnector.serviceType,
             baseURL: baseURL,
@@ -461,10 +488,10 @@ struct CapabilityInstaller {
         _ pluginConnector: PluginConnector,
         from workspace: Workspace,
         modelContext: ModelContext
-    ) {
+    ) throws {
         guard !workspace.enabledGlobalConnectorIDs.isEmpty else { return }
         let descriptor = FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal == true })
-        guard let globalConnectors = try? modelContext.fetch(descriptor) else { return }
+        let globalConnectors = try modelContext.fetch(descriptor)
         let matchingIDs = Set(
             globalConnectors
                 .filter {
@@ -481,8 +508,8 @@ struct CapabilityInstaller {
         _ pluginTool: PluginLocalTool,
         package: PluginPackage,
         modelContext: ModelContext
-    ) -> LocalTool {
-        let tool = existingGlobalTool(
+    ) throws -> LocalTool {
+        let tool = try existingGlobalTool(
             name: pluginTool.name,
             toolType: pluginTool.toolType,
             command: pluginTool.command,
@@ -551,14 +578,14 @@ struct CapabilityInstaller {
         return template
     }
 
-    private func existingGlobalSkill(named name: String, modelContext: ModelContext) -> Skill? {
+    private func existingGlobalSkill(named name: String, modelContext: ModelContext) throws -> Skill? {
         let descriptor = FetchDescriptor<Skill>(
             predicate: #Predicate {
                 $0.name == name &&
                 $0.isGlobal
             }
         )
-        return (try? modelContext.fetch(descriptor))?.first
+        return try modelContext.fetch(descriptor).first
     }
 
     private func existingGlobalConnector(
@@ -566,7 +593,7 @@ struct CapabilityInstaller {
         serviceType: String,
         baseURL: String,
         modelContext: ModelContext
-    ) -> Connector? {
+    ) throws -> Connector? {
         let descriptor = FetchDescriptor<Connector>(
             predicate: #Predicate {
                 $0.name == name &&
@@ -575,7 +602,7 @@ struct CapabilityInstaller {
                 $0.isGlobal
             }
         )
-        return (try? modelContext.fetch(descriptor))?.first
+        return try modelContext.fetch(descriptor).first
     }
 
     private func existingWorkspaceConnector(
@@ -593,7 +620,7 @@ struct CapabilityInstaller {
         toolType: String,
         command: String,
         modelContext: ModelContext
-    ) -> LocalTool? {
+    ) throws -> LocalTool? {
         let descriptor = FetchDescriptor<LocalTool>(
             predicate: #Predicate {
                 $0.name == name &&
@@ -602,7 +629,7 @@ struct CapabilityInstaller {
                 $0.isGlobal
             }
         )
-        return (try? modelContext.fetch(descriptor))?.first
+        return try modelContext.fetch(descriptor).first
     }
 
     private func appendUnique(_ value: String, to values: inout [String]) {

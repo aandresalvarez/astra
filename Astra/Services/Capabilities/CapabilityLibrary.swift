@@ -36,7 +36,18 @@ struct CapabilityLibrary {
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
     }
 
-    func installedPackages() -> [PluginPackage] {
+    /// Package IDs whose on-disk governance is trusted as shipped: the
+    /// app-curated built-in definitions seeded by `syncApprovedPackages`.
+    /// Everything else in the library directory is local content whose
+    /// self-declared governance is clamped on load — approval for local
+    /// packages comes exclusively from digest-bound approval records.
+    static var trustedBuiltInPackageIDs: Set<String> {
+        Set(PluginCatalog.builtInPackages.map(\.id))
+    }
+
+    func installedPackages(
+        trustedBuiltInIDs: Set<String> = CapabilityLibrary.trustedBuiltInPackageIDs
+    ) -> [PluginPackage] {
         guard let files = try? fileManager.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: nil
@@ -53,6 +64,14 @@ struct CapabilityLibrary {
                 if package.sourceMetadata == nil {
                     package.sourceMetadata = .localLibrary()
                 }
+                if !trustedBuiltInIDs.contains(package.id),
+                   CapabilityGovernanceNormalizer.clampToLocalDraft(&package) {
+                    AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
+                        "source": "library_load",
+                        "package_id": package.id,
+                        "result": "self_declared_governance_clamped"
+                    ], level: .warning)
+                }
                 return package
             }
             .sorted { lhs, rhs in
@@ -62,8 +81,11 @@ struct CapabilityLibrary {
             }
     }
 
-    func installedPackage(id: String) -> PluginPackage? {
-        installedPackages().first { $0.id == id }
+    func installedPackage(
+        id: String,
+        trustedBuiltInIDs: Set<String> = CapabilityLibrary.trustedBuiltInPackageIDs
+    ) -> PluginPackage? {
+        installedPackages(trustedBuiltInIDs: trustedBuiltInIDs).first { $0.id == id }
     }
 
     func installedVersion(of id: String) -> String? {
@@ -134,7 +156,10 @@ struct CapabilityLibrary {
     }
 
     @discardableResult
-    func removePackage(id: String) throws -> PluginPackage {
+    func removePackage(
+        id: String,
+        trustedBuiltInIDs: Set<String> = CapabilityLibrary.trustedBuiltInPackageIDs
+    ) throws -> PluginPackage {
         let url = packageURL(for: id)
         guard let data = try? Data(contentsOf: url) else {
             throw RemovalError.notInstalled(id)
@@ -145,7 +170,9 @@ struct CapabilityLibrary {
             package.sourceMetadata = .localLibrary()
         }
 
-        if package.sourceMetadata?.kind == "built-in" {
+        // The cannot-be-removed protection applies only to genuine curated
+        // built-ins; a file merely claiming built-in kind is local content.
+        if package.sourceMetadata?.kind == "built-in", trustedBuiltInIDs.contains(package.id) {
             throw RemovalError.builtInPackage(package.name)
         }
 

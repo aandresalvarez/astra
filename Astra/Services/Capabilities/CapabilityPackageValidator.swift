@@ -180,13 +180,8 @@ enum CapabilityPackageValidator {
             ))
         }
 
-        package.governance.approvalStatus = .draft
-        package.governance.visibility = .adminOnly
-        package.governance.requiresAdminApproval = true
-        package.governance.requiresExplicitUserConsent = true
-        package.governance.approvedBy = nil
-        package.governance.approvedAt = nil
-        if package.governance.policyNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        CapabilityGovernanceNormalizer.clampToLocalDraft(&package)
+        if package.governance.policyNotes == "Local capability package pending review." {
             package.governance.policyNotes = "Local capability package imported from JSON and pending review."
         }
     }

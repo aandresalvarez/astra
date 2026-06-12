@@ -66,9 +66,14 @@ struct CapabilityActivationDisabler {
             removableGlobalToolIDs.contains(id)
         }
 
+        // Keychain entries are wiped only after the SwiftData deletes are
+        // saved; otherwise a failed save would leave connector/skill records
+        // that look configured but whose credentials are gone.
+        var pendingKeychainCleanups: [() -> Void] = []
+
         for connector in state.linkedConnectors where !connector.isGlobal {
             guard !isClaimedByRemainingPackages(connector, excluding: package, remainingPackages: remainingPackages) else { continue }
-            connector.cleanupKeychain()
+            pendingKeychainCleanups.append { connector.cleanupKeychain() }
             result.removedWorkspaceConnectorIDs.append(connector.id)
             modelContext.delete(connector)
         }
@@ -76,12 +81,26 @@ struct CapabilityActivationDisabler {
         let remainingExplicitPackages = remainingPackages.filter { !$0.isSyntheticWorkspaceSkillPackage }
         for skill in state.linkedSkills where !skill.isGlobal {
             guard !isClaimedByRemainingPackages(skill, excluding: package, remainingPackages: remainingExplicitPackages) else { continue }
-            skill.cleanupKeychain()
+            pendingKeychainCleanups.append { skill.cleanupKeychain() }
             result.removedWorkspaceSkillIDs.append(skill.id)
             modelContext.delete(skill)
         }
 
         workspace.updatedAt = Date()
+
+        if pendingKeychainCleanups.isEmpty {
+            return result
+        }
+        if WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext) {
+            pendingKeychainCleanups.forEach { $0() }
+        } else {
+            AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
+                "source": "package_disable",
+                "package_id": package.id,
+                "result": "save_failed_keychain_cleanup_deferred",
+                "deferred_cleanup_count": String(pendingKeychainCleanups.count)
+            ], level: .error)
+        }
         return result
     }
 
