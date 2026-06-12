@@ -168,7 +168,7 @@ struct CapabilityHierarchyLine: View {
         HStack(spacing: 7) {
             Image(systemName: icon)
                 .font(Stanford.ui(10, weight: .semibold))
-                .foregroundStyle(Stanford.lagunita)
+                .foregroundStyle(.secondary)
                 .frame(width: 14)
             Text(title)
                 .font(Stanford.caption(11).weight(.semibold))
@@ -321,6 +321,7 @@ struct CapabilityRailRow: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.tail)
+                        .help(subtitle)
                 }
 
                 Spacer(minLength: 0)

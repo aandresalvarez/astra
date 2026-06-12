@@ -14,7 +14,7 @@ enum WorkspaceGitPanelPresentation {
     static let expandedDetailRowCount = 6
     static let repositorySelectorRowMinHeight: CGFloat = 50
     static let detailRowMinHeight: CGFloat = 44
-    static let showDetailsActionTitle = "Show all"
+    static let showDetailsActionTitle = "Show controls"
     static let hideDetailsActionTitle = "Hide"
 
     static func transientStateAfterRepositoryContextChange(
@@ -311,6 +311,7 @@ struct WorkspaceGitSectionView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                        .help(repositorySummarySubtitle)
                 }
                 .layoutPriority(1)
 
@@ -661,9 +662,10 @@ struct WorkspaceGitSectionView: View {
     }
 
     private var repositorySyncStatusColor: Color {
-        // Any behind state (including diverged) needs a pull before a push, so it
-        // must not wear the "ready to push" accent.
-        viewModel.behind > 0 ? Stanford.statusInfo : Stanford.lagunita
+        // Behind/diverged needs a pull before a push, so it wears the info tint —
+        // not the "ready" accent. Ahead-only is quiet metadata; the interactive
+        // accent is reserved for tappable text, so it stays secondary here.
+        viewModel.behind > 0 ? Stanford.statusInfo : Color.secondary
     }
 
     /// Readiness shown as a caption beneath the Create-pull-request button. Prefers
@@ -866,7 +868,13 @@ struct WorkspaceGitSectionView: View {
                 viewModel.openExistingPullRequest()
             } label: {
                 HStack(spacing: Self.rowIconSpacing) {
-                    rowIcon("arrow.triangle.pull")
+                    CapabilityLeadingIcon(
+                        systemImage: "arrow.triangle.pull",
+                        brand: .github,
+                        pointSize: Self.rowIconGlyphSize
+                    )
+                    .foregroundStyle(Stanford.lagunita)
+                    .frame(width: Self.rowIconFrame)
                     rowTitle("Pull request")
 
                     Spacer(minLength: 8)

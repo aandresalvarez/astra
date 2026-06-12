@@ -125,11 +125,18 @@ struct UsageDashboardView: View {
                         .padding(.top, 8)
 
                     ForEach(summary.tasks) { task in
+                        let status = breakdownStatusIcon(task.status)
                         HStack {
+                            Image(systemName: status.0)
+                                .font(Stanford.ui(16, weight: .medium))
+                                .foregroundStyle(status.1)
+                                .frame(width: 24)
+
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(task.title)
                                     .font(Stanford.body())
                                     .lineLimit(1)
+                                    .help(task.title)
                                 Text(task.status.rawValue.replacingOccurrences(of: "_", with: " "))
                                     .font(Stanford.caption())
                                     .foregroundStyle(Stanford.coolGrey)
@@ -149,7 +156,7 @@ struct UsageDashboardView: View {
 
                             ProgressView(value: min(task.budgetProgress, 1.0))
                                 .frame(width: 60)
-                                .tint(task.budgetProgress > 0.9 ? Stanford.failed : Stanford.lagunita)
+                                .tint(task.budgetProgress > 0.9 ? Stanford.failed : Stanford.coolGrey)
                         }
                         .padding(.vertical, 4)
                         Divider()
@@ -160,6 +167,19 @@ struct UsageDashboardView: View {
         }
     }
 
+    /// Leading status glyph for a per-task breakdown row, so the list has a
+    /// scannable status column instead of starting cold with a title.
+    private func breakdownStatusIcon(_ status: TaskStatus) -> (String, Color) {
+        if let pill = StatusPill.forStatus(status) {
+            return (pill.icon, pill.color)
+        }
+        switch status {
+        case .running:
+            return ("clock", Stanford.statusInfo)
+        default:
+            return ("circle", Color.secondary)
+        }
+    }
 }
 
 struct StatCard: View {

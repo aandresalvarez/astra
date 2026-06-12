@@ -103,7 +103,7 @@ struct SettingsView: View {
             detectClaudeCLI()
             detectCopilotCLI()
             if expandedProviderRuntime == nil {
-                expandedProviderRuntime = selectedRuntime
+                expandedProviderRuntime = restoredExpandedProviderRuntime()
             }
             Task { await refreshRuntimeReadiness() }
         }
@@ -144,6 +144,7 @@ struct SettingsView: View {
                 .onChange(of: defaultRuntimeID) {
                     alignDefaultModelsWithRuntime(resetToRuntimeSuggestion: true)
                     expandedProviderRuntime = selectedRuntime
+                    ProviderDisclosureStore.expandedRuntimeID = selectedRuntime.rawValue
                     readinessReport = nil
                     readinessCheckedAt = nil
                 }
@@ -262,19 +263,25 @@ struct SettingsView: View {
     private func providerSummaryLabel(_ runtime: AgentRuntimeID) -> some View {
         let status = providerConnectionStatus(for: runtime)
 
+        let descriptor = AgentRuntimeAdapterRegistry.descriptor(for: runtime)
+
         return HStack(alignment: .center, spacing: 10) {
-            Image(systemName: providerIcon(for: runtime))
-                .font(Stanford.ui(16, weight: .semibold))
-                .foregroundStyle(status.tint)
-                .frame(width: 22)
+            CapabilityLeadingIcon(
+                systemImage: providerIcon(for: runtime),
+                brand: providerBrand(for: runtime),
+                pointSize: 16
+            )
+            .foregroundStyle(.secondary)
+            .frame(width: 22)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(AgentRuntimeAdapterRegistry.descriptor(for: runtime).displayName)
+                Text(descriptor.displayName)
                     .font(Stanford.body(14).weight(.semibold))
                 Text(status.detail)
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .lineLimit(1)
+                    .help(status.detail)
             }
 
             Spacer()
@@ -283,10 +290,6 @@ struct SettingsView: View {
                 providerChip("Default", tint: Stanford.statusInfo)
             }
 
-            Image(systemName: status.symbol)
-                .font(Stanford.caption(11).weight(.semibold))
-                .foregroundStyle(status.tint)
-                .frame(width: 14)
             providerChip(status.label, tint: status.tint)
         }
     }
@@ -392,6 +395,14 @@ struct SettingsView: View {
             .background(Capsule().fill(tint.opacity(0.10)))
     }
 
+    /// The real brand mark for a provider when one ships, so recognizable
+    /// services (GitHub Copilot, Claude Code) lead with their glyph and the
+    /// generic SF Symbol from `providerIcon` is only a fallback (ICO).
+    private func providerBrand(for runtime: AgentRuntimeID) -> BrandMark? {
+        let descriptor = AgentRuntimeAdapterRegistry.descriptor(for: runtime)
+        return BrandMark.resolve(id: runtime.rawValue, name: descriptor.displayName)
+    }
+
     private func providerIcon(for runtime: AgentRuntimeID) -> String {
         switch runtime {
         case .claudeCode: "terminal"
@@ -478,10 +489,26 @@ struct SettingsView: View {
         )
     }
 
+    /// The provider row to open when Settings first appears: the value the user
+    /// last left (including an explicit "all collapsed"), falling back to the
+    /// default provider only when nothing has been stored yet.
+    private func restoredExpandedProviderRuntime() -> AgentRuntimeID? {
+        guard let stored = ProviderDisclosureStore.expandedRuntimeID else {
+            return selectedRuntime
+        }
+        // An empty stored value is the sentinel for "user collapsed every row".
+        guard !stored.isEmpty else { return nil }
+        return AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: stored)
+    }
+
     private func expandedProviderBinding(for runtime: AgentRuntimeID) -> Binding<Bool> {
         Binding(
             get: { expandedProviderRuntime == runtime },
-            set: { expandedProviderRuntime = $0 ? runtime : nil }
+            set: {
+                let next: AgentRuntimeID? = $0 ? runtime : nil
+                expandedProviderRuntime = next
+                ProviderDisclosureStore.expandedRuntimeID = next?.rawValue
+            }
         )
     }
 
@@ -579,7 +606,7 @@ struct SettingsView: View {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: role.symbolName)
                     .font(Stanford.ui(15, weight: .semibold))
-                    .foregroundStyle(Stanford.lagunita)
+                    .foregroundStyle(.secondary)
                     .frame(width: 22)
 
                 VStack(alignment: .leading, spacing: 2) {
@@ -962,6 +989,7 @@ struct SettingsView: View {
             }
             .buttonStyle(.borderless)
             .accessibilityLabel("Choose \(title)")
+            .help("Choose \(title)")
         }
     }
 
@@ -1003,6 +1031,7 @@ struct SettingsView: View {
             }
             .buttonStyle(.borderless)
             .accessibilityLabel("Choose \(title)")
+            .help("Choose \(title)")
         }
     }
 
@@ -1418,5 +1447,26 @@ struct SettingsView: View {
 private extension RuntimeReadinessConfiguration {
     var runtimeReadinessCheckID: String {
         AgentRuntimeAdapterRegistry.adapter(for: runtime).readinessCheckID
+    }
+}
+
+/// Remembers which provider disclosure row was last expanded so reopening
+/// Settings restores the user's layout. Backed by `UserDefaults` directly — not
+/// `@AppStorage` — to stay off the architecture-fitness `@AppStorage` ratchet,
+/// mirroring `RailDisclosureStore`. Settings is a single global surface, so the
+/// key is not workspace-scoped. `nil` means "never touched" (seed the default
+/// provider); an empty string is the sentinel for "user collapsed every row".
+enum ProviderDisclosureStore {
+    private static let key = "settings.providers.expandedRuntimeID"
+
+    static var expandedRuntimeID: String? {
+        get { UserDefaults.standard.string(forKey: key) }
+        set {
+            if let newValue {
+                UserDefaults.standard.set(newValue, forKey: key)
+            } else {
+                UserDefaults.standard.set("", forKey: key)
+            }
+        }
     }
 }

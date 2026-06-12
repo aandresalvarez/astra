@@ -14,8 +14,8 @@ struct ConnectorsManagerView: View {
             // Header
             HStack {
                 Text("Connectors")
-                    .font(Stanford.heading(22))
-                    .foregroundStyle(Stanford.black)
+                    .font(Stanford.ui(18, weight: .semibold))
+                    .foregroundStyle(.primary)
                 Spacer()
                 if let onManageCapabilities {
                     Button { onManageCapabilities() } label: {
@@ -74,18 +74,32 @@ struct ConnectorsManagerView: View {
 
     private func connectorRow(_ connector: Connector) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: connector.icon)
-                .foregroundStyle(Stanford.lagunita)
-                .frame(width: 20)
+            CapabilityLeadingIcon(
+                systemImage: connector.icon,
+                brand: BrandMark.resolve(id: connector.serviceType, name: connector.name),
+                pointSize: 16
+            )
+            .foregroundStyle(.secondary)
+            .frame(width: 20)
             VStack(alignment: .leading, spacing: 2) {
                 Text(connector.name.isEmpty ? "Untitled" : connector.name)
                     .font(Stanford.body(15))
-                Text(connector.displaySummary)
+                Text(rowSubtitle(connector))
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .help(rowSubtitle(connector))
             }
         }
+    }
+
+    /// Lead the subtitle with the recognizable service noun (GitHub, Jira, …),
+    /// then the host/scoping metadata from `displaySummary` (P2a).
+    private func rowSubtitle(_ connector: Connector) -> String {
+        let label = ConnectorEditorView.serviceLabel(connector.serviceType)
+        let summary = connector.displaySummary
+        guard !summary.isEmpty, summary != connector.serviceType else { return label }
+        return "\(label) · \(summary)"
     }
 
     private func createConnector() {
@@ -112,6 +126,18 @@ struct ConnectorsManagerView: View {
 
 // MARK: - Connector Editor
 
+/// A staged destructive action awaiting explicit confirmation. One piece of
+/// state plus one `.confirmationDialog` serves every delete site in the editor,
+/// so each dialog can name exactly what it will remove and run the deletion
+/// only on an explicit second tap.
+private struct PendingConnectorDeletion: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
+    let confirmTitle: String
+    let perform: () -> Void
+}
+
 struct ConnectorEditorView: View {
     @Bindable var connector: Connector
     var workspace: Workspace?
@@ -134,6 +160,7 @@ struct ConnectorEditorView: View {
     @State private var isOAuthSigningIn = false
     @State private var oauthSignInTask: Task<Void, Never>?
     @State private var oauthSignInGeneration = UUID()
+    @State private var pendingDeletion: PendingConnectorDeletion?
     @FocusState private var isNameFocused: Bool
 
     private static let secretPatterns = ["KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH"]
@@ -289,6 +316,9 @@ struct ConnectorEditorView: View {
 
                         ForEach(Array(connector.configKeys.enumerated()), id: \.offset) { idx, key in
                             if idx < connector.configValues.count {
+                                if idx > 0 {
+                                    Divider().opacity(0.5)
+                                }
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(key)
                                         .font(Stanford.ui(13, design: .monospaced))
@@ -306,10 +336,16 @@ struct ConnectorEditorView: View {
                                                     Text(item)
                                                         .font(Stanford.ui(12, design: .monospaced))
                                                     Button {
-                                                        guard idx < connector.configValues.count else { return }
-                                                        let updated = items.filter { $0 != item }.joined(separator: ",")
-                                                        connector.configValues[idx] = updated
-                                                        connector.updatedAt = Date()
+                                                        pendingDeletion = PendingConnectorDeletion(
+                                                            title: "Remove “\(item)”?",
+                                                            message: "Remove “\(item)” from \(key) on \(connectorDisplayName)?",
+                                                            confirmTitle: "Remove"
+                                                        ) {
+                                                            guard idx < connector.configValues.count else { return }
+                                                            let updated = items.filter { $0 != item }.joined(separator: ",")
+                                                            connector.configValues[idx] = updated
+                                                            connector.updatedAt = Date()
+                                                        }
                                                     } label: {
                                                         Image(systemName: "xmark")
                                                             .font(Stanford.ui(10, weight: .bold))
@@ -352,11 +388,17 @@ struct ConnectorEditorView: View {
                                     HStack {
                                         Spacer()
                                         Button {
-                                            guard idx < connector.configKeys.count,
-                                                  idx < connector.configValues.count else { return }
-                                            connector.configKeys.remove(at: idx)
-                                            connector.configValues.remove(at: idx)
-                                            connector.updatedAt = Date()
+                                            pendingDeletion = PendingConnectorDeletion(
+                                                title: "Remove “\(key)”?",
+                                                message: "Remove the \(key) parameter from \(connectorDisplayName)? This clears its value.",
+                                                confirmTitle: "Remove"
+                                            ) {
+                                                guard idx < connector.configKeys.count,
+                                                      idx < connector.configValues.count else { return }
+                                                connector.configKeys.remove(at: idx)
+                                                connector.configValues.remove(at: idx)
+                                                connector.updatedAt = Date()
+                                            }
                                         } label: {
                                             Image(systemName: "trash")
                                                 .font(Stanford.ui(11))
@@ -365,9 +407,7 @@ struct ConnectorEditorView: View {
                                         .buttonStyle(.plain)
                                     }
                                 }
-                                .padding(8)
-                                .background(Stanford.fog)
-                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                                .padding(.vertical, 4)
                             }
                         }
 
@@ -380,7 +420,7 @@ struct ConnectorEditorView: View {
                                 .textFieldStyle(.roundedBorder)
                                 .font(Stanford.ui(13, design: .monospaced))
                                 .onSubmit { addConfig() }
-                            Button("Add") { addConfig() }
+                            Button("Add parameter") { addConfig() }
                                 .disabled(newConfigKey.trimmingCharacters(in: .whitespaces).isEmpty)
                         }
                     }
@@ -403,8 +443,13 @@ struct ConnectorEditorView: View {
 
                         if !connector.credentialKeys.isEmpty {
                             VStack(spacing: 4) {
-                                ForEach(connector.credentialKeys, id: \.self) { key in
-                                    let idx = connector.credentialKeys.firstIndex(of: key) ?? 0
+                                // Identity is the position, not the key string: legacy data can
+                                // carry duplicate keys, and deriving the index via firstIndex(of:)
+                                // would then replace/remove the wrong secret.
+                                ForEach(Array(connector.credentialKeys.enumerated()), id: \.offset) { idx, key in
+                                    if idx > 0 {
+                                        Divider().opacity(0.5)
+                                    }
                                     HStack(spacing: 8) {
                                         Text(key)
                                             .font(Stanford.ui(13, design: .monospaced))
@@ -425,10 +470,14 @@ struct ConnectorEditorView: View {
                                                 Text(String(repeating: "\u{2022}", count: 12))
                                                     .font(Stanford.ui(13))
                                                     .foregroundStyle(.secondary)
-                                                Image(systemName: inKeychain ? "checkmark.shield.fill" : "exclamationmark.triangle")
-                                                    .font(Stanford.ui(10))
-                                                    .foregroundStyle(inKeychain ? Stanford.paloAltoGreen : Stanford.poppy)
-                                                    .help(inKeychain ? "Stored in Keychain" : "Not yet in Keychain — re-enter value")
+                                                // P2: the header carries the count for stored secrets;
+                                                // only flag the exceptional row that still needs a value.
+                                                if !inKeychain {
+                                                    Image(systemName: "exclamationmark.triangle")
+                                                        .font(Stanford.ui(10))
+                                                        .foregroundStyle(Stanford.poppy)
+                                                        .help("Not yet in Keychain — re-enter value")
+                                                }
                                             }
                                         }
 
@@ -463,7 +512,13 @@ struct ConnectorEditorView: View {
                                             .controlSize(.small)
 
                                             Button {
-                                                connector.removeCredential(at: idx)
+                                                pendingDeletion = PendingConnectorDeletion(
+                                                    title: "Remove secret “\(key)”?",
+                                                    message: "Remove the \(key) secret from \(connectorDisplayName)? This deletes its stored Keychain value.",
+                                                    confirmTitle: "Remove Secret"
+                                                ) {
+                                                    connector.removeCredential(at: idx)
+                                                }
                                             } label: {
                                                 Image(systemName: "trash")
                                                     .font(Stanford.ui(12))
@@ -472,10 +527,7 @@ struct ConnectorEditorView: View {
                                             .buttonStyle(.plain)
                                         }
                                     }
-                                    .padding(.horizontal, 8)
                                     .padding(.vertical, 4)
-                                    .background(Stanford.fog)
-                                    .clipShape(RoundedRectangle(cornerRadius: 6))
                                 }
                             }
                         }
@@ -490,7 +542,7 @@ struct ConnectorEditorView: View {
                                     .textFieldStyle(.roundedBorder)
                                     .font(Stanford.ui(13, design: .monospaced))
                                     .onSubmit { addCredential() }
-                                Button("Add") { addCredential() }
+                                Button("Store secret") { addCredential() }
                                     .disabled(newCredKey.trimmingCharacters(in: .whitespaces).isEmpty || newCredValue.isEmpty)
                                 Button("Cancel") {
                                     cancelCredentialEntry()
@@ -502,7 +554,7 @@ struct ConnectorEditorView: View {
                             Button {
                                 isAddingCredential = true
                             } label: {
-                                Label("Add Secret", systemImage: "plus.circle")
+                                Label("New secret", systemImage: "plus.circle")
                                     .font(Stanford.body(13))
                             }
                             .buttonStyle(.bordered)
@@ -603,18 +655,20 @@ struct ConnectorEditorView: View {
                         .padding(4)
                         .background(Color(nsColor: .textBackgroundColor))
                         .clipShape(RoundedRectangle(cornerRadius: 6))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6)
-                                .stroke(Stanford.sandstone.opacity(0.4), lineWidth: 1)
-                        )
                 }
 
                 // Delete
                 HStack {
                     Spacer()
                     Button(role: .destructive) {
-                        cancelOutlookSignIn()
-                        onDelete()
+                        pendingDeletion = PendingConnectorDeletion(
+                            title: "Delete \(connectorDisplayName)?",
+                            message: "Delete the connector \(connectorDisplayName)? This removes its configuration and any stored Keychain secrets. This cannot be undone.",
+                            confirmTitle: "Delete Connector"
+                        ) {
+                            cancelOutlookSignIn()
+                            onDelete()
+                        }
                     } label: {
                         Label("Delete Connector", systemImage: "trash")
                     }
@@ -639,6 +693,29 @@ struct ConnectorEditorView: View {
                 modelContext: modelContext
             )
         }
+        .confirmationDialog(
+            pendingDeletion?.title ?? "",
+            isPresented: Binding(
+                get: { pendingDeletion != nil },
+                set: { presented in if !presented { pendingDeletion = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: pendingDeletion
+        ) { deletion in
+            Button(deletion.confirmTitle, role: .destructive) {
+                deletion.perform()
+                pendingDeletion = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingDeletion = nil
+            }
+        } message: { deletion in
+            Text(deletion.message)
+        }
+    }
+
+    private var connectorDisplayName: String {
+        connector.name.isEmpty ? "this connector" : "“\(connector.name)”"
     }
 
     private var outlookMailOAuthSection: some View {
@@ -960,7 +1037,7 @@ struct ConnectorEditorView: View {
         newListItem = ""
     }
 
-    private static func serviceLabel(_ type: String) -> String {
+    static func serviceLabel(_ type: String) -> String {
         switch type {
         case "redcap": return "REDCap"
         case "rest_api": return "REST API"

@@ -146,13 +146,10 @@ struct WorkspaceRightRailView: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
-    @State private var isIdentityCollapsed = true
-    @State private var isCapabilitiesCollapsed = false
     @State private var isContextCollapsed = true
     @State private var isAccessCollapsed = true
     @State private var isSchedulesSectionCollapsed = false
     @State private var sshConnections: [SSHConnection] = []
-    @State private var isConnectorsExpanded = false
     @State private var isToolsExpanded = false
     @State private var isTemplatesExpanded = false
     @State private var isConfiguredWorkspaceSetupExpanded = false
@@ -201,20 +198,8 @@ struct WorkspaceRightRailView: View {
         capabilities.enabledGlobalSkills
     }
 
-    private var availableSkills: [Skill] {
-        capabilities.activeSkills
-    }
-
-    private var workspaceTools: [LocalTool] {
-        capabilities.activeTools
-    }
-
     private var enabledGlobalConnectors: [Connector] {
         capabilities.enabledGlobalConnectors
-    }
-
-    private var workspaceConnectors: [Connector] {
-        capabilities.activeConnectors
     }
 
     private var templates: [TaskTemplate] {
@@ -644,102 +629,6 @@ struct WorkspaceRightRailView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var capabilityArchitectureSummary: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            CapabilityHierarchySummary()
-
-            Divider().opacity(0.25)
-
-            HStack(alignment: .top, spacing: 0) {
-                CapabilityOverviewMetric(
-                    title: "Enabled here",
-                    value: "\(enabledPackageCount)",
-                    icon: "checkmark.circle.fill",
-                    color: Stanford.paloAltoGreen
-                )
-                Divider().opacity(0.25).padding(.horizontal, 8)
-                CapabilityOverviewMetric(
-                    title: "Needs setup",
-                    value: "\(needsSetupPackageCount)",
-                    icon: "exclamationmark.triangle.fill",
-                    color: Stanford.poppy
-                )
-                Divider().opacity(0.25).padding(.horizontal, 8)
-                CapabilityOverviewMetric(
-                    title: "Shared here",
-                    value: "\(enabledSharedResourceCount)",
-                    icon: "square.3.layers.3d",
-                    color: Stanford.sky
-                )
-            }
-
-            Text("Package actions are workspace scoped. Shared resources can be reused elsewhere; workspace resources can carry different instructions or credentials here.")
-                .font(Stanford.caption(11))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(Stanford.railInlineCardPadding)
-        .railCard(
-            cornerRadius: Stanford.railCompactCardCornerRadius,
-            fill: Color.primary.opacity(0.025),
-            strokeOpacity: 0.04
-        )
-    }
-
-    @ViewBuilder
-    private var sharedResourceScopeSummary: some View {
-        let enabledShared = enabledSharedResourceCount
-        let availableShared = availableSharedResourceCount
-        let workspaceOnly = workspaceOnlyResourceCount
-
-        if enabledShared + availableShared + workspaceOnly > 0 {
-            VStack(alignment: .leading, spacing: 7) {
-                HStack(spacing: 6) {
-                    Image(systemName: "square.3.layers.3d")
-                        .font(Stanford.ui(11, weight: .semibold))
-                        .foregroundStyle(Stanford.sky)
-                    Text("Reusable resources")
-                        .font(Stanford.caption(12).weight(.semibold))
-                        .foregroundStyle(.primary)
-                    Spacer(minLength: 0)
-                }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    CapabilityResourceScopeRow(title: "Shared enabled here", value: enabledShared)
-                    CapabilityResourceScopeRow(title: "Shared available", value: availableShared)
-                    CapabilityResourceScopeRow(title: "Workspace-only", value: workspaceOnly)
-                }
-
-                HStack(spacing: 8) {
-                    Text("Shared skills, connectors, and tools keep one definition across workspaces.")
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    Spacer(minLength: 0)
-                }
-
-                if onOpenConfigureTab != nil {
-                    Button {
-                        onOpenConfigureTab?(.skills, nil)
-                    } label: {
-                        Text("Configure resources")
-                            .font(Stanford.caption(11).weight(.medium))
-                            .foregroundStyle(Stanford.lagunita)
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.top, 1)
-                }
-            }
-            .padding(Stanford.railInlineCardPadding)
-            .railCard(
-                cornerRadius: Stanford.railCompactCardCornerRadius,
-                fill: Color.primary.opacity(0.025),
-                strokeOpacity: 0.04
-            )
-        }
-    }
-
     private func capabilityGroupHeader(
         _ title: String,
         count _: Int,
@@ -860,26 +749,6 @@ struct WorkspaceRightRailView: View {
                     .padding(.leading, 2)
             }
         }
-    }
-
-    private var enabledPackageCount: Int {
-        railCapabilityItems.filter(\.isEnabled).count
-    }
-
-    private var needsSetupPackageCount: Int {
-        railCapabilityItems.filter { $0.readiness.level == .needsAttention }.count
-    }
-
-    private var attentionCapabilityItems: [RailCapabilityItem] {
-        railCapabilityItems.filter { $0.readiness.level == .needsAttention }
-    }
-
-    private var readyCapabilityItems: [RailCapabilityItem] {
-        railCapabilityItems.filter { $0.readiness.level != .needsAttention && !isDraftCapability($0) }
-    }
-
-    private var draftCapabilityItems: [RailCapabilityItem] {
-        railCapabilityItems.filter(isDraftCapability)
     }
 
     private func isDraftCapability(_ item: RailCapabilityItem) -> Bool {
@@ -1013,31 +882,6 @@ struct WorkspaceRightRailView: View {
         }
     }
 
-    private var enabledSharedResourceCount: Int {
-        enabledGlobalSkills.count + enabledGlobalConnectors.count + capabilities.enabledGlobalTools.count
-    }
-
-    private var availableSharedResourceCount: Int {
-        let disabledSharedSkills = capabilities.availableGlobalSkills.filter {
-            !workspace.enabledGlobalSkillIDs.contains($0.id.uuidString)
-        }.count
-        let disabledSharedConnectors = capabilities.availableGlobalConnectors.filter {
-            !workspace.enabledGlobalConnectorIDs.contains($0.id.uuidString)
-        }.count
-        let disabledSharedTools = capabilities.availableGlobalTools.filter {
-            !workspace.enabledGlobalToolIDs.contains($0.id.uuidString)
-        }.count
-        return disabledSharedSkills + disabledSharedConnectors + disabledSharedTools
-    }
-
-    private var workspaceOnlyResourceCount: Int {
-        capabilities.workspaceSkills.count + capabilities.workspaceConnectors.count + capabilities.workspaceTools.count
-    }
-
-    private var railCapabilityItems: [RailCapabilityItem] {
-        capabilityRailSnapshot.items
-    }
-
     private func sortRailCapabilityItems(_ lhs: RailCapabilityItem, _ rhs: RailCapabilityItem) -> Bool {
         let lhsNeedsSetup = lhs.readiness.level == .needsAttention
         let rhsNeedsSetup = rhs.readiness.level == .needsAttention
@@ -1120,59 +964,6 @@ struct WorkspaceRightRailView: View {
         )
     }
 
-    private func makeSkillCapabilityItem(_ skill: Skill) -> RailCapabilityItem {
-        let connectors = uniqueConnectors(skill.connectors)
-        let tools = uniqueTools(skill.localTools)
-        let isEnabled = skill.isGlobal ? workspace.enabledGlobalSkillIDs.contains(skill.id.uuidString) : true
-        let presentation = CapabilityRailPackagePresentation.make(
-            isEnabled: isEnabled,
-            readinessLevel: readinessForSkill(isEnabled: isEnabled, connectors: connectors).level,
-            workspaceName: workspace.name,
-            sharedResourceCount: skillSharedResourceCount(skill: skill, connectors: connectors, tools: tools),
-            workspaceResourceCount: skillWorkspaceResourceCount(skill: skill, connectors: connectors, tools: tools),
-            declaredResourceCount: 1 + connectors.count + tools.count,
-            contentSummary: "\(skill.allowedTools.count) permission\(skill.allowedTools.count == 1 ? "" : "s")"
-        )
-        return RailCapabilityItem(
-            id: "skill:\(skill.id.uuidString)",
-            name: skill.name.isEmpty ? "Untitled Capability" : skill.name,
-            icon: skill.icon,
-            summary: skill.skillDescription.isEmpty ? "\(skill.allowedTools.count) permissions" : skill.skillDescription,
-            color: Stanford.lagunita,
-            isEnabled: isEnabled,
-            readiness: readinessForSkill(isEnabled: isEnabled, connectors: connectors),
-            presentation: presentation,
-            source: .skill(skill),
-            skillNames: [skill.name.isEmpty ? "Untitled Skill" : skill.name],
-            connectorNames: RailStringList.uniqueSorted(connectors.map { $0.name.isEmpty ? "Untitled Connector" : $0.name }),
-            toolNames: RailStringList.uniqueSorted(tools.map { $0.name.isEmpty ? "Untitled Tool" : $0.name }),
-            browserAdapterNames: [],
-            templateNames: [],
-            requirementNames: []
-        )
-    }
-
-    private func readinessForSkill(isEnabled: Bool, connectors: [Connector]) -> CapabilityReadiness {
-        guard isEnabled else { return .inactive }
-
-        let messages = connectors.flatMap { connector -> [String] in
-            guard connector.authMethod != "none" else { return [] }
-            let name = connector.name.isEmpty ? "Connector" : connector.name
-            let missing = connector.missingCredentialKeys()
-            if !missing.isEmpty {
-                return ["\(name): missing \(missing.joined(separator: ", "))"]
-            }
-            if connector.credentialKeys.isEmpty {
-                return ["\(name): no credentials configured"]
-            }
-            return []
-        }
-
-        return messages.isEmpty
-            ? .ready
-            : CapabilityReadiness(level: .needsAttention, messages: messages)
-    }
-
     private func readiness(
         for package: PluginPackage,
         stateReadiness: CapabilityReadiness,
@@ -1191,18 +982,6 @@ struct WorkspaceRightRailView: View {
         )
     }
 
-    private func skillSharedResourceCount(skill: Skill, connectors: [Connector], tools: [LocalTool]) -> Int {
-        (skill.isGlobal ? 1 : 0)
-            + connectors.filter(\.isGlobal).count
-            + tools.filter(\.isGlobal).count
-    }
-
-    private func skillWorkspaceResourceCount(skill: Skill, connectors: [Connector], tools: [LocalTool]) -> Int {
-        (skill.isGlobal ? 0 : 1)
-            + connectors.filter { !$0.isGlobal }.count
-            + tools.filter { !$0.isGlobal }.count
-    }
-
     private func linkedConnectors(for package: PluginPackage, linkedSkills: [Skill]) -> [Connector] {
         let packageNames = Set(package.connectors.map(\.name))
         let active = capabilities.activeConnectors.filter { packageNames.contains($0.name) }
@@ -1213,164 +992,6 @@ struct WorkspaceRightRailView: View {
         let packageNames = Set(package.localTools.map(\.name))
         let active = capabilities.activeTools.filter { packageNames.contains($0.name) }
         return uniqueTools(active + linkedSkills.flatMap(\.localTools))
-    }
-
-    private func hasEnabledElements(
-        package: PluginPackage,
-        linkedSkills: [Skill],
-        linkedConnectors: [Connector],
-        linkedTools: [LocalTool]
-    ) -> Bool {
-        if linkedSkills.contains(where: { skill in
-            skill.isGlobal ? workspace.enabledGlobalSkillIDs.contains(skill.id.uuidString) : workspace.skills.contains { $0.id == skill.id }
-        }) {
-            return true
-        }
-
-        if linkedConnectors.contains(where: { connector in
-            connector.isGlobal ? workspace.enabledGlobalConnectorIDs.contains(connector.id.uuidString) : workspace.connectors.contains { $0.id == connector.id }
-        }) {
-            return true
-        }
-
-        if linkedTools.contains(where: { tool in
-            tool.isGlobal ? workspace.enabledGlobalToolIDs.contains(tool.id.uuidString) : workspace.localTools.contains { $0.id == tool.id }
-        }) {
-            return true
-        }
-
-        return false
-    }
-
-    private func setCapability(_ item: RailCapabilityItem, enabled: Bool) {
-        switch item.source {
-        case .package(let package):
-            if enabled {
-                let traceID = AuditTrace.make("capability-enable")
-                AppLogger.breadcrumb(action: "enable_capability_clicked", category: "Capabilities", traceID: traceID, fields: [
-                    "source": "right_rail",
-                    "package_id": package.id,
-                    "package_name": package.name,
-                    "workspace_id": workspace.id.uuidString,
-                    "readiness_level": String(describing: item.readiness.level),
-                    "requirement_count": String(item.requirementNames.count)
-                ])
-                AppLogger.audit(.capabilityEnableStarted, category: "Capabilities", fields: [
-                    "source": "right_rail",
-                    "trace_id": traceID,
-                    "package_id": package.id,
-                    "package_name": package.name,
-                    "package_version": package.version,
-                    "workspace_id": workspace.id.uuidString,
-                    "readiness_level": String(describing: item.readiness.level),
-                    "readiness_messages_count": String(item.readiness.messages.count),
-                    "requirement_count": String(item.requirementNames.count)
-                ])
-                do {
-                    try CapabilityInstaller().install(
-                        package,
-                        into: workspace,
-                        modelContext: modelContext,
-                        policyContext: catalogPolicyContext,
-                        traceID: traceID
-                    )
-                    refreshApprovedCapabilities()
-                    refreshCapabilityPrerequisiteStatuses()
-                } catch {
-                    capabilityError = error.localizedDescription
-                    AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
-                        "result": "failed",
-                        "source": "right_rail",
-                        "trace_id": traceID,
-                        "package_id": package.id,
-                        "package_name": package.name,
-                        "workspace_id": workspace.id.uuidString,
-                        "readiness_level": String(describing: item.readiness.level),
-                        "readiness_messages_count": String(item.readiness.messages.count),
-                        "requirement_count": String(item.requirementNames.count),
-                        "error_type": String(describing: type(of: error))
-                    ], level: .error)
-                }
-            } else {
-                disablePackageCapability(package)
-            }
-        case .skill(let skill):
-            guard skill.isGlobal else { return }
-            let traceID = AuditTrace.make("skill-toggle")
-            AppLogger.breadcrumb(action: enabled ? "enable_skill_clicked" : "disable_skill_clicked", category: "Capabilities", traceID: traceID, fields: [
-                "source": "right_rail",
-                "skill_id": skill.id.uuidString,
-                "skill_name": skill.name,
-                "workspace_id": workspace.id.uuidString
-            ])
-            let idString = skill.id.uuidString
-            if enabled {
-                if !workspace.enabledGlobalSkillIDs.contains(idString) {
-                    workspace.enabledGlobalSkillIDs.append(idString)
-                }
-            } else {
-                workspace.enabledGlobalSkillIDs.removeAll { $0 == idString }
-            }
-            workspace.updatedAt = Date()
-            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
-            AppLogger.audit(enabled ? .capabilityEnabled : .capabilityDisabled, category: "Capabilities", fields: [
-                "source": "skill",
-                "trace_id": traceID,
-                "skill_id": skill.id.uuidString,
-                "workspace_id": workspace.id.uuidString,
-                "readiness_level": String(describing: item.readiness.level),
-                "readiness_messages_count": String(item.readiness.messages.count)
-            ])
-        }
-    }
-
-    private func disablePackageCapability(_ package: PluginPackage) {
-        let state = CapabilityPackageState(
-            package: package,
-            workspace: workspace,
-            capabilities: capabilities
-        )
-        let traceID = AuditTrace.make("capability-disable")
-        AppLogger.breadcrumb(action: "disable_capability_clicked", category: "Capabilities", traceID: traceID, fields: [
-            "source": "right_rail",
-            "package_id": package.id,
-            "package_name": package.name,
-            "workspace_id": workspace.id.uuidString
-        ])
-        AppLogger.audit(.capabilityDisableStarted, category: "Capabilities", fields: [
-            "source": "right_rail",
-            "trace_id": traceID,
-            "package_id": package.id,
-            "package_name": package.name,
-            "package_version": package.version,
-            "workspace_id": workspace.id.uuidString,
-            "skills_count": String(state.skillIDStrings.count),
-            "connectors_count": String(state.connectorIDStrings.count),
-            "tools_count": String(state.toolIDStrings.count)
-        ])
-
-        let result = CapabilityActivationDisabler().disable(
-            package,
-            in: workspace,
-            capabilities: capabilities,
-            modelContext: modelContext,
-            availablePackages: approvedCapabilityPackages + PluginCatalog.builtInPackages
-        )
-        workspace.updatedAt = Date()
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
-        AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
-            "source": "package",
-            "trace_id": traceID,
-            "package_id": package.id,
-            "workspace_id": workspace.id.uuidString,
-            "skills_count": String(state.skillIDStrings.count),
-            "connectors_count": String(state.connectorIDStrings.count),
-            "tools_count": String(state.toolIDStrings.count),
-            "removed_workspace_skills_count": String(result.removedWorkspaceSkillIDs.count),
-            "removed_workspace_connectors_count": String(result.removedWorkspaceConnectorIDs.count),
-            "readiness_level": String(describing: state.readiness.level),
-            "readiness_messages_count": String(state.readiness.messages.count)
-        ])
     }
 
     private func openCapabilityConfiguration(_ item: RailCapabilityItem) {
@@ -1447,124 +1068,9 @@ struct WorkspaceRightRailView: View {
 
     // MARK: - Connector Subsection
 
-    private var connectorSubsection: some View {
-        VStack(alignment: .leading, spacing: sectionContentSpacing) {
-            HStack {
-                HStack(spacing: 4) {
-                    Image(systemName: "bolt.horizontal.circle")
-                        .font(Stanford.ui(12))
-                        .foregroundStyle(Stanford.paloAltoGreen)
-                    Text("Connectors")
-                        .font(Stanford.caption(12).weight(.semibold))
-                    Text("\(workspaceConnectors.count) active")
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-            }
-
-            let localConnectors = capabilities.workspaceConnectors
-
-            ForEach(localConnectors) { connector in
-                CapabilityRow(
-                    icon: connector.icon,
-                    title: connector.name.isEmpty ? "Untitled" : connector.name,
-                    subtitle: connector.displaySummary,
-                    color: Stanford.paloAltoGreen,
-                    trailing: "Connected"
-                )
-            }
-
-            let availableGlobals = capabilities.availableGlobalConnectors
-
-            ForEach(availableGlobals) { connector in
-                CapabilityToggleRow(
-                    icon: connector.icon,
-                    title: connector.name.isEmpty ? "Untitled" : connector.name,
-                    subtitle: connector.displaySummary,
-                    color: Stanford.paloAltoGreen,
-                    isOn: workspaceGlobalConnectorBinding(connector)
-                )
-            }
-        }
-    }
-
     // MARK: - Tools & Templates Pills
 
     @ViewBuilder
-    private var toolsAndTemplatesPills: some View {
-        let availableGlobalTools = capabilities.availableGlobalTools.filter {
-            !workspace.enabledGlobalToolIDs.contains($0.id.uuidString)
-        }
-        let hasTools = !workspaceTools.isEmpty || !availableGlobalTools.isEmpty
-
-        if !hasTools && templates.isEmpty {
-            Text("No tools or templates attached")
-                .font(Stanford.caption(11))
-                .foregroundStyle(.tertiary)
-                .padding(.leading, 2)
-        } else {
-            if hasTools {
-                resourceSection(
-                    title: "Tools",
-                    count: workspaceTools.count,
-                    icon: "wrench.and.screwdriver",
-                    color: Stanford.plum,
-                    isExpanded: $isToolsExpanded
-                ) {
-                    if !workspaceTools.isEmpty {
-                        resourceRows(
-                            items: workspaceTools,
-                            emptyTitle: "No tools",
-                            emptyDescription: "Add scripts or CLI commands in Configure."
-                        ) { tool in
-                            ResourceRow(
-                                icon: LocalTool.iconForType(tool.toolType),
-                                title: tool.name.isEmpty ? "Untitled Tool" : tool.name,
-                                subtitle: tool.displayCommand.isEmpty ? tool.toolType.uppercased() : tool.displayCommand,
-                                color: Stanford.plum,
-                                onEdit: { onOpenConfigureTab?(.tools, tool.id) }
-                            )
-                        }
-                    }
-
-                    ForEach(availableGlobalTools) { tool in
-                        CapabilityToggleRow(
-                            icon: LocalTool.iconForType(tool.toolType),
-                            title: tool.name.isEmpty ? "Untitled Tool" : tool.name,
-                            subtitle: tool.displayCommand.isEmpty ? tool.toolType.uppercased() : tool.displayCommand,
-                            color: Stanford.plum,
-                            isOn: workspaceGlobalToolBinding(tool)
-                        )
-                    }
-                }
-            }
-
-            if !templates.isEmpty {
-                resourceSection(
-                    title: "Templates",
-                    count: templates.count,
-                    icon: "rectangle.3.group",
-                    color: Stanford.poppy,
-                    isExpanded: $isTemplatesExpanded
-                ) {
-                    resourceRows(
-                        items: templates,
-                        emptyTitle: "No templates",
-                        emptyDescription: "Create reusable task workflows in Configure."
-                    ) { template in
-                        ResourceRow(
-                            icon: template.icon,
-                            title: template.name,
-                            subtitle: template.templateDescription.isEmpty ? templatePhaseSummary(template) : template.templateDescription,
-                            color: Stanford.poppy,
-                            onEdit: { onOpenConfigureTab?(.templates, template.id) }
-                        )
-                    }
-                }
-            }
-        }
-    }
 
     // MARK: - Context Section
 
@@ -2273,258 +1779,9 @@ struct WorkspaceRightRailView: View {
 
     // MARK: - Access Section
 
-    private var accessSection: some View {
-        VStack(alignment: .leading, spacing: sectionContentSpacing) {
-            // Paths
-            HStack(spacing: 4) {
-                Text("Paths")
-                    .font(Stanford.caption(11).weight(.semibold))
-                    .foregroundStyle(.primary)
-                Spacer()
-                Button { addExtraFolder() } label: {
-                    Text("+ Add folder")
-                        .font(Stanford.caption(11).weight(.medium))
-                        .foregroundStyle(Stanford.lagunita)
-                }
-                .buttonStyle(.plain)
-            }
-
-            HStack(spacing: 6) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Primary")
-                        .font(Stanford.caption(10))
-                        .foregroundStyle(.tertiary)
-                    Text(abbreviatePath(workspace.primaryPath))
-                        .font(Stanford.mono(11))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .help(workspace.primaryPath)
-                }
-                Spacer()
-                Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(workspace.primaryPath, forType: .string)
-                } label: {
-                    Image(systemName: "doc.on.doc")
-                        .font(Stanford.ui(10))
-                        .foregroundStyle(.tertiary)
-                }
-                .buttonStyle(.plain)
-                .help("Copy path")
-            }
-            .padding(8)
-            .background(Color.primary.opacity(0.03))
-            .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall))
-
-            ForEach(Array(workspace.additionalPaths.enumerated()), id: \.offset) { idx, path in
-                HStack(spacing: 6) {
-                    Image(systemName: "folder")
-                        .font(Stanford.ui(11))
-                        .foregroundStyle(.secondary)
-                    Text(abbreviatePath(path))
-                        .font(Stanford.caption(12))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .help(path)
-                    Spacer(minLength: 0)
-                    Button {
-                        removeAdditionalPath(at: idx)
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(Stanford.ui(10, weight: .semibold))
-                            .foregroundStyle(.tertiary)
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.vertical, 3)
-            }
-
-            Divider().opacity(0.3)
-
-            // SSH
-            HStack(spacing: 4) {
-                Text("SSH Connections")
-                    .font(Stanford.caption(11).weight(.medium))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button { onNewSSHConnection?() } label: {
-                    Text("+ Add remote server")
-                        .font(Stanford.caption(11).weight(.medium))
-                        .foregroundStyle(Stanford.lagunita)
-                }
-                .buttonStyle(.plain)
-            }
-
-            if sshConnections.isEmpty {
-                Text("No remote connections configured")
-                    .font(Stanford.caption(11))
-                    .foregroundStyle(.tertiary)
-            } else {
-                VStack(spacing: contentListSpacing) {
-                    ForEach(sshConnections) { conn in
-                        Button { onEditSSHConnection?(conn) } label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: "network")
-                                    .font(Stanford.ui(12))
-                                    .foregroundStyle(conn.lastTestResult == true ? Stanford.completed : (conn.lastTestResult == false ? Stanford.failed : .secondary))
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(conn.name.isEmpty ? conn.host : conn.name)
-                                        .font(Stanford.body(12).weight(.medium))
-                                        .foregroundStyle(.primary)
-                                        .lineLimit(1)
-                                    Text("\(conn.user)@\(conn.host):\(conn.port)")
-                                        .font(Stanford.caption(11))
-                                        .foregroundStyle(.tertiary)
-                                }
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                                    .font(Stanford.ui(10, weight: .semibold))
-                                    .foregroundStyle(.quaternary)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .padding(Stanford.railInlineCardPadding)
-                        .background(Color.primary.opacity(0.03))
-                        .clipShape(RoundedRectangle(cornerRadius: Stanford.railCompactCardCornerRadius))
-                    }
-                }
-            }
-        }
-    }
-
     // MARK: - Routines Content
 
-    private var schedulesContent: some View {
-        VStack(alignment: .leading, spacing: sectionContentSpacing) {
-            if workspace.schedules.isEmpty {
-                Button { onNewSchedule?() } label: {
-                    Text("+ Add routine")
-                        .font(Stanford.caption(11).weight(.medium))
-                        .foregroundStyle(Stanford.lagunita)
-                }
-                .buttonStyle(.plain)
-            } else {
-                VStack(spacing: contentListSpacing) {
-                    ForEach(workspace.schedules.sorted { $0.name < $1.name }) { schedule in
-                        HStack(spacing: 8) {
-                            Button { onEditSchedule?(schedule) } label: {
-                                HStack(spacing: 8) {
-                                    Image(systemName: "arrow.triangle.2.circlepath")
-                                        .font(Stanford.ui(12))
-                                        .foregroundStyle(schedule.isEnabled ? Stanford.lagunita : .secondary)
-                                    VStack(alignment: .leading, spacing: 1) {
-                                        Text(schedule.name)
-                                            .font(Stanford.body(12).weight(.medium))
-                                            .foregroundStyle(.primary)
-                                            .lineLimit(1)
-                                        Text(schedule.frequencySummary)
-                                            .font(Stanford.caption(11))
-                                            .foregroundStyle(.tertiary)
-                                    }
-                                    Spacer()
-                                }
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-
-                            Toggle("Enabled", isOn: Binding(
-                                get: { schedule.isEnabled },
-                                set: { schedule.isEnabled = $0; schedule.updatedAt = Date() }
-                            ))
-                            .toggleStyle(.switch)
-                            .labelsHidden()
-                            .controlSize(.mini)
-                        }
-                        .padding(Stanford.railInlineCardPadding)
-                        .background(Color.primary.opacity(0.03))
-                        .clipShape(RoundedRectangle(cornerRadius: Stanford.railCompactCardCornerRadius))
-                    }
-                }
-            }
-        }
-    }
-
     // MARK: - Collapsible Section Helpers
-
-    private func collapsibleSection<Content: View>(
-        _ title: String,
-        summary: String? = nil,
-        isCollapsed: Binding<Bool>,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: isCollapsed.wrappedValue ? 0 : sectionContentSpacing) {
-            Button {
-                withAnimation(disclosureAnimation) {
-                    isCollapsed.wrappedValue.toggle()
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: isCollapsed.wrappedValue ? "chevron.right" : "chevron.down")
-                        .font(Stanford.ui(10, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                    Text(title)
-                        .font(Stanford.caption(11).weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    if let summary {
-                        Text(summary)
-                            .font(Stanford.caption(10).weight(.medium))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.primary.opacity(0.05))
-                            .clipShape(Capsule())
-                    }
-                    Spacer()
-                }
-                .padding(.vertical, 2)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            if !isCollapsed.wrappedValue {
-                content()
-            }
-        }
-    }
-
-    private func collapsibleSectionWithTrailing<Trailing: View, Content: View>(
-        _ title: String,
-        isCollapsed: Binding<Bool>,
-        @ViewBuilder trailing: () -> Trailing,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: isCollapsed.wrappedValue ? 0 : sectionContentSpacing) {
-            HStack {
-                Button {
-                    withAnimation(disclosureAnimation) {
-                        isCollapsed.wrappedValue.toggle()
-                    }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: isCollapsed.wrappedValue ? "chevron.right" : "chevron.down")
-                            .font(Stanford.ui(10, weight: .semibold))
-                            .foregroundStyle(.tertiary)
-                        Text(title)
-                            .font(Stanford.caption(11).weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, 2)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                Spacer()
-                if !isCollapsed.wrappedValue {
-                    trailing()
-                }
-            }
-
-            if !isCollapsed.wrappedValue {
-                content()
-            }
-        }
-    }
 
     private func markWorkspaceConfigurationChanged() {
         workspace.updatedAt = Date()
@@ -2651,6 +1908,8 @@ struct WorkspaceRightRailView: View {
             }
             .buttonStyle(.plain)
             .disabled(newMemoryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .help("Save memory")
+            .accessibilityLabel("Save memory")
 
             Button {
                 newMemoryText = ""
@@ -2661,6 +1920,8 @@ struct WorkspaceRightRailView: View {
                     .foregroundStyle(.tertiary)
             }
             .buttonStyle(.plain)
+            .help("Cancel")
+            .accessibilityLabel("Cancel adding memory")
         }
     }
 
@@ -2698,214 +1959,8 @@ struct WorkspaceRightRailView: View {
 
     // MARK: - Inspector Helpers
 
-    private func inspectorSection<Content: View>(
-        _ title: String,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: sectionContentSpacing) {
-            Text(title)
-                .font(Stanford.ui(10, weight: .semibold))
-                .foregroundStyle(.tertiary)
-            content()
-        }
-    }
-
-    private func inspectorSectionWithTrailing<Trailing: View, Content: View>(
-        _ title: String,
-        @ViewBuilder trailing: () -> Trailing,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: sectionContentSpacing) {
-            HStack {
-                Text(title)
-                    .font(Stanford.ui(10, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                Spacer()
-                trailing()
-            }
-            content()
-        }
-    }
-
-    private func inspectorRow(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .top, spacing: 0) {
-            Text(label)
-                .font(Stanford.caption(12))
-                .foregroundStyle(.secondary)
-                .frame(width: Stanford.inspectorLabelWidth, alignment: .leading)
-            Text(value.isEmpty ? "—" : value)
-                .font(Stanford.caption(12))
-                .foregroundStyle(.primary)
-                .lineLimit(2)
-                .textSelection(.enabled)
-            Spacer(minLength: 0)
-        }
-    }
-
-    private var workspaceSkillSection: some View {
-        VStack(alignment: .leading, spacing: sectionContentSpacing) {
-            HStack {
-                HStack(spacing: 4) {
-                    Image(systemName: "puzzlepiece.extension")
-                        .font(Stanford.ui(12))
-                        .foregroundStyle(Stanford.lagunita)
-                    Text("Skills")
-                        .font(Stanford.caption(12).weight(.semibold))
-                    Text("\(availableSkills.count) active")
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-            }
-
-            ForEach(workspaceSkills) { skill in
-                CapabilityRow(
-                    icon: skill.icon,
-                    title: skill.name.isEmpty ? "Untitled" : skill.name,
-                    subtitle: "\(skill.allowedTools.count) capabilities",
-                    color: Stanford.lagunita,
-                    onTap: { onOpenConfigureTab?(.skills, skill.id) }
-                )
-            }
-
-            let availableGlobals = capabilities.availableGlobalSkills
-
-            ForEach(availableGlobals) { skill in
-                CapabilityToggleRow(
-                    icon: skill.icon,
-                    title: skill.name.isEmpty ? "Untitled" : skill.name,
-                    subtitle: "\(skill.allowedTools.count) capabilities",
-                    color: Stanford.lagunita,
-                    isOn: workspaceGlobalSkillBinding(skill)
-                )
-            }
-        }
-    }
-
-    private func resourceSection<Content: View>(
-        title: String,
-        count: Int,
-        icon: String,
-        color: Color,
-        isExpanded: Binding<Bool>,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: sectionContentSpacing) {
-            Button {
-                withAnimation(disclosureAnimation) {
-                    isExpanded.wrappedValue.toggle()
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: isExpanded.wrappedValue ? "chevron.down" : "chevron.right")
-                        .font(Stanford.ui(10, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 10)
-
-                    Text(title)
-                        .font(Stanford.body(13).weight(.semibold))
-                        .foregroundStyle(.primary)
-
-                    Spacer()
-
-                    RailCountBadge(count: count)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            if isExpanded.wrappedValue {
-                content()
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func resourceRows<Item: Identifiable, Row: View>(
-        items: [Item],
-        emptyTitle: String,
-        emptyDescription: String,
-        @ViewBuilder row: @escaping (Item) -> Row
-    ) -> some View {
-        if items.isEmpty {
-            EmptyRailState(title: emptyTitle, description: emptyDescription)
-        } else {
-            VStack(spacing: contentListSpacing) {
-                ForEach(items) { item in
-                    row(item)
-                }
-            }
-        }
-    }
-
-    private func workspaceGlobalSkillBinding(_ skill: Skill) -> Binding<Bool> {
-        Binding(
-            get: {
-                workspace.enabledGlobalSkillIDs.contains(skill.id.uuidString)
-            },
-            set: { enabled in
-                let idString = skill.id.uuidString
-                if enabled {
-                    if !workspace.enabledGlobalSkillIDs.contains(idString) {
-                        workspace.enabledGlobalSkillIDs.append(idString)
-                    }
-                } else {
-                    workspace.enabledGlobalSkillIDs.removeAll { $0 == idString }
-                }
-                workspace.updatedAt = Date()
-                WorkspacePersistenceCoordinator.scheduleAutoExport(workspace: workspace, modelContext: modelContext)
-            }
-        )
-    }
-
-    private func workspaceGlobalConnectorBinding(_ connector: Connector) -> Binding<Bool> {
-        Binding(
-            get: {
-                workspace.enabledGlobalConnectorIDs.contains(connector.id.uuidString)
-            },
-            set: { enabled in
-                let idString = connector.id.uuidString
-                if enabled {
-                    if !workspace.enabledGlobalConnectorIDs.contains(idString) {
-                        workspace.enabledGlobalConnectorIDs.append(idString)
-                    }
-                } else {
-                    workspace.enabledGlobalConnectorIDs.removeAll { $0 == idString }
-                }
-                workspace.updatedAt = Date()
-                WorkspacePersistenceCoordinator.scheduleAutoExport(workspace: workspace, modelContext: modelContext)
-            }
-        )
-    }
-
-    private func workspaceGlobalToolBinding(_ tool: LocalTool) -> Binding<Bool> {
-        Binding(
-            get: {
-                workspace.enabledGlobalToolIDs.contains(tool.id.uuidString)
-            },
-            set: { enabled in
-                let idString = tool.id.uuidString
-                if enabled {
-                    if !workspace.enabledGlobalToolIDs.contains(idString) {
-                        workspace.enabledGlobalToolIDs.append(idString)
-                    }
-                } else {
-                    workspace.enabledGlobalToolIDs.removeAll { $0 == idString }
-                }
-                workspace.updatedAt = Date()
-                WorkspacePersistenceCoordinator.scheduleAutoExport(workspace: workspace, modelContext: modelContext)
-            }
-        )
-    }
-
     private func uniqueTools(_ tools: [LocalTool]) -> [LocalTool] {
         Dictionary(grouping: tools, by: \.id)
-            .compactMap { $0.value.first }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-    }
-
-    private func uniqueSkills(_ skills: [Skill]) -> [Skill] {
-        Dictionary(grouping: skills, by: \.id)
             .compactMap { $0.value.first }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
@@ -2916,18 +1971,7 @@ struct WorkspaceRightRailView: View {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
-    private func templatePhaseSummary(_ template: TaskTemplate) -> String {
-        var phases = ["main"]
-        if template.hasBeforePhase {
-            phases.insert("before", at: 0)
-        }
-        if template.hasAfterPhase {
-            phases.append("after")
-        }
-        return phases.joined(separator: " · ")
-    }
 }
-
 
 struct WorkspaceGitRepositoryScanInputs: Equatable {
     let primaryPath: String

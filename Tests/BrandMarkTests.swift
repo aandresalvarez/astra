@@ -29,12 +29,19 @@ struct BrandMarkTests {
         #expect(BrandMark.resolve(id: "google-drive-browser", name: "Google Drive Browser") == .googleDrive)
         #expect(BrandMark.resolve(id: "security-auditor", name: "Security Auditor") == nil)
         #expect(BrandMark.resolve(id: "redcap-workflow", name: "REDCap Workflow") == nil)
+        // The bare "gh" alias matches only as a standalone token, never inside
+        // ordinary words ending in "gh".
+        #expect(BrandMark.resolve(id: "x", name: "gh — GitHub CLI") == .github)
+        #expect(BrandMark.resolve(id: "x", name: "gh helper") == .github)
+        #expect(BrandMark.resolve(id: "x", name: "High priority sync") == nil)
+        #expect(BrandMark.resolve(id: "x", name: "Walkthrough recorder") == nil)
     }
 
     @Test("parser rejects unsupported commands so callers can fall back")
     func parserRejectsUnsupportedCommands() {
-        // Quadratic curves are not in the bundled marks and are unsupported.
-        #expect(SVGPathParser.parse("M0 0 Q1 1 2 2") == nil)
+        // All standard path commands are supported; a non-command letter (here
+        // "B") is genuinely unknown and must fall back to nil.
+        #expect(SVGPathParser.parse("M0 0 B1 1") == nil)
         #expect(SVGPathParser.parse("") == nil)
     }
 
