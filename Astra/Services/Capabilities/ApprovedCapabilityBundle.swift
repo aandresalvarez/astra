@@ -17,6 +17,9 @@ enum ApprovedCapabilityBundle {
                 if package.sourceMetadata == nil {
                     package.sourceMetadata = .builtIn()
                 }
+                if package.iconDescriptor.kind == .asset {
+                    package.sourceMetadata?.url = url
+                }
                 return package
             }
             .sorted { lhs, rhs in

@@ -110,19 +110,9 @@ enum WorkspaceContextIconography {
     static let headerIcon = "info.circle"
 
     static func capabilityIcon(name: String, fallback: String) -> String {
-        let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if normalized.contains("bigquery") {
-            return "cylinder.split.1x2"
-        }
-        if normalized.contains("read-only") || normalized.contains("read only") {
-            return "eye"
-        }
-        if normalized.contains("safe bash") {
-            return "terminal"
-        }
-        return fallback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "puzzlepiece.extension"
-            : fallback
+        CapabilityIconPresentation
+            .make(name: name, fallbackSystemName: fallback)
+            .legacySystemName
     }
 }
 
@@ -594,6 +584,7 @@ struct WorkspaceRightRailView: View {
             return "doc.text"
         }
     }
+
 
     private func capabilitySummaryTint(for style: CapabilityRailGroupStyle) -> Color {
         switch style {

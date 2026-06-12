@@ -30,6 +30,14 @@ Review checklist:
 - Remote MCP URLs must use HTTPS, except loopback HTTP for local development.
 - Connector-bound MCP servers should list the connector service names in `connectorBindings` and required env keys in `environmentKeys`; never store values in JSON.
 - Risk metadata must match the strongest declared data access or external effect.
+- Use `iconDescriptor` for package-owned icons. Built-in brand assets live under
+  `assets/`, use relative paths such as `assets/github.svg`, and should include
+  an SF Symbol `fallbackSystemName`.
+- Set `iconDescriptor.monochromePreferred` to `true` for single-color assets
+  that should tint with ASTRA's light/dark appearance. Reserve `false` for
+  full-color assets that should render with their original colors.
+- Keep vendored brand assets small, local, and source-attributed. Do not point
+  package JSON at remote icon URLs.
 - Add or update focused tests when changing package schema, prerequisites, governance, or runtime activation behavior.
 
 Approval workflow:
@@ -38,6 +46,8 @@ Approval workflow:
 - Local or legacy packages without governance decode as draft, admin-only, and explicit-consent-required.
 - Local review decisions are stored as channel-specific approval records under App Support and are keyed by package ID, version, and canonical package digest.
 - Any package content change changes the digest and requires re-review before the previous approval can be used.
+- For packages with asset icons, changing the declared asset bytes also changes
+  the approval digest.
 - Blocking a package prevents new task launches even if the package had already been enabled in a workspace.
 
 Local testing workflow:

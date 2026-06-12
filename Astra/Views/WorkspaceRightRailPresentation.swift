@@ -135,6 +135,19 @@ enum CapabilityRailSectionPresentation {
         let prefix = visible.joined(separator: ", ")
         return remaining > 0 ? "\(prefix) +\(remaining)" : prefix
     }
+
+    static func summaryIconPresentation(
+        for itemIcons: [CapabilityIconPresentation],
+        fallbackSystemName: String
+    ) -> CapabilityIconPresentation {
+        if itemIcons.count == 1, let icon = itemIcons.first {
+            return icon
+        }
+        return CapabilityIconPresentation(
+            kind: .systemSymbol(fallbackSystemName),
+            fallbackSystemName: fallbackSystemName
+        )
+    }
 }
 
 struct CapabilityRailPackagePresentation: Equatable {

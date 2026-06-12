@@ -94,6 +94,31 @@ struct CapabilityApprovalTests {
         #expect(try CapabilityApprovalDigest.digest(for: first) == CapabilityApprovalDigest.digest(for: second))
     }
 
+    @Test("approval digest changes when declared icon asset bytes change")
+    func approvalDigestChangesWhenDeclaredIconAssetBytesChange() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-approval-asset-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let assetRoot = root.appendingPathComponent("source", isDirectory: true)
+        let assets = assetRoot.appendingPathComponent("assets", isDirectory: true)
+        try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
+        let iconURL = assets.appendingPathComponent("icon.svg")
+        try Data("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"><path d=\"M0 0h1v1H0z\"/></svg>".utf8)
+            .write(to: iconURL)
+
+        var package = makeApprovalPackage()
+        package.iconDescriptor = .asset("assets/icon.svg", fallbackSystemName: package.icon)
+
+        let first = CapabilityPackageSource(package: package, manifestURL: nil, assetRootURL: assetRoot)
+        let firstDigest = try CapabilityApprovalDigest.digest(for: first)
+
+        try Data("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"><path d=\"M0 0h.5v.5H0z\"/></svg>".utf8)
+            .write(to: iconURL)
+        let second = CapabilityPackageSource(package: package, manifestURL: nil, assetRootURL: assetRoot)
+
+        #expect(try CapabilityApprovalDigest.digest(for: second) != firstDigest)
+    }
+
     @Test("approval store default directories are channel-specific")
     func approvalStoreDirectoriesAreChannelSpecific() {
         let dev = CapabilityApprovalStore.approvalsDirectory(for: .development).path

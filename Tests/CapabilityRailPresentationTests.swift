@@ -156,6 +156,25 @@ struct CapabilityRailPresentationTests {
         )
     }
 
+    @Test("single capability summary uses the capability icon presentation")
+    func singleCapabilitySummaryUsesCapabilityIconPresentation() {
+        let github = CapabilityIconPresentation(kind: .brand(.github), fallbackSystemName: "link")
+        let drive = CapabilityIconPresentation(kind: .brand(.googleDrive), fallbackSystemName: "externaldrive")
+
+        #expect(
+            CapabilityRailSectionPresentation.summaryIconPresentation(
+                for: [github],
+                fallbackSystemName: "cloud"
+            ) == github
+        )
+        #expect(
+            CapabilityRailSectionPresentation.summaryIconPresentation(
+                for: [github, drive],
+                fallbackSystemName: "cloud"
+            ) == CapabilityIconPresentation(kind: .systemSymbol("cloud"), fallbackSystemName: "cloud")
+        )
+    }
+
     @Test("capability health omits low value top summary metrics")
     func capabilityHealthOmitsLowValueTopSummaryMetrics() {
         #expect(CapabilityRailSectionPresentation.showsTopHealthSummaryMetrics == false)

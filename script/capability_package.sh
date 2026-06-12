@@ -34,6 +34,7 @@ python3 - "$ACTION" "$PACKAGE_PATH" <<'PY'
 import json
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -48,6 +49,9 @@ SEMVER = re.compile(r"^[0-9]+\.[0-9]+(\.[0-9]+)?$")
 SHELL_META_COMMAND = set(";|&`$<>(){}[]\n\r")
 SHELL_META_ARGUMENTS = set(";|&`$<>()\n\r")
 KNOWN_BROWSER_ADAPTERS = {"googledrive", "googledrivebrowser", "drive", "github", "githubbrowser", "githubworkflow", "gh"}
+MANIFEST_NAME = "capability.json"
+ALLOWED_ICON_EXTENSIONS = {".pdf", ".png", ".svg"}
+MAX_ICON_BYTES = 512 * 1024
 
 
 def safe_file_name(package_id: str) -> str:
@@ -103,6 +107,8 @@ def string_items(items, key, issues):
 
 
 def installed_collision_issue(target: Path, package_id: str) -> dict:
+    if target.is_dir():
+        target = target / MANIFEST_NAME
     try:
         existing = json.loads(target.read_text(encoding="utf-8"))
         existing_id = existing.get("id") if isinstance(existing, dict) else None
@@ -131,9 +137,69 @@ def discover_package_paths(path):
         return sorted(files)
 
     if path.is_dir():
+        manifest = path / MANIFEST_NAME
+        if manifest.is_file():
+            return [manifest]
         print("BLOCKER directoryInput: use validate-dir or install-dev-dir for capability libraries", file=sys.stderr)
         sys.exit(1)
     return [path]
+
+
+def icon_asset_relative_path(package, issues):
+    descriptor = package.get("iconDescriptor")
+    if descriptor is None:
+        return None
+    if not isinstance(descriptor, dict):
+        issues.append(issue("BLOCKER", "malformedJSON", "iconDescriptor must be an object."))
+        return None
+    if descriptor.get("kind") != "asset":
+        return None
+
+    value = descriptor.get("value")
+    if not isinstance(value, str):
+        issues.append(issue("BLOCKER", "invalidIconAsset", "Asset icon value must be a string."))
+        return None
+    trimmed = value.strip()
+    parts = trimmed.split("/")
+    invalid = (
+        not trimmed
+        or "://" in trimmed
+        or trimmed.startswith("/")
+        or not trimmed.startswith("assets/")
+        or any(part in {"", ".", ".."} for part in parts)
+        or Path(trimmed).suffix.lower() not in ALLOWED_ICON_EXTENSIONS
+    )
+    if invalid:
+        issues.append(issue("BLOCKER", "invalidIconAsset", "Asset icons must use a relative assets/ path with a pdf, png, or svg extension."))
+        return None
+    return trimmed
+
+
+def validate_icon_asset(package, package_root, issues):
+    relative = icon_asset_relative_path(package, issues)
+    if relative is None:
+        return None
+
+    asset = package_root / relative
+    try:
+        resolved_root = package_root.resolve()
+        resolved_asset = asset.resolve()
+    except OSError as exc:
+        issues.append(issue("BLOCKER", "invalidIconAsset", f"{relative} could not be resolved safely: {exc}"))
+        return None
+    if resolved_root not in resolved_asset.parents:
+        issues.append(issue("BLOCKER", "invalidIconAsset", f"{relative} escapes the capability package."))
+        return None
+    if not asset.exists():
+        issues.append(issue("BLOCKER", "missingIconAsset", f"{relative} was declared but was not found in the package assets."))
+        return None
+    if not asset.is_file() or asset.is_symlink():
+        issues.append(issue("BLOCKER", "invalidIconAsset", f"{relative} must be a regular file."))
+        return None
+    if asset.stat().st_size > MAX_ICON_BYTES:
+        issues.append(issue("BLOCKER", "invalidIconAsset", f"{relative} is larger than {MAX_ICON_BYTES} bytes."))
+        return None
+    return relative
 
 
 def validate_package(path: Path) -> dict:
@@ -160,6 +226,7 @@ def validate_package(path: Path) -> dict:
         }
 
     issues = []
+    package_root = path.parent
     if not isinstance(package, dict):
         return {
             "path": path,
@@ -265,16 +332,24 @@ def validate_package(path: Path) -> dict:
             if scheme != "https" and not (scheme == "http" and is_loopback(host)):
                 issues.append(issue("BLOCKER", "unsafeMCPServer", f"{name} remote URL must use HTTPS, except loopback HTTP."))
 
+    icon_asset_path = validate_icon_asset(package, package_root, issues)
+
     if package_id and install_mode:
-        target = DEV_LIBRARY / f"{safe_name}.json"
-        if target.exists():
-            issues.append(installed_collision_issue(target, package_id))
+        targets = [
+            DEV_LIBRARY / f"{safe_name}.json",
+            DEV_LIBRARY / safe_name,
+        ]
+        for target in targets:
+            if target.exists():
+                issues.append(installed_collision_issue(target, package_id))
 
     return {
         "path": path,
+        "package_root": package_root,
         "package": package,
         "package_id": package_id,
         "safe_name": safe_name,
+        "icon_asset_path": icon_asset_path,
         "issues": issues,
     }
 
@@ -354,7 +429,16 @@ if not install_mode:
 DEV_LIBRARY.mkdir(parents=True, exist_ok=True)
 for result in results:
     package = normalize_package_for_install(result["package"])
-    target = DEV_LIBRARY / f"{result['safe_name']}.json"
+    if result["icon_asset_path"]:
+        target_dir = DEV_LIBRARY / result["safe_name"]
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / MANIFEST_NAME
+        source_asset = result["package_root"] / result["icon_asset_path"]
+        target_asset = target_dir / result["icon_asset_path"]
+        target_asset.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_asset, target_asset)
+    else:
+        target = DEV_LIBRARY / f"{result['safe_name']}.json"
     target.write_text(json.dumps(package, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"Installed {result['package_id']} to {target}")
 PY
