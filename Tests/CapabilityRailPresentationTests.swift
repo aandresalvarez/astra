@@ -176,6 +176,33 @@ struct CapabilityRailPresentationTests {
         ])
     }
 
+    @Test("rail leads with setup while pending and with capabilities once configured")
+    func railLeadsWithSetupWhilePendingAndCapabilitiesOnceConfigured() {
+        // Onboarding: setup stays directly under the repository.
+        #expect(
+            WorkspaceRightRailPresentation.sectionOrder(hasPendingSetup: true)
+                == WorkspaceRightRailPresentation.primarySectionOrder
+        )
+        // Steady state: capabilities rise above the now-compact configured setup.
+        let steady = WorkspaceRightRailPresentation.sectionOrder(hasPendingSetup: false)
+        #expect(steady == WorkspaceRightRailPresentation.steadyStateSectionOrder)
+        let capabilities = steady.firstIndex(of: CapabilityRailSectionPresentation.sectionTitle)
+        let setup = steady.firstIndex(of: WorkspaceSetupChecklistPresentation.sectionTitle)
+        #expect(capabilities != nil && setup != nil && capabilities! < setup!)
+        #expect(steady.first == "Repository")
+    }
+
+    @Test("summary disclosures name how many rows they reveal")
+    func summaryDisclosuresNameHowManyRowsTheyReveal() {
+        // The N >= 2 rule: the verb states its payload count, so a lone item is
+        // never hidden behind a "Show all (1)".
+        #expect(CapabilityRailSectionPresentation.showAllActionTitle(count: 3) == "Show all (3)")
+        #expect(WorkspaceSetupChecklistPresentation.showAllActionTitle(2) == "Show all (2)")
+        #expect(WorkspaceSetupChecklistPresentation.configuredCountSubtitle(4) == "4 configured")
+        #expect(CapabilityRailSectionPresentation.readySummarySubtitle(count: 2) == "Ready · 2")
+        #expect(CapabilityRailSectionPresentation.draftSummarySubtitle(count: 1) == "Draft · 1")
+    }
+
     @Test("repository rail exposes git controls by default")
     func repositoryRailExposesGitControlsByDefault() {
         #expect(WorkspaceGitPanelPresentation.startsCollapsed == false)

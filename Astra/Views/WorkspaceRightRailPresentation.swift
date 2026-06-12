@@ -2,11 +2,28 @@ import Foundation
 import SwiftUI
 
 enum WorkspaceRightRailPresentation {
+    /// Order while a workspace still has setup to do: setup stays directly under
+    /// the repository so onboarding is not buried beneath the inventory.
     static let primarySectionOrder = [
         "Repository",
         WorkspaceSetupChecklistPresentation.sectionTitle,
         CapabilityRailSectionPresentation.sectionTitle
     ]
+
+    /// Order once setup is complete: the capabilities the workspace actually uses
+    /// rise above the now-compact configured-setup summary, so the panel leads
+    /// with where the user has invested rather than with finished chores.
+    static let steadyStateSectionOrder = [
+        "Repository",
+        CapabilityRailSectionPresentation.sectionTitle,
+        WorkspaceSetupChecklistPresentation.sectionTitle
+    ]
+
+    /// The section order to render for a workspace, chosen by whether any setup
+    /// item is still outstanding.
+    static func sectionOrder(hasPendingSetup: Bool) -> [String] {
+        hasPendingSetup ? primarySectionOrder : steadyStateSectionOrder
+    }
 
     static let headerIconFontSize: CGFloat = 15
     static let headerIconFrame: CGFloat = 22

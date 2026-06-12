@@ -368,6 +368,14 @@ struct WorkspaceRightRailView: View {
     private var configurePanel: some View {
         let snapshot = capabilityRailSnapshot
 
+        // Once setup is complete the panel leads with the capabilities the
+        // workspace actually uses; while setup is pending it stays directly under
+        // the repository so onboarding is not buried. See sectionOrder(_:).
+        let order = WorkspaceRightRailPresentation.sectionOrder(hasPendingSetup: workspaceSetupMissingCount > 0)
+        let capabilitiesIndex = order.firstIndex(of: CapabilityRailSectionPresentation.sectionTitle) ?? Int.max
+        let setupIndex = order.firstIndex(of: WorkspaceSetupChecklistPresentation.sectionTitle) ?? Int.max
+        let leadWithCapabilities = capabilitiesIndex < setupIndex
+
         return VStack(alignment: .leading, spacing: panelSpacing) {
             if hasGitRepositories {
                 floatingContextSection {
@@ -381,12 +389,17 @@ struct WorkspaceRightRailView: View {
                 }
             }
 
-            floatingContextSection {
-                workspaceSetupChecklistPanel
+            if leadWithCapabilities {
+                capabilityHealthPanel(snapshot)
+                floatingContextSection {
+                    workspaceSetupChecklistPanel
+                }
+            } else {
+                floatingContextSection {
+                    workspaceSetupChecklistPanel
+                }
+                capabilityHealthPanel(snapshot)
             }
-
-            capabilityHealthPanel(snapshot)
-
         }
         .tint(Stanford.lagunita)
         .onAppear {
