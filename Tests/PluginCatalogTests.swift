@@ -73,7 +73,7 @@ struct PluginCatalogLoadTests {
         try library.install(package)
         catalog.loadApprovedCapabilities(library: library)
         #expect(catalog.packages.map(\.id).contains("approved-only"))
-        #expect(catalog.packages.allSatisfy { FileManager.default.fileExists(atPath: library.packageURL(for: $0.id).path) })
+        #expect(catalog.packages.allSatisfy { FileManager.default.fileExists(atPath: library.packageStorageURL(for: $0.id).path) })
     }
 }
 

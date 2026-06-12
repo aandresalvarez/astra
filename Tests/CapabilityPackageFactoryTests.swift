@@ -158,6 +158,45 @@ struct CapabilityPackageFactoryTests {
         #expect(decoded.governance.externalEffects == [.externalAPIWrite])
         #expect(report.blockers.isEmpty)
     }
+
+    @Test("source exporter writes package folder with icon asset")
+    func sourceExporterWritesPackageFolderWithIconAsset() throws {
+        let root = try temporaryDirectory(named: "astra-source-export-assets")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceRoot = root.appendingPathComponent("source", isDirectory: true)
+        let assets = sourceRoot.appendingPathComponent("assets", isDirectory: true)
+        try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
+        let sourceIcon = assets.appendingPathComponent("icon.svg")
+        try Data("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"><path d=\"M0 0h1v1H0z\"/></svg>".utf8)
+            .write(to: sourceIcon)
+        let sourceManifest = sourceRoot.appendingPathComponent("capability.json")
+        var package = PluginPackage(
+            id: "local.export-asset",
+            name: "Export Asset",
+            icon: "puzzlepiece.extension",
+            iconDescriptor: .asset("assets/icon.svg", fallbackSystemName: "puzzlepiece.extension"),
+            description: "Export asset package",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            governance: .localDraft()
+        )
+        package.sourceMetadata = .localLibrary(url: sourceManifest)
+        let destination = root.appendingPathComponent("exported-package", isDirectory: true)
+
+        let writtenURL = try CapabilityPackageSourceExporter().export(package, to: destination)
+        let copiedIcon = destination.appendingPathComponent("assets/icon.svg")
+        let report = CapabilityPackageValidator.validateSource(at: destination, checkPrerequisites: false)
+
+        #expect(writtenURL == destination.appendingPathComponent("capability.json"))
+        #expect(FileManager.default.fileExists(atPath: copiedIcon.path))
+        #expect(report.blockers.isEmpty)
+    }
 }
 
 private func temporaryDirectory(named prefix: String) throws -> URL {
