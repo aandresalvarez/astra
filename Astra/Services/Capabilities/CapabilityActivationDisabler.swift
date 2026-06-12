@@ -112,12 +112,17 @@ struct CapabilityActivationDisabler {
     ) -> [PluginPackage] {
         let enabledIDs = Set(workspace.enabledCapabilityIDs).subtracting([package.id])
         let enabledCatalogPackages = availablePackages.filter { enabledIDs.contains($0.id) }
+        // Only the synthetic standalone-skill projections. Catalog packages
+        // count as remaining solely via explicit enablement above — a
+        // resource-projected "still configured" catalog package would
+        // otherwise keep a shared resource alive after every package
+        // claiming it was disabled (mutual-claim deadlock).
         let syntheticPackages = CapabilityCatalogInventory.configuredPackages(
             catalogPackages: availablePackages,
             capabilities: capabilities,
             workspace: workspace
         )
-        .filter { $0.id != package.id }
+        .filter { $0.id != package.id && $0.isSyntheticWorkspaceSkillPackage }
         return uniquePackages(enabledCatalogPackages + syntheticPackages)
     }
 
@@ -154,7 +159,11 @@ struct CapabilityActivationDisabler {
         remainingPackages: [PluginPackage]
     ) -> Bool {
         remainingPackages.contains { remaining in
-            if CapabilityResourceOrigin.isOwnedBy(skill, packageID: package.id),
+            // Synthetic standalone-skill packages only preserve user-created
+            // resources. A package-originated resource is governed by real
+            // package claims, so a lingering synthetic self-claim must not
+            // keep it active after its last claiming package is disabled.
+            if CapabilityResourceOrigin.hasOrigin(skill),
                remaining.isSyntheticWorkspaceSkillPackage {
                 return false
             }
@@ -168,7 +177,11 @@ struct CapabilityActivationDisabler {
         remainingPackages: [PluginPackage]
     ) -> Bool {
         remainingPackages.contains { remaining in
-            if CapabilityResourceOrigin.isOwnedBy(connector, packageID: package.id),
+            // Synthetic standalone-skill packages only preserve user-created
+            // resources. A package-originated resource is governed by real
+            // package claims, so a lingering synthetic self-claim must not
+            // keep it active after its last claiming package is disabled.
+            if CapabilityResourceOrigin.hasOrigin(connector),
                remaining.isSyntheticWorkspaceSkillPackage {
                 return false
             }
@@ -182,7 +195,11 @@ struct CapabilityActivationDisabler {
         remainingPackages: [PluginPackage]
     ) -> Bool {
         remainingPackages.contains { remaining in
-            if CapabilityResourceOrigin.isOwnedBy(tool, packageID: package.id),
+            // Synthetic standalone-skill packages only preserve user-created
+            // resources. A package-originated resource is governed by real
+            // package claims, so a lingering synthetic self-claim must not
+            // keep it active after its last claiming package is disabled.
+            if CapabilityResourceOrigin.hasOrigin(tool),
                remaining.isSyntheticWorkspaceSkillPackage {
                 return false
             }
