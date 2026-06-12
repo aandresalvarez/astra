@@ -124,7 +124,8 @@ struct CapabilityInstaller {
         baseURLOverrides: [String: String] = [:],
         policyContext: CapabilityCatalogPolicyContext? = nil,
         auditSource: String = "enable",
-        traceID: String? = nil
+        traceID: String? = nil,
+        persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist
     ) throws -> InstallationResult {
         var startFields = capabilityFields(for: package, workspace: workspace, source: auditSource)
         if let traceID { startFields["trace_id"] = traceID }
@@ -144,6 +145,7 @@ struct CapabilityInstaller {
             throw InstallationError.blocked(blockers)
         }
 
+        let membershipSnapshot = WorkspaceCapabilityMembershipSnapshot(workspace)
         var skillIDs: [UUID] = []
         var connectorIDs: [UUID] = []
         var localToolIDs: [UUID] = []
@@ -233,10 +235,13 @@ struct CapabilityInstaller {
 
         appendUnique(package.id, to: &workspace.enabledCapabilityIDs)
         workspace.recordInstalledPlugin(id: package.id, version: package.version)
-        guard WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext) else {
+        guard persist(workspace, modelContext) else {
             // Reporting success on a failed save would strand the library
             // file and any keychain credentials against unsaved records.
+            // rollback() drops the inserted resources; restore the workspace
+            // membership arrays it does not revert.
             modelContext.rollback()
+            membershipSnapshot.restore(to: workspace)
             var fields = capabilityFields(for: package, workspace: workspace, source: auditSource)
             if let traceID { fields["trace_id"] = traceID }
             fields["result"] = "enable_save_failed_rolled_back"

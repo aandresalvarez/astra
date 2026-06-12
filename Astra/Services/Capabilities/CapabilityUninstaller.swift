@@ -33,7 +33,8 @@ struct CapabilityUninstaller {
     @discardableResult
     func remove(
         _ requestedPackage: PluginPackage,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist
     ) throws -> RemovalResult {
         let installedPackages = library.installedPackages()
         guard var package = installedPackages.first(where: { $0.id == requestedPackage.id }) else {
@@ -92,6 +93,9 @@ struct CapabilityUninstaller {
         )
 
         var result = RemovalResult(packageID: package.id)
+        // Membership arrays are mutated per workspace below; rollback does not
+        // revert them, so snapshot for the save-failure path.
+        let membershipSnapshots = workspaces.map { ($0, WorkspaceCapabilityMembershipSnapshot($0)) }
         // Wiped only after the SwiftData deletes are saved — see below.
         var pendingKeychainCleanups: [() -> Void] = []
 
@@ -177,10 +181,12 @@ struct CapabilityUninstaller {
             modelContext.delete(skill)
         }
 
-        guard WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: nil, modelContext: modelContext) else {
+        guard persist(nil, modelContext) else {
             // Abort before touching the keychain or the library file: the
             // deletes were not persisted, so removing either would strand
             // resources (file gone) or credentials (records still present).
+            modelContext.rollback()
+            membershipSnapshots.forEach { $1.restore(to: $0) }
             throw UninstallError.saveFailed(packageID: package.id)
         }
         pendingKeychainCleanups.forEach { $0() }
@@ -188,7 +194,22 @@ struct CapabilityUninstaller {
             WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: modelContext)
         }
 
-        _ = try library.removePackage(id: package.id)
+        // File removal is the last step and deliberately non-throwing: the
+        // deletes are committed and the keychain is wiped, so the package is
+        // already functionally uninstalled. A failure here leaves an inert
+        // library file that self-heals on the next uninstall/sync (which
+        // finds no resources to delete and just clears it). Throwing would
+        // make the caller report a failed uninstall that actually succeeded.
+        do {
+            _ = try library.removePackage(id: package.id)
+        } catch {
+            AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
+                "source": "package_uninstall",
+                "package_id": package.id,
+                "result": "library_file_removal_failed_resources_already_removed",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+        }
 
         AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
             "source": "package_uninstall",

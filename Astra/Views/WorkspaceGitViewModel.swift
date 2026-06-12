@@ -12,7 +12,7 @@ final class WorkspaceGitViewModel: ObservableObject {
     @Published var selectedRepository: GitRepositoryInfo? = nil {
         didSet {
             if oldValue?.path != selectedRepository?.path {
-                Task { await refreshRepoDetails() }
+                scheduleRefresh()
             }
         }
     }
@@ -83,6 +83,11 @@ final class WorkspaceGitViewModel: ObservableObject {
     private var workspace: Workspace?
     private var selectedTask: AgentTask?
     private var refreshTimer: Timer?
+    /// The most recently scheduled background status refresh. Refreshes are
+    /// chained through this handle so they never overlap (each awaits the
+    /// previous) and so callers — and tests — can drain pending work instead
+    /// of racing a detached `didSet`/timer task.
+    private var refreshTask: Task<Void, Never>?
     private var isRefreshPaused = false
     // Background git status refresh interval. Each tick fans out git
     // subprocesses, so we keep it lazy (30s) and pause it entirely when the
@@ -130,7 +135,7 @@ final class WorkspaceGitViewModel: ObservableObject {
         guard !isRefreshPaused else { return }
         refreshTimer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                await self?.refreshRepoDetails()
+                self?.scheduleRefresh()
             }
         }
     }
@@ -149,7 +154,7 @@ final class WorkspaceGitViewModel: ObservableObject {
         guard isRefreshPaused else { return }
         isRefreshPaused = false
         guard workspace != nil else { return }
-        Task { @MainActor in await refreshRepoDetails() }
+        scheduleRefresh()
         startRefreshTimer()
     }
 
@@ -181,7 +186,26 @@ final class WorkspaceGitViewModel: ObservableObject {
         } else if !repos.contains(where: { $0.path == self.selectedRepository?.path }) {
             self.selectedRepository = repos.first
         }
-        await refreshRepoDetails()
+        scheduleRefresh()
+        await waitForPendingRefresh()
+    }
+
+    /// Schedules a status refresh that runs after any in-flight refresh
+    /// completes, replacing `refreshTask` with the chained handle.
+    @MainActor
+    private func scheduleRefresh(force: Bool = false) {
+        let previous = refreshTask
+        refreshTask = Task { @MainActor [weak self] in
+            await previous?.value
+            await self?.refreshRepoDetails(force: force)
+        }
+    }
+
+    /// Awaits the most recently scheduled refresh (and, transitively, every
+    /// refresh chained before it). Lets `scanRepositories` and tests observe a
+    /// settled panel instead of racing a detached `didSet`/timer refresh.
+    func waitForPendingRefresh() async {
+        await refreshTask?.value
     }
 
     private func initialActiveCodePath(workspace: Workspace, selectedTask: AgentTask?) -> String? {

@@ -19,8 +19,10 @@ struct CapabilityActivationDisabler {
         in workspace: Workspace,
         capabilities: WorkspaceCapabilities,
         modelContext: ModelContext,
-        availablePackages: [PluginPackage] = CapabilityRuntimeResourceMatcher.packageDefinitions()
+        availablePackages: [PluginPackage] = CapabilityRuntimeResourceMatcher.packageDefinitions(),
+        persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist
     ) -> Result {
+        let membershipSnapshot = WorkspaceCapabilityMembershipSnapshot(workspace)
         let state = CapabilityPackageState(
             package: package,
             workspace: workspace,
@@ -91,13 +93,15 @@ struct CapabilityActivationDisabler {
         if pendingKeychainCleanups.isEmpty {
             return result
         }
-        if WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext) {
+        if persist(workspace, modelContext) {
             pendingKeychainCleanups.forEach { $0() }
         } else {
-            // Failed save: revert the pending deletes and ID mutations so
-            // the package reads as still enabled (truthful) and no keychain
+            // Failed save: revert the pending deletes and the workspace
+            // membership arrays (which rollback does not restore) so the
+            // package reads as still enabled (truthful) and no keychain
             // credential is orphaned by a later unrelated save.
             modelContext.rollback()
+            membershipSnapshot.restore(to: workspace)
             AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
                 "source": "package_disable",
                 "package_id": package.id,

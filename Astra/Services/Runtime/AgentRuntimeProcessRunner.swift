@@ -747,10 +747,7 @@ final class AgentRuntimeProcessRunner {
         }
         if TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) {
             for (key, value) in ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id) {
-                // Namespace invariant: the bridge may only contribute its own
-                // ASTRA_BROWSER_* variables, never overwrite PATH/HOME or
-                // connector credentials.
-                guard key.hasPrefix("ASTRA_BROWSER") else {
+                guard isBrowserBridgeEnvKeyAllowed(key) else {
                     AppLogger.audit(.capabilityChatContext, category: "Capabilities", taskID: task.id, fields: [
                         "source": "browser_bridge_env",
                         "result": "non_namespaced_key_dropped",
@@ -762,6 +759,13 @@ final class AgentRuntimeProcessRunner {
             }
         }
         return taskEnv
+    }
+
+    /// Namespace invariant for the Shelf browser bridge: it may only
+    /// contribute its own `ASTRA_BROWSER*` variables, never overwrite
+    /// PATH/HOME or connector credentials.
+    static func isBrowserBridgeEnvKeyAllowed(_ key: String) -> Bool {
+        key.hasPrefix("ASTRA_BROWSER")
     }
 
     @MainActor
