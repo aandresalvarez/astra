@@ -1834,7 +1834,10 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         lock.unlock()
 
         let processBox = AgentRuntimeProcessControlBox(process)
-        let checkInterval: TimeInterval = 30
+        let checkInterval = Self.watchdogCheckInterval(
+            idleTimeoutSeconds: idleTimeoutSeconds,
+            noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds
+        )
         DispatchQueue.global().async { [weak self] in
             while true {
                 Thread.sleep(forTimeInterval: checkInterval)
@@ -1845,6 +1848,15 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    static func watchdogCheckInterval(
+        idleTimeoutSeconds: TimeInterval,
+        noSemanticProgressTimeoutSeconds: TimeInterval
+    ) -> TimeInterval {
+        let shortestTimeout = min(idleTimeoutSeconds, noSemanticProgressTimeoutSeconds)
+        guard shortestTimeout.isFinite, shortestTimeout > 0 else { return 1 }
+        return min(shortestTimeout, max(0.1, min(30, shortestTimeout / 4)))
     }
 
     @discardableResult

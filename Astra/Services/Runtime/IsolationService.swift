@@ -27,17 +27,25 @@ enum IsolationService {
         private var locks: [String: NSLock] = [:]
 
         func withLock<T>(for path: String, body: () throws -> T) rethrows -> T {
+            let key = Self.lockKey(for: path)
             let wsLock: NSLock = {
                 lock.lock()
                 defer { lock.unlock() }
-                if let existing = locks[path] { return existing }
+                if let existing = locks[key] { return existing }
                 let new = NSLock()
-                locks[path] = new
+                locks[key] = new
                 return new
             }()
             wsLock.lock()
             defer { wsLock.unlock() }
             return try body()
+        }
+
+        static func lockKey(for path: String) -> String {
+            URL(fileURLWithPath: path)
+                .resolvingSymlinksInPath()
+                .standardizedFileURL
+                .path
         }
     }
 
@@ -77,9 +85,10 @@ enum IsolationService {
                 "strategy": task.isolationStrategy.rawValue
             ])
         case .copy:
+            _ = deleteCopy(path: executionPath)
             AppLogger.audit(.isolationCleanedUp, category: "Isolation", taskID: task.id, fields: [
                 "strategy": task.isolationStrategy.rawValue,
-                "copy_retained": "true"
+                "copy_retained": "false"
             ])
         case .sameDirectory:
             break
@@ -196,12 +205,20 @@ enum IsolationService {
 
     // MARK: - Copy
 
+    static func copyScratchRoot(fileManager: FileManager = .default) -> URL {
+        let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support", isDirectory: true)
+        return appSupport
+            .appendingPathComponent(AppChannel.current.appSupportDirectoryName, isDirectory: true)
+            .appendingPathComponent("WorkspaceCopies", isDirectory: true)
+    }
+
     private static func copyWorkspace(workspacePath: String, taskId: UUID) throws -> String {
         let fm = FileManager.default
-        let parentDir = URL(fileURLWithPath: workspacePath).deletingLastPathComponent()
         let originalName = URL(fileURLWithPath: workspacePath).lastPathComponent
         let copyName = "\(originalName)-astra-\(taskId.uuidString.prefix(8).lowercased())"
-        let copyPath = parentDir.appendingPathComponent(copyName).path
+        let scratchRoot = copyScratchRoot(fileManager: fm)
+        let copyPath = scratchRoot.appendingPathComponent(copyName, isDirectory: true).path
 
         AppLogger.audit(.isolationPrepared, category: "Isolation", fields: [
             "strategy": "copy",
@@ -210,6 +227,12 @@ enum IsolationService {
         ])
 
         do {
+            try fm.createDirectory(
+                at: scratchRoot,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scratchRoot.path)
             try fm.copyItem(atPath: workspacePath, toPath: copyPath)
         } catch {
             throw IsolationError.copyFailed("Failed to copy '\(workspacePath)' to '\(copyPath)': \(error.localizedDescription)")

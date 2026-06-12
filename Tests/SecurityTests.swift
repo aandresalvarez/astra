@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import Security
 @testable import ASTRA
 import ASTRACore
 import CryptoKit
@@ -165,6 +166,21 @@ struct SecretRedactionInputTests {
 
 @Suite("Plugin Signing")
 struct PluginSigningTests {
+    enum PluginSigningTestError: Error {
+        case syntheticFailure
+    }
+
+    struct FailingSigner: PluginSignatureProvider {
+        func signature(for data: Data, privateKey: Curve25519.Signing.PrivateKey) throws -> Data {
+            throw PluginSigningTestError.syntheticFailure
+        }
+    }
+
+    struct EmptySigner: PluginSignatureProvider {
+        func signature(for data: Data, privateKey: Curve25519.Signing.PrivateKey) throws -> Data {
+            Data()
+        }
+    }
 
     @Test("Hash produces consistent SHA-256 hex string")
     func consistentHash() {
@@ -176,29 +192,49 @@ struct PluginSigningTests {
     }
 
     @Test("Valid signature verifies successfully")
-    func validSignature() {
+    func validSignature() throws {
         let (privateKey, publicKey) = PluginSigning.generateKeyPair()
         let data = "{\"name\": \"test-plugin\"}".data(using: .utf8)!
-        let signature = PluginSigning.sign(pluginJSON: data, privateKey: privateKey)
+        let signature = try PluginSigning.sign(pluginJSON: data, privateKey: privateKey)
         #expect(PluginSigning.verify(pluginJSON: data, signature: signature, publicKey: publicKey))
     }
 
     @Test("Tampered data fails verification")
-    func tamperedData() {
+    func tamperedData() throws {
         let (privateKey, publicKey) = PluginSigning.generateKeyPair()
         let data = "{\"name\": \"test-plugin\"}".data(using: .utf8)!
-        let signature = PluginSigning.sign(pluginJSON: data, privateKey: privateKey)
+        let signature = try PluginSigning.sign(pluginJSON: data, privateKey: privateKey)
         let tampered = "{\"name\": \"evil-plugin\"}".data(using: .utf8)!
         #expect(!PluginSigning.verify(pluginJSON: tampered, signature: signature, publicKey: publicKey))
     }
 
     @Test("Wrong key fails verification")
-    func wrongKey() {
+    func wrongKey() throws {
         let (privateKey, _) = PluginSigning.generateKeyPair()
         let (_, otherPublic) = PluginSigning.generateKeyPair()
         let data = "{\"name\": \"test\"}".data(using: .utf8)!
-        let signature = PluginSigning.sign(pluginJSON: data, privateKey: privateKey)
+        let signature = try PluginSigning.sign(pluginJSON: data, privateKey: privateKey)
         #expect(!PluginSigning.verify(pluginJSON: data, signature: signature, publicKey: otherPublic))
+    }
+
+    @Test("Signing propagates provider failures")
+    func signingPropagatesProviderFailures() {
+        let (privateKey, _) = PluginSigning.generateKeyPair()
+        let data = Data(#"{"id":"plugin"}"#.utf8)
+
+        #expect(throws: PluginSigningTestError.self) {
+            try PluginSigning.sign(pluginJSON: data, privateKey: privateKey, signer: FailingSigner())
+        }
+    }
+
+    @Test("Signing rejects empty signatures")
+    func signingRejectsEmptySignatures() {
+        let (privateKey, _) = PluginSigning.generateKeyPair()
+        let data = Data(#"{"id":"plugin"}"#.utf8)
+
+        #expect(throws: PluginSigningError.self) {
+            try PluginSigning.sign(pluginJSON: data, privateKey: privateKey, signer: EmptySigner())
+        }
     }
 
     @Test("Unsigned plugin has isTrusted false")
@@ -209,6 +245,88 @@ struct PluginSigningTests {
         let plugin = try JSONDecoder().decode(PluginPackage.self, from: json.data(using: .utf8)!)
         #expect(!plugin.isTrusted)
         #expect(plugin.signature == nil)
+    }
+}
+
+@Suite("Connector Security Policy")
+struct ConnectorSecurityPolicyTests {
+    @Test("Authenticated connectors require protected transport even when credentials come from env")
+    func authenticatedConnectorsRequireProtectedTransportWithoutCredentialKeys() {
+        let violation = ConnectorSecurityPolicy.credentialTransportViolation(
+            baseURL: "http://api.example.com",
+            authMethod: "bearer",
+            credentialKeys: []
+        )
+
+        #expect(violation != nil)
+    }
+
+    @Test("Unauthenticated HTTP connectors remain allowed")
+    func unauthenticatedHTTPConnectorsRemainAllowed() {
+        let violation = ConnectorSecurityPolicy.credentialTransportViolation(
+            baseURL: "http://api.example.com",
+            authMethod: "none",
+            credentialKeys: []
+        )
+
+        #expect(violation == nil)
+    }
+}
+
+@Suite("Credential Storage Policy")
+struct CredentialStoragePolicyTests {
+    @Test("Keychain credentials are device local")
+    func keychainCredentialsAreDeviceLocal() {
+        #expect(
+            KeychainCredentialPolicy.accessibility as String
+                == kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String
+        )
+    }
+}
+
+@Suite("Session History Redaction")
+struct SessionHistoryRedactionTests {
+    @Test("Session history redacts short explicit secrets and common token formats")
+    func sessionHistoryRedactsShortSecretsAndKnownTokenFormats() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-redaction-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let body = """
+        pin xy
+        github ghp_1234567890abcdef1234567890abcdef1234
+        fine-grained github_pat_1234567890abcdef_1234567890abcdef
+        aws AKIA1234567890ABCDEF
+        anthropic sk-ant-api03-1234567890abcdef
+        """
+
+        SessionHistoryManager.recordTurn(
+            taskFolder: root.path,
+            taskTitle: "Redaction",
+            turnMessage: "pin xy",
+            output: body,
+            tokensUsed: 0,
+            costUSD: 0,
+            fileChanges: [],
+            redactions: ["xy"]
+        )
+
+        let history = try String(
+            contentsOf: root.appendingPathComponent("session_history.md"),
+            encoding: .utf8
+        )
+        let output = try String(
+            contentsOf: root.appendingPathComponent("outputs/turn_001.md"),
+            encoding: .utf8
+        )
+        let combined = history + "\n" + output
+
+        #expect(!combined.contains("xy"))
+        #expect(!combined.contains("ghp_1234567890abcdef1234567890abcdef1234"))
+        #expect(!combined.contains("github_pat_1234567890abcdef_1234567890abcdef"))
+        #expect(!combined.contains("AKIA1234567890ABCDEF"))
+        #expect(!combined.contains("sk-ant-api03-1234567890abcdef"))
+        #expect(combined.contains("[REDACTED]"))
     }
 }
 

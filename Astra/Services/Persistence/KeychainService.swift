@@ -51,7 +51,7 @@ enum KeychainService {
                 kSecAttrAccount as String: key,
                 kSecValueData as String: data,
                 kSecAttrComment as String: label ?? "Astra connector credential",
-                kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked,
+                kSecAttrAccessible as String: KeychainCredentialPolicy.accessibility,
             ]
             if let label {
                 addQuery[kSecAttrLabel as String] = label
@@ -99,7 +99,7 @@ enum KeychainService {
                 kSecAttrAccount as String: key,
                 kSecValueData as String: data,
                 kSecAttrComment as String: label ?? "Astra skill secret",
-                kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked,
+                kSecAttrAccessible as String: KeychainCredentialPolicy.accessibility,
             ]
             if let label {
                 addQuery[kSecAttrLabel as String] = label

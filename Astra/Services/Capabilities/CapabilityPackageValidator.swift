@@ -225,19 +225,21 @@ enum CapabilityPackageValidator {
             ))
         }
 
-        if !allowReplacingExistingPackageID,
-           installedPackages.contains(where: { $0.id == package.id }) {
+        let normalizedID = package.id.lowercased()
+        if let duplicate = installedPackages.first(where: { $0.id.lowercased() == normalizedID }),
+           !allowReplacingExistingPackageID || duplicate.id != package.id {
             issues.append(issue(
                 .blocker,
                 .duplicatePackageID,
                 "Package already installed",
-                "A capability with ID \(package.id) already exists. Remove it before importing a replacement.",
+                "A capability with ID \(duplicate.id) already exists. Remove it before importing a replacement.",
                 component: package.id
             ))
         }
 
         if let collision = installedPackages.first(where: {
-            $0.id != package.id && CapabilityLibrary.safeFileName(for: $0.id) == safeName
+            $0.id.lowercased() != normalizedID
+                && CapabilityLibrary.safeFileName(for: $0.id).lowercased() == safeName.lowercased()
         }) {
             issues.append(issue(
                 .blocker,

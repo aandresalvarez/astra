@@ -846,6 +846,27 @@ struct ProcessMonitorTests {
         #expect(longRun.noSemanticProgressTimeoutSeconds == 180)
     }
 
+    @Test("Watchdog cadence stays below short runtime timeout budgets")
+    func watchdogCadenceStaysBelowShortRuntimeTimeoutBudgets() {
+        let shortInterval = AgentRuntimeWorker.ProcessMonitor.watchdogCheckInterval(
+            idleTimeoutSeconds: 2,
+            noSemanticProgressTimeoutSeconds: 2
+        )
+        let defaultInterval = AgentRuntimeWorker.ProcessMonitor.watchdogCheckInterval(
+            idleTimeoutSeconds: 600,
+            noSemanticProgressTimeoutSeconds: 180
+        )
+        let microTimeoutInterval = AgentRuntimeWorker.ProcessMonitor.watchdogCheckInterval(
+            idleTimeoutSeconds: 0.05,
+            noSemanticProgressTimeoutSeconds: 0.05
+        )
+
+        #expect(shortInterval < 2)
+        #expect(shortInterval >= 0.1)
+        #expect(microTimeoutInterval <= 0.05)
+        #expect(defaultInterval == 30)
+    }
+
     @Test("Visible provider text prevents liveness-only stop")
     func visibleProviderTextPreventsLivenessOnlyStop() {
         let monitor = AgentRuntimeWorker.ProcessMonitor(
