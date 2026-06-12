@@ -269,10 +269,15 @@ struct RailCapabilityItem: Identifiable {
     let browserAdapterNames: [String]
     let templateNames: [String]
     let requirementNames: [String]
+
+    /// The recognizable brand the capability integrates with, if any, so its row
+    /// can lead with the real mark instead of a stand-in SF Symbol.
+    var brand: BrandMark? { BrandMark.resolve(id: id, name: name) }
 }
 
 struct CapabilityRailRow: View {
     let icon: String
+    var brand: BrandMark?
     let title: String
     let subtitle: String
     let color: Color
@@ -286,10 +291,13 @@ struct CapabilityRailRow: View {
     var body: some View {
         Button(action: onOpen) {
             HStack(spacing: CapabilityRailLayout.leadingIconSpacing) {
-                Image(systemName: icon)
-                    .font(Stanford.ui(CapabilityRailLayout.leadingIconFontSize, weight: .medium))
-                    .foregroundStyle(isEnabled ? color : .secondary)
-                    .frame(width: CapabilityRailLayout.leadingIconFrame)
+                CapabilityLeadingIcon(
+                    systemImage: icon,
+                    brand: brand,
+                    pointSize: CapabilityRailLayout.leadingIconFontSize
+                )
+                .foregroundStyle(isEnabled ? color : .secondary)
+                .frame(width: CapabilityRailLayout.leadingIconFrame)
 
                 VStack(alignment: .leading, spacing: CapabilityRailLayout.titleSubtitleSpacing) {
                     HStack(spacing: 5) {

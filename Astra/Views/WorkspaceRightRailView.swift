@@ -847,6 +847,7 @@ struct WorkspaceRightRailView: View {
 
         return CapabilityRailRow(
             icon: WorkspaceContextIconography.capabilityIcon(name: item.name, fallback: item.icon),
+            brand: item.brand,
             title: capabilityDisplayName(item.name),
             subtitle: capabilityListSubtitle(for: item),
             color: item.color,
