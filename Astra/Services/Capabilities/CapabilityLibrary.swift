@@ -148,6 +148,7 @@ struct CapabilityLibrary {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(storedPackage)
+        try removeItemIfPresent(at: packageManifestURL(for: storedPackage.id).deletingLastPathComponent())
         try data.write(to: packageURL(for: storedPackage.id), options: [.atomic])
     }
 
@@ -164,6 +165,7 @@ struct CapabilityLibrary {
 
         let manifestURL = packageManifestURL(for: storedPackage.id)
         let packageDirectory = manifestURL.deletingLastPathComponent()
+        try removeItemIfPresent(at: packageURL(for: storedPackage.id))
         try fileManager.createDirectory(at: packageDirectory, withIntermediateDirectories: true)
 
         guard let assetRootURL = source.assetRootURL else {
@@ -443,5 +445,10 @@ struct CapabilityLibrary {
     private func removePackageStorage(jsonURL: URL, packageDirectoryURL: URL) {
         try? fileManager.removeItem(at: jsonURL)
         try? fileManager.removeItem(at: packageDirectoryURL)
+    }
+
+    private func removeItemIfPresent(at url: URL) throws {
+        guard fileManager.fileExists(atPath: url.path) else { return }
+        try fileManager.removeItem(at: url)
     }
 }

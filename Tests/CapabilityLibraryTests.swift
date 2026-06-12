@@ -99,6 +99,104 @@ struct CapabilityLibraryTests {
         #expect(installed.sourceMetadata?.url?.resolvingSymlinksInPath() == manifestURL.resolvingSymlinksInPath())
     }
 
+    @Test("installing plain package over asset package removes stale package folder")
+    func installingPlainPackageOverAssetPackageRemovesStalePackageFolder() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-asset-to-json-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceRoot = root.appendingPathComponent("source", isDirectory: true)
+        let sourceAssets = sourceRoot.appendingPathComponent("assets", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceAssets, withIntermediateDirectories: true)
+        try Data("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"><path d=\"M0 0h1v1H0z\"/></svg>".utf8)
+            .write(to: sourceAssets.appendingPathComponent("icon.svg"))
+
+        let library = CapabilityLibrary(directory: root.appendingPathComponent("library", isDirectory: true))
+        let assetPackage = PluginPackage(
+            id: "local.storage-switch",
+            name: "Storage Switch",
+            icon: "puzzlepiece.extension",
+            iconDescriptor: .asset("assets/icon.svg", fallbackSystemName: "puzzlepiece.extension"),
+            description: "Asset package",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            governance: .localDraft()
+        )
+        var plainPackage = assetPackage
+        plainPackage.version = "2.0.0"
+        plainPackage.icon = "star"
+        plainPackage.iconDescriptor = .systemSymbol("star")
+
+        try library.install(CapabilityPackageSource(package: assetPackage, manifestURL: nil, assetRootURL: sourceRoot))
+        let manifestURL = library.packageManifestURL(for: assetPackage.id)
+        #expect(FileManager.default.fileExists(atPath: manifestURL.path))
+
+        try library.install(plainPackage)
+
+        let jsonURL = library.packageURL(for: plainPackage.id)
+        let installed = try #require(library.installedPackage(id: plainPackage.id))
+        #expect(FileManager.default.fileExists(atPath: jsonURL.path))
+        #expect(!FileManager.default.fileExists(atPath: manifestURL.deletingLastPathComponent().path))
+        #expect(library.packageStorageURL(for: plainPackage.id) == jsonURL)
+        #expect(installed.version == "2.0.0")
+        #expect(installed.iconDescriptor == .systemSymbol("star"))
+    }
+
+    @Test("installing asset package over plain package removes stale JSON file")
+    func installingAssetPackageOverPlainPackageRemovesStaleJSONFile() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-json-to-asset-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceRoot = root.appendingPathComponent("source", isDirectory: true)
+        let sourceAssets = sourceRoot.appendingPathComponent("assets", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceAssets, withIntermediateDirectories: true)
+        try Data("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"><path d=\"M0 0h1v1H0z\"/></svg>".utf8)
+            .write(to: sourceAssets.appendingPathComponent("icon.svg"))
+
+        let library = CapabilityLibrary(directory: root.appendingPathComponent("library", isDirectory: true))
+        let plainPackage = PluginPackage(
+            id: "local.storage-switch",
+            name: "Storage Switch",
+            icon: "star",
+            description: "Plain package",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            governance: .localDraft()
+        )
+        var assetPackage = plainPackage
+        assetPackage.version = "2.0.0"
+        assetPackage.icon = "puzzlepiece.extension"
+        assetPackage.iconDescriptor = .asset("assets/icon.svg", fallbackSystemName: "puzzlepiece.extension")
+
+        try library.install(plainPackage)
+        let jsonURL = library.packageURL(for: plainPackage.id)
+        #expect(FileManager.default.fileExists(atPath: jsonURL.path))
+
+        try library.install(CapabilityPackageSource(package: assetPackage, manifestURL: nil, assetRootURL: sourceRoot))
+
+        let manifestURL = library.packageManifestURL(for: assetPackage.id)
+        let installed = try #require(library.installedPackage(id: assetPackage.id))
+        #expect(FileManager.default.fileExists(atPath: manifestURL.path))
+        #expect(!FileManager.default.fileExists(atPath: jsonURL.path))
+        #expect(library.packageStorageURL(for: assetPackage.id) == manifestURL)
+        #expect(installed.version == "2.0.0")
+
+        try library.removePackage(id: assetPackage.id, trustedBuiltInIDs: [])
+        #expect(library.installedPackage(id: assetPackage.id, trustedBuiltInIDs: []) == nil)
+        #expect(!FileManager.default.fileExists(atPath: jsonURL.path))
+    }
+
     @Test("storage snapshot removes fresh package folder after rollback")
     func storageSnapshotRemovesFreshPackageFolderAfterRollback() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())

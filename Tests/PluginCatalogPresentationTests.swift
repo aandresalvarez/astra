@@ -267,6 +267,7 @@ struct PluginCatalogPresentationTests {
         let presentation = CapabilityIconPresentation.make(for: package)
 
         #expect(presentation.fallbackSystemName == package.icon)
+        #expect(!presentation.monochromePreferred)
         assertIconPresentation(presentation, resolvesTo: .github, assetName: "github.svg")
     }
 

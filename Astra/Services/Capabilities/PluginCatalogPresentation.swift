@@ -228,6 +228,17 @@ struct CapabilityIconPresentation: Equatable {
 
     let kind: Kind
     let fallbackSystemName: String
+    let monochromePreferred: Bool
+
+    init(
+        kind: Kind,
+        fallbackSystemName: String,
+        monochromePreferred: Bool = true
+    ) {
+        self.kind = kind
+        self.fallbackSystemName = fallbackSystemName
+        self.monochromePreferred = monochromePreferred
+    }
 
     static func make(for package: PluginPackage) -> CapabilityIconPresentation {
         let explicitDescriptor = package.iconDescriptor == .systemSymbol(package.icon) ? nil : package.iconDescriptor
@@ -345,7 +356,11 @@ struct CapabilityIconPresentation: Equatable {
             guard let assetURL = assetURL(relativePath: descriptor.value, sourceURL: sourceURL) else {
                 return CapabilityIconPresentation(kind: .systemSymbol(descriptorFallback), fallbackSystemName: descriptorFallback)
             }
-            return CapabilityIconPresentation(kind: .asset(assetURL), fallbackSystemName: descriptorFallback)
+            return CapabilityIconPresentation(
+                kind: .asset(assetURL),
+                fallbackSystemName: descriptorFallback,
+                monochromePreferred: descriptor.monochromePreferred
+            )
         }
     }
 

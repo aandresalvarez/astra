@@ -34,25 +34,110 @@ struct CapabilityIconView: View {
                 .fill(color)
                 .frame(width: size, height: size)
         case .asset(let url):
-            if let image = templateImage(contentsOf: url) {
-                Image(nsImage: image)
-                    .renderingMode(.template)
-                    .resizable()
-                    .scaledToFit()
-                    .foregroundStyle(color)
-                    .frame(width: size, height: size)
+            CapabilityAssetIconView(
+                url: url,
+                fallbackSystemName: presentation.fallbackSystemName,
+                monochromePreferred: presentation.monochromePreferred,
+                size: size,
+                color: color,
+                weight: weight
+            )
+        }
+    }
+}
+
+enum CapabilityIconAssetRenderingMode: Hashable {
+    case monochrome
+    case originalColor
+}
+
+final class CapabilityIconAssetImageCache {
+    static let shared = CapabilityIconAssetImageCache()
+
+    private struct Key: Hashable {
+        var url: URL
+        var renderingMode: CapabilityIconAssetRenderingMode
+    }
+
+    private var images: [Key: NSImage] = [:]
+    private let loader: (URL) -> NSImage?
+
+    init(loader: @escaping (URL) -> NSImage? = { NSImage(contentsOf: $0) }) {
+        self.loader = loader
+    }
+
+    func image(
+        contentsOf url: URL,
+        renderingMode: CapabilityIconAssetRenderingMode
+    ) -> NSImage? {
+        let key = Key(url: url.standardizedFileURL, renderingMode: renderingMode)
+        if let image = images[key] {
+            return image
+        }
+        guard let loaded = loader(url) else { return nil }
+        let image = (loaded.copy() as? NSImage) ?? loaded
+        image.isTemplate = renderingMode == .monochrome
+        images[key] = image
+        return image
+    }
+}
+
+private struct CapabilityAssetIconView: View {
+    let url: URL
+    let fallbackSystemName: String
+    let monochromePreferred: Bool
+    let size: CGFloat
+    let color: Color
+    let weight: Font.Weight
+
+    @State private var image: NSImage?
+
+    private var renderingMode: CapabilityIconAssetRenderingMode {
+        monochromePreferred ? .monochrome : .originalColor
+    }
+
+    var body: some View {
+        Group {
+            if let image {
+                assetImage(image)
             } else {
-                Image(systemName: presentation.fallbackSystemName)
-                    .font(Stanford.ui(size, weight: weight))
-                    .foregroundStyle(color)
+                fallbackIcon
             }
+        }
+        .onAppear(perform: loadImage)
+        .onChange(of: url) { loadImage() }
+        .onChange(of: monochromePreferred) { loadImage() }
+    }
+
+    @ViewBuilder
+    private func assetImage(_ image: NSImage) -> some View {
+        if monochromePreferred {
+            Image(nsImage: image)
+                .renderingMode(.template)
+                .resizable()
+                .scaledToFit()
+                .foregroundStyle(color)
+                .frame(width: size, height: size)
+        } else {
+            Image(nsImage: image)
+                .renderingMode(.original)
+                .resizable()
+                .scaledToFit()
+                .frame(width: size, height: size)
         }
     }
 
-    private func templateImage(contentsOf url: URL) -> NSImage? {
-        guard let image = NSImage(contentsOf: url) else { return nil }
-        image.isTemplate = true
-        return image
+    private var fallbackIcon: some View {
+        Image(systemName: fallbackSystemName)
+            .font(Stanford.ui(size, weight: weight))
+            .foregroundStyle(color)
+    }
+
+    private func loadImage() {
+        image = CapabilityIconAssetImageCache.shared.image(
+            contentsOf: url,
+            renderingMode: renderingMode
+        )
     }
 }
 
