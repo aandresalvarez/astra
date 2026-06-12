@@ -32,6 +32,12 @@
     "visibility" : "everyone"
   },
   "icon" : "folder.badge.gearshape",
+  "iconDescriptor" : {
+    "fallbackSystemName" : "folder.badge.gearshape",
+    "kind" : "asset",
+    "monochromePreferred" : false,
+    "value" : "assets/google-drive.svg"
+  },
   "id" : "google-drive-browser",
   "isTrusted" : false,
   "localTools" : [

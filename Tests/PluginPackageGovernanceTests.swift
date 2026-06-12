@@ -121,6 +121,57 @@ struct PluginPackageGovernanceTests {
         #expect(decoded.governance.dataAccess == [.connectorCredentials, .clinicalData])
     }
 
+    @Test("Legacy icon string creates system symbol descriptor")
+    func legacyIconStringCreatesSystemSymbolDescriptor() throws {
+        let legacy = """
+        {
+          "id": "legacy-icon-pkg",
+          "name": "Legacy Icon",
+          "icon": "star",
+          "description": "from before",
+          "author": "ASTRA",
+          "category": "Other",
+          "tags": [],
+          "version": "1.0.0",
+          "skills": [],
+          "connectors": [],
+          "localTools": [],
+          "templates": []
+        }
+        """.data(using: .utf8)!
+
+        let package = try JSONDecoder().decode(PluginPackage.self, from: legacy)
+
+        #expect(package.icon == "star")
+        #expect(package.iconDescriptor == .systemSymbol("star"))
+    }
+
+    @Test("Typed icon descriptor round trips while preserving legacy fallback")
+    func typedIconDescriptorRoundTripsPreservingLegacyFallback() throws {
+        let package = PluginPackage(
+            id: "jira-icon-package",
+            name: "Jira",
+            icon: "list.bullet.clipboard",
+            iconDescriptor: .brand("jira", fallbackSystemName: "list.bullet.clipboard"),
+            description: "Jira package",
+            author: "Tests",
+            category: "Tickets",
+            tags: ["jira"],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            governance: .localDraft()
+        )
+
+        let data = try JSONEncoder().encode(package)
+        let decoded = try JSONDecoder().decode(PluginPackage.self, from: data)
+
+        #expect(decoded.icon == "list.bullet.clipboard")
+        #expect(decoded.iconDescriptor == .brand("jira", fallbackSystemName: "list.bullet.clipboard"))
+    }
+
     @Test("Audit package fields include compact governance posture")
     @MainActor
     func auditPackageFieldsIncludeGovernancePosture() {
