@@ -87,6 +87,22 @@ enum CapabilityRailSectionPresentation {
         "\(count) draft \(count == 1 ? "capability" : "capabilities")"
     }
 
+    /// Status + count metadata shown beneath the noun-first capability summary
+    /// title (the title carries the capability names).
+    static func readySummarySubtitle(count: Int) -> String {
+        "Ready · \(count)"
+    }
+
+    static func draftSummarySubtitle(count: Int) -> String {
+        "Draft · \(count)"
+    }
+
+    /// Disclosure verb that names how many rows it reveals. Only rendered for
+    /// count >= 2 — a lone capability renders expanded instead.
+    static func showAllActionTitle(count: Int) -> String {
+        "Show all (\(count))"
+    }
+
     static func previewList(_ names: [String], limit: Int = 3) -> String {
         let displayNames = names
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }

@@ -71,6 +71,17 @@ enum WorkspaceSetupChecklistPresentation {
         configured == 0 ? "Empty" : "\(configured) of \(total) configured"
     }
 
+    /// Count metadata shown beneath the noun-first configured summary title.
+    static func configuredCountSubtitle(_ count: Int) -> String {
+        "\(count) configured"
+    }
+
+    /// Disclosure verb that names how many rows it reveals, so the affordance is
+    /// honest about its payload. Only ever rendered for count >= 2.
+    static func showAllActionTitle(_ count: Int) -> String {
+        "Show all (\(count))"
+    }
+
     static func configuredPreview(_ names: [String], limit: Int = 3) -> String {
         let cleanNames = names
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -473,16 +484,23 @@ struct WorkspaceRightRailView: View {
     private var capabilityAddButton: some View {
         if let onManageCapabilities {
             Button(action: onManageCapabilities) {
-                VStack(alignment: .trailing, spacing: 1) {
-                    Text(CapabilityRailSectionPresentation.addActionTitle)
-                        .font(Stanford.ui(CapabilityRailLayout.sectionActionFontSize, weight: .semibold))
-                        .lineLimit(1)
+                HStack(spacing: 4) {
+                    if CapabilityRailSectionPresentation.addActionShowsPlusIcon {
+                        Image(systemName: "plus")
+                            .font(Stanford.ui(CapabilityRailLayout.sectionActionFontSize, weight: .semibold))
+                    }
 
-                    if !CapabilityRailSectionPresentation.addActionSubtitle.isEmpty {
-                        Text(CapabilityRailSectionPresentation.addActionSubtitle)
-                            .font(Stanford.caption(CapabilityRailLayout.sectionActionSubtitleFontSize))
-                            .foregroundStyle(.secondary)
+                    VStack(alignment: .trailing, spacing: 1) {
+                        Text(CapabilityRailSectionPresentation.addActionTitle)
+                            .font(Stanford.ui(CapabilityRailLayout.sectionActionFontSize, weight: .semibold))
                             .lineLimit(1)
+
+                        if !CapabilityRailSectionPresentation.addActionSubtitle.isEmpty {
+                            Text(CapabilityRailSectionPresentation.addActionSubtitle)
+                                .font(Stanford.caption(CapabilityRailLayout.sectionActionSubtitleFontSize))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
                     }
                 }
                 .foregroundStyle(Stanford.lagunita)
@@ -518,8 +536,8 @@ struct WorkspaceRightRailView: View {
                         items: snapshot.readyItems,
                         style: .ready,
                         isExpanded: $isReadyCapabilitiesExpanded,
-                        summaryTitle: CapabilityRailSectionPresentation.readySummaryTitle(count: snapshot.readyItems.count),
-                        summarySubtitle: capabilityPreview(snapshot.readyItems)
+                        summaryTitle: capabilityPreview(snapshot.readyItems),
+                        summarySubtitle: CapabilityRailSectionPresentation.readySummarySubtitle(count: snapshot.readyItems.count)
                     )
                 }
 
@@ -529,8 +547,8 @@ struct WorkspaceRightRailView: View {
                         items: snapshot.draftItems,
                         style: .draft,
                         isExpanded: $isDraftCapabilitiesExpanded,
-                        summaryTitle: CapabilityRailSectionPresentation.draftSummaryTitle(count: snapshot.draftItems.count),
-                        summarySubtitle: capabilityPreview(snapshot.draftItems)
+                        summaryTitle: capabilityPreview(snapshot.draftItems),
+                        summarySubtitle: CapabilityRailSectionPresentation.draftSummarySubtitle(count: snapshot.draftItems.count)
                     )
                 }
             }
@@ -547,7 +565,7 @@ struct WorkspaceRightRailView: View {
         case .attention:
             return "exclamationmark.triangle.fill"
         case .ready:
-            return "cloud"
+            return "checkmark.circle"
         case .draft:
             return "doc.text"
         }
@@ -570,30 +588,36 @@ struct WorkspaceRightRailView: View {
         summaryTitle: String,
         summarySubtitle: String
     ) -> some View {
-        VStack(alignment: .leading, spacing: isCompact ? 8 : 10) {
+        // A "Show all (1)" summary that collapses a single row hides nothing worth
+        // hiding, so a lone item always renders expanded (the N >= 2 rule).
+        let showsExpanded = isExpanded.wrappedValue || items.count < 2
+
+        return VStack(alignment: .leading, spacing: isCompact ? 8 : 10) {
             capabilityGroupHeader(title, count: items.count, style: style)
 
-            if isExpanded.wrappedValue {
+            if showsExpanded {
                 capabilityRows(items, style: style)
-                Button {
-                    withAnimation(disclosureAnimation) {
-                        isExpanded.wrappedValue = false
+                if items.count >= 2 {
+                    Button {
+                        withAnimation(disclosureAnimation) {
+                            isExpanded.wrappedValue = false
+                        }
+                    } label: {
+                        Text(WorkspaceGitPanelPresentation.hideDetailsActionTitle)
+                            .font(Stanford.caption(11).weight(.medium))
+                            .foregroundStyle(Stanford.lagunita)
+                            .padding(.leading, CapabilityRailLayout.dividerLeadingPadding(isCompact: isCompact))
+                            .padding(.vertical, 2)
                     }
-                } label: {
-                    Text("Hide")
-                        .font(Stanford.caption(11).weight(.medium))
-                        .foregroundStyle(Stanford.lagunita)
-                        .padding(.leading, CapabilityRailLayout.dividerLeadingPadding(isCompact: isCompact))
-                        .padding(.vertical, 2)
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             } else {
                 CapabilitySummaryRow(
                     icon: capabilitySummaryIcon(for: style),
                     iconColor: capabilitySummaryTint(for: style),
                     title: summaryTitle,
                     subtitle: summarySubtitle,
-                    actionTitle: style == .ready ? "Show all" : nil,
+                    actionTitle: CapabilityRailSectionPresentation.showAllActionTitle(count: items.count),
                     action: {
                         withAnimation(disclosureAnimation) {
                             isExpanded.wrappedValue = true
@@ -1549,28 +1573,38 @@ struct WorkspaceRightRailView: View {
     }
 
     private var workspaceSetupConfiguredGroup: some View {
-        workspaceSetupGroup(WorkspaceSetupChecklistPresentation.configuredGroupTitle) {
-            if isConfiguredWorkspaceSetupExpanded {
+        // A lone configured item renders expanded — a "Show all (1)" summary that
+        // hides a single row is self-undermining, so the N >= 2 rule applies here
+        // exactly as it does for capabilities.
+        let count = workspaceSetupConfiguredCount
+        let showsExpanded = isConfiguredWorkspaceSetupExpanded || count < 2
+
+        return workspaceSetupGroup(WorkspaceSetupChecklistPresentation.configuredGroupTitle) {
+            if showsExpanded {
                 workspaceSetupRows(for: .configured)
-                Button {
-                    withAnimation(disclosureAnimation) {
-                        isConfiguredWorkspaceSetupExpanded = false
+                if count >= 2 {
+                    Button {
+                        withAnimation(disclosureAnimation) {
+                            isConfiguredWorkspaceSetupExpanded = false
+                        }
+                    } label: {
+                        Text(WorkspaceGitPanelPresentation.hideDetailsActionTitle)
+                            .font(Stanford.caption(11).weight(.medium))
+                            .foregroundStyle(Stanford.lagunita)
+                            .padding(.leading, CapabilityRailLayout.dividerLeadingPadding(isCompact: isCompact))
+                            .padding(.vertical, 2)
                     }
-                } label: {
-                    Text("Hide")
-                        .font(Stanford.caption(11).weight(.medium))
-                        .foregroundStyle(Stanford.lagunita)
-                        .padding(.leading, CapabilityRailLayout.dividerLeadingPadding(isCompact: isCompact))
-                        .padding(.vertical, 2)
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             } else {
+                // Noun-first: the configured item names are the title, the count is
+                // metadata, and the accent-coloured verb carries the disclosure.
                 CapabilitySummaryRow(
                     icon: WorkspaceSetupChecklistPresentation.configuredSummaryIcon,
-                    iconColor: Stanford.lagunita,
-                    title: WorkspaceSetupChecklistPresentation.configuredSummaryTitle,
-                    subtitle: workspaceSetupConfiguredPreview,
-                    actionTitle: WorkspaceSetupChecklistPresentation.configuredSummaryActionTitle,
+                    iconColor: Stanford.statusHealthy,
+                    title: workspaceSetupConfiguredPreview,
+                    subtitle: WorkspaceSetupChecklistPresentation.configuredCountSubtitle(count),
+                    actionTitle: WorkspaceSetupChecklistPresentation.showAllActionTitle(count),
                     action: {
                         withAnimation(disclosureAnimation) {
                             isConfiguredWorkspaceSetupExpanded = true
@@ -1661,9 +1695,9 @@ struct WorkspaceRightRailView: View {
                 item: .instructions,
                 icon: "text.quote",
                 title: "Instructions",
-                subtitle: hasWorkspaceInstructions ? "Main task guidance is set" : "Add guidance for how tasks should run",
+                subtitle: hasWorkspaceInstructions ? "Main task guidance is set" : "Guidance for how tasks run",
                 state: workspaceSetupState(for: .instructions),
-                actionTitle: hasWorkspaceInstructions ? "Edit" : "Add",
+                actionTitle: hasWorkspaceInstructions ? "Edit" : "Write",
                 action: {
                     withAnimation(disclosureAnimation) {
                         _ = expandedWorkspaceSetupItems.insert(.instructions)
@@ -1678,7 +1712,7 @@ struct WorkspaceRightRailView: View {
                 icon: "text.badge.checkmark",
                 title: "Memory",
                 subtitle: workspace.memories.isEmpty
-                    ? "Save details the agent should remember"
+                    ? "Details the agent remembers"
                     : "\(workspace.memories.count) saved \(workspace.memories.count == 1 ? "detail" : "details")",
                 state: workspaceSetupState(for: .memory),
                 actionTitle: "Add",
@@ -1700,7 +1734,7 @@ struct WorkspaceRightRailView: View {
                     ? "No folder selected"
                     : "Primary \(compactPath(workspace.primaryPath))",
                 state: workspaceSetupState(for: .folders),
-                actionTitle: "Add",
+                actionTitle: workspaceFolderCount > 0 ? "Add" : "Choose…",
                 action: {
                     withAnimation(disclosureAnimation) {
                         _ = expandedWorkspaceSetupItems.insert(.folders)
@@ -1716,10 +1750,10 @@ struct WorkspaceRightRailView: View {
                 icon: "network",
                 title: "Remote access",
                 subtitle: sshConnections.isEmpty
-                    ? "Add remote servers the agent can access"
+                    ? "Servers the agent can reach"
                     : "\(sshConnections.count) configured \(sshConnections.count == 1 ? "server" : "servers")",
                 state: workspaceSetupState(for: .remoteAccess),
-                actionTitle: "Add",
+                actionTitle: sshConnections.isEmpty ? "Connect" : "Add",
                 action: onNewSSHConnection
             ) {
                 remoteAccessSetupDetails
@@ -1761,6 +1795,11 @@ struct WorkspaceRightRailView: View {
                             .font(Stanford.ui(CapabilityRailLayout.leadingIconFontSize, weight: .medium))
                             .foregroundStyle(setupChecklistIconColor(for: state))
                             .frame(width: CapabilityRailLayout.leadingIconFrame)
+                            .overlay(alignment: .bottomTrailing) {
+                                if state == .configured {
+                                    ConfiguredStatusDot()
+                                }
+                            }
 
                         VStack(alignment: .leading, spacing: CapabilityRailLayout.titleSubtitleSpacing) {
                             Text(title)
@@ -1771,8 +1810,9 @@ struct WorkspaceRightRailView: View {
                             Text(subtitle)
                                 .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize))
                                 .foregroundStyle(.secondary)
-                                .lineLimit(2)
+                                .lineLimit(1)
                                 .truncationMode(.tail)
+                                .help(subtitle)
                         }
                         .layoutPriority(1)
 

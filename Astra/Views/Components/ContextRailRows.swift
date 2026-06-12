@@ -7,6 +7,25 @@ import SwiftUI
 import SwiftData
 import ASTRACore
 
+/// A small green dot pinned to the corner of a row's leading icon to mark an
+/// item as configured. The contrasting ring lifts it off the glyph so it reads
+/// as a status badge rather than part of the icon.
+struct ConfiguredStatusDot: View {
+    var diameter: CGFloat = 8
+
+    var body: some View {
+        Circle()
+            .fill(Stanford.statusHealthy)
+            .frame(width: diameter, height: diameter)
+            .overlay(
+                Circle()
+                    .stroke(Stanford.cardBackground, lineWidth: 1.5)
+            )
+            .offset(x: 1, y: 1)
+            .accessibilityHidden(true)
+    }
+}
+
 struct RailCountBadge: View {
     let text: String
 

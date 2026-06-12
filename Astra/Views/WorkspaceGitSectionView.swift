@@ -335,15 +335,15 @@ struct WorkspaceGitSectionView: View {
                 changesDrawer
             }
 
-            rowDivider
-            commitOrPushRow
+            // Once a PR exists it is a status object, not an action — it stays a
+            // row, with the commit/push buttons below for pushing further work.
+            if let pr = viewModel.openPullRequest {
+                rowDivider
+                pullRequestLinkRow(pr)
+            }
 
             rowDivider
-            if let pr = viewModel.openPullRequest {
-                pullRequestLinkRow(pr)
-            } else {
-                createPullRequestRow
-            }
+            repositoryActionFooter
         }
     }
 
@@ -381,6 +381,12 @@ struct WorkspaceGitSectionView: View {
         }
         parts.append(workingLocationLabel)
         parts.append(changesSummaryCompactText)
+
+        if viewModel.pushableCommitCount > 0 {
+            parts.append("↑\(viewModel.pushableCommitCount)")
+        } else if viewModel.behind > 0 {
+            parts.append("↓\(viewModel.behind)")
+        }
 
         if let pr = viewModel.openPullRequest {
             parts.append("PR #\(pr.number)")
@@ -523,46 +529,131 @@ struct WorkspaceGitSectionView: View {
             ?? URL(fileURLWithPath: viewModel.activeWorkingPath ?? "").lastPathComponent
     }
 
-    // MARK: - Commit or push row
+    // MARK: - Action footer (commit / push / create PR)
+    //
+    // State (branch, checkout, changes) reads as rows above; the things the user
+    // *does* are buttons here, so verbs and state never wear the same chrome. The
+    // ahead/behind counts that used to ride the commit row become an explicit
+    // sync-status line, and PR readiness shows as a caption rather than a cramped
+    // trailing badge.
 
-    private var commitOrPushRow: some View {
+    private var repositoryActionFooter: some View {
+        let prExists = viewModel.openPullRequest != nil
+
+        return VStack(alignment: .leading, spacing: 7) {
+            if let sync = repositorySyncStatusText {
+                HStack(spacing: 6) {
+                    Image(systemName: repositorySyncStatusIcon)
+                        .font(Stanford.ui(11, weight: .semibold))
+                    Text(sync)
+                        .font(Stanford.caption(11).weight(.medium))
+                }
+                .foregroundStyle(repositorySyncStatusColor)
+            }
+
+            HStack(spacing: 8) {
+                commitActionButton
+                if !prExists {
+                    createPullRequestButton
+                }
+            }
+
+            if !prExists, let caption = pullRequestReadinessCaption {
+                Text(caption)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .help(viewModel.pullRequestReadinessIssue ?? viewModel.pullRequestLookupIssue ?? caption)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.leading, Self.rowIconFrame)
+        .padding(.top, 6)
+    }
+
+    private var commitActionButton: some View {
         Button {
             showCommitSheet = true
         } label: {
-            HStack(spacing: Self.rowIconSpacing) {
-                rowIcon("arrow.up.circle")
-                rowTitle("Commit or push")
-
-                Spacer(minLength: 8)
-
-                commitOrPushBadge
-            }
-            .frame(minHeight: Self.rowMinHeight)
-            .contentShape(Rectangle())
+            Label(commitActionLabel, systemImage: "arrow.up.circle")
+                .font(Stanford.caption(12).weight(.semibold))
+                .frame(maxWidth: .infinity)
         }
-        .buttonStyle(RowButtonStyle())
+        .buttonStyle(.borderedProminent)
+        .controlSize(.small)
+        .tint(Stanford.lagunita)
         .disabled(!viewModel.canOpenCommitSheet || viewModel.isSyncing)
+        .help(commitActionLabel)
     }
 
-    @ViewBuilder
-    private var commitOrPushBadge: some View {
-        let hasStaged = viewModel.statusFiles.contains(where: { $0.isStaged })
-        let hasMessage = !viewModel.commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        if hasStaged && hasMessage {
-            Text("Ready")
-                .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize).weight(.medium))
-                .foregroundStyle(Stanford.statusHealthy)
-        } else if viewModel.pushableCommitCount > 0 {
-            Label("\(viewModel.pushableCommitCount)", systemImage: viewModel.hasUpstream ? "arrow.up" : "arrow.up.to.line")
-                .labelStyle(.titleAndIcon)
-                .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize).weight(.semibold))
-                .foregroundStyle(Stanford.lagunita)
-        } else if viewModel.behind > 0 {
-            Label("\(viewModel.behind)", systemImage: "arrow.down")
-                .labelStyle(.titleAndIcon)
-                .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize).weight(.semibold))
-                .foregroundStyle(Stanford.statusInfo)
+    private var createPullRequestButton: some View {
+        Button {
+            Task { await viewModel.suggestPullRequest() }
+        } label: {
+            HStack(spacing: 5) {
+                if viewModel.isSuggestingPR {
+                    ProgressView()
+                        .controlSize(.mini)
+                } else {
+                    Image(systemName: "sparkles")
+                }
+                Text("Create pull request")
+            }
+            .font(Stanford.caption(12).weight(.medium))
+            .frame(maxWidth: .infinity)
         }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(viewModel.isSuggestingPR)
+        .help(viewModel.pullRequestReadinessIssue ?? "Draft and create a pull request")
+        .contextMenu {
+            Button("Open GitHub without draft") {
+                viewModel.openPullRequestURL(with: nil)
+            }
+        }
+    }
+
+    private var commitActionLabel: String {
+        if !viewModel.statusFiles.isEmpty { return "Commit & push" }
+        if viewModel.pushableCommitCount > 0 { return "Push" }
+        return "Commit & push"
+    }
+
+    private var repositorySyncStatusText: String? {
+        if viewModel.pushableCommitCount > 0 {
+            let count = viewModel.pushableCommitCount
+            let verb = viewModel.hasUpstream ? "to push" : "to publish"
+            return "\(count) commit\(count == 1 ? "" : "s") \(verb)"
+        }
+        if viewModel.behind > 0 {
+            return "\(viewModel.behind) behind — pull first"
+        }
+        return nil
+    }
+
+    private var repositorySyncStatusIsBehind: Bool {
+        viewModel.behind > 0 && viewModel.pushableCommitCount == 0
+    }
+
+    private var repositorySyncStatusIcon: String {
+        repositorySyncStatusIsBehind ? "arrow.down" : (viewModel.hasUpstream ? "arrow.up" : "arrow.up.to.line")
+    }
+
+    private var repositorySyncStatusColor: Color {
+        repositorySyncStatusIsBehind ? Stanford.statusInfo : Stanford.lagunita
+    }
+
+    /// Readiness shown as a caption beneath the Create-pull-request button. Prefers
+    /// the concrete readiness blocker; falls back to a soft warning when an existing
+    /// PR could not be looked up.
+    private var pullRequestReadinessCaption: String? {
+        if let issue = viewModel.pullRequestReadinessIssue {
+            return "Pull request — \(shortPullRequestIssue(issue).lowercased())"
+        }
+        if viewModel.pullRequestLookupIssue != nil {
+            return "Could not check for an existing pull request"
+        }
+        return nil
     }
 
     // MARK: - Changes row + drawer
@@ -717,54 +808,6 @@ struct WorkspaceGitSectionView: View {
                     icon: icon,
                     help: rowHelp
                 )
-            }
-        }
-    }
-
-    // MARK: - Create pull request row
-
-    private var createPullRequestRow: some View {
-        Button {
-            Task { await viewModel.suggestPullRequest() }
-        } label: {
-            HStack(spacing: Self.rowIconSpacing) {
-                if viewModel.isSuggestingPR {
-                    ProgressView()
-                        .controlSize(.small)
-                        .frame(width: Self.rowIconFrame)
-                } else {
-                    rowIcon("arrow.triangle.pull")
-                }
-
-                rowTitle("Create pull request")
-
-                Spacer(minLength: 8)
-
-                if let issue = viewModel.pullRequestReadinessIssue {
-                    Text(shortPullRequestIssue(issue))
-                        .font(Stanford.caption(12).weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                } else if let issue = viewModel.pullRequestLookupIssue {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(Stanford.ui(12))
-                        .foregroundStyle(Stanford.statusWarn)
-                        .help("Could not check for an existing pull request: \(issue)")
-                } else {
-                    Image(systemName: "sparkles")
-                        .font(Stanford.ui(CapabilityRailLayout.rowSubtitleFontSize))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(minHeight: Self.rowMinHeight)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(RowButtonStyle())
-        .disabled(viewModel.isSuggestingPR)
-        .help(viewModel.pullRequestReadinessIssue ?? "Draft and create a pull request")
-        .contextMenu {
-            Button("Open GitHub without draft") {
-                viewModel.openPullRequestURL(with: nil)
             }
         }
     }
