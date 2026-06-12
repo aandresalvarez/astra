@@ -123,6 +123,62 @@ struct WorkspaceAppStudioContextBuilderTests {
     }
 
     @MainActor
+    @Test("generation task draft carries redacted Workspace App Studio context")
+    func generationTaskDraftCarriesRedactedWorkspaceAppStudioContext() {
+        let workspace = Workspace(
+            name: "Clinical Ops",
+            primaryPath: "/tmp/clinical-ops",
+            instructions: "Use REDCap carefully with token=workspace-secret-123456."
+        )
+        workspace.enabledCapabilityIDs = ["redcap-capability"]
+        let task = AgentTask(
+            title: "REDCap reconciliation",
+            goal: "Compare warehouse rows with api_key=task-secret-123456.",
+            workspace: workspace
+        )
+        task.updatedAt = Date(timeIntervalSince1970: 2_000)
+        task.events = [
+            studioEvent(
+                task: task,
+                eventType: TaskEventTypes.Conversation.userMessage,
+                payload: "Build the app from ghp_1234567890abcdef.",
+                timestamp: Date(timeIntervalSince1970: 2_001)
+            )
+        ]
+        workspace.tasks = [task]
+
+        let redcap = capabilityPackage(
+            id: "redcap-capability",
+            name: "REDCap",
+            riskLevel: .high,
+            dataAccess: [.clinicalData],
+            externalEffects: [.readOnly]
+        )
+
+        let draft = WorkspaceAppStudioGenerationTaskBuilder.draft(
+            userPrompt: "Build a reconciliation app using token=prompt-secret-123456.",
+            workspace: workspace,
+            packages: [redcap],
+            existingAppManifest: #"{"token":"manifest-secret-123456"}"#
+        )
+
+        #expect(draft.title == "Design Workspace App: Clinical Ops")
+        #expect(draft.goal.contains("Build a reconciliation app using token=[redacted]"))
+        #expect(draft.goal.contains("Workspace App Studio context"))
+        #expect(draft.inputs.count == 1)
+        #expect(draft.inputs[0].contains("## Recent tasks"))
+        #expect(draft.inputs[0].contains("REDCap"))
+        #expect(draft.inputs[0].contains("Existing app manifest"))
+        #expect(draft.acceptanceCriteria.contains("Proposes the app storage, views, actions, automations, and permission mode."))
+        let combined = ([draft.goal] + draft.inputs + draft.acceptanceCriteria).joined(separator: "\n")
+        #expect(combined.contains("workspace-secret") == false)
+        #expect(combined.contains("task-secret") == false)
+        #expect(combined.contains("ghp_1234567890") == false)
+        #expect(combined.contains("prompt-secret") == false)
+        #expect(combined.contains("manifest-secret") == false)
+    }
+
+    @MainActor
     @Test("context includes enabled capability summaries in stable order")
     func contextIncludesEnabledCapabilitiesInStableOrder() {
         let workspace = Workspace(name: "Research", primaryPath: "/tmp/research")

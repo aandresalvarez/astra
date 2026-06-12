@@ -634,6 +634,7 @@ struct ContentView: View {
             onMoveToDraft: moveTaskToDraft,
             onForkTask: setSelectedTask,
             onCreateTask: startComposingTask,
+            onCreateApp: startWorkspaceAppStudioTask,
             onOpenTask: openExistingTask,
             onDeleteTask: requestDeleteTask,
             onSetDoneState: setDoneState,
@@ -1624,6 +1625,56 @@ struct ContentView: View {
     private func startComposingTask() {
         setSelectedTask(nil)
         isComposingTask = true
+        presentRightRail(rememberShelfState: false)
+    }
+
+    private func startWorkspaceAppStudioTask() {
+        guard let workspace = effectiveWorkspace else { return }
+        let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
+        let model = RuntimeModelAvailability.normalizedModel(defaultModel, for: runtime)
+        let draft = WorkspaceAppStudioGenerationTaskBuilder.draft(workspace: workspace)
+        let task = AgentTask(
+            title: draft.title,
+            goal: draft.goal,
+            workspace: workspace,
+            tokenBudget: defaultBudget,
+            model: model,
+            runtime: runtime
+        )
+        task.status = .draft
+        task.inputs = draft.inputs
+        task.constraints = draft.constraints
+        task.acceptanceCriteria = draft.acceptanceCriteria
+        TaskCapabilitySnapshotter.capture(for: task)
+
+        modelContext.insert(task)
+        let policyLevel = AgentPolicyDefaults.effectiveLevel(
+            workspace: workspace,
+            globalDefaultRaw: defaultAgentPolicyLevelRaw,
+            skipPermissions: skipPermissions
+        )
+        TaskPolicyStore.recordSelection(
+            level: policyLevel,
+            task: task,
+            modelContext: modelContext,
+            source: "workspace_app_studio"
+        )
+        TaskRoleProfileStore.recordSelected(
+            TaskRoleProfileStore.selection(
+                for: .worker,
+                task: task,
+                defaultRuntimeID: runtime.rawValue,
+                defaultModel: model,
+                defaultBudget: defaultBudget,
+                defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
+                providerSettings: providerSettingsSnapshot.providerSettings
+            ),
+            task: task,
+            modelContext: modelContext
+        )
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        setSelectedTask(task)
+        isComposingTask = false
         presentRightRail(rememberShelfState: false)
     }
 
@@ -2714,6 +2765,7 @@ private struct ContentDetailAreaView: View {
     let onMoveToDraft: (AgentTask) -> Void
     let onForkTask: (AgentTask) -> Void
     let onCreateTask: () -> Void
+    let onCreateApp: () -> Void
     let onOpenTask: (AgentTask) -> Void
     let onDeleteTask: (AgentTask) -> Void
     let onSetDoneState: (AgentTask, Bool) -> Void
@@ -3082,6 +3134,7 @@ private struct ContentDetailAreaView: View {
             onMoveToDraft: onMoveToDraft,
             onForkTask: onForkTask,
             onCreateTask: onCreateTask,
+            onCreateApp: onCreateApp,
             onOpenTask: onOpenTask,
             onDeleteTask: onDeleteTask,
             onSetDoneState: onSetDoneState,
@@ -3166,6 +3219,7 @@ private struct ContentDetailContentView: View {
     let onMoveToDraft: (AgentTask) -> Void
     let onForkTask: (AgentTask) -> Void
     let onCreateTask: () -> Void
+    let onCreateApp: () -> Void
     let onOpenTask: (AgentTask) -> Void
     let onDeleteTask: (AgentTask) -> Void
     let onSetDoneState: (AgentTask, Bool) -> Void
@@ -3239,6 +3293,7 @@ private struct ContentDetailContentView: View {
                     workspace: workspace,
                     taskQueue: taskQueue,
                     onCreateTask: onCreateTask,
+                    onCreateApp: onCreateApp,
                     onOpenTask: onOpenTask,
                     onDeleteTask: onDeleteTask,
                     onSetDoneState: onSetDoneState,
