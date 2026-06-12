@@ -360,6 +360,21 @@ struct CapabilityRailPresentationTests {
         ) == "1 added folder")
     }
 
+    @Test("workspace folder removal drops every normalized duplicate path")
+    func workspaceFolderRemovalDropsEveryNormalizedDuplicatePath() {
+        let remaining = WorkspaceSetupChecklistPresentation.remainingAdditionalPaths(
+            afterRemovingFolderMatching: "/tmp/astra-review/docs",
+            from: [
+                "/tmp/astra-review/docs",
+                "/tmp/astra-review/./docs",
+                " /tmp/astra-review/docs/ ",
+                "/tmp/astra-review/notes"
+            ]
+        )
+
+        #expect(remaining == ["/tmp/astra-review/notes"])
+    }
+
     @Test("workspace folder setup surfaces missing root even with added paths")
     func workspaceFolderSetupSurfacesMissingRootEvenWithAddedPaths() {
         #expect(WorkspaceSetupChecklistPresentation.shouldShowWorkspaceRootMissingMessage(primaryPath: " ") == true)

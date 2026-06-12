@@ -92,6 +92,17 @@ enum WorkspaceSetupChecklistPresentation {
         userConfiguredFolderDescriptors(additionalPaths).count
     }
 
+    static func remainingAdditionalPaths(
+        afterRemovingFolderMatching path: String,
+        from additionalPaths: [String]
+    ) -> [String] {
+        let removedPath = WorkspacePathPresentation.standardizedPath(path)
+        guard !removedPath.isEmpty else { return additionalPaths }
+        return additionalPaths.filter { rawPath in
+            WorkspacePathPresentation.standardizedPath(rawPath) != removedPath
+        }
+    }
+
     static func folderState(primaryPath: String, additionalPaths: [String]) -> State {
         guard !shouldShowWorkspaceRootMissingMessage(primaryPath: primaryPath) else { return .missing }
         return userConfiguredFolderCount(additionalPaths) > 0 ? State.configured : State.reference
@@ -1545,7 +1556,7 @@ struct WorkspaceRightRailView: View {
                     roleLabel: descriptor.roleLabel,
                     path: descriptor.path,
                     canRemove: true,
-                    removeAction: { removeAdditionalPath(at: descriptor.index - 1) }
+                    removeAction: { removeAdditionalPaths(matching: descriptor.path) }
                 )
             }
 
@@ -1832,9 +1843,13 @@ struct WorkspaceRightRailView: View {
         WorkspacePersistenceCoordinator.scheduleAutoExport(workspace: workspace, modelContext: modelContext)
     }
 
-    private func removeAdditionalPath(at index: Int) {
-        guard workspace.additionalPaths.indices.contains(index) else { return }
-        workspace.additionalPaths.remove(at: index)
+    private func removeAdditionalPaths(matching path: String) {
+        let remaining = WorkspaceSetupChecklistPresentation.remainingAdditionalPaths(
+            afterRemovingFolderMatching: path,
+            from: workspace.additionalPaths
+        )
+        guard remaining.count != workspace.additionalPaths.count else { return }
+        workspace.additionalPaths = remaining
         markWorkspaceConfigurationChanged()
     }
 
