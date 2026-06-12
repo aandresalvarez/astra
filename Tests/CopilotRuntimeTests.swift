@@ -565,6 +565,66 @@ struct AgentRuntimeFailureDiagnosticsTests {
         #expect(fields["parsed_events"] == "0")
         #expect(fields["failure_category"] == AgentRuntimeFailureCategory.noVisibleOutput.rawValue)
     }
+
+    private func zeroOutputSnapshot() -> AgentRuntimeStreamTelemetrySnapshot {
+        let telemetry = AgentRuntimeStreamTelemetry()
+        telemetry.recordRawLine(parsesJSONLines: true)
+        telemetry.recordParsed([])
+        return telemetry.snapshot()
+    }
+
+    @Test("Benign deprecation warning over a zero-output stream stays noVisibleOutput")
+    func benignWarningDoesNotDefeatNoVisibleOutput() {
+        let diagnostic = AgentRuntimeFailureDiagnostic.classify(
+            runtime: .claudeCode,
+            model: "claude-opus-4-6",
+            exitCode: 1,
+            rawError: "Using Claude with claude-opus-4-6 and thinking.type=enabled is deprecated. Use thinking.type=adaptive instead",
+            providerVersion: "claude 1.0.0",
+            stream: zeroOutputSnapshot()
+        )
+
+        #expect(diagnostic.category == .noVisibleOutput)
+        // The warning must NOT become the surfaced cause.
+        #expect(!diagnostic.redactedSummary.lowercased().contains("deprecated"))
+        // Claude Code message is actionable (login / hook guidance).
+        #expect(diagnostic.userMessage.contains("/login"))
+        #expect(diagnostic.userMessage.lowercased().contains("hook"))
+        // Raw signal is preserved via the audit field.
+        let fields = diagnostic.auditFields(phase: "run", stream: nil)
+        #expect(fields["stderr_was_warning_only"] == "true")
+    }
+
+    @Test("Genuine unmatched stderr still surfaces as providerProcessFailed")
+    func genuineErrorStillSurfaces() {
+        let diagnostic = AgentRuntimeFailureDiagnostic.classify(
+            runtime: .claudeCode,
+            model: "claude-opus-4-6",
+            exitCode: 1,
+            rawError: "Fatal: the provider subprocess crashed while initializing the agent loop",
+            providerVersion: "claude 1.0.0",
+            stream: zeroOutputSnapshot()
+        )
+
+        #expect(diagnostic.category == .providerProcessFailed)
+        #expect(diagnostic.redactedSummary.contains("provider subprocess crashed"))
+        let fields = diagnostic.auditFields(phase: "run", stream: nil)
+        #expect(fields["stderr_was_warning_only"] == "false")
+    }
+
+    @Test("Auth keyword is matched before the noVisibleOutput branch")
+    func authKeywordWinsOverNoVisibleOutput() {
+        let diagnostic = AgentRuntimeFailureDiagnostic.classify(
+            runtime: .claudeCode,
+            model: "claude-opus-4-6",
+            exitCode: 1,
+            rawError: "Error: not authenticated. Run claude /login.",
+            providerVersion: "claude 1.0.0",
+            stream: zeroOutputSnapshot()
+        )
+
+        #expect(diagnostic.category == .authenticationFailed)
+    }
 }
 
 @Suite("Copilot CLI Command Planning")
@@ -1111,7 +1171,7 @@ struct CopilotWorkerExecutionTests {
         try script.write(to: binURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binURL.path)
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.copilotPath = binURL.path
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
@@ -1171,7 +1231,7 @@ struct CopilotWorkerExecutionTests {
         context.insert(task)
         try context.save()
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.copilotPath = binURL.path
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
@@ -1238,7 +1298,7 @@ struct CopilotWorkerExecutionTests {
         try script.write(to: binURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binURL.path)
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.copilotPath = binURL.path
         worker.copilotHome = copilotHomeURL.path
         worker.timeoutSeconds = 30
@@ -1300,7 +1360,7 @@ struct CopilotWorkerExecutionTests {
         try script.write(to: binURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binURL.path)
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.copilotPath = binURL.path
         worker.copilotHome = copilotHomeURL.path
         worker.timeoutSeconds = 30
@@ -1370,7 +1430,7 @@ struct CopilotWorkerExecutionTests {
         try script.write(to: binURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binURL.path)
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.copilotPath = binURL.path
         worker.copilotHome = copilotHomeURL.path
         worker.timeoutSeconds = 30
@@ -1448,7 +1508,7 @@ struct CopilotWorkerExecutionTests {
         context.insert(task)
         try context.save()
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.copilotPath = binURL.path
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
@@ -1498,7 +1558,7 @@ struct CopilotWorkerExecutionTests {
         context.insert(task)
         try context.save()
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.copilotPath = binURL.path
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
@@ -1573,7 +1633,7 @@ struct CopilotWorkerExecutionTests {
         context.insert(task)
         try context.save()
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.copilotPath = binURL.path
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
@@ -1643,7 +1703,7 @@ struct CopilotWorkerExecutionTests {
         context.insert(task)
         try context.save()
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.copilotPath = binURL.path
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
@@ -1720,7 +1780,7 @@ struct CopilotWorkerExecutionTests {
         TaskPolicyStore.recordSelection(level: .autonomous, task: task, modelContext: context, source: "test")
         try context.save()
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.copilotPath = binURL.path
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
@@ -1822,7 +1882,7 @@ struct CopilotWorkerExecutionTests {
         TaskPolicyStore.recordSelection(level: .autonomous, task: task, modelContext: context, source: "test")
         try context.save()
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.copilotPath = binURL.path
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30

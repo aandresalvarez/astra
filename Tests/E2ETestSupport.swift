@@ -58,6 +58,28 @@ enum E2ETestSupport {
                 expectsTeamEvents: false,
                 expectsStructuredToolEvents: false,
                 expectsResultCallback: false
+            ),
+            RuntimeCase(
+                runtimeID: .cursorCLI,
+                model: environment["REAL_CURSOR_MODEL"] ?? AgentRuntimeAdapterRegistry.defaultModel(for: .cursorCLI),
+                directoryNameComponent: "cursor",
+                expectsSessionID: true,
+                expectsUsageStats: true,
+                expectsCostUSD: true,
+                expectsTeamEvents: false,
+                expectsStructuredToolEvents: true,
+                expectsResultCallback: true
+            ),
+            RuntimeCase(
+                runtimeID: .openCodeCLI,
+                model: environment["REAL_OPENCODE_MODEL"] ?? AgentRuntimeAdapterRegistry.defaultModel(for: .openCodeCLI),
+                directoryNameComponent: "opencode",
+                expectsSessionID: true,
+                expectsUsageStats: false,
+                expectsCostUSD: false,
+                expectsTeamEvents: false,
+                expectsStructuredToolEvents: true,
+                expectsResultCallback: true
             )
         ]
         let requested = (environment["RUN_E2E_RUNTIME"] ?? "")
@@ -123,6 +145,18 @@ enum E2ETestSupport {
                 throw E2ETestSupportError.missingExecutable("agy")
             }
             worker.setExecutablePath(path, for: .antigravityCLI)
+        case .cursorCLI:
+            let path = RuntimePathResolver.detectCursorPath()
+            guard FileManager.default.isExecutableFile(atPath: path) else {
+                throw E2ETestSupportError.missingExecutable("cursor-agent")
+            }
+            worker.setExecutablePath(path, for: .cursorCLI)
+        case .openCodeCLI:
+            let path = RuntimePathResolver.detectOpenCodePath()
+            guard FileManager.default.isExecutableFile(atPath: path) else {
+                throw E2ETestSupportError.missingExecutable("opencode")
+            }
+            worker.setExecutablePath(path, for: .openCodeCLI)
         default:
             throw E2ETestSupportError.missingExecutable(runtimeID.rawValue)
         }
@@ -223,10 +257,10 @@ private actor E2ELiveProviderGate {
 
 @Suite("E2E live provider gate")
 struct E2ELiveProviderGateTests {
-    @Test("Runtime cases include Antigravity and support runtime filtering")
-    func runtimeCasesIncludeAntigravityAndSupportFiltering() {
+    @Test("Runtime cases include Antigravity, Cursor, OpenCode, and support runtime filtering")
+    func runtimeCasesIncludeAntigravityCursorOpenCodeAndSupportFiltering() {
         let allCases = E2ETestSupport.runtimeCases(environment: [:])
-        #expect(allCases.map(\.runtimeID) == [.claudeCode, .copilotCLI, .antigravityCLI])
+        #expect(allCases.map(\.runtimeID) == [.claudeCode, .copilotCLI, .antigravityCLI, .cursorCLI, .openCodeCLI])
 
         let filteredByID = E2ETestSupport.runtimeCases(environment: [
             "RUN_E2E_RUNTIME": "antigravity_cli",
@@ -238,8 +272,22 @@ struct E2ELiveProviderGateTests {
         let filteredByName = E2ETestSupport.runtimeCases(environment: ["RUN_E2E_RUNTIME": "antigravity"])
         #expect(filteredByName.map(\.runtimeID) == [.antigravityCLI])
 
+        let filteredByCursorName = E2ETestSupport.runtimeCases(environment: [
+            "RUN_E2E_RUNTIME": "cursor",
+            "REAL_CURSOR_MODEL": "Cursor Test Model"
+        ])
+        #expect(filteredByCursorName.map(\.runtimeID) == [.cursorCLI])
+        #expect(filteredByCursorName.first?.model == "Cursor Test Model")
+
+        let filteredByOpenCodeName = E2ETestSupport.runtimeCases(environment: [
+            "RUN_E2E_RUNTIME": "opencode",
+            "REAL_OPENCODE_MODEL": "OpenCode Test Model"
+        ])
+        #expect(filteredByOpenCodeName.map(\.runtimeID) == [.openCodeCLI])
+        #expect(filteredByOpenCodeName.first?.model == "OpenCode Test Model")
+
         let unknownFilter = E2ETestSupport.runtimeCases(environment: ["RUN_E2E_RUNTIME": "not-a-runtime"])
-        #expect(unknownFilter.map(\.runtimeID) == [.claudeCode, .copilotCLI, .antigravityCLI])
+        #expect(unknownFilter.map(\.runtimeID) == [.claudeCode, .copilotCLI, .antigravityCLI, .cursorCLI, .openCodeCLI])
     }
 
     @Test("Queued live provider waiters finish when cancelled")

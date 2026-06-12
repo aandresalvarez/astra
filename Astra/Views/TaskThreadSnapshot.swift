@@ -741,10 +741,18 @@ struct TaskThreadSnapshot: Sendable {
         activityByRunID: [UUID: TaskRunActivity],
         protocolByRunID: [UUID: TaskRunProtocolState]
     ) -> [TaskConversationItem] {
-        var items: [TaskConversationItem] = [
-            .userMessage(text: goal, timestamp: createdAt)
-        ]
         let conversationEvents = events.filter(Self.isVisibleConversationEvent)
+        // Plan-created tasks record the user's ask as a plan.user.message
+        // event with the same text as the goal; synthesizing the goal bubble
+        // on top of it would show the prompt twice.
+        let trimmedGoal = goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let planEchoesGoal = conversationEvents.contains {
+            $0.type == TaskPlanConversationEventTypes.userMessage
+                && $0.payload.trimmingCharacters(in: .whitespacesAndNewlines) == trimmedGoal
+        }
+        var items: [TaskConversationItem] = planEchoesGoal
+            ? []
+            : [.userMessage(text: goal, timestamp: createdAt)]
         let visibleRuns = runs.filter {
             shouldShowAgentResponse(
                 for: $0,
@@ -948,7 +956,7 @@ struct TaskThreadSnapshotTrigger: Equatable {
         status = task.status
         latestRunID = latestRun?.id
         latestRunStatus = latestRun?.status
-        latestRunOutputCount = latestRun?.output.count ?? 0
+        latestRunOutputCount = latestRun?.output.utf8.count ?? 0
         latestRunOutputBucket = Self.outputBucket(for: latestRunOutputCount)
     }
 
@@ -962,9 +970,9 @@ struct TaskThreadSnapshotTrigger: Equatable {
             lhs.latestRunOutputBucket == rhs.latestRunOutputBucket
     }
 
-    private static func outputBucket(for characterCount: Int) -> Int {
-        guard characterCount > 0 else { return 0 }
-        return ((characterCount - 1) / liveOutputBucketSize) + 1
+    private static func outputBucket(for byteCount: Int) -> Int {
+        guard byteCount > 0 else { return 0 }
+        return ((byteCount - 1) / liveOutputBucketSize) + 1
     }
 }
 

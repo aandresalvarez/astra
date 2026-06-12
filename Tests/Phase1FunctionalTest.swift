@@ -60,7 +60,7 @@ struct Phase1FunctionalTest {
         context.insert(task)
         try context.save()
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         await worker.execute(task: task, modelContext: context) { _ in }
 
         #expect(task.status == .failed, "Task without workspace should fail, got: \(task.status.rawValue)")
@@ -88,7 +88,7 @@ struct Phase1FunctionalTest {
         context.insert(task)
         try context.save()
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         await worker.execute(task: task, modelContext: context) { _ in }
 
         #expect(task.status == .failed, "Task with bad workspace should fail, got: \(task.status.rawValue)")
@@ -144,7 +144,7 @@ struct Phase1FunctionalTest {
         #expect(workspace.tasks.contains(task), "Workspace should contain the task")
 
         // 4. Run through AgentRuntimeWorker (same code path as the app)
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         try E2ETestSupport.configureUnattended(worker, for: runtimeCase, temporaryRootPath: testDir)
         var receivedEvents: [ParsedEvent] = []
 

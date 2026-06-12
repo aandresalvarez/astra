@@ -105,6 +105,7 @@ struct AgentPolicySheet: View {
                 Section("Provider Preview") {
                     factRow("Runtime", value: runtime.displayName)
                     factRow("Permission mode", value: render.permissionMode)
+                    askCoverageRow
                     factRow("Config source", value: render.configOwnership.displayName)
                     factRow("Enforcement", value: render.enforcementTiers.map(\.displayName).joined(separator: ", "))
                     factRow("Broad provider permissions", value: render.usesBroadProviderPermissions ? "Yes" : "No")
@@ -535,7 +536,9 @@ struct AgentPolicySheet: View {
         placeholder: String
     ) -> some View {
         VStack(alignment: .leading, spacing: 5) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
+            // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+            // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
+            HStack(alignment: .top, spacing: 8) {
                 Text(title)
                     .font(Stanford.caption(12).weight(.semibold))
                 Text(help)
@@ -699,8 +702,39 @@ struct AgentPolicySheet: View {
         .padding(.vertical, 3)
     }
 
+    /// Honest, per-(runtime, policy) coverage statement so the sheet never
+    /// implies the same Ask guarantee on every runtime. Derived from the same
+    /// tier + sandbox logic the worker uses.
+    @ViewBuilder
+    private var askCoverageRow: some View {
+        if let permissionPolicy = PermissionPolicy(rawValue: render.permissionMode) {
+            let badge = AskCoverageBadge.resolve(
+                runtime: runtime,
+                permissionPolicy: permissionPolicy,
+                sandboxSettings: ExecutionSandboxSettings.current(permissionPolicy: permissionPolicy)
+            )
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: badge.symbolName)
+                    .foregroundStyle(Stanford.lagunita)
+                    .frame(width: 16)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Ask coverage: \(badge.label)")
+                        .font(Stanford.caption(12).weight(.semibold))
+                    Text(badge.detail)
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.vertical, 2)
+        }
+    }
+
     private func factRow(_ title: String, value: String) -> some View {
-        HStack(alignment: .firstTextBaseline) {
+        // `.top`, not `.firstTextBaseline`: `value` is selectable, and a
+        // baseline-aligned HStack querying a hosted SelectionOverlay's baseline
+        // live-locks the SwiftUI layout engine. See MarkdownTextView's list-item
+        // case in TaskMainView for the full root-cause writeup.
+        HStack(alignment: .top) {
             Text(title)
                 .foregroundStyle(.secondary)
             Spacer(minLength: 12)

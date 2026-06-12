@@ -36,7 +36,29 @@ struct CapabilityLibrary {
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
     }
 
-    func installedPackages() -> [PluginPackage] {
+    /// Package IDs whose on-disk governance is trusted as shipped: the
+    /// app-curated built-in definitions seeded by `syncApprovedPackages`.
+    /// Everything else in the library directory is local content whose
+    /// self-declared governance is clamped on load — approval for local
+    /// packages comes exclusively from digest-bound approval records.
+    static var trustedBuiltInPackageIDs: Set<String> {
+        Set(PluginCatalog.builtInPackages.map(\.id))
+    }
+
+    /// Curated governance by built-in ID. On load, a trusted built-in's
+    /// governance comes from the compiled definition, never the disk file —
+    /// a hand-edited built-in JSON cannot elevate (or weaken) its own
+    /// governance by name alone.
+    static var curatedBuiltInGovernance: [String: CapabilityGovernance] {
+        Dictionary(
+            PluginCatalog.builtInPackages.map { ($0.id, $0.governance) },
+            uniquingKeysWith: { first, _ in first }
+        )
+    }
+
+    func installedPackages(
+        trustedBuiltInIDs: Set<String> = CapabilityLibrary.trustedBuiltInPackageIDs
+    ) -> [PluginPackage] {
         guard let files = try? fileManager.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: nil
@@ -53,6 +75,19 @@ struct CapabilityLibrary {
                 if package.sourceMetadata == nil {
                     package.sourceMetadata = .localLibrary()
                 }
+                if trustedBuiltInIDs.contains(package.id) {
+                    // Defense in depth: trusted by ID, but governance still
+                    // comes from the compiled definition when one exists.
+                    if let curated = Self.curatedBuiltInGovernance[package.id] {
+                        package.governance = curated
+                    }
+                } else if CapabilityGovernanceNormalizer.clampToLocalDraft(&package) {
+                    AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
+                        "source": "library_load",
+                        "package_id": package.id,
+                        "result": "self_declared_governance_clamped"
+                    ], level: .warning)
+                }
                 return package
             }
             .sorted { lhs, rhs in
@@ -62,8 +97,11 @@ struct CapabilityLibrary {
             }
     }
 
-    func installedPackage(id: String) -> PluginPackage? {
-        installedPackages().first { $0.id == id }
+    func installedPackage(
+        id: String,
+        trustedBuiltInIDs: Set<String> = CapabilityLibrary.trustedBuiltInPackageIDs
+    ) -> PluginPackage? {
+        installedPackages(trustedBuiltInIDs: trustedBuiltInIDs).first { $0.id == id }
     }
 
     func installedVersion(of id: String) -> String? {
@@ -134,7 +172,10 @@ struct CapabilityLibrary {
     }
 
     @discardableResult
-    func removePackage(id: String) throws -> PluginPackage {
+    func removePackage(
+        id: String,
+        trustedBuiltInIDs: Set<String> = CapabilityLibrary.trustedBuiltInPackageIDs
+    ) throws -> PluginPackage {
         let url = packageURL(for: id)
         guard let data = try? Data(contentsOf: url) else {
             throw RemovalError.notInstalled(id)
@@ -145,7 +186,12 @@ struct CapabilityLibrary {
             package.sourceMetadata = .localLibrary()
         }
 
-        if package.sourceMetadata?.kind == "built-in" {
+        // The trust boundary is the curated built-in ID set, never the disk
+        // metadata: keying off `sourceMetadata.kind` would let a tampered
+        // file flip its own `kind` to "local" and remove a genuine built-in.
+        // A file merely claiming built-in kind whose ID is not curated is
+        // local content and remains removable.
+        if trustedBuiltInIDs.contains(package.id) {
             throw RemovalError.builtInPackage(package.name)
         }
 

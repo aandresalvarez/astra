@@ -8,6 +8,11 @@ struct SettingsView: View {
     @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultTokenBudget = TaskExecutionDefaults.tokenBudget
     @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var defaultAgentPolicyLevelRaw = AgentPolicyLevel.review.rawValue
     @AppStorage(AppStorageKeys.budgetEnforcementMode) private var budgetEnforcementModeRaw = TaskExecutionDefaults.budgetEnforcementMode.rawValue
+    // Defaults derive from ExecutionSandboxSettings so the UI's initial state and
+    // the resolved (current()) behavior share one source of truth and can't drift.
+    @AppStorage(AppStorageKeys.sandboxEnforcement) private var sandboxEnforcementRaw = ExecutionSandboxSettings.defaultEnforcement.rawValue
+    @AppStorage(AppStorageKeys.sandboxAllowNetwork) private var sandboxAllowNetwork = ExecutionSandboxSettings.defaultAllowNetwork
+    @AppStorage(AppStorageKeys.sandboxLayerNativeProviders) private var sandboxLayerNativeProviders = ExecutionSandboxSettings.defaultLayerNativeProviders
     @AppStorage(AppStorageKeys.defaultRuntimeID) private var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
     @AppStorage(AppStorageKeys.claudePath) private var claudePath = ""
     @AppStorage(AppStorageKeys.copilotPath) private var copilotPath = ""
@@ -153,7 +158,7 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Technical Readiness") {
+            Section("Default Provider Readiness") {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(alignment: .center, spacing: 12) {
                         readinessSummary
@@ -178,7 +183,7 @@ struct SettingsView: View {
                             }
                         }
                     } else {
-                        Text("Run a readiness check to verify the selected runtime, authentication, provider route, and required local tools.")
+                        Text("Run a readiness check to verify the default provider, authentication, provider route, and required local tools.")
                             .font(Stanford.caption(12))
                             .foregroundStyle(.secondary)
                     }
@@ -211,6 +216,33 @@ struct SettingsView: View {
                 }
 
                 Text(selectedDefaultPolicyLevel.shortDescription)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+
+                Picker("Execution Sandbox", selection: sandboxEnforcementSelectionBinding) {
+                    ForEach(ExecutionSandboxEnforcement.allCases) { mode in
+                        Text(mode.displayName).tag(mode.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text(selectedSandboxEnforcement.helpText)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+
+                Toggle("Allow Network In Sandbox", isOn: $sandboxAllowNetwork)
+                    .disabled(selectedSandboxEnforcement == .off)
+
+                Text(sandboxAllowNetwork
+                    ? "Sandboxed agents can reach the network — required for the provider's model API and online tools."
+                    : "Offline: the sandbox blocks all outbound network. Use only for fully local tasks; most agent runs will fail to reach their model.")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+
+                Toggle("Also Sandbox Providers With Built-In Sandboxes", isOn: $sandboxLayerNativeProviders)
+                    .disabled(selectedSandboxEnforcement == .off)
+
+                Text("Layer ASTRA's sandbox over Codex, Cursor, and Antigravity for defense-in-depth. Off by default — these providers already self-sandbox, and double-confinement can break them.")
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
             }
@@ -365,6 +397,9 @@ struct SettingsView: View {
         case .claudeCode: "terminal"
         case .copilotCLI: "person.crop.circle"
         case .antigravityCLI: "sparkles"
+        case .codexCLI: "curlybraces.square"
+        case .cursorCLI: "cursorarrow.rays"
+        case .openCodeCLI: "chevron.left.forwardslash.chevron.right"
         default: "terminal"
         }
     }
@@ -833,6 +868,21 @@ struct SettingsView: View {
         BudgetEnforcementMode(rawValue: budgetEnforcementModeRaw) ?? TaskExecutionDefaults.budgetEnforcementMode
     }
 
+    private var selectedSandboxEnforcement: ExecutionSandboxEnforcement {
+        ExecutionSandboxEnforcement.normalized(sandboxEnforcementRaw)
+    }
+
+    /// Normalizing binding so the segmented Picker always reads/writes a canonical
+    /// raw value. A legacy/unknown stored value (which `normalized` tolerates)
+    /// therefore still maps to a valid segment instead of leaving the control with
+    /// no selection.
+    private var sandboxEnforcementSelectionBinding: Binding<String> {
+        Binding(
+            get: { ExecutionSandboxEnforcement.normalized(sandboxEnforcementRaw).rawValue },
+            set: { sandboxEnforcementRaw = ExecutionSandboxEnforcement.normalized($0).rawValue }
+        )
+    }
+
     private var selectedDefaultPolicyLevel: AgentPolicyLevel {
         AgentPolicyLevel.normalized(defaultAgentPolicyLevelRaw).userFacingLevel
     }
@@ -894,12 +944,15 @@ struct SettingsView: View {
                     Button {
                         selection.wrappedValue = model
                     } label: {
-                        HStack {
-                            Text(model)
-                            if selection.wrappedValue == model {
-                                Image(systemName: "checkmark")
-                            }
-                        }
+                        ModelMenuItemLabel(
+                            model: model,
+                            displayName: RuntimeModelAvailability.displayName(
+                                for: model,
+                                runtime: selectedRuntime,
+                                cache: runtimeModelCache
+                            ),
+                            isSelected: selection.wrappedValue == model
+                        )
                     }
                 }
             } label: {
@@ -932,12 +985,15 @@ struct SettingsView: View {
                     Button {
                         roleModelBinding(for: role).wrappedValue = model
                     } label: {
-                        HStack {
-                            Text(model)
-                            if selection.wrappedValue == model {
-                                Image(systemName: "checkmark")
-                            }
-                        }
+                        ModelMenuItemLabel(
+                            model: model,
+                            displayName: RuntimeModelAvailability.displayName(
+                                for: model,
+                                runtime: runtime,
+                                cache: runtimeModelCache
+                            ),
+                            isSelected: selection.wrappedValue == model
+                        )
                     }
                 }
             } label: {
@@ -1147,7 +1203,9 @@ struct SettingsView: View {
     }
 
     private func dataLocationRow(_ title: String, path: String, canOpen: Bool = true) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
+        // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+        // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
+        HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(Stanford.body(15))

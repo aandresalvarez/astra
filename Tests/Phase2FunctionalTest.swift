@@ -107,7 +107,7 @@ struct Phase2FunctionalTest {
         #expect(task.teamSize == (runtimeCase.expectsTeamEvents ? 2 : 1), "Team size should match runtime support")
 
         // 4. Run through AgentRuntimeWorker
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         try E2ETestSupport.configureUnattended(worker, for: runtimeCase, temporaryRootPath: testDir)
         var receivedEvents: [ParsedEvent] = []
 

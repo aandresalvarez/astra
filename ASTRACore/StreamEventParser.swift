@@ -21,6 +21,13 @@ public struct StreamUsage: Decodable {
     public let output_tokens: Int?
     public let cache_read_input_tokens: Int?
     public let cache_creation_input_tokens: Int?
+    public let inputTokens: Int?
+    public let outputTokens: Int?
+    public let cachedInputTokens: Int?
+    public let cacheReadInputTokens: Int?
+    public let cacheCreationInputTokens: Int?
+    public let cacheReadTokens: Int?
+    public let cacheWriteTokens: Int?
 }
 
 public struct StreamContentBlock: Decodable {
@@ -298,8 +305,8 @@ public enum StreamEventParser {
                     totalOutput += entry.outputTokens ?? 0
                 }
             } else if let usage = event.usage {
-                totalInput = (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0)
-                totalOutput = usage.output_tokens ?? 0
+                totalInput = totalInputTokens(from: usage)
+                totalOutput = totalOutputTokens(from: usage)
             }
 
             return [.result(
@@ -389,12 +396,29 @@ public enum StreamEventParser {
     }
 
     private static func parsedUsageEvent(from usage: StreamUsage) -> ParsedEvent? {
-        let totalInput = (usage.input_tokens ?? 0)
-            + (usage.cache_read_input_tokens ?? 0)
-            + (usage.cache_creation_input_tokens ?? 0)
-        let totalOutput = usage.output_tokens ?? 0
+        let totalInput = totalInputTokens(from: usage)
+        let totalOutput = totalOutputTokens(from: usage)
         guard totalInput > 0 || totalOutput > 0 else { return nil }
         return .usage(totalInputTokens: totalInput, totalOutputTokens: totalOutput)
+    }
+
+    private static func totalInputTokens(from usage: StreamUsage) -> Int {
+        let uncachedInput = usage.input_tokens ?? usage.inputTokens ?? 0
+        let cachedInput = usage.cachedInputTokens ?? 0
+        let cacheReadInput = usage.cache_read_input_tokens
+            ?? usage.cacheReadInputTokens
+            ?? usage.cacheReadTokens
+            ?? 0
+        let cacheCreationInput = usage.cache_creation_input_tokens
+            ?? usage.cacheCreationInputTokens
+            ?? usage.cacheWriteTokens
+            ?? 0
+
+        return uncachedInput + cachedInput + cacheReadInput + cacheCreationInput
+    }
+
+    private static func totalOutputTokens(from usage: StreamUsage) -> Int {
+        usage.output_tokens ?? usage.outputTokens ?? 0
     }
 
     private static func extractAgentName(from description: String?) -> String? {

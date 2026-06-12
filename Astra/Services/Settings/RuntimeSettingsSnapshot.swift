@@ -76,11 +76,9 @@ struct RuntimeSettingsSnapshot: Equatable, Sendable {
     }
 
     var modelCacheSignature: String {
-        [
-            String(runtimeModelCacheRevision),
-            runtimeModelCache.rawSnapshot(for: .claudeCode),
-            runtimeModelCache.rawSnapshot(for: .copilotCLI)
-        ].joined(separator: "|")
+        ([String(runtimeModelCacheRevision)] + AgentRuntimeAdapterRegistry.runtimeIDs.map { runtime in
+            "\(runtime.rawValue)=\(runtimeModelCache.rawSnapshot(for: runtime))"
+        }).joined(separator: "|")
     }
 
     func utilityRuntime(

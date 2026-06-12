@@ -45,13 +45,30 @@ public actor PreflightCache {
            now().timeIntervalSince(cached.checkedAt) < ttl {
             return cached.status
         }
-        let fresh = await checker.check(
+        let checked = await checker.check(
             binary: prereq.binary,
             livenessArgs: prereq.livenessArgs,
             semantic: prereq.semantic
         )
+        let fresh = normalizedStatus(checked, for: prereq)
+        // A probe interrupted by caller cancellation is not a real result —
+        // caching it would publish "unresponsive: cancelled" for 30s and
+        // make an installed runtime look broken to every other consumer.
+        guard !Task.isCancelled else {
+            return entries[prereq.id]?.status ?? fresh
+        }
         entries[prereq.id] = Entry(status: fresh, checkedAt: now())
         return fresh
+    }
+
+    private func normalizedStatus(_ status: HealthStatus, for prereq: CLIPrerequisite) -> HealthStatus {
+        guard case .unresponsive(let detail) = status,
+              prereq.authHint != nil,
+              prereq.livenessArgs.contains(where: { $0.localizedCaseInsensitiveContains("auth") })
+        else {
+            return status
+        }
+        return .unauthenticated(detail: detail)
     }
 
     /// Drop all cached results. Use on app foreground / workspace switch.
@@ -63,14 +80,7 @@ public actor PreflightCache {
     /// variants. Used by the "Re-check" button and when a user runs an
     /// install action we know should change the status.
     public func invalidate(binary: String) {
-        entries = entries.filter { _, entry in
-            // A prereq's id embeds the binary + args, so we can't just
-            // delete by prefix match without reconstructing the key.
-            // Instead we keep a parallel index on insert.
-            _ = entry
-            return true
-        }
-        // Simpler: rebuild by walking and deleting matching keys.
+        // A prereq's id embeds the binary + args, so prefix-match the key.
         let matching = entries.keys.filter { $0.hasPrefix("\(binary):") }
         for key in matching { entries.removeValue(forKey: key) }
     }

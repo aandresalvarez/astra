@@ -8,6 +8,16 @@ TOOL_PRODUCTS=("astra-browser" "stanford-mail" "stanford-apple-mail" "stanford-g
 ASTRA_CHANNEL="${ASTRA_CHANNEL:-dev}"
 MIN_SYSTEM_VERSION="14.0"
 BUILD_CONFIGURATION="${ASTRA_BUILD_CONFIGURATION:-debug}"
+# Strip debug/symbol tables from bundled binaries before signing. The shipped
+# executable carries a ~50%+ __LINKEDIT segment of local symbols that page in
+# nothing at launch but bloat the download. Off by default for debug builds so
+# `--debug` runs keep symbols for lldb; on by default for release. Override with
+# ASTRA_STRIP_BINARIES=0/1.
+if [[ "$BUILD_CONFIGURATION" == "release" ]]; then
+  STRIP_BINARIES="${ASTRA_STRIP_BINARIES:-1}"
+else
+  STRIP_BINARIES="${ASTRA_STRIP_BINARIES:-0}"
+fi
 REQUIRE_ARM64="${ASTRA_REQUIRE_ARM64:-1}"
 SPARKLE_PUBLIC_ED_KEY="${ASTRA_SPARKLE_PUBLIC_ED_KEY:-${SPARKLE_PUBLIC_ED_KEY:-}}"
 SIGN_IDENTITY="${ASTRA_SIGN_IDENTITY:-}"
@@ -169,6 +179,29 @@ copy_sparkle_framework() {
 
 copy_sparkle_framework
 
+strip_bundled_binaries() {
+  [[ "$STRIP_BINARIES" == "1" ]] || return 0
+  # Preserve a dSYM for crash symbolication before stripping local symbols.
+  if xcrun dsymutil "$APP_BINARY" -o "$APP_BUNDLE.dSYM" >/dev/null 2>&1; then
+    echo "  wrote $APP_BUNDLE.dSYM"
+  fi
+  # -r keeps dynamically-referenced symbols, -S removes debug symbols,
+  # -T/-x trim local symbol-table entries. Must run before codesign so the
+  # signature covers the stripped bytes.
+  local target
+  for target in "$APP_BINARY" "$BUNDLED_TOOLS_DIR"/*; do
+    [[ -f "$target" ]] || continue
+    local before after
+    before="$(stat -f%z "$target" 2>/dev/null || echo 0)"
+    if xcrun strip -rSTx "$target" >/dev/null 2>&1; then
+      after="$(stat -f%z "$target" 2>/dev/null || echo 0)"
+      echo "  stripped $(basename "$target"): ${before} -> ${after} bytes"
+    fi
+  done
+}
+
+strip_bundled_binaries
+
 cat >"$INFO_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -234,8 +267,26 @@ cat >>"$INFO_PLIST" <<PLIST
 </plist>
 PLIST
 
-if [[ -n "$SIGN_IDENTITY" ]]; then
+# Dev builds prefer a STABLE self-signed identity over ad-hoc when one exists, so
+# the login-keychain ACL (bound to the signing Designated Requirement) survives
+# rebuilds. An ad-hoc signature's DR is a cdhash that changes on every build, which
+# is what triggers the repeated keychain prompts/failures while configuring ASTRA.
+if [[ -z "$SIGN_IDENTITY" && "$ASTRA_CHANNEL" == "dev" ]]; then
+  if security find-identity -v -p codesigning 2>/dev/null | grep -q '"ASTRA Local Dev"'; then
+    SIGN_IDENTITY="ASTRA Local Dev"
+    echo "  signing dev build with stable self-signed identity 'ASTRA Local Dev'"
+  fi
+fi
+
+if [[ -n "$SIGN_IDENTITY" && "$ASTRA_CHANNEL" != "dev" ]]; then
+  # Distributed channels (prod/beta): hardened runtime + secure timestamp so the
+  # bundle can be notarized.
   /usr/bin/codesign --force --deep --timestamp --options runtime --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
+elif [[ -n "$SIGN_IDENTITY" ]]; then
+  # Dev: stable identity but NO hardened runtime/timestamp. Those are only needed
+  # for notarization and would change local runtime behavior vs the ad-hoc build
+  # (hardened runtime enables library validation against the bundled tools/helper).
+  /usr/bin/codesign --force --deep --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
 else
   /usr/bin/codesign --force --deep --entitlements "$ENTITLEMENTS" --sign - "$APP_BUNDLE"
 fi

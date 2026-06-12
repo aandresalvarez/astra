@@ -1,4 +1,5 @@
 import AppKit
+import AstraObjCSupport
 import SwiftUI
 
 /// Watches the AppKit split-view column that hosts the SwiftUI sidebar.
@@ -12,10 +13,17 @@ import SwiftUI
 /// degrade into a clipped strip.
 struct SidebarSplitViewGuard: NSViewRepresentable {
     let minimumExpandedWidth: CGFloat
+    let isRevealInProgress: Bool
+    let onReadableWidth: (CGFloat) -> Void
     let onCollapse: () -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(minimumExpandedWidth: minimumExpandedWidth, onCollapse: onCollapse)
+        Coordinator(
+            minimumExpandedWidth: minimumExpandedWidth,
+            isRevealInProgress: isRevealInProgress,
+            onReadableWidth: onReadableWidth,
+            onCollapse: onCollapse
+        )
     }
 
     func makeNSView(context: Context) -> NSView {
@@ -26,6 +34,8 @@ struct SidebarSplitViewGuard: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.minimumExpandedWidth = minimumExpandedWidth
+        context.coordinator.isRevealInProgress = isRevealInProgress
+        context.coordinator.onReadableWidth = onReadableWidth
         context.coordinator.onCollapse = onCollapse
         configureSoon(from: nsView, coordinator: context.coordinator)
     }
@@ -39,15 +49,25 @@ struct SidebarSplitViewGuard: NSViewRepresentable {
 
     final class Coordinator {
         var minimumExpandedWidth: CGFloat
+        var isRevealInProgress: Bool
+        var onReadableWidth: (CGFloat) -> Void
         var onCollapse: () -> Void
 
         private weak var observedSplitView: NSSplitView?
         private weak var observedSidebarSubview: NSView?
         private var observations: [NSObjectProtocol] = []
         private var isCollapsing = false
+        private var didApplyHoldingPriority = false
 
-        init(minimumExpandedWidth: CGFloat, onCollapse: @escaping () -> Void) {
+        init(
+            minimumExpandedWidth: CGFloat,
+            isRevealInProgress: Bool,
+            onReadableWidth: @escaping (CGFloat) -> Void,
+            onCollapse: @escaping () -> Void
+        ) {
             self.minimumExpandedWidth = minimumExpandedWidth
+            self.isRevealInProgress = isRevealInProgress
+            self.onReadableWidth = onReadableWidth
             self.onCollapse = onCollapse
         }
 
@@ -65,6 +85,7 @@ struct SidebarSplitViewGuard: NSViewRepresentable {
                 installObservations(splitView: target.splitView, sidebarSubview: target.sidebarSubview)
             }
 
+            applyHoldingPriorityIfNeeded()
             enforceReadableSidebarWidth()
         }
 
@@ -94,9 +115,36 @@ struct SidebarSplitViewGuard: NSViewRepresentable {
                 }
             ]
 
-            if let index = splitView.subviews.firstIndex(where: { $0 === sidebarSubview }) {
+            // Holding priority is applied separately (and retried) by
+            // `applyHoldingPriorityIfNeeded`, because the AppKit call can raise
+            // mid-transition right after a fresh split view is observed.
+            didApplyHoldingPriority = false
+        }
+
+        /// Pins the sidebar pane's holding priority so it keeps its width as the
+        /// window resizes — the resize-nicety the guard otherwise can't express.
+        ///
+        /// Deferred out of `installObservations` and retried each `configure`
+        /// because `-[NSSplitView setHoldingPriority:forSubviewAtIndex:]` can
+        /// raise an NSException when its internal pane list briefly lags
+        /// `subviews` during a SwiftUI column show/hide transition (the index is
+        /// valid for `subviews` yet still out of AppKit's live range). Swift
+        /// can't catch that, so the call is funneled through `AstraExceptionTrap`
+        /// and only marked done once it returns cleanly; a transient raise just
+        /// retries on the next `configure`.
+        private func applyHoldingPriorityIfNeeded() {
+            guard !didApplyHoldingPriority,
+                  let splitView = observedSplitView,
+                  let sidebarSubview = observedSidebarSubview,
+                  splitView.subviews.count >= 2,
+                  let index = splitView.subviews.firstIndex(where: { $0 === sidebarSubview }) else {
+                return
+            }
+
+            let raised = AstraExceptionTrap.catching {
                 splitView.setHoldingPriority(.defaultHigh, forSubviewAt: index)
             }
+            didApplyHoldingPriority = (raised == nil)
         }
 
         private func clearObservations() {
@@ -104,14 +152,23 @@ struct SidebarSplitViewGuard: NSViewRepresentable {
             observations.removeAll()
             observedSplitView = nil
             observedSidebarSubview = nil
+            didApplyHoldingPriority = false
         }
 
         private func enforceReadableSidebarWidth() {
             guard let sidebarWidth = observedSidebarSubview?.frame.width else { return }
             guard sidebarWidth.isFinite else { return }
+            if SidebarColumnLayout.shouldCompleteSidebarReveal(
+                width: sidebarWidth,
+                minimumExpandedWidth: minimumExpandedWidth
+            ) {
+                onReadableWidth(sidebarWidth)
+                return
+            }
             guard SidebarColumnLayout.shouldCollapseVisibleSplitWidth(
                 sidebarWidth,
-                minimumExpandedWidth: minimumExpandedWidth
+                minimumExpandedWidth: minimumExpandedWidth,
+                isRevealInProgress: isRevealInProgress
             ) else {
                 return
             }

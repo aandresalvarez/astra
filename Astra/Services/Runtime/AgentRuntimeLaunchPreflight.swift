@@ -1,10 +1,13 @@
 import Foundation
 import SwiftData
+import ASTRACore
 
 struct AgentRuntimeLaunchPreflightResult: Sendable, Equatable {
     enum Status: String, Sendable {
         case taskFolderPrepared
         case taskFolderCreateFailed
+        case runtimeReadinessPassed
+        case runtimeReadinessFailed
         case capabilityRuntimeResourcesPassed
         case capabilityRuntimeResourcesMissing
         case connectorPreflightPassed
@@ -19,9 +22,9 @@ struct AgentRuntimeLaunchPreflightResult: Sendable, Equatable {
 
     var didPass: Bool {
         switch status {
-        case .taskFolderPrepared, .capabilityRuntimeResourcesPassed, .connectorPreflightPassed:
+        case .taskFolderPrepared, .runtimeReadinessPassed, .capabilityRuntimeResourcesPassed, .connectorPreflightPassed:
             return true
-        case .taskFolderCreateFailed, .capabilityRuntimeResourcesMissing, .connectorPreflightFailed:
+        case .taskFolderCreateFailed, .runtimeReadinessFailed, .capabilityRuntimeResourcesMissing, .connectorPreflightFailed:
             return false
         }
     }
@@ -96,7 +99,7 @@ enum AgentRuntimeLaunchPreflight {
         phase: String,
         contextText: String
     ) async -> AgentRuntimeLaunchPreflightResult {
-        let capabilityResult = preflightCapabilitiesBeforeLaunchResult(
+        let capabilityResult = await preflightCapabilitiesBeforeLaunchResultWithPrerequisiteChecks(
             task: task,
             run: run,
             modelContext: modelContext,
@@ -112,8 +115,29 @@ enum AgentRuntimeLaunchPreflight {
             task.title,
             contextText
         ].joined(separator: "\n")
+        let scopedConnectors = TaskCapabilityResolver(task: task).promptScope(contextText: contextText).connectors
+        // Service-agnostic credential presence check. Non-blocking — the
+        // agent may not need every projected connector — but a connector
+        // with declared, unloadable credentials must not fail silently.
+        let missingCredentials = ConnectorRuntimeProjection(connectors: scopedConnectors)
+            .missingCredentialKeysByConnector()
+        if !missingCredentials.isEmpty {
+            var warningFields = CapabilityAudit.taskContextFields(
+                source: "connector_credential_preflight",
+                task: task,
+                scope: .providerLaunch(contextText: contextText)
+            )
+            warningFields["phase"] = phase
+            warningFields["result"] = "credentials_missing"
+            warningFields["connector_names"] = CapabilityAudit.compactNames(missingCredentials.map(\.connector.name))
+            warningFields["missing_key_names"] = missingCredentials
+                .flatMap(\.missingKeys)
+                .sorted()
+                .joined(separator: ",")
+            AppLogger.audit(.connectorTested, category: "Worker", taskID: task.id, fields: warningFields, level: .warning, fieldMaxLength: 240)
+        }
         let connectors = ConnectorPreflightService.connectorsRequiringPreflight(
-            from: TaskCapabilityResolver(task: task).promptScope(contextText: contextText).connectors,
+            from: scopedConnectors,
             contextText: fullContext
         )
         let traceID = AuditTrace.make("connector-preflight")
@@ -200,12 +224,79 @@ enum AgentRuntimeLaunchPreflight {
         ).didPass
     }
 
+    static func preflightRuntimeReadinessBeforeLaunchResult(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String,
+        report: RuntimeReadinessReport
+    ) -> AgentRuntimeLaunchPreflightResult {
+        let blockedChecks = report.checks.filter { $0.state == .blocked }
+        var fields: [String: String] = [
+            "source": "runtime_readiness_preflight",
+            "phase": phase,
+            "runtime": task.resolvedRuntimeID.rawValue,
+            "readiness_state": report.state.rawValue,
+            "blocked_check_count": String(blockedChecks.count)
+        ]
+
+        guard let blocked = blockedChecks.first else {
+            fields["diagnostic_result"] = AgentRuntimeLaunchPreflightResult.Status.runtimeReadinessPassed.rawValue
+            AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: fields, level: .debug)
+            return AgentRuntimeLaunchPreflightResult(
+                status: .runtimeReadinessPassed,
+                phase: phase,
+                reason: nil,
+                detail: nil,
+                auditFields: fields
+            )
+        }
+
+        fields["diagnostic_result"] = AgentRuntimeLaunchPreflightResult.Status.runtimeReadinessFailed.rawValue
+        fields["blocked_check_id"] = blocked.id
+        fields["blocked_check_title"] = blocked.title
+        let message = runtimeReadinessFailureMessage(blocked)
+        finishPreLaunchFailure(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            reason: "runtime_readiness_failed",
+            payload: message
+        )
+        return AgentRuntimeLaunchPreflightResult(
+            status: .runtimeReadinessFailed,
+            phase: phase,
+            reason: "runtime_readiness_failed",
+            detail: blocked.detail,
+            auditFields: fields
+        )
+    }
+
+    static func preflightRuntimeReadinessBeforeLaunch(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String,
+        configuration: RuntimeReadinessConfiguration,
+        readinessService: RuntimeReadinessService = RuntimeReadinessService()
+    ) async -> Bool {
+        let report = await readinessService.check(configuration: configuration)
+        return preflightRuntimeReadinessBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: phase,
+            report: report
+        ).didPass
+    }
+
     static func preflightCapabilitiesBeforeLaunchResult(
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
         phase: String,
-        contextText: String = ""
+        contextText: String = "",
+        prerequisiteStatuses: [String: HealthStatus] = [:]
     ) -> AgentRuntimeLaunchPreflightResult {
         let policyContext = task.workspace.map {
             CapabilityCatalogPolicyContext.workspaceUser(
@@ -215,6 +306,7 @@ enum AgentRuntimeLaunchPreflight {
         }
         let issues = CapabilityRuntimeIntegrityService.issues(
             for: task,
+            prerequisiteStatuses: prerequisiteStatuses,
             policyContext: policyContext,
             scope: .providerLaunch(contextText: contextText)
         )
@@ -229,7 +321,28 @@ enum AgentRuntimeLaunchPreflight {
             fields[key] = value
         }
 
-        guard !issues.isEmpty else {
+        // MCP servers are materialized only for runtimes that support them;
+        // for those, a stdio server whose command can't be resolved would
+        // fail opaquely mid-run, so it blocks the launch here instead.
+        let runtime = AgentRuntimeID(rawValue: task.runtimeID ?? "") ?? TaskExecutionDefaults.runtime
+        let mcpIssues: [MCPRuntimeProjection.PreflightIssue]
+        if AgentRuntimeAdapterRegistry.descriptor(for: runtime).supportsMCPServers {
+            mcpIssues = MCPRuntimeProjection.preflightIssues(
+                servers: MCPRuntimeProjection.enabledServers(
+                    for: task.workspace,
+                    packages: CapabilityRuntimeResourceMatcher.packageDefinitions(),
+                    approvalRecords: CapabilityApprovalStore().records()
+                )
+            )
+        } else {
+            mcpIssues = []
+        }
+        if !mcpIssues.isEmpty {
+            fields["result"] = "mcp_server_executable_missing"
+            fields["mcp_issue_count"] = String(mcpIssues.count)
+        }
+
+        guard !issues.isEmpty || !mcpIssues.isEmpty else {
             fields["diagnostic_result"] = AgentRuntimeLaunchPreflightResult.Status.capabilityRuntimeResourcesPassed.rawValue
             AppLogger.audit(.capabilityRuntimeIntegrity, category: "Worker", taskID: task.id, fields: fields, level: .debug, fieldMaxLength: 240)
             return AgentRuntimeLaunchPreflightResult(
@@ -237,6 +350,26 @@ enum AgentRuntimeLaunchPreflight {
                 phase: phase,
                 reason: nil,
                 detail: nil,
+                auditFields: fields
+            )
+        }
+
+        if issues.isEmpty {
+            let detail = mcpIssues.map(\.message).joined(separator: "\n")
+            fields["diagnostic_result"] = AgentRuntimeLaunchPreflightResult.Status.capabilityRuntimeResourcesMissing.rawValue
+            AppLogger.audit(.capabilityRuntimeIntegrity, category: "Worker", taskID: task.id, fields: fields, level: .error, fieldMaxLength: 240)
+            finishPreLaunchFailure(
+                task: task,
+                run: run,
+                modelContext: modelContext,
+                reason: "mcp_server_executable_missing",
+                payload: detail
+            )
+            return AgentRuntimeLaunchPreflightResult(
+                status: .capabilityRuntimeResourcesMissing,
+                phase: phase,
+                reason: "mcp_server_executable_missing",
+                detail: detail,
                 auditFields: fields
             )
         }
@@ -259,6 +392,72 @@ enum AgentRuntimeLaunchPreflight {
         )
     }
 
+    static func preflightCapabilitiesBeforeLaunchResultWithPrerequisiteChecks(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String,
+        contextText: String = "",
+        preflightCache: PreflightCache = PreflightCache()
+    ) async -> AgentRuntimeLaunchPreflightResult {
+        let prerequisiteStatuses = await prerequisiteStatusesBeforeLaunch(
+            task: task,
+            contextText: contextText,
+            preflightCache: preflightCache
+        )
+        return preflightCapabilitiesBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: phase,
+            contextText: contextText,
+            prerequisiteStatuses: prerequisiteStatuses
+        )
+    }
+
+    private static func prerequisiteStatusesBeforeLaunch(
+        task: AgentTask,
+        contextText: String,
+        preflightCache: PreflightCache
+    ) async -> [String: HealthStatus] {
+        let packages = CapabilityRuntimeResourceMatcher.packageDefinitions()
+        let enabledPackageIDs = Set(task.workspace?.enabledCapabilityIDs ?? [])
+        let resolvedScope = TaskCapabilityResolver(task: task).resolvedScope(.providerLaunch(contextText: contextText))
+        let selectedSkillNames = Set(
+            resolvedScope.behaviorSkills.map(\.name)
+                .map(CapabilityRuntimeResourceMatcher.normalizedName)
+        )
+        var statuses: [String: HealthStatus] = [:]
+
+        for package in packages where shouldProbePrerequisites(
+            package,
+            enabledPackageIDs: enabledPackageIDs,
+            selectedSkillNames: selectedSkillNames
+        ) {
+            let packageStatuses = await CapabilityHealthService.prerequisiteStatuses(
+                for: package,
+                cache: preflightCache
+            )
+            statuses.merge(packageStatuses) { _, new in new }
+        }
+
+        return statuses
+    }
+
+    private static func shouldProbePrerequisites(
+        _ package: PluginPackage,
+        enabledPackageIDs: Set<String>,
+        selectedSkillNames: Set<String>
+    ) -> Bool {
+        if enabledPackageIDs.contains(package.id) {
+            return true
+        }
+        let packageSkillNames = Set(
+            package.skills.map { CapabilityRuntimeResourceMatcher.normalizedName($0.name) }
+        )
+        return !packageSkillNames.isDisjoint(with: selectedSkillNames)
+    }
+
     static func preflightCapabilitiesBeforeLaunch(
         task: AgentTask,
         run: TaskRun,
@@ -273,6 +472,15 @@ enum AgentRuntimeLaunchPreflight {
             phase: phase,
             contextText: contextText
         ).didPass
+    }
+
+    private static func runtimeReadinessFailureMessage(_ check: RuntimeReadinessCheck) -> String {
+        let remediation = check.remediation.map { "\n\n\($0)" } ?? ""
+        return """
+        \(check.title) check failed before the agent ran:
+
+        \(check.detail)\(remediation)
+        """
     }
 
     static func finishPreLaunchFailure(

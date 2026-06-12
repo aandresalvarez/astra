@@ -79,6 +79,11 @@ The importer blocks:
 - unknown browser adapter IDs
 - unsafe MCP stdio commands or arguments
 - remote MCP URLs that are not HTTPS, except loopback HTTP for local development
+- MCP servers requesting environment keys the package does not declare via
+  its own connector hints or skill environment keys (prevents a server from
+  reading unrelated host secrets)
+- MCP server IDs or tool names that break the `mcp__<server>__<tool>`
+  permission grammar (no `__`, whitespace, or other separators)
 
 The importer warns:
 
@@ -87,6 +92,9 @@ The importer warns:
 - approval was reset to draft
 - declared prerequisites are missing locally
 - package has no installable payload
+- a strictly newer version of an installed local package imports as an
+  update: the file is replaced, the package returns to draft, and the
+  digest change requires re-approval before it runs again
 
 ## Developer Workflow
 

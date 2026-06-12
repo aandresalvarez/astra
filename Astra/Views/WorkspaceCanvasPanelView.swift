@@ -107,6 +107,11 @@ struct WorkspaceCanvasPanelView: View {
     private var planInputSignature: String {
         guard let selectedTask else { return "none" }
         let latestRun = selectedTask.runs.max { $0.startedAt < $1.startedAt }
+        // Deliberately exclude `latestRun.output.count`: it is an
+        // O(output-length) walk on the live model that re-runs on every body
+        // pass (this signature is read ~6× per render) while output streams.
+        // The plan is derived from plan events/run structure, not raw output
+        // text, so event/run counts and status are sufficient change signals.
         return [
             selectedTask.id.uuidString,
             selectedTask.status.rawValue,
@@ -114,8 +119,7 @@ struct WorkspaceCanvasPanelView: View {
             String(selectedTask.events.count),
             String(selectedTask.runs.count),
             latestRun?.id.uuidString ?? "none",
-            latestRun?.status.rawValue ?? "none",
-            String(latestRun?.output.count ?? 0)
+            latestRun?.status.rawValue ?? "none"
         ].joined(separator: "|")
     }
 
@@ -323,7 +327,7 @@ struct WorkspaceCanvasPanelView: View {
             Button {
                 skipPermissions = false
             } label: {
-                Label("Ask mode - pause before each step", systemImage: "checkmark.shield")
+                Label("Ask mode - keep approval checkpoints", systemImage: "checkmark.shield")
             }
         } label: {
             HStack(spacing: 4) {
@@ -341,7 +345,7 @@ struct WorkspaceCanvasPanelView: View {
         .menuIndicator(.hidden)
         .buttonStyle(.plain)
         .fixedSize()
-        .help("Choose whether the plan runs automatically or pauses for review.")
+        .help("Auto mode runs without pausing. Ask mode keeps approval checkpoints: live approvals on runtimes that support them, one approved step per run otherwise.")
     }
 
     private var planMetaLine: some View {
@@ -615,7 +619,9 @@ struct WorkspaceCanvasPanelView: View {
     }
 
     private func expandedEditableStepHeader(index: Int, step: TaskPlanStep) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+        // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
+        HStack(alignment: .top, spacing: 8) {
             stepNumberBadge(index: index, step: step, isExpanded: true)
 
             TextField("Step title", text: stepTitleBinding(index))
@@ -969,7 +975,9 @@ struct WorkspaceCanvasPanelView: View {
     }
 
     private func stepReadOnlyText(_ text: String, systemImage: String, tint: Color) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 7) {
+        // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+        // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
+        HStack(alignment: .top, spacing: 7) {
             Image(systemName: systemImage)
                 .font(Stanford.caption(11).weight(.semibold))
                 .foregroundStyle(tint)
@@ -1148,6 +1156,14 @@ struct WorkspaceCanvasPanelView: View {
             return
         }
         TaskPlanService.recordUpdated(sanitized, task: selectedTask, modelContext: modelContext)
+        // Editing the plan goal in the canvas is a deliberate redefinition, so keep
+        // the user-facing task goal in sync (mirrors the chat approval path). This
+        // prevents the capsule's objective from silently diverging from task.goal.
+        // sanitizedPlan already guarantees goal is trimmed and non-empty.
+        if selectedTask.goal != sanitized.goal {
+            selectedTask.goal = sanitized.goal
+            selectedTask.updatedAt = Date()
+        }
         try? modelContext.save()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: selectedTask.workspace, modelContext: modelContext)
         draftPlan = sanitized

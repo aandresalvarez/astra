@@ -439,12 +439,267 @@ struct AntigravityPolicyAdapter: ProviderPolicyAdapter {
         )
     }
 
-    func providerGrantStrings(for _: [PermissionGrant]) -> [String] {
-        []
+    func providerGrantStrings(for grants: [PermissionGrant]) -> [String] {
+        BrokeredProviderGrantStrings.providerGrantStrings(for: grants)
     }
 
-    func providerRuntimeGrantStrings(for _: [PermissionGrant]) -> [String] {
-        []
+    func providerRuntimeGrantStrings(for grants: [PermissionGrant]) -> [String] {
+        providerGrantStrings(for: ProviderRuntimeGrantCompanions.grants(for: grants))
+    }
+}
+
+struct CodexPolicyAdapter: ProviderPolicyAdapter {
+    let providerID: AgentRuntimeID = .codexCLI
+    let adapterVersion = 1
+
+    var supportedFeatures: ProviderPolicyFeatures {
+        ProviderPolicyFeatures(
+            supportsAllowTools: false,
+            supportsDenyTools: false,
+            supportsAskFirstMode: false,
+            supportsPathScoping: true,
+            supportsURLAllowlist: false,
+            supportsURLDenylist: false,
+            supportsSecretEnvRedaction: false,
+            supportsGeneratedSettingsFile: false,
+            supportsPerRunFlags: true,
+            supportsInteractiveCallbacks: false,
+            supportsManagedSettings: false,
+            supportsMachineReadableEvents: true,
+            supportsBroadAllowAll: true
+        )
+    }
+
+    func render(policy: AgentPolicy, context: PolicyRenderContext) -> ProviderPolicyRender {
+        let permissionPolicy = PermissionPolicy.fromAgentPolicyLevel(policy.level)
+        let args = CodexCLIRuntime.codexPermissionArguments(policy: permissionPolicy)
+        var diagnostics = diagnostics(for: policy, context: context)
+
+        let hasFineGrainedRules = !policy.allowedTools.isEmpty
+            || !policy.askFirstTools.isEmpty
+            || !policy.deniedTools.isEmpty
+            || !policy.allowedShellPatterns.isEmpty
+            || !policy.askFirstShellPatterns.isEmpty
+            || !policy.deniedShellPatterns.isEmpty
+            || !policy.allowedURLPatterns.isEmpty
+            || !policy.deniedURLPatterns.isEmpty
+        if permissionPolicy != .autonomous, hasFineGrainedRules {
+            diagnostics.append(PolicyDiagnostic(
+                id: "codex_cli.fine-grained-provider-native-gap",
+                severity: .warning,
+                title: "Fine-grained rules use Codex sandbox mode",
+                message: "Codex CLI exposes per-run sandbox and approval policy flags, but this adapter cannot render ASTRA's individual allow, deny, and ask-first rules as provider-native flags.",
+                affectedCapability: "permissions",
+                remediation: "Use Ask or Locked mode for sandboxed runs. Use Auto only for trusted or isolated work."
+            ))
+        }
+
+        return ProviderPolicyRender(
+            providerID: providerID,
+            adapterVersion: adapterVersion,
+            policyLevel: policy.level,
+            configOwnership: .generated,
+            permissionMode: permissionPolicy.rawValue,
+            allowedTools: permissionPolicy == .autonomous ? ["*"] : [],
+            runtimeSupportTools: runtimeSupportTools,
+            askFirstTools: policy.askFirstTools,
+            deniedTools: policy.deniedTools,
+            allowedShellPatterns: policy.allowedShellPatterns,
+            askFirstShellPatterns: policy.askFirstShellPatterns,
+            deniedShellPatterns: policy.deniedShellPatterns,
+            allowedURLPatterns: policy.allowedURLPatterns,
+            deniedURLPatterns: policy.deniedURLPatterns,
+            cliArgumentsSummary: args,
+            settingsSummary: "Generated per-run Codex CLI sandbox and approval flags",
+            generatedConfigPreview: args.joined(separator: " "),
+            enforcementTiers: permissionPolicy == .autonomous ? [.providerNative] : [.providerNative, .astraBrokered],
+            diagnostics: diagnostics,
+            usesBroadProviderPermissions: permissionPolicy == .autonomous
+        )
+    }
+
+    func providerGrantStrings(for grants: [PermissionGrant]) -> [String] {
+        BrokeredProviderGrantStrings.providerGrantStrings(for: grants)
+    }
+
+    func providerRuntimeGrantStrings(for grants: [PermissionGrant]) -> [String] {
+        providerGrantStrings(for: ProviderRuntimeGrantCompanions.grants(for: grants))
+    }
+}
+
+struct CursorPolicyAdapter: ProviderPolicyAdapter {
+    let providerID: AgentRuntimeID = .cursorCLI
+    let adapterVersion = 1
+
+    var supportedFeatures: ProviderPolicyFeatures {
+        ProviderPolicyFeatures(
+            supportsAllowTools: false,
+            supportsDenyTools: false,
+            // Cursor CLI only exposes sandbox/force flags; it cannot surface
+            // ask-first checkpoints back to ASTRA, so do not advertise them.
+            supportsAskFirstMode: false,
+            supportsPathScoping: false,
+            supportsURLAllowlist: false,
+            supportsURLDenylist: false,
+            supportsSecretEnvRedaction: false,
+            supportsGeneratedSettingsFile: false,
+            supportsPerRunFlags: true,
+            supportsInteractiveCallbacks: false,
+            supportsManagedSettings: false,
+            supportsMachineReadableEvents: true,
+            supportsBroadAllowAll: true
+        )
+    }
+
+    func render(policy: AgentPolicy, context: PolicyRenderContext) -> ProviderPolicyRender {
+        let permissionPolicy = PermissionPolicy.fromAgentPolicyLevel(policy.level)
+        let args = CursorCLIRuntime.cursorPermissionArguments(policy: permissionPolicy)
+        var diagnostics = diagnostics(for: policy, context: context)
+
+        let hasFineGrainedRules = !policy.allowedTools.isEmpty
+            || !policy.askFirstTools.isEmpty
+            || !policy.deniedTools.isEmpty
+            || !policy.allowedShellPatterns.isEmpty
+            || !policy.askFirstShellPatterns.isEmpty
+            || !policy.deniedShellPatterns.isEmpty
+            || !policy.allowedURLPatterns.isEmpty
+            || !policy.deniedURLPatterns.isEmpty
+        if permissionPolicy != .autonomous, hasFineGrainedRules {
+            diagnostics.append(PolicyDiagnostic(
+                id: "cursor_cli.fine-grained-provider-native-gap",
+                severity: .warning,
+                title: "Fine-grained rules use Cursor sandbox mode",
+                message: "Cursor CLI exposes per-run sandbox, ask mode, and force flags, but this adapter cannot render ASTRA's individual allow, deny, and ask-first rules as provider-native flags.",
+                affectedCapability: "permissions",
+                remediation: "Use Ask or Locked mode for sandboxed runs. Use Auto only for trusted or isolated work."
+            ))
+        }
+
+        return ProviderPolicyRender(
+            providerID: providerID,
+            adapterVersion: adapterVersion,
+            policyLevel: policy.level,
+            configOwnership: .generated,
+            permissionMode: permissionPolicy.rawValue,
+            allowedTools: permissionPolicy == .autonomous ? ["*"] : [],
+            runtimeSupportTools: runtimeSupportTools,
+            askFirstTools: policy.askFirstTools,
+            deniedTools: policy.deniedTools,
+            allowedShellPatterns: policy.allowedShellPatterns,
+            askFirstShellPatterns: policy.askFirstShellPatterns,
+            deniedShellPatterns: policy.deniedShellPatterns,
+            allowedURLPatterns: policy.allowedURLPatterns,
+            deniedURLPatterns: policy.deniedURLPatterns,
+            cliArgumentsSummary: args,
+            settingsSummary: "Generated per-run Cursor CLI sandbox and mode flags",
+            generatedConfigPreview: args.joined(separator: " "),
+            enforcementTiers: permissionPolicy == .autonomous ? [.providerNative] : [.providerNative, .astraBrokered],
+            diagnostics: diagnostics,
+            usesBroadProviderPermissions: permissionPolicy == .autonomous
+        )
+    }
+
+    func providerGrantStrings(for grants: [PermissionGrant]) -> [String] {
+        BrokeredProviderGrantStrings.providerGrantStrings(for: grants)
+    }
+
+    func providerRuntimeGrantStrings(for grants: [PermissionGrant]) -> [String] {
+        providerGrantStrings(for: ProviderRuntimeGrantCompanions.grants(for: grants))
+    }
+}
+
+struct OpenCodePolicyAdapter: ProviderPolicyAdapter {
+    let providerID: AgentRuntimeID = .openCodeCLI
+    let adapterVersion = 1
+
+    var supportedFeatures: ProviderPolicyFeatures {
+        ProviderPolicyFeatures(
+            supportsAllowTools: false,
+            supportsDenyTools: false,
+            supportsAskFirstMode: false,
+            supportsPathScoping: false,
+            supportsURLAllowlist: false,
+            supportsURLDenylist: false,
+            supportsSecretEnvRedaction: false,
+            supportsGeneratedSettingsFile: false,
+            supportsPerRunFlags: true,
+            supportsInteractiveCallbacks: false,
+            supportsManagedSettings: false,
+            supportsMachineReadableEvents: true,
+            supportsBroadAllowAll: true
+        )
+    }
+
+    func render(policy: AgentPolicy, context: PolicyRenderContext) -> ProviderPolicyRender {
+        let permissionPolicy = PermissionPolicy.fromAgentPolicyLevel(policy.level)
+        let args = OpenCodeCLIRuntime.permissionArguments(policy: permissionPolicy)
+        let allowedTools = policy.providerAllowedTools(requestedTools: context.requestedAllowedTools)
+        var diagnostics = diagnostics(for: policy, context: context)
+
+        let hasFineGrainedRules = !policy.allowedTools.isEmpty
+            || !policy.askFirstTools.isEmpty
+            || !policy.deniedTools.isEmpty
+            || !policy.allowedShellPatterns.isEmpty
+            || !policy.askFirstShellPatterns.isEmpty
+            || !policy.deniedShellPatterns.isEmpty
+            || !policy.allowedURLPatterns.isEmpty
+            || !policy.deniedURLPatterns.isEmpty
+        if permissionPolicy != .autonomous, hasFineGrainedRules {
+            diagnostics.append(PolicyDiagnostic(
+                id: "opencode_cli.fine-grained-provider-native-gap",
+                severity: .warning,
+                title: "Fine-grained rules use ASTRA brokering",
+                message: "OpenCode CLI exposes a broad per-run permission skip flag, but this adapter cannot render ASTRA's individual allow, deny, and ask-first rules as provider-native flags.",
+                affectedCapability: "permissions",
+                remediation: "Use Ask or Locked mode for brokered runs. Use Auto only for trusted or isolated work."
+            ))
+        }
+
+        return ProviderPolicyRender(
+            providerID: providerID,
+            adapterVersion: adapterVersion,
+            policyLevel: policy.level,
+            configOwnership: .generated,
+            permissionMode: permissionPolicy.rawValue,
+            allowedTools: permissionPolicy == .autonomous ? ["*"] : allowedTools,
+            runtimeSupportTools: runtimeSupportTools,
+            askFirstTools: policy.askFirstTools,
+            deniedTools: policy.deniedTools,
+            allowedShellPatterns: policy.allowedShellPatterns,
+            askFirstShellPatterns: policy.askFirstShellPatterns,
+            deniedShellPatterns: policy.deniedShellPatterns,
+            allowedURLPatterns: policy.allowedURLPatterns,
+            deniedURLPatterns: policy.deniedURLPatterns,
+            cliArgumentsSummary: args,
+            settingsSummary: "Generated per-run OpenCode CLI permission flags",
+            generatedConfigPreview: args.joined(separator: " "),
+            enforcementTiers: permissionPolicy == .autonomous ? [.providerNative] : [.astraBrokered],
+            diagnostics: diagnostics,
+            usesBroadProviderPermissions: permissionPolicy == .autonomous
+        )
+    }
+
+    func providerGrantStrings(for grants: [PermissionGrant]) -> [String] {
+        BrokeredProviderGrantStrings.providerGrantStrings(for: grants)
+    }
+
+    func providerRuntimeGrantStrings(for grants: [PermissionGrant]) -> [String] {
+        providerGrantStrings(for: ProviderRuntimeGrantCompanions.grants(for: grants))
+    }
+}
+
+private enum BrokeredProviderGrantStrings {
+    static func providerGrantStrings(for grants: [PermissionGrant]) -> [String] {
+        PermissionBroker.uniqueProviderGrantStrings(grants.compactMap { grant in
+            switch grant {
+            case .tool(let name), .providerTool(let name):
+                return name.trimmingCharacters(in: .whitespacesAndNewlines)
+            case .shellCommand(let executable, let pattern):
+                return "shell(\(executable):\(pattern))"
+            case .filePath, .networkPattern:
+                return nil
+            }
+        })
     }
 }
 
@@ -692,11 +947,12 @@ enum AgentPolicyManifestService {
         let runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: runtime)
         let providerPolicyAdapter = runtimeAdapter.policyAdapter(runtimeCapabilities: providerCapabilities)
         let configOwnership = runtimeAdapter.providerConfigOwnership(workspacePath: workspacePath)
+        let runtimePaths = runtimeAdditionalPaths(for: task)
         let context = PolicyRenderContext(
             runtimeID: runtime,
             model: model,
             workspacePath: workspacePath,
-            additionalPaths: TaskWorkspaceAccess(task: task).runtimeAdditionalPaths,
+            additionalPaths: runtimePaths,
             requestedAllowedTools: requestedAllowedTools,
             localToolCommands: localToolCommands(for: task),
             environmentKeyNames: envKeys,
@@ -707,6 +963,20 @@ enum AgentPolicyManifestService {
         )
         var render = providerPolicyAdapter.render(policy: policy, context: context)
         render.diagnostics = providerPolicyAdapter.validate(render: render, context: context)
+        // Reflect ASTRA's OS-level Seatbelt sandbox in the declared enforcement
+        // tiers — but only when the run will both be wrapped (runtime in scope)
+        // AND the sandbox would actually apply (enforcement on, usable workspace,
+        // sandbox-exec present). Without the second check the manifest would
+        // claim "OS Sandboxed" for a best-effort run that silently falls back to
+        // unconfined at launch. Display-only; application + fallbacks are audited
+        // at launch time.
+        let effectiveSandboxPolicy = manifestExecutionPolicy.permissionPolicyOverride ?? permissionPolicy
+        let sandboxSettings = ExecutionSandboxSettings.current(permissionPolicy: effectiveSandboxPolicy)
+        if sandboxSettings.shouldWrap(runtime: runtime),
+           ExecutionSandbox.willLikelyApply(workspacePath: workspacePath, settings: sandboxSettings),
+           !render.enforcementTiers.contains(.osSandboxed) {
+            render.enforcementTiers.append(.osSandboxed)
+        }
         let approvals = approvalsGranted(executionPolicy: manifestExecutionPolicy, render: render)
         let policyScope = if executionPolicy.allowedToolsOverride != nil || !executionGrants.isEmpty {
             AgentPolicyScope.oneRunEscalation
@@ -726,7 +996,7 @@ enum AgentPolicyManifestService {
             policyScope: policyScope,
             providerRender: render,
             workspacePath: workspacePath,
-            additionalPaths: TaskWorkspaceAccess(task: task).runtimeAdditionalPaths,
+            additionalPaths: runtimePaths,
             environmentKeyNames: envKeys,
             credentialLabels: credentialLabels(for: task),
             mcpServers: capabilityPackages.map {
@@ -752,6 +1022,23 @@ enum AgentPolicyManifestService {
             "uses_broad_provider_permissions": String(render.usesBroadProviderPermissions)
         ], level: render.diagnostics.contains(where: { $0.severity == .blocked }) ? .warning : .debug)
         return manifest
+    }
+
+    private static func runtimeAdditionalPaths(for task: AgentTask) -> [String] {
+        let access = TaskWorkspaceAccess(task: task)
+        var paths = access.runtimeAdditionalPaths
+        if !access.effectiveWorkspacePath.isEmpty {
+            paths.append(access.effectiveWorkspacePath)
+        }
+        if !access.taskFolder.isEmpty {
+            paths.append(access.taskFolder)
+        }
+        var seen: Set<String> = []
+        return paths.compactMap { rawPath in
+            let path = (rawPath as NSString).expandingTildeInPath
+            guard !path.isEmpty, seen.insert(path).inserted else { return nil }
+            return path
+        }
     }
 
     @MainActor
@@ -969,6 +1256,19 @@ private func diagnostics(for policy: AgentPolicy, context: PolicyRenderContext) 
             message: "This provider render cannot mark injected environment keys as secrets.",
             affectedCapability: "credentials",
             remediation: "Remove credential injection or use a provider/version with secret env support."
+        ))
+    }
+    let usesAskCheckpoints = policy.level == .review
+        || !policy.askFirstTools.isEmpty
+        || !policy.askFirstShellPatterns.isEmpty
+    if usesAskCheckpoints, !context.providerFeatures.supportsInteractiveCallbacks {
+        diagnostics.append(PolicyDiagnostic(
+            id: "\(context.runtimeID.rawValue).ask-checkpoints-brokered",
+            severity: .warning,
+            title: "Ask checkpoints are brokered by ASTRA",
+            message: "\(context.runtimeID.displayName) cannot ask for live approval mid-run. Blocked actions pause the task; approving resumes it in a new provider run.",
+            affectedCapability: "permissions",
+            remediation: "Approve requested permissions when the task pauses, or pick a runtime with live approval support for ask-heavy work."
         ))
     }
     if policy.level == .autonomous {

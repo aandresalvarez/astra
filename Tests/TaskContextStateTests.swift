@@ -161,6 +161,7 @@ struct TaskContextStateTests {
         let state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
         #expect(state.startingRequest == "Original exploratory request")
         #expect(state.currentObjective == "Edited execution goal")
+        #expect(state.standingInstructions == nil) // no follow-ups → nil, not []
     }
 
     @Test("turn numbering follows saved state and deterministic output paths")
@@ -204,6 +205,103 @@ struct TaskContextStateTests {
         #expect(state.turns.map(\.outputFile) == ["outputs/turn_001.md", "outputs/turn_002.md"])
     }
 
+    @Test("completed run clears prior permission blocker from current state")
+    func completedRunClearsPriorPermissionBlockerFromCurrentState() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Permission Resume", primaryPath: root)
+        let task = AgentTask(title: "Resume", goal: "who are you?", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        task.status = .pendingUser
+        let blockedRun = TaskRun(task: task)
+        blockedRun.status = .failed
+        blockedRun.stopReason = "permission_approval_required"
+        blockedRun.completedAt = Date()
+        context.insert(blockedRun)
+        context.insert(TaskEvent(
+            task: task,
+            type: "permission.approval.requested",
+            payload: "Permission requested for tool: Bash(gh pr list *)",
+            run: blockedRun
+        ))
+        TaskContextStateManager.recordTurn(task: task, run: blockedRun, message: "do i have open prs to review?")
+
+        var blockedState = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        #expect(blockedState.mode == .blocked)
+        #expect(blockedState.blockers.contains { $0.contains("gh pr list") })
+
+        task.status = .completed
+        let completedRun = TaskRun(task: task)
+        completedRun.status = .completed
+        completedRun.stopReason = "completed"
+        completedRun.output = "You have one open PR to review."
+        completedRun.completedAt = Date()
+        context.insert(completedRun)
+        TaskContextStateManager.recordTurn(
+            task: task,
+            run: completedRun,
+            message: "ASTRA approved one-time runtime permission for this run: shell(gh:pr list *)"
+        )
+
+        blockedState = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        #expect(blockedState.mode == .completed)
+        #expect(blockedState.blockers.isEmpty)
+        #expect(blockedState.blockerFacts.isEmpty)
+        #expect(blockedState.turns.first?.blockers.contains { $0.contains("gh pr list") } == true)
+        #expect(blockedState.turns.last?.blockers.isEmpty == true)
+    }
+
+    @Test("follow-up user instructions are retained verbatim past the transcript window")
+    func standingInstructionsRetainFollowUpDirectives() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Standing", primaryPath: root)
+        let task = AgentTask(title: "Export", goal: "Build the export feature", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        // First message → pinned as startingRequest, excluded from standing list.
+        let messages: [(Double, String)] = [
+            (1, "Build the export feature"),
+            (2, "Never modify the auth module"),
+            (3, "ok proceed"),
+            (4, "Output must be CSV not JSON"),
+            (5, "no") // bare negation: a meaningful course-correction, must be kept
+        ]
+        for (ts, text) in messages {
+            let event = TaskEvent(task: task, type: "user.message", payload: text)
+            event.timestamp = Date(timeIntervalSince1970: ts)
+            context.insert(event)
+        }
+        // Many later turns push the follow-ups out of the recent-transcript window;
+        // the standing list reads all user messages regardless, so they survive.
+        for index in 0..<20 {
+            let event = TaskEvent(task: task, type: "agent.response", payload: "progress \(index)")
+            event.timestamp = Date(timeIntervalSince1970: Double(100 + index))
+            context.insert(event)
+        }
+
+        TaskContextStateManager.refresh(task: task)
+
+        let state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        let instructions = (state.standingInstructions ?? []).map(\.text)
+        #expect(instructions == ["Never modify the auth module", "Output must be CSV not JSON", "no"])
+        #expect(!instructions.contains("Build the export feature")) // pinned as startingRequest
+        #expect(!instructions.contains("ok proceed"))               // trimmed acknowledgement
+        #expect(state.startingRequest == "Build the export feature")
+
+        let prompt = try #require(TaskContextStateManager.promptContext(for: task))
+        #expect(prompt.contains("Standing user instructions"))
+        #expect(prompt.contains("Never modify the auth module"))
+        #expect(prompt.contains("Output must be CSV not JSON"))
+    }
+
     @Test("approved plans refresh state with explicit planning mode and approved goal")
     func planApprovalRecordsApprovedGoal() throws {
         let root = try temporaryRoot()
@@ -231,6 +329,45 @@ struct TaskContextStateTests {
         #expect(state.approvedGoal == "Add a local current-state checkpoint for ASTRA threads")
         #expect(state.decisions.contains("Approved goal: Add a local current-state checkpoint for ASTRA threads"))
         #expect(state.nextLikelyAction == "Continue with plan step: Add state file")
+    }
+
+    @Test("unreconciled draft plan goal does not re-anchor the objective")
+    func draftPlanGoalDivergenceDoesNotReanchorObjective() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Divergence", primaryPath: root)
+        let task = AgentTask(title: "Goal drift", goal: "Original task goal", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        let draftPlan = TaskPlanPayload(
+            title: "Drifted plan",
+            goal: "Drifted plan goal",
+            steps: [TaskPlanPayloadStep(id: "s1", title: "Do work")]
+        )
+        // Draft only — not approved, and task.goal is not synced to the plan goal.
+        TaskPlanService.recordCreated(draftPlan, task: task, modelContext: context)
+        TaskContextStateManager.refresh(task: task)
+
+        let draftState = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        #expect(draftState.currentObjective == "Original task goal")
+        #expect(draftState.objective.currentObjective == "Original task goal")
+        let note = try #require(draftState.objectiveDivergenceNote)
+        #expect(note.contains("Drifted plan goal"))
+
+        let prompt = try #require(TaskContextStateManager.promptContext(for: task))
+        #expect(prompt.contains("Current objective: Original task goal"))
+        #expect(prompt.contains("Objective reconciliation:"))
+
+        // Approving reconciles the goal: the plan goal becomes authoritative and the note clears.
+        TaskPlanService.recordApproved(draftPlan, task: task, modelContext: context)
+        TaskContextStateManager.refresh(task: task)
+
+        let approvedState = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        #expect(approvedState.currentObjective == "Drifted plan goal")
+        #expect(approvedState.objectiveDivergenceNote == nil)
     }
 
     @Test("context capsule records validation contract summary")
@@ -1052,6 +1189,206 @@ struct TaskContextStateTests {
         #expect(Int(fields["output_latest_chars"] ?? "0", radix: 10) ?? 0 > 0)
     }
 
+    @Test("oversized capsule truncates the body but preserves the recovery pointer")
+    func oversizedCapsulePreservesRecoveryPointer() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Truncate", primaryPath: root)
+        let task = AgentTask(title: "Big capsule", goal: "Stress the prompt budget", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+
+        func longFacts(_ tag: String, _ count: Int) -> [TaskContextState.ContextFact] {
+            (0..<count).map { index in
+                TaskContextState.ContextFact(
+                    text: String(repeating: "\(tag)\(index) ", count: 60),
+                    sourcePointers: [],
+                    confidence: "derived"
+                )
+            }
+        }
+
+        // Fill multiple capped sections so the rendered body far exceeds the 6_000-char
+        // block budget and forces the truncation path.
+        var state = minimalState()
+        state.constraints = longFacts("constraint", 6)
+        state.acceptanceCriteria = longFacts("criterion", 6)
+        state.standingInstructions = longFacts("standing", 8)
+        state.decisionFacts = longFacts("decision", 6)
+        state.changedFiles = (0..<8).map { index in
+            TaskContextState.ChangedFile(
+                path: "/repo/" + String(repeating: "segment\(index)/", count: 30) + "file.swift",
+                changeType: "edit",
+                sourcePointers: []
+            )
+        }
+        #expect(TaskContextStateManager.saveState(state, taskFolder: folder).didSave)
+
+        let prompt = try #require(TaskContextStateManager.promptContext(for: task))
+        #expect(prompt.contains("... (thread intent truncated)"))   // truncation path was exercised
+        #expect(prompt.contains("- Canonical state file: \(folder)/\(TaskContextStateManager.jsonFileName)"))
+        // The recovery tail is the literal end of the block — proof it was not the casualty.
+        #expect(prompt.hasSuffix("exact prior wording."))
+    }
+
+    @Test("decode failure quarantines the corrupt state file instead of silently discarding it")
+    func decodeFailureQuarantinesCorruptState() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Recover", primaryPath: root)
+        let task = AgentTask(title: "Corrupt", goal: "Survive a corrupt capsule", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let jsonPath = (folder as NSString).appendingPathComponent(TaskContextStateManager.jsonFileName)
+        try "{ not valid json".write(toFile: jsonPath, atomically: true, encoding: .utf8)
+
+        // refresh() recomputes derived state; it must NOT overwrite the unreadable file
+        // in place — the original bytes are preserved under a quarantine name.
+        TaskContextStateManager.refresh(task: task)
+
+        let fileManager = FileManager.default
+        let quarantined = try fileManager.contentsOfDirectory(atPath: folder)
+            .filter { $0.hasPrefix("current_state.corrupt-") && $0.hasSuffix(".json") }
+        #expect(quarantined.count == 1)
+        let quarantinePath = (folder as NSString).appendingPathComponent(try #require(quarantined.first))
+        #expect(try String(contentsOfFile: quarantinePath, encoding: .utf8) == "{ not valid json")
+        // The task recovered to a fresh, valid capsule rather than staying blocked.
+        #expect(TaskContextStateManager.loadResult(taskFolder: folder).status == .loadedCurrent)
+    }
+
+    @Test("a newer-schema capsule is backed up and its content is reused instead of discarded")
+    func newerSchemaCapsuleIsPreservedAsDegradedRead() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Future", primaryPath: root)
+        let task = AgentTask(title: "Newer", goal: "Open a capsule from a newer build", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let jsonPath = (folder as NSString).appendingPathComponent(TaskContextStateManager.jsonFileName)
+
+        // Structurally a current capsule, but stamped with a schema this build predates.
+        var future = minimalState()
+        future.schemaVersion = 99
+        future.currentObjective = "Objective written by a newer build"
+        try JSONEncoder().encode(future).write(to: URL(fileURLWithPath: jsonPath))
+
+        // A plain load rejects the unknown version outright...
+        #expect(TaskContextStateManager.loadResult(taskFolder: folder).status == .unsupportedSchema)
+
+        // ...but recovery backs up the original and reuses its readable content.
+        let recovered = try #require(TaskContextStateRecovery.recoverState(taskFolder: folder, taskID: task.id))
+        #expect(recovered.currentObjective == "Objective written by a newer build") // not blanked
+        #expect(recovered.schemaVersion == TaskContextStateManager.schemaVersion)    // re-labeled to current
+        let backups = try FileManager.default.contentsOfDirectory(atPath: folder)
+            .filter { $0.hasPrefix("current_state.v99-backup") }
+        #expect(backups.count == 1)
+        // A second recovery does not pile up duplicate backups.
+        _ = TaskContextStateRecovery.recoverState(taskFolder: folder, taskID: task.id)
+        let backupsAfter = try FileManager.default.contentsOfDirectory(atPath: folder)
+            .filter { $0.hasPrefix("current_state.v99-backup") }
+        #expect(backupsAfter.count == 1)
+    }
+
+    @Test("verification classification stays coupled to the producer's outcome markers")
+    func verificationClassificationFollowsOutcomeMarkers() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Verify", primaryPath: root)
+        let task = AgentTask(title: "Classify", goal: "Classify validation outcomes", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        // Build the payload exactly as AgentRuntimeWorker does — from the shared marker.
+        // If producer and consumer ever drift, this classification flips and the test fails.
+        let passEvent = TaskEvent(task: task, type: "task.completed",
+                                  payload: "\(ValidationOutcomeMarker.testsPassed.rawValue). 42 examples")
+        passEvent.timestamp = Date(timeIntervalSince1970: 10)
+        context.insert(passEvent)
+        TaskContextStateManager.refresh(task: task)
+        var state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        #expect(state.verification.status == "passed")
+        #expect(state.verification.completionVerified)
+
+        // A later AI-check error must reclassify to "error" via the aiCheckError marker.
+        let errorEvent = TaskEvent(task: task, type: "error",
+                                   payload: "\(ValidationOutcomeMarker.aiCheckError.rawValue): model timed out. Needs manual review.")
+        errorEvent.timestamp = Date(timeIntervalSince1970: 20)
+        context.insert(errorEvent)
+        TaskContextStateManager.refresh(task: task)
+        state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        #expect(state.verification.status == "error")
+        #expect(!state.verification.completionVerified)
+    }
+
+    @Test("prompt block surfaces every populated section within budget and renders deterministically")
+    func promptBlockCoversSectionsWithinBudget() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Snapshot", primaryPath: root)
+        let task = AgentTask(title: "Rich", goal: "Render a fully-populated capsule", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        #expect(TaskContextStateManager.saveState(CapsuleSnapshotTests.richState(), taskFolder: folder).didSave)
+
+        let prompt = try #require(TaskContextStateManager.promptContext(for: task))
+
+        // Every populated section must reach the model-facing block.
+        for marker in [
+            "Context Capsule v2:", "Current objective:", "Approved goal:", "Constraints:",
+            "Acceptance criteria:", "Standing user instructions", "Validation contract: passed",
+            "Decisions:", "Blockers:", "Files changed:", "Verification: passed", "Artifacts:",
+            "Latest handoff:", "Corrective work:", "Next likely action:", "Recent state turns:"
+        ] {
+            #expect(prompt.contains(marker), "prompt block missing section: \(marker)")
+        }
+        #expect(prompt.count <= 6_000) // mirrors TaskContextStateManager.promptBlockCharacterLimit
+        #expect(prompt.contains("- Canonical state file: \(folder)/\(TaskContextStateManager.jsonFileName)"))
+        // Deterministic for a stable state + budget (prompt-assembly invariant).
+        #expect(TaskContextStateManager.promptContext(for: task) == prompt)
+    }
+
+    @Test("repeated quarantines in the same second do not overwrite each other")
+    func repeatedQuarantinesArePreserved() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Quarantine", primaryPath: root)
+        let task = AgentTask(title: "Repeat", goal: "Survive repeated corruption", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let jsonPath = (folder as NSString).appendingPathComponent(TaskContextStateManager.jsonFileName)
+
+        try "{ corrupt one".write(toFile: jsonPath, atomically: true, encoding: .utf8)
+        TaskContextStateManager.refresh(task: task) // quarantine #1, then fresh save
+        try "{ corrupt two".write(toFile: jsonPath, atomically: true, encoding: .utf8)
+        TaskContextStateManager.refresh(task: task) // quarantine #2, same wall-clock second
+
+        let quarantined = try FileManager.default.contentsOfDirectory(atPath: folder)
+            .filter { $0.hasPrefix("current_state.corrupt-") && $0.hasSuffix(".json") }
+        #expect(quarantined.count == 2) // neither overwrote the other
+        var preserved: Set<String> = []
+        for name in quarantined {
+            preserved.insert(try String(contentsOfFile: (folder as NSString).appendingPathComponent(name), encoding: .utf8))
+        }
+        #expect(preserved == ["{ corrupt one", "{ corrupt two"])
+    }
+
     private func temporaryRoot() throws -> String {
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-context-state-\(UUID().uuidString)", isDirectory: true)
@@ -1098,6 +1435,8 @@ struct TaskContextStateTests {
             correctiveWork: nil,
             sourcePointers: [],
             nextLikelyAction: nil,
+            objectiveDivergenceNote: nil,
+            standingInstructions: nil,
             turns: [],
             updatedAt: "2026-06-05T00:00:00Z"
         )

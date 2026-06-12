@@ -187,7 +187,9 @@ private struct AboutAstraView: View {
 
 private struct AboutHighlightLabelStyle: LabelStyle {
     func makeBody(configuration: Configuration) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+        // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
+        HStack(alignment: .top, spacing: 8) {
             configuration.icon
                 .font(Stanford.ui(12, weight: .semibold))
                 .foregroundStyle(Stanford.lagunita)
@@ -240,16 +242,33 @@ public struct ASTRAApp: App {
             )
         let persistentStoreURL = isUITesting ? nil : WorkspaceRecoveryService.preparePersistentStoreURL()
         if let persistentStoreURL, !isUITesting {
-            WorkspaceRecoveryService.repairLegacyStoreValues(at: persistentStoreURL)
+            // The legacy enum repair is idempotent and only matters once per
+            // build (it backfills stale enum raw values written by older
+            // schemas). Gate it on the build number so we don't open a 2nd
+            // SQLite connection and run ~7 full-table UPDATE scans on every
+            // launch. Re-runs once after each app update — mirrors the
+            // one-time Skill migration gate. AppBuildInfo.current.build only
+            // reads Bundle.main.infoDictionary and UserDefaults is already
+            // safe here, so this is fine before ModelContainer creation.
+            let currentBuild = AppBuildInfo.current.build
+            if UserDefaults.standard.string(forKey: AppStorageKeys.completedLegacyStoreRepairBuild) != currentBuild {
+                WorkspaceRecoveryService.repairLegacyStoreValues(at: persistentStoreURL)
+                UserDefaults.standard.set(currentBuild, forKey: AppStorageKeys.completedLegacyStoreRepairBuild)
+            }
         }
         let config = persistentStoreURL.map { ModelConfiguration(url: $0) }
             ?? ModelConfiguration(isStoredInMemoryOnly: true)
-        StartupDiagnosticsService.record(
-            stage: "pre_model_container",
-            isUITesting: isUITesting,
-            skipWorkspaceRecovery: skipWorkspaceRecovery,
-            persistentStoreURL: persistentStoreURL
-        )
+        // Telemetry only — nobody awaits it, and its default `crashReports`
+        // argument scans the system crash-report directories. Run it off the
+        // launch critical path so that I/O doesn't delay the first frame.
+        Task.detached(priority: .utility) {
+            StartupDiagnosticsService.record(
+                stage: "pre_model_container",
+                isUITesting: isUITesting,
+                skipWorkspaceRecovery: skipWorkspaceRecovery,
+                persistentStoreURL: persistentStoreURL
+            )
+        }
         if isUITesting {
             AppLogger.audit(.dataStoreSelected, category: "App", fields: ["mode": "ui-testing"])
         } else if let persistentStoreURL {
@@ -267,31 +286,20 @@ public struct ASTRAApp: App {
             AppLogger.audit(.dataStoreSelected, category: "App", fields: [
                 "result": "model_container_created"
             ])
-            StartupDiagnosticsService.record(
-                stage: "model_container_ready",
-                isUITesting: isUITesting,
-                skipWorkspaceRecovery: skipWorkspaceRecovery,
-                persistentStoreURL: persistentStoreURL,
-                modelContainerResult: "created"
-            )
-            if !isUITesting {
-                if !skipWorkspaceRecovery {
-                    WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(modelContext: modelContainer.mainContext)
-                }
-                let capabilityLibrary = CapabilityLibrary()
-                try? capabilityLibrary.syncApprovedPackages(PluginCatalog.builtInPackages)
-                CapabilityDefinitionRepairService.refreshInstalledApprovedDefinitions(
-                    modelContext: modelContainer.mainContext,
-                    library: capabilityLibrary,
-                    approvedPackages: PluginCatalog.builtInPackages
-                )
-                Self.migrateDisallowedToolsToBehavior(modelContext: modelContainer.mainContext)
-                Self.markBuiltInSkillsAsGlobal(modelContext: modelContainer.mainContext)
-                TaskRunLifecycleService.recoverOrphanedRunningRuns(
-                    modelContext: modelContainer.mainContext,
-                    autoExportWorkspaces: !skipWorkspaceRecovery
+            Task.detached(priority: .utility) {
+                StartupDiagnosticsService.record(
+                    stage: "model_container_ready",
+                    isUITesting: isUITesting,
+                    skipWorkspaceRecovery: skipWorkspaceRecovery,
+                    persistentStoreURL: persistentStoreURL,
+                    modelContainerResult: "created"
                 )
             }
+            // Post-container chores (workspace recovery, capability sync +
+            // definition repair, one-time Skill migrations, orphaned-run
+            // recovery) are deferred to runDeferredStartupWork(), invoked from
+            // ContentView after the first frame, so none of this DB/JSON/FS
+            // work blocks launch. See runDeferredStartupWork below.
         } catch {
             AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
                 "stage": "model_container_failed",
@@ -322,24 +330,8 @@ public struct ASTRAApp: App {
                     persistentStoreURL: persistentStoreURL,
                     modelContainerResult: "recreated"
                 )
-                if !isUITesting {
-                    if !skipWorkspaceRecovery {
-                        WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(modelContext: modelContainer.mainContext)
-                    }
-                    let capabilityLibrary = CapabilityLibrary()
-                    try? capabilityLibrary.syncApprovedPackages(PluginCatalog.builtInPackages)
-                    CapabilityDefinitionRepairService.refreshInstalledApprovedDefinitions(
-                        modelContext: modelContainer.mainContext,
-                        library: capabilityLibrary,
-                        approvedPackages: PluginCatalog.builtInPackages
-                    )
-                    Self.migrateDisallowedToolsToBehavior(modelContext: modelContainer.mainContext)
-                    Self.markBuiltInSkillsAsGlobal(modelContext: modelContainer.mainContext)
-                    TaskRunLifecycleService.recoverOrphanedRunningRuns(
-                        modelContext: modelContainer.mainContext,
-                        autoExportWorkspaces: !skipWorkspaceRecovery
-                    )
-                }
+                // Post-container chores are deferred to runDeferredStartupWork()
+                // (invoked from ContentView after first frame). See above.
             } catch {
                 AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
                     "stage": "model_container_reset_failed",
@@ -358,20 +350,96 @@ public struct ASTRAApp: App {
         }
     }
 
-    /// One-time migration: move disallowedTools into behaviorInstructions, then clear the array.
-    private static func migrateDisallowedToolsToBehavior(modelContext: ModelContext) {
-        let descriptor = FetchDescriptor<Skill>()
+    /// Guards `runDeferredStartupWork` so post-launch chores run once per
+    /// process even though `ContentView` (the WindowGroup root) can appear
+    /// more than once. MainActor-isolated; only touched from that method.
+    @MainActor private static var hasRunDeferredStartupWork = false
+
+    /// Post-launch chores that used to run synchronously inside `init()` before
+    /// the first frame. Invoked from `ContentView` once the window is on screen
+    /// so capability sync, definition repair, the one-time Skill migrations, and
+    /// orphaned-run recovery never delay launch. Idempotent and run-once.
+    @MainActor
+    public static func runDeferredStartupWork(modelContext: ModelContext) {
+        guard !hasRunDeferredStartupWork else { return }
+        hasRunDeferredStartupWork = true
+
+        let isUITesting = ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--uitesting") })
+        guard !isUITesting else { return }
+        let skipWorkspaceRecovery = ProcessInfo.processInfo.arguments.contains("--skip-workspace-recovery") ||
+            ["1", "true", "yes"].contains(
+                ProcessInfo.processInfo.environment["ASTRA_SKIP_WORKSPACE_RECOVERY"]?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+            )
+
+        if !skipWorkspaceRecovery {
+            WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(modelContext: modelContext)
+        }
+        // Approved-package disk sync is owned by PluginCatalog.loadApprovedCapabilities()
+        // (runtime.loadPluginCatalog()), which runs synchronously in
+        // ContentView.handleAppear BEFORE this deferred Task. By the time we get
+        // here the Capabilities directory is already seeded/pruned, so the repair
+        // pass below sees a populated directory and its installedIDs early-out works.
+        // Re-syncing here would just rewrite every built-in JSON a second time.
+        let capabilityLibrary = CapabilityLibrary()
+        CapabilityDefinitionRepairService.refreshInstalledApprovedDefinitions(
+            modelContext: modelContext,
+            library: capabilityLibrary,
+            approvedPackages: PluginCatalog.builtInPackages
+        )
+        runOneTimeSkillMigrationsIfNeeded(modelContext: modelContext)
+        TaskRunLifecycleService.recoverOrphanedRunningRuns(
+            modelContext: modelContext,
+            autoExportWorkspaces: !skipWorkspaceRecovery
+        )
+    }
+
+    /// Legacy Skill data backfills, gated on the build number so they run once
+    /// per app update instead of fetching the whole Skill table three times on
+    /// every launch. The two migrations share a single fetch and a single save.
+    @MainActor
+    private static func runOneTimeSkillMigrationsIfNeeded(modelContext: ModelContext) {
+        let currentBuild = AppBuildInfo.current.build
+        if UserDefaults.standard.string(forKey: AppStorageKeys.completedStartupSkillMigrationsBuild) == currentBuild {
+            return
+        }
+
         let skills: [Skill]
         do {
-            skills = try modelContext.fetch(descriptor)
+            skills = try modelContext.fetch(FetchDescriptor<Skill>())
         } catch {
             AppLogger.audit(.skillToolPermissionChanged, category: "App", fields: [
-                "migration": "disallowed_tools_to_behavior",
+                "migration": "startup_skill_migrations",
                 "stage": "fetch_failed",
                 "error_type": String(describing: type(of: error))
             ], level: .error)
             return
         }
+
+        let disallowedMigrated = migrateDisallowedToolsToBehavior(in: skills)
+        let globalMarked = markBuiltInSkillsAsGlobal(in: skills)
+
+        if disallowedMigrated > 0 || globalMarked > 0 {
+            do {
+                try modelContext.save()
+            } catch {
+                AppLogger.audit(.skillToolPermissionChanged, category: "App", fields: [
+                    "migration": "startup_skill_migrations",
+                    "stage": "save_failed",
+                    "error_type": String(describing: type(of: error))
+                ], level: .error)
+                // Leave the build flag unset so the migration retries next launch.
+                return
+            }
+        }
+        UserDefaults.standard.set(currentBuild, forKey: AppStorageKeys.completedStartupSkillMigrationsBuild)
+    }
+
+    /// One-time migration: move disallowedTools into behaviorInstructions, then clear the array.
+    /// Mutates `skills` in place; the caller owns the fetch and the save. Returns the count changed.
+    @discardableResult
+    private static func migrateDisallowedToolsToBehavior(in skills: [Skill]) -> Int {
         var migrated = 0
         for skill in skills where !skill.disallowedTools.isEmpty {
             let toolList = skill.disallowedTools.joined(separator: ", ")
@@ -383,36 +451,18 @@ public struct ASTRAApp: App {
             migrated += 1
         }
         if migrated > 0 {
-            do {
-                try modelContext.save()
-            } catch {
-                AppLogger.audit(.skillToolPermissionChanged, category: "App", fields: [
-                    "migration": "disallowed_tools_to_behavior",
-                    "stage": "save_failed",
-                    "error_type": String(describing: type(of: error))
-                ], level: .error)
-            }
             AppLogger.audit(.skillToolPermissionChanged, category: "App", fields: [
                 "migration": "disallowed_tools_to_behavior",
                 "skill_count": String(migrated)
             ])
         }
+        return migrated
     }
 
-    /// Mark universal skills as global so they're hidden from workspace skill lists
-    private static func markBuiltInSkillsAsGlobal(modelContext: ModelContext) {
-        let descriptor = FetchDescriptor<Skill>()
-        let skills: [Skill]
-        do {
-            skills = try modelContext.fetch(descriptor)
-        } catch {
-            AppLogger.audit(.skillToolPermissionChanged, category: "App", fields: [
-                "migration": "builtin_skills_global",
-                "stage": "fetch_failed",
-                "error_type": String(describing: type(of: error))
-            ], level: .error)
-            return
-        }
+    /// Mark universal skills as global so they're hidden from workspace skill lists.
+    /// Mutates `skills` in place; the caller owns the fetch and the save. Returns the count changed.
+    @discardableResult
+    private static func markBuiltInSkillsAsGlobal(in skills: [Skill]) -> Int {
         var updated = 0
         for skill in skills where Skill.isBuiltInName(skill.name) && !skill.isBuiltIn {
             skill.isGlobal = true
@@ -420,20 +470,12 @@ public struct ASTRAApp: App {
             updated += 1
         }
         if updated > 0 {
-            do {
-                try modelContext.save()
-            } catch {
-                AppLogger.audit(.skillToolPermissionChanged, category: "App", fields: [
-                    "migration": "builtin_skills_global",
-                    "stage": "save_failed",
-                    "error_type": String(describing: type(of: error))
-                ], level: .error)
-            }
             AppLogger.audit(.skillToolPermissionChanged, category: "App", fields: [
                 "migration": "builtin_skills_global",
                 "skill_count": String(updated)
             ])
         }
+        return updated
     }
 
     @AppStorage(AppearancePreference.storageKey) private var appearanceRaw = AppearancePreference.system.rawValue
@@ -447,7 +489,7 @@ public struct ASTRAApp: App {
             ContentView(appUpdateController: appUpdateController, runtime: runtime)
                 .frame(minWidth: AppWindowLayout.mainMinimumWidth, minHeight: AppWindowLayout.mainMinimumHeight)
                 .environmentObject(appSettings)
-                .tint(Stanford.cardinalRed)
+                .tint(Stanford.interactive)
                 .preferredColorScheme(resolvedAppearance.colorScheme)
                 .onOpenURL { url in
                     guard let route = AstraExternalRouteCodec.route(from: url) else { return }
@@ -505,7 +547,7 @@ public struct ASTRAApp: App {
 
         Window("About \(AppChannel.current.displayName)", id: aboutAstraWindowID) {
             AboutAstraView()
-                .tint(Stanford.cardinalRed)
+                .tint(Stanford.interactive)
                 .preferredColorScheme(resolvedAppearance.colorScheme)
         }
         .defaultSize(width: 620, height: 560)
@@ -514,7 +556,7 @@ public struct ASTRAApp: App {
         Window("Logs", id: logsWindowID) {
             LogViewerView()
                 .frame(minWidth: 760, minHeight: 460)
-                .tint(Stanford.cardinalRed)
+                .tint(Stanford.interactive)
                 .preferredColorScheme(resolvedAppearance.colorScheme)
         }
         .defaultSize(width: 980, height: 620)
@@ -523,7 +565,7 @@ public struct ASTRAApp: App {
         Window("Usage", id: usageWindowID) {
             UsageDashboardView()
                 .frame(minWidth: 600, minHeight: 500)
-                .tint(Stanford.cardinalRed)
+                .tint(Stanford.interactive)
                 .preferredColorScheme(resolvedAppearance.colorScheme)
                 .modelContainer(modelContainer)
         }

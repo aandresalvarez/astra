@@ -19,8 +19,10 @@ struct CapabilityActivationDisabler {
         in workspace: Workspace,
         capabilities: WorkspaceCapabilities,
         modelContext: ModelContext,
-        availablePackages: [PluginPackage] = CapabilityRuntimeResourceMatcher.packageDefinitions()
+        availablePackages: [PluginPackage] = CapabilityRuntimeResourceMatcher.packageDefinitions(),
+        persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist
     ) -> Result {
+        let membershipSnapshot = WorkspaceCapabilityMembershipSnapshot(workspace)
         let state = CapabilityPackageState(
             package: package,
             workspace: workspace,
@@ -66,9 +68,14 @@ struct CapabilityActivationDisabler {
             removableGlobalToolIDs.contains(id)
         }
 
+        // Keychain entries are wiped only after the SwiftData deletes are
+        // saved; otherwise a failed save would leave connector/skill records
+        // that look configured but whose credentials are gone.
+        var pendingKeychainCleanups: [() -> Void] = []
+
         for connector in state.linkedConnectors where !connector.isGlobal {
             guard !isClaimedByRemainingPackages(connector, excluding: package, remainingPackages: remainingPackages) else { continue }
-            connector.cleanupKeychain()
+            pendingKeychainCleanups.append { connector.cleanupKeychain() }
             result.removedWorkspaceConnectorIDs.append(connector.id)
             modelContext.delete(connector)
         }
@@ -76,12 +83,36 @@ struct CapabilityActivationDisabler {
         let remainingExplicitPackages = remainingPackages.filter { !$0.isSyntheticWorkspaceSkillPackage }
         for skill in state.linkedSkills where !skill.isGlobal {
             guard !isClaimedByRemainingPackages(skill, excluding: package, remainingPackages: remainingExplicitPackages) else { continue }
-            skill.cleanupKeychain()
+            pendingKeychainCleanups.append { skill.cleanupKeychain() }
             result.removedWorkspaceSkillIDs.append(skill.id)
             modelContext.delete(skill)
         }
 
         workspace.updatedAt = Date()
+
+        // Always persist: disable mutates the workspace membership arrays
+        // (enabledCapabilityIDs / enabled-global IDs) even when no
+        // keychain-backed workspace resource is deleted — e.g. global-only
+        // or MCP-only packages. Skipping the save there would make the
+        // disable look applied in memory but never reach SwiftData / the
+        // exported config. Keychain cleanup stays gated on a successful save.
+        if persist(workspace, modelContext) {
+            pendingKeychainCleanups.forEach { $0() }
+        } else {
+            // Failed save: revert the pending deletes and the workspace
+            // membership arrays (which rollback does not restore) so the
+            // package reads as still enabled (truthful) and no keychain
+            // credential is orphaned by a later unrelated save.
+            modelContext.rollback()
+            membershipSnapshot.restore(to: workspace)
+            AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
+                "source": "package_disable",
+                "package_id": package.id,
+                "result": "save_failed_disable_rolled_back",
+                "deferred_cleanup_count": String(pendingKeychainCleanups.count)
+            ], level: .error)
+            return Result(packageID: package.id)
+        }
         return result
     }
 
@@ -93,12 +124,17 @@ struct CapabilityActivationDisabler {
     ) -> [PluginPackage] {
         let enabledIDs = Set(workspace.enabledCapabilityIDs).subtracting([package.id])
         let enabledCatalogPackages = availablePackages.filter { enabledIDs.contains($0.id) }
+        // Only the synthetic standalone-skill projections. Catalog packages
+        // count as remaining solely via explicit enablement above — a
+        // resource-projected "still configured" catalog package would
+        // otherwise keep a shared resource alive after every package
+        // claiming it was disabled (mutual-claim deadlock).
         let syntheticPackages = CapabilityCatalogInventory.configuredPackages(
             catalogPackages: availablePackages,
             capabilities: capabilities,
             workspace: workspace
         )
-        .filter { $0.id != package.id }
+        .filter { $0.id != package.id && $0.isSyntheticWorkspaceSkillPackage }
         return uniquePackages(enabledCatalogPackages + syntheticPackages)
     }
 
@@ -135,7 +171,11 @@ struct CapabilityActivationDisabler {
         remainingPackages: [PluginPackage]
     ) -> Bool {
         remainingPackages.contains { remaining in
-            if CapabilityResourceOrigin.isOwnedBy(skill, packageID: package.id),
+            // Synthetic standalone-skill packages only preserve user-created
+            // resources. A package-originated resource is governed by real
+            // package claims, so a lingering synthetic self-claim must not
+            // keep it active after its last claiming package is disabled.
+            if CapabilityResourceOrigin.hasOrigin(skill),
                remaining.isSyntheticWorkspaceSkillPackage {
                 return false
             }
@@ -149,7 +189,11 @@ struct CapabilityActivationDisabler {
         remainingPackages: [PluginPackage]
     ) -> Bool {
         remainingPackages.contains { remaining in
-            if CapabilityResourceOrigin.isOwnedBy(connector, packageID: package.id),
+            // Synthetic standalone-skill packages only preserve user-created
+            // resources. A package-originated resource is governed by real
+            // package claims, so a lingering synthetic self-claim must not
+            // keep it active after its last claiming package is disabled.
+            if CapabilityResourceOrigin.hasOrigin(connector),
                remaining.isSyntheticWorkspaceSkillPackage {
                 return false
             }
@@ -163,7 +207,11 @@ struct CapabilityActivationDisabler {
         remainingPackages: [PluginPackage]
     ) -> Bool {
         remainingPackages.contains { remaining in
-            if CapabilityResourceOrigin.isOwnedBy(tool, packageID: package.id),
+            // Synthetic standalone-skill packages only preserve user-created
+            // resources. A package-originated resource is governed by real
+            // package claims, so a lingering synthetic self-claim must not
+            // keep it active after its last claiming package is disabled.
+            if CapabilityResourceOrigin.hasOrigin(tool),
                remaining.isSyntheticWorkspaceSkillPackage {
                 return false
             }

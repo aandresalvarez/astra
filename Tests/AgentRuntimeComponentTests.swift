@@ -257,6 +257,55 @@ struct AgentRuntimeLaunchPreflightTests {
         #expect(task.events.contains { $0.type == "error" && $0.run?.id == run.id && $0.payload == "Connector failed" })
     }
 
+    @Test("Runtime readiness preflight surfaces provider authentication remediation")
+    func runtimeReadinessPreflightSurfacesAuthRemediation() async throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Provider Auth", primaryPath: NSTemporaryDirectory())
+        let task = AgentTask(
+            title: "Who are you",
+            goal: "who are you?",
+            workspace: workspace,
+            runtime: .openCodeCLI
+        )
+        task.status = .running
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        let blockedReport = RuntimeReadinessReport(checks: [
+            RuntimeReadinessCheck(
+                id: "opencode-account",
+                title: "OpenCode account",
+                detail: "No OpenCode credentials are configured.",
+                state: .blocked,
+                remediation: "Run `opencode auth login`, then retry."
+            )
+        ])
+
+        let result = AgentRuntimeLaunchPreflight.preflightRuntimeReadinessBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "run",
+            report: blockedReport
+        )
+
+        #expect(!result.didPass)
+        #expect(result.status == .runtimeReadinessFailed)
+        #expect(result.reason == "runtime_readiness_failed")
+        #expect(task.status == .failed)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "runtime_readiness_failed")
+        #expect(task.events.contains {
+            $0.type == "error" &&
+                $0.run?.id == run.id &&
+                $0.payload.contains("OpenCode account check failed before the agent ran") &&
+                $0.payload.contains("No OpenCode credentials are configured.") &&
+                $0.payload.contains("opencode auth login")
+        })
+    }
+
     @Test("Capability preflight blocks selected package skill without required connector")
     func capabilityPreflightBlocksSelectedPackageSkillWithoutConnector() throws {
         let container = try makeRuntimeComponentContainer()

@@ -155,6 +155,28 @@ struct AntigravityCLIRuntimeTests {
         ) != nil)
     }
 
+    @Test("Model list parser keeps agy models lines verbatim")
+    func modelListParserKeepsAgyModelsLinesVerbatim() {
+        let output = """
+        Gemini 3.5 Flash (Medium)
+        Gemini 3.5 Flash (High)
+
+        Claude Opus 4.6 (Thinking)
+        GPT-OSS 120B (Medium)
+        Claude Opus 4.6 (Thinking)
+        Tip: use --model to switch.
+        """
+
+        #expect(AntigravityCLIRuntime.parseModelNames(output) == [
+            "Gemini 3.5 Flash (Medium)",
+            "Gemini 3.5 Flash (High)",
+            "Claude Opus 4.6 (Thinking)",
+            "GPT-OSS 120B (Medium)"
+        ])
+        #expect(AntigravityCLIRuntime.parseModelNames("") == [])
+        #expect(AntigravityCLIRuntime.parseModelNames("Available models\n") == [])
+    }
+
     @Test("Model settings expose configured and bundled model choices")
     func modelSettingsExposeConfiguredAndBundledModelChoices() throws {
         let settingsURL = FileManager.default.temporaryDirectory
@@ -208,7 +230,10 @@ struct AntigravityCLIRuntimeTests {
         #expect(review.generatedConfigPreview == "--sandbox")
         #expect(review.usesBroadProviderPermissions == false)
         #expect(review.diagnostics.contains { $0.id == "antigravity.fine-grained-provider-native-gap" })
-        #expect(adapter.providerGrantStrings(for: [.tool(name: "Write")]).isEmpty)
+        #expect(adapter.providerGrantStrings(for: [.tool(name: "Write")]) == ["Write"])
+        #expect(adapter.providerGrantStrings(for: [.shellCommand(executable: "gh", pattern: "pr list *")]) == [
+            "shell(gh:pr list *)"
+        ])
 
         let autonomous = adapter.render(policy: .preset(.autonomous), context: context)
         #expect(autonomous.cliArgumentsSummary == ["--dangerously-skip-permissions"])

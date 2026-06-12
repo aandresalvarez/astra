@@ -83,6 +83,7 @@ struct ArchitectureFitnessTests {
             "mission.milestone.created": .lifecycle,
             "permission.approval.requested": .system,
             "permission.denied": .tool,
+            "permission.request.resolved": .system,
             "permission.grant.task": .system,
             "plan.approved": .lifecycle,
             "plan.assistant.message": .conversation,
@@ -221,6 +222,33 @@ struct ArchitectureFitnessTests {
         #expect(view.contains("CapabilityCatalogActionService("))
     }
 
+    @Test("Admin policy contexts come only from the currentUser factory")
+    func adminPolicyContextsComeOnlyFromCurrentUserFactory() throws {
+        // Single-user admin semantics live in exactly one place:
+        // CapabilityCatalogPolicyContext.currentUser. A scattered
+        // `isAdmin: true` literal is how a future non-admin mode ships
+        // half-broken.
+        let root = try repositoryRoot()
+        let astraRoot = root.appendingPathComponent("Astra")
+        let enumerator = FileManager.default.enumerator(
+            at: astraRoot,
+            includingPropertiesForKeys: nil
+        )
+        var offenders: [String] = []
+        while let url = enumerator?.nextObject() as? URL {
+            guard url.pathExtension == "swift" else { continue }
+            guard let contents = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            guard contents.contains("isAdmin: true") else { continue }
+            if url.lastPathComponent != "CapabilityCatalogPolicy.swift" {
+                offenders.append(url.lastPathComponent)
+            }
+        }
+        #expect(
+            offenders.isEmpty,
+            "Use CapabilityCatalogPolicyContext.currentUser instead of literal isAdmin contexts: \(offenders.joined(separator: ", "))"
+        )
+    }
+
     @Test("Plugin catalog import presentation lives with catalog presentation contracts")
     func pluginCatalogImportPresentationLivesWithCatalogPresentationContracts() throws {
         let root = try repositoryRoot()
@@ -251,6 +279,41 @@ struct ArchitectureFitnessTests {
         #expect(!railView.contains("enum CapabilityRailLayout"))
         #expect(!railView.contains("enum CapabilityRailSectionPresentation"))
         #expect(!railView.contains("struct CapabilityRailPackagePresentation"))
+    }
+
+    @Test("Docked sidebar keeps its column width spec outermost")
+    func dockedSidebarKeepsColumnWidthSpecOutermost() throws {
+        let root = try repositoryRoot()
+        let contentView = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/ContentView.swift"),
+            encoding: .utf8
+        )
+
+        let bodyStart = try #require(contentView.range(of: "private var sidebarArea: some View {"))
+        let searchTail = contentView[bodyStart.upperBound...]
+        let bodyEnd = try #require(searchTail.range(of: "\n    private var "))
+        let sidebarArea = searchTail[..<bodyEnd.lowerBound]
+
+        let widthSpec = try #require(
+            sidebarArea.range(of: ".navigationSplitViewColumnWidth("),
+            "The docked sidebar column must declare min/ideal/max widths."
+        )
+
+        // Regression guard for the unconstrained-resize bug: wrappers interposed
+        // between the width spec and the column root (notably `.clipped()` before
+        // `.toolbar(removing:)`) make NavigationSplitView drop min/ideal/max
+        // entirely — the divider then drags to any width. The spec must be the
+        // outermost modifier in the chain.
+        for wrapper in [".clipped()", ".toolbar(removing: .sidebarToggle)", ".transition(", ".animation("] {
+            let range = try #require(
+                sidebarArea.range(of: wrapper),
+                "Expected \(wrapper) in sidebarArea; update this test if the chain changed."
+            )
+            #expect(
+                range.upperBound <= widthSpec.lowerBound,
+                "\(wrapper) must be applied before .navigationSplitViewColumnWidth so the width spec stays outermost."
+            )
+        }
     }
 
     @Test("Large owner files stay within current debt budgets")
@@ -301,7 +364,113 @@ struct ArchitectureFitnessTests {
                 swiftFiles(under: root.appendingPathComponent("ASTRACore"))
         )
 
-        #expect(count <= 125, "Prefer settings snapshots or stores over new direct @AppStorage reads. Current count: \(count)")
+        // Ratchet bumped 125 -> 129 for the execution-sandbox settings
+        // (sandboxEnforcement / sandboxAllowNetwork / sandboxLayerNativeProviders),
+        // which are user-facing toggles following the existing SettingsView pattern.
+        #expect(count <= 129, "Prefer settings snapshots or stores over new direct @AppStorage reads. Current count: \(count)")
+    }
+
+    @Test("Files shelf does not decode image previews from SwiftUI body")
+    func filesShelfDoesNotDecodeImagePreviewsFromSwiftUIBody() throws {
+        let root = try repositoryRoot()
+        let shelfView = try fileText("Astra/Views/ShelfMarkdownPanelView.swift", root: root)
+        let shelfSession = try fileText("Astra/Services/Browser/ShelfMarkdownSession.swift", root: root)
+
+        #expect(!shelfView.contains("NSImage(contentsOf:"))
+        #expect(shelfSession.contains("NSImage(contentsOf:"))
+    }
+
+    @Test("Files shelf image reload fast-paths unchanged previews before decoding")
+    func filesShelfImageReloadFastPathsUnchangedPreviewsBeforeDecoding() throws {
+        let root = try repositoryRoot()
+        let shelfSession = try fileText("Astra/Services/Browser/ShelfMarkdownSession.swift", root: root)
+        let loadStart = try #require(shelfSession.range(of: "func load(_ url: URL)"))
+        let selectStart = try #require(shelfSession[loadStart.upperBound...].range(of: "func selectDocument"))
+        let loadBody = String(shelfSession[loadStart.lowerBound..<selectStart.lowerBound])
+        let reuseFastPath = try #require(loadBody.range(of: "reuseUnchangedImageDocument"))
+        let fullDocumentLoad = try #require(loadBody.range(of: "Self.makeDocument(for: url)"))
+
+        #expect(reuseFastPath.lowerBound < fullDocumentLoad.lowerBound)
+    }
+
+    @Test("Completed chat markdown avoids SwiftUI text selection overlay")
+    func completedChatMarkdownAvoidsSwiftUITextSelectionOverlay() throws {
+        let root = try repositoryRoot()
+        let taskMainView = try fileText("Astra/Views/TaskMainView.swift", root: root)
+        let completedAgentMarkdownView = try extractedStruct(
+            named: "CompletedAgentMarkdownView",
+            from: taskMainView
+        )
+        let streamingAgentTextView = try extractedStruct(
+            named: "StreamingAgentTextView",
+            from: taskMainView
+        )
+
+        #expect(completedAgentMarkdownView.contains("isSelectable: false"))
+        #expect(!completedAgentMarkdownView.contains(".textSelection(.enabled)"))
+        #expect(!streamingAgentTextView.contains(".textSelection(.enabled)"))
+    }
+
+    @Test("Repository protection artifacts stay wired")
+    func repositoryProtectionArtifactsStayWired() throws {
+        let root = try repositoryRoot()
+        let requiredFiles = [
+            ".github/workflows/ci.yml",
+            ".github/CODEOWNERS",
+            ".githooks/pre-commit",
+            ".githooks/pre-push",
+            "script/precommit.sh",
+            "script/prepush.sh",
+            "script/configure_branch_protection.sh"
+        ]
+
+        for relativePath in requiredFiles {
+            #expect(
+                FileManager.default.fileExists(atPath: root.appendingPathComponent(relativePath).path),
+                "Missing repository protection artifact: \(relativePath)"
+            )
+        }
+
+        for relativePath in requiredFiles.filter({ $0.hasPrefix(".githooks/") || $0.hasPrefix("script/") }) {
+            #expect(
+                try isExecutable(root.appendingPathComponent(relativePath)),
+                "Protection script should be executable: \(relativePath)"
+            )
+        }
+
+        let preCommitHook = try fileText(".githooks/pre-commit", root: root)
+        let prePushHook = try fileText(".githooks/pre-push", root: root)
+        let preCommitScript = try fileText("script/precommit.sh", root: root)
+        let prePushScript = try fileText("script/prepush.sh", root: root)
+        let branchProtectionScript = try fileText("script/configure_branch_protection.sh", root: root)
+        let ciWorkflow = try fileText(".github/workflows/ci.yml", root: root)
+        let codeowners = try fileText(".github/CODEOWNERS", root: root)
+
+        #expect(preCommitHook.contains("script/precommit.sh"))
+        #expect(prePushHook.contains("script/prepush.sh"))
+        #expect(preCommitScript.contains("swift test --filter ArchitectureFitnessTests"))
+        #expect(preCommitScript.contains("git diff --cached --check"))
+        #expect(branchProtectionScript.contains(#""enforce_admins": false"#))
+        #expect(prePushScript.contains("FOCUSED_SWIFT_TEST_FILTER="))
+        #expect(prePushScript.components(separatedBy: "run swift test --filter").count == 2)
+        #expect(prePushScript.contains("ArchitectureFitnessTests"))
+        #expect(prePushScript.contains("RuntimeReadinessServiceTests"))
+        #expect(prePushScript.contains("WorkspacePersistenceTests"))
+        #expect(prePushScript.contains("AgentRuntimeAdapterTests"))
+        #expect(prePushScript.contains("git diff --no-ext-diff --check"))
+        #expect(prePushScript.contains("git merge-base"))
+        #expect(prePushScript.contains(#""${range}...HEAD""#))
+        #expect(prePushScript.contains("origin/main...HEAD"))
+        #expect(prePushScript.contains("git diff-tree --check --no-commit-id --root -r HEAD"))
+        #expect(ciWorkflow.contains("script/prepush.sh"))
+        #expect(ciWorkflow.contains("Focused Swift tests"))
+        #expect(ciWorkflow.contains("fetch-depth: 0"))
+        #expect(ciWorkflow.range(of: #"runs-on:\s+macos[-A-Za-z0-9_.]*"#, options: .regularExpression) != nil)
+        #expect(ciWorkflow.contains("git diff --check"))
+        #expect(!codeowners.contains("* @aandresalvarez"))
+        #expect(codeowners.contains("Astra/Services/Runtime/"))
+        #expect(codeowners.contains("Astra/Services/Persistence/"))
+        #expect(codeowners.contains("Tests/ArchitectureFitnessTests.swift"))
     }
 
     private func declaredTaskEventTypeConstants() throws -> Set<String> {
@@ -364,8 +533,52 @@ struct ArchitectureFitnessTests {
             return total + text.components(separatedBy: pattern).count - 1
         }
     }
+
+    private func fileText(_ relativePath: String, root: URL) throws -> String {
+        try String(
+            contentsOf: root.appendingPathComponent(relativePath),
+            encoding: .utf8
+        )
+    }
+
+    private func extractedStruct(named name: String, from source: String) throws -> String {
+        guard let declarationRange = source.range(of: "struct \(name)") else {
+            throw ArchitectureFitnessError.sourceSnippetNotFound(name)
+        }
+        guard let openingBrace = source[declarationRange.lowerBound...].firstIndex(of: "{") else {
+            throw ArchitectureFitnessError.sourceSnippetNotFound(name)
+        }
+
+        var depth = 0
+        var index = openingBrace
+        while index < source.endIndex {
+            switch source[index] {
+            case "{":
+                depth += 1
+            case "}":
+                depth -= 1
+                if depth == 0 {
+                    return String(source[declarationRange.lowerBound...index])
+                }
+            default:
+                break
+            }
+            index = source.index(after: index)
+        }
+
+        throw ArchitectureFitnessError.sourceSnippetNotFound(name)
+    }
+
+    private func isExecutable(_ file: URL) throws -> Bool {
+        let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+        guard let permissions = attributes[.posixPermissions] as? NSNumber else {
+            return false
+        }
+        return permissions.intValue & 0o111 != 0
+    }
 }
 
 private enum ArchitectureFitnessError: Error {
     case repositoryRootNotFound
+    case sourceSnippetNotFound(String)
 }

@@ -74,9 +74,8 @@ struct CapabilityPackageCreationService {
                 workspace: workspace,
                 policyContext: policyContext
             )
-            var enablePolicyContext = policyContext ?? CapabilityCatalogPolicyContext.workspaceUser(
+            var enablePolicyContext = policyContext ?? CapabilityCatalogPolicyContext.currentUser(
                 workspace: workspace,
-                isAdmin: true,
                 approvalRecords: approvalStore.records()
             )
             if let pendingApprovalRecord,
@@ -120,9 +119,8 @@ struct CapabilityPackageCreationService {
         workspace: Workspace,
         policyContext: CapabilityCatalogPolicyContext?
     ) throws -> CapabilityApprovalRecord? {
-        let existingContext = policyContext ?? CapabilityCatalogPolicyContext.workspaceUser(
+        let existingContext = policyContext ?? CapabilityCatalogPolicyContext.currentUser(
             workspace: workspace,
-            isAdmin: true,
             approvalRecords: approvalStore.records()
         )
         if CapabilityCatalogPolicy.decision(for: package, context: existingContext).canEnable {

@@ -10,7 +10,6 @@ enum WorkspaceCanvasItem: String, Equatable {
     case markdown
     case browser
     case query
-
     var minWidth: CGFloat {
         switch self {
         case .plan: 400
@@ -19,7 +18,6 @@ enum WorkspaceCanvasItem: String, Equatable {
         case .query: 460
         }
     }
-
     var idealWidth: CGFloat {
         switch self {
         case .plan: 520
@@ -28,7 +26,6 @@ enum WorkspaceCanvasItem: String, Equatable {
         case .query: 640
         }
     }
-
     var maxWidth: CGFloat {
         switch self {
         case .plan: 1040
@@ -37,7 +34,6 @@ enum WorkspaceCanvasItem: String, Equatable {
         case .query: 1180
         }
     }
-
     var title: String {
         switch self {
         case .plan: "Plan"
@@ -46,7 +42,6 @@ enum WorkspaceCanvasItem: String, Equatable {
         case .query: "Query"
         }
     }
-
     var closesWhenDraggedBelowMinimum: Bool {
         self == .markdown
     }
@@ -55,7 +50,6 @@ enum WorkspaceCanvasItem: String, Equatable {
 private enum WorkspaceRightPanel: Equatable {
     case canvas(WorkspaceCanvasItem)
     case context(UUID)
-
     var isContext: Bool {
         if case .context = self { return true }
         return false
@@ -66,7 +60,6 @@ private struct ShelfBoundaryMetrics: Equatable {
     var width: CGFloat = 0
     var isVisible = false
     var isResizing = false
-
     static let hidden = ShelfBoundaryMetrics()
 }
 
@@ -81,62 +74,29 @@ private struct ShelfBoundaryMetricsPreferenceKey: PreferenceKey {
     }
 }
 
-private struct CompactPanelLayoutObserver: View {
-    let width: CGFloat
-    let splitVisibility: NavigationSplitViewVisibility
-    let activeCanvasItem: WorkspaceCanvasItem?
-    let isRightRailVisible: Bool
-    let workspaceID: UUID?
+/// Reports window width and right-panel presence to `SidebarPresentationModel`.
+/// A background `GeometryReader` measures the full content width; both signals are
+/// pure proposals — the model alone turns them into sidebar visibility.
+private struct SidebarLayoutObserver: ViewModifier {
+    let hasRightSidePanel: Bool
     let onWidthChanged: (CGFloat) -> Void
-    let onSplitVisibilityChanged: () -> Void
-    let onPanelStateChanged: () -> Void
-
-    var body: some View {
-        Color.clear
-            .onAppear {
-                onWidthChanged(width)
-            }
-            .onChange(of: width) {
-                onWidthChanged(width)
-            }
-            .onChange(of: splitVisibility) {
-                onSplitVisibilityChanged()
-            }
-            .onChange(of: activeCanvasItem) {
-                onPanelStateChanged()
-            }
-            .onChange(of: isRightRailVisible) {
-                onPanelStateChanged()
-            }
-            .onChange(of: workspaceID) {
-                onPanelStateChanged()
-            }
-    }
-}
-
-private struct CompactPanelLayoutCoordinator: ViewModifier {
-    let splitVisibility: NavigationSplitViewVisibility
-    let activeCanvasItem: WorkspaceCanvasItem?
-    let isRightRailVisible: Bool
-    let workspaceID: UUID?
-    let onWidthChanged: (CGFloat) -> Void
-    let onSplitVisibilityChanged: () -> Void
-    let onPanelStateChanged: () -> Void
+    let onRightSidePanelChanged: (Bool) -> Void
 
     func body(content: Content) -> some View {
         content
             .background {
                 GeometryReader { proxy in
-                    CompactPanelLayoutObserver(
-                        width: proxy.size.width,
-                        splitVisibility: splitVisibility,
-                        activeCanvasItem: activeCanvasItem,
-                        isRightRailVisible: isRightRailVisible,
-                        workspaceID: workspaceID,
-                        onWidthChanged: onWidthChanged,
-                        onSplitVisibilityChanged: onSplitVisibilityChanged,
-                        onPanelStateChanged: onPanelStateChanged
-                    )
+                    Color.clear
+                        .onAppear {
+                            onWidthChanged(proxy.size.width)
+                            onRightSidePanelChanged(hasRightSidePanel)
+                        }
+                        .onChange(of: proxy.size.width) {
+                            onWidthChanged(proxy.size.width)
+                        }
+                        .onChange(of: hasRightSidePanel) {
+                            onRightSidePanelChanged(hasRightSidePanel)
+                        }
                 }
             }
     }
@@ -191,11 +151,9 @@ struct NewWorkspaceDraft: Equatable {
     var instructions = ""
     var selectedCapabilityIDs: Set<String> = []
     var capabilityConfiguration = OnboardingCapabilityConfiguration()
-
     var trimmedName: String {
         name.trimmingCharacters(in: .whitespacesAndNewlines)
     }
-
     var trimmedInstructions: String {
         instructions.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -221,6 +179,31 @@ struct NewWorkspaceDraft: Equatable {
         instructions = ""
         selectedCapabilityIDs = []
         capabilityConfiguration = OnboardingCapabilityConfiguration()
+    }
+}
+
+/// Leaf observer that watches the task queue's update-safety signal in
+/// isolation. Reading `taskQueue.isProcessing/activeCount/activeTasks` here —
+/// rather than in `ContentView.body` — keeps queue churn (task start/exit)
+/// from invalidating ContentView's very large body. See the UI responsiveness
+/// audit (Cluster 1): this is the only body-level reader of those fields.
+private struct UpdateSafetyObserver: View {
+    let taskQueue: TaskQueue
+    let runningTaskCount: Int
+    let onChange: () -> Void
+
+    private var signature: String {
+        [
+            String(taskQueue.isProcessing),
+            String(taskQueue.activeCount),
+            String(taskQueue.activeTasks.count),
+            String(runningTaskCount)
+        ].joined(separator: "|")
+    }
+
+    var body: some View {
+        Color.clear
+            .onChange(of: signature) { onChange() }
     }
 }
 
@@ -280,10 +263,23 @@ struct ContentView: View {
     @AppStorage(WorkspaceRecoveryService.recoveryNoticeKey) private var recoveryNotice = ""
     @State private var activeWorkspaceCanvasItem: WorkspaceCanvasItem?
     @State private var browserToolbarEngine = ShelfBrowserEngine.embedded
-    @State private var splitVisibility: NavigationSplitViewVisibility = .all
-    @State private var responsiveLayoutWidth: CGFloat = 0
-    @State private var didAutoHideSidebarForCompactPanels = false
+    // MARK: Sidebar Presentation
+    /// The single owner of sidebar visibility — docked column, floating overlay
+    /// drawer, or collapsed. Replaces the former `splitVisibility` @State plus the
+    /// responsive/reveal-settling flags; every width probe and the AppKit split
+    /// guard now *propose* changes through this model instead of racing on
+    /// `splitVisibility` directly.
+    @StateObject private var presentation = SidebarPresentationModel()
+    private let sidebarTitlebarCommands = SidebarTitlebarCommandBridge.shared
+    /// Hover state of the show-sidebar toggle, which drives the transient
+    /// hover-preview of the overlay drawer (`SidebarPeekContainer`).
+    @State private var isSidebarToggleHovered = false
     @State private var cachedHasCanvasContent = false
+    /// Run-once guard for the deferred Sparkle update probe. handleAppear can
+    /// fire on more than one .onAppear for the same view instance; this keeps
+    /// the ~3s deferral scheduled exactly once. (The controller also guards the
+    /// actual probe via hasProbedForUpdates, so this is belt-and-suspenders.)
+    @State private var didScheduleUpdateProbe = false
     @State private var generatedHTMLDiscoveryTask: Task<Void, Never>?
     @State private var markdownAvailabilityTask: Task<Void, Never>?
     @State private var queryAvailabilityTask: Task<Void, Never>?
@@ -418,14 +414,21 @@ struct ContentView: View {
 
     private var selectedTaskCanvasSignature: String {
         guard let selectedTask else { return "none" }
-        let htmlPreviewSignature = selectedTaskHTMLPreviewSignature(for: selectedTask)
-        let inputSignature = selectedTask.inputs.joined(separator: "|")
+        // Compute the latest run once (was scanned twice — here and in the
+        // HTML-preview helper). Deliberately exclude `output.count`: it is an
+        // O(output-length) walk that re-runs every body pass while output
+        // streams, and the canvas only reflects file changes, not raw output.
         let latestRun = selectedTask.runs.max { $0.startedAt < $1.startedAt }
+        let inputSignature = selectedTask.inputs.joined(separator: "|")
+        let htmlPreviewSignature = [
+            selectedTask.status.rawValue,
+            latestRun?.id.uuidString ?? "none",
+            String(latestRun?.fileChangesJSON.count ?? 0)
+        ].joined(separator: "|")
         let latestRunSignature = [
             latestRun?.id.uuidString ?? "none",
             latestRun?.status.rawValue ?? "none",
             String(Int(latestRun?.startedAt.timeIntervalSince1970 ?? 0)),
-            String(latestRun?.output.count ?? 0),
             String(latestRun?.fileChangesJSON.count ?? 0)
         ].joined(separator: ":")
         return [
@@ -437,15 +440,6 @@ struct ContentView: View {
             latestRunSignature,
             htmlPreviewSignature,
             inputSignature
-        ].joined(separator: "|")
-    }
-
-    private func selectedTaskHTMLPreviewSignature(for task: AgentTask) -> String {
-        let latestRun = task.runs.max { $0.startedAt < $1.startedAt }
-        return [
-            task.status.rawValue,
-            latestRun?.id.uuidString ?? "none",
-            String(latestRun?.fileChangesJSON.count ?? 0)
         ].joined(separator: "|")
     }
 
@@ -477,20 +471,11 @@ struct ContentView: View {
         activeWorkspaceCanvasItem != nil
     }
 
-    private var compactPanelMutualExclusionWidth: CGFloat {
-        PanelLayoutGeometry.compactPanelMutualExclusionWidth
-    }
-
-    private var isCompactPanelLayout: Bool {
-        PanelLayoutGeometry.isCompactPanelLayout(width: responsiveLayoutWidth)
-    }
-
+    /// Whether a right-side panel (the workspace inspector rail or a canvas shelf)
+    /// is currently presented. Fed into `SidebarPresentationModel` so it can decide
+    /// whether the sidebar docks alongside it or presents as an overlay drawer.
     private var hasRightSidePanelPresented: Bool {
         activeWorkspaceCanvasItem != nil || (effectiveWorkspace != nil && isWorkspaceRightRailVisible)
-    }
-
-    private var shouldUseDetailOnlyCompactLayout: Bool {
-        isCompactPanelLayout && hasRightSidePanelPresented
     }
 
     private var panelTransitionAnimation: Animation? {
@@ -525,29 +510,26 @@ struct ContentView: View {
         )
     }
 
-    private var compactPanelLayoutCoordinator: CompactPanelLayoutCoordinator {
-        CompactPanelLayoutCoordinator(
-            splitVisibility: splitVisibility,
-            activeCanvasItem: activeWorkspaceCanvasItem,
-            isRightRailVisible: isWorkspaceRightRailVisible,
-            workspaceID: effectiveWorkspaceID,
-            onWidthChanged: handleResponsiveLayoutWidthChanged,
-            onSplitVisibilityChanged: handleSplitVisibilityChanged,
-            onPanelStateChanged: handleRightSidePanelStateChanged
+    /// Feeds window width and right-panel presence into the presentation model.
+    /// The model is the only thing that turns those inputs into sidebar visibility.
+    private var sidebarLayoutObserver: SidebarLayoutObserver {
+        SidebarLayoutObserver(
+            hasRightSidePanel: hasRightSidePanelPresented,
+            onWidthChanged: { presentation.setResponsiveWidth($0) },
+            onRightSidePanelChanged: { presentation.setHasRightSidePanel($0) }
         )
     }
 
-    @ViewBuilder
+    /// The split view is ALWAYS mounted — the sidebar is hidden by collapsing the
+    /// column (`columnVisibility`), never by swapping the whole layout out. That
+    /// keeps the `NavigationSplitView` (the sole renderer of the column-visibility
+    /// binding) live at all times, so a "show sidebar" can never be a dead write.
     private var rootLayout: some View {
-        if shouldUseDetailOnlyCompactLayout {
-            detailArea
-        } else {
-            splitLayout
-        }
+        splitLayout
     }
 
     private var splitLayout: some View {
-        NavigationSplitView(columnVisibility: $splitVisibility) {
+        NavigationSplitView(columnVisibility: presentation.columnVisibilityBinding()) {
             sidebarArea
         } detail: {
             detailArea
@@ -555,7 +537,11 @@ struct ContentView: View {
         .navigationSplitViewStyle(.balanced)
     }
 
-    private var sidebarArea: some View {
+    /// The sidebar's content, free of any `NavigationSplitView` sizing modifiers,
+    /// so it can be reused verbatim by both the docked column (`sidebarArea`) and
+    /// the floating overlay drawer (`SidebarPeekContainer`) — both wrapping it in
+    /// the same `SidebarSurface` so the two never diverge in style.
+    private var sidebarContent: some View {
         TaskSidebarContainerView(
             selectedTask: selectedTaskBinding,
             taskQueue: runtime.taskQueue,
@@ -575,33 +561,47 @@ struct ContentView: View {
             onDeleteWorkspace: deleteWorkspace,
             onRenameWorkspace: beginRenamingWorkspace,
             onNewSchedule: showNewSchedule,
-            onEditSchedule: beginEditingSchedule,
-            isSearchActive: $isSearchActive
+            onEditSchedule: beginEditingSchedule
         )
+    }
+
+    private var sidebarArea: some View {
+        SidebarSurface(style: .docked) {
+            sidebarContent
+        }
         .background {
             GeometryReader { proxy in
                 Color.clear
                     .onAppear {
-                        handleSidebarColumnWidthChanged(proxy.size.width)
+                        presentation.noteColumnWidth(proxy.size.width)
                     }
                     .onChange(of: proxy.size.width) {
-                        handleSidebarColumnWidthChanged(proxy.size.width)
+                        presentation.noteColumnWidth(proxy.size.width)
                     }
             }
             SidebarSplitViewGuard(
                 minimumExpandedWidth: SidebarColumnLayout.expandedMinimumWidth,
-                onCollapse: collapseSidebarForCompressedSplit
+                isRevealInProgress: presentation.isSettling,
+                onReadableWidth: { presentation.noteReadableSplitSubviewWidth($0) },
+                onCollapse: { presentation.proposeCompressedCollapse() }
             )
             .frame(width: 0, height: 0)
         }
+        .clipped()
+        // The leading titlebar accessory (AstraLeadingCommandBar) owns the only
+        // sidebar toggle; drop NavigationSplitView's built-in one.
+        .toolbar(removing: .sidebarToggle)
+        .transition(sidebarCollapseTransition)
+        .animation(sidebarCollapseAnimation, value: presentation.columnVisibility)
+        // MUST stay the outermost modifier on the column root: with `.clipped()`
+        // interposed between this and `.toolbar(removing:)`, NavigationSplitView
+        // drops the whole min/ideal/max spec — the divider then drags to any
+        // width and the sub-minimum guard collapse fires mid-drag.
         .navigationSplitViewColumnWidth(
             min: SidebarColumnLayout.expandedMinimumWidth,
             ideal: SidebarColumnLayout.expandedIdealWidth,
             max: SidebarColumnLayout.expandedMaximumWidth
         )
-        .clipped()
-        .transition(sidebarCollapseTransition)
-        .animation(sidebarCollapseAnimation, value: splitVisibility)
     }
 
     private var detailArea: some View {
@@ -654,31 +654,45 @@ struct ContentView: View {
         )
     }
 
-    var body: some View {
+    /// Keeps ⌘F toggling search even though the visible search button lives in
+    /// the leading titlebar accessory (`AstraLeadingCommandBar`), which sits
+    /// outside the window's key responder chain where a `.keyboardShortcut`
+    /// can't fire. The button stays in the SwiftUI hierarchy (so the shortcut
+    /// registers) but is made invisible with a zero-size clear label + opacity(0).
+    private var searchHotkey: some View {
+        Button(action: { isSearchActive.toggle() }) { Color.clear.frame(width: 0, height: 0) }
+            .buttonStyle(.plain)
+            .keyboardShortcut("f", modifiers: .command)
+            .opacity(0)
+            .accessibilityHidden(true)
+    }
+
+    // Split out of `body` so each modifier chain stays small enough for the
+    // SwiftUI type-checker. `body` adds only the .onChange / .sheet tail.
+    private var rootLayoutWithChrome: some View {
         rootLayout
         .frame(minHeight: 600)
         .accessibilityIdentifier("MainContentView")
-        .astraWindowChrome()
+        // Installs the leading titlebar accessory (AstraLeadingCommandBar):
+        // sidebar toggle + search pinned beside the traffic lights in every layout.
+        .astraWindowChrome(
+            isSearchActive: $isSearchActive,
+            sidebarCommands: sidebarTitlebarCommands,
+            isSidebarToggleHovered: $isSidebarToggleHovered,
+            isSidebarHidden: presentation.isSidebarHidden
+        )
+        .background(searchHotkey)
         .astraHiddenToolbarBackground()
         // Right-rail toggle. Attached to the NavigationSplitView root so
         // .primaryAction lands at the WINDOW's trailing edge — past the
         // inspector column — instead of at the inspector boundary
         // (where attaching to .detail or to the inspector content put it).
         .toolbar {
-            if shouldUseDetailOnlyCompactLayout {
-                ToolbarItem(placement: .navigation) {
-                    AstraToolbarCommandCluster {
-                        Button(action: revealSidebarFromCompactLayout) {
-                            AstraToolbarCommandIcon(systemImage: "sidebar.left", isActive: false)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Show sidebar and close the right panel")
-                        .accessibilityIdentifier("CompactShowSidebarButton")
-                        .accessibilityLabel("Show sidebar")
-                    }
-                }
-            }
-
+            // Sidebar toggle + search live in the leading titlebar accessory
+            // (AstraLeadingCommandBar, installed by astraWindowChrome) — pinned
+            // beside the traffic lights in every layout. It feeds the hover-to-peek
+            // state (isSidebarToggleHovered); the native split-view toggle is
+            // suppressed on `sidebarArea` via `.toolbar(removing: .sidebarToggle)`.
             ContentToolbar(
                 appUpdateController: appUpdateController,
                 onCheckForUpdates: appUpdateController.checkForUpdatesFromButton
@@ -699,7 +713,7 @@ struct ContentView: View {
             }
         }
         .shelfBoundaryOverlay()
-        .modifier(compactPanelLayoutCoordinator)
+        .modifier(sidebarLayoutObserver)
         .overlay {
             if isSearchActive {
                 SearchPanelOverlayContainer(
@@ -708,6 +722,17 @@ struct ContentView: View {
                     selectedWorkspace: $selectedWorkspace,
                     isActive: $isSearchActive
                 )
+            }
+        }
+        .overlay(alignment: .topLeading) {
+            SidebarPeekContainer(
+                mode: presentation.mode,
+                isTriggerHovered: isSidebarToggleHovered,
+                width: presentation.sidebarWidth,
+                reduceMotion: reduceMotion,
+                onDismiss: { presentation.dismissOverlay() }
+            ) {
+                sidebarContent
             }
         }
         .safeAreaInset(edge: .top) {
@@ -720,6 +745,10 @@ struct ContentView: View {
                 onCheckForUpdates: appUpdateController.checkForUpdatesFromButton
             )
         }
+    }
+
+    var body: some View {
+        rootLayoutWithChrome
         .onChange(of: selectedTaskCanvasSignature) {
             handleSelectedTaskCanvasSignatureChanged()
         }
@@ -731,6 +760,12 @@ struct ContentView: View {
                 animatePanelChange {
                     setActiveWorkspaceCanvasItem(nil, remember: false)
                 }
+            }
+            // Opening a task while the sidebar is a too-narrow overlay drawer
+            // dismisses the drawer so the detail area is visible (no-op when the
+            // sidebar is docked or already collapsed).
+            if hasOpenTaskThread {
+                presentation.handleSelectionCommitted()
             }
         }
         .onChange(of: activeWorkspaceCanvasItem) {
@@ -842,12 +877,24 @@ struct ContentView: View {
         }
         .id(uiScale)
         .onAppear {
+            sidebarTitlebarCommands.installSidebarToggleHandler {
+                handleSidebarToggle()
+            }
             handleAppear()
         }
+        .onDisappear {
+            sidebarTitlebarCommands.clearSidebarToggleHandler()
+        }
         .onChange(of: executionSettingsSignature) { applySettings() }
-        .onChange(of: updateSafetySignature) {
-            refreshRunningTaskCount()
-            refreshUpdateSafetyHooks()
+        .background {
+            UpdateSafetyObserver(
+                taskQueue: runtime.taskQueue,
+                runningTaskCount: runningTaskCount,
+                onChange: {
+                    refreshRunningTaskCount()
+                    refreshUpdateSafetyHooks()
+                }
+            )
         }
         .onChange(of: workspaceSelectionSignature) {
             handleWorkspaceSelectionSignatureChanged()
@@ -960,28 +1007,17 @@ struct ContentView: View {
         }
     }
 
-    private func handleResponsiveLayoutWidthChanged(_ width: CGFloat) {
-        responsiveLayoutWidth = width
-        reconcileCompactPanelLayout(for: width)
-    }
-
-    private func handleSidebarColumnWidthChanged(_ width: CGFloat) {
-        guard splitVisibility != .detailOnly else { return }
-        guard SidebarColumnLayout.shouldCollapseExpandedSidebar(width: width) else { return }
-
-        collapseSidebarForCompressedSplit()
-    }
-
-    private func collapseSidebarForCompressedSplit() {
-        guard splitVisibility != .detailOnly else { return }
-
-        withAnimation(sidebarCollapseAnimation) {
-            splitVisibility = .detailOnly
+    private func handleSidebarToggle() {
+        guard presentation.shouldClearRightSidePanelBeforeReveal else {
+            presentation.toggle()
+            return
         }
-    }
 
-    private func handleRightSidePanelStateChanged() {
-        reconcileCompactPanelLayout()
+        animatePanelChange {
+            setActiveWorkspaceCanvasItem(nil, remember: true)
+            isWorkspaceRightRailVisible = false
+            presentation.revealAfterClearingRightSidePanel()
+        }
     }
 
     private func handleSelectedTaskCanvasSignatureChanged() {
@@ -999,72 +1035,6 @@ struct ContentView: View {
         refreshQueryShelfAvailabilityForSelectedTask()
         refreshGeneratedHTMLAvailabilityForSelectedTask()
         restoreRememberedWorkspaceCanvasItemIfAvailable()
-    }
-
-    private func reconcileCompactPanelLayout(for width: CGFloat? = nil) {
-        let currentWidth = width ?? responsiveLayoutWidth
-        guard currentWidth > 0 else { return }
-
-        guard currentWidth < compactPanelMutualExclusionWidth else {
-            if didAutoHideSidebarForCompactPanels {
-                didAutoHideSidebarForCompactPanels = false
-                if splitVisibility == .detailOnly {
-                    withAnimation(panelTransitionAnimation) {
-                        splitVisibility = .all
-                    }
-                }
-            }
-            return
-        }
-
-        guard hasRightSidePanelPresented else {
-            if didAutoHideSidebarForCompactPanels {
-                didAutoHideSidebarForCompactPanels = false
-                if splitVisibility == .detailOnly {
-                    withAnimation(panelTransitionAnimation) {
-                        splitVisibility = .all
-                    }
-                }
-            }
-            return
-        }
-        guard splitVisibility != .detailOnly else { return }
-
-        didAutoHideSidebarForCompactPanels = true
-        withAnimation(panelTransitionAnimation) {
-            splitVisibility = .detailOnly
-        }
-    }
-
-    private func handleSplitVisibilityChanged() {
-        guard isCompactPanelLayout else {
-            if splitVisibility != .detailOnly {
-                didAutoHideSidebarForCompactPanels = false
-            }
-            return
-        }
-
-        guard splitVisibility != .detailOnly else { return }
-        guard hasRightSidePanelPresented else { return }
-
-        didAutoHideSidebarForCompactPanels = false
-        hideRightSidePanelsForCompactSidebar()
-    }
-
-    private func hideRightSidePanelsForCompactSidebar() {
-        animatePanelChange {
-            setActiveWorkspaceCanvasItem(nil, remember: false)
-            isWorkspaceRightRailVisible = false
-        }
-    }
-
-    private func revealSidebarFromCompactLayout() {
-        didAutoHideSidebarForCompactPanels = false
-        animatePanelChange {
-            setActiveWorkspaceCanvasItem(nil, remember: false)
-            isWorkspaceRightRailVisible = false
-            splitVisibility = .all
-        }
     }
 
     private func setRightRailPresented(_ isPresented: Bool) {
@@ -1490,12 +1460,13 @@ struct ContentView: View {
 
             let discoveryState = GeneratedHTMLDiscoveryState.discovered(preferredPath: path, taskID: taskID)
             await MainActor.run {
+                // Compare against the signature already computed off-main above
+                // rather than calling shouldApplyDiscovery(), which would re-run
+                // an attributesOfItem stat on the main actor for the same path.
+                // See the UI responsiveness audit (Cluster 2).
                 guard !Task.isCancelled,
                       self.selectedTask?.id == taskID,
-                      GeneratedHTMLDiscoveryState(
-                          preferredPath: selectedTaskPreferredHTMLPath,
-                          signature: lastGeneratedHTMLDiscoverySignature
-                      ).shouldApplyDiscovery(preferredPath: path, taskID: taskID) else {
+                      lastGeneratedHTMLDiscoverySignature != discoveryState.signature else {
                     return
                 }
 
@@ -1798,15 +1769,6 @@ struct ContentView: View {
         )
     }
 
-    private var updateSafetySignature: String {
-        return [
-            String(runtime.taskQueue.isProcessing),
-            String(runtime.taskQueue.activeCount),
-            String(runtime.taskQueue.activeTasks.count),
-            String(runningTaskCount)
-        ].joined(separator: "|")
-    }
-
     private var hasUpdateBlockingWork: Bool {
         AppUpdateSafety.isInstallBlocked(
             queueIsProcessing: runtime.taskQueue.isProcessing,
@@ -2050,10 +2012,15 @@ struct ContentView: View {
     }
 
     private func deleteTask(_ task: AgentTask) {
+        let deletedTaskID = task.id
         if selectedTask?.id == task.id {
             setSelectedTask(nil)
         }
         _ = coordinator.deleteTask(task)
+        // Release the task's browser (WebContent process + bridge listener) and
+        // markdown sessions; otherwise they leak until the window closes.
+        browserSessionStore.releaseSession(for: deletedTaskID)
+        markdownSessionStore.releaseSession(for: deletedTaskID)
         refreshRunningTaskCount()
     }
 
@@ -2113,6 +2080,13 @@ struct ContentView: View {
         coordinator.migrateSkillSecrets(skills: skills)
     }
 
+    private func runStoreMaintenanceIfNeeded() {
+        runtime.runStoreMaintenanceIfNeeded(
+            modelContext: modelContext,
+            isUITestingSeededLaunch: isUITestingSeededLaunch
+        )
+    }
+
     private func backfillThreadTitlesIfNeeded() {
         runtime.backfillThreadTitlesIfNeeded(
             coordinator: coordinator,
@@ -2156,6 +2130,10 @@ struct ContentView: View {
         seedTestDataIfNeeded()
         migrateConnectorCredentials()
         migrateSkillSecrets()
+        // Run the destructive store maintenance (draft prune + import dedup)
+        // BEFORE restoring selection, so it can never delete the task that
+        // `restoreWorkspaceSelection` is about to point `selectedTask` at.
+        runStoreMaintenanceIfNeeded()
         restoreWorkspaceSelection()
         refreshMarkdownShelfAvailabilityForSelectedTask()
         refreshQueryShelfAvailabilityForSelectedTask()
@@ -2169,7 +2147,25 @@ struct ContentView: View {
         refreshRunningTaskCount()
         handlePendingExternalRoute()
         refreshUpdateSafetyHooks()
-        appUpdateController.probeForUpdatesOnce()
+        // Defer Sparkle's network probe ~3s after first appear so it doesn't
+        // compete with launch I/O. Non-development channels only (dev already
+        // disables updates in AppUpdateController.disabledReason). Scheduled
+        // once per view instance; the controller's hasProbedForUpdates guard
+        // keeps the actual probe single-fire regardless.
+        if !didScheduleUpdateProbe, AppChannel.current != .development {
+            didScheduleUpdateProbe = true
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                appUpdateController.probeForUpdatesOnce()
+            }
+        }
+        // Post-launch chores moved off ASTRAApp.init() so they don't block the
+        // first frame. Wrapped in a Task so they run on a later runloop turn,
+        // after this frame is presented. Run-once-guarded inside.
+        Task { @MainActor in
+            ASTRAApp.runDeferredStartupWork(modelContext: modelContext)
+            refreshRunningTaskCount()
+        }
     }
 
     private func applySecurityGateDefaultIfNeeded() {
@@ -3663,7 +3659,9 @@ struct WorkspaceSetupForm: View {
     }
 
     private var availableCapabilityShortcut: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 7) {
+        // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+        // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
+        HStack(alignment: .top, spacing: 7) {
             Image(systemName: "wand.and.stars")
                 .font(Stanford.ui(10, weight: .medium))
                 .foregroundStyle(Stanford.lagunita)
@@ -3687,7 +3685,9 @@ struct WorkspaceSetupForm: View {
     }
 
     private var copyCapabilitySetupShortcut: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 7) {
+        // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+        // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
+        HStack(alignment: .top, spacing: 7) {
             Image(systemName: copiedCapabilitySetup == nil ? "square.on.square" : "checkmark.circle.fill")
                 .font(Stanford.ui(10, weight: .medium))
                 .foregroundStyle(copiedCapabilitySetup == nil ? Stanford.lagunita : Stanford.paloAltoGreen)
@@ -4628,114 +4628,6 @@ struct WorkspaceSetupForm: View {
 
     private func capabilityPrerequisiteColor(for packageID: String) -> Color {
         capabilityPrerequisitesReady(for: packageID) ? Stanford.paloAltoGreen : Stanford.poppy
-    }
-}
-
-private struct TopNoticeBannersView: View {
-    let recoveryNotice: String
-    let updateBlockNotice: String?
-    let externalRouteNotice: String
-    let onDismissRecoveryNotice: () -> Void
-    let onDismissExternalRouteNotice: () -> Void
-    let onCheckForUpdates: () -> Void
-
-    var body: some View {
-        if !recoveryNotice.isEmpty || updateBlockNotice != nil || !externalRouteNotice.isEmpty {
-            VStack(spacing: 0) {
-                if !recoveryNotice.isEmpty {
-                    RecoveryNoticeBanner(
-                        message: recoveryNotice,
-                        onDismiss: onDismissRecoveryNotice
-                    )
-                }
-                if !externalRouteNotice.isEmpty {
-                    ExternalRouteNoticeBanner(
-                        message: externalRouteNotice,
-                        onDismiss: onDismissExternalRouteNotice
-                    )
-                }
-                if let updateBlockNotice {
-                    UpdateNoticeBanner(
-                        message: updateBlockNotice,
-                        onCheckForUpdates: onCheckForUpdates
-                    )
-                }
-            }
-        }
-    }
-}
-
-private struct RecoveryNoticeBanner: View {
-    let message: String
-    let onDismiss: () -> Void
-
-    var body: some View {
-        NoticeBanner(
-            systemImage: "externaldrive.badge.checkmark",
-            imageColor: Stanford.paloAltoGreen,
-            message: message,
-            buttonTitle: "Dismiss",
-            buttonAction: onDismiss
-        )
-    }
-}
-
-private struct ExternalRouteNoticeBanner: View {
-    let message: String
-    let onDismiss: () -> Void
-
-    var body: some View {
-        NoticeBanner(
-            systemImage: "exclamationmark.triangle.fill",
-            imageColor: Stanford.poppy,
-            message: message,
-            buttonTitle: "Dismiss",
-            buttonAction: onDismiss
-        )
-    }
-}
-
-private struct UpdateNoticeBanner: View {
-    let message: String
-    let onCheckForUpdates: () -> Void
-
-    var body: some View {
-        NoticeBanner(
-            systemImage: "arrow.down.circle",
-            imageColor: Stanford.cardinalRed,
-            message: message,
-            buttonTitle: "Check Again",
-            buttonAction: onCheckForUpdates
-        )
-    }
-}
-
-private struct NoticeBanner: View {
-    let systemImage: String
-    let imageColor: Color
-    let message: String
-    let buttonTitle: String
-    let buttonAction: () -> Void
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: systemImage)
-                .foregroundStyle(imageColor)
-            Text(message)
-                .font(Stanford.body(13))
-                .foregroundStyle(Stanford.black)
-            Spacer()
-            Button(buttonTitle, action: buttonAction)
-                .font(Stanford.body(12))
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(Stanford.fog)
-        .overlay(alignment: .bottom) {
-            SoftHorizontalTransition(height: 12)
-                .rotationEffect(.degrees(180))
-                .offset(y: 8)
-        }
     }
 }
 

@@ -114,7 +114,7 @@ enum WorkspaceConfigManager {
         }
     }
 
-    struct WorkspaceConfig: Codable {
+    struct WorkspaceConfig: Codable, Sendable {
         var version: Int = WorkspaceConfigManager.currentVersion
         var id: String?
         var name: String
@@ -146,13 +146,13 @@ enum WorkspaceConfigManager {
         var exportedAt: Date
     }
 
-    struct InstalledPluginRef: Codable {
+    struct InstalledPluginRef: Codable, Sendable {
         var id: String
         var version: String
         var name: String?
     }
 
-    struct SkillConfig: Codable {
+    struct SkillConfig: Codable, Sendable {
         var id: String?
         var name: String
         var icon: String
@@ -177,7 +177,7 @@ enum WorkspaceConfigManager {
         var updatedAt: Date?
     }
 
-    struct ConnectorConfig: Codable {
+    struct ConnectorConfig: Codable, Sendable {
         var id: String?
         var name: String
         var serviceType: String
@@ -199,7 +199,7 @@ enum WorkspaceConfigManager {
         var updatedAt: Date?
     }
 
-    struct LocalToolConfig: Codable {
+    struct LocalToolConfig: Codable, Sendable {
         var id: String?
         var name: String
         var description: String
@@ -217,7 +217,7 @@ enum WorkspaceConfigManager {
         var updatedAt: Date?
     }
 
-    struct TemplateConfig: Codable {
+    struct TemplateConfig: Codable, Sendable {
         var id: String?
         var name: String
         var icon: String
@@ -245,7 +245,7 @@ enum WorkspaceConfigManager {
         var updatedAt: Date?
     }
 
-    struct ScheduleConfig: Codable {
+    struct ScheduleConfig: Codable, Sendable {
         var id: String?
         var name: String
         var isEnabled: Bool
@@ -275,7 +275,7 @@ enum WorkspaceConfigManager {
         var updatedAt: Date?
     }
 
-    struct TaskConfig: Codable {
+    struct TaskConfig: Codable, Sendable {
         var id: String?
         var title: String
         var goal: String
@@ -315,7 +315,7 @@ enum WorkspaceConfigManager {
         var skillSnapshots: [SkillSnapshotConfig]?
     }
 
-    struct RunConfig: Codable {
+    struct RunConfig: Codable, Sendable {
         var id: String?
         var status: String
         var startedAt: Date
@@ -333,7 +333,7 @@ enum WorkspaceConfigManager {
         var fileChangesJSON: String
     }
 
-    struct EventConfig: Codable {
+    struct EventConfig: Codable, Sendable {
         var id: String?
         var type: String
         var payload: String
@@ -468,18 +468,24 @@ enum WorkspaceConfigManager {
     }
 
     /// Auto-save config to the workspace's primary path for recovery.
+    ///
+    /// The Sendable `WorkspaceConfig` snapshot is built synchronously here (it must
+    /// read SwiftData objects on the current actor), then the JSON encode + atomic
+    /// file write are handed to `WorkspaceAutoExportWriter`, which serializes all
+    /// auto-export writes off the main actor. This removes the synchronous
+    /// `encode(.prettyPrinted)` + `data.write` stall from every `modelContext.save()`
+    /// on a live run. The result-returning `exportToFileResult` path (used by tests,
+    /// explicit user export, and flush-on-disappear) is intentionally left synchronous.
     static func autoExport(workspace: Workspace) {
         let target = autoExportTarget(for: workspace.primaryPath)
         guard let url = target.url else {
             logAutoExportSkipped(workspace: workspace, reason: target.reason)
             return
         }
-        let result = exportToFileResult(workspace: workspace, url: url)
-        if result.status == .writeFailed {
-            var fields = result.auditFields
-            fields["result"] = "auto_export_failed"
-            fields["diagnostic_result"] = result.status.rawValue
-            AppLogger.audit(.workspaceExported, category: "Persistence", fields: fields, level: .error)
+        guard let config = export(workspace: workspace) else { return }
+        let workspaceID = workspace.id.uuidString
+        Task.detached(priority: .utility) {
+            await WorkspaceAutoExportWriter.shared.write(config, to: url, workspaceID: workspaceID)
         }
     }
 
@@ -489,12 +495,10 @@ enum WorkspaceConfigManager {
             logAutoExportSkipped(workspace: workspace, reason: target.reason)
             return
         }
-        let result = exportToFileResult(workspace: workspace, modelContext: modelContext, url: url)
-        if result.status == .writeFailed {
-            var fields = result.auditFields
-            fields["result"] = "auto_export_failed"
-            fields["diagnostic_result"] = result.status.rawValue
-            AppLogger.audit(.workspaceExported, category: "Persistence", fields: fields, level: .error)
+        guard let config = export(workspace: workspace, modelContext: modelContext) else { return }
+        let workspaceID = workspace.id.uuidString
+        Task.detached(priority: .utility) {
+            await WorkspaceAutoExportWriter.shared.write(config, to: url, workspaceID: workspaceID)
         }
     }
 
@@ -1682,5 +1686,47 @@ enum WorkspaceConfigManager {
     private static func appendUnique(_ value: String, to values: inout [String]) {
         guard !values.contains(value) else { return }
         values.append(value)
+    }
+}
+
+/// Serializes workspace auto-export JSON encode + file writes off the main actor.
+///
+/// Actor isolation guarantees that two auto-exports never write the same file
+/// concurrently, and the `.atomic` write means `WorkspaceRecoveryService` /
+/// `loadConfig` can never observe a torn file. Auto-export drops `.prettyPrinted`
+/// (kept only for explicit user-facing exports via `WorkspaceConfigManager.write`)
+/// while preserving `.sortedKeys` so the on-disk recovery file stays deterministic.
+actor WorkspaceAutoExportWriter {
+    static let shared = WorkspaceAutoExportWriter()
+
+    private let encoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return encoder
+    }()
+
+    func write(
+        _ config: WorkspaceConfigManager.WorkspaceConfig,
+        to url: URL,
+        workspaceID: String
+    ) {
+        do {
+            let data = try encoder.encode(config)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            let nsError = error as NSError
+            AppLogger.audit(.workspaceExported, category: "Persistence", fields: [
+                "result": "auto_export_failed",
+                "diagnostic_result": "writeFailed",
+                "workspace_id": workspaceID,
+                "config_file": url.lastPathComponent,
+                "path": url.path,
+                "error_type": String(describing: type(of: error)),
+                "error_domain": nsError.domain,
+                "error_code": String(nsError.code),
+                "error_description": nsError.localizedDescription
+            ], level: .error)
+        }
     }
 }

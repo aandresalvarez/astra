@@ -244,7 +244,7 @@ struct PolicySummaryPresentation: Identifiable, Hashable, Sendable {
             .init(title: "Paths", value: compactList([manifest.workspacePath] + manifest.additionalPaths, empty: "None"), isMonospaced: true),
             .init(title: "Environment keys", value: compactList(manifest.environmentKeyNames, empty: "None"), isMonospaced: true),
             .init(title: "Credential labels", value: compactList(manifest.credentialLabels, empty: "None")),
-            .init(title: "MCP servers", value: compactList(mcpServerSummaries(manifest.mcpServers), empty: "None")),
+            .init(title: "MCP servers", value: mcpServersFactValue(manifest)),
             .init(title: "Approvals", value: compactList(manifest.approvalsGranted, empty: "None"))
         ]
 
@@ -258,6 +258,17 @@ struct PolicySummaryPresentation: Identifiable, Hashable, Sendable {
             facts.append(.init(title: "Diagnostics", value: diagnostics))
         }
         return facts
+    }
+
+    static func mcpServersFactValue(_ manifest: RunPermissionManifest) -> String {
+        guard !manifest.mcpServers.isEmpty else { return "None" }
+        guard AgentRuntimeAdapterRegistry.descriptor(for: manifest.providerID).supportsMCPServers else {
+            // Declared servers must never read as active on a runtime that
+            // doesn't materialize them.
+            let count = manifest.mcpServers.count
+            return "\(count) skipped — \(manifest.providerID.displayName) doesn't support MCP servers"
+        }
+        return compactList(mcpServerSummaries(manifest.mcpServers), empty: "None")
     }
 
     private static func mcpServerSummaries(_ servers: [RunPermissionManifest.MCPServer]) -> [String] {

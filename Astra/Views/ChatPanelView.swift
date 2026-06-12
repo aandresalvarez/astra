@@ -375,6 +375,8 @@ struct ChatPanelView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var messageText = ""
     @State private var messages: [ChatMessage] = []
+    @State private var isChatAtBottom = true
+    @State private var hasUnseenChatActivity = false
     @State private var isThinking = false
     @State private var extractedSpec: TaskSpec?
     @State private var showSpecCard = false
@@ -652,80 +654,106 @@ struct ChatPanelView: View {
                 heroView
             } else {
                 ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(spacing: 10) {
-                            if let approvedPlan = approvedDraftPlan,
-                               pendingPlan == nil {
-                                ApprovedPlanReadyCard(
-                                    plan: approvedPlan,
-                                    isHistoryExpanded: $isApprovedPlanHistoryExpanded,
-                                    isPlanCanvasVisible: isPlanCanvasVisible,
-                                    onOpenPlan: {
-                                        if let draftTask {
-                                            onOpenPlan?(draftTask)
+                    GeometryReader { viewport in
+                        ScrollView {
+                            // Lazy so historical message subtrees (each hosting an
+                            // AppKit selection overlay via `.textSelection`) are
+                            // realized on demand instead of all up front — mirrors the
+                            // sibling transcript in TaskMainView. See the UI
+                            // responsiveness audit (Cluster 4).
+                            LazyVStack(spacing: 10) {
+                                if let approvedPlan = approvedDraftPlan,
+                                   pendingPlan == nil {
+                                    ApprovedPlanReadyCard(
+                                        plan: approvedPlan,
+                                        isHistoryExpanded: $isApprovedPlanHistoryExpanded,
+                                        isPlanCanvasVisible: isPlanCanvasVisible,
+                                        onOpenPlan: {
+                                            if let draftTask {
+                                                onOpenPlan?(draftTask)
+                                            }
                                         }
-                                    }
-                                )
-                                .padding(.horizontal)
-                                .id("approved-plan-card")
+                                    )
+                                    .padding(.horizontal)
+                                    .id("approved-plan-card")
 
-                                if isApprovedPlanHistoryExpanded {
+                                    if isApprovedPlanHistoryExpanded {
+                                        conversationMessages
+                                    }
+                                } else {
                                     conversationMessages
                                 }
-                            } else {
-                                conversationMessages
-                            }
 
-                            if isThinking {
-                                thinkingIndicator
-                            }
+                                if isThinking {
+                                    thinkingIndicator
+                                }
 
-                            if showSpecCard {
-                                SpecCardView(
-                                    spec: $extractedSpec,
-                                    chainedGoal: $chainedGoal,
-                                    onCreateTask: createTaskFromSpec,
-                                    onDismiss: { showSpecCard = false; extractedSpec = nil; chainedGoal = "" }
+                                if showSpecCard {
+                                    SpecCardView(
+                                        spec: $extractedSpec,
+                                        chainedGoal: $chainedGoal,
+                                        onCreateTask: createTaskFromSpec,
+                                        onDismiss: { showSpecCard = false; extractedSpec = nil; chainedGoal = "" }
+                                    )
+                                    .padding(.horizontal)
+                                    .id("spec-card")
+                                }
+
+                                ChatScrollMetrics.bottomSentinel(
+                                    id: "chatBottom",
+                                    coordinateSpace: Self.chatScrollSpace
                                 )
-                                .padding(.horizontal)
-                                .id("spec-card")
+                            }
+                            .frame(maxWidth: 780)
+                            .padding()
+                            .frame(maxWidth: .infinity)
+                        }
+                        // Open pinned to the latest message and tail-follow while at the
+                        // bottom. The layout-time anchor survives async draft loading
+                        // without a one-shot scrollTo landing short. A standalone card
+                        // (e.g. the approved-plan summary) anchors to the top instead so
+                        // it doesn't float in dead space at the bottom of a tall pane.
+                        .defaultScrollAnchor(chatScrollAnchor)
+                        .coordinateSpace(name: Self.chatScrollSpace)
+                        .onAppear {
+                            // A real transcript opens pinned to the latest message;
+                            // summary-only mode stays top-aligned (defaultScrollAnchor(.top)),
+                            // so don't force it to the bottom here.
+                            if !showsApprovedPlanSummaryOnly {
+                                scrollChatToBottom(proxy, animated: false)
                             }
                         }
-                        .frame(maxWidth: 780)
-                        .padding()
-                        .frame(maxWidth: .infinity)
-                    }
-                    .onChange(of: messages.count) {
-                        if approvedDraftPlan != nil,
-                           pendingPlan == nil,
-                           !isApprovedPlanHistoryExpanded {
-                            withAnimation(.easeOut(duration: 0.2)) {
-                                proxy.scrollTo("approved-plan-card", anchor: .bottom)
-                            }
-                        } else if let last = messages.last {
-                            withAnimation(.easeOut(duration: 0.2)) {
-                                proxy.scrollTo(last.id, anchor: .bottom)
+                        .overlay(alignment: .bottom) {
+                            jumpToLatestPill(proxy: proxy)
+                                .transition(.move(edge: .bottom).combined(with: .opacity))
+                                .animation(.easeOut(duration: 0.18), value: isChatAtBottom)
+                                .animation(.easeOut(duration: 0.18), value: hasUnseenChatActivity)
+                        }
+                        .onPreferenceChange(ChatBottomPositionPreferenceKey.self) { bottomMinY in
+                            updateChatBottomState(bottomMinY: bottomMinY, viewportHeight: viewport.size.height)
+                        }
+                        .onChange(of: messages.count) {
+                            handleMessageCountChange(proxy: proxy)
+                        }
+                        .onChange(of: showSpecCard) {
+                            if showSpecCard {
+                                withAnimation(.easeOut(duration: 0.2)) {
+                                    proxy.scrollTo("spec-card", anchor: .bottom)
+                                }
                             }
                         }
-                    }
-                    .onChange(of: showSpecCard) {
-                        if showSpecCard {
-                            withAnimation(.easeOut(duration: 0.2)) {
-                                proxy.scrollTo("spec-card", anchor: .bottom)
+                        .onChange(of: pendingPlan?.planID) {
+                            if pendingPlan != nil {
+                                withAnimation(.easeOut(duration: 0.2)) {
+                                    proxy.scrollTo("pending-plan-card", anchor: .bottom)
+                                }
                             }
                         }
-                    }
-                    .onChange(of: pendingPlan?.planID) {
-                        if pendingPlan != nil {
-                            withAnimation(.easeOut(duration: 0.2)) {
-                                proxy.scrollTo("pending-plan-card", anchor: .bottom)
-                            }
-                        }
-                    }
-                    .onChange(of: approvedDraftPlan?.planID) {
-                        if approvedDraftPlan != nil {
-                            withAnimation(.easeOut(duration: 0.2)) {
-                                proxy.scrollTo("approved-plan-card", anchor: .bottom)
+                        .onChange(of: approvedDraftPlan?.planID) {
+                            if approvedDraftPlan != nil {
+                                withAnimation(.easeOut(duration: 0.2)) {
+                                    proxy.scrollTo("approved-plan-card", anchor: chatScrollAnchor)
+                                }
                             }
                         }
                     }
@@ -766,6 +794,80 @@ struct ChatPanelView: View {
         .onChange(of: workspace?.id) { initializeComposerPolicyFromDefaults() }
     }
 
+    // MARK: - Scroll behavior
+
+    private static let chatScrollSpace = "chat-panel-scroll"
+
+    /// The approved-plan summary with its history collapsed is a single card that reads
+    /// better top-aligned than floating at the bottom of a tall pane; a real message
+    /// transcript pins to the bottom (chat-style, and it overflows anyway).
+    private var showsApprovedPlanSummaryOnly: Bool {
+        approvedDraftPlan != nil && pendingPlan == nil && !isApprovedPlanHistoryExpanded
+    }
+
+    /// Resting scroll anchor for the chat area. Also used as the anchor for explicit
+    /// `scrollTo` calls so they don't fight the resting position in summary-only mode.
+    private var chatScrollAnchor: UnitPoint {
+        showsApprovedPlanSummaryOnly ? .top : .bottom
+    }
+
+    /// Floating "scroll to latest" pill, shown whenever the user is scrolled away from
+    /// the bottom. `hasUnseenChatActivity` only changes its emphasis. The enter/exit
+    /// transition + animation live at the `.overlay` call site (on the stable slot), not
+    /// here, so SwiftUI reliably animates the insertion/removal.
+    @ViewBuilder
+    private func jumpToLatestPill(proxy: ScrollViewProxy) -> some View {
+        if !isChatAtBottom {
+            ChatJumpToLatestButton(hasUnseenActivity: hasUnseenChatActivity) {
+                scrollChatToBottom(proxy)
+            }
+        }
+    }
+
+    private func handleMessageCountChange(proxy: ScrollViewProxy) {
+        // Approved-plan summary mode keeps the plan card pinned top (history collapsed),
+        // matching the resting anchor so it doesn't float at the bottom of a tall pane.
+        if showsApprovedPlanSummaryOnly {
+            withAnimation(.easeOut(duration: 0.2)) {
+                proxy.scrollTo("approved-plan-card", anchor: .top)
+            }
+            return
+        }
+
+        // Always follow the user's own just-sent message; otherwise only tail-follow
+        // live output when the user is already at the bottom. If they've scrolled up to
+        // read history, surface the jump-to-latest pill instead of yanking them down.
+        if messages.last?.role == "user" || isChatAtBottom {
+            scrollChatToBottom(proxy)
+        } else {
+            hasUnseenChatActivity = true
+        }
+    }
+
+    private func updateChatBottomState(bottomMinY: CGFloat, viewportHeight: CGFloat) {
+        let wasAtBottom = isChatAtBottom
+        isChatAtBottom = ChatScrollMetrics.isAtBottom(
+            bottomMinY: bottomMinY,
+            viewportHeight: viewportHeight
+        )
+        if isChatAtBottom && !wasAtBottom {
+            hasUnseenChatActivity = false
+        }
+    }
+
+    private func scrollChatToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
+        hasUnseenChatActivity = false
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    proxy.scrollTo("chatBottom", anchor: .bottom)
+                }
+            } else {
+                proxy.scrollTo("chatBottom", anchor: .bottom)
+            }
+        }
+    }
+
     // MARK: - Hero (empty state)
 
     private var heroView: some View {
@@ -781,20 +883,9 @@ struct ChatPanelView: View {
                 .lineLimit(2)
                 .frame(maxWidth: 720, minHeight: 84)
 
-            if let ws = workspace {
-                HStack(spacing: 6) {
-                    Image(systemName: "folder.fill")
-                        .font(Stanford.ui(12))
-                        .foregroundStyle(.secondary)
-                    Text(ws.name)
-                        .font(Stanford.body(14).weight(.medium))
-                        .foregroundStyle(.primary)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(Color.primary.opacity(0.055))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
+            // The active workspace is already shown in the title bar subtitle
+            // and the right-hand "Workspace Context" panel; a third chip here
+            // was pure repetition, so the hero stays focused on the prompt.
 
             HStack(spacing: 28) {
                 HStack(spacing: 5) {
@@ -893,6 +984,7 @@ struct ChatPanelView: View {
                     maxContentWidth: Stanford.chatParagraphMaxWidth,
                     onSuggestedNextStep: pursueSuggestedNextStep
                 )
+                    .equatable()
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
 
@@ -1091,9 +1183,23 @@ struct ChatPanelView: View {
         return "Goal Mode"
     }
 
+    private var actionBarPlanMode: TaskPlanExecutionMode {
+        // Prefer the draft task's runtime (the worker role selection can
+        // differ from the composer default) so the label matches the mode
+        // that will actually execute.
+        if let draftTask {
+            return PlanCheckpointPolicy.executionMode(for: draftTask, skipPermissions: skipPermissions)
+        }
+        return PlanCheckpointPolicy.executionMode(
+            runtime: AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime,
+            skipPermissions: skipPermissions
+        )
+    }
+
     private var actionBarPrimaryTitle: String {
         if approvedDraftPlan != nil {
-            return skipPermissions ? "Run Full Plan" : "Approve Next Step"
+            if skipPermissions { return "Run Full Plan" }
+            return actionBarPlanMode == .fullPlan ? "Run Plan with Live Approvals" : "Approve Next Step"
         }
         if pendingPlan != nil {
             return "Approve Plan"
@@ -1103,7 +1209,8 @@ struct ChatPanelView: View {
 
     private var actionBarPrimaryIcon: String {
         if approvedDraftPlan != nil {
-            return skipPermissions ? "play.fill" : "checkmark.circle.fill"
+            if skipPermissions { return "play.fill" }
+            return actionBarPlanMode == .fullPlan ? "play.circle.fill" : "checkmark.circle.fill"
         }
         if pendingPlan != nil {
             return "checkmark.circle.fill"
@@ -1693,7 +1800,7 @@ struct ChatPanelView: View {
         showPlanCanvasIfNeeded(for: task)
 
         Task {
-            let mode: TaskPlanExecutionMode = skipPermissions ? .fullPlan : .nextStep
+            let mode = PlanCheckpointPolicy.executionMode(for: task, skipPermissions: skipPermissions)
             await taskQueue?.executeApprovedPlan(task: task, plan: plan, mode: mode, modelContext: modelContext) { _ in }
             await MainActor.run {
                 _ = WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
@@ -2507,6 +2614,21 @@ struct ChatPanelView: View {
             draft.updatedAt = Date()
             return draft
         } else {
+            // Gate creation at the source: don't persist a brand-new draft for a
+            // throwaway greeting/probe chat ("hi", "who are you"). Once the thread
+            // carries real intent — a second user turn, plan mode, or a candidate
+            // plan — it persists normally and captures the full conversation. This
+            // keeps the long tail of "open chat, type hi, wander off" out of the
+            // store entirely, complementing the board filter and launch prune.
+            if !isPlanMode, pendingPlan == nil {
+                let userMessages = messages.filter { $0.role == "user" }.map(\.content)
+                if TaskConversationSignal.isLowSignalConversation(
+                    goal: messages.first?.content ?? "",
+                    userMessages: userMessages
+                ) {
+                    return nil
+                }
+            }
             let workerSelection = workerRoleSelection
             let runtime = workerSelection.profile.runtime
             let model = workerSelection.profile.model

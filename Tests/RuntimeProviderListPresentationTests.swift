@@ -1,4 +1,5 @@
 import Testing
+import Foundation
 @testable import ASTRA
 import ASTRACore
 
@@ -83,6 +84,136 @@ struct RuntimeProviderListPresentationTests {
         #expect(rows.map(\.title) == ["Claude Code", "GitHub Copilot CLI", "Future CLI"])
         #expect(rows[1].isSelected)
         #expect(rows[2].state == .unknown)
+    }
+
+    @Test("Auth probe results override the green installed state")
+    func authStateOverridesInstalledGreen() throws {
+        let futureRuntime = try #require(AgentRuntimeID(rawValue: "future_cli"))
+        let signedOut = RuntimeProviderListPresentation.row(
+            runtime: futureRuntime,
+            descriptor: descriptor(for: futureRuntime),
+            selectedRuntime: .claudeCode,
+            status: .healthy(path: "/opt/future/bin/future-cli", version: "2.0"),
+            isProbing: false,
+            installingRuntime: nil,
+            installCommand: nil,
+            authState: .unauthenticated(detail: "Signed out")
+        )
+        #expect(signedOut.state == .unauthenticated)
+        #expect(signedOut.subtitle == "Signed out")
+        #expect(signedOut.primaryAction == .signIn)
+        #expect(signedOut.isInstalled)
+
+        let unverified = RuntimeProviderListPresentation.row(
+            runtime: futureRuntime,
+            descriptor: descriptor(for: futureRuntime),
+            selectedRuntime: .claudeCode,
+            status: .healthy(path: "/opt/future/bin/future-cli", version: "2.0"),
+            isProbing: false,
+            installingRuntime: nil,
+            installCommand: nil,
+            authState: .unverified(note: "Verified on first task")
+        )
+        #expect(unverified.state == .unverified)
+        #expect(unverified.primaryAction == .use)
+    }
+
+    @Test("An active sign-in session renders as awaiting with a cancel action")
+    func signingInRuntimeAwaits() throws {
+        let futureRuntime = try #require(AgentRuntimeID(rawValue: "future_cli"))
+        let row = RuntimeProviderListPresentation.row(
+            runtime: futureRuntime,
+            descriptor: descriptor(for: futureRuntime),
+            selectedRuntime: futureRuntime,
+            status: .healthy(path: "/opt/future/bin/future-cli", version: "2.0"),
+            isProbing: false,
+            installingRuntime: nil,
+            installCommand: nil,
+            signingInRuntime: futureRuntime
+        )
+        #expect(row.state == .awaitingSignIn)
+        #expect(row.primaryAction == .cancelSignIn)
+    }
+
+    @Test("Missing runtimes only offer Install when a plan exists, else the install page")
+    func missingRuntimeActionNeverDeadEnds() throws {
+        let futureRuntime = try #require(AgentRuntimeID(rawValue: "future_cli"))
+        let url = try #require(URL(string: "https://example.com/install"))
+
+        let withPlan = RuntimeProviderListPresentation.row(
+            runtime: futureRuntime,
+            descriptor: descriptor(for: futureRuntime),
+            selectedRuntime: .claudeCode,
+            status: .missingBinary,
+            isProbing: false,
+            installingRuntime: nil,
+            installCommand: "brew install future-cli",
+            installPageURL: url
+        )
+        #expect(withPlan.primaryAction == .install(displayCommand: "brew install future-cli"))
+
+        let linkOnly = RuntimeProviderListPresentation.row(
+            runtime: futureRuntime,
+            descriptor: descriptor(for: futureRuntime),
+            selectedRuntime: .claudeCode,
+            status: .missingBinary,
+            isProbing: false,
+            installingRuntime: nil,
+            installCommand: nil,
+            installPageURL: url
+        )
+        #expect(linkOnly.primaryAction == .openInstallPage(url))
+    }
+
+    @Test("Sections group rows by readiness and collapse the not-installed tail")
+    func sectionsGroupRows() throws {
+        let futureRuntime = try #require(AgentRuntimeID(rawValue: "future_cli"))
+        func row(
+            _ runtime: AgentRuntimeID,
+            status: HealthStatus?,
+            authState: RuntimeProviderAuthState = .unknown
+        ) -> RuntimeProviderRowPresentation {
+            RuntimeProviderListPresentation.row(
+                runtime: runtime,
+                descriptor: descriptor(for: runtime),
+                selectedRuntime: .claudeCode,
+                status: status,
+                isProbing: false,
+                installingRuntime: nil,
+                installCommand: nil,
+                authState: authState
+            )
+        }
+
+        let sections = RuntimeProviderListPresentation.sections(rows: [
+            row(futureRuntime, status: .healthy(path: "/x", version: "1")),
+            row(.copilotCLI, status: .healthy(path: "/x", version: "1"), authState: .unverified(note: "later")),
+            row(.codexCLI, status: .healthy(path: "/x", version: "1"), authState: .unauthenticated(detail: "out")),
+            row(.cursorCLI, status: .missingBinary),
+            row(.claudeCode, status: .missingBinary)
+        ])
+
+        #expect(sections.ready.map(\.id) == [.copilotCLI, futureRuntime])
+        #expect(sections.needsAttention.map(\.id) == [.codexCLI])
+        #expect(sections.notInstalled.map(\.id) == [.claudeCode, .cursorCLI])
+    }
+
+    @Test("An installing runtime stays in the always-visible attention section")
+    func installingRowIsAlwaysVisible() {
+        let installing = RuntimeProviderListPresentation.row(
+            runtime: .codexCLI,
+            descriptor: descriptor(for: .codexCLI),
+            selectedRuntime: .claudeCode,
+            status: .missingBinary,
+            isProbing: false,
+            installingRuntime: .codexCLI,
+            installCommand: "npm install -g @openai/codex"
+        )
+        let sections = RuntimeProviderListPresentation.sections(rows: [installing])
+
+        #expect(sections.needsAttention.map(\.id) == [.codexCLI])
+        #expect(sections.notInstalled.isEmpty, "install progress must not hide in the collapsed disclosure")
+        #expect(installing.primaryAction == .cancelInstall)
     }
 
     private func descriptor(for runtime: AgentRuntimeID) -> AgentRuntimeDescriptor {

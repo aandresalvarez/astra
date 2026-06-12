@@ -523,7 +523,10 @@ enum BuiltInAgentRuntimeAdapterProviders {
         [
             ClaudeCodeRuntimeAdapterProvider(),
             CopilotCLIRuntimeAdapterProvider(),
-            AntigravityCLIRuntimeAdapterProvider()
+            AntigravityCLIRuntimeAdapterProvider(),
+            CodexCLIRuntimeAdapterProvider(),
+            CursorCLIRuntimeAdapterProvider(),
+            OpenCodeCLIRuntimeAdapterProvider()
         ]
     }
 }
@@ -636,6 +639,7 @@ struct AgentRuntimeProcessLaunchContext {
     let contextText: String
     let nativeContinuationSessionID: String?
     let runID: UUID?
+    let liveApprovalsEnabled: Bool
 
     init(
         prompt: String,
@@ -650,7 +654,8 @@ struct AgentRuntimeProcessLaunchContext {
         phase: String = "run",
         contextText: String = "",
         nativeContinuationSessionID: String? = nil,
-        runID: UUID? = nil
+        runID: UUID? = nil,
+        liveApprovalsEnabled: Bool = false
     ) {
         self.prompt = prompt
         self.task = task
@@ -665,6 +670,7 @@ struct AgentRuntimeProcessLaunchContext {
         self.contextText = contextText
         self.nativeContinuationSessionID = nativeContinuationSessionID
         self.runID = runID
+        self.liveApprovalsEnabled = liveApprovalsEnabled
     }
 }
 
@@ -683,7 +689,7 @@ struct AgentRuntimePostProcessContext {
     let onEvent: (ParsedEvent) -> Void
 }
 
-struct AgentRuntimeProcessLaunchPlan {
+struct AgentRuntimeProcessLaunchPlan: Equatable {
     let runtime: AgentRuntimeID
     let executablePath: String
     let arguments: [String]
@@ -695,6 +701,35 @@ struct AgentRuntimeProcessLaunchPlan {
     let directoriesToCreate: [String]
     let providerDetectedFields: [String: String]
     let commandPlannedFields: [String: String]
+    var interactiveAsk: AgentRuntimeInteractiveAskPlan?
+
+    init(
+        runtime: AgentRuntimeID,
+        executablePath: String,
+        arguments: [String],
+        currentDirectory: String,
+        environment: [String: String],
+        browserShimDirectory: String?,
+        providerVersion: String?,
+        parsesJSONLines: Bool,
+        directoriesToCreate: [String] = [],
+        providerDetectedFields: [String: String] = [:],
+        commandPlannedFields: [String: String] = [:],
+        interactiveAsk: AgentRuntimeInteractiveAskPlan? = nil
+    ) {
+        self.runtime = runtime
+        self.executablePath = executablePath
+        self.arguments = arguments
+        self.currentDirectory = currentDirectory
+        self.environment = environment
+        self.browserShimDirectory = browserShimDirectory
+        self.providerVersion = providerVersion
+        self.parsesJSONLines = parsesJSONLines
+        self.directoriesToCreate = directoriesToCreate
+        self.providerDetectedFields = providerDetectedFields
+        self.commandPlannedFields = commandPlannedFields
+        self.interactiveAsk = interactiveAsk
+    }
 }
 
 enum AgentRuntimeRecordingMode {
@@ -918,6 +953,40 @@ enum RuntimeReadinessRedactor {
     }
 }
 
+enum RuntimeReadinessDiagnostics {
+    static func detail(from result: RunResult, fallback: String) -> String {
+        let diagnostic = [result.stdout, result.stderr]
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !diagnostic.isEmpty else { return fallback }
+        return RuntimeReadinessRedactor.redacted(diagnostic)
+    }
+
+    static func showsAuthenticatedSession(_ output: String) -> Bool {
+        let lower = output.lowercased()
+        let compact = lower.filter { !$0.isWhitespace }
+        let negativeSignals = [
+            "\"loggedin\":false",
+            "\"authenticated\":false",
+            "not logged in",
+            "not authenticated",
+            "not signed in",
+            "unauthenticated",
+            "logged out",
+            "login required",
+            "authentication required",
+            "no authenticated"
+        ]
+        if negativeSignals.contains(where: { lower.contains($0) || compact.contains($0) }) {
+            return false
+        }
+        return compact.contains("\"loggedin\":true")
+            || compact.contains("\"authenticated\":true")
+            || lower.contains("logged in")
+            || lower.contains("authenticated")
+    }
+}
+
 struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
     var id: AgentRuntimeID { descriptor.id }
     let descriptor = AgentRuntimeDescriptor(
@@ -928,13 +997,19 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         authHint: "Run `claude /login` or set `ANTHROPIC_API_KEY`.",
         prerequisite: CommonCLIPrerequisites.claude,
         defaultModel: "claude-sonnet-4-6",
+        // Pre-probe fallback only; the CLI initialize handshake replaces
+        // this list at app launch. Aliases track the CLI's current models
+        // instead of rotting like pinned IDs; the pinned default stays for
+        // no-cache resolution and cross-runtime bleed detection.
         defaultModels: [
-            "claude-opus-4-6",
-            "claude-sonnet-4-6",
-            "claude-haiku-4-5-20251001"
+            "default",
+            "sonnet",
+            "haiku",
+            "claude-sonnet-4-6"
         ],
         supportsAstraRunProtocol: true,
-        supportsNativeContinuation: true
+        supportsNativeContinuation: true,
+        supportsMCPServers: true
     )
     let readinessCheckID = "claude-cli"
     let availableModelsStorageKey = AppStorageKeys.claudeAvailableModels
@@ -1024,6 +1099,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         let result = await ClaudeModelAvailabilityService().refreshAndPersist(
             configuration: ClaudeModelAvailabilityConfiguration(
                 provider: configuration.claudeProvider,
+                executablePath: configuration.executablePath(for: id),
                 vertexOpusModel: configuration.vertexOpusModel,
                 vertexSonnetModel: configuration.vertexSonnetModel,
                 vertexHaikuModel: configuration.vertexHaikuModel
@@ -1034,7 +1110,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             return RuntimeReadinessCheck(
                 id: "claude-models",
                 title: "Claude models",
-                detail: "Available: \(models.joined(separator: ", "))",
+                detail: "Available: \(models.map(\.value).joined(separator: ", "))",
                 state: .ready,
                 remediation: nil
             )
@@ -1096,8 +1172,21 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             providerAllowedTools: providerAllowed,
             askFirstTools: askFirstToolPermissions
         )
+        // Capability-package MCP servers: render the per-launch config and
+        // grant the projected tool names. Secrets stay out of the file via
+        // ${KEY} env indirection (the CLI expands from the task environment).
+        let mcpServers = MCPRuntimeProjection.enabledServers(
+            for: context.task.workspace,
+            packages: CapabilityRuntimeResourceMatcher.packageDefinitions(),
+            approvalRecords: CapabilityApprovalStore().records()
+        )
+        // allowEmpty: strict mode must apply even with zero governed servers,
+        // or a repository's own .mcp.json loads ungoverned on those runs.
+        let mcpConfigURL = MCPRuntimeProjection.writeClaudeConfig(servers: mcpServers, taskID: context.task.id, allowEmpty: true)
+        let mcpAllowedTools = mcpConfigURL == nil ? [] : MCPRuntimeProjection.allowedToolPermissions(servers: mcpServers)
+        let mcpDeniedTools = mcpConfigURL == nil ? [] : MCPRuntimeProjection.deniedToolPermissions(servers: mcpServers)
         let nativeAllowedTools = Array(Set(
-            providerAllowed + askFirstToolPermissions + runtimeSupportTools + artifactBootstrapTools
+            providerAllowed + askFirstToolPermissions + runtimeSupportTools + artifactBootstrapTools + mcpAllowedTools
         )).sorted()
         let usesArtifactBootstrapProfile = !artifactBootstrapTools.isEmpty
         let visibleTools = Self.visibleProviderTools(
@@ -1106,13 +1195,24 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             permissionPolicy: effectivePermissionPolicy
         )
         let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
-        var args = [
-            "-p",
-            context.prompt
-        ]
+        // Live approvals use the stdio control protocol, which requires
+        // stream-json input — the prompt then travels over stdin instead of
+        // the positional argument.
+        let interactiveAsk: AgentRuntimeInteractiveAskPlan? = {
+            guard context.liveApprovalsEnabled,
+                  effectivePermissionPolicy != .autonomous,
+                  let initialMessage = ClaudeControlProtocol.initialUserMessage(prompt: context.prompt) else {
+                return nil
+            }
+            return AgentRuntimeInteractiveAskPlan(initialStdinMessage: initialMessage)
+        }()
+        var args = interactiveAsk == nil ? ["-p", context.prompt] : ["-p"]
         if let sessionID = context.nativeContinuationSessionID,
            !sessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             args += ["--resume", sessionID]
+        }
+        if interactiveAsk != nil {
+            args += ["--input-format", "stream-json", "--permission-prompt-tool", "stdio"]
         }
         args += [
             "--model",
@@ -1139,6 +1239,15 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         }
         if !nativeAllowedTools.isEmpty {
             args += ["--allowedTools"] + nativeAllowedTools
+        }
+        // Unconditional (not gated on a successful config write): strict mode
+        // blocks the repo's .mcp.json, so a failed render means no servers, not bypass.
+        args += ["--strict-mcp-config"]
+        if let mcpConfigURL {
+            args += ["--mcp-config", mcpConfigURL.path]
+        }
+        if !mcpDeniedTools.isEmpty {
+            args += ["--disallowedTools"] + mcpDeniedTools
         }
 
         return AgentRuntimeProcessLaunchPlan(
@@ -1187,8 +1296,12 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
                 "max_turns": String(context.task.maxTurns),
                 "supports_native_continuation": String(descriptor.supportsNativeContinuation),
                 "uses_native_continuation": String(context.nativeContinuationSessionID != nil),
-                "native_session_prefix": context.nativeContinuationSessionID.map { String($0.prefix(8)) } ?? "none"
-            ]
+                "native_session_prefix": context.nativeContinuationSessionID.map { String($0.prefix(8)) } ?? "none",
+                "uses_live_approvals": String(interactiveAsk != nil),
+                "mcp_server_count": String(mcpConfigURL == nil ? 0 : mcpServers.count),
+                "mcp_config_rendered": String(mcpConfigURL != nil)
+            ],
+            interactiveAsk: interactiveAsk
         )
     }
 
@@ -1378,7 +1491,10 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             return RuntimeReadinessCheck(
                 id: "claude-auth",
                 title: "Claude authentication",
-                detail: "Claude auth status did not pass.",
+                detail: RuntimeReadinessDiagnostics.detail(
+                    from: result,
+                    fallback: "Claude auth status did not pass."
+                ),
                 state: .blocked,
                 remediation: configuration.claudeProvider == .vertex
                     ? "Check Vertex project, region, ADC credentials, and model aliases."
@@ -1386,9 +1502,8 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             )
         }
 
-        let output = result.stdout.lowercased()
-        let compactOutput = output.filter { !$0.isWhitespace }
-        if compactOutput.contains("\"loggedin\":true") || output.contains("logged in") || output.contains("authenticated") {
+        let output = [result.stdout, result.stderr].joined(separator: "\n")
+        if RuntimeReadinessDiagnostics.showsAuthenticatedSession(output) {
             return RuntimeReadinessCheck(
                 id: "claude-auth",
                 title: "Claude authentication",
@@ -1401,7 +1516,10 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         return RuntimeReadinessCheck(
             id: "claude-auth",
             title: "Claude authentication",
-            detail: "Claude responded, but no authenticated session was detected.",
+            detail: RuntimeReadinessDiagnostics.detail(
+                from: result,
+                fallback: "Claude responded, but no authenticated session was detected."
+            ),
             state: .blocked,
             remediation: configuration.claudeProvider == .vertex
                 ? "Run `gcloud auth application-default login` and re-check."
@@ -1551,8 +1669,10 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             "claude-opus-4.6",
             "claude-opus-4.5",
             "gpt-5.2-codex",
+            "gpt-5-codex",
             "gpt-5.2",
             "gpt-5-mini",
+            "gpt-5",
             "gpt-4.1"
         ],
         supportsAstraRunProtocol: true
@@ -2434,8 +2554,11 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         return RuntimeReadinessReport(checks: checks)
     }
 
-    func modelAvailabilityCheck(configuration _: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {
-        let models = AntigravityCLIRuntime.availableModelNames()
+    func modelAvailabilityCheck(configuration: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {
+        let configuredPath = configuration.executablePath(for: id)
+        let executable = configuredPath.isEmpty ? AntigravityCLIRuntime.detectPath() : configuredPath
+        let models = AntigravityCLIRuntime.modelNames(executablePath: executable)
+            ?? AntigravityCLIRuntime.availableModelNames()
         RuntimeModelAvailability.persistAvailableModels(models, for: id, authority: modelAvailabilityAuthority)
         return RuntimeReadinessCheck(
             id: "antigravity-models",

@@ -72,6 +72,10 @@ struct ShelfMarkdownPanelView: View {
     @State private var isScanningFiles = false
     @State private var fileNavigatorScope: FileNavigatorScope = .task
     @State private var fileSearchText = ""
+    /// Debounced mirror of `fileSearchText` that actually drives filtering, so a
+    /// keystroke doesn't re-filter the (up to ~5,000 node) tree on every key.
+    /// See the UI responsiveness audit (Cluster 3).
+    @State private var appliedFileSearchText = ""
     @State private var isFileSearchVisible = false
     @State private var isFileSearchCollapsed = false
     @State private var expandedRootIDs: Set<String> = []
@@ -87,19 +91,26 @@ struct ShelfMarkdownPanelView: View {
         VStack(spacing: 0) {
             toolbar
             Divider()
-            HStack(spacing: 0) {
-                if !isFileNavigatorCollapsed {
-                    fileNavigator
-                        .frame(width: fileNavigatorWidth)
+            if showsCombinedEmptyState {
+                // When there are no files to browse and nothing is selected,
+                // a split would show two empty states side by side ("No task
+                // files" + "No file selected"). Collapse to one centered state.
+                combinedEmptyState
+            } else {
+                HStack(spacing: 0) {
+                    if !isFileNavigatorCollapsed {
+                        fileNavigator
+                            .frame(width: fileNavigatorWidth)
 
-                    FileNavigatorResizeHandle(
-                        isResizing: isResizingFileNavigator,
-                        onChanged: resizeFileNavigator,
-                        onEnded: finishResizingFileNavigator
-                    )
+                        FileNavigatorResizeHandle(
+                            isResizing: isResizingFileNavigator,
+                            onChanged: resizeFileNavigator,
+                            onEnded: finishResizingFileNavigator
+                        )
+                    }
+
+                    viewerPane
                 }
-
-                viewerPane
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -111,6 +122,16 @@ struct ShelfMarkdownPanelView: View {
         }
         .onDisappear {
             fileIndexTask?.cancel()
+        }
+        .task(id: fileSearchText) {
+            // Apply clears immediately; debounce non-empty queries so typing
+            // doesn't re-filter the whole tree on every keystroke. `.task(id:)`
+            // cancels the prior wait when the text changes again.
+            if !fileSearchText.isEmpty {
+                try? await Task.sleep(nanoseconds: 180_000_000)
+                if Task.isCancelled { return }
+            }
+            appliedFileSearchText = fileSearchText
         }
         .onChange(of: session.selectedDocumentID) {
             isEditing = false
@@ -274,6 +295,37 @@ struct ShelfMarkdownPanelView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// True when the navigator is open, has no files to show, and nothing is
+    /// selected — the only situation that otherwise renders two empty states.
+    private var showsCombinedEmptyState: Bool {
+        !isFileNavigatorCollapsed
+            && !session.hasFile
+            && fileNavigatorContentPresentation != .populatedList
+    }
+
+    private var combinedEmptyState: some View {
+        let isNoPaths = fileNavigatorContentPresentation == .noWorkspacePaths
+        return VStack(spacing: 8) {
+            Image(systemName: isNoPaths ? "folder.badge.questionmark" : "folder")
+                .font(Stanford.ui(28, weight: .regular))
+                .foregroundStyle(Stanford.textTertiary)
+
+            Text(isNoPaths ? "No workspace paths" : emptyScopeTitle)
+                .font(Stanford.body(16).weight(.semibold))
+                .foregroundStyle(Stanford.textSecondary)
+
+            Text(isNoPaths ? "Configure a workspace folder to browse files." : emptyScopeMessage)
+                .font(Stanford.caption(12))
+                .foregroundStyle(Stanford.textTertiary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 24)
+        .padding(.top, 120)
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+
     private var fileNavigator: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 7) {
@@ -333,6 +385,7 @@ struct ShelfMarkdownPanelView: View {
                     .pickerStyle(.segmented)
                     .controlSize(.small)
                     .labelsHidden()
+                    .tint(Stanford.interactive)
                     .help("Choose which paths to show")
                 }
 
@@ -850,7 +903,7 @@ struct ShelfMarkdownPanelView: View {
     }
 
     private var normalizedFileSearchText: String {
-        fileSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        appliedFileSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     private var isSearchingFiles: Bool {
@@ -1109,9 +1162,12 @@ struct ShelfMarkdownPanelView: View {
         return fileNodes.filter { node in
             guard node.rootID == root.id else { return false }
             guard !query.isEmpty else { return true }
-            return node.name.lowercased().contains(query)
-                || node.relativePath.lowercased().contains(query)
-                || node.path.lowercased().contains(query)
+            // Case-insensitive search without allocating a lowercased copy of
+            // each field per node (previously 3 allocations/node over up to
+            // ~5,000 nodes). See the UI responsiveness audit (Cluster 3).
+            return node.name.range(of: query, options: .caseInsensitive) != nil
+                || node.relativePath.range(of: query, options: .caseInsensitive) != nil
+                || node.path.range(of: query, options: .caseInsensitive) != nil
         }
     }
 
@@ -1642,13 +1698,13 @@ struct ShelfMarkdownPanelView: View {
 
     @ViewBuilder
     private func imagePreviewBody(_ document: ShelfMarkdownDocument) -> some View {
-        if let image = NSImage(contentsOf: document.fileURL) {
+        if let preview = document.imagePreview {
             GeometryReader { proxy in
                 ZStack {
                     Stanford.cardBackground.opacity(0.45)
 
                     ScrollView([.horizontal, .vertical]) {
-                        Image(nsImage: image)
+                        Image(nsImage: preview.image)
                             .resizable()
                             .interpolation(.medium)
                             .scaledToFit()

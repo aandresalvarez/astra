@@ -48,6 +48,9 @@ public struct AgentRuntimeID: RawRepresentable, Codable, Sendable, Hashable, Ide
     public static let claudeCode = AgentRuntimeID(staticRawValue: "claude_code")
     public static let copilotCLI = AgentRuntimeID(staticRawValue: "copilot_cli")
     public static let antigravityCLI = AgentRuntimeID(staticRawValue: "antigravity_cli")
+    public static let codexCLI = AgentRuntimeID(staticRawValue: "codex_cli")
+    public static let cursorCLI = AgentRuntimeID(staticRawValue: "cursor_cli")
+    public static let openCodeCLI = AgentRuntimeID(staticRawValue: "opencode_cli")
 
     public var id: String { rawValue }
 
@@ -56,6 +59,9 @@ public struct AgentRuntimeID: RawRepresentable, Codable, Sendable, Hashable, Ide
         case .claudeCode: "Claude Code"
         case .copilotCLI: "GitHub Copilot CLI"
         case .antigravityCLI: "Google Antigravity CLI"
+        case .codexCLI: "Codex CLI"
+        case .cursorCLI: "Cursor CLI"
+        case .openCodeCLI: "OpenCode CLI"
         default: rawValue
             .replacingOccurrences(of: "_", with: " ")
             .replacingOccurrences(of: "-", with: " ")
@@ -80,6 +86,10 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
     public let defaultModels: [String]
     public let supportsAstraRunProtocol: Bool
     public let supportsNativeContinuation: Bool
+    /// Whether capability-package MCP servers are materialized into this
+    /// runtime's launches. Runtimes without support surface the skip
+    /// explicitly instead of silently dropping declared servers.
+    public let supportsMCPServers: Bool
 
     public init(
         id: AgentRuntimeID,
@@ -91,7 +101,8 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
         defaultModel: String? = nil,
         defaultModels: [String],
         supportsAstraRunProtocol: Bool,
-        supportsNativeContinuation: Bool = false
+        supportsNativeContinuation: Bool = false,
+        supportsMCPServers: Bool = false
     ) {
         self.id = id
         self.displayName = displayName
@@ -109,6 +120,7 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
         self.defaultModels = defaultModels
         self.supportsAstraRunProtocol = supportsAstraRunProtocol
         self.supportsNativeContinuation = supportsNativeContinuation
+        self.supportsMCPServers = supportsMCPServers
     }
 
 }

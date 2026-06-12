@@ -5,7 +5,11 @@ struct AgentUtilityRuntimeConfiguration: Equatable {
     static let defaultTimeoutSeconds: TimeInterval = 60
 
     var runtime: AgentRuntimeID
-    var model: String
+    private var normalizedModel: String
+    var model: String {
+        get { normalizedModel }
+        set { normalizedModel = RuntimeModelAvailability.normalizedModel(newValue, for: runtime) }
+    }
     var timeoutSeconds: TimeInterval
     private var providerSettings: AgentRuntimeProviderSettings
 
@@ -29,7 +33,7 @@ struct AgentUtilityRuntimeConfiguration: Equatable {
             resolvedSettings.setHomeDirectory(copilotHome, for: .copilotCLI)
         }
         self.runtime = runtime
-        self.model = RuntimeModelAvailability.normalizedModel(model ?? "", for: runtime)
+        self.normalizedModel = RuntimeModelAvailability.normalizedModel(model ?? "", for: runtime)
         self.timeoutSeconds = timeoutSeconds
         self.providerSettings = resolvedSettings
     }
@@ -74,6 +78,16 @@ struct AgentUtilityRunResult: Equatable {
     var exitCode: Int
     var output: String
     var error: String
+
+    /// Human-readable reason for a non-zero exit. CLI failures often land on
+    /// stdout (e.g. Claude's "API Error: Usage credits required for 1M
+    /// context"), so an empty stderr must not erase the reason.
+    var failureDetail: String {
+        let trimmedError = error.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedError.isEmpty { return String(trimmedError.prefix(300)) }
+        let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedOutput.isEmpty ? "The provider produced no output." : String(trimmedOutput.suffix(300))
+    }
 }
 
 enum AgentUtilityRuntimeRunner {

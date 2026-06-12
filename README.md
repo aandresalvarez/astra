@@ -320,6 +320,11 @@ ASTRA_RELEASE_MODE=developer-id ./script/release_update.sh
 
 That future path requires Apple Developer ID signing and notarization.
 
+For the full code-signing setup — including a stable self-signed identity for
+local development (which avoids the Keychain re-prompts that ad-hoc signing
+causes on every rebuild) and the Developer ID + notarization steps — see
+[docs/code-signing.md](docs/code-signing.md).
+
 ## Project Structure
 
 ```text
@@ -370,6 +375,22 @@ Before opening a change:
 
 ```bash
 swift test
+```
+
+Install repo-managed git hooks once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The pre-commit hook runs the architecture fitness suite and whitespace check.
+The pre-push hook adds focused runtime, persistence, and adapter regression
+suites. GitHub CI also requires `Focused Swift tests` and `Whitespace` checks on
+protected branches. Repository admins can apply the default `main` branch
+protection with:
+
+```bash
+script/configure_branch_protection.sh
 ```
 
 Default tests do not call account-backed provider CLIs. To run live provider

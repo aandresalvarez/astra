@@ -374,9 +374,10 @@ enum SpecEngine {
             AppLogger.audit(.specExtractionFailed, category: "Worker", fields: [
                 "exit_code": String(result.exitCode),
                 "source": "single_input",
-                "runtime": utilityRuntime.runtime.rawValue
+                "runtime": utilityRuntime.runtime.rawValue,
+                "error": String(result.failureDetail.prefix(200))
             ], level: .error)
-            return .failure(.providerError("Exit code \(result.exitCode): \(result.error.prefix(200))"))
+            return .failure(.providerError("Exit code \(result.exitCode): \(result.failureDetail)"))
         }
 
         return await parseSpecWithRetry(
@@ -461,9 +462,9 @@ enum SpecEngine {
                 "exit_code": String(result.exitCode),
                 "source": "chat",
                 "runtime": utilityRuntime.runtime.rawValue,
-                "error": String(result.error.prefix(200))
+                "error": String(result.failureDetail.prefix(200))
             ], level: .error)
-            return .failure(.providerError("Exit code \(result.exitCode): \(result.error.prefix(200))"))
+            return .failure(.providerError("Exit code \(result.exitCode): \(result.failureDetail)"))
         }
 
         return .success(result.output)
@@ -520,9 +521,10 @@ enum SpecEngine {
                 continue
             }
 
-            let title = result.output
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .replacingOccurrences(of: "\"", with: "")
+            // Sanitise at the source: trim, strip quotes, and collapse the
+            // occasional self-doubled output ("New greetingNew greeting") so the
+            // stored title is clean and no view layer has to paper over it.
+            let title = TaskTitleSanitizer.sanitizeGeneratedTitle(result.output)
             guard !title.isEmpty, title.count <= 80 else { continue }
             return title
         }
@@ -593,7 +595,7 @@ enum SpecEngine {
         )
 
         guard result.exitCode == 0 else {
-            return .failure(.providerError("Exit code \(result.exitCode): \(result.error.prefix(200))"))
+            return .failure(.providerError("Exit code \(result.exitCode): \(result.failureDetail)"))
         }
 
         return await parseSpecWithRetry(
@@ -739,7 +741,7 @@ enum SpecEngine {
         )
 
         guard result.exitCode == 0 else {
-            return .failure(.providerError("Exit code \(result.exitCode): \(result.error.prefix(200))"))
+            return .failure(.providerError("Exit code \(result.exitCode): \(result.failureDetail)"))
         }
 
         let jsonString = extractJSON(from: result.output)

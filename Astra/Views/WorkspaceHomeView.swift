@@ -308,7 +308,10 @@ struct WorkspaceHomeContainerView: View {
     var body: some View {
         WorkspaceHomeView(
             workspace: workspace,
-            tasks: tasks,
+            // Enforce the board invariant at the view layer: a card is delegated
+            // work, so drafts (in-composition chats) are never surfaced. A task
+            // appears here the moment it's queued/run.
+            tasks: tasks.filter { !TaskHygiene.isHiddenFromBoard($0) },
             onCreateTask: onCreateTask,
             onOpenTask: onOpenTask,
             onDeleteTask: onDeleteTask,
@@ -458,7 +461,9 @@ struct WorkspaceHomeView: View {
 
     private var workspaceContextCard: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
+            // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+            // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
+            HStack(alignment: .top, spacing: 8) {
                 Text("Workspace context")
                     .font(Stanford.caption(13).weight(.semibold))
                     .foregroundStyle(.primary)
@@ -535,7 +540,9 @@ struct WorkspaceHomeView: View {
                 .padding(.top, 13)
 
             VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+                // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
+                HStack(alignment: .top, spacing: 10) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Instructions")
                             .font(Stanford.caption(12).weight(.semibold))

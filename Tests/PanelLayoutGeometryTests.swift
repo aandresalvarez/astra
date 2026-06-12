@@ -211,6 +211,78 @@ struct PanelLayoutGeometryTests {
         #expect(PanelLayoutGeometry.isCompactPanelLayout(width: 1_500) == false)
     }
 
+    @Test("Compact auto-hide yields while sidebar reveal is settling")
+    func compactAutoHideYieldsDuringSidebarReveal() {
+        #expect(PanelLayoutGeometry.shouldAutoHideSidebarForCompactPanels(
+            width: 1_100,
+            hasRightSidePanelPresented: true,
+            isSidebarDetailOnly: false,
+            isSidebarRevealInProgress: false
+        ) == true)
+        #expect(PanelLayoutGeometry.shouldAutoHideSidebarForCompactPanels(
+            width: 1_100,
+            hasRightSidePanelPresented: true,
+            isSidebarDetailOnly: false,
+            isSidebarRevealInProgress: true
+        ) == false)
+        #expect(PanelLayoutGeometry.shouldAutoHideSidebarForCompactPanels(
+            width: 1_500,
+            hasRightSidePanelPresented: true,
+            isSidebarDetailOnly: false,
+            isSidebarRevealInProgress: false
+        ) == false)
+    }
+
+    // MARK: - Sidebar dock vs. overlay decision
+
+    @Test("canDockSidebar: with a right panel, requires the readability-margin width")
+    func canDockWithRightPanel() {
+        #expect(PanelLayoutGeometry.canDockSidebar(width: 1_279, hasRightSidePanel: true) == false)
+        #expect(PanelLayoutGeometry.canDockSidebar(width: 1_280, hasRightSidePanel: true) == true)
+    }
+
+    @Test("canDockSidebar: without a right panel, only needs sidebar + detail minimums")
+    func canDockWithoutRightPanel() {
+        let floor = SidebarColumnLayout.expandedMinimumWidth + PanelLayoutGeometry.detailMinWidth // 310 + 480
+        #expect(PanelLayoutGeometry.canDockSidebar(width: floor - 1, hasRightSidePanel: false) == false)
+        #expect(PanelLayoutGeometry.canDockSidebar(width: floor, hasRightSidePanel: false) == true)
+    }
+
+    @Test("canDockSidebar: unmeasured width docks optimistically")
+    func canDockOptimisticBeforeMeasurement() {
+        #expect(PanelLayoutGeometry.canDockSidebar(width: 0, hasRightSidePanel: true) == true)
+    }
+
+    @Test("sidebarMode: collapsed when neither docked-intent nor an open overlay applies")
+    func sidebarModeCollapsedWhenNeitherApplies() {
+        #expect(PanelLayoutGeometry.sidebarMode(width: 1_400, hasRightSidePanel: true, wantsDock: false, overlayOpen: false) == .collapsed)
+        #expect(PanelLayoutGeometry.sidebarMode(width: 700, hasRightSidePanel: false, wantsDock: false, overlayOpen: false) == .collapsed)
+    }
+
+    @Test("sidebarMode: dock intent docks when it fits, and is hidden (not auto-overlaid) when it doesn't")
+    func sidebarModeDockIntent() {
+        #expect(PanelLayoutGeometry.sidebarMode(width: 1_400, hasRightSidePanel: true, wantsDock: true, overlayOpen: false) == .docked)
+        #expect(PanelLayoutGeometry.sidebarMode(width: 1_000, hasRightSidePanel: false, wantsDock: true, overlayOpen: false) == .docked)
+        // Can't dock + no explicit overlay → collapsed (never an intrusive auto-overlay).
+        #expect(PanelLayoutGeometry.sidebarMode(width: 1_000, hasRightSidePanel: true, wantsDock: true, overlayOpen: false) == .collapsed)
+        #expect(PanelLayoutGeometry.sidebarMode(width: 700, hasRightSidePanel: false, wantsDock: true, overlayOpen: false) == .collapsed)
+    }
+
+    @Test("sidebarMode: an open overlay floats only when the window can't dock; the dock intent wins otherwise")
+    func sidebarModeOverlayOnlyWhenCantDock() {
+        #expect(PanelLayoutGeometry.sidebarMode(width: 1_000, hasRightSidePanel: true, wantsDock: false, overlayOpen: true) == .overlay)
+        // Wide enough to dock → overlayOpen is ignored; falls back to dock intent.
+        #expect(PanelLayoutGeometry.sidebarMode(width: 1_400, hasRightSidePanel: true, wantsDock: false, overlayOpen: true) == .collapsed)
+        #expect(PanelLayoutGeometry.sidebarMode(width: 1_400, hasRightSidePanel: true, wantsDock: true, overlayOpen: true) == .docked)
+    }
+
+    @Test("SidebarMode.occupiesColumn is true only when docked")
+    func sidebarModeOccupiesColumn() {
+        #expect(SidebarMode.docked.occupiesColumn)
+        #expect(SidebarMode.overlay.occupiesColumn == false)
+        #expect(SidebarMode.collapsed.occupiesColumn == false)
+    }
+
     // MARK: - Inspector sizing
 
     @Test("Inspector docked width uses viewport-relative clamp")

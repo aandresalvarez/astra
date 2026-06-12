@@ -58,6 +58,40 @@ struct IsolationTests {
         #expect(original == "hello")
     }
 
+    @Test("Copy isolation uses restricted app scratch and cleanup deletes it")
+    func copyIsolationUsesRestrictedScratchAndDeletesOnCleanup() async throws {
+        let fm = FileManager.default
+        let src = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copy-source-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: src, withIntermediateDirectories: true)
+        try Data("hello".utf8).write(to: src.appendingPathComponent("test.txt"))
+        defer { try? fm.removeItem(at: src) }
+
+        let workspace = Workspace(name: "Copy Isolation", primaryPath: src.path)
+        let task = AgentTask(
+            title: "Copy Isolation",
+            goal: "Use a workspace copy",
+            workspace: workspace,
+            isolationStrategy: .copy
+        )
+
+        let copyPath = try await IsolationService.prepare(task: task)
+        let copyURL = URL(fileURLWithPath: copyPath, isDirectory: true)
+        let scratchRoot = IsolationService.copyScratchRoot(fileManager: fm)
+        defer { try? fm.removeItem(at: copyURL) }
+
+        #expect(copyURL.path.hasPrefix(scratchRoot.path + "/"))
+        #expect(copyURL.deletingLastPathComponent().path != src.deletingLastPathComponent().path)
+        #expect(fm.fileExists(atPath: copyURL.appendingPathComponent("test.txt").path))
+
+        let attributes = try fm.attributesOfItem(atPath: scratchRoot.path)
+        let permissions = try #require(attributes[FileAttributeKey.posixPermissions] as? NSNumber)
+        #expect(permissions.intValue & 0o777 == 0o700)
+
+        IsolationService.cleanup(task: task, executionPath: copyPath)
+        #expect(!fm.fileExists(atPath: copyPath))
+    }
+
     @Test("Non-git directory detected")
     func notAGitRepo() {
         let dir = "/tmp/astra-nogit-\(UUID().uuidString.prefix(8))"
@@ -73,6 +107,23 @@ struct IsolationTests {
 
 @Suite("WorkspaceLockManager")
 struct WorkspaceLockManagerTests {
+    @Test("Lock keys normalize symlinked workspace paths")
+    func lockKeysNormalizeSymlinkedWorkspacePaths() throws {
+        let fm = FileManager.default
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-lock-root-\(UUID().uuidString)", isDirectory: true)
+        let workspace = root.appendingPathComponent("workspace", isDirectory: true)
+        let link = root.appendingPathComponent("workspace-link", isDirectory: true)
+        defer { try? fm.removeItem(at: root) }
+
+        try fm.createDirectory(at: workspace, withIntermediateDirectories: true)
+        try fm.createSymbolicLink(at: link, withDestinationURL: workspace)
+
+        #expect(
+            IsolationService.WorkspaceLockManager.lockKey(for: link.path)
+                == IsolationService.WorkspaceLockManager.lockKey(for: workspace.path)
+        )
+    }
 
     @Test("Concurrent operations on same path are serialized")
     func concurrentSamePath() async {

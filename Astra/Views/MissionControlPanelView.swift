@@ -41,7 +41,9 @@ struct MissionControlPanelView: View {
                 .frame(width: 22, height: 22)
 
             VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+                // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
+                HStack(alignment: .top, spacing: 8) {
                     Text("Mission Control")
                         .font(Stanford.ui(16, weight: .semibold))
                         .foregroundStyle(Stanford.black)

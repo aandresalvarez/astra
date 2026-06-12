@@ -22,6 +22,99 @@ final class AgentRuntimeProcessRunner {
         currentProcess = nil
     }
 
+    /// Either a launch plan ready to run, or a fail-closed result that blocks the
+    /// run (strict sandbox enforcement when the sandbox cannot be applied).
+    enum SandboxedPlanOutcome {
+        case plan(AgentRuntimeProcessLaunchPlan)
+        case blocked(AgentProcessResult)
+    }
+
+    /// Pure mapping from a sandbox decision to a launch outcome. Extracted from
+    /// `sandboxedPlan` so the security-critical branch — `failClosed` MUST block
+    /// the run and never fall through to running unconfined — is unit-testable
+    /// without spawning a process or constructing a full adapter. A regression
+    /// that turned `.failClosed` into `.plan` would otherwise run the provider
+    /// unconfined under strict/autonomous with no test to catch it.
+    static func sandboxOutcome(
+        for decision: ExecutionSandboxDecision,
+        originalPlan: AgentRuntimeProcessLaunchPlan
+    ) -> SandboxedPlanOutcome {
+        switch decision {
+        case .applied(let wrapped, _):
+            return .plan(wrapped)
+        case .skipped, .fallback:
+            return .plan(originalPlan)
+        case .failClosed(let reason):
+            let message = "ASTRA could not apply the macOS execution sandbox (\(reason)) and strict enforcement is enabled, so the run was blocked."
+            return .blocked(AgentProcessResult(
+                exitCode: -1,
+                error: message,
+                runtimeStopReason: "sandbox_unavailable",
+                runtimeStopMessage: message
+            ))
+        }
+    }
+
+    /// Builds the launch plan and applies the macOS execution sandbox to it.
+    /// Returns the (possibly wrapped) plan, or — under strict enforcement when
+    /// the sandbox cannot be applied — a fail-closed `AgentProcessResult` so the
+    /// run never proceeds unconfined. All decisions are audited.
+    /// Internal (not private) so the sandbox wiring — decision, auditing, and the
+    /// fail-closed translation — is unit-testable with a fake adapter without
+    /// spawning a process.
+    @MainActor
+    func sandboxedPlan(
+        adapter: any AgentRuntimeProcessLaunchPlanning & AgentRuntimeProcessEventParsing,
+        context: AgentRuntimeProcessLaunchContext
+    ) -> SandboxedPlanOutcome {
+        let plan = adapter.makeProcessLaunchPlan(context: context)
+        // Use the run's effective permission policy (an execution-policy override
+        // wins over the base policy) so best-effort correctly escalates to strict
+        // for override-autonomous runs — matching how the preflight manifest
+        // resolves the sandbox tier.
+        let effectivePermissionPolicy = context.executionPolicy.permissionPolicyOverride ?? context.permissionPolicy
+        let settings = ExecutionSandboxSettings.current(permissionPolicy: effectivePermissionPolicy)
+        // Multi-path workspaces: the agent is granted the workspace's additional
+        // paths + input dirs (same set passed to providers via `--add-dir` and
+        // honored by the in-band policy guard), so include them in the sandbox's
+        // writable allowlist or the kernel would block legitimate writes.
+        let decision = ExecutionSandbox.decide(
+            plan: plan,
+            providerHomeDirectory: context.providerHomeDirectory,
+            additionalWritablePaths: Self.runtimeAdditionalPaths(for: context.task),
+            settings: settings
+        )
+        let taskID = context.task.id
+        switch decision {
+        case .applied(_, let writableRoots):
+            AppLogger.audit(.sandboxApplied, category: "Worker", taskID: taskID, fields: [
+                "runtime": plan.runtime.rawValue,
+                "enforcement": settings.enforcement.rawValue,
+                "writable_root_count": String(writableRoots.count),
+                "allow_network": String(settings.allowNetwork)
+            ], level: .debug)
+        case .skipped(let reason):
+            AppLogger.audit(.sandboxSkipped, category: "Worker", taskID: taskID, fields: [
+                "runtime": plan.runtime.rawValue,
+                "reason": reason
+            ], level: .debug)
+        case .fallback(let reason):
+            AppLogger.audit(.sandboxFallback, category: "Worker", taskID: taskID, fields: [
+                "runtime": plan.runtime.rawValue,
+                "enforcement": settings.enforcement.rawValue,
+                "reason": reason
+            ], level: .warning)
+        case .failClosed(let reason):
+            AppLogger.audit(.sandboxFailed, category: "Worker", taskID: taskID, fields: [
+                "runtime": plan.runtime.rawValue,
+                "enforcement": settings.enforcement.rawValue,
+                "reason": reason
+            ], level: .error)
+        }
+
+        return Self.sandboxOutcome(for: decision, originalPlan: plan)
+    }
+
     @MainActor
     func runRuntimeProcess(
         adapter: any AgentRuntimeProcessLaunchPlanning & AgentRuntimeProcessEventParsing,
@@ -39,6 +132,8 @@ final class AgentRuntimeProcessRunner {
         contextText: String = "",
         nativeContinuationSessionID: String? = nil,
         runID: UUID? = nil,
+        liveApprovalsEnabled: Bool = false,
+        onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
         let launchContext = AgentRuntimeProcessLaunchContext(
@@ -54,7 +149,8 @@ final class AgentRuntimeProcessRunner {
             phase: phase,
             contextText: contextText,
             nativeContinuationSessionID: nativeContinuationSessionID,
-            runID: runID
+            runID: runID,
+            liveApprovalsEnabled: liveApprovalsEnabled && onInteractiveAsk != nil
         )
         if let sharedStateKey = adapter.sharedLaunchStateKey(context: launchContext) {
             do {
@@ -69,7 +165,14 @@ final class AgentRuntimeProcessRunner {
             } catch {
                 return AgentProcessResult(exitCode: -1, error: error.localizedDescription)
             }
-            let plan = adapter.makeProcessLaunchPlan(context: launchContext)
+            let plan: AgentRuntimeProcessLaunchPlan
+            switch sandboxedPlan(adapter: adapter, context: launchContext) {
+            case .plan(let resolvedPlan):
+                plan = resolvedPlan
+            case .blocked(let blockedResult):
+                await AgentRuntimeSharedStateGate.shared.release(sharedStateKey)
+                return blockedResult
+            }
             let result = await runProcess(
                 adapter: adapter,
                 plan: plan,
@@ -77,13 +180,20 @@ final class AgentRuntimeProcessRunner {
                 permissionManifest: permissionManifest,
                 budgetEnforcementMode: budgetEnforcementMode,
                 timeoutSeconds: timeoutSeconds,
+                onInteractiveAsk: onInteractiveAsk,
                 onLine: onLine
             )
             await AgentRuntimeSharedStateGate.shared.release(sharedStateKey)
             return result
         }
 
-        let plan = adapter.makeProcessLaunchPlan(context: launchContext)
+        let plan: AgentRuntimeProcessLaunchPlan
+        switch sandboxedPlan(adapter: adapter, context: launchContext) {
+        case .plan(let resolvedPlan):
+            plan = resolvedPlan
+        case .blocked(let blockedResult):
+            return blockedResult
+        }
         return await runProcess(
             adapter: adapter,
             plan: plan,
@@ -91,6 +201,7 @@ final class AgentRuntimeProcessRunner {
             permissionManifest: permissionManifest,
             budgetEnforcementMode: budgetEnforcementMode,
             timeoutSeconds: timeoutSeconds,
+            onInteractiveAsk: onInteractiveAsk,
             onLine: onLine
         )
     }
@@ -103,6 +214,7 @@ final class AgentRuntimeProcessRunner {
         permissionManifest: RunPermissionManifest?,
         budgetEnforcementMode: BudgetEnforcementMode,
         timeoutSeconds: TimeInterval,
+        onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
         let tokenBudget = Self.effectiveTokenBudget(for: task)
@@ -143,7 +255,8 @@ final class AgentRuntimeProcessRunner {
                 executablePath: plan.executablePath,
                 arguments: plan.arguments,
                 currentDirectory: plan.currentDirectory,
-                environment: plan.environment
+                environment: plan.environment,
+                providesStdinChannel: plan.interactiveAsk != nil
             )
 
             let errorOutput = AgentLockedBuffer()
@@ -164,10 +277,27 @@ final class AgentRuntimeProcessRunner {
             let handleLine: (String) -> Void = { line in
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { return }
+                if plan.interactiveAsk != nil,
+                   let control = ClaudeControlProtocol.controlRequest(from: trimmed) {
+                    Self.answerControlRequest(
+                        control,
+                        process: process,
+                        monitor: monitor,
+                        taskID: taskID,
+                        onInteractiveAsk: onInteractiveAsk
+                    )
+                    return
+                }
                 onLine(line, plan.parsesJSONLines)
                 for parsed in adapter.parseProcessEvents(line: line, parsesJSONLines: plan.parsesJSONLines) {
                     for filtered in eventPipeline.process(parsed) {
                         _ = monitor.processEvent(filtered, process: process)
+                    }
+                    // Stream-json input providers wait for the next stdin
+                    // message after a turn ends; EOF on the terminal result is
+                    // what lets the process exit.
+                    if plan.interactiveAsk != nil, case .result = parsed {
+                        process.closeStdinChannel()
                     }
                 }
                 if let message = adapter.blockingProcessPermissionMessage(
@@ -196,6 +326,7 @@ final class AgentRuntimeProcessRunner {
             }
 
             process.terminationHandler = { proc in
+                InFlightPermissionCenter.shared.failAll(taskID: taskID)
                 proc.stdoutFileHandle.readabilityHandler = nil
                 proc.stderrFileHandle.readabilityHandler = nil
                 if let chunk = String(
@@ -247,8 +378,61 @@ final class AgentRuntimeProcessRunner {
                 return
             }
 
+            if let interactiveAsk = plan.interactiveAsk {
+                process.writeStdinLine(interactiveAsk.initialStdinMessage)
+            }
             currentProcess = process
             monitor.startWatchdog(process: process)
+        }
+    }
+
+    /// Answers a provider control request. `can_use_tool` asks are routed to the
+    /// worker's hook (which surfaces them in the UI and awaits the user); every
+    /// other subtype gets an immediate error response so the provider never
+    /// blocks on an unanswered request. A heartbeat keeps the idle watchdog from
+    /// killing the run while the user decides.
+    private static func answerControlRequest(
+        _ control: ClaudeControlProtocol.ControlRequest,
+        process: AgentExecutionScopedProcess,
+        monitor: AgentProcessMonitor,
+        taskID: UUID,
+        onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)?
+    ) {
+        guard control.subtype == "can_use_tool", let onInteractiveAsk else {
+            if let response = ClaudeControlProtocol.errorResponse(
+                requestID: control.requestID,
+                message: "ASTRA does not handle control requests of subtype \(control.subtype)."
+            ) {
+                process.writeStdinLine(response)
+            }
+            return
+        }
+        let request = AgentInteractiveAskRequest(
+            requestID: control.requestID,
+            toolName: control.toolName ?? "Tool",
+            inputSummary: control.inputSummary,
+            commandText: control.commandText
+        )
+        let heartbeat = Task.detached {
+            while !Task.isCancelled {
+                monitor.recordActivity()
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
+            }
+        }
+        Task.detached {
+            let outcome = await onInteractiveAsk(request)
+            heartbeat.cancel()
+            monitor.recordActivity()
+            let response: String?
+            switch outcome {
+            case .allow:
+                response = ClaudeControlProtocol.allowResponse(for: control)
+            case .deny(let message):
+                response = ClaudeControlProtocol.denyResponse(for: control, message: message)
+            }
+            if let response {
+                process.writeStdinLine(response)
+            }
         }
     }
 
@@ -563,10 +747,27 @@ final class AgentRuntimeProcessRunner {
         }
         if TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) {
             for (key, value) in ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id) {
+                guard isBrowserBridgeEnvKeyAllowed(key) else {
+                    AppLogger.audit(.capabilityChatContext, category: "Capabilities", taskID: task.id, fields: [
+                        "source": "browser_bridge_env",
+                        "result": "non_namespaced_key_dropped",
+                        "key": key
+                    ], level: .warning)
+                    continue
+                }
                 taskEnv[key] = value
             }
         }
         return taskEnv
+    }
+
+    /// Namespace invariant for the Shelf browser bridge: it may only
+    /// contribute its own `ASTRA_BROWSER_*` variables, never overwrite
+    /// PATH/HOME or connector credentials. The trailing underscore keeps the
+    /// namespace explicit so an unrelated future `ASTRA_BROWSERX` key can't
+    /// slip through.
+    static func isBrowserBridgeEnvKeyAllowed(_ key: String) -> Bool {
+        key.hasPrefix("ASTRA_BROWSER_")
     }
 
     @MainActor

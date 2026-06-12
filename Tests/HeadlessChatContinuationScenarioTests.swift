@@ -148,6 +148,57 @@ extension HeadlessChatScenarioTests {
         #expect(task.status == .completed)
     }
 
+    @Test("Claude follow-up keeps native session after a permission approval grant")
+    func claudeFollowUpKeepsNativeSessionAfterPermissionGrant() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsFile = harness.rootURL.appendingPathComponent("claude-grant-args.txt")
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-session-1","model":"claude-sonnet-4-6"}'
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Claude answer"}]}}'
+            printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Claude answer","usage":{"input_tokens":3,"output_tokens":5}}'
+            exit 0
+            """, argsFile: argsFile)
+        )
+
+        let task = harness.makeTask(runtime: .claudeCode, goal: "Research the API surface", model: "claude-sonnet-4-6")
+        let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath)
+
+        _ = await harness.execute(task: task, worker: worker)
+        #expect(task.sessionId == "claude-session-1")
+
+        let recorded = TaskRuntimePermissionGrants.record(
+            grants: [.providerTool(name: "WebSearch")],
+            providerID: .claudeCode,
+            task: task,
+            modelContext: harness.context,
+            source: "test_user_approval"
+        )
+        #expect(!recorded.isEmpty)
+        try harness.context.save()
+
+        _ = await harness.continueTask(
+            task: task,
+            message: "Continue with the newly approved access",
+            worker: worker
+        )
+
+        let rawArgs = try String(contentsOf: argsFile, encoding: .utf8)
+        let args = rawArgs
+            .split(separator: "\n")
+            .map(String.init)
+        let resumeIndex = try #require(args.firstIndex(of: "--resume"))
+        #expect(args.count > resumeIndex + 1)
+        if args.count > resumeIndex + 1 {
+            #expect(args[resumeIndex + 1] == "claude-session-1")
+        }
+        #expect(task.runs.count == 2)
+        #expect(task.status == .completed)
+    }
+
     @Test("Claude no-progress follow-up starts a clean provider session")
     func claudeNoProgressFollowUpStartsCleanProviderSession() async throws {
         let harness = try HeadlessChatHarness()
@@ -418,6 +469,51 @@ extension HeadlessChatScenarioTests {
         #expect(turn2Args.contains("speed of light"))
         #expect(turn2Args.contains("Express that in km/h"))
         #expect(turn2Args.contains("299792458"))
+        #expect(task.runs.count == 2)
+        #expect(task.status == .completed)
+    }
+
+    @Test("Codex follow-up resumes the provider thread while sending rebuilt prompt")
+    func codexFollowUpResumesProviderThread() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let argsFile = harness.rootURL.appendingPathComponent("codex-resume-args.txt")
+        let codexPath = try harness.writeExecutable(
+            named: "codex",
+            script: """
+            #!/bin/sh
+            if [ "$1" = "--version" ]; then
+              printf '%s\\n' 'codex-cli 0.50.0'
+              exit 0
+            fi
+            printf '%s\\n' "$@" > '\(argsFile.path)'
+            printf '%s\\n' '{"type":"thread.started","thread_id":"codex-thread-1"}'
+            printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"Codex answer"}}'
+            printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":7}}'
+            exit 0
+            """
+        )
+
+        let task = harness.makeTask(runtime: .codexCLI, goal: "Trace the request flow", model: "gpt-5.5")
+        let worker = harness.makeWorker(runtime: .codexCLI, executablePath: codexPath)
+
+        _ = await harness.execute(task: task, worker: worker)
+        #expect(task.sessionId == "codex-thread-1")
+        #expect(task.runs.first?.providerSessionId == "codex-thread-1")
+
+        _ = await harness.continueTask(task: task, message: "Continue from the prior thread", worker: worker)
+
+        let rawArgs = try String(contentsOf: argsFile, encoding: .utf8)
+        let args = rawArgs
+            .split(separator: "\n")
+            .map(String.init)
+        let resumeIndex = try #require(args.firstIndex(of: "resume"))
+        #expect(args.count > resumeIndex + 1)
+        if args.count > resumeIndex + 1 {
+            #expect(args[resumeIndex + 1] == "codex-thread-1")
+        }
+        #expect(rawArgs.contains("User's follow-up request:\nContinue from the prior thread"))
         #expect(task.runs.count == 2)
         #expect(task.status == .completed)
     }

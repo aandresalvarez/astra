@@ -1,5 +1,24 @@
 import CoreGraphics
 
+/// How the sidebar is presented for a given window width and intent.
+///
+/// One value, derived purely from (intent, width, right-panel presence) by
+/// `PanelLayoutGeometry.sidebarMode`. `SidebarPresentationModel` owns the live
+/// instance; nothing else decides sidebar visibility. Keeping the decision here
+/// (and pure) makes it unit-testable without a view hierarchy.
+enum SidebarMode: Equatable {
+    /// Resizable column docked inside the `NavigationSplitView`.
+    case docked
+    /// Floating drawer over the detail area — the window is too narrow to dock
+    /// the column alongside the right panel without cramping the detail.
+    case overlay
+    /// Hidden entirely (the user has not asked for it).
+    case collapsed
+
+    /// True when the sidebar occupies its own layout column (vs. floating/hidden).
+    var occupiesColumn: Bool { self == .docked }
+}
+
 /// Pure-math helpers for the ContentDetailAreaView panel layout.
 ///
 /// Extracted so the layout rules (compact thresholds, shelf clamping,
@@ -8,6 +27,45 @@ import CoreGraphics
 enum PanelLayoutGeometry {
     /// Window width at which the sidebar auto-hides when a right-side panel is open.
     static let compactPanelMutualExclusionWidth: CGFloat = 1_280
+
+    /// Minimum readable width for the main detail area. Mirrors
+    /// `ContentDetailAreaView.contentMinWidth`; kept here so the pure dock/overlay
+    /// decision can reason about the full three-column budget without a view.
+    static let detailMinWidth: CGFloat = 480
+
+    /// Window width below which a docked sidebar + right panel + readable detail
+    /// can't coexist, so the sidebar must present as an overlay drawer instead.
+    /// With a right panel this is the readability-margin threshold; without one
+    /// the sidebar only needs room for itself plus the detail minimum.
+    static func canDockSidebar(width: CGFloat, hasRightSidePanel: Bool) -> Bool {
+        // Unmeasured width: dock optimistically; the first real measurement
+        // re-resolves before anything is shown.
+        guard width > 0 else { return true }
+        if hasRightSidePanel {
+            return width >= compactPanelMutualExclusionWidth
+        }
+        return width >= SidebarColumnLayout.expandedMinimumWidth + detailMinWidth
+    }
+
+    /// The single, pure sidebar-presentation decision. `SidebarPresentationModel`
+    /// is the only caller that turns this into live view state.
+    ///
+    /// - `wantsDock`: the durable intent — drives the docked column whenever the
+    ///   window is wide enough to dock.
+    /// - `overlayOpen`: a transient request to float the sidebar over a window too
+    ///   narrow to dock. Ignored when the window can dock (the dock intent wins),
+    ///   so a stale overlay flag can never override a real column.
+    static func sidebarMode(
+        width: CGFloat,
+        hasRightSidePanel: Bool,
+        wantsDock: Bool,
+        overlayOpen: Bool
+    ) -> SidebarMode {
+        if canDockSidebar(width: width, hasRightSidePanel: hasRightSidePanel) {
+            return wantsDock ? .docked : .collapsed
+        }
+        return overlayOpen ? .overlay : .collapsed
+    }
 
     /// Minimum docked width that still keeps the workspace inspector readable.
     static let inspectorMinColumnWidth: CGFloat = 340
@@ -37,6 +95,18 @@ enum PanelLayoutGeometry {
     /// AND a right-side panel open at once would cramp the detail area.
     static func isCompactPanelLayout(width: CGFloat) -> Bool {
         width > 0 && width < compactPanelMutualExclusionWidth
+    }
+
+    static func shouldAutoHideSidebarForCompactPanels(
+        width: CGFloat,
+        hasRightSidePanelPresented: Bool,
+        isSidebarDetailOnly: Bool,
+        isSidebarRevealInProgress: Bool
+    ) -> Bool {
+        guard !isSidebarRevealInProgress else { return false }
+        guard isCompactPanelLayout(width: width) else { return false }
+        guard hasRightSidePanelPresented else { return false }
+        return !isSidebarDetailOnly
     }
 
     /// Uses a viewport-relative target with hard readability clamps:

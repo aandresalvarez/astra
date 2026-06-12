@@ -160,6 +160,7 @@ struct WorkspaceRightRailView: View {
     @State private var expandedWorkspaceSetupItems: Set<WorkspaceSetupItem> = []
     @State private var approvedCapabilityPackages: [PluginPackage] = PluginCatalog.builtInPackages
     @State private var capabilityError: String?
+    @State private var capabilityPrerequisiteStatuses: [String: HealthStatus] = [:]
     @State private var scrollMetrics = RightRailScrollMetrics()
     @State private var isReadyCapabilitiesExpanded = false
     @State private var isDraftCapabilitiesExpanded = false
@@ -182,9 +183,8 @@ struct WorkspaceRightRailView: View {
     }
 
     private var catalogPolicyContext: CapabilityCatalogPolicyContext {
-        CapabilityCatalogPolicyContext.workspaceUser(
+        CapabilityCatalogPolicyContext.currentUser(
             workspace: workspace,
-            isAdmin: true,
             approvalRecords: CapabilityApprovalStore().records()
         )
     }
@@ -377,6 +377,7 @@ struct WorkspaceRightRailView: View {
         .onAppear {
             loadSSHConnections()
             refreshApprovedCapabilities()
+            refreshCapabilityPrerequisiteStatuses()
             applyConfigureDefaults()
             checkGitRepositories()
         }
@@ -956,7 +957,11 @@ struct WorkspaceRightRailView: View {
                 .compactMap { package -> RailCapabilityItem? in
                     let packageState = state(for: package)
                     guard packageState.isEnabled else { return nil }
-                    return makePackageCapabilityItem(package, state: packageState)
+                    return makePackageCapabilityItem(
+                        package,
+                        state: packageState,
+                        prerequisiteStatuses: capabilityPrerequisiteStatuses
+                    )
                 }
                 .sorted(by: sortRailCapabilityItems)
 
@@ -1024,7 +1029,11 @@ struct WorkspaceRightRailView: View {
         return 100
     }
 
-    private func makePackageCapabilityItem(_ package: PluginPackage, state: CapabilityPackageState) -> RailCapabilityItem {
+    private func makePackageCapabilityItem(
+        _ package: PluginPackage,
+        state: CapabilityPackageState,
+        prerequisiteStatuses: [String: HealthStatus]
+    ) -> RailCapabilityItem {
         let sharedResourceCount = state.linkedSkills.filter(\.isGlobal).count
             + state.linkedConnectors.filter(\.isGlobal).count
             + state.linkedTools.filter(\.isGlobal).count
@@ -1036,9 +1045,14 @@ struct WorkspaceRightRailView: View {
             + package.localTools.count
             + package.templates.count
             + package.browserAdapters.count
+        let readiness = readiness(
+            for: package,
+            stateReadiness: state.readiness,
+            prerequisiteStatuses: prerequisiteStatuses
+        )
         let presentation = CapabilityRailPackagePresentation.make(
             isEnabled: state.isEnabled,
-            readinessLevel: state.readiness.level,
+            readinessLevel: readiness.level,
             workspaceName: workspace.name,
             sharedResourceCount: sharedResourceCount,
             workspaceResourceCount: workspaceResourceCount,
@@ -1053,7 +1067,7 @@ struct WorkspaceRightRailView: View {
             summary: package.description.isEmpty ? package.contentSummary : package.description,
             color: Stanford.lagunita,
             isEnabled: state.isEnabled,
-            readiness: state.readiness,
+            readiness: readiness,
             presentation: presentation,
             source: .package(package),
             skillNames: (package.skills.map(\.name) + state.linkedSkills.map(\.name)).uniqueSorted(),
@@ -1116,6 +1130,24 @@ struct WorkspaceRightRailView: View {
         return messages.isEmpty
             ? .ready
             : CapabilityReadiness(level: .needsAttention, messages: messages)
+    }
+
+    private func readiness(
+        for package: PluginPackage,
+        stateReadiness: CapabilityReadiness,
+        prerequisiteStatuses: [String: HealthStatus]
+    ) -> CapabilityReadiness {
+        guard stateReadiness.level != .inactive else { return stateReadiness }
+        let prerequisiteMessages = CapabilityHealthService.readinessMessages(
+            for: package,
+            statuses: prerequisiteStatuses
+        )
+        guard !prerequisiteMessages.isEmpty else { return stateReadiness }
+        let existingMessages = stateReadiness.level == .ready ? [] : stateReadiness.messages
+        return CapabilityReadiness(
+            level: .needsAttention,
+            messages: existingMessages + prerequisiteMessages
+        )
     }
 
     private func skillSharedResourceCount(skill: Skill, connectors: [Connector], tools: [LocalTool]) -> Int {
@@ -1202,6 +1234,7 @@ struct WorkspaceRightRailView: View {
                         traceID: traceID
                     )
                     refreshApprovedCapabilities()
+                    refreshCapabilityPrerequisiteStatuses()
                 } catch {
                     capabilityError = error.localizedDescription
                     AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
@@ -1320,6 +1353,30 @@ struct WorkspaceRightRailView: View {
             CapabilityLibrary().installedPackages()
         }
         approvedCapabilityPackages = packages.isEmpty ? PluginCatalog.builtInPackages : packages
+    }
+
+    private func refreshCapabilityPrerequisiteStatuses() {
+        let currentCapabilities = capabilities
+        let packages = approvedCapabilityPackages.filter { package in
+            guard !package.prerequisites.isEmpty else { return false }
+            return CapabilityPackageState(
+                package: package,
+                workspace: workspace,
+                capabilities: currentCapabilities
+            ).isEnabled
+        }
+        Task { @MainActor in
+            let cache = PreflightCache()
+            var statuses: [String: HealthStatus] = [:]
+            for package in packages {
+                let packageStatuses = await CapabilityHealthService.prerequisiteStatuses(
+                    for: package,
+                    cache: cache
+                )
+                statuses.merge(packageStatuses) { _, new in new }
+            }
+            capabilityPrerequisiteStatuses = statuses
+        }
     }
 
     private func readinessColor(for readiness: CapabilityReadiness, isEnabled: Bool) -> Color {

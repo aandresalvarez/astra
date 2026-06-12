@@ -143,6 +143,43 @@ struct AgentRuntimePolicyGuard: Sendable {
         return requested.isSubset(of: Set(manifest.approvalGrants))
     }
 
+    /// How the effective policy treats a (tool, command) pair, independent of
+    /// any provider's own opinion. Lets a live-ask broker apply the *same*
+    /// allow/ask/deny rules ASTRA enforces post-hoc — one source of truth, so
+    /// auto-approval in Auto mode and the ask card in Ask mode can't drift from
+    /// what the guard would have flagged.
+    enum CommandDisposition: Equatable {
+        case allowed
+        case ask
+        case denied
+    }
+
+    func disposition(toolName rawTool: String, command rawCommand: String?) -> CommandDisposition {
+        // Don't special-case an empty tool name: pass it through so
+        // validateObservedAction returns its "unnamed tool use" deny, instead
+        // of returning .ask here (which Auto would auto-approve — a bypass).
+        let toolName = rawTool.trimmingCharacters(in: .whitespacesAndNewlines)
+        let command = rawCommand?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Route through the guard's own post-hoc evaluation so the live
+        // decision is identical to what would terminate the run otherwise — no
+        // partial reimplementation that could miss allowedShellPatterns,
+        // ask-first shell patterns, or the "not in allow-list" deny. A nil
+        // violation means the guard would allow; a violation flagged
+        // requiresApproval is ask-first; any other violation is a deny the
+        // guard would enforce, so it must NOT be auto-approved.
+        let observed = PolicyObservedEvent(
+            kind: .toolUse,
+            toolName: toolName,
+            command: command,
+            summary: command
+        )
+        guard let violation = validateObservedAction(observed, request: nil) else {
+            return .allowed
+        }
+        return violation.requiresApproval ? .ask : .denied
+    }
+
     func violation(for parsed: ParsedEvent) -> AgentRuntimePolicyViolation? {
         let adapter = ProviderPolicyAdapterRegistry.adapter(for: manifest.providerID)
         guard !manifest.providerRender.usesBroadProviderPermissions,
@@ -1216,25 +1253,7 @@ struct AgentRuntimePolicyGuard: Sendable {
     }
 
     private static func wildcardMatch(_ value: String, pattern: String) -> Bool {
-        guard !pattern.isEmpty else { return false }
-        if pattern == "*" { return true }
-
-        var regex = "^"
-        for scalar in pattern.unicodeScalars {
-            switch scalar {
-            case "*":
-                regex += ".*"
-            case "?":
-                regex += "."
-            default:
-                regex += NSRegularExpression.escapedPattern(for: String(scalar))
-            }
-        }
-        regex += "$"
-
-        guard let compiled = try? NSRegularExpression(pattern: regex) else { return false }
-        let range = NSRange(value.startIndex..<value.endIndex, in: value)
-        return compiled.firstMatch(in: value, range: range) != nil
+        WildcardPatternMatcher.shared.matches(value, pattern: pattern)
     }
 
     static func commandHintFromShellPermissionToolName(_ toolName: String) -> String? {

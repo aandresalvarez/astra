@@ -69,9 +69,8 @@ struct ConfigureView: View {
     }
 
     private var catalogPolicyContext: CapabilityCatalogPolicyContext {
-        CapabilityCatalogPolicyContext.workspaceUser(
+        CapabilityCatalogPolicyContext.currentUser(
             workspace: workspace,
-            isAdmin: true,
             approvalRecords: CapabilityApprovalStore().records()
         )
     }

@@ -49,6 +49,15 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
 
     let stdoutPipe = Pipe()
     let stderrPipe = Pipe()
+    // Created only when the provider speaks a stdin control protocol; other
+    // providers keep inheriting the parent's stdin unchanged. Writes and the
+    // close run on different threads (approval tasks vs the stdout handler
+    // closing on `.result`), so handle operations serialize under their own
+    // lock — separate from `lock` so a large stdin write can't stall
+    // process-state reads like isRunning/terminate.
+    private let stdinPipe: Pipe?
+    private let stdinLock = NSLock()
+    private var stdinClosed = false
     var terminationHandler: ((AgentExecutionScopedProcess) -> Void)?
 
     var stdoutFileHandle: FileHandle { stdoutPipe.fileHandleForReading }
@@ -70,12 +79,36 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         executablePath: String,
         arguments: [String],
         currentDirectory: String,
-        environment: [String: String]
+        environment: [String: String],
+        providesStdinChannel: Bool = false
     ) {
         self.executablePath = executablePath
         self.arguments = arguments
         self.currentDirectory = currentDirectory
         self.environment = environment
+        self.stdinPipe = providesStdinChannel ? Pipe() : nil
+    }
+
+    /// Writes one line to the child's stdin. Safe to call after the child has
+    /// exited; a broken pipe is swallowed. Serialized with the close so a
+    /// write can never race the handle being closed.
+    func writeStdinLine(_ line: String) {
+        guard let stdinPipe, let data = (line + "\n").data(using: .utf8) else { return }
+        stdinLock.lock()
+        defer { stdinLock.unlock() }
+        guard !stdinClosed else { return }
+        try? stdinPipe.fileHandleForWriting.write(contentsOf: data)
+    }
+
+    /// Signals end-of-conversation: stream-json providers keep waiting for the
+    /// next stdin message after a turn, so EOF is what lets them exit.
+    func closeStdinChannel() {
+        guard let stdinPipe else { return }
+        stdinLock.lock()
+        defer { stdinLock.unlock() }
+        guard !stdinClosed else { return }
+        stdinClosed = true
+        stdinPipe.fileHandleForWriting.closeFile()
     }
 
     func run() throws {
@@ -101,6 +134,14 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
                   operation: "posix_spawn_file_actions_addclose(stdout_read)")
         try check(posix_spawn_file_actions_addclose(&actions, stderrPipe.fileHandleForReading.fileDescriptor),
                   operation: "posix_spawn_file_actions_addclose(stderr_read)")
+        if let stdinPipe {
+            try check(posix_spawn_file_actions_adddup2(&actions, stdinPipe.fileHandleForReading.fileDescriptor, STDIN_FILENO),
+                      operation: "posix_spawn_file_actions_adddup2(stdin)")
+            try check(posix_spawn_file_actions_addclose(&actions, stdinPipe.fileHandleForReading.fileDescriptor),
+                      operation: "posix_spawn_file_actions_addclose(stdin_read)")
+            try check(posix_spawn_file_actions_addclose(&actions, stdinPipe.fileHandleForWriting.fileDescriptor),
+                      operation: "posix_spawn_file_actions_addclose(stdin_write)")
+        }
         try addWorkingDirectory(to: &actions)
 
         let flags = Int16(POSIX_SPAWN_SETPGROUP)
@@ -132,6 +173,7 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
 
         stdoutPipe.fileHandleForWriting.closeFile()
         stderrPipe.fileHandleForWriting.closeFile()
+        stdinPipe?.fileHandleForReading.closeFile()
 
         lock.lock()
         processID = childPID
@@ -192,6 +234,8 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         }
 
         cleanupResidualProcessGroup()
+
+        closeStdinChannel()
 
         lock.lock()
         status = exitStatus
@@ -870,6 +914,14 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     private var browserToolUseIDs: Set<String> = []
     private var browserShellIDs: Set<String> = []
     private var toolUseContextsByID: [String: ToolUseContext] = [:]
+    /// Insertion order for `toolUseContextsByID`, used to evict the oldest
+    /// entries so the keyed map can't grow unbounded across a long run.
+    private var toolUseContextOrder: [String] = []
+    /// Cap on retained keyed tool-use contexts. A tool_result almost always
+    /// follows its tool_use within the same turn, so this is far more than
+    /// needed; a result for an evicted (very old) id falls back to
+    /// `recentToolUseContexts.last`, exactly as it does today on a miss.
+    private static let maxTrackedToolUseContexts = 256
     private var recentToolUseContexts: [ToolUseContext] = []
     private var sawGoogleDocsVisiblePageRead = false
     private var ignoredGoogleDocsFullReadRequirementAfterVisibleRead = false
@@ -1144,7 +1196,17 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             summary: Self.toolUseSummary(name: name, input: input)
         )
         if !id.isEmpty {
+            if toolUseContextsByID[id] == nil {
+                toolUseContextOrder.append(id)
+            }
             toolUseContextsByID[id] = context
+            if toolUseContextOrder.count > Self.maxTrackedToolUseContexts {
+                let overflow = toolUseContextOrder.count - Self.maxTrackedToolUseContexts
+                for evictedID in toolUseContextOrder.prefix(overflow) {
+                    toolUseContextsByID.removeValue(forKey: evictedID)
+                }
+                toolUseContextOrder.removeFirst(overflow)
+            }
         }
         recentToolUseContexts.append(context)
         if recentToolUseContexts.count > 8 {
@@ -1772,7 +1834,10 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         lock.unlock()
 
         let processBox = AgentRuntimeProcessControlBox(process)
-        let checkInterval: TimeInterval = 30
+        let checkInterval = Self.watchdogCheckInterval(
+            idleTimeoutSeconds: idleTimeoutSeconds,
+            noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds
+        )
         DispatchQueue.global().async { [weak self] in
             while true {
                 Thread.sleep(forTimeInterval: checkInterval)
@@ -1783,6 +1848,15 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    static func watchdogCheckInterval(
+        idleTimeoutSeconds: TimeInterval,
+        noSemanticProgressTimeoutSeconds: TimeInterval
+    ) -> TimeInterval {
+        let shortestTimeout = min(idleTimeoutSeconds, noSemanticProgressTimeoutSeconds)
+        guard shortestTimeout.isFinite, shortestTimeout > 0 else { return 1 }
+        return min(shortestTimeout, max(0.1, min(30, shortestTimeout / 4)))
     }
 
     @discardableResult

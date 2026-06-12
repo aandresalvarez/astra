@@ -330,10 +330,11 @@ struct ComposerToolbar: View {
                 }
                 ForEach(candidates, id: \.self) { candidate in
                     Button { onModelChange?(candidate) } label: {
-                        HStack {
-                            Text(modelDisplayName(candidate))
-                            if model == candidate { Image(systemName: "checkmark") }
-                        }
+                        ModelMenuItemLabel(
+                            model: candidate,
+                            displayName: modelDisplayName(candidate),
+                            isSelected: model == candidate
+                        )
                     }
                 }
             } label: {
@@ -865,7 +866,11 @@ struct ComposerToolbar: View {
     }
 
     private func modelDisplayName(_ model: String) -> String {
-        model.trimmingCharacters(in: .whitespacesAndNewlines)
+        RuntimeModelAvailability.displayName(
+            for: model,
+            runtime: resolvedRuntime,
+            cache: runtimeModelCache
+        )
     }
 
     private func runtimeModels(for runtime: AgentRuntimeID) -> [String] {
@@ -911,7 +916,12 @@ struct ComposerToolbar: View {
                 .replacingOccurrences(of: "gpt-", with: "GPT-")
                 .replacingOccurrences(of: "-mini", with: " Mini")
         }
-        return normalized
+        // Keep the pill compact: "Default (recommended)" → "Default".
+        return normalized.replacingOccurrences(
+            of: #"\s*\([^)]*\)$"#,
+            with: "",
+            options: .regularExpression
+        )
     }
 
     private func versionedModelName(_ family: String, from model: String) -> String {
@@ -970,6 +980,9 @@ struct ComposerToolbar: View {
         case .claudeCode: "Claude"
         case .copilotCLI: "Copilot"
         case .antigravityCLI: "Antigravity"
+        case .codexCLI: "Codex"
+        case .cursorCLI: "Cursor"
+        case .openCodeCLI: "OpenCode"
         default: runtime.displayName
         }
     }

@@ -16,6 +16,17 @@ enum BundledToolInstaller {
             )
             for tool in tools {
                 let target = destination.appendingPathComponent(tool.lastPathComponent)
+                // Skip the delete+copy when the installed tool already matches
+                // the bundled one (same size + mtime). Avoids ~MBs of clonefile
+                // churn on every launch; fails safe to the copy path on any
+                // resource-value read error.
+                if FileManager.default.fileExists(atPath: target.path),
+                   let sourceValues = try? tool.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
+                   let targetValues = try? target.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
+                   sourceValues.fileSize == targetValues.fileSize,
+                   sourceValues.contentModificationDate == targetValues.contentModificationDate {
+                    continue
+                }
                 if FileManager.default.fileExists(atPath: target.path) {
                     try FileManager.default.removeItem(at: target)
                 }

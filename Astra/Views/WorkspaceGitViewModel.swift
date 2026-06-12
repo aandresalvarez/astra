@@ -12,7 +12,7 @@ final class WorkspaceGitViewModel: ObservableObject {
     @Published var selectedRepository: GitRepositoryInfo? = nil {
         didSet {
             if oldValue?.path != selectedRepository?.path {
-                Task { await refreshRepoDetails() }
+                scheduleRefresh()
             }
         }
     }
@@ -83,6 +83,16 @@ final class WorkspaceGitViewModel: ObservableObject {
     private var workspace: Workspace?
     private var selectedTask: AgentTask?
     private var refreshTimer: Timer?
+    /// The most recently scheduled background status refresh. Refreshes are
+    /// chained through this handle so they never overlap (each awaits the
+    /// previous) and so callers — and tests — can drain pending work instead
+    /// of racing a detached `didSet`/timer task.
+    private var refreshTask: Task<Void, Never>?
+    private var isRefreshPaused = false
+    // Background git status refresh interval. Each tick fans out git
+    // subprocesses, so we keep it lazy (30s) and pause it entirely when the
+    // rail is offscreen or the app is backgrounded — see pause/resumeRefresh.
+    private let refreshInterval: TimeInterval = 30.0
     private let git: GitRepositoryOperating
 
     var authoringServiceFactory: (() -> any GitCommitMessageGenerating & GitPullRequestGenerating)?
@@ -115,12 +125,37 @@ final class WorkspaceGitViewModel: ObservableObject {
         self.activeWorkingPath = initialActiveCodePath(workspace: workspace, selectedTask: selectedTask)
         Task { await scanRepositories() }
 
+        // setup() runs on appear / task change, i.e. the rail is visible again.
+        isRefreshPaused = false
+        startRefreshTimer()
+    }
+
+    private func startRefreshTimer() {
         refreshTimer?.invalidate()
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
+        guard !isRefreshPaused else { return }
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                await self?.refreshRepoDetails()
+                self?.scheduleRefresh()
             }
         }
+    }
+
+    /// Stop the background refresh ticks. Call when the rail goes offscreen or
+    /// the app is backgrounded so idle windows stop spawning git subprocesses.
+    func pauseRefresh() {
+        isRefreshPaused = true
+        refreshTimer?.invalidate()
+        refreshTimer = nil
+    }
+
+    /// Resume background refresh and refresh once immediately so the rail is
+    /// current the moment it becomes visible/active again.
+    func resumeRefresh() {
+        guard isRefreshPaused else { return }
+        isRefreshPaused = false
+        guard workspace != nil else { return }
+        scheduleRefresh()
+        startRefreshTimer()
     }
 
     #if DEBUG
@@ -151,7 +186,26 @@ final class WorkspaceGitViewModel: ObservableObject {
         } else if !repos.contains(where: { $0.path == self.selectedRepository?.path }) {
             self.selectedRepository = repos.first
         }
-        await refreshRepoDetails()
+        scheduleRefresh()
+        await waitForPendingRefresh()
+    }
+
+    /// Schedules a status refresh that runs after any in-flight refresh
+    /// completes, replacing `refreshTask` with the chained handle.
+    @MainActor
+    private func scheduleRefresh(force: Bool = false) {
+        let previous = refreshTask
+        refreshTask = Task { @MainActor [weak self] in
+            await previous?.value
+            await self?.refreshRepoDetails(force: force)
+        }
+    }
+
+    /// Awaits the most recently scheduled refresh (and, transitively, every
+    /// refresh chained before it). Lets `scanRepositories` and tests observe a
+    /// settled panel instead of racing a detached `didSet`/timer refresh.
+    func waitForPendingRefresh() async {
+        await refreshTask?.value
     }
 
     private func initialActiveCodePath(workspace: Workspace, selectedTask: AgentTask?) -> String? {
@@ -218,6 +272,13 @@ final class WorkspaceGitViewModel: ObservableObject {
         guard let repo = selectedRepository else { return "No git repository found" }
         if !repo.subtitle.isEmpty { return repo.subtitle }
         return WorkspacePathPresentation.abbreviatePath(repo.path)
+    }
+
+    /// Full, un-abbreviated path for the repository row tooltip so the
+    /// truncated subtitle never hides where the repo actually lives.
+    var selectedRepositoryFullPath: String? {
+        guard let repo = selectedRepository else { return nil }
+        return WorkspacePathPresentation.standardizedPath(repo.path)
     }
 
     var activeSelectionScopeLabel: String {

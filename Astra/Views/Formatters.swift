@@ -39,24 +39,40 @@ enum Formatters {
         if interval < 604800 { return "\(Int(interval / 86400))d" }
         // 1 week to 1 year — show "Apr 17"
         if interval < 31_536_000 {
-            let f = DateFormatter()
-            f.dateFormat = "MMM d"
-            return f.string(from: date)
+            return monthDayFormatter.string(from: date)
         }
         // Older — include the year.
+        return monthDayYearFormatter.string(from: date)
+    }
+
+    /// Cached "MMM d" formatter for `relativeShort(_:)`. DateFormatter is
+    /// expensive to allocate; reads are thread-safe once configured.
+    private static let monthDayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MMM d"
+        return f
+    }()
+
+    /// Cached "MMM d, yyyy" formatter for `relativeShort(_:)` on older dates.
+    private static let monthDayYearFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "MMM d, yyyy"
-        return f.string(from: date)
-    }
+        return f
+    }()
 
     /// Long-form timestamp suitable for a tooltip / accessibility hint
     /// when a UI surface only shows `relativeShort(_:)`.
     static func fullDate(_ date: Date) -> String {
+        return fullDateFormatter.string(from: date)
+    }
+
+    /// Cached long-date / short-time formatter for `fullDate(_:)` tooltips.
+    private static let fullDateFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateStyle = .long
         f.timeStyle = .short
-        return f.string(from: date)
-    }
+        return f
+    }()
 
     /// Middle-ellipsize identifier-like tokens (long, contain `. _ - /`) so
     /// compact rows preserve both the recognizable prefix and useful suffix.

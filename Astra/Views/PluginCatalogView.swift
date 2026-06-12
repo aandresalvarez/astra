@@ -87,9 +87,8 @@ struct PluginCatalogView: View {
 
     private var catalogPolicyContext: CapabilityCatalogPolicyContext {
         _ = approvalRevision
-        return CapabilityCatalogPolicyContext.workspaceUser(
+        return CapabilityCatalogPolicyContext.currentUser(
             workspace: workspace,
-            isAdmin: true,
             approvalRecords: CapabilityApprovalStore().records()
         )
     }
@@ -620,7 +619,9 @@ struct PluginCatalogView: View {
 
     private func capabilityGroupSection(_ group: CapabilityCatalogPackageGroup) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
+            // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+            // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
+            HStack(alignment: .top, spacing: 6) {
                 Text(group.kind.title)
                     .font(Stanford.caption(12).weight(.semibold))
                     .foregroundStyle(.secondary)
@@ -1010,6 +1011,34 @@ struct PluginCatalogView: View {
         }
     }
 
+    /// After approving an updated package version, workspaces that already
+    /// have it enabled would otherwise keep running the previous version's
+    /// SwiftData definitions until a manual re-enable. Re-running enable
+    /// upserts the refreshed skills/connectors/tools in place.
+    private func refreshEnabledDefinitionsAfterApproval(
+        _ package: PluginPackage,
+        status: CapabilityApprovalStatus,
+        traceID: String
+    ) {
+        guard status == .approved,
+              workspace.enabledCapabilityIDs.contains(package.id) else { return }
+        do {
+            _ = try CapabilityCatalogActionService().enable(
+                package,
+                workspace: workspace,
+                modelContext: modelContext,
+                policyContext: CapabilityCatalogPolicyContext.currentUser(
+                    workspace: workspace,
+                    approvalRecords: CapabilityApprovalStore().records()
+                ),
+                source: "approval_definition_refresh",
+                traceID: traceID
+            )
+        } catch {
+            approvalError = "Approved, but refreshing the enabled definition failed: \(error.localizedDescription)"
+        }
+    }
+
     private func saveApproval(_ package: PluginPackage, status: CapabilityApprovalStatus) {
         let traceID = AuditTrace.make("capability-approval")
         do {
@@ -1021,6 +1050,7 @@ struct PluginCatalogView: View {
             )
             approvalRevision += 1
             catalog.loadApprovedCapabilities()
+            refreshEnabledDefinitionsAfterApproval(package, status: status, traceID: traceID)
             onCatalogChanged?()
             AppLogger.audit(.capabilityApprovalChanged, category: "Capabilities", fields: [
                 "source": "catalog_review",
@@ -1290,7 +1320,7 @@ struct PluginCatalogView: View {
             sections.append(CapabilityDetailSection(
                 id: "mcp",
                 title: "MCP Servers",
-                subtitle: "Structured external tools and resources",
+                subtitle: CapabilityRuntimeSupportPresentation.mcpSupportSubtitle(),
                 icon: "server.rack",
                 color: Stanford.plum,
                 items: package.mcpServers.enumerated().map { index, server in
@@ -1523,6 +1553,16 @@ struct PluginCatalogView: View {
 
                 Spacer()
 
+                Button {
+                    exportPackageSource(package)
+                } label: {
+                    Label("Export", systemImage: "square.and.arrow.up")
+                        .font(Stanford.caption(11).weight(.semibold))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Save \(package.name) as a shareable JSON file (exports as draft; recipients review before use)")
+
                 Button(role: .destructive) {
                     removalCandidate = package
                 } label: {
@@ -1536,6 +1576,19 @@ struct PluginCatalogView: View {
         }
     }
 
+    private func exportPackageSource(_ package: PluginPackage) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "\(CapabilityLibrary.safeFileName(for: package.id)).json"
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            _ = try CapabilityCatalogActionService().exportSource(package, to: url)
+        } catch {
+            installError = "Couldn't export \(package.name): \(error.localizedDescription)"
+        }
+    }
+
     @ViewBuilder
     private func capabilityConfigurationLinks(_ state: CapabilityPackageState) -> some View {
         let links = capabilityConfigurationLinkItems(state)
@@ -1544,7 +1597,9 @@ struct PluginCatalogView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Divider().opacity(0.35)
 
-                HStack(alignment: .firstTextBaseline) {
+                // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+                // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
+                HStack(alignment: .top) {
                     Text("Configure resources")
                         .font(Stanford.caption(11).weight(.semibold))
                         .foregroundStyle(.secondary)
@@ -2111,7 +2166,9 @@ struct PluginInstallSheet: View {
     }
 
     private var copySetupSection: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 9) {
+        // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+        // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
+        HStack(alignment: .top, spacing: 9) {
             Image(systemName: copiedSetupSourceName == nil ? "square.on.square" : "checkmark.circle.fill")
                 .font(Stanford.ui(12, weight: .medium))
                 .foregroundStyle(copiedSetupSourceName == nil ? Stanford.lagunita : Stanford.paloAltoGreen)
@@ -2606,7 +2663,9 @@ struct PluginInstallSheet: View {
     }
 
     private func setupFieldHeader(for key: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
+        // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+        // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
+        HStack(alignment: .top, spacing: 6) {
             Text(CapabilitySetupPresentation.fieldLabel(for: key))
                 .font(Stanford.caption(11).weight(.semibold))
                 .foregroundStyle(Stanford.black)

@@ -79,6 +79,7 @@ final class AgentRuntimeWorker {
         let selectedRuntime = runtimeConfiguration.selectedRuntime(for: task)
         alignTaskModelWithSelectedRuntime(task, selectedRuntime: selectedRuntime, phase: "run")
         clearMismatchedProviderSessionIfNeeded(for: task, selectedRuntime: selectedRuntime, phase: "run")
+        TaskCapabilitySnapshotter.refreshForFreshRun(task: task)
         await executeRuntimeSession(
             task: task,
             modelContext: modelContext,
@@ -190,10 +191,45 @@ final class AgentRuntimeWorker {
     ) async {
         let stateAfterRun = TaskPlanService.reconstruct(for: task)
         let currentStepStatus = stateAfterRun.plan?.steps.first(where: { $0.id == step.id })?.status
+        let lastRun = task.runs.sorted { $0.startedAt < $1.startedAt }.last
+
+        // Checkpoint: a finished process is a claim, not evidence. Resolve the
+        // step's declared required outputs before recording it done — even a
+        // provider-emitted completion marker doesn't outrank a missing output.
+        // Provider-skipped steps are exempt (their outputs legitimately don't
+        // exist), and a provider-reported blocker takes priority below so its
+        // actionable detail isn't shadowed by a generic checkpoint message.
+        let checkpoint = PlanStepCheckpointVerifier.verify(step: step, plan: plan, task: task)
+        let latestBlockIsCheckpointImposed = PlanStepCheckpointVerifier.latestBlockIsCheckpointImposed(
+            task: task,
+            stepID: step.id
+        )
+        let providerReportedBlock = currentStepStatus == .blocked && !latestBlockIsCheckpointImposed
+        if currentStepStatus != .skipped, !providerReportedBlock, !checkpoint.missingRequiredPaths.isEmpty {
+            let message = PlanStepCheckpointVerifier.recordCheckpointBlock(
+                step: step,
+                missing: checkpoint.missingRequiredPaths,
+                plan: plan,
+                task: task,
+                run: lastRun,
+                modelContext: modelContext
+            )
+            pauseApprovedPlanForUser(task: task, modelContext: modelContext, message: message, run: lastRun)
+            return
+        }
+
         let shouldFallbackComplete: Bool = {
             switch currentStepStatus {
-            case .done, .skipped, .blocked:
+            case .done, .skipped:
                 return false
+            case .blocked:
+                // Only ASTRA's own checkpoint blocks are liftable by evidence:
+                // a retried step whose required outputs now exist completes.
+                // Provider-reported blockers carry meaning the filesystem
+                // can't refute and still need an explicit completion marker.
+                return latestBlockIsCheckpointImposed
+                    && checkpoint.isVerified
+                    && !checkpoint.verifiedPaths.isEmpty
             case .pending, .running, nil:
                 return true
             }
@@ -206,10 +242,19 @@ final class AgentRuntimeWorker {
                 status: .done,
                 task: task,
                 modelContext: modelContext,
-                run: task.runs.sorted { $0.startedAt < $1.startedAt }.last,
+                run: lastRun,
                 title: step.title,
-                summary: "Completed approved step: \(step.title)"
+                summary: "Completed approved step: \(step.title).\(checkpoint.completionEvidence)"
             )
+        } else if currentStepStatus == .done, !checkpoint.verifiedPaths.isEmpty {
+            // The provider's own completion marker recorded the step; keep the
+            // checkpoint's evidence in the log alongside it.
+            modelContext.insert(TaskEvent(
+                task: task,
+                eventType: TaskEventTypes.System.info,
+                payload: "Step checkpoint verified for \"\(step.title)\":\(checkpoint.completionEvidence)",
+                run: lastRun
+            ))
         }
 
         let refreshedPlan = TaskPlanService.reconstruct(for: task).plan ?? plan
@@ -260,6 +305,19 @@ final class AgentRuntimeWorker {
                     : "Plan blocked at \(blockedStep.title): \(blockedStep.detail)",
                 run: task.runs.sorted { $0.startedAt < $1.startedAt }.last
             )
+            return
+        }
+
+        // Single-run plans have no intermediate run boundaries, so the output
+        // checkpoint for every step lands here instead.
+        let lastRun = task.runs.sorted(by: { $0.startedAt < $1.startedAt }).last
+        if let message = PlanStepCheckpointVerifier.recordFullPlanCheckpointBlocks(
+            plan: refreshedPlan,
+            task: task,
+            run: lastRun,
+            modelContext: modelContext
+        ) {
+            pauseApprovedPlanForUser(task: task, modelContext: modelContext, message: message, run: lastRun)
             return
         }
 
@@ -435,17 +493,6 @@ final class AgentRuntimeWorker {
             phase: auditPhase
         )
 
-        guard await AgentRuntimeLaunchPreflight.preflightConnectorsBeforeLaunch(
-            task: task,
-            run: run,
-            modelContext: modelContext,
-            phase: auditPhase,
-            contextText: providerLaunchContextText
-        ) else {
-            isRunning = false
-            return
-        }
-
         guard FileManager.default.isExecutableFile(atPath: launchSettings.executablePath) else {
             AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
                 "reason": runtimeAdapter.missingExecutableAuditReason(),
@@ -462,6 +509,28 @@ final class AgentRuntimeWorker {
             let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error,
                 payload: runtimeAdapter.missingExecutableMessage(executablePath: launchSettings.executablePath), run: run)
             modelContext.insert(event)
+            isRunning = false
+            return
+        }
+
+        guard await AgentRuntimeLaunchPreflight.preflightRuntimeReadinessBeforeLaunch(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: auditPhase,
+            configuration: runtimeReadinessConfiguration(for: selectedRuntime), readinessService: runtimeReadinessService
+        ) else {
+            isRunning = false
+            return
+        }
+
+        guard await AgentRuntimeLaunchPreflight.preflightConnectorsBeforeLaunch(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: auditPhase,
+            contextText: providerLaunchContextText
+        ) else {
             isRunning = false
             return
         }
@@ -566,7 +635,8 @@ final class AgentRuntimeWorker {
             currentRun: run,
             runtimeAdapter: runtimeAdapter,
             phase: auditPhase,
-            currentLaunchSignature: launchSignature
+            currentLaunchSignature: launchSignature,
+            grantNeutralizingStrings: Self.signatureGrantStrings(for: manifest)
         )
         Self.recordProviderLaunchSignature(
             launchSignature,
@@ -629,6 +699,12 @@ final class AgentRuntimeWorker {
             contextText: providerLaunchContextText,
             nativeContinuationSessionID: nativeContinuationSessionID,
             runID: run.id,
+            liveApprovalsEnabled: liveApprovalsEnabled,
+            onInteractiveAsk: Self.interactiveAskHandler(
+                runtime: selectedRuntime, task: task, run: run,
+                permissionPolicy: runPermissionPolicy, manifest: manifest,
+                modelContext: modelContext, pendingEvents: pendingEvents
+            ),
             onLine: { line, parsesJSONLines in
                 PerformanceSignposts.processStreamLine {
                     streamTelemetry?.recordRawLine(parsesJSONLines: parsesJSONLines)
@@ -878,15 +954,15 @@ final class AgentRuntimeWorker {
                         switch testResult {
                         case .passed(let details):
                             task.status = .completed
-                            let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.completed, payload: "Tests passed. \(String(details.prefix(300)))", run: run)
+                            let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.completed, payload: "\(ValidationOutcomeMarker.testsPassed.rawValue). \(String(details.prefix(300)))", run: run)
                             modelContext.insert(event)
                         case .failed(let details):
                             task.status = .failed
-                            let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "Tests failed:\n\(String(details.prefix(500)))", run: run)
+                            let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "\(ValidationOutcomeMarker.testsFailed.rawValue):\n\(String(details.prefix(500)))", run: run)
                             modelContext.insert(event)
                         case .error(let msg):
                             task.status = .pendingUser
-                            let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "Validation error: \(msg). Needs manual review.", run: run)
+                            let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "\(ValidationOutcomeMarker.validationError.rawValue): \(msg). Needs manual review.", run: run)
                             modelContext.insert(event)
                         }
                     case .aiCheck:
@@ -907,15 +983,15 @@ final class AgentRuntimeWorker {
                         switch aiResult {
                         case .passed(let details):
                             task.status = .completed
-                            let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.completed, payload: "AI check passed. \(String(details.prefix(300)))", run: run)
+                            let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.completed, payload: "\(ValidationOutcomeMarker.aiCheckPassed.rawValue). \(String(details.prefix(300)))", run: run)
                             modelContext.insert(event)
                         case .failed(let details):
                             task.status = .pendingUser
-                            let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "AI check flagged issues:\n\(String(details.prefix(500)))", run: run)
+                            let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "\(ValidationOutcomeMarker.aiCheckFlagged.rawValue) issues:\n\(String(details.prefix(500)))", run: run)
                             modelContext.insert(event)
                         case .error(let msg):
                             task.status = .pendingUser
-                            let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "AI check error: \(msg). Needs manual review.", run: run)
+                            let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "\(ValidationOutcomeMarker.aiCheckError.rawValue): \(msg). Needs manual review.", run: run)
                             modelContext.insert(event)
                         }
                     }
@@ -1021,6 +1097,20 @@ final class AgentRuntimeWorker {
     }
 
     // MARK: - Private
+
+    private func runtimeReadinessConfiguration(for runtime: AgentRuntimeID) -> RuntimeReadinessConfiguration {
+        let providerSnapshot = RuntimeSettingsSnapshotStore.providerSnapshot()
+        return RuntimeReadinessConfiguration(
+            runtime: runtime,
+            providerSettings: runtimeConfiguration.configuredProviderSettings,
+            claudeProvider: providerSnapshot.claudeProvider,
+            vertexProjectID: providerSnapshot.vertexProjectID,
+            vertexRegion: providerSnapshot.vertexRegion,
+            vertexOpusModel: providerSnapshot.vertexOpusModel,
+            vertexSonnetModel: providerSnapshot.vertexSonnetModel,
+            vertexHaikuModel: providerSnapshot.vertexHaikuModel
+        )
+    }
 
     @MainActor
     private static func applyEmptySuccessfulRunIfNeeded(
@@ -1494,12 +1584,12 @@ final class AgentRuntimeWorker {
         let runtimeID: String
         let model: String
         let policyLevel: String
-        let policyScope: String
+        var policyScope: String
         let providerAdapterVersion: Int
         let permissionMode: String
-        let allowedTools: [String]
-        let askFirstTools: [String]
-        let deniedTools: [String]
+        var allowedTools: [String]
+        var askFirstTools: [String]
+        var deniedTools: [String]
         let allowedShellPatterns: [String]
         let askFirstShellPatterns: [String]
         let deniedShellPatterns: [String]
@@ -1547,13 +1637,43 @@ final class AgentRuntimeWorker {
         }
     }
 
+    // Approval grants accumulate inside a task, so signatures are compared
+    // modulo grant-derived entries: otherwise the first post-approval turn
+    // always reads as a policy change and drops the provider session.
+    private static func grantNeutralizedSignatureValue(
+        _ payload: ProviderLaunchSignaturePayload,
+        grantStrings: Set<String>
+    ) -> String {
+        guard !grantStrings.isEmpty else { return payload.signatureValue }
+        let grantKeys = Set(grantStrings.map(canonicalToolKey))
+        var neutral = payload
+        neutral.allowedTools = payload.allowedTools.filter { !grantStrings.contains($0) }
+        neutral.askFirstTools = payload.askFirstTools.filter { !grantKeys.contains(canonicalToolKey($0)) }
+        neutral.deniedTools = payload.deniedTools.filter { !grantKeys.contains(canonicalToolKey($0)) }
+        neutral.policyScope = "grant_neutral"
+        return neutral.signatureValue
+    }
+
+    private static func canonicalToolKey(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func signatureGrantStrings(for manifest: RunPermissionManifest) -> Set<String> {
+        guard !manifest.approvalGrants.isEmpty else { return [] }
+        return Set(
+            PermissionBroker.providerGrantStrings(for: manifest.approvalGrants, runtime: manifest.providerID)
+                + PermissionBroker.providerRuntimeGrantStrings(for: manifest.approvalGrants, runtime: manifest.providerID)
+        )
+    }
+
     @MainActor
     private static func nativeContinuationSessionID(
         for task: AgentTask,
         currentRun: TaskRun,
         runtimeAdapter: any AgentRuntimeDescriptorReadiness,
         phase: String,
-        currentLaunchSignature: ProviderLaunchSignaturePayload
+        currentLaunchSignature: ProviderLaunchSignaturePayload,
+        grantNeutralizingStrings: Set<String> = []
     ) -> NativeContinuationDecision {
         guard phase == "resume",
               runtimeAdapter.descriptor.supportsNativeContinuation else {
@@ -1577,7 +1697,9 @@ final class AgentRuntimeWorker {
             return NativeContinuationDecision(sessionID: nil, skipReason: "missing_previous_launch_signature", signatureMatched: false)
         }
 
-        guard previousSignature.signatureValue == currentLaunchSignature.signatureValue else {
+        let previousValue = grantNeutralizedSignatureValue(previousSignature, grantStrings: grantNeutralizingStrings)
+        let currentValue = grantNeutralizedSignatureValue(currentLaunchSignature, grantStrings: grantNeutralizingStrings)
+        guard previousValue == currentValue else {
             return NativeContinuationDecision(sessionID: nil, skipReason: "launch_signature_changed", signatureMatched: false)
         }
 
@@ -1960,6 +2082,7 @@ final class AgentRuntimeWorker {
     /// Model used for AI validation checks
     var validationModel: String = "claude-haiku-4-5-20251001"
 
+    var runtimeReadinessService = RuntimeReadinessService()
     /// Maximum execution time in seconds (10 minutes default)
     var timeoutSeconds: TimeInterval = 600
 
@@ -1967,5 +2090,10 @@ final class AgentRuntimeWorker {
     /// the composer security gate can opt into autonomous runs for trusted work.
     var skipPermissions: Bool = false
     var permissionPolicy: PermissionPolicy = .restricted
+
+    /// Routes provider permission prompts through ASTRA mid-run (stdio control
+    /// protocol) for providers that support it, instead of failing the run and
+    /// relaunching after approval.
+    var liveApprovalsEnabled: Bool = true
 
 }
