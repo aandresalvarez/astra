@@ -193,7 +193,7 @@ enum CapabilityRowPresentation {
     }
 }
 
-enum CapabilityBrandIcon: String, Equatable {
+enum CapabilityBrandIcon: String, Equatable, CaseIterable {
     case github
     case jira
     case googleDrive

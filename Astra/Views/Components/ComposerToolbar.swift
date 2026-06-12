@@ -402,7 +402,9 @@ struct ComposerToolbar: View {
         case .some(.pendingUser):
             return Stanford.poppy
         default:
-            return isRunning ? Stanford.lagunita : Stanford.coolGrey
+            // Running is conveyed by the spinner, not by tinting the model/budget
+            // metadata with the interactive accent — keep this label neutral.
+            return Stanford.coolGrey
         }
     }
 
