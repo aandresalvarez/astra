@@ -856,9 +856,14 @@ struct ProcessMonitorTests {
             idleTimeoutSeconds: 600,
             noSemanticProgressTimeoutSeconds: 180
         )
+        let microTimeoutInterval = AgentRuntimeWorker.ProcessMonitor.watchdogCheckInterval(
+            idleTimeoutSeconds: 0.05,
+            noSemanticProgressTimeoutSeconds: 0.05
+        )
 
         #expect(shortInterval < 2)
         #expect(shortInterval >= 0.1)
+        #expect(microTimeoutInterval <= 0.05)
         #expect(defaultInterval == 30)
     }
 

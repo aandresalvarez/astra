@@ -1856,7 +1856,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     ) -> TimeInterval {
         let shortestTimeout = min(idleTimeoutSeconds, noSemanticProgressTimeoutSeconds)
         guard shortestTimeout.isFinite, shortestTimeout > 0 else { return 1 }
-        return max(0.1, min(30, shortestTimeout / 4))
+        return min(shortestTimeout, max(0.1, min(30, shortestTimeout / 4)))
     }
 
     @discardableResult
