@@ -2951,7 +2951,7 @@ struct WorkspaceGitRepositoryScanInputs: Equatable {
 /// A staged destructive removal awaiting confirmation. Carries its own copy so
 /// the confirm dialog can describe exactly what it will delete and run the
 /// removal only on an explicit second tap.
-struct PendingRailDeletion: Identifiable {
+private struct PendingRailDeletion: Identifiable {
     let id = UUID()
     let title: String
     let message: String

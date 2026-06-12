@@ -576,7 +576,7 @@ struct WorkspaceGitSectionView: View {
                     .font(Stanford.caption(11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                    .help(viewModel.pullRequestReadinessIssue ?? viewModel.pullRequestLookupIssue ?? caption)
+                    .help(pullRequestReadinessHelp ?? caption)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -666,6 +666,16 @@ struct WorkspaceGitSectionView: View {
         }
         if viewModel.pullRequestLookupIssue != nil {
             return "Could not check for an existing pull request"
+        }
+        return nil
+    }
+
+    /// Full-text tooltip for the readiness caption. The lookup failure keeps its
+    /// explanatory prefix so the raw error never appears without context.
+    private var pullRequestReadinessHelp: String? {
+        if let issue = viewModel.pullRequestReadinessIssue { return issue }
+        if let issue = viewModel.pullRequestLookupIssue {
+            return "Could not check for an existing pull request: \(issue)"
         }
         return nil
     }

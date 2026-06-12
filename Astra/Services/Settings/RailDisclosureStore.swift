@@ -8,7 +8,7 @@ import Foundation
 enum RailDisclosureStore {
     /// One persisted disclosure toggle in the rail. Raw values are stable on-disk
     /// key suffixes — do not rename without a migration.
-    enum Toggle: String {
+    enum Toggle: String, CaseIterable {
         case configuredSetupExpanded
         case readyCapabilitiesExpanded
         case draftCapabilitiesExpanded
@@ -29,5 +29,13 @@ enum RailDisclosureStore {
 
     static func setBool(_ value: Bool, _ workspaceID: String, _ toggle: Toggle) {
         UserDefaults.standard.set(value, forKey: defaultsKey(workspaceID, toggle))
+    }
+
+    /// Remove every persisted toggle for a workspace — useful when a workspace is
+    /// deleted, and to keep tests from leaving state behind.
+    static func clear(_ workspaceID: String) {
+        for toggle in Toggle.allCases {
+            UserDefaults.standard.removeObject(forKey: defaultsKey(workspaceID, toggle))
+        }
     }
 }
