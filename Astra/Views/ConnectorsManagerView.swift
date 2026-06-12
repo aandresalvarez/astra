@@ -443,9 +443,11 @@ struct ConnectorEditorView: View {
 
                         if !connector.credentialKeys.isEmpty {
                             VStack(spacing: 4) {
-                                ForEach(Array(connector.credentialKeys.enumerated()), id: \.element) { position, key in
-                                    let idx = connector.credentialKeys.firstIndex(of: key) ?? 0
-                                    if position > 0 {
+                                // Identity is the position, not the key string: legacy data can
+                                // carry duplicate keys, and deriving the index via firstIndex(of:)
+                                // would then replace/remove the wrong secret.
+                                ForEach(Array(connector.credentialKeys.enumerated()), id: \.offset) { idx, key in
+                                    if idx > 0 {
                                         Divider().opacity(0.5)
                                     }
                                     HStack(spacing: 8) {

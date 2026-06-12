@@ -31,10 +31,14 @@ enum BrandMark: String, CaseIterable {
     /// rows that share a brand all light up.
     static func resolve(id: String, name: String) -> BrandMark? {
         let haystack = "\(id) \(name)".lowercased()
+        // The bare "gh" alias (the GitHub CLI) must match as a standalone token,
+        // not a substring — otherwise ordinary words ending in "gh" ("high",
+        // "through") would wrongly light up the GitHub mark.
+        let tokens = Set(haystack.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
         // Order matters: more specific brands win over substrings they contain
         // (Copilot before GitHub, Gemini/Cloud/Drive before a bare "google").
         if haystack.contains("copilot") { return .copilot }
-        if haystack.contains("github") || haystack.contains("gh ") { return .github }
+        if haystack.contains("github") || tokens.contains("gh") { return .github }
         if haystack.contains("gitlab") { return .gitlab }
         if haystack.contains("jira") { return .jira }
         if haystack.contains("slack") { return .slack }
