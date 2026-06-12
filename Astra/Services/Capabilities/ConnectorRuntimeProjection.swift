@@ -58,6 +58,7 @@ struct ConnectorRuntimeProjection {
             counts[binding.originalKey, default: 0] += 1
         }
         var output: [String: String] = [:]
+        var injectedLegacyKeys: [String] = []
 
         for binding in bindings {
             output[binding.envKey] = binding.value
@@ -67,10 +68,39 @@ struct ConnectorRuntimeProjection {
                 continue
             }
             output[binding.originalKey] = binding.value
+            injectedLegacyKeys.append(binding.originalKey)
+        }
+
+        if !injectedLegacyKeys.isEmpty {
+            // Deprecation telemetry: bare key names silently rebind when a
+            // second connector of the same service appears. The fallback is
+            // scheduled for removal once these audits go quiet.
+            AppLogger.audit(.connectorTested, category: "Capabilities", fields: [
+                "source": "connector_env_projection",
+                "result": "legacy_bare_env_fallback_injected",
+                "legacy_key_count": String(injectedLegacyKeys.count),
+                "legacy_key_names": injectedLegacyKeys.sorted().joined(separator: ",")
+            ], level: .info)
         }
 
         output["ASTRA_CONNECTORS"] = manifestJSON(aliases: aliases)
         return output
+    }
+
+    /// Declared credential keys that fail to load a non-empty value from
+    /// the secret store, per connector. Key names only — never values.
+    func missingCredentialKeysByConnector() -> [(connector: Connector, missingKeys: [String])] {
+        connectors.compactMap { connector in
+            let credentials = connector.credentials(store: secretStore)
+            let missing = connector.credentialKeys
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { key in
+                    guard !key.isEmpty else { return false }
+                    let value = credentials[key] ?? ""
+                    return value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                }
+            return missing.isEmpty ? nil : (connector, missing)
+        }
     }
 
     func manifest() -> Manifest {

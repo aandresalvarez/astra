@@ -115,8 +115,29 @@ enum AgentRuntimeLaunchPreflight {
             task.title,
             contextText
         ].joined(separator: "\n")
+        let scopedConnectors = TaskCapabilityResolver(task: task).promptScope(contextText: contextText).connectors
+        // Service-agnostic credential presence check. Non-blocking — the
+        // agent may not need every projected connector — but a connector
+        // with declared, unloadable credentials must not fail silently.
+        let missingCredentials = ConnectorRuntimeProjection(connectors: scopedConnectors)
+            .missingCredentialKeysByConnector()
+        if !missingCredentials.isEmpty {
+            var warningFields = CapabilityAudit.taskContextFields(
+                source: "connector_credential_preflight",
+                task: task,
+                scope: .providerLaunch(contextText: contextText)
+            )
+            warningFields["phase"] = phase
+            warningFields["result"] = "credentials_missing"
+            warningFields["connector_names"] = CapabilityAudit.compactNames(missingCredentials.map(\.connector.name))
+            warningFields["missing_key_names"] = missingCredentials
+                .flatMap(\.missingKeys)
+                .sorted()
+                .joined(separator: ",")
+            AppLogger.audit(.connectorTested, category: "Worker", taskID: task.id, fields: warningFields, level: .warning, fieldMaxLength: 240)
+        }
         let connectors = ConnectorPreflightService.connectorsRequiringPreflight(
-            from: TaskCapabilityResolver(task: task).promptScope(contextText: contextText).connectors,
+            from: scopedConnectors,
             contextText: fullContext
         )
         let traceID = AuditTrace.make("connector-preflight")

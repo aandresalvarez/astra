@@ -79,6 +79,7 @@ final class AgentRuntimeWorker {
         let selectedRuntime = runtimeConfiguration.selectedRuntime(for: task)
         alignTaskModelWithSelectedRuntime(task, selectedRuntime: selectedRuntime, phase: "run")
         clearMismatchedProviderSessionIfNeeded(for: task, selectedRuntime: selectedRuntime, phase: "run")
+        TaskCapabilitySnapshotter.refreshForFreshRun(task: task)
         await executeRuntimeSession(
             task: task,
             modelContext: modelContext,
