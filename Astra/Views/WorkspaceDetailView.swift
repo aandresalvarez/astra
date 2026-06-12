@@ -25,7 +25,7 @@ struct WorkspaceDetailView: View {
             // Header
             HStack {
                 Text("Workspace Settings")
-                    .font(Stanford.heading(20))
+                    .font(Stanford.ui(17, weight: .semibold))
                     .foregroundStyle(Stanford.black)
                 Spacer()
 
@@ -115,40 +115,44 @@ struct WorkspaceDetailView: View {
                                 .foregroundStyle(.secondary)
 
                             if !workspace.additionalPaths.isEmpty {
-                                ForEach(workspace.additionalPaths, id: \.self) { path in
-                                    HStack {
-                                        Image(systemName: "folder")
-                                            .font(Stanford.ui(12))
-                                            .foregroundStyle(Stanford.coolGrey)
-                                        Text(path)
-                                            .font(Stanford.ui(13, design: .monospaced))
-                                            .lineLimit(1)
-                                        Spacer()
-                                        Button {
-                                            pendingRemoval = PendingRemoval(
-                                                title: "Remove Folder?",
-                                                message: "“\(path)” will be unlinked from this workspace. The folder itself is not deleted from disk.",
-                                                confirmTitle: "Remove Folder",
-                                                perform: {
-                                                    workspace.additionalPaths.removeAll { $0 == path }
-                                                    workspace.updatedAt = Date()
-                                                }
-                                            )
-                                        } label: {
-                                            Image(systemName: "trash")
+                                VStack(alignment: .leading, spacing: 0) {
+                                    ForEach(Array(workspace.additionalPaths.enumerated()), id: \.element) { index, path in
+                                        if index > 0 {
+                                            Divider().opacity(0.4)
+                                        }
+                                        HStack {
+                                            Image(systemName: "folder")
                                                 .font(Stanford.ui(12))
                                                 .foregroundStyle(Stanford.coolGrey)
+                                            Text(path)
+                                                .font(Stanford.ui(13, design: .monospaced))
+                                                .lineLimit(1)
+                                                .help(path)
+                                            Spacer()
+                                            Button {
+                                                pendingRemoval = PendingRemoval(
+                                                    title: "Remove Folder?",
+                                                    message: "“\(path)” will be unlinked from this workspace. The folder itself is not deleted from disk.",
+                                                    confirmTitle: "Remove Folder",
+                                                    perform: {
+                                                        workspace.additionalPaths.removeAll { $0 == path }
+                                                        workspace.updatedAt = Date()
+                                                    }
+                                                )
+                                            } label: {
+                                                Image(systemName: "trash")
+                                                    .font(Stanford.ui(12))
+                                                    .foregroundStyle(Stanford.coolGrey)
+                                            }
+                                            .buttonStyle(.plain)
+                                            .help("Remove folder")
                                         }
-                                        .buttonStyle(.plain)
+                                        .padding(.vertical, 6)
                                     }
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(Stanford.fog)
-                                    .clipShape(RoundedRectangle(cornerRadius: 6))
                                 }
                             }
 
-                            Button("Add Folder...") { browseAdditionalPath() }
+                            Button(workspace.additionalPaths.isEmpty ? "Choose…" : "Add Folder…") { browseAdditionalPath() }
                         }
                         .padding(.vertical, 4)
                     } label: {
@@ -170,66 +174,17 @@ struct WorkspaceDetailView: View {
                                 .foregroundStyle(.secondary)
 
                             if !sshConnections.isEmpty {
-                                ForEach(sshConnections) { conn in
-                                    HStack(spacing: 8) {
-                                        Image(systemName: "network")
-                                            .font(Stanford.ui(12))
-                                            .foregroundStyle(Stanford.lagunita)
-
-                                        VStack(alignment: .leading, spacing: 1) {
-                                            Text(conn.displayLabel)
-                                                .font(Stanford.body(13))
-                                                .fontWeight(.medium)
-                                            Text("\(conn.sshTarget):\(conn.remotePath)")
-                                                .font(Stanford.ui(12, design: .monospaced))
-                                                .foregroundStyle(.secondary)
-                                                .lineLimit(1)
+                                VStack(alignment: .leading, spacing: 0) {
+                                    ForEach(Array(sshConnections.enumerated()), id: \.element.id) { index, conn in
+                                        if index > 0 {
+                                            Divider().opacity(0.4)
                                         }
-
-                                        Spacer()
-
-                                        // Status indicator
-                                        if let result = conn.lastTestResult {
-                                            Image(systemName: result ? "checkmark.circle.fill" : "xmark.circle.fill")
-                                                .font(Stanford.ui(13))
-                                                .foregroundStyle(result ? Stanford.paloAltoGreen : Stanford.cardinalRed)
-                                        }
-
-                                        Button {
-                                            editingSSH = conn
-                                            showSSHEditor = true
-                                        } label: {
-                                            Image(systemName: "pencil")
-                                                .font(Stanford.ui(12))
-                                                .foregroundStyle(Stanford.coolGrey)
-                                        }
-                                        .buttonStyle(.plain)
-
-                                        Button {
-                                            pendingRemoval = PendingRemoval(
-                                                title: "Remove SSH Connection?",
-                                                message: "“\(conn.displayLabel)” (\(conn.sshTarget):\(conn.remotePath)) will be removed from this workspace. The remote server and its files are not affected.",
-                                                confirmTitle: "Remove Connection",
-                                                perform: {
-                                                    sshConnections.removeAll { $0.id == conn.id }
-                                                    saveSSHConnections()
-                                                }
-                                            )
-                                        } label: {
-                                            Image(systemName: "trash")
-                                                .font(Stanford.ui(12))
-                                                .foregroundStyle(Stanford.coolGrey)
-                                        }
-                                        .buttonStyle(.plain)
+                                        sshRow(conn)
                                     }
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 6)
-                                    .background(Stanford.fog)
-                                    .clipShape(RoundedRectangle(cornerRadius: 6))
                                 }
                             }
 
-                            Button("Add SSH Connection...") {
+                            Button(sshConnections.isEmpty ? "Connect…" : "Add SSH Connection…") {
                                 editingSSH = SSHConnection()
                                 showSSHEditor = true
                             }
@@ -239,7 +194,7 @@ struct WorkspaceDetailView: View {
                         HStack {
                             Text("SSH Connections")
                             if !sshConnections.isEmpty {
-                                Text("(\(sshConnections.count))")
+                                Text(sshReachabilitySummary)
                                     .font(Stanford.caption(12))
                                     .foregroundStyle(.secondary)
                             }
@@ -258,10 +213,10 @@ struct WorkspaceDetailView: View {
                                     ForEach(workspace.skills.sorted { $0.name < $1.name }) { skill in
                                         Label(skill.name, systemImage: skill.icon)
                                             .font(Stanford.caption(12))
-                                            .foregroundStyle(Stanford.lagunita)
+                                            .foregroundStyle(.secondary)
                                             .padding(.horizontal, 8)
                                             .padding(.vertical, 4)
-                                            .background(Stanford.lagunita.opacity(0.1))
+                                            .background(Stanford.fog)
                                             .clipShape(Capsule())
                                     }
                                 }
@@ -280,15 +235,17 @@ struct WorkspaceDetailView: View {
 
                     // Stats
                     GroupBox("Stats") {
-                        HStack(spacing: 24) {
-                            statItem("Tasks", value: "\(workspace.tasks.count)")
-                            statItem("Tokens", value: Formatters.formatTokens(workspace.totalTokens))
-                            statItem("Cost", value: String(format: "$%.2f", workspace.totalCost))
+                        VStack(spacing: 0) {
+                            statRow("Tasks", value: "\(workspace.tasks.count)")
+                            Divider().opacity(0.4)
+                            statRow("Tokens", value: Formatters.formatTokens(workspace.totalTokens))
+                            Divider().opacity(0.4)
+                            statRow("Cost", value: String(format: "$%.2f", workspace.totalCost))
                         }
                         .padding(.vertical, 4)
                     }
 
-                    // Delete
+                    // Action footer
                     HStack {
                         Spacer()
                         Button(role: .destructive) {
@@ -358,15 +315,91 @@ struct WorkspaceDetailView: View {
         }
     }
 
-    private func statItem(_ label: String, value: String) -> some View {
-        VStack(spacing: 2) {
-            Text(value)
-                .font(Stanford.heading(16))
-                .foregroundStyle(Stanford.black)
-            Text(label)
-                .font(Stanford.caption(12))
-                .foregroundStyle(Stanford.coolGrey)
+    /// Shared reachability carried in the section heading instead of a status
+    /// glyph on every row (group status, don't repeat).
+    private var sshReachabilitySummary: String {
+        let reachable = sshConnections.filter { $0.lastTestResult == true }.count
+        if reachable == sshConnections.count {
+            return "· \(sshConnections.count)"
         }
+        return "· \(reachable)/\(sshConnections.count) reachable"
+    }
+
+    /// Collapsed SSH summary row: quiet leading icon, strong title, one-line
+    /// target subtitle, and a single remove verb. The whole row body opens the
+    /// editor sheet (the expanded edit surface); only an exceptional failing
+    /// connection shows a quiet status glyph.
+    private func sshRow(_ conn: SSHConnection) -> some View {
+        HStack(spacing: 8) {
+            Button {
+                editingSSH = conn
+                showSSHEditor = true
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "network")
+                        .font(Stanford.ui(12))
+                        .foregroundStyle(.secondary)
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(conn.displayLabel)
+                            .font(Stanford.ui(13, weight: .semibold))
+                            .foregroundStyle(.primary)
+                        Text("\(conn.sshTarget):\(conn.remotePath)")
+                            .font(Stanford.ui(12, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    .help("\(conn.sshTarget):\(conn.remotePath)")
+
+                    Spacer()
+
+                    // Exceptional state only: a failing connection gets a quiet
+                    // glyph; reachable/untested connections rely on the heading.
+                    if conn.lastTestResult == false {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(Stanford.ui(12))
+                            .foregroundStyle(Stanford.statusWarn)
+                            .help("Last connection test failed")
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                pendingRemoval = PendingRemoval(
+                    title: "Remove SSH Connection?",
+                    message: "“\(conn.displayLabel)” (\(conn.sshTarget):\(conn.remotePath)) will be removed from this workspace. The remote server and its files are not affected.",
+                    confirmTitle: "Remove Connection",
+                    perform: {
+                        sshConnections.removeAll { $0.id == conn.id }
+                        saveSSHConnections()
+                    }
+                )
+            } label: {
+                Image(systemName: "trash")
+                    .font(Stanford.ui(12))
+                    .foregroundStyle(Stanford.coolGrey)
+            }
+            .buttonStyle(.plain)
+            .help("Remove connection")
+        }
+        .padding(.vertical, 6)
+    }
+
+    /// Quiet key-value row for read-only facts (state reads as rows; verbs read
+    /// as buttons in the footer).
+    private func statRow(_ label: String, value: String) -> some View {
+        HStack {
+            Text(label)
+                .font(Stanford.ui(13))
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+                .font(Stanford.ui(13, weight: .semibold))
+                .foregroundStyle(Stanford.black)
+        }
+        .padding(.vertical, 6)
     }
 
     private func saveSSHConnections() {

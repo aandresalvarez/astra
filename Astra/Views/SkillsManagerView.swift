@@ -117,27 +117,26 @@ struct SkillsManagerView: View {
     private func skillRow(_ skill: Skill) -> some View {
         HStack(spacing: 8) {
             Image(systemName: skill.icon)
-                .foregroundStyle(skill.isGlobal ? Stanford.poppy : Stanford.lagunita)
+                .foregroundStyle(.secondary)
                 .frame(width: 20)
             VStack(alignment: .leading, spacing: 2) {
                 Text(skill.name.isEmpty ? "Untitled" : skill.name)
                     .font(Stanford.body(15))
-                HStack(spacing: 4) {
-                    Text("\(skill.allowedTools.count) capabilities")
-                        .font(Stanford.caption(12))
-                        .foregroundStyle(.secondary)
-                    if skill.isGlobal {
-                        Text("shared")
-                            .font(Stanford.caption(10))
-                            .foregroundStyle(Stanford.poppy)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(Stanford.poppy.opacity(0.1))
-                            .clipShape(Capsule())
-                    }
-                }
+                Text(skillRowSubtitle(skill))
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .help(skillRowSubtitle(skill))
             }
         }
+    }
+
+    private func skillRowSubtitle(_ skill: Skill) -> String {
+        let tools = skill.allowedTools
+        guard !tools.isEmpty else { return "No capabilities" }
+        let lead = tools.prefix(2).joined(separator: ", ")
+        let extra = tools.count - min(tools.count, 2)
+        return extra > 0 ? "\(lead) · +\(extra)" : lead
     }
 
     private func createSkill() {
@@ -382,14 +381,19 @@ struct SkillEditorView: View {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 8) {
                         if !skill.connectors.isEmpty {
-                            ForEach(skill.connectors.sorted(by: { $0.name < $1.name })) { conn in
+                            let sortedConnectors = skill.connectors.sorted(by: { $0.name < $1.name })
+                            ForEach(Array(sortedConnectors.enumerated()), id: \.element.id) { index, conn in
+                                if index > 0 {
+                                    Divider().padding(.leading, 38)
+                                }
                                 HStack(spacing: 10) {
-                                    Image(systemName: conn.icon)
-                                        .font(Stanford.ui(15))
-                                        .foregroundStyle(.white)
-                                        .frame(width: 28, height: 28)
-                                        .background(Stanford.paloAltoGreen)
-                                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                                    CapabilityLeadingIcon(
+                                        systemImage: conn.icon,
+                                        brand: BrandMark.resolve(id: conn.serviceType, name: conn.name),
+                                        pointSize: 16
+                                    )
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 28, height: 28)
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(conn.name)
                                             .font(Stanford.body(14))
@@ -397,7 +401,7 @@ struct SkillEditorView: View {
                                         HStack(spacing: 6) {
                                             Text(conn.serviceType.replacingOccurrences(of: "_", with: " ").capitalized)
                                                 .font(Stanford.caption(11))
-                                                .foregroundStyle(Stanford.paloAltoGreen)
+                                                .foregroundStyle(.secondary)
                                             if !conn.baseURL.isEmpty {
                                                 Text(conn.baseURL)
                                                     .font(Stanford.caption(11))
@@ -414,11 +418,7 @@ struct SkillEditorView: View {
                                             Text("\(conn.credentialKeys.count)")
                                                 .font(Stanford.caption(11))
                                         }
-                                        .foregroundStyle(Stanford.paloAltoGreen)
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(Stanford.paloAltoGreen.opacity(0.1))
-                                        .clipShape(Capsule())
+                                        .foregroundStyle(.secondary)
                                     }
                                     Button {
                                         pendingDestruction = PendingSkillDestruction(
@@ -438,19 +438,13 @@ struct SkillEditorView: View {
                                     .buttonStyle(.plain)
                                     .help("Detach connector")
                                 }
-                                .padding(8)
-                                .background(Stanford.paloAltoGreen.opacity(0.05))
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(Stanford.paloAltoGreen.opacity(0.15), lineWidth: 1)
-                                )
+                                .padding(.vertical, 4)
                             }
                         } else {
                             HStack(spacing: 8) {
                                 Image(systemName: "bolt.horizontal.circle")
                                     .font(Stanford.ui(16))
-                                    .foregroundStyle(Stanford.paloAltoGreen.opacity(0.4))
+                                    .foregroundStyle(.tertiary)
                                 Text("No connectors attached")
                                     .font(Stanford.caption(13))
                                     .foregroundStyle(Stanford.coolGrey)
@@ -472,7 +466,7 @@ struct SkillEditorView: View {
                             } label: {
                                 Label("Attach Connector", systemImage: "plus.circle")
                                     .font(Stanford.body(13))
-                                    .foregroundStyle(Stanford.paloAltoGreen)
+                                    .foregroundStyle(Stanford.lagunita)
                             }
                         } else if skill.connectors.isEmpty {
                             Text("Create connectors in the Connectors tab to attach them here.")
@@ -484,16 +478,13 @@ struct SkillEditorView: View {
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "bolt.horizontal.circle")
-                            .foregroundStyle(Stanford.paloAltoGreen)
+                            .foregroundStyle(.secondary)
                         Text("Connectors")
+                        Spacer()
                         if !skill.connectors.isEmpty {
                             Text("\(skill.connectors.count)")
-                                .font(Stanford.caption(11))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 1)
-                                .background(Stanford.paloAltoGreen)
-                                .clipShape(Capsule())
+                                .font(Stanford.caption(12))
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -503,14 +494,16 @@ struct SkillEditorView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         // Attached workspace tools
                         if !skill.localTools.isEmpty {
-                            ForEach(skill.localTools.sorted(by: { $0.name < $1.name })) { tool in
+                            let sortedTools = skill.localTools.sorted(by: { $0.name < $1.name })
+                            ForEach(Array(sortedTools.enumerated()), id: \.element.id) { index, tool in
+                                if index > 0 {
+                                    Divider().padding(.leading, 38)
+                                }
                                 HStack(spacing: 10) {
                                     Image(systemName: LocalTool.iconForType(tool.toolType))
                                         .font(Stanford.ui(15))
-                                        .foregroundStyle(.white)
+                                        .foregroundStyle(.secondary)
                                         .frame(width: 28, height: 28)
-                                        .background(Stanford.tools)
-                                        .clipShape(RoundedRectangle(cornerRadius: 6))
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(tool.name)
                                             .font(Stanford.body(14))
@@ -523,11 +516,7 @@ struct SkillEditorView: View {
                                     Spacer()
                                     Text(tool.toolType.uppercased())
                                         .font(Stanford.caption(10))
-                                        .foregroundStyle(Stanford.tools)
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(Stanford.tools.opacity(0.1))
-                                        .clipShape(Capsule())
+                                        .foregroundStyle(.secondary)
                                     Button {
                                         pendingDestruction = PendingSkillDestruction(
                                             title: "Detach Tool",
@@ -546,13 +535,7 @@ struct SkillEditorView: View {
                                     .buttonStyle(.plain)
                                     .help("Detach tool")
                                 }
-                                .padding(8)
-                                .background(Stanford.tools.opacity(0.04))
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(Stanford.tools.opacity(0.15), lineWidth: 1)
-                                )
+                                .padding(.vertical, 4)
                             }
                         }
 
@@ -586,7 +569,7 @@ struct SkillEditorView: View {
                             HStack(spacing: 8) {
                                 Image(systemName: "wrench.and.screwdriver")
                                     .font(Stanford.ui(16))
-                                    .foregroundStyle(Stanford.tools.opacity(0.4))
+                                    .foregroundStyle(.tertiary)
                                 Text("No tools attached")
                                     .font(Stanford.caption(13))
                                     .foregroundStyle(Stanford.coolGrey)
@@ -601,7 +584,7 @@ struct SkillEditorView: View {
                                 .textFieldStyle(.roundedBorder)
                                 .font(Stanford.ui(13, design: .monospaced))
                                 .onSubmit { addCustomTool() }
-                            Button("Add") { addCustomTool() }
+                            Button("Add tool") { addCustomTool() }
                                 .disabled(newCustomTool.trimmingCharacters(in: .whitespaces).isEmpty)
                         }
 
@@ -618,7 +601,7 @@ struct SkillEditorView: View {
                             } label: {
                                 Label("Attach Workspace Tool", systemImage: "plus.circle")
                                     .font(Stanford.body(13))
-                                    .foregroundStyle(Stanford.tools)
+                                    .foregroundStyle(Stanford.lagunita)
                             }
                         }
                     }
@@ -626,17 +609,14 @@ struct SkillEditorView: View {
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "wrench.and.screwdriver")
-                            .foregroundStyle(Stanford.tools)
+                            .foregroundStyle(.secondary)
                         Text("Tools")
+                        Spacer()
                         if !skill.localTools.isEmpty || !skill.customTools.isEmpty {
                             let totalTools = skill.localTools.count + skill.customTools.count
                             Text("\(totalTools)")
-                                .font(Stanford.caption(11))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 1)
-                                .background(Stanford.tools)
-                                .clipShape(Capsule())
+                                .font(Stanford.caption(12))
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -718,7 +698,7 @@ struct SkillEditorView: View {
                                                 .textFieldStyle(.roundedBorder)
                                                 .font(Stanford.ui(13, design: .monospaced))
                                                 .onSubmit { addConfigItem(at: origIdx) }
-                                            Button("Add") { addConfigItem(at: origIdx) }
+                                            Button("Add value") { addConfigItem(at: origIdx) }
                                                 .disabled(newConfigItem.trimmingCharacters(in: .whitespaces).isEmpty)
                                         }
                                     } else {
@@ -824,7 +804,7 @@ struct SkillEditorView: View {
                                     Text("Inherited from attached connectors")
                                         .font(Stanford.caption(12).weight(.medium))
                                 }
-                                .foregroundStyle(Stanford.paloAltoGreen)
+                                .foregroundStyle(.secondary)
 
                                 Text("These keys are injected automatically from connector credentials and are managed in the Connectors tab.")
                                     .font(Stanford.caption(11))
@@ -860,20 +840,12 @@ struct SkillEditorView: View {
 
                                             Text(item.connector.name)
                                                 .font(Stanford.caption(11))
-                                                .foregroundStyle(Stanford.paloAltoGreen)
-                                                .padding(.horizontal, 6)
-                                                .padding(.vertical, 2)
-                                                .background(Stanford.paloAltoGreen.opacity(0.1))
-                                                .clipShape(Capsule())
+                                                .foregroundStyle(.secondary)
                                         }
                                         .padding(.horizontal, 8)
                                         .padding(.vertical, 4)
-                                        .background(Stanford.paloAltoGreen.opacity(0.05))
+                                        .background(Stanford.fog)
                                         .clipShape(RoundedRectangle(cornerRadius: 6))
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 6)
-                                                .stroke(Stanford.paloAltoGreen.opacity(0.12), lineWidth: 1)
-                                        )
                                     }
                                 }
                             }
@@ -889,7 +861,7 @@ struct SkillEditorView: View {
                                     .textFieldStyle(.roundedBorder)
                                     .font(Stanford.ui(13, design: .monospaced))
                                     .onSubmit { addEnvVar() }
-                                Button("Add") { addEnvVar() }
+                                Button("Save secret") { addEnvVar() }
                                     .disabled(newEnvKey.trimmingCharacters(in: .whitespaces).isEmpty || newEnvValue.isEmpty)
                                 Button("Cancel") {
                                     cancelSecretEntry()

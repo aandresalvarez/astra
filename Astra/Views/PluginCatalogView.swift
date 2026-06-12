@@ -576,7 +576,9 @@ struct PluginCatalogView: View {
                     .font(Stanford.caption(12).weight(isSelected ? .semibold : .regular))
                 Text("\(count)")
                     .font(Stanford.caption(10).weight(.medium))
-                    .foregroundStyle(isSelected ? Stanford.lagunita.opacity(0.72) : Color.secondary)
+                    // COL: the count is metadata, never the interactive accent. The
+                    // chip's label tint + background carry the selected affordance.
+                    .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 9)
             .padding(.vertical, 5)
@@ -740,22 +742,20 @@ struct PluginCatalogView: View {
             .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
-    private func capabilityRowMetadata(_ package: PluginPackage, needsSetup: Bool) -> String {
+    private func capabilityRowMetadata(_ package: PluginPackage, needsSetup _: Bool) -> String {
+        // P2: the group heading ("Needs attention" / "Enabled" / "Available" /
+        // "Blocked") already carries the attention signal, so the collapsed row
+        // keeps only item-specific facts (approval + risk). The full attention /
+        // blocker detail lives in the expanded detail status summary.
         let decision = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext)
         var parts: [String] = []
-        if let attention = CapabilityRowPresentation.attentionLabel(needsSetup: needsSetup, decision: decision) {
-            parts.append(attention)
-        }
         parts.append(capabilityApprovalLabel(decision.governance.approvalStatus))
         parts.append("\(capabilityRiskLabel(decision.governance.riskLevel)) risk")
         return parts.joined(separator: " · ")
     }
 
-    private func capabilityRowMetadataColor(_ package: PluginPackage, needsSetup: Bool) -> Color {
+    private func capabilityRowMetadataColor(_ package: PluginPackage, needsSetup _: Bool) -> Color {
         let decision = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext)
-        if CapabilityRowPresentation.attentionLabel(needsSetup: needsSetup, decision: decision) != nil {
-            return Stanford.poppy
-        }
         switch decision.governance.riskLevel {
         case .restricted:
             return Stanford.cardinalRed
@@ -766,31 +766,16 @@ struct PluginCatalogView: View {
         }
     }
 
+    @ViewBuilder
     private func packageActionRow(_ package: PluginPackage, enabled: Bool) -> some View {
-        Group {
-            if enabled {
-                enabledPackageControls(package)
-            } else {
-                installButton(for: package)
-            }
+        // P3/P5a: collapsed rows stay summaries. An enabled row's state is carried
+        // by the "Enabled" group heading, so it shows no trailing control — the row
+        // body opens the editor, whose header hosts the destructive "Disable" verb.
+        // A not-enabled row keeps a single "Enable" verb (row-level add).
+        if !enabled {
+            installButton(for: package)
+                .fixedSize()
         }
-        .fixedSize()
-    }
-
-    private func enabledPackageControls(_ package: PluginPackage) -> some View {
-        HStack(spacing: 8) {
-            enabledStatusLabel
-
-            Button(role: .destructive) {
-                disableCandidate = package
-            } label: {
-                Label("Disable", systemImage: "minus.circle")
-                    .font(Stanford.caption(11).weight(.medium))
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-        }
-        .fixedSize()
     }
 
     private var enabledStatusLabel: some View {
@@ -1630,9 +1615,14 @@ struct PluginCatalogView: View {
 
                     Spacer()
 
-                    Text("\(links.count) editable")
-                        .font(Stanford.caption(10))
-                        .foregroundStyle(.tertiary)
+                    // P4a: a lone editable resource is already rendered expanded
+                    // below, so a bare "1 editable" count names nothing worth
+                    // counting. Show the count only when it summarizes 2+ items.
+                    if links.count > 1 {
+                        Text("\(links.count) editable")
+                            .font(Stanford.caption(10))
+                            .foregroundStyle(.tertiary)
+                    }
                 }
 
                 VStack(spacing: 0) {

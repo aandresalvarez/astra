@@ -14,8 +14,8 @@ struct ConnectorsManagerView: View {
             // Header
             HStack {
                 Text("Connectors")
-                    .font(Stanford.heading(22))
-                    .foregroundStyle(Stanford.black)
+                    .font(Stanford.ui(18, weight: .semibold))
+                    .foregroundStyle(.primary)
                 Spacer()
                 if let onManageCapabilities {
                     Button { onManageCapabilities() } label: {
@@ -74,18 +74,32 @@ struct ConnectorsManagerView: View {
 
     private func connectorRow(_ connector: Connector) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: connector.icon)
-                .foregroundStyle(Stanford.lagunita)
-                .frame(width: 20)
+            CapabilityLeadingIcon(
+                systemImage: connector.icon,
+                brand: BrandMark.resolve(id: connector.serviceType, name: connector.name),
+                pointSize: 16
+            )
+            .foregroundStyle(.secondary)
+            .frame(width: 20)
             VStack(alignment: .leading, spacing: 2) {
                 Text(connector.name.isEmpty ? "Untitled" : connector.name)
                     .font(Stanford.body(15))
-                Text(connector.displaySummary)
+                Text(rowSubtitle(connector))
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .help(rowSubtitle(connector))
             }
         }
+    }
+
+    /// Lead the subtitle with the recognizable service noun (GitHub, Jira, …),
+    /// then the host/scoping metadata from `displaySummary` (P2a).
+    private func rowSubtitle(_ connector: Connector) -> String {
+        let label = ConnectorEditorView.serviceLabel(connector.serviceType)
+        let summary = connector.displaySummary
+        guard !summary.isEmpty, summary != connector.serviceType else { return label }
+        return "\(label) · \(summary)"
     }
 
     private func createConnector() {
@@ -302,6 +316,9 @@ struct ConnectorEditorView: View {
 
                         ForEach(Array(connector.configKeys.enumerated()), id: \.offset) { idx, key in
                             if idx < connector.configValues.count {
+                                if idx > 0 {
+                                    Divider().opacity(0.5)
+                                }
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(key)
                                         .font(Stanford.ui(13, design: .monospaced))
@@ -390,9 +407,7 @@ struct ConnectorEditorView: View {
                                         .buttonStyle(.plain)
                                     }
                                 }
-                                .padding(8)
-                                .background(Stanford.fog)
-                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                                .padding(.vertical, 4)
                             }
                         }
 
@@ -405,7 +420,7 @@ struct ConnectorEditorView: View {
                                 .textFieldStyle(.roundedBorder)
                                 .font(Stanford.ui(13, design: .monospaced))
                                 .onSubmit { addConfig() }
-                            Button("Add") { addConfig() }
+                            Button("Add parameter") { addConfig() }
                                 .disabled(newConfigKey.trimmingCharacters(in: .whitespaces).isEmpty)
                         }
                     }
@@ -428,8 +443,11 @@ struct ConnectorEditorView: View {
 
                         if !connector.credentialKeys.isEmpty {
                             VStack(spacing: 4) {
-                                ForEach(connector.credentialKeys, id: \.self) { key in
+                                ForEach(Array(connector.credentialKeys.enumerated()), id: \.element) { position, key in
                                     let idx = connector.credentialKeys.firstIndex(of: key) ?? 0
+                                    if position > 0 {
+                                        Divider().opacity(0.5)
+                                    }
                                     HStack(spacing: 8) {
                                         Text(key)
                                             .font(Stanford.ui(13, design: .monospaced))
@@ -450,10 +468,14 @@ struct ConnectorEditorView: View {
                                                 Text(String(repeating: "\u{2022}", count: 12))
                                                     .font(Stanford.ui(13))
                                                     .foregroundStyle(.secondary)
-                                                Image(systemName: inKeychain ? "checkmark.shield.fill" : "exclamationmark.triangle")
-                                                    .font(Stanford.ui(10))
-                                                    .foregroundStyle(inKeychain ? Stanford.paloAltoGreen : Stanford.poppy)
-                                                    .help(inKeychain ? "Stored in Keychain" : "Not yet in Keychain — re-enter value")
+                                                // P2: the header carries the count for stored secrets;
+                                                // only flag the exceptional row that still needs a value.
+                                                if !inKeychain {
+                                                    Image(systemName: "exclamationmark.triangle")
+                                                        .font(Stanford.ui(10))
+                                                        .foregroundStyle(Stanford.poppy)
+                                                        .help("Not yet in Keychain — re-enter value")
+                                                }
                                             }
                                         }
 
@@ -503,10 +525,7 @@ struct ConnectorEditorView: View {
                                             .buttonStyle(.plain)
                                         }
                                     }
-                                    .padding(.horizontal, 8)
                                     .padding(.vertical, 4)
-                                    .background(Stanford.fog)
-                                    .clipShape(RoundedRectangle(cornerRadius: 6))
                                 }
                             }
                         }
@@ -521,7 +540,7 @@ struct ConnectorEditorView: View {
                                     .textFieldStyle(.roundedBorder)
                                     .font(Stanford.ui(13, design: .monospaced))
                                     .onSubmit { addCredential() }
-                                Button("Add") { addCredential() }
+                                Button("Store secret") { addCredential() }
                                     .disabled(newCredKey.trimmingCharacters(in: .whitespaces).isEmpty || newCredValue.isEmpty)
                                 Button("Cancel") {
                                     cancelCredentialEntry()
@@ -533,7 +552,7 @@ struct ConnectorEditorView: View {
                             Button {
                                 isAddingCredential = true
                             } label: {
-                                Label("Add Secret", systemImage: "plus.circle")
+                                Label("New secret", systemImage: "plus.circle")
                                     .font(Stanford.body(13))
                             }
                             .buttonStyle(.bordered)
@@ -634,10 +653,6 @@ struct ConnectorEditorView: View {
                         .padding(4)
                         .background(Color(nsColor: .textBackgroundColor))
                         .clipShape(RoundedRectangle(cornerRadius: 6))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6)
-                                .stroke(Stanford.sandstone.opacity(0.4), lineWidth: 1)
-                        )
                 }
 
                 // Delete
@@ -1020,7 +1035,7 @@ struct ConnectorEditorView: View {
         newListItem = ""
     }
 
-    private static func serviceLabel(_ type: String) -> String {
+    static func serviceLabel(_ type: String) -> String {
         switch type {
         case "redcap": return "REDCap"
         case "rest_api": return "REST API"
