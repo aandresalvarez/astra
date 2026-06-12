@@ -40,10 +40,10 @@ struct BrandMarkTests {
 
     @Test("catalog brand icons map onto shared, parseable marks")
     func catalogBrandIconsMapOntoSharedMarks() {
-        // The presentation-layer enum delegates artwork to BrandMark; every case
-        // must land on a mark that actually parses (the allCases bounds test
-        // covers geometry; this pins the mapping's totality at runtime too).
-        for icon in [CapabilityBrandIcon.github, .jira, .googleDrive, .googleCloud, .microsoft365] {
+        // The presentation-layer enum delegates artwork to BrandMark. Iterating
+        // allCases means a future CapabilityBrandIcon case is covered here
+        // automatically: its mapped mark must parse to real geometry.
+        for icon in CapabilityBrandIcon.allCases {
             #expect(!icon.brandMark.path.isEmpty, "\(icon) maps to an unparseable mark")
         }
     }

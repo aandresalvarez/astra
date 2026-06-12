@@ -3,9 +3,10 @@ import SwiftUI
 // Real brand marks for capability rows. The app ships no asset catalog and the
 // custom bundling step makes one fragile, so brand glyphs are rendered from
 // their vector path data directly into a SwiftUI `Path`. The path strings are
-// the official single-colour marks from Simple Icons (CC0 / public domain); the
-// trademarks belong to their owners and are used here only to identify the
-// integration each capability talks to.
+// the official single-colour marks from Simple Icons (CC0 / public domain),
+// with one exception: `microsoft365` is an in-house geometric mark (Simple
+// Icons carries no Microsoft glyphs). The trademarks belong to their owners and
+// are used here only to identify the integration each capability talks to.
 //
 // Marks are monochrome (they inherit `foregroundStyle`), which keeps them
 // legible in both light and dark mode and consistent with the SF Symbol icons
