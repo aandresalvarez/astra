@@ -67,17 +67,18 @@ struct ToolsManagerView: View {
     private func toolRow(_ tool: LocalTool) -> some View {
         HStack(spacing: 8) {
             Image(systemName: LocalTool.iconForType(tool.toolType))
-                .foregroundStyle(Stanford.lagunita)
+                .foregroundStyle(.secondary)
                 .frame(width: 20)
             VStack(alignment: .leading, spacing: 2) {
                 Text(tool.name.isEmpty ? "Untitled" : tool.name)
-                    .font(Stanford.body(15))
+                    .font(Stanford.ui(14, weight: .semibold))
                 Text(tool.displayCommand)
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
         }
+        .help(tool.displayCommand)
     }
 
     private func createTool() {
@@ -205,9 +206,7 @@ struct LocalToolEditorView: View {
                                 .foregroundStyle(Stanford.black)
                             Spacer()
                         }
-                        .padding(8)
-                        .background(Stanford.fog)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .padding(.vertical, 4)
                     }
                 }
 
@@ -241,14 +240,19 @@ struct LocalToolEditorView: View {
                                 }
                                 .disabled(workspace == nil)
 
-                                Button {
-                                    duplicateForWorkspace()
-                                } label: {
-                                    Label("Duplicate for this workspace", systemImage: "doc.on.doc")
-                                        .font(Stanford.body(13))
+                                Divider()
+
+                                HStack {
+                                    Spacer()
+                                    Button {
+                                        duplicateForWorkspace()
+                                    } label: {
+                                        Label("Duplicate for this workspace", systemImage: "doc.on.doc")
+                                            .font(Stanford.body(13))
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .disabled(workspace == nil)
                                 }
-                                .buttonStyle(.bordered)
-                                .disabled(workspace == nil)
                             }
                         } else {
                             Toggle(isOn: Binding(
