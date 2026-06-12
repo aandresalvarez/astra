@@ -63,9 +63,7 @@ struct CapabilityInstaller {
         }
         // Snapshot the pre-install library state so a failed enable can be
         // compensated instead of leaving an orphaned or overwritten file.
-        let packageURL = library.packageURL(for: package.id)
-        let packageFileExistedBefore = FileManager.default.fileExists(atPath: packageURL.path)
-        let previousPackageData = try? Data(contentsOf: packageURL)
+        let packageStorageSnapshot = library.makePackageStorageSnapshot(for: package.id)
         do {
             try library.install(package)
         } catch {
@@ -90,15 +88,11 @@ struct CapabilityInstaller {
                 traceID: traceID
             )
         } catch {
-            Self.restoreLibraryFile(
-                previousData: previousPackageData,
-                fileExistedBefore: packageFileExistedBefore,
-                at: packageURL
-            )
+            library.restorePackageStorage(packageStorageSnapshot)
             var fields = capabilityFields(for: package, workspace: workspace, source: "install")
             if let traceID { fields["trace_id"] = traceID }
             fields["result"] = "enable_failed_library_rolled_back"
-            fields["restored_previous_file"] = previousPackageData == nil ? "false" : "true"
+            fields["restored_previous_file"] = packageStorageSnapshot.snapshotURL == nil ? "false" : "true"
             AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: fields, level: .error)
             throw error
         }

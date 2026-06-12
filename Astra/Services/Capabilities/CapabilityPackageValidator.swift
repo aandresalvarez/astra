@@ -24,6 +24,8 @@ struct CapabilityPackageValidationIssue: Equatable, Identifiable {
         case missingPrerequisite
         case emptyPayload
         case packageUpdate
+        case invalidIconAsset
+        case missingIconAsset
     }
 
     var severity: Severity
@@ -46,6 +48,7 @@ struct CapabilityPackageValidationIssue: Equatable, Identifiable {
 struct CapabilityPackageValidationReport {
     var package: PluginPackage?
     var sourceURL: URL?
+    var source: CapabilityPackageSource? = nil
     var issues: [CapabilityPackageValidationIssue]
 
     var blockers: [CapabilityPackageValidationIssue] {
@@ -106,6 +109,66 @@ enum CapabilityPackageValidator {
         )
     }
 
+    static func validateSource(
+        at url: URL,
+        installedPackages: [PluginPackage] = [],
+        allowReplacingExistingPackageID: Bool = false,
+        checkPrerequisites: Bool = true,
+        detectExecutable: (String) -> String = { RuntimePathResolver.detectExecutablePath(named: $0) }
+    ) -> CapabilityPackageValidationReport {
+        do {
+            let source = try CapabilityPackageSourceReader.read(at: url)
+            return validate(
+                source: source,
+                installedPackages: installedPackages,
+                allowReplacingExistingPackageID: allowReplacingExistingPackageID,
+                checkPrerequisites: checkPrerequisites,
+                detectExecutable: detectExecutable
+            )
+        } catch let error as CapabilityPackageSourceReadError {
+            return unreadableSourceReport(url: url, error: error)
+        } catch {
+            return CapabilityPackageValidationReport(
+                package: nil,
+                sourceURL: url,
+                issues: [
+                    issue(
+                        .blocker,
+                        .unreadableFile,
+                        "Unreadable package",
+                        "ASTRA could not read \(url.path): \(error.localizedDescription)",
+                        component: url.lastPathComponent
+                    )
+                ]
+            )
+        }
+    }
+
+    static func validate(
+        source: CapabilityPackageSource,
+        installedPackages: [PluginPackage] = [],
+        allowReplacingExistingPackageID: Bool = false,
+        checkPrerequisites: Bool = true,
+        detectExecutable: (String) -> String = { RuntimePathResolver.detectExecutablePath(named: $0) }
+    ) -> CapabilityPackageValidationReport {
+        let governanceWasOmitted = source.manifestData.map(governanceWasOmitted(from:)) ?? false
+        var report = validate(
+            package: source.package,
+            sourceURL: source.manifestURL,
+            installedPackages: installedPackages,
+            governanceWasOmitted: governanceWasOmitted,
+            allowReplacingExistingPackageID: allowReplacingExistingPackageID,
+            checkPrerequisites: checkPrerequisites,
+            detectExecutable: detectExecutable
+        )
+        var normalizedSource = source
+        if let package = report.package {
+            normalizedSource.package = package
+        }
+        report.source = normalizedSource
+        return report
+    }
+
     static func validate(
         package rawPackage: PluginPackage,
         sourceURL: URL? = nil,
@@ -126,6 +189,7 @@ enum CapabilityPackageValidator {
             issues: &issues
         )
         validatePayload(package, issues: &issues)
+        validateIconDescriptor(package.iconDescriptor, sourceURL: sourceURL, issues: &issues)
         validateLocalTools(package.localTools, issues: &issues)
         validateConnectors(package.connectors, issues: &issues)
         validateBrowserAdapters(package.browserAdapters, issues: &issues)
@@ -326,6 +390,51 @@ enum CapabilityPackageValidator {
         }
     }
 
+    private static func validateIconDescriptor(
+        _ descriptor: CapabilityIconDescriptor,
+        sourceURL: URL?,
+        issues: inout [CapabilityPackageValidationIssue]
+    ) {
+        guard descriptor.kind == .asset else { return }
+        if let reason = CapabilityIconAssetPolicy.invalidReason(for: descriptor) {
+            issues.append(issue(
+                .blocker,
+                .invalidIconAsset,
+                "Invalid icon asset",
+                reason,
+                component: descriptor.value
+            ))
+            return
+        }
+
+        guard let sourceURL else { return }
+        let assetRoot = ((try? sourceURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true)
+            ? sourceURL
+            : sourceURL.deletingLastPathComponent()
+        do {
+            _ = try CapabilityIconAssetPolicy.validatedAssetURL(
+                relativePath: descriptor.value,
+                rootURL: assetRoot
+            )
+        } catch CapabilityIconAssetValidationError.missing {
+            issues.append(issue(
+                .blocker,
+                .missingIconAsset,
+                "Missing icon asset",
+                "\(descriptor.value) was declared but was not found in the package assets.",
+                component: descriptor.value
+            ))
+        } catch {
+            issues.append(issue(
+                .blocker,
+                .invalidIconAsset,
+                "Invalid icon asset",
+                "\(descriptor.value) could not be loaded as a safe package asset.",
+                component: descriptor.value
+            ))
+        }
+    }
+
     private static func validateLocalTools(
         _ tools: [PluginLocalTool],
         issues: inout [CapabilityPackageValidationIssue]
@@ -501,6 +610,55 @@ enum CapabilityPackageValidator {
             return false
         }
         return object["governance"] == nil || object["governance"] is NSNull
+    }
+
+    private static func unreadableSourceReport(
+        url: URL,
+        error: CapabilityPackageSourceReadError
+    ) -> CapabilityPackageValidationReport {
+        switch error {
+        case .malformedManifest(let manifestURL, let decodeError):
+            return CapabilityPackageValidationReport(
+                package: nil,
+                sourceURL: manifestURL,
+                issues: [
+                    issue(
+                        .blocker,
+                        .malformedJSON,
+                        "Malformed JSON",
+                        "ASTRA could not decode this file as a PluginPackage: \(decodeError.localizedDescription)"
+                    )
+                ]
+            )
+        case .missingManifest(let manifestURL):
+            return CapabilityPackageValidationReport(
+                package: nil,
+                sourceURL: manifestURL,
+                issues: [
+                    issue(
+                        .blocker,
+                        .unreadableFile,
+                        "Unreadable package",
+                        "ASTRA could not find \(CapabilityPackageSourceReader.manifestFileName) at \(manifestURL.path).",
+                        component: url.lastPathComponent
+                    )
+                ]
+            )
+        case .unreadable(let manifestURL, let readError):
+            return CapabilityPackageValidationReport(
+                package: nil,
+                sourceURL: manifestURL,
+                issues: [
+                    issue(
+                        .blocker,
+                        .unreadableFile,
+                        "Unreadable package",
+                        "ASTRA could not read \(manifestURL.path): \(readError.localizedDescription)",
+                        component: url.lastPathComponent
+                    )
+                ]
+            )
+        }
     }
 
     private static func issue(
