@@ -3,7 +3,6 @@
 // owner file within its architecture-fitness line budget.
 
 import SwiftUI
-import SwiftData
 import ASTRAGitContracts
 
 // MARK: - Commit sheet

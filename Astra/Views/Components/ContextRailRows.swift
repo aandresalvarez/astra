@@ -4,7 +4,6 @@
 // give the rail a single home for its reusable row vocabulary.
 
 import SwiftUI
-import SwiftData
 import ASTRACore
 
 /// A small green dot pinned to the corner of a row's leading icon to mark an
