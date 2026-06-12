@@ -41,6 +41,8 @@ struct WorkspaceAppStudioDraftSupportTests {
         #expect(context.contains("Workspace App Studio context:"))
         #expect(context.contains("Build a reconciliation app."))
         #expect(context.contains("Proposes the app storage, views, actions, automations, and permission mode."))
+        #expect(context.contains("Build App"))
+        #expect(context.contains("Do not tell the user to click Create Task."))
     }
 
     @MainActor
@@ -108,5 +110,106 @@ struct WorkspaceAppStudioDraftSupportTests {
 
         #expect(regularMetadata.title == "Make it dashboard-first")
         #expect(regularMetadata.goal == "Make it dashboard-first")
+    }
+
+    @MainActor
+    @Test("App Studio drafts with generated conversation expose build action")
+    func appStudioDraftWithConversationExposesBuildAction() {
+        let workspace = Workspace(name: "Clinical Ops", primaryPath: "/tmp/clinical-ops")
+        let draft = WorkspaceAppStudioGenerationTaskBuilder.draft(workspace: workspace, packages: [])
+        let task = AgentTask(title: draft.title, goal: draft.goal, workspace: workspace)
+        task.status = .draft
+        task.inputs = draft.inputs
+
+        #expect(!WorkspaceAppStudioDraftSupport.shouldShowBuildAction(
+            task: task,
+            hasConversation: false,
+            hasPendingPlan: false,
+            hasApprovedPlan: false,
+            showSpecCard: false
+        ))
+        #expect(WorkspaceAppStudioDraftSupport.shouldShowBuildAction(
+            task: task,
+            hasConversation: true,
+            hasPendingPlan: false,
+            hasApprovedPlan: false,
+            showSpecCard: false
+        ))
+        #expect(!WorkspaceAppStudioDraftSupport.shouldShowBuildAction(
+            task: task,
+            hasConversation: true,
+            hasPendingPlan: true,
+            hasApprovedPlan: false,
+            showSpecCard: false
+        ))
+        #expect(!WorkspaceAppStudioDraftSupport.shouldShowBuildAction(
+            task: task,
+            hasConversation: true,
+            hasPendingPlan: false,
+            hasApprovedPlan: true,
+            showSpecCard: false
+        ))
+        #expect(!WorkspaceAppStudioDraftSupport.shouldShowBuildAction(
+            task: task,
+            hasConversation: true,
+            hasPendingPlan: false,
+            hasApprovedPlan: false,
+            showSpecCard: true
+        ))
+
+        let regular = AgentTask(title: "Draft", goal: "Draft", workspace: workspace)
+        regular.status = .draft
+        #expect(!WorkspaceAppStudioDraftSupport.shouldShowBuildAction(
+            task: regular,
+            hasConversation: true,
+            hasPendingPlan: false,
+            hasApprovedPlan: false,
+            showSpecCard: false
+        ))
+    }
+
+    @MainActor
+    @Test("Build task draft carries redacted design conversation and source context")
+    func buildTaskDraftCarriesRedactedConversationAndContext() {
+        let workspace = Workspace(name: "Clinical Ops", primaryPath: "/tmp/clinical-ops")
+        let draft = WorkspaceAppStudioGenerationTaskBuilder.draft(
+            userPrompt: "Build a reconciliation app.",
+            workspace: workspace,
+            packages: []
+        )
+        let task = AgentTask(title: draft.title, goal: draft.goal, workspace: workspace)
+        task.status = .draft
+        task.inputs = draft.inputs
+
+        let build = WorkspaceAppStudioBuildTaskBuilder.draft(
+            appDraftTask: task,
+            messages: [
+                WorkspaceAppStudioBuildConversationMessage(
+                    role: "user",
+                    content: "Use token=conversation-secret-123456 for the import."
+                ),
+                WorkspaceAppStudioBuildConversationMessage(
+                    role: "assistant",
+                    content: "Proposal: track reconciliation queues and approval gates."
+                )
+            ],
+            attachedFiles: ["/tmp/mockup.png"]
+        )
+
+        #expect(build.title == "Build Workspace App: Clinical Ops")
+        #expect(build.goal.contains("Build the Workspace App from the generated App Studio design for Clinical Ops."))
+        let inputs = build.inputs.joined(separator: "\n\n")
+        #expect(inputs.contains("Workspace App Studio design conversation:"))
+        #expect(inputs.contains("User:"))
+        #expect(inputs.contains("Assistant:"))
+        #expect(inputs.contains("token=[redacted]"))
+        #expect(!inputs.contains("conversation-secret"))
+        #expect(inputs.contains("Workspace App Studio source context:"))
+        #expect(inputs.contains("Workspace App Studio context:"))
+        #expect(inputs.contains("/tmp/mockup.png"))
+        #expect(build.constraints.contains { $0.contains("Do not publish") })
+        #expect(build.constraints.contains { $0.contains("redacted") })
+        #expect(build.acceptanceCriteria.contains { $0.contains("implementation") && $0.contains("manifest") })
+        #expect(build.acceptanceCriteria.contains { $0.contains("tests") || $0.contains("validation") })
     }
 }

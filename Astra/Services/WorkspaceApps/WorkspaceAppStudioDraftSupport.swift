@@ -36,6 +36,10 @@ enum WorkspaceAppStudioDraftSupport {
             Attached generation context:
             \(inputs)
             """,
+            """
+            Available ASTRA action after the design is ready:
+            Use Build App to create the implementation task from this App Studio design. Do not tell the user to click Create Task.
+            """,
             constraints,
             acceptance
         ]
@@ -83,6 +87,20 @@ enum WorkspaceAppStudioDraftSupport {
 
     static func defaultPlanningPrompt(for task: AgentTask?) -> String {
         "Draft the app plan for \(workspaceName(for: task)) from the attached Workspace App Studio context."
+    }
+
+    static func shouldShowBuildAction(
+        task: AgentTask?,
+        hasConversation: Bool,
+        hasPendingPlan: Bool,
+        hasApprovedPlan: Bool,
+        showSpecCard: Bool
+    ) -> Bool {
+        isWorkspaceAppStudioDraft(task)
+            && hasConversation
+            && !hasPendingPlan
+            && !hasApprovedPlan
+            && !showSpecCard
     }
 
     private static func bulletSection(title: String, values: [String]) -> String {
