@@ -80,7 +80,7 @@ struct CommitSheet: View {
     private var actionColumn: some View {
         VStack(spacing: 8) {
             if viewModel.hasChanges {
-                commitButton(label: "Commit and push", icon: "arrow.up.circle.fill", andPush: true, prominent: true)
+                commitButton(label: "Commit & push", icon: "arrow.up.circle.fill", andPush: true, prominent: true)
                     .keyboardShortcut(.return, modifiers: [.command, .shift])
 
                 commitButton(label: "Commit", icon: "checkmark.circle", andPush: false, prominent: false)

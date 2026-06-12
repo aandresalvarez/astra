@@ -395,9 +395,12 @@ struct WorkspaceGitSectionView: View {
         parts.append(workingLocationLabel)
         parts.append(changesSummaryCompactText)
 
+        // Show both arrows when diverged so the summary never hides that a pull
+        // is needed before a push will succeed.
         if viewModel.pushableCommitCount > 0 {
             parts.append("↑\(viewModel.pushableCommitCount)")
-        } else if viewModel.behind > 0 {
+        }
+        if viewModel.behind > 0 {
             parts.append("↓\(viewModel.behind)")
         }
 
@@ -634,27 +637,33 @@ struct WorkspaceGitSectionView: View {
     }
 
     private var repositorySyncStatusText: String? {
-        if viewModel.pushableCommitCount > 0 {
-            let count = viewModel.pushableCommitCount
-            let verb = viewModel.hasUpstream ? "to push" : "to publish"
-            return "\(count) commit\(count == 1 ? "" : "s") \(verb)"
+        let ahead = viewModel.pushableCommitCount
+        let behind = viewModel.behind
+        // Diverged: a push would be rejected, so lead with the blocker and show
+        // both counts rather than only the ahead message.
+        if ahead > 0, behind > 0 {
+            return "\(ahead) ahead, \(behind) behind — pull first"
         }
-        if viewModel.behind > 0 {
-            return "\(viewModel.behind) behind — pull first"
+        if ahead > 0 {
+            let verb = viewModel.hasUpstream ? "to push" : "to publish"
+            return "\(ahead) commit\(ahead == 1 ? "" : "s") \(verb)"
+        }
+        if behind > 0 {
+            return "\(behind) behind — pull first"
         }
         return nil
     }
 
-    private var repositorySyncStatusIsBehind: Bool {
-        viewModel.behind > 0 && viewModel.pushableCommitCount == 0
-    }
-
     private var repositorySyncStatusIcon: String {
-        repositorySyncStatusIsBehind ? "arrow.down" : (viewModel.hasUpstream ? "arrow.up" : "arrow.up.to.line")
+        if viewModel.pushableCommitCount > 0, viewModel.behind > 0 { return "arrow.up.arrow.down" }
+        if viewModel.behind > 0 { return "arrow.down" }
+        return viewModel.hasUpstream ? "arrow.up" : "arrow.up.to.line"
     }
 
     private var repositorySyncStatusColor: Color {
-        repositorySyncStatusIsBehind ? Stanford.statusInfo : Stanford.lagunita
+        // Any behind state (including diverged) needs a pull before a push, so it
+        // must not wear the "ready to push" accent.
+        viewModel.behind > 0 ? Stanford.statusInfo : Stanford.lagunita
     }
 
     /// Readiness shown as a caption beneath the Create-pull-request button. Prefers
