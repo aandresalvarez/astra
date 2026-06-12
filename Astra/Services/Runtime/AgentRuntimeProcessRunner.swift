@@ -762,10 +762,12 @@ final class AgentRuntimeProcessRunner {
     }
 
     /// Namespace invariant for the Shelf browser bridge: it may only
-    /// contribute its own `ASTRA_BROWSER*` variables, never overwrite
-    /// PATH/HOME or connector credentials.
+    /// contribute its own `ASTRA_BROWSER_*` variables, never overwrite
+    /// PATH/HOME or connector credentials. The trailing underscore keeps the
+    /// namespace explicit so an unrelated future `ASTRA_BROWSERX` key can't
+    /// slip through.
     static func isBrowserBridgeEnvKeyAllowed(_ key: String) -> Bool {
-        key.hasPrefix("ASTRA_BROWSER")
+        key.hasPrefix("ASTRA_BROWSER_")
     }
 
     @MainActor

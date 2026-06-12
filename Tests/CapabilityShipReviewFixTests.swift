@@ -153,6 +153,32 @@ struct StrictMCPConfigTests {
     func defaultStaysNil() {
         #expect(MCPRuntimeProjection.writeClaudeConfig(servers: [], taskID: UUID()) == nil)
     }
+
+    @Test("allowEmpty falls back to the temp root when the private subdir is blocked")
+    func writeFallsBackWhenSubdirBlocked() throws {
+        // Block the private subdir by planting a regular file where the
+        // directory would be created; the fallback location must still
+        // produce a config URL so the strict flag never gets stripped.
+        let blocker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-mcp-configs", isDirectory: false)
+        let preexisting = FileManager.default.fileExists(atPath: blocker.path)
+        var isDir: ObjCBool = false
+        FileManager.default.fileExists(atPath: blocker.path, isDirectory: &isDir)
+        guard !preexisting || !isDir.boolValue else {
+            // A real config dir already exists on this machine — skip the
+            // destructive setup rather than remove the shared directory.
+            return
+        }
+        try? FileManager.default.removeItem(at: blocker)
+        try Data("x".utf8).write(to: blocker)
+        defer { try? FileManager.default.removeItem(at: blocker) }
+
+        let url = MCPRuntimeProjection.writeClaudeConfig(servers: [], taskID: UUID(), allowEmpty: true)
+        let resolved = try #require(url)
+        defer { try? FileManager.default.removeItem(at: resolved) }
+        let object = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: resolved)) as? [String: Any])
+        #expect((object["mcpServers"] as? [String: Any])?.isEmpty == true)
+    }
 }
 
 @Suite("Legacy Env Name Denylist")

@@ -190,17 +190,42 @@ enum MCPRuntimeProjection {
     ) -> URL? {
         let emptyConfig = Data(#"{"mcpServers":{}}"#.utf8)
         guard let data = claudeConfigJSON(servers: servers) ?? (allowEmpty ? emptyConfig : nil) else { return nil }
-        let directory = FileManager.default.temporaryDirectory
+
+        // Preferred: a private 0700 subdir that can be pruned. Fallback: the
+        // temp-dir root, so a stale file blocking the subdir (or a subdir
+        // creation hiccup) still yields a config URL. Returning nil here would
+        // strip --mcp-config AND --strict-mcp-config from the launch and
+        // re-open the repo .mcp.json bypass, so we try hard not to.
+        let privateDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("astra-mcp-configs", isDirectory: true)
+        if let url = writeConfigFile(data, taskID: taskID, into: privateDir, prune: true) {
+            return url
+        }
+        if let url = writeConfigFile(data, taskID: taskID, into: FileManager.default.temporaryDirectory, prune: false) {
+            return url
+        }
+        AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
+            "source": "mcp_projection",
+            "result": "config_write_failed_all_locations"
+        ], level: .error)
+        return nil
+    }
+
+    private static func writeConfigFile(
+        _ data: Data,
+        taskID: UUID,
+        into directory: URL,
+        prune: Bool
+    ) -> URL? {
         do {
             try FileManager.default.createDirectory(
                 at: directory,
                 withIntermediateDirectories: true,
                 attributes: [.posixPermissions: 0o700]
             )
-            pruneStaleConfigs(in: directory)
+            if prune { pruneStaleConfigs(in: directory) }
             let url = directory
-                .appendingPathComponent("\(taskID.uuidString)-\(UUID().uuidString)")
+                .appendingPathComponent("astra-mcp-\(taskID.uuidString)-\(UUID().uuidString)")
                 .appendingPathExtension("json")
             try data.write(to: url, options: [.atomic])
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
@@ -209,6 +234,7 @@ enum MCPRuntimeProjection {
             AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
                 "source": "mcp_projection",
                 "result": "config_write_failed",
+                "directory": directory.lastPathComponent,
                 "error_type": String(describing: type(of: error))
             ], level: .error)
             return nil

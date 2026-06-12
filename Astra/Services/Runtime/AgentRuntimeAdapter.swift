@@ -1240,11 +1240,11 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         if !nativeAllowedTools.isEmpty {
             args += ["--allowedTools"] + nativeAllowedTools
         }
+        // Unconditional (not gated on a successful config write): strict mode
+        // blocks the repo's .mcp.json, so a failed render means no servers, not bypass.
+        args += ["--strict-mcp-config"]
         if let mcpConfigURL {
-            // --strict-mcp-config keeps a repository's own .mcp.json from
-            // adding servers that bypassed capability governance; with no
-            // governed servers the config is an empty {"mcpServers":{}}.
-            args += ["--mcp-config", mcpConfigURL.path, "--strict-mcp-config"]
+            args += ["--mcp-config", mcpConfigURL.path]
         }
         if !mcpDeniedTools.isEmpty {
             args += ["--disallowedTools"] + mcpDeniedTools
