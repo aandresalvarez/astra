@@ -112,6 +112,18 @@ struct ConnectorsManagerView: View {
 
 // MARK: - Connector Editor
 
+/// A staged destructive action awaiting explicit confirmation. One piece of
+/// state plus one `.confirmationDialog` serves every delete site in the editor,
+/// so each dialog can name exactly what it will remove and run the deletion
+/// only on an explicit second tap.
+private struct PendingConnectorDeletion: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
+    let confirmTitle: String
+    let perform: () -> Void
+}
+
 struct ConnectorEditorView: View {
     @Bindable var connector: Connector
     var workspace: Workspace?
@@ -134,6 +146,7 @@ struct ConnectorEditorView: View {
     @State private var isOAuthSigningIn = false
     @State private var oauthSignInTask: Task<Void, Never>?
     @State private var oauthSignInGeneration = UUID()
+    @State private var pendingDeletion: PendingConnectorDeletion?
     @FocusState private var isNameFocused: Bool
 
     private static let secretPatterns = ["KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH"]
@@ -306,10 +319,16 @@ struct ConnectorEditorView: View {
                                                     Text(item)
                                                         .font(Stanford.ui(12, design: .monospaced))
                                                     Button {
-                                                        guard idx < connector.configValues.count else { return }
-                                                        let updated = items.filter { $0 != item }.joined(separator: ",")
-                                                        connector.configValues[idx] = updated
-                                                        connector.updatedAt = Date()
+                                                        pendingDeletion = PendingConnectorDeletion(
+                                                            title: "Remove “\(item)”?",
+                                                            message: "Remove “\(item)” from \(key) on \(connectorDisplayName)?",
+                                                            confirmTitle: "Remove"
+                                                        ) {
+                                                            guard idx < connector.configValues.count else { return }
+                                                            let updated = items.filter { $0 != item }.joined(separator: ",")
+                                                            connector.configValues[idx] = updated
+                                                            connector.updatedAt = Date()
+                                                        }
                                                     } label: {
                                                         Image(systemName: "xmark")
                                                             .font(Stanford.ui(10, weight: .bold))
@@ -352,11 +371,17 @@ struct ConnectorEditorView: View {
                                     HStack {
                                         Spacer()
                                         Button {
-                                            guard idx < connector.configKeys.count,
-                                                  idx < connector.configValues.count else { return }
-                                            connector.configKeys.remove(at: idx)
-                                            connector.configValues.remove(at: idx)
-                                            connector.updatedAt = Date()
+                                            pendingDeletion = PendingConnectorDeletion(
+                                                title: "Remove “\(key)”?",
+                                                message: "Remove the \(key) parameter from \(connectorDisplayName)? This clears its value.",
+                                                confirmTitle: "Remove"
+                                            ) {
+                                                guard idx < connector.configKeys.count,
+                                                      idx < connector.configValues.count else { return }
+                                                connector.configKeys.remove(at: idx)
+                                                connector.configValues.remove(at: idx)
+                                                connector.updatedAt = Date()
+                                            }
                                         } label: {
                                             Image(systemName: "trash")
                                                 .font(Stanford.ui(11))
@@ -463,7 +488,13 @@ struct ConnectorEditorView: View {
                                             .controlSize(.small)
 
                                             Button {
-                                                connector.removeCredential(at: idx)
+                                                pendingDeletion = PendingConnectorDeletion(
+                                                    title: "Remove secret “\(key)”?",
+                                                    message: "Remove the \(key) secret from \(connectorDisplayName)? This deletes its stored Keychain value.",
+                                                    confirmTitle: "Remove Secret"
+                                                ) {
+                                                    connector.removeCredential(at: idx)
+                                                }
                                             } label: {
                                                 Image(systemName: "trash")
                                                     .font(Stanford.ui(12))
@@ -613,8 +644,14 @@ struct ConnectorEditorView: View {
                 HStack {
                     Spacer()
                     Button(role: .destructive) {
-                        cancelOutlookSignIn()
-                        onDelete()
+                        pendingDeletion = PendingConnectorDeletion(
+                            title: "Delete \(connectorDisplayName)?",
+                            message: "Delete the connector \(connectorDisplayName)? This removes its configuration and any stored Keychain secrets. This cannot be undone.",
+                            confirmTitle: "Delete Connector"
+                        ) {
+                            cancelOutlookSignIn()
+                            onDelete()
+                        }
                     } label: {
                         Label("Delete Connector", systemImage: "trash")
                     }
@@ -639,6 +676,29 @@ struct ConnectorEditorView: View {
                 modelContext: modelContext
             )
         }
+        .confirmationDialog(
+            pendingDeletion?.title ?? "",
+            isPresented: Binding(
+                get: { pendingDeletion != nil },
+                set: { presented in if !presented { pendingDeletion = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: pendingDeletion
+        ) { deletion in
+            Button(deletion.confirmTitle, role: .destructive) {
+                deletion.perform()
+                pendingDeletion = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingDeletion = nil
+            }
+        } message: { deletion in
+            Text(deletion.message)
+        }
+    }
+
+    private var connectorDisplayName: String {
+        connector.name.isEmpty ? "this connector" : "“\(connector.name)”"
     }
 
     private var outlookMailOAuthSection: some View {

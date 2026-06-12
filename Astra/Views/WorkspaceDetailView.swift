@@ -11,6 +11,7 @@ struct WorkspaceDetailView: View {
     @State private var editingSSH: SSHConnection?
     @State private var showSSHEditor = false
     @State private var exportMessage = ""
+    @State private var pendingRemoval: PendingRemoval?
     let onDelete: () -> Void
 
     private let iconOptions = [
@@ -124,8 +125,15 @@ struct WorkspaceDetailView: View {
                                             .lineLimit(1)
                                         Spacer()
                                         Button {
-                                            workspace.additionalPaths.removeAll { $0 == path }
-                                            workspace.updatedAt = Date()
+                                            pendingRemoval = PendingRemoval(
+                                                title: "Remove Folder?",
+                                                message: "“\(path)” will be unlinked from this workspace. The folder itself is not deleted from disk.",
+                                                confirmTitle: "Remove Folder",
+                                                perform: {
+                                                    workspace.additionalPaths.removeAll { $0 == path }
+                                                    workspace.updatedAt = Date()
+                                                }
+                                            )
                                         } label: {
                                             Image(systemName: "trash")
                                                 .font(Stanford.ui(12))
@@ -198,8 +206,15 @@ struct WorkspaceDetailView: View {
                                         .buttonStyle(.plain)
 
                                         Button {
-                                            sshConnections.removeAll { $0.id == conn.id }
-                                            saveSSHConnections()
+                                            pendingRemoval = PendingRemoval(
+                                                title: "Remove SSH Connection?",
+                                                message: "“\(conn.displayLabel)” (\(conn.sshTarget):\(conn.remotePath)) will be removed from this workspace. The remote server and its files are not affected.",
+                                                confirmTitle: "Remove Connection",
+                                                perform: {
+                                                    sshConnections.removeAll { $0.id == conn.id }
+                                                    saveSSHConnections()
+                                                }
+                                            )
                                         } label: {
                                             Image(systemName: "trash")
                                                 .font(Stanford.ui(12))
@@ -295,6 +310,25 @@ struct WorkspaceDetailView: View {
             }
         } message: {
             Text("This will delete the workspace and all \(workspace.tasks.count) associated tasks. This cannot be undone.")
+        }
+        .confirmationDialog(
+            pendingRemoval?.title ?? "",
+            isPresented: Binding(
+                get: { pendingRemoval != nil },
+                set: { presented in if !presented { pendingRemoval = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: pendingRemoval
+        ) { removal in
+            Button(removal.confirmTitle, role: .destructive) {
+                removal.perform()
+                pendingRemoval = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingRemoval = nil
+            }
+        } message: { removal in
+            Text(removal.message)
         }
         .sheet(isPresented: $showSSHEditor) {
             if let conn = editingSSH {
@@ -399,6 +433,18 @@ struct WorkspaceDetailView: View {
             withAnimation { exportMessage = "" }
         }
     }
+}
+
+// MARK: - Pending Removal
+
+/// Stages a destructive removal so the confirmation dialog can name exactly what
+/// will be removed and run the removal only on an explicit second tap.
+private struct PendingRemoval: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
+    let confirmTitle: String
+    let perform: () -> Void
 }
 
 // MARK: - SSH Connection Editor

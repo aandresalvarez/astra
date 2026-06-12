@@ -68,6 +68,7 @@ struct PluginCatalogView: View {
     @State private var installingPackage: PluginPackage?
     @State private var installError: String?
     @State private var removalCandidate: PluginPackage?
+    @State private var disableCandidate: PluginPackage?
     @State private var removalError: String?
     @State private var approvalError: String?
     @State private var approvalRevision = 0
@@ -267,6 +268,23 @@ struct PluginCatalogView: View {
         } message: { package in
             Text("This removes \(package.name) from the app-local capability library and disables it in every workspace. Shared resources that are still used by another installed package are kept.")
         }
+        .confirmationDialog(
+            "Disable \(disableCandidate?.name ?? "capability")?",
+            isPresented: Binding(
+                get: { disableCandidate != nil },
+                set: { if !$0 { disableCandidate = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: disableCandidate
+        ) { package in
+            Button("Disable", role: .destructive) {
+                disableCandidate = nil
+                disableCapability(package)
+            }
+            Button("Cancel", role: .cancel) { disableCandidate = nil }
+        } message: { package in
+            Text("This turns off \(package.name) in this workspace and removes the workspace-owned connectors and skills it added, clearing their saved credentials. Re-enabling it later requires entering those credentials again. Resources still used by another enabled capability are kept.")
+        }
         .alert("Capability could not be removed", isPresented: Binding(
             get: { removalError != nil },
             set: { if !$0 { removalError = nil } }
@@ -326,7 +344,7 @@ struct PluginCatalogView: View {
                     enabledStatusLabel
 
                     Button(role: .destructive) {
-                        disableCapability(package)
+                        disableCandidate = package
                     } label: {
                         Label("Disable", systemImage: "minus.circle")
                             .font(Stanford.caption(12).weight(.semibold))
@@ -764,7 +782,7 @@ struct PluginCatalogView: View {
             enabledStatusLabel
 
             Button(role: .destructive) {
-                disableCapability(package)
+                disableCandidate = package
             } label: {
                 Label("Disable", systemImage: "minus.circle")
                     .font(Stanford.caption(11).weight(.medium))

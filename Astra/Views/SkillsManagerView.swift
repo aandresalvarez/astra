@@ -201,6 +201,7 @@ struct SkillEditorView: View {
     @State private var newConfigItem = ""
     @State private var showEnvValues = false
     @State private var isAddingSecret = false
+    @State private var pendingDestruction: PendingSkillDestruction?
     @FocusState private var isNameFocused: Bool
 
     @Query private var allConnectors: [Connector]
@@ -420,8 +421,15 @@ struct SkillEditorView: View {
                                         .clipShape(Capsule())
                                     }
                                     Button {
-                                        conn.skill = nil
-                                        skill.updatedAt = Date()
+                                        pendingDestruction = PendingSkillDestruction(
+                                            title: "Detach Connector",
+                                            message: "Detach \u{201C}\(conn.name)\u{201D} from \u{201C}\(skill.name.isEmpty ? "this skill" : skill.name)\u{201D}? Its credentials will no longer be inherited by the skill.",
+                                            confirmTitle: "Detach",
+                                            perform: {
+                                                conn.skill = nil
+                                                skill.updatedAt = Date()
+                                            }
+                                        )
                                     } label: {
                                         Image(systemName: "xmark.circle.fill")
                                             .font(Stanford.ui(16))
@@ -521,8 +529,15 @@ struct SkillEditorView: View {
                                         .background(Stanford.tools.opacity(0.1))
                                         .clipShape(Capsule())
                                     Button {
-                                        tool.skill = nil
-                                        skill.updatedAt = Date()
+                                        pendingDestruction = PendingSkillDestruction(
+                                            title: "Detach Tool",
+                                            message: "Detach \u{201C}\(tool.name)\u{201D} from \u{201C}\(skill.name.isEmpty ? "this skill" : skill.name)\u{201D}? It will no longer be available to the skill.",
+                                            confirmTitle: "Detach",
+                                            perform: {
+                                                tool.skill = nil
+                                                skill.updatedAt = Date()
+                                            }
+                                        )
                                     } label: {
                                         Image(systemName: "xmark.circle.fill")
                                             .font(Stanford.ui(16))
@@ -919,13 +934,37 @@ struct SkillEditorView: View {
                 HStack {
                     Spacer()
                     Button(role: .destructive) {
-                        onDelete()
+                        pendingDestruction = PendingSkillDestruction(
+                            title: "Delete Skill",
+                            message: "Delete \u{201C}\(skill.name.isEmpty ? "this skill" : skill.name)\u{201D}? This permanently removes the skill and its stored secrets. This cannot be undone.",
+                            confirmTitle: "Delete",
+                            perform: { onDelete() }
+                        )
                     } label: {
                         Label("Delete Skill", systemImage: "trash")
                     }
                 }
             }
             .padding()
+        }
+        .confirmationDialog(
+            pendingDestruction?.title ?? "",
+            isPresented: Binding(
+                get: { pendingDestruction != nil },
+                set: { presented in if !presented { pendingDestruction = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: pendingDestruction
+        ) { destruction in
+            Button(destruction.confirmTitle, role: .destructive) {
+                destruction.perform()
+                pendingDestruction = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingDestruction = nil
+            }
+        } message: { destruction in
+            Text(destruction.message)
         }
         .onAppear { if skill.name == "New Skill" { isNameFocused = true } }
         .onDisappear {
@@ -998,6 +1037,16 @@ struct SkillEditorView: View {
         skill.updatedAt = Date()
         newCustomTool = ""
     }
+}
+
+// MARK: - Pending Destruction
+
+private struct PendingSkillDestruction: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
+    let confirmTitle: String
+    let perform: () -> Void
 }
 
 // MARK: - Flow Layout (wrapping chips)
