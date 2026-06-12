@@ -95,9 +95,22 @@ struct WorkspaceGitSectionView: View {
         .onAppear {
             viewModel.setup(for: workspace, selectedTask: selectedTask)
             clearTransientRepositoryPresentation()
+            // Restore whether this workspace's repository card was left expanded.
+            repositoryDetailsMode = RailDisclosureStore.bool(
+                workspace.id.uuidString,
+                .repositoryShowsDetails,
+                default: !WorkspaceGitPanelPresentation.startsCollapsed
+            ) ? .details : .summary
         }
         .onDisappear {
             viewModel.pauseRefresh()
+        }
+        .onChange(of: repositoryDetailsMode) { _, mode in
+            RailDisclosureStore.setBool(
+                mode == .details,
+                workspace.id.uuidString,
+                .repositoryShowsDetails
+            )
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {

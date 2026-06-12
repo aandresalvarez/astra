@@ -422,6 +422,15 @@ struct WorkspaceRightRailView: View {
                 isAccessCollapsed = false
             }
         }
+        .onChange(of: isConfiguredWorkspaceSetupExpanded) { _, value in
+            RailDisclosureStore.setBool(value, workspaceDisclosureID, .configuredSetupExpanded)
+        }
+        .onChange(of: isReadyCapabilitiesExpanded) { _, value in
+            RailDisclosureStore.setBool(value, workspaceDisclosureID, .readyCapabilitiesExpanded)
+        }
+        .onChange(of: isDraftCapabilitiesExpanded) { _, value in
+            RailDisclosureStore.setBool(value, workspaceDisclosureID, .draftCapabilitiesExpanded)
+        }
         .alert("Capability could not be updated", isPresented: Binding(
             get: { capabilityError != nil },
             set: { if !$0 { capabilityError = nil } }
@@ -2565,15 +2574,30 @@ struct WorkspaceRightRailView: View {
         }
     }
 
+    private var workspaceDisclosureID: String {
+        workspace.id.uuidString
+    }
+
     private func applyConfigureDefaults() {
         isAccessCollapsed = sshConnections.isEmpty && workspace.additionalPaths.isEmpty
         isSchedulesSectionCollapsed = workspace.schedules.isEmpty
         isContextCollapsed = false
         isToolsExpanded = false
         isTemplatesExpanded = false
-        isConfiguredWorkspaceSetupExpanded = false
         isMemoryComposerVisible = false
         expandedWorkspaceSetupItems = []
+
+        // Restore the section expand/collapse choices the user made last time in
+        // this workspace, so the panel does not forget its layout every session.
+        isConfiguredWorkspaceSetupExpanded = RailDisclosureStore.bool(
+            workspaceDisclosureID, .configuredSetupExpanded, default: false
+        )
+        isReadyCapabilitiesExpanded = RailDisclosureStore.bool(
+            workspaceDisclosureID, .readyCapabilitiesExpanded, default: false
+        )
+        isDraftCapabilitiesExpanded = RailDisclosureStore.bool(
+            workspaceDisclosureID, .draftCapabilitiesExpanded, default: false
+        )
     }
 
     private func addExtraFolder() {
