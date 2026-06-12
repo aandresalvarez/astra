@@ -242,8 +242,6 @@ public struct PluginPackage: Codable, Identifiable {
     public var minAppVersion: String?
     public var requires: [String]?
     public var conflicts: [String]?
-    public var signature: String?
-    public var isTrusted: Bool = false
     public var sourceMetadata: CapabilitySourceMetadata?
     public var governance: CapabilityGovernance
     /// External CLI tools this package needs in order to actually work.
@@ -317,14 +315,14 @@ public struct PluginPackage: Codable, Identifiable {
         minAppVersion = try c.decodeIfPresent(String.self, forKey: .minAppVersion)
         requires = try c.decodeIfPresent([String].self, forKey: .requires)
         conflicts = try c.decodeIfPresent([String].self, forKey: .conflicts)
-        signature = try c.decodeIfPresent(String.self, forKey: .signature)
         sourceMetadata = try c.decodeIfPresent(CapabilitySourceMetadata.self, forKey: .sourceMetadata)
         governance = try c.decodeIfPresent(CapabilityGovernance.self, forKey: .governance)
             ?? CapabilityGovernance.defaultGovernance(for: sourceMetadata)
         // Legacy fixtures pre-date `prerequisites`. Default to empty so
-        // every pre-existing catalog JSON still decodes cleanly.
+        // every pre-existing catalog JSON still decodes cleanly. Older
+        // fixtures may also carry retired `signature`/`isTrusted` keys;
+        // keyed decoding ignores them.
         prerequisites = try c.decodeIfPresent([CLIPrerequisite].self, forKey: .prerequisites) ?? []
-        isTrusted = false
     }
 
     public var requiresSetup: Bool {
