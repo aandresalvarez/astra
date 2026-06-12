@@ -272,4 +272,39 @@ struct CapabilityRailPresentationTests {
             ) == nil
         )
     }
+
+    @Test("workspace folder setup treats primary path as reference")
+    func workspaceFolderSetupTreatsPrimaryPathAsReference() {
+        #expect(WorkspaceSetupChecklistPresentation.workspaceRootReferenceTitle == "Workspace root")
+        #expect(WorkspaceSetupChecklistPresentation.workspaceRootReferenceRole == "Reference")
+        #expect(WorkspaceSetupChecklistPresentation.userConfiguredFolderCount([]) == 0)
+        #expect(WorkspaceSetupChecklistPresentation.userConfiguredFolderCount(["  "]) == 0)
+        #expect(WorkspaceSetupChecklistPresentation.folderState(additionalPaths: []) == .missing)
+        #expect(WorkspaceSetupChecklistPresentation.folderSubtitle(
+            primaryPath: "/Users/alvaro/Documents/Astra Dev/Workspaces/pr",
+            additionalPaths: []
+        ) == "Add extra folders for this workspace")
+    }
+
+    @Test("workspace folder setup counts only added paths")
+    func workspaceFolderSetupCountsOnlyAddedPaths() {
+        #expect(WorkspaceSetupChecklistPresentation.userConfiguredFolderCount([
+            "/Users/alvaro/Documents/Code/astra",
+            " /Users/alvaro/Documents/Code/artana-evidence-platform "
+        ]) == 2)
+        #expect(WorkspaceSetupChecklistPresentation.folderState(additionalPaths: [
+            "/Users/alvaro/Documents/Code/astra"
+        ]) == .configured)
+        #expect(WorkspaceSetupChecklistPresentation.folderSubtitle(
+            primaryPath: "/Users/alvaro/Documents/Astra Dev/Workspaces/pr",
+            additionalPaths: ["/Users/alvaro/Documents/Code/astra"]
+        ) == "1 added folder")
+        #expect(WorkspaceSetupChecklistPresentation.folderSubtitle(
+            primaryPath: "/Users/alvaro/Documents/Astra Dev/Workspaces/pr",
+            additionalPaths: [
+                "/Users/alvaro/Documents/Code/astra",
+                "/Users/alvaro/Documents/Code/artana-evidence-platform"
+            ]
+        ) == "2 added folders")
+    }
 }
