@@ -18,7 +18,7 @@ struct WorkerCancelTests {
 
     @Test("Cancel on idle worker is safe")
     func cancelIdle() {
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         #expect(worker.isRunning == false)
         worker.cancel()
         #expect(worker.isRunning == false)
@@ -615,7 +615,7 @@ struct BuildPromptTests {
         ctx.insert(task)
         try ctx.save()
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         let prompt = worker.buildPrompt(for: task)
         #expect(prompt.contains("Goal: Fix the login bug"))
     }
@@ -736,7 +736,7 @@ struct BuildPromptTests {
         ctx.insert(task)
         try ctx.save()
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         let prompt = worker.buildPrompt(for: task)
         let manifest = AgentPromptBuilder.buildPromptAssembly(for: task)
         let currentGoalSection = try #require(manifest.sections.first { $0.kind == .currentGoal })
@@ -759,7 +759,7 @@ struct BuildPromptTests {
         ctx.insert(task)
         try ctx.save()
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         let prompt = worker.buildPrompt(for: task)
         #expect(prompt.contains("Workspace Context:"))
         #expect(prompt.contains("Use Swift 6 strict concurrency"))
@@ -776,7 +776,7 @@ struct BuildPromptTests {
         ctx.insert(task)
         try ctx.save()
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         let prompt = worker.buildPrompt(for: task)
         #expect(prompt.contains("Workspace Memory Retrieval:"))
         #expect(prompt.contains("workspace-saved memories. Task-local state is Context Capsule v2/current_state"))
@@ -798,7 +798,7 @@ struct BuildPromptTests {
         ctx.insert(task)
         try ctx.save()
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         let prompt = worker.buildPrompt(for: task)
         #expect(prompt.contains("Constraints:"))
         #expect(prompt.contains("No external dependencies"))
@@ -879,7 +879,7 @@ struct BuildPromptTests {
         ctx.insert(task)
         try ctx.save()
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         let prompt = worker.buildPrompt(for: task)
         #expect(prompt.contains("Create an agent team with 3 teammates"))
         #expect(prompt.contains("Focus on security"))
@@ -895,7 +895,7 @@ struct BuildPromptTests {
         ctx.insert(task)
         try ctx.save()
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         let prompt = worker.buildPrompt(for: task)
 
         #expect(prompt.contains("Astra Run Protocol v1:"))

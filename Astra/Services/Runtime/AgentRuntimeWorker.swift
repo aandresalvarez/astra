@@ -518,7 +518,7 @@ final class AgentRuntimeWorker {
             run: run,
             modelContext: modelContext,
             phase: auditPhase,
-            configuration: runtimeReadinessConfiguration(for: selectedRuntime)
+            configuration: runtimeReadinessConfiguration(for: selectedRuntime), readinessService: runtimeReadinessService
         ) else {
             isRunning = false
             return
@@ -2082,6 +2082,7 @@ final class AgentRuntimeWorker {
     /// Model used for AI validation checks
     var validationModel: String = "claude-haiku-4-5-20251001"
 
+    var runtimeReadinessService = RuntimeReadinessService()
     /// Maximum execution time in seconds (10 minutes default)
     var timeoutSeconds: TimeInterval = 600
 

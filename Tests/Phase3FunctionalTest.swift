@@ -103,7 +103,7 @@ struct Phase3FunctionalTest {
         #expect(task.teamSize == (runtimeCase.expectsTeamEvents ? 3 : 1))
 
         // 4. Run through AgentRuntimeWorker
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         try E2ETestSupport.configureUnattended(worker, for: runtimeCase, temporaryRootPath: testDir)
         var receivedEvents: [ParsedEvent] = []
 
@@ -247,7 +247,7 @@ struct Phase3FunctionalTest {
         try context.save()
 
         // 3. Run
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         try E2ETestSupport.configureUnattended(worker, for: runtimeCase, temporaryRootPath: testDir)
         worker.budgetEnforcementModeOverride = .hardStop
         try await E2ETestSupport.withLiveProviderSlot {
