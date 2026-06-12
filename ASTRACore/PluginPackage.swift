@@ -33,11 +33,31 @@ public struct CapabilitySourceMetadata: Codable, Sendable, Equatable {
         )
     }
 
+    public static func builtIn(url: URL?) -> CapabilitySourceMetadata {
+        CapabilitySourceMetadata(
+            id: "built-in",
+            displayName: "Built-in Capabilities",
+            kind: "built-in",
+            url: url,
+            trustLevel: "built-in"
+        )
+    }
+
     public static func localLibrary() -> CapabilitySourceMetadata {
         CapabilitySourceMetadata(
             id: "local",
             displayName: "Local Capability Library",
             kind: "local",
+            trustLevel: "local"
+        )
+    }
+
+    public static func localLibrary(url: URL?) -> CapabilitySourceMetadata {
+        CapabilitySourceMetadata(
+            id: "local",
+            displayName: "Local Capability Library",
+            kind: "local",
+            url: url,
             trustLevel: "local"
         )
     }
@@ -219,11 +239,70 @@ public struct CapabilityGovernance: Codable, Sendable, Equatable {
     }
 }
 
+public struct CapabilityIconDescriptor: Codable, Sendable, Equatable {
+    public enum Kind: String, Codable, Sendable, Equatable {
+        case systemSymbol
+        case brand
+        case asset
+    }
+
+    public var kind: Kind
+    public var value: String
+    public var fallbackSystemName: String
+    public var monochromePreferred: Bool
+
+    public init(
+        kind: Kind,
+        value: String,
+        fallbackSystemName: String,
+        monochromePreferred: Bool = true
+    ) {
+        self.kind = kind
+        self.value = value
+        self.fallbackSystemName = fallbackSystemName
+        self.monochromePreferred = monochromePreferred
+    }
+
+    public static func systemSymbol(
+        _ name: String,
+        fallbackSystemName: String? = nil
+    ) -> CapabilityIconDescriptor {
+        CapabilityIconDescriptor(
+            kind: .systemSymbol,
+            value: name,
+            fallbackSystemName: fallbackSystemName ?? name
+        )
+    }
+
+    public static func brand(
+        _ id: String,
+        fallbackSystemName: String
+    ) -> CapabilityIconDescriptor {
+        CapabilityIconDescriptor(
+            kind: .brand,
+            value: id,
+            fallbackSystemName: fallbackSystemName
+        )
+    }
+
+    public static func asset(
+        _ relativePath: String,
+        fallbackSystemName: String
+    ) -> CapabilityIconDescriptor {
+        CapabilityIconDescriptor(
+            kind: .asset,
+            value: relativePath,
+            fallbackSystemName: fallbackSystemName
+        )
+    }
+}
+
 public struct PluginPackage: Codable, Identifiable {
     public var formatVersion: Int
     public var id: String
     public var name: String
     public var icon: String
+    public var iconDescriptor: CapabilityIconDescriptor
     public var description: String
     public var author: String
     public var category: String
@@ -257,6 +336,7 @@ public struct PluginPackage: Codable, Identifiable {
         id: String,
         name: String,
         icon: String,
+        iconDescriptor: CapabilityIconDescriptor? = nil,
         description: String,
         author: String,
         category: String,
@@ -277,6 +357,7 @@ public struct PluginPackage: Codable, Identifiable {
         self.id = id
         self.name = name
         self.icon = icon
+        self.iconDescriptor = iconDescriptor ?? .systemSymbol(icon)
         self.description = description
         self.author = author
         self.category = category
@@ -300,6 +381,8 @@ public struct PluginPackage: Codable, Identifiable {
         id = try c.decode(String.self, forKey: .id)
         name = try c.decode(String.self, forKey: .name)
         icon = try c.decode(String.self, forKey: .icon)
+        iconDescriptor = try c.decodeIfPresent(CapabilityIconDescriptor.self, forKey: .iconDescriptor)
+            ?? .systemSymbol(icon)
         description = try c.decode(String.self, forKey: .description)
         author = try c.decode(String.self, forKey: .author)
         category = try c.decode(String.self, forKey: .category)

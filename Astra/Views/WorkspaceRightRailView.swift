@@ -99,19 +99,9 @@ enum WorkspaceContextIconography {
     static let headerIcon = "info.circle"
 
     static func capabilityIcon(name: String, fallback: String) -> String {
-        let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if normalized.contains("bigquery") {
-            return "cylinder.split.1x2"
-        }
-        if normalized.contains("read-only") || normalized.contains("read only") {
-            return "eye"
-        }
-        if normalized.contains("safe bash") {
-            return "terminal"
-        }
-        return fallback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "puzzlepiece.extension"
-            : fallback
+        CapabilityIconPresentation
+            .make(name: name, fallbackSystemName: fallback)
+            .legacySystemName
     }
 }
 
@@ -552,6 +542,16 @@ struct WorkspaceRightRailView: View {
         }
     }
 
+    private func capabilitySummaryIconPresentation(
+        for style: CapabilityRailGroupStyle,
+        items: [RailCapabilityItem]
+    ) -> CapabilityIconPresentation {
+        CapabilityRailSectionPresentation.summaryIconPresentation(
+            for: items.map(capabilityIconPresentation),
+            fallbackSystemName: capabilitySummaryIcon(for: style)
+        )
+    }
+
     private func capabilitySummaryTint(for style: CapabilityRailGroupStyle) -> Color {
         switch style {
         case .attention:
@@ -588,7 +588,7 @@ struct WorkspaceRightRailView: View {
                 .buttonStyle(.plain)
             } else {
                 CapabilitySummaryRow(
-                    icon: capabilitySummaryIcon(for: style),
+                    icon: capabilitySummaryIconPresentation(for: style, items: items),
                     iconColor: capabilitySummaryTint(for: style),
                     title: summaryTitle,
                     subtitle: summarySubtitle,
@@ -796,7 +796,7 @@ struct WorkspaceRightRailView: View {
         let isHighlighted = item.readiness.level == .needsAttention
 
         return CapabilityRailRow(
-            icon: WorkspaceContextIconography.capabilityIcon(name: item.name, fallback: item.icon),
+            icon: capabilityIconPresentation(for: item),
             title: capabilityDisplayName(item.name),
             subtitle: capabilityListSubtitle(for: item),
             color: item.color,
@@ -819,6 +819,13 @@ struct WorkspaceRightRailView: View {
                     .padding(.leading, 2)
             }
         }
+    }
+
+    private func capabilityIconPresentation(for item: RailCapabilityItem) -> CapabilityIconPresentation {
+        if case .package(let package) = item.source {
+            return .make(for: package)
+        }
+        return .make(name: item.name, fallbackSystemName: item.icon)
     }
 
     private var enabledPackageCount: Int {
@@ -2846,19 +2853,55 @@ private struct RailCountBadge: View {
 }
 
 private struct CapabilitySummaryRow: View {
-    let icon: String
+    let icon: CapabilityIconPresentation
     let iconColor: Color
     let title: String
     let subtitle: String
     let actionTitle: String?
     let action: () -> Void
 
+    init(
+        icon: String,
+        iconColor: Color,
+        title: String,
+        subtitle: String,
+        actionTitle: String?,
+        action: @escaping () -> Void
+    ) {
+        self.init(
+            icon: CapabilityIconPresentation(kind: .systemSymbol(icon), fallbackSystemName: icon),
+            iconColor: iconColor,
+            title: title,
+            subtitle: subtitle,
+            actionTitle: actionTitle,
+            action: action
+        )
+    }
+
+    init(
+        icon: CapabilityIconPresentation,
+        iconColor: Color,
+        title: String,
+        subtitle: String,
+        actionTitle: String?,
+        action: @escaping () -> Void
+    ) {
+        self.icon = icon
+        self.iconColor = iconColor
+        self.title = title
+        self.subtitle = subtitle
+        self.actionTitle = actionTitle
+        self.action = action
+    }
+
     var body: some View {
         Button(action: action) {
             HStack(alignment: .center, spacing: CapabilityRailLayout.leadingIconSpacing) {
-                Image(systemName: icon)
-                    .font(Stanford.ui(CapabilityRailLayout.leadingIconFontSize, weight: .medium))
-                    .foregroundStyle(iconColor)
+                CapabilityIconView(
+                    presentation: icon,
+                    size: CapabilityRailLayout.leadingIconFontSize,
+                    color: iconColor
+                )
                     .frame(width: CapabilityRailLayout.leadingIconFrame)
 
                 VStack(alignment: .leading, spacing: CapabilityRailLayout.titleSubtitleSpacing) {
@@ -3064,7 +3107,7 @@ private struct RailCapabilityItem: Identifiable {
 }
 
 private struct CapabilityRailRow: View {
-    let icon: String
+    let icon: CapabilityIconPresentation
     let title: String
     let subtitle: String
     let color: Color
@@ -3078,9 +3121,11 @@ private struct CapabilityRailRow: View {
     var body: some View {
         Button(action: onOpen) {
             HStack(spacing: CapabilityRailLayout.leadingIconSpacing) {
-                Image(systemName: icon)
-                    .font(Stanford.ui(CapabilityRailLayout.leadingIconFontSize, weight: .medium))
-                    .foregroundStyle(isEnabled ? color : .secondary)
+                CapabilityIconView(
+                    presentation: icon,
+                    size: CapabilityRailLayout.leadingIconFontSize,
+                    color: isEnabled ? color : .secondary
+                )
                     .frame(width: CapabilityRailLayout.leadingIconFrame)
 
                 VStack(alignment: .leading, spacing: CapabilityRailLayout.titleSubtitleSpacing) {

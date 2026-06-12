@@ -31,27 +31,8 @@ struct CapabilityPackageImporter {
         at url: URL,
         checkPrerequisites: Bool = true
     ) -> CapabilityPackageValidationReport {
-        let data: Data
-        do {
-            data = try Data(contentsOf: url)
-        } catch {
-            return CapabilityPackageValidationReport(
-                package: nil,
-                sourceURL: url,
-                issues: [
-                    CapabilityPackageValidationIssue(
-                        severity: .blocker,
-                        code: .unreadableFile,
-                        title: "Unreadable package",
-                        message: "ASTRA could not read \(url.path): \(error.localizedDescription)",
-                        component: url.lastPathComponent
-                    )
-                ]
-            )
-        }
-        return CapabilityPackageValidator.validate(
-            data: data,
-            sourceURL: url,
+        CapabilityPackageValidator.validateSource(
+            at: url,
             installedPackages: library.installedPackages(),
             checkPrerequisites: checkPrerequisites
         )
@@ -73,20 +54,31 @@ struct CapabilityPackageImporter {
         guard report.canInstall, let package = report.package else {
             throw CapabilityPackageImportError(report: report)
         }
-        let currentReport = CapabilityPackageValidator.validate(
+        var currentSource = report.source ?? CapabilityPackageSource(
             package: package,
-            sourceURL: report.sourceURL,
+            manifestURL: report.sourceURL,
+            assetRootURL: report.sourceURL?.deletingLastPathComponent()
+        )
+        currentSource.package = package
+        let currentReport = CapabilityPackageValidator.validate(
+            source: currentSource,
             installedPackages: library.installedPackages(),
             checkPrerequisites: false
         )
         guard currentReport.canInstall else {
             throw CapabilityPackageImportError(report: currentReport)
         }
-        try library.install(package, sourceMetadata: .localLibrary())
+        if let source = currentReport.source {
+            try library.install(source)
+        } else {
+            try library.install(package, sourceMetadata: .localLibrary())
+        }
         return CapabilityPackageImportResult(
             package: package,
             report: report,
-            installedURL: library.packageURL(for: package.id)
+            installedURL: package.iconDescriptor.kind == .asset
+                ? library.packageManifestURL(for: package.id)
+                : library.packageURL(for: package.id)
         )
     }
 }
