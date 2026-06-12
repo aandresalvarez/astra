@@ -14,10 +14,17 @@ enum SVGPathParser {
         var current = CGPoint.zero
         var start = CGPoint.zero
         var lastControl: CGPoint?
+        var lastQuadControl: CGPoint?
         // The command *before* the one being processed (normalized to upper case).
-        // Smooth-cubic `S` reflects the previous control point only when preceded
-        // by a cubic, so this must reflect history, not the current command.
+        // Smooth curves (`S`/`T`) reflect the previous control point only when
+        // preceded by the matching curve type, so this must reflect history, not
+        // the current command.
         var previousCommand: Character = " "
+
+        func reflectedQuadControl() -> CGPoint {
+            guard let lastQuadControl else { return current }
+            return CGPoint(x: 2 * current.x - lastQuadControl.x, y: 2 * current.y - lastQuadControl.y)
+        }
 
         func reflectedControl() -> CGPoint {
             guard let lastControl else { return current }
@@ -96,6 +103,33 @@ enum SVGPathParser {
                     current = end
                     segmentPrevious = "S"
                 }
+
+            case "Q":
+                while scanner.hasNumber {
+                    guard let cx = scanner.number(), let cy = scanner.number(),
+                          let x = scanner.number(), let y = scanner.number() else { return nil }
+                    let control = point(cx, cy, relativeTo: current, relative)
+                    let end = point(x, y, relativeTo: current, relative)
+                    path.addQuadCurve(to: end, control: control)
+                    lastQuadControl = control
+                    current = end
+                }
+                lastControl = nil
+
+            case "T":
+                // Smooth quadratic: reflect the previous quad control when the run
+                // is preceded by a quadratic; otherwise the control is the point.
+                var segmentPrevious = previousCommand
+                while scanner.hasNumber {
+                    guard let x = scanner.number(), let y = scanner.number() else { return nil }
+                    let control = (segmentPrevious == "Q" || segmentPrevious == "T") ? reflectedQuadControl() : current
+                    let end = point(x, y, relativeTo: current, relative)
+                    path.addQuadCurve(to: end, control: control)
+                    lastQuadControl = control
+                    current = end
+                    segmentPrevious = "T"
+                }
+                lastControl = nil
 
             case "A":
                 while scanner.hasNumber {

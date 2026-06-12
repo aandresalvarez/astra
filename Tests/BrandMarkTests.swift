@@ -33,8 +33,9 @@ struct BrandMarkTests {
 
     @Test("parser rejects unsupported commands so callers can fall back")
     func parserRejectsUnsupportedCommands() {
-        // Quadratic curves are not in the bundled marks and are unsupported.
-        #expect(SVGPathParser.parse("M0 0 Q1 1 2 2") == nil)
+        // All standard path commands are supported; a non-command letter (here
+        // "B") is genuinely unknown and must fall back to nil.
+        #expect(SVGPathParser.parse("M0 0 B1 1") == nil)
         #expect(SVGPathParser.parse("") == nil)
     }
 
