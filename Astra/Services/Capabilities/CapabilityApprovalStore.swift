@@ -18,13 +18,52 @@ struct CapabilityApprovalRecord: Codable, Equatable, Identifiable, Sendable {
 
 enum CapabilityApprovalDigest {
     static func digest(for package: PluginPackage) throws -> String {
-        var canonical = package
-        canonical.sourceMetadata?.lastRefreshedAt = nil
+        try digest(for: CapabilityPackageSource(
+            package: package,
+            manifestURL: package.sourceMetadata?.url,
+            assetRootURL: assetRootURL(for: package)
+        ))
+    }
+
+    static func digest(for source: CapabilityPackageSource) throws -> String {
+        var canonicalSource = source
+        canonicalSource.package.sourceMetadata?.lastRefreshedAt = nil
+        canonicalSource.package.sourceMetadata?.url = nil
+        let canonical = canonicalSource.package
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(canonical)
-        let digest = SHA256.hash(data: data)
+        var hasher = SHA256()
+        hasher.update(data: data)
+        if let assetDigestData = try iconAssetDigestData(for: source) {
+            hasher.update(data: Data("\nicon-asset\n".utf8))
+            hasher.update(data: assetDigestData)
+        }
+        let digest = hasher.finalize()
         return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func assetRootURL(for package: PluginPackage) -> URL? {
+        guard package.iconDescriptor.kind == .asset else { return nil }
+        guard let url = package.sourceMetadata?.url else { return nil }
+        let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        if isDirectory {
+            return url
+        }
+        return url.deletingLastPathComponent()
+    }
+
+    private static func iconAssetDigestData(for source: CapabilityPackageSource) throws -> Data? {
+        guard let relativePath = source.declaredIconAssetPath,
+              let rootURL = source.assetRootURL else {
+            return nil
+        }
+        let assetURL = try CapabilityIconAssetPolicy.validatedAssetURL(
+            relativePath: relativePath,
+            rootURL: rootURL
+        )
+        let digest = try CapabilityIconAssetPolicy.sha256Hex(for: assetURL)
+        return Data("\(relativePath):\(digest)".utf8)
     }
 }
 

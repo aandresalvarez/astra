@@ -26,15 +26,21 @@ struct CapabilityPackageSourceExporter {
         to url: URL? = nil
     ) throws -> URL {
         let destination = try url ?? defaultPackageURL(for: package)
+        let manifestDestination = destination.pathExtension == "json"
+            ? destination
+            : destination.appendingPathComponent(CapabilityPackageSourceReader.manifestFileName)
         try fileManager.createDirectory(
-            at: destination.deletingLastPathComponent(),
+            at: manifestDestination.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
+        if package.iconDescriptor.kind == .asset {
+            try copyIconAsset(for: package, toPackageRoot: manifestDestination.deletingLastPathComponent())
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(Self.sourcePackage(package))
-        try data.write(to: destination, options: [.atomic])
-        return destination
+        try data.write(to: manifestDestination, options: [.atomic])
+        return manifestDestination
     }
 
     func defaultPackageURL(for package: PluginPackage) throws -> URL {
@@ -63,6 +69,35 @@ struct CapabilityPackageSourceExporter {
             source.governance.policyNotes = "Local capability package saved from ASTRA and pending review."
         }
         return source
+    }
+
+    private func copyIconAsset(
+        for package: PluginPackage,
+        toPackageRoot packageRoot: URL
+    ) throws {
+        guard let sourceRoot = assetRootURL(from: package.sourceMetadata?.url) else {
+            throw CapabilityIconAssetValidationError.missing
+        }
+        let sourceAsset = try CapabilityIconAssetPolicy.validatedAssetURL(
+            relativePath: package.iconDescriptor.value,
+            rootURL: sourceRoot,
+            fileManager: fileManager
+        )
+        let destinationAsset = packageRoot.appendingPathComponent(package.iconDescriptor.value)
+        try fileManager.createDirectory(
+            at: destinationAsset.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        if fileManager.fileExists(atPath: destinationAsset.path) {
+            try fileManager.removeItem(at: destinationAsset)
+        }
+        try fileManager.copyItem(at: sourceAsset, to: destinationAsset)
+    }
+
+    private func assetRootURL(from url: URL?) -> URL? {
+        guard let url else { return nil }
+        let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        return isDirectory ? url : url.deletingLastPathComponent()
     }
 
     static func defaultSourceDirectory(

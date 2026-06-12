@@ -301,9 +301,12 @@ struct PluginCatalogView: View {
                 }
                 .buttonStyle(.plain)
 
-                Image(systemName: package.icon)
-                    .font(Stanford.ui(15, weight: .semibold))
-                    .foregroundStyle(Stanford.lagunita)
+                CapabilityIconView(
+                    presentation: .make(for: package),
+                    size: 15,
+                    color: Stanford.lagunita,
+                    weight: .semibold
+                )
                     .frame(width: 22, height: 22)
 
                 VStack(alignment: .leading, spacing: 1) {
@@ -709,9 +712,11 @@ struct PluginCatalogView: View {
     }
 
     private func capabilityIconTile(_ package: PluginPackage, isEnabled: Bool) -> some View {
-        Image(systemName: package.icon)
-            .font(Stanford.ui(15, weight: .medium))
-            .foregroundStyle(isEnabled ? Stanford.lagunita : .secondary)
+        CapabilityIconView(
+            presentation: .make(for: package),
+            size: 15,
+            color: isEnabled ? Stanford.lagunita : .secondary
+        )
             .frame(width: 30, height: 30)
             .background((isEnabled ? Stanford.lagunita : Color.secondary).opacity(0.08))
             .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
@@ -1752,11 +1757,17 @@ private struct CapabilityImportReviewSheet: View {
     }
 
     var body: some View {
+        let iconPresentation = package.map(CapabilityIconPresentation.make)
+            ?? CapabilityIconPresentation.make(name: "Invalid Capability", fallbackSystemName: "exclamationmark.triangle")
+
         VStack(spacing: 0) {
             HStack(alignment: .top, spacing: 12) {
-                Image(systemName: package?.icon ?? "exclamationmark.triangle")
-                    .font(Stanford.ui(18, weight: .semibold))
-                    .foregroundStyle(report.canInstall ? Stanford.lagunita : Stanford.poppy)
+                CapabilityIconView(
+                    presentation: iconPresentation,
+                    size: 18,
+                    color: report.canInstall ? Stanford.lagunita : Stanford.poppy,
+                    weight: .semibold
+                )
                     .frame(width: 34, height: 34)
                     .background((report.canInstall ? Stanford.lagunita : Stanford.poppy).opacity(0.1))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -2004,9 +2015,12 @@ struct PluginInstallSheet: View {
         VStack(alignment: .leading, spacing: 0) {
             // Header
             HStack(alignment: .top, spacing: 12) {
-                Image(systemName: package.icon)
-                    .font(Stanford.ui(22, weight: .semibold))
-                    .foregroundStyle(Stanford.lagunita)
+                CapabilityIconView(
+                    presentation: .make(for: package),
+                    size: 22,
+                    color: Stanford.lagunita,
+                    weight: .semibold
+                )
                     .frame(width: 44, height: 44)
                     .background(Stanford.lagunita.opacity(0.1))
                     .clipShape(RoundedRectangle(cornerRadius: 12))

@@ -57,6 +57,12 @@
     "visibility" : "everyone"
   },
   "icon" : "list.bullet.clipboard",
+  "iconDescriptor" : {
+    "fallbackSystemName" : "list.bullet.clipboard",
+    "kind" : "asset",
+    "monochromePreferred" : false,
+    "value" : "assets/jira.svg"
+  },
   "id" : "jira-workflow",
   "isTrusted" : false,
   "localTools" : [
