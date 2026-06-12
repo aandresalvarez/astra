@@ -169,6 +169,9 @@ struct WorkspaceRightRailView: View {
     @State private var newMemoryText = ""
     @State private var isMemoryComposerVisible = false
     @State private var expandedWorkspaceSetupItems: Set<WorkspaceSetupItem> = []
+    // Removing a configured folder or saved memory is destructive and was
+    // previously one stray tap away with no undo — gate both behind a confirm.
+    @State private var pendingRailDeletion: PendingRailDeletion?
     @State private var approvedCapabilityPackages: [PluginPackage] = PluginCatalog.builtInPackages
     @State private var capabilityError: String?
     @State private var capabilityPrerequisiteStatuses: [String: HealthStatus] = [:]
@@ -1570,6 +1573,25 @@ struct WorkspaceRightRailView: View {
                 }
             }
         }
+        .confirmationDialog(
+            pendingRailDeletion?.title ?? "",
+            isPresented: Binding(
+                get: { pendingRailDeletion != nil },
+                set: { presented in if !presented { pendingRailDeletion = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: pendingRailDeletion
+        ) { deletion in
+            Button(deletion.confirmTitle, role: .destructive) {
+                deletion.perform()
+                pendingRailDeletion = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingRailDeletion = nil
+            }
+        } message: { deletion in
+            Text(deletion.message)
+        }
     }
 
     private var workspaceSetupConfiguredGroup: some View {
@@ -2069,7 +2091,7 @@ struct WorkspaceRightRailView: View {
                 )
 
             Button {
-                removeMemory(at: index)
+                requestMemoryDeletion(at: index)
             } label: {
                 Image(systemName: "trash")
                     .font(Stanford.ui(11, weight: .medium))
@@ -2127,7 +2149,14 @@ struct WorkspaceRightRailView: View {
             .help("Copy path")
 
             if canRemove, let removeAction {
-                Button(action: removeAction) {
+                Button {
+                    pendingRailDeletion = PendingRailDeletion(
+                        title: "Remove folder?",
+                        message: "\(compactPath(path)) will no longer be available to the agent. The folder itself is not deleted.",
+                        confirmTitle: "Remove",
+                        perform: removeAction
+                    )
+                } label: {
                     Image(systemName: "trash")
                         .font(Stanford.ui(11, weight: .medium))
                         .foregroundStyle(.tertiary)
@@ -2559,6 +2588,18 @@ struct WorkspaceRightRailView: View {
         isMemoryComposerVisible = false
     }
 
+    private func requestMemoryDeletion(at index: Int) {
+        guard workspace.memories.indices.contains(index) else { return }
+        let detail = workspace.memories[index].trimmingCharacters(in: .whitespacesAndNewlines)
+        let shown = detail.isEmpty ? "This saved detail" : "“\(detail.prefix(80))”"
+        pendingRailDeletion = PendingRailDeletion(
+            title: "Remove memory?",
+            message: "\(shown) will be removed from this workspace's memory.",
+            confirmTitle: "Remove",
+            perform: { removeMemory(at: index) }
+        )
+    }
+
     private func removeMemory(at index: Int) {
         guard workspace.memories.indices.contains(index) else { return }
         workspace.memories.remove(at: index)
@@ -2881,4 +2922,15 @@ extension View {
             fallbackStrokeOpacity: strokeOpacity
         )
     }
+}
+
+/// A staged destructive removal awaiting confirmation. Carries its own copy so
+/// the confirm dialog can describe exactly what it will delete and run the
+/// removal only on an explicit second tap.
+struct PendingRailDeletion: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
+    let confirmTitle: String
+    let perform: () -> Void
 }
