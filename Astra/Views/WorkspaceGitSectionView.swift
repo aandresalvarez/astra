@@ -597,9 +597,10 @@ struct WorkspaceGitSectionView: View {
                 } else {
                     Image(systemName: "sparkles")
                 }
-                Text("Create pull request")
+                Text("Create PR")
             }
             .font(Stanford.caption(12).weight(.medium))
+            .lineLimit(1)
             .frame(maxWidth: .infinity)
         }
         .buttonStyle(.bordered)
