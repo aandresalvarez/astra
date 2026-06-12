@@ -81,10 +81,19 @@ struct TaskDecisionDockView: View {
     private var statusTitleCluster: some View {
         HStack(alignment: .center, spacing: 7) {
             statusIcon
-            Text(presentation.title)
-                .font(Stanford.body(TaskComposerPresentation.decisionTitleFontSize).weight(.semibold))
-                .foregroundStyle(Stanford.black)
-                .lineLimit(1)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(presentation.title)
+                    .font(Stanford.body(TaskComposerPresentation.decisionTitleFontSize).weight(.semibold))
+                    .foregroundStyle(Stanford.black)
+                    .lineLimit(1)
+                // The one-line summary is part of the visible scan path, not only a
+                // tooltip; full text stays in .help when it truncates.
+                Text(presentation.summary)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
         }
         .help(presentation.summary)
         .accessibilityElement(children: .ignore)
@@ -95,7 +104,7 @@ struct TaskDecisionDockView: View {
     private var statusIcon: some View {
         Image(systemName: presentation.icon)
             .font(Stanford.ui(TaskComposerPresentation.decisionIconFontSize, weight: .semibold))
-            .foregroundStyle(toneColor)
+            .foregroundStyle(statusIconColor)
             .frame(
                 width: TaskComposerPresentation.decisionIconFrame,
                 height: TaskComposerPresentation.decisionIconFrame
@@ -277,6 +286,12 @@ struct TaskDecisionDockView: View {
 
     private var toneColor: Color {
         metricColor(presentation.tone)
+    }
+
+    /// The leading status glyph is non-tappable, so it never wears the interactive
+    /// accent: the running tone drops to the info tint instead of lagunita.
+    private var statusIconColor: Color {
+        presentation.tone == .running ? Stanford.statusInfo : toneColor
     }
 
     private func buttonForeground(_ action: TaskDecisionDockAction, isPrimary: Bool) -> Color {
