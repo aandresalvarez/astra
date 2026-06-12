@@ -18,8 +18,9 @@ enum WorkspaceAppStudioContextBuilder {
             limit: request.artifactLimit,
             excerptLimit: excerptLimit
         )
+        let manifestExcerptLimit = doubledLimit(excerptLimit)
         let existingManifest = request.existingAppManifest.map {
-            redactAndLimit($0, limit: excerptLimit * 2)
+            redactAndLimit($0, limit: manifestExcerptLimit)
         }
         let context = WorkspaceAppStudioContext(
             prompt: prompt,
@@ -90,9 +91,9 @@ enum WorkspaceAppStudioContextBuilder {
                 dataAccess: state.package.governance.dataAccess.map(\.rawValue),
                 externalEffects: state.package.governance.externalEffects.map(\.rawValue)
             ),
-            skills: state.linkedSkills.map(\.name),
-            connectors: state.linkedConnectors.map(\.name),
-            tools: state.linkedTools.map(\.name)
+            skills: redactedNames(state.linkedSkills.map(\.name)),
+            connectors: redactedNames(state.linkedConnectors.map(\.name)),
+            tools: redactedNames(state.linkedTools.map(\.name))
         )
     }
 
@@ -210,6 +211,16 @@ enum WorkspaceAppStudioContextBuilder {
         case .needsAttention:
             return "needsAttention"
         }
+    }
+
+    private static func redactedNames(_ names: [String]) -> [String] {
+        names.map(WorkspaceAppStudioContextRedactor.redact)
+    }
+
+    private static func doubledLimit(_ limit: Int) -> Int {
+        guard limit > 0 else { return 0 }
+        guard limit <= Int.max / 2 else { return Int.max }
+        return limit * 2
     }
 
     private static func redactAndLimit(_ rawValue: String, limit: Int) -> String {

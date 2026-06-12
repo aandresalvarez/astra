@@ -64,6 +64,65 @@ struct WorkspaceAppStudioContextBuilderTests {
     }
 
     @MainActor
+    @Test("context redacts capability linked resource names")
+    func contextRedactsCapabilityLinkedResourceNames() {
+        let workspace = Workspace(name: "Research", primaryPath: "/tmp/research")
+        workspace.enabledCapabilityIDs = ["secret-capability"]
+
+        let skill = Skill(name: "Skill token=skill-secret-123456")
+        skill.originPackageID = "secret-capability"
+        let connector = Connector(name: "Connector ghp_1234567890abcdef", serviceType: "custom")
+        connector.originPackageID = "secret-capability"
+        let tool = LocalTool(name: "Tool sk-1234567890abcdef")
+        tool.originPackageID = "secret-capability"
+        workspace.skills = [skill]
+        workspace.connectors = [connector]
+        workspace.localTools = [tool]
+
+        let package = capabilityPackage(
+            id: "secret-capability",
+            name: "Secret Resource Names",
+            riskLevel: .medium
+        )
+        let context = WorkspaceAppStudioContextBuilder.build(WorkspaceAppStudioContextRequest(
+            userPrompt: "Build with linked resources.",
+            workspace: workspace,
+            capabilityStates: [
+                CapabilityPackageState(
+                    package: package,
+                    workspace: workspace,
+                    capabilities: WorkspaceCapabilities(workspace: workspace)
+                )
+            ]
+        ))
+
+        #expect(context.capabilities.first?.skills == ["Skill token=[redacted]"])
+        #expect(context.capabilities.first?.connectors == ["Connector [redacted]"])
+        #expect(context.capabilities.first?.tools == ["Tool [redacted]"])
+        let rendered = context.builderContract.renderedPrompt
+        #expect(rendered.contains("skill-secret") == false)
+        #expect(rendered.contains("ghp_1234567890") == false)
+        #expect(rendered.contains("sk-1234567890") == false)
+    }
+
+    @MainActor
+    @Test("context caps doubled manifest excerpt limit")
+    func contextCapsDoubledManifestExcerptLimit() {
+        let workspace = Workspace(name: "Research", primaryPath: "/tmp/research")
+
+        let context = WorkspaceAppStudioContextBuilder.build(WorkspaceAppStudioContextRequest(
+            userPrompt: "Build safely.",
+            workspace: workspace,
+            capabilityStates: [],
+            existingAppManifest: #"{"token":"manifest-secret-123456"}"#,
+            excerptCharacterLimit: Int.max
+        ))
+
+        #expect(context.existingAppManifest == #"{"token":"[redacted]"}"#)
+        #expect(context.builderContract.renderedPrompt.contains("manifest-secret") == false)
+    }
+
+    @MainActor
     @Test("context includes enabled capability summaries in stable order")
     func contextIncludesEnabledCapabilitiesInStableOrder() {
         let workspace = Workspace(name: "Research", primaryPath: "/tmp/research")
