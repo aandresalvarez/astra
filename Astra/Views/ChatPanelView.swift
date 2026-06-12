@@ -594,6 +594,14 @@ struct ChatPanelView: View {
         Self.newTaskPrompts[newTaskPromptIndex % Self.newTaskPrompts.count]
     }
 
+    private var draftPresentation: ChatPanelDraftPresentation {
+        ChatPanelDraftPresentation.resolve(draftTask: draftTask, fallbackPrompt: newTaskPrompt)
+    }
+
+    private var isWorkspaceAppStudioDraft: Bool {
+        draftPresentation.usesWorkspaceAppStudioEmptyState
+    }
+
     private var hasGoalModeSurface: Bool {
         isPlanMode || pendingPlan != nil || approvedDraftPlan != nil
     }
@@ -631,6 +639,9 @@ struct ChatPanelView: View {
         }
         if hasGoalModeSurface {
             return hasConversation ? "Send" : "Plan"
+        }
+        if isWorkspaceAppStudioDraft {
+            return draftPresentation.submitTitle
         }
         return "Run"
     }
@@ -768,7 +779,7 @@ struct ChatPanelView: View {
             // Composer
             composerView
         }
-        .navigationTitle(draftTask != nil ? "Draft" : "New Task")
+        .navigationTitle(draftPresentation.navigationTitle)
         .navigationSubtitle(workspace?.name ?? "Astra")
         .task(id: runtimeAvailabilitySignature) {
             await refreshRuntimeAvailability()
@@ -871,42 +882,13 @@ struct ChatPanelView: View {
     // MARK: - Hero (empty state)
 
     private var heroView: some View {
-        VStack(spacing: 24) {
-            AstraPulsingReticleMark(color: Color(hex: Stanford.cardinalRedLightHex))
-                .frame(width: 76, height: 76)
-
-            Text(newTaskPrompt)
-                .font(Stanford.heading(28))
-                .foregroundStyle(Stanford.black)
-                .multilineTextAlignment(.center)
-                .lineSpacing(4)
-                .lineLimit(2)
-                .frame(maxWidth: 720, minHeight: 84)
-
-            // The active workspace is already shown in the title bar subtitle
-            // and the right-hand "Workspace Context" panel; a third chip here
-            // was pure repetition, so the hero stays focused on the prompt.
-
-            HStack(spacing: 28) {
-                HStack(spacing: 5) {
-                    Image(systemName: "bolt.fill")
-                        .font(Stanford.ui(13))
-                    Text("Enter to run immediately")
-                        .font(Stanford.body(15))
-                }
-                .foregroundStyle(Stanford.lagunita)
-
-                HStack(spacing: 5) {
-                    Image(systemName: "switch.2")
-                        .font(Stanford.ui(13))
-                    Text("Enable Goal mode to refine first")
-                        .font(Stanford.body(15))
-                }
-                .foregroundStyle(Color.primary.opacity(0.65))
-            }
-
+        ChatPanelEmptyStateView(
+            presentation: draftPresentation,
+            isThinking: isThinking
+        ) {
+            messageText = draftPresentation.primaryActionPrompt
+            sendMessage()
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - Message Bubbles
@@ -1241,7 +1223,7 @@ struct ChatPanelView: View {
                     }
                 }
 
-                TextField("Describe a task or ask a question...", text: $messageText, axis: .vertical)
+                TextField(draftPresentation.composerPlaceholder, text: $messageText, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(Stanford.chatBody())
                     .lineLimit(2...10)
@@ -1473,6 +1455,10 @@ struct ChatPanelView: View {
             skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + "Attached files/folders (dragged by user):\n\(fileList)\n\nThe user has attached these paths. When they refer to \"this folder\" or \"this file\", they mean these paths."
         }
 
+        if let appStudioContext = WorkspaceAppStudioDraftSupport.conversationContext(for: draftTask) {
+            skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + appStudioContext
+        }
+
         return skillCtx
     }
 
@@ -1495,6 +1481,8 @@ struct ChatPanelView: View {
     private func submitComposer() {
         if showSlashMenu && !slashOptions.isEmpty {
             selectSlashOption(slashOptions[slashSelectedIndex])
+        } else if isWorkspaceAppStudioDraft {
+            sendMessage()
         } else if isPlanModeActive {
             sendMessage()
         } else {
@@ -2595,15 +2583,22 @@ struct ChatPanelView: View {
             let workerSelection = workerRoleSelection
             let runtime = workerSelection.profile.runtime
             let model = workerSelection.profile.model
+            let metadata = WorkspaceAppStudioDraftSupport.metadataAfterConversationUpdate(
+                task: draft,
+                firstMessage: messages.first?.content
+            )
             // Update existing draft
             draft.draftMessages = json
-            draft.title = String(messages.first?.content.prefix(60) ?? "Draft")
-            draft.goal = messages.first?.content ?? draft.goal
+            draft.title = metadata.title
+            draft.goal = metadata.goal
             draft.tokenBudget = workerSelection.profile.tokenBudget
             draft.model = model
             draft.runtimeID = runtime.rawValue
-            draft.inputs = attachedFiles
-            draft.skills = scopedSelectedSkills(forTaskText: draft.goal, inputs: attachedFiles)
+            draft.inputs = WorkspaceAppStudioDraftSupport.inputsAfterConversationUpdate(
+                task: draft,
+                attachedFiles: attachedFiles
+            )
+            draft.skills = scopedSelectedSkills(forTaskText: draft.goal, inputs: draft.inputs)
             TaskCapabilitySnapshotter.capture(for: draft)
             draft.useAgentTeam = useAgentTeam
             draft.teamSize = teamSize
