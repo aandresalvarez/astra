@@ -2651,6 +2651,8 @@ struct WorkspaceRightRailView: View {
             }
             .buttonStyle(.plain)
             .disabled(newMemoryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .help("Save memory")
+            .accessibilityLabel("Save memory")
 
             Button {
                 newMemoryText = ""
@@ -2661,6 +2663,8 @@ struct WorkspaceRightRailView: View {
                     .foregroundStyle(.tertiary)
             }
             .buttonStyle(.plain)
+            .help("Cancel")
+            .accessibilityLabel("Cancel adding memory")
         }
     }
 
