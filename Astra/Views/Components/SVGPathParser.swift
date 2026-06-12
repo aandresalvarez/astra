@@ -14,7 +14,10 @@ enum SVGPathParser {
         var current = CGPoint.zero
         var start = CGPoint.zero
         var lastControl: CGPoint?
-        var lastCommand: Character = " "
+        // The command *before* the one being processed (normalized to upper case).
+        // Smooth-cubic `S` reflects the previous control point only when preceded
+        // by a cubic, so this must reflect history, not the current command.
+        var previousCommand: Character = " "
 
         func reflectedControl() -> CGPoint {
             guard let lastControl else { return current }
@@ -22,9 +25,10 @@ enum SVGPathParser {
         }
 
         while let command = scanner.nextCommand() {
-            lastCommand = command
             let relative = command.isLowercase
-            switch Character(command.uppercased()) {
+            let upperCommand = Character(command.uppercased())
+            defer { previousCommand = upperCommand }
+            switch upperCommand {
             case "M":
                 guard let x = scanner.number(), let y = scanner.number() else { return nil }
                 current = relative ? CGPoint(x: current.x + x, y: current.y + y) : CGPoint(x: x, y: y)
@@ -77,17 +81,20 @@ enum SVGPathParser {
                 }
 
             case "S":
+                // The first segment reflects only if the *preceding* command was a
+                // cubic; every later segment in this same `S` run is itself
+                // preceded by a cubic, so it reflects too.
+                var segmentPrevious = previousCommand
                 while scanner.hasNumber {
                     guard let x2 = scanner.number(), let y2 = scanner.number(),
                           let x = scanner.number(), let y = scanner.number() else { return nil }
-                    let c1 = (lastCommand == "C" || lastCommand == "S"
-                              || lastCommand == "c" || lastCommand == "s") ? reflectedControl() : current
+                    let c1 = (segmentPrevious == "C" || segmentPrevious == "S") ? reflectedControl() : current
                     let c2 = point(x2, y2, relativeTo: current, relative)
                     let end = point(x, y, relativeTo: current, relative)
                     path.addCurve(to: end, control1: c1, control2: c2)
                     lastControl = c2
                     current = end
-                    lastCommand = command
+                    segmentPrevious = "S"
                 }
 
             case "A":

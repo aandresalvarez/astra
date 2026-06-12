@@ -46,6 +46,21 @@ struct BrandMarkTests {
         #expect(path?.isEmpty == false)
     }
 
+    @Test("smooth-cubic S reflects only when preceded by a cubic")
+    func smoothCubicReflectionRespectsPreviousCommand() {
+        // C → S: the S reflects the prior control point; the run stays in bounds.
+        let reflected = SVGPathParser.parse("M0 0C0 1 1 1 1 0S2 -1 2 0")
+        let rb = try! #require(reflected).boundingRect
+        #expect(rb.minX >= -0.01 && rb.maxX <= 2.01)
+
+        // S NOT preceded by a cubic must use the current point as the first
+        // control (no reflection), so a flat S on the axis stays on the axis.
+        let flat = SVGPathParser.parse("M0 0S1 0 2 0")
+        let fb = try! #require(flat).boundingRect
+        #expect(abs(fb.minY) < 0.01 && abs(fb.maxY) < 0.01)
+        #expect(abs(fb.maxX - 2) < 0.01)
+    }
+
     @Test("arc converts to the correct centre, radius, and sweep direction")
     func arcGeometryIsCorrect() {
         // Half-circle from (0,0) to (2,0), unit radii (centre at (1,0)). In SVG's
