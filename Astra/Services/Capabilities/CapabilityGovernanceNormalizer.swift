@@ -8,6 +8,8 @@ import ASTRACore
 /// the library load path run untrusted packages through this normalizer so
 /// the two can't drift.
 enum CapabilityGovernanceNormalizer {
+    static let defaultDraftPolicyNote = "Local capability package pending review."
+
     /// Forces a package's self-declared source and governance back to the
     /// local-draft baseline. Returns `true` when any field was changed, so
     /// callers can surface a warning or audit entry.
@@ -36,7 +38,7 @@ enum CapabilityGovernanceNormalizer {
         package.governance.approvedBy = nil
         package.governance.approvedAt = nil
         if package.governance.policyNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            package.governance.policyNotes = "Local capability package pending review."
+            package.governance.policyNotes = defaultDraftPolicyNote
         }
         return changed
     }

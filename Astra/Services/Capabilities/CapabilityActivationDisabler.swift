@@ -94,12 +94,17 @@ struct CapabilityActivationDisabler {
         if WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext) {
             pendingKeychainCleanups.forEach { $0() }
         } else {
+            // Failed save: revert the pending deletes and ID mutations so
+            // the package reads as still enabled (truthful) and no keychain
+            // credential is orphaned by a later unrelated save.
+            modelContext.rollback()
             AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
                 "source": "package_disable",
                 "package_id": package.id,
-                "result": "save_failed_keychain_cleanup_deferred",
+                "result": "save_failed_disable_rolled_back",
                 "deferred_cleanup_count": String(pendingKeychainCleanups.count)
             ], level: .error)
+            return Result(packageID: package.id)
         }
         return result
     }

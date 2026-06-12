@@ -128,7 +128,7 @@ struct CapabilityInstallRollbackTests {
         let url = root.appendingPathComponent("pkg.json")
         try Data("{}".utf8).write(to: url)
 
-        CapabilityInstaller.restoreLibraryFile(previousData: nil, at: url)
+        CapabilityInstaller.restoreLibraryFile(previousData: nil, fileExistedBefore: false, at: url)
         #expect(!FileManager.default.fileExists(atPath: url.path))
     }
 
@@ -140,7 +140,7 @@ struct CapabilityInstallRollbackTests {
         let previous = Data(#"{"version":"1.0.0"}"#.utf8)
         try Data(#"{"version":"2.0.0"}"#.utf8).write(to: url)
 
-        CapabilityInstaller.restoreLibraryFile(previousData: previous, at: url)
+        CapabilityInstaller.restoreLibraryFile(previousData: previous, fileExistedBefore: true, at: url)
         #expect(try Data(contentsOf: url) == previous)
     }
 

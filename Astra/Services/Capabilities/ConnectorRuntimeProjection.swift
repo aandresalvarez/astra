@@ -64,7 +64,8 @@ struct ConnectorRuntimeProjection {
             output[binding.envKey] = binding.value
             guard includeLegacySingleConnectorFallback,
                   serviceCounts[serviceTypesByConnectorID[binding.connectorID] ?? ""] == 1,
-                  legacyKeyCounts[binding.originalKey] == 1 else {
+                  legacyKeyCounts[binding.originalKey] == 1,
+                  Self.isSafeLegacyEnvName(binding.originalKey) else {
                 continue
             }
             output[binding.originalKey] = binding.value
@@ -288,6 +289,23 @@ struct ConnectorRuntimeProjection {
             value: value,
             kind: kind
         ))
+    }
+
+    /// The bare legacy fallback exports connector key names verbatim into
+    /// the task environment. Key names are package/user-controlled, so
+    /// process-critical and loader variables must never be claimable —
+    /// a connector config key literally named PATH would otherwise poison
+    /// every launch. The prefixed projected names are always safe.
+    static func isSafeLegacyEnvName(_ name: String) -> Bool {
+        let critical: Set<String> = [
+            "PATH", "HOME", "SHELL", "USER", "LOGNAME", "TMPDIR",
+            "SSH_AUTH_SOCK", "XPC_SERVICE_NAME"
+        ]
+        if critical.contains(name) { return false }
+        for prefix in ["DYLD_", "LD_", "ASTRA_"] where name.hasPrefix(prefix) {
+            return false
+        }
+        return true
     }
 
     private func normalizedServiceTypesByConnectorID() -> [UUID: String] {

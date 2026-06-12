@@ -274,6 +274,19 @@ enum CapabilityCatalogPolicy {
             if let reason = unsafeMCPServerReason(server) {
                 operationalBlockers.append(.unsafeMCPServer(name: displayName(server.displayName, fallback: server.id), reason: reason))
             }
+            if let nameReason = MCPEnvironmentKeyPolicy.invalidNameReason(server: server) {
+                operationalBlockers.append(.unsafeMCPServer(
+                    name: displayName(server.displayName, fallback: server.id),
+                    reason: nameReason
+                ))
+            }
+            let undeclared = MCPEnvironmentKeyPolicy.undeclaredKeys(server: server, package: package)
+            if !undeclared.isEmpty {
+                operationalBlockers.append(.unsafeMCPServer(
+                    name: displayName(server.displayName, fallback: server.id),
+                    reason: "requests environment keys the package does not declare (\(undeclared.joined(separator: ", ")))"
+                ))
+            }
         }
 
         let isVisible = visibilityBlockers.isEmpty

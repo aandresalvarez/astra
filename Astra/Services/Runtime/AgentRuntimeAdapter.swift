@@ -1180,7 +1180,9 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             packages: CapabilityRuntimeResourceMatcher.packageDefinitions(),
             approvalRecords: CapabilityApprovalStore().records()
         )
-        let mcpConfigURL = MCPRuntimeProjection.writeClaudeConfig(servers: mcpServers, taskID: context.task.id)
+        // allowEmpty: strict mode must apply even with zero governed servers,
+        // or a repository's own .mcp.json loads ungoverned on those runs.
+        let mcpConfigURL = MCPRuntimeProjection.writeClaudeConfig(servers: mcpServers, taskID: context.task.id, allowEmpty: true)
         let mcpAllowedTools = mcpConfigURL == nil ? [] : MCPRuntimeProjection.allowedToolPermissions(servers: mcpServers)
         let mcpDeniedTools = mcpConfigURL == nil ? [] : MCPRuntimeProjection.deniedToolPermissions(servers: mcpServers)
         let nativeAllowedTools = Array(Set(
@@ -1240,7 +1242,8 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         }
         if let mcpConfigURL {
             // --strict-mcp-config keeps a repository's own .mcp.json from
-            // adding servers that bypassed capability governance.
+            // adding servers that bypassed capability governance; with no
+            // governed servers the config is an empty {"mcpServers":{}}.
             args += ["--mcp-config", mcpConfigURL.path, "--strict-mcp-config"]
         }
         if !mcpDeniedTools.isEmpty {
@@ -1295,7 +1298,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
                 "uses_native_continuation": String(context.nativeContinuationSessionID != nil),
                 "native_session_prefix": context.nativeContinuationSessionID.map { String($0.prefix(8)) } ?? "none",
                 "uses_live_approvals": String(interactiveAsk != nil),
-                "mcp_server_count": String(mcpServers.count),
+                "mcp_server_count": String(mcpConfigURL == nil ? 0 : mcpServers.count),
                 "mcp_config_rendered": String(mcpConfigURL != nil)
             ],
             interactiveAsk: interactiveAsk

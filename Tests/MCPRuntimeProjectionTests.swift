@@ -212,11 +212,12 @@ struct MCPRuntimeProjectionTests {
 
         // Stub MCP server: answers one JSON-RPC initialize request on stdio.
         let stub = root.appendingPathComponent("stub-mcp.sh")
+        // The test controls the request, so the response id is fixed —
+        // no python3 dependency (absent on machines without CLT).
         try """
         #!/bin/bash
         read -r line
-        id=$(echo "$line" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
-        printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-03-26","capabilities":{"tools":{}},"serverInfo":{"name":"stub","version":"%s"}}}\\n' "$id" "$STUB_MARKER"
+        printf '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26","capabilities":{"tools":{}},"serverInfo":{"name":"stub","version":"%s"}}}\\n' "$STUB_MARKER"
         """.write(to: stub, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
 
@@ -252,7 +253,15 @@ struct MCPRuntimeProjectionTests {
         let request = #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"astra-test","version":"1.0"}}}"# + "\n"
         stdin.fileHandleForWriting.write(Data(request.utf8))
         stdin.fileHandleForWriting.closeFile()
-        process.waitUntilExit()
+        // A hung stub must fail the test, not hang the suite.
+        let deadline = Date().addingTimeInterval(10)
+        while process.isRunning && Date() < deadline {
+            usleep(50_000)
+        }
+        if process.isRunning {
+            process.terminate()
+            Issue.record("MCP stub did not exit within 10s")
+        }
 
         let output = String(decoding: stdout.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         let firstLine = try #require(output.split(separator: "\n").first)

@@ -45,6 +45,17 @@ struct CapabilityLibrary {
         Set(PluginCatalog.builtInPackages.map(\.id))
     }
 
+    /// Curated governance by built-in ID. On load, a trusted built-in's
+    /// governance comes from the compiled definition, never the disk file —
+    /// a hand-edited built-in JSON cannot elevate (or weaken) its own
+    /// governance by name alone.
+    static var curatedBuiltInGovernance: [String: CapabilityGovernance] {
+        Dictionary(
+            PluginCatalog.builtInPackages.map { ($0.id, $0.governance) },
+            uniquingKeysWith: { first, _ in first }
+        )
+    }
+
     func installedPackages(
         trustedBuiltInIDs: Set<String> = CapabilityLibrary.trustedBuiltInPackageIDs
     ) -> [PluginPackage] {
@@ -64,8 +75,13 @@ struct CapabilityLibrary {
                 if package.sourceMetadata == nil {
                     package.sourceMetadata = .localLibrary()
                 }
-                if !trustedBuiltInIDs.contains(package.id),
-                   CapabilityGovernanceNormalizer.clampToLocalDraft(&package) {
+                if trustedBuiltInIDs.contains(package.id) {
+                    // Defense in depth: trusted by ID, but governance still
+                    // comes from the compiled definition when one exists.
+                    if let curated = Self.curatedBuiltInGovernance[package.id] {
+                        package.governance = curated
+                    }
+                } else if CapabilityGovernanceNormalizer.clampToLocalDraft(&package) {
                     AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
                         "source": "library_load",
                         "package_id": package.id,

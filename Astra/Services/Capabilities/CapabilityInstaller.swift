@@ -6,11 +6,14 @@ import ASTRACore
 struct CapabilityInstaller {
     enum InstallationError: Error, Equatable, LocalizedError {
         case blocked([String])
+        case persistenceFailed(packageID: String)
 
         var errorDescription: String? {
             switch self {
             case .blocked(let messages):
                 return messages.joined(separator: "\n")
+            case .persistenceFailed(let id):
+                return "Enabling \(id) could not be saved. Try again."
             }
         }
     }
@@ -61,6 +64,7 @@ struct CapabilityInstaller {
         // Snapshot the pre-install library state so a failed enable can be
         // compensated instead of leaving an orphaned or overwritten file.
         let packageURL = library.packageURL(for: package.id)
+        let packageFileExistedBefore = FileManager.default.fileExists(atPath: packageURL.path)
         let previousPackageData = try? Data(contentsOf: packageURL)
         do {
             try library.install(package)
@@ -86,7 +90,11 @@ struct CapabilityInstaller {
                 traceID: traceID
             )
         } catch {
-            Self.restoreLibraryFile(previousData: previousPackageData, at: packageURL)
+            Self.restoreLibraryFile(
+                previousData: previousPackageData,
+                fileExistedBefore: packageFileExistedBefore,
+                at: packageURL
+            )
             var fields = capabilityFields(for: package, workspace: workspace, source: "install")
             if let traceID { fields["trace_id"] = traceID }
             fields["result"] = "enable_failed_library_rolled_back"
@@ -225,7 +233,16 @@ struct CapabilityInstaller {
 
         appendUnique(package.id, to: &workspace.enabledCapabilityIDs)
         workspace.recordInstalledPlugin(id: package.id, version: package.version)
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        guard WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext) else {
+            // Reporting success on a failed save would strand the library
+            // file and any keychain credentials against unsaved records.
+            modelContext.rollback()
+            var fields = capabilityFields(for: package, workspace: workspace, source: auditSource)
+            if let traceID { fields["trace_id"] = traceID }
+            fields["result"] = "enable_save_failed_rolled_back"
+            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: fields, level: .error)
+            throw InstallationError.persistenceFailed(packageID: package.id)
+        }
         var enabledFields = [
             "package_id": package.id,
             "package_name": package.name,
@@ -254,10 +271,13 @@ struct CapabilityInstaller {
     /// restore the pre-install bytes, or remove the file if this was a fresh
     /// install, so the catalog never shows an installed-but-never-enabled
     /// package.
-    static func restoreLibraryFile(previousData: Data?, at url: URL) {
+    static func restoreLibraryFile(previousData: Data?, fileExistedBefore: Bool, at url: URL) {
         if let previousData {
             try? previousData.write(to: url, options: [.atomic])
-        } else {
+        } else if !fileExistedBefore {
+            // Only a genuinely fresh install removes the file. A nil snapshot
+            // of a file that DID exist means the pre-install read failed —
+            // deleting then would destroy the user's previous package.
             try? FileManager.default.removeItem(at: url)
         }
     }

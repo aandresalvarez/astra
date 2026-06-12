@@ -129,7 +129,7 @@ enum CapabilityPackageValidator {
         validateLocalTools(package.localTools, issues: &issues)
         validateConnectors(package.connectors, issues: &issues)
         validateBrowserAdapters(package.browserAdapters, issues: &issues)
-        validateMCPServers(package.mcpServers, issues: &issues)
+        validateMCPServers(in: package, issues: &issues)
         validatePrerequisites(
             package.prerequisites,
             checkPrerequisites: checkPrerequisites,
@@ -182,7 +182,7 @@ enum CapabilityPackageValidator {
         }
 
         CapabilityGovernanceNormalizer.clampToLocalDraft(&package)
-        if package.governance.policyNotes == "Local capability package pending review." {
+        if package.governance.policyNotes == CapabilityGovernanceNormalizer.defaultDraftPolicyNote {
             package.governance.policyNotes = "Local capability package imported from JSON and pending review."
         }
     }
@@ -392,10 +392,31 @@ enum CapabilityPackageValidator {
     }
 
     private static func validateMCPServers(
-        _ servers: [PluginMCPServer],
+        in package: PluginPackage,
         issues: inout [CapabilityPackageValidationIssue]
     ) {
-        for server in servers {
+        for server in package.mcpServers {
+            if let nameReason = MCPEnvironmentKeyPolicy.invalidNameReason(server: server) {
+                let name = displayName(server.displayName, fallback: server.id)
+                issues.append(issue(
+                    .blocker,
+                    .unsafeMCPServer,
+                    "Unsafe MCP server name",
+                    "\(name): \(nameReason).",
+                    component: name
+                ))
+            }
+            let undeclared = MCPEnvironmentKeyPolicy.undeclaredKeys(server: server, package: package)
+            if !undeclared.isEmpty {
+                let name = displayName(server.displayName, fallback: server.id)
+                issues.append(issue(
+                    .blocker,
+                    .unsafeMCPServer,
+                    "MCP server requests undeclared environment keys",
+                    "\(name) requests \(undeclared.joined(separator: ", ")), which this package does not declare via its connectors or skills. A server may only receive environment keys its own package configures.",
+                    component: name
+                ))
+            }
             if let reason = unsafeMCPServerReason(server) {
                 let name = displayName(server.displayName, fallback: server.id)
                 issues.append(issue(
