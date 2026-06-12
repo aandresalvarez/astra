@@ -4,6 +4,17 @@ import ASTRACore
 
 @MainActor
 struct CapabilityUninstaller {
+    enum UninstallError: Error, Equatable, LocalizedError {
+        case saveFailed(packageID: String)
+
+        var errorDescription: String? {
+            switch self {
+            case .saveFailed(let id):
+                return "Removing \(id) could not be saved. No resources were deleted; try again."
+            }
+        }
+    }
+
     struct RemovalResult: Equatable {
         var packageID: String
         var disabledWorkspaceIDs: [UUID] = []
@@ -22,7 +33,8 @@ struct CapabilityUninstaller {
     @discardableResult
     func remove(
         _ requestedPackage: PluginPackage,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist
     ) throws -> RemovalResult {
         let installedPackages = library.installedPackages()
         guard var package = installedPackages.first(where: { $0.id == requestedPackage.id }) else {
@@ -36,16 +48,19 @@ struct CapabilityUninstaller {
         }
 
         let remainingPackages = installedPackages.filter { $0.id != package.id }
-        let workspaces = (try? modelContext.fetch(FetchDescriptor<Workspace>())) ?? []
-        let globalSkills = (try? modelContext.fetch(FetchDescriptor<Skill>(
+        // A fetch failure must abort the uninstall rather than degrade to
+        // "nothing matched": proceeding with empty arrays would remove the
+        // package file while leaving its resources behind in every workspace.
+        let workspaces = try modelContext.fetch(FetchDescriptor<Workspace>())
+        let globalSkills = try modelContext.fetch(FetchDescriptor<Skill>(
             predicate: #Predicate { $0.isGlobal == true }
-        ))) ?? []
-        let globalConnectors = (try? modelContext.fetch(FetchDescriptor<Connector>(
+        ))
+        let globalConnectors = try modelContext.fetch(FetchDescriptor<Connector>(
             predicate: #Predicate { $0.isGlobal == true }
-        ))) ?? []
-        let globalTools = (try? modelContext.fetch(FetchDescriptor<LocalTool>(
+        ))
+        let globalTools = try modelContext.fetch(FetchDescriptor<LocalTool>(
             predicate: #Predicate { $0.isGlobal == true }
-        ))) ?? []
+        ))
 
         let packageSkillNames = Set(package.skills.map(\.name))
         let packageConnectorNames = Set(package.connectors.map(\.name))
@@ -78,6 +93,11 @@ struct CapabilityUninstaller {
         )
 
         var result = RemovalResult(packageID: package.id)
+        // Membership arrays are mutated per workspace below; rollback does not
+        // revert them, so snapshot for the save-failure path.
+        let membershipSnapshots = workspaces.map { ($0, WorkspaceCapabilityMembershipSnapshot($0)) }
+        // Wiped only after the SwiftData deletes are saved — see below.
+        var pendingKeychainCleanups: [() -> Void] = []
 
         for workspace in workspaces {
             let remainingWorkspacePackages = remainingPackages.filter {
@@ -118,7 +138,7 @@ struct CapabilityUninstaller {
                 !remainingWorkspacePackages.contains(where: { claims(connector, package: $0) })
             }
             for connector in workspaceConnectors {
-                connector.cleanupKeychain()
+                pendingKeychainCleanups.append { connector.cleanupKeychain() }
                 result.removedConnectorIDs.append(connector.id)
                 modelContext.delete(connector)
             }
@@ -145,7 +165,7 @@ struct CapabilityUninstaller {
         }
 
         for connector in matchedGlobalConnectors where !remainingPackages.contains(where: { claims(connector, package: $0) }) {
-            connector.cleanupKeychain()
+            pendingKeychainCleanups.append { connector.cleanupKeychain() }
             result.removedConnectorIDs.append(connector.id)
             modelContext.delete(connector)
         }
@@ -156,17 +176,40 @@ struct CapabilityUninstaller {
         }
 
         for skill in matchedGlobalSkills where !remainingPackages.contains(where: { claims(skill, package: $0) }) {
-            skill.cleanupKeychain()
+            pendingKeychainCleanups.append { skill.cleanupKeychain() }
             result.removedSkillIDs.append(skill.id)
             modelContext.delete(skill)
         }
 
-        _ = WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: nil, modelContext: modelContext)
+        guard persist(nil, modelContext) else {
+            // Abort before touching the keychain or the library file: the
+            // deletes were not persisted, so removing either would strand
+            // resources (file gone) or credentials (records still present).
+            modelContext.rollback()
+            membershipSnapshots.forEach { $1.restore(to: $0) }
+            throw UninstallError.saveFailed(packageID: package.id)
+        }
+        pendingKeychainCleanups.forEach { $0() }
         for workspace in workspaces where result.disabledWorkspaceIDs.contains(workspace.id) {
             WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: modelContext)
         }
 
-        _ = try library.removePackage(id: package.id)
+        // File removal is the last step and deliberately non-throwing: the
+        // deletes are committed and the keychain is wiped, so the package is
+        // already functionally uninstalled. A failure here leaves an inert
+        // library file that self-heals on the next uninstall/sync (which
+        // finds no resources to delete and just clears it). Throwing would
+        // make the caller report a failed uninstall that actually succeeded.
+        do {
+            _ = try library.removePackage(id: package.id)
+        } catch {
+            AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
+                "source": "package_uninstall",
+                "package_id": package.id,
+                "result": "library_file_removal_failed_resources_already_removed",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+        }
 
         AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
             "source": "package_uninstall",

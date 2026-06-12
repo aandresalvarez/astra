@@ -170,7 +170,19 @@ enum CapabilityResourceOrigin {
 
     private static func shouldApply(_ origin: OriginFields, existingPackageID: String?) -> Bool {
         let existing = existingPackageID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return existing.isEmpty || existing == origin.packageID
+        let applies = existing.isEmpty || existing == origin.packageID
+        if !applies {
+            // Declining is correct (the resource keeps its original owner),
+            // but contested ownership matters for later uninstall debugging.
+            AppLogger.audit(.capabilityEnableStarted, category: "Capabilities", fields: [
+                "source": "resource_origin_stamp",
+                "result": "skipped_contested_ownership",
+                "owning_package_id": existing,
+                "requesting_package_id": origin.packageID,
+                "component_id": origin.componentID
+            ], level: .warning)
+        }
+        return applies
     }
 
     private static func normalized(_ value: String) -> String {

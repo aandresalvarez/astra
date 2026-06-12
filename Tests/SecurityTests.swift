@@ -3,7 +3,6 @@ import Foundation
 import Security
 @testable import ASTRA
 import ASTRACore
-import CryptoKit
 
 @Suite("Permission Policy")
 struct PermissionPolicyTests {
@@ -164,87 +163,18 @@ struct SecretRedactionInputTests {
     }
 }
 
-@Suite("Plugin Signing")
-struct PluginSigningTests {
-    enum PluginSigningTestError: Error {
-        case syntheticFailure
-    }
-
-    struct FailingSigner: PluginSignatureProvider {
-        func signature(for data: Data, privateKey: Curve25519.Signing.PrivateKey) throws -> Data {
-            throw PluginSigningTestError.syntheticFailure
-        }
-    }
-
-    struct EmptySigner: PluginSignatureProvider {
-        func signature(for data: Data, privateKey: Curve25519.Signing.PrivateKey) throws -> Data {
-            Data()
-        }
-    }
-
-    @Test("Hash produces consistent SHA-256 hex string")
-    func consistentHash() {
-        let data = "hello world".data(using: .utf8)!
-        let hash1 = PluginSigning.hash(pluginJSON: data)
-        let hash2 = PluginSigning.hash(pluginJSON: data)
-        #expect(hash1 == hash2)
-        #expect(hash1.count == 64)
-    }
-
-    @Test("Valid signature verifies successfully")
-    func validSignature() throws {
-        let (privateKey, publicKey) = PluginSigning.generateKeyPair()
-        let data = "{\"name\": \"test-plugin\"}".data(using: .utf8)!
-        let signature = try PluginSigning.sign(pluginJSON: data, privateKey: privateKey)
-        #expect(PluginSigning.verify(pluginJSON: data, signature: signature, publicKey: publicKey))
-    }
-
-    @Test("Tampered data fails verification")
-    func tamperedData() throws {
-        let (privateKey, publicKey) = PluginSigning.generateKeyPair()
-        let data = "{\"name\": \"test-plugin\"}".data(using: .utf8)!
-        let signature = try PluginSigning.sign(pluginJSON: data, privateKey: privateKey)
-        let tampered = "{\"name\": \"evil-plugin\"}".data(using: .utf8)!
-        #expect(!PluginSigning.verify(pluginJSON: tampered, signature: signature, publicKey: publicKey))
-    }
-
-    @Test("Wrong key fails verification")
-    func wrongKey() throws {
-        let (privateKey, _) = PluginSigning.generateKeyPair()
-        let (_, otherPublic) = PluginSigning.generateKeyPair()
-        let data = "{\"name\": \"test\"}".data(using: .utf8)!
-        let signature = try PluginSigning.sign(pluginJSON: data, privateKey: privateKey)
-        #expect(!PluginSigning.verify(pluginJSON: data, signature: signature, publicKey: otherPublic))
-    }
-
-    @Test("Signing propagates provider failures")
-    func signingPropagatesProviderFailures() {
-        let (privateKey, _) = PluginSigning.generateKeyPair()
-        let data = Data(#"{"id":"plugin"}"#.utf8)
-
-        #expect(throws: PluginSigningTestError.self) {
-            try PluginSigning.sign(pluginJSON: data, privateKey: privateKey, signer: FailingSigner())
-        }
-    }
-
-    @Test("Signing rejects empty signatures")
-    func signingRejectsEmptySignatures() {
-        let (privateKey, _) = PluginSigning.generateKeyPair()
-        let data = Data(#"{"id":"plugin"}"#.utf8)
-
-        #expect(throws: PluginSigningError.self) {
-            try PluginSigning.sign(pluginJSON: data, privateKey: privateKey, signer: EmptySigner())
-        }
-    }
-
-    @Test("Unsigned plugin has isTrusted false")
-    func unsignedPlugin() throws {
+@Suite("Plugin Package Decode Compatibility")
+struct PluginPackageDecodeCompatibilityTests {
+    @Test("Legacy package JSON with retired signature/isTrusted keys still decodes")
+    func legacySigningKeysAreIgnored() throws {
         let json = """
-        {"formatVersion":2,"id":"test","name":"Test","icon":"star","description":"desc","author":"me","category":"dev","tags":[],"version":"1.0","skills":[],"connectors":[],"localTools":[],"templates":[]}
+        {"formatVersion":2,"id":"test","name":"Test","icon":"star","description":"desc","author":"me","category":"dev","tags":[],"version":"1.0","skills":[],"connectors":[],"localTools":[],"templates":[],"signature":"ZmFrZQ==","isTrusted":true}
         """
         let plugin = try JSONDecoder().decode(PluginPackage.self, from: json.data(using: .utf8)!)
-        #expect(!plugin.isTrusted)
-        #expect(plugin.signature == nil)
+        #expect(plugin.id == "test")
+        // Retired keys must not grant trust: governance falls back to the
+        // source-metadata default, which is a local draft for bare JSON.
+        #expect(plugin.governance.approvalStatus == .draft)
     }
 }
 

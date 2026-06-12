@@ -183,13 +183,13 @@ struct CapabilityLibraryTests {
         try library.install(package, sourceMetadata: .builtIn())
 
         do {
-            _ = try library.removePackage(id: package.id)
+            _ = try library.removePackage(id: package.id, trustedBuiltInIDs: [package.id])
             Issue.record("Built-in package removal should fail")
         } catch let error as CapabilityLibrary.RemovalError {
             #expect(error == .builtInPackage(package.name))
         }
 
-        #expect(library.installedPackage(id: package.id) != nil)
+        #expect(library.installedPackage(id: package.id, trustedBuiltInIDs: [package.id]) != nil)
     }
 
     @Test("catalog refresh does not restore removed local package")
@@ -294,7 +294,10 @@ struct CapabilityLibraryTests {
         try library.seedApprovedPackages([approved])
 
         #expect(library.installedPackages().map(\.id) == ["stanford.approved"])
-        #expect(library.installedPackage(id: approved.id)?.sourceMetadata == .builtIn())
+        #expect(library.installedPackage(id: approved.id, trustedBuiltInIDs: [approved.id])?.sourceMetadata == .builtIn())
+        // Without an entry in the trusted built-in set, self-declared
+        // built-in source metadata is clamped back to local on load.
+        #expect(library.installedPackage(id: approved.id)?.sourceMetadata == .localLibrary())
 
         approved.version = "0.9.0"
         try library.seedApprovedPackages([approved])
@@ -331,7 +334,7 @@ struct CapabilityLibraryTests {
         try library.install(stale, sourceMetadata: .builtIn())
         try library.seedApprovedPackages([approved])
 
-        let installed = try #require(library.installedPackage(id: approved.id))
+        let installed = try #require(library.installedPackage(id: approved.id, trustedBuiltInIDs: [approved.id]))
         #expect(installed.name == "Approved Drift")
         #expect(installed.description == "Canonical approved capability")
         #expect(installed.browserAdapters == [BrowserSiteAdapterID.github])
@@ -367,7 +370,7 @@ struct CapabilityLibraryTests {
         try library.install(localShadow, sourceMetadata: .localLibrary())
         try library.seedApprovedPackages([approved])
 
-        let installed = try #require(library.installedPackage(id: approved.id))
+        let installed = try #require(library.installedPackage(id: approved.id, trustedBuiltInIDs: [approved.id]))
         #expect(installed.name == "Approved Shadow")
         #expect(installed.version == "1.0.0")
         #expect(installed.sourceMetadata == .builtIn())

@@ -1008,7 +1008,8 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             "claude-sonnet-4-6"
         ],
         supportsAstraRunProtocol: true,
-        supportsNativeContinuation: true
+        supportsNativeContinuation: true,
+        supportsMCPServers: true
     )
     let readinessCheckID = "claude-cli"
     let availableModelsStorageKey = AppStorageKeys.claudeAvailableModels
@@ -1171,8 +1172,21 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             providerAllowedTools: providerAllowed,
             askFirstTools: askFirstToolPermissions
         )
+        // Capability-package MCP servers: render the per-launch config and
+        // grant the projected tool names. Secrets stay out of the file via
+        // ${KEY} env indirection (the CLI expands from the task environment).
+        let mcpServers = MCPRuntimeProjection.enabledServers(
+            for: context.task.workspace,
+            packages: CapabilityRuntimeResourceMatcher.packageDefinitions(),
+            approvalRecords: CapabilityApprovalStore().records()
+        )
+        // allowEmpty: strict mode must apply even with zero governed servers,
+        // or a repository's own .mcp.json loads ungoverned on those runs.
+        let mcpConfigURL = MCPRuntimeProjection.writeClaudeConfig(servers: mcpServers, taskID: context.task.id, allowEmpty: true)
+        let mcpAllowedTools = mcpConfigURL == nil ? [] : MCPRuntimeProjection.allowedToolPermissions(servers: mcpServers)
+        let mcpDeniedTools = mcpConfigURL == nil ? [] : MCPRuntimeProjection.deniedToolPermissions(servers: mcpServers)
         let nativeAllowedTools = Array(Set(
-            providerAllowed + askFirstToolPermissions + runtimeSupportTools + artifactBootstrapTools
+            providerAllowed + askFirstToolPermissions + runtimeSupportTools + artifactBootstrapTools + mcpAllowedTools
         )).sorted()
         let usesArtifactBootstrapProfile = !artifactBootstrapTools.isEmpty
         let visibleTools = Self.visibleProviderTools(
@@ -1226,6 +1240,15 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         if !nativeAllowedTools.isEmpty {
             args += ["--allowedTools"] + nativeAllowedTools
         }
+        // Unconditional (not gated on a successful config write): strict mode
+        // blocks the repo's .mcp.json, so a failed render means no servers, not bypass.
+        args += ["--strict-mcp-config"]
+        if let mcpConfigURL {
+            args += ["--mcp-config", mcpConfigURL.path]
+        }
+        if !mcpDeniedTools.isEmpty {
+            args += ["--disallowedTools"] + mcpDeniedTools
+        }
 
         return AgentRuntimeProcessLaunchPlan(
             runtime: id,
@@ -1274,7 +1297,9 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
                 "supports_native_continuation": String(descriptor.supportsNativeContinuation),
                 "uses_native_continuation": String(context.nativeContinuationSessionID != nil),
                 "native_session_prefix": context.nativeContinuationSessionID.map { String($0.prefix(8)) } ?? "none",
-                "uses_live_approvals": String(interactiveAsk != nil)
+                "uses_live_approvals": String(interactiveAsk != nil),
+                "mcp_server_count": String(mcpConfigURL == nil ? 0 : mcpServers.count),
+                "mcp_config_rendered": String(mcpConfigURL != nil)
             ],
             interactiveAsk: interactiveAsk
         )

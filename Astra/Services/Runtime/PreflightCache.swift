@@ -80,14 +80,7 @@ public actor PreflightCache {
     /// variants. Used by the "Re-check" button and when a user runs an
     /// install action we know should change the status.
     public func invalidate(binary: String) {
-        entries = entries.filter { _, entry in
-            // A prereq's id embeds the binary + args, so we can't just
-            // delete by prefix match without reconstructing the key.
-            // Instead we keep a parallel index on insert.
-            _ = entry
-            return true
-        }
-        // Simpler: rebuild by walking and deleting matching keys.
+        // A prereq's id embeds the binary + args, so prefix-match the key.
         let matching = entries.keys.filter { $0.hasPrefix("\(binary):") }
         for key in matching { entries.removeValue(forKey: key) }
     }

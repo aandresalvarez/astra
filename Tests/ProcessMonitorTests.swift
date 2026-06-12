@@ -19,28 +19,28 @@ struct ClaudePermissionPolicyTests {
 
     @Test("Autonomous policy produces skip-permissions flag")
     func autonomousPolicyFlags() {
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.permissionPolicy = .autonomous
         #expect(worker.permissionPolicy.cliArguments == ["--dangerously-skip-permissions"])
     }
 
     @Test("Restricted policy produces no CLI flags")
     func restrictedPolicyFlags() {
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.permissionPolicy = .restricted
         #expect(worker.permissionPolicy.cliArguments.isEmpty)
     }
 
     @Test("Interactive policy produces no CLI flags")
     func interactivePolicyFlags() {
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.permissionPolicy = .interactive
         #expect(worker.permissionPolicy.cliArguments.isEmpty)
     }
 
     @Test("Workers default to restricted permissions")
     func workerDefaultsRestricted() {
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         #expect(worker.skipPermissions == false)
         #expect(worker.permissionPolicy == .restricted)
     }
