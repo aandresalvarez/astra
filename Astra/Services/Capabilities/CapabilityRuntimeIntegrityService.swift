@@ -219,7 +219,7 @@ enum CapabilityRuntimeIntegrityService {
                     source: source,
                     kind: .localTool,
                     name: pluginTool.name,
-                    message: "local tool \(pluginTool.name) is not installed for this workspace"
+                    message: "local tool \(pluginTool.name) is not active for this workspace"
                 ))
                 continue
             }
