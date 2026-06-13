@@ -565,29 +565,41 @@ enum WorkspaceConfigManager {
 
     // MARK: - Import
 
-    static func loadConfig(from url: URL) throws -> WorkspaceConfig {
-        let data = try Data(contentsOf: url)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return try decoder.decode(WorkspaceConfig.self, from: data)
+    static func loadConfig(
+        from url: URL,
+        accessIntent: HostFileAccessIntent = .explicitUserSelection
+    ) throws -> WorkspaceConfig {
+        let data = try readConfigData(from: url, accessIntent: accessIntent)
+        return try workspaceConfigDecoder().decode(WorkspaceConfig.self, from: data)
     }
 
-    static func loadConfigResult(from url: URL) -> WorkspaceConfigLoadResult {
+    static func loadConfigResult(
+        from url: URL,
+        accessIntent: HostFileAccessIntent = .explicitUserSelection
+    ) -> WorkspaceConfigLoadResult {
         let data: Data
         do {
-            data = try Data(contentsOf: url)
+            data = try readConfigData(from: url, accessIntent: accessIntent)
         } catch {
             return loadResult(status: .unreadableFile, url: url, config: nil, error: error)
         }
 
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
         do {
-            let config = try decoder.decode(WorkspaceConfig.self, from: data)
+            let config = try workspaceConfigDecoder().decode(WorkspaceConfig.self, from: data)
             return loadResult(status: .loaded, url: url, config: config, error: nil)
         } catch {
             return loadResult(status: .decodeFailed, url: url, config: nil, error: error)
         }
+    }
+
+    private static func readConfigData(from url: URL, accessIntent: HostFileAccessIntent) throws -> Data {
+        try HostFileAccessBroker().readData(at: url, intent: accessIntent)
+    }
+
+    private static func workspaceConfigDecoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
     }
 
     /// Create a new Workspace + Skills + Connectors + Tools + Templates from a config.

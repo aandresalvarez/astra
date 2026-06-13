@@ -38,7 +38,11 @@ extension AgentRuntimeWorker {
     /// directly (see AgentRuntimeComponentTests) and are unaffected.
     @MainActor
     static func scenarioWorker() -> AgentRuntimeWorker {
-        let worker = AgentRuntimeWorker()
+        let runner = AgentRuntimeProcessRunner { permissionPolicy in
+            let enforcement: ExecutionSandboxEnforcement = permissionPolicy == .autonomous ? .strict : .bestEffort
+            return ExecutionSandboxSettings(enforcement: enforcement)
+        }
+        let worker = AgentRuntimeWorker(processRunner: runner)
         worker.runtimeReadinessService = RuntimeReadinessService(runner: InstantSuccessBinaryRunner())
         return worker
     }

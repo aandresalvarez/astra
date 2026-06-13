@@ -1738,29 +1738,8 @@ struct CopilotWorkerExecutionTests {
           echo "copilot fake 1.0"
           exit 0
         fi
-        /usr/bin/python3 -u - <<'PY'
-        import json
-        print(json.dumps({
-            "type": "tool.execution_start",
-            "data": {
-                "toolCallId": "toolu_browser",
-                "toolName": "bash",
-                "arguments": {"command": "astra-browser google-docs-read-document"}
-            },
-            "id": "event-start"
-        }), flush=True)
-        print(json.dumps({
-            "type": "tool.execution_complete",
-            "data": {
-                "toolCallId": "toolu_browser",
-                "success": True,
-                "result": {
-                    "content": "{\\"ok\\":false,\\"error\\":\\"google_docs_controlled_browser_required\\",\\"reason\\":\\"embedded_webkit_clipboard_unavailable\\"}"
-                }
-            },
-            "id": "event-complete"
-        }), flush=True)
-        PY
+        printf '%s\\n' '{"type":"tool.execution_start","data":{"toolCallId":"toolu_browser","toolName":"bash","arguments":{"command":"astra-browser google-docs-read-document"}},"id":"event-start"}'
+        printf '%s\\n' '{"type":"tool.execution_complete","data":{"toolCallId":"toolu_browser","success":true,"result":{"content":"{\\"ok\\":false,\\"error\\":\\"google_docs_controlled_browser_required\\",\\"reason\\":\\"embedded_webkit_clipboard_unavailable\\"}"}},"id":"event-complete"}'
         exit 0
         """
         try script.write(to: binURL, atomically: true, encoding: .utf8)
@@ -1814,55 +1793,11 @@ struct CopilotWorkerExecutionTests {
           echo "copilot fake 1.0"
           exit 0
         fi
-        /usr/bin/python3 -u - <<'PY'
-        import json
-        def emit(obj):
-            print(json.dumps(obj), flush=True)
-        emit({
-            "type": "tool.execution_start",
-            "data": {
-                "toolCallId": "toolu_visible",
-                "toolName": "bash",
-                "arguments": {"command": "astra-browser google-docs-read-visible-page --format markdown --limit 50000"}
-            },
-            "id": "event-visible-start"
-        })
-        emit({
-            "type": "tool.execution_complete",
-            "data": {
-                "toolCallId": "toolu_visible",
-                "success": True,
-                "result": {
-                    "content": "{\\"ok\\":true,\\"googleDocsMode\\":\\"visible_page\\",\\"partialSummaryAllowed\\":true,\\"coverage\\":\\"partial\\",\\"content\\":\\"Visible page content\\"}"
-                }
-            },
-            "id": "event-visible-complete"
-        })
-        emit({
-            "type": "tool.execution_start",
-            "data": {
-                "toolCallId": "toolu_full",
-                "toolName": "bash",
-                "arguments": {"command": "astra-browser google-docs-read-document"}
-            },
-            "id": "event-full-start"
-        })
-        emit({
-            "type": "tool.execution_complete",
-            "data": {
-                "toolCallId": "toolu_full",
-                "success": True,
-                "result": {
-                    "content": "{\\"ok\\":false,\\"error\\":\\"google_docs_controlled_browser_required\\",\\"reason\\":\\"embedded_webkit_clipboard_unavailable\\"}"
-                }
-            },
-            "id": "event-full-complete"
-        })
-        emit({
-            "type": "assistant.message",
-            "data": {"content": "Partial summary: Visible page content"}
-        })
-        PY
+        printf '%s\\n' '{"type":"tool.execution_start","data":{"toolCallId":"toolu_visible","toolName":"bash","arguments":{"command":"astra-browser google-docs-read-visible-page --format markdown --limit 50000"}},"id":"event-visible-start"}'
+        printf '%s\\n' '{"type":"tool.execution_complete","data":{"toolCallId":"toolu_visible","success":true,"result":{"content":"{\\"ok\\":true,\\"googleDocsMode\\":\\"visible_page\\",\\"partialSummaryAllowed\\":true,\\"coverage\\":\\"partial\\",\\"content\\":\\"Visible page content\\"}"}},"id":"event-visible-complete"}'
+        printf '%s\\n' '{"type":"tool.execution_start","data":{"toolCallId":"toolu_full","toolName":"bash","arguments":{"command":"astra-browser google-docs-read-document"}},"id":"event-full-start"}'
+        printf '%s\\n' '{"type":"tool.execution_complete","data":{"toolCallId":"toolu_full","success":true,"result":{"content":"{\\"ok\\":false,\\"error\\":\\"google_docs_controlled_browser_required\\",\\"reason\\":\\"embedded_webkit_clipboard_unavailable\\"}"}},"id":"event-full-complete"}'
+        printf '%s\\n' '{"type":"assistant.message","data":{"content":"Partial summary: Visible page content"}}'
         exit 0
         """
         try script.write(to: binURL, atomically: true, encoding: .utf8)

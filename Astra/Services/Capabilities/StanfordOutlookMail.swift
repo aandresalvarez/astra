@@ -483,7 +483,12 @@ enum StanfordOutlookMailRegistry {
     }
 
     static func entries() -> [Entry] {
-        guard let data = try? Data(contentsOf: StanfordOutlookMail.registryURL) else {
+        let registryURL = StanfordOutlookMail.registryURL
+        let broker = HostFileAccessBroker()
+        guard let data = try? broker.readData(
+            at: registryURL,
+            intent: .astraManagedStorage(root: registryURL.deletingLastPathComponent())
+        ) else {
             return []
         }
         return (try? JSONDecoder().decode([Entry].self, from: data)) ?? []

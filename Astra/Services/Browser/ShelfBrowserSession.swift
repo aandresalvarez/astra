@@ -48,6 +48,35 @@ enum ShelfBrowserEngine: String, CaseIterable, Identifiable {
     }
 }
 
+enum ShelfBrowserPrivacyBoundary {
+    static let blocksEmbeddedPreviewFilePickers = true
+    static let blocksEmbeddedPreviewMediaCapture = true
+    static let usesEphemeralEmbeddedPreviewDataStore = true
+}
+
+enum ShelfBrowserWebViewConfigurationFactory {
+    @MainActor
+    static func makeEmbeddedConfiguration(pageReadMessageHandler: WKScriptMessageHandler) -> WKWebViewConfiguration {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
+        configuration.mediaTypesRequiringUserActionForPlayback = .all
+        // Keep the lightweight reporter installed in the preview WebView even when
+        // Controlled mode is active, so switching back to Embedded does not require
+        // rebuilding WebKit configuration or reloading the page.
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: BrowserAutomationScripts.embeddedPageReadReporterScript(),
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: false
+        ))
+        configuration.userContentController.add(
+            pageReadMessageHandler,
+            name: BrowserAutomationScripts.pageReadMessageHandlerName
+        )
+        return configuration
+    }
+}
+
 @MainActor
 final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     @Published var engine: ShelfBrowserEngine = .embedded {
@@ -232,19 +261,10 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     }
 
     override init() {
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .default()
-        configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         let pageReadHandler = WeakPageReadMessageHandler()
-        // Keep the lightweight reporter installed in the preview WebView even when
-        // Controlled mode is active, so switching back to Embedded does not require
-        // rebuilding WebKit configuration or reloading the page.
-        configuration.userContentController.addUserScript(WKUserScript(
-            source: BrowserAutomationScripts.embeddedPageReadReporterScript(),
-            injectionTime: .atDocumentEnd,
-            forMainFrameOnly: false
-        ))
-        configuration.userContentController.add(pageReadHandler, name: BrowserAutomationScripts.pageReadMessageHandlerName)
+        let configuration = ShelfBrowserWebViewConfigurationFactory.makeEmbeddedConfiguration(
+            pageReadMessageHandler: pageReadHandler
+        )
 
         webView = WKWebView(frame: .zero, configuration: configuration)
         pageReadMessageHandler = pageReadHandler
@@ -718,6 +738,28 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     func webView(
         _ webView: WKWebView,
+        runOpenPanelWith parameters: WKOpenPanelParameters,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping ([URL]?) -> Void
+    ) {
+        logEmbeddedPrivacyRequestBlocked(action: "open_panel", sourceURL: frame.request.url)
+        completionHandler(nil)
+    }
+
+    @available(macOS 12.0, *)
+    func webView(
+        _ webView: WKWebView,
+        requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+        initiatedByFrame frame: WKFrameInfo,
+        type: WKMediaCaptureType,
+        decisionHandler: @escaping (WKPermissionDecision) -> Void
+    ) {
+        logEmbeddedPrivacyRequestBlocked(action: "media_capture", sourceURL: frame.request.url)
+        decisionHandler(.deny)
+    }
+
+    func webView(
+        _ webView: WKWebView,
         didReceive challenge: URLAuthenticationChallenge,
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
@@ -727,6 +769,26 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         }
 
         completionHandler(.performDefaultHandling, nil)
+    }
+
+    private func logEmbeddedPrivacyRequestBlocked(action: String, sourceURL: URL?) {
+        var fields: [String: String] = [
+            "action": action,
+            "result": "blocked",
+            "reason": "embedded_preview_privacy_boundary",
+            "engine": engine.rawValue,
+            "is_presented": String(isPresented)
+        ]
+        if let sourceURL {
+            fields.merge(ShelfBrowserURLLogFields.fields(for: sourceURL, prefix: "source"), uniquingKeysWith: { current, _ in current })
+        }
+        AppLogger.audit(
+            .shelfBrowserAction,
+            category: "Browser",
+            taskID: boundTaskID,
+            fields: fields,
+            level: .warning
+        )
     }
 
     private func installObservers() {

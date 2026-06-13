@@ -1,9 +1,27 @@
 import Foundation
 import Testing
+import WebKit
 @testable import ASTRA
 
 @Suite("Browser Bridge Security")
 struct BrowserBridgeSecurityTests {
+    @Test("Embedded preview blocks WebKit file and media pickers")
+    func embeddedPreviewBlocksWebKitFileAndMediaPickers() {
+        #expect(ShelfBrowserPrivacyBoundary.blocksEmbeddedPreviewFilePickers)
+        #expect(ShelfBrowserPrivacyBoundary.blocksEmbeddedPreviewMediaCapture)
+    }
+
+    @Test("Embedded preview uses an ephemeral WebKit data store")
+    @MainActor
+    func embeddedPreviewUsesEphemeralWebKitDataStore() {
+        let configuration = ShelfBrowserWebViewConfigurationFactory.makeEmbeddedConfiguration(
+            pageReadMessageHandler: NoopScriptMessageHandler()
+        )
+
+        #expect(ShelfBrowserPrivacyBoundary.usesEphemeralEmbeddedPreviewDataStore)
+        #expect(!configuration.websiteDataStore.isPersistent)
+    }
+
     @Test("Bridge requires per-session access token")
     func bridgeRequiresAccessToken() async throws {
         let endpoint = LockedEndpoint()
@@ -217,6 +235,10 @@ struct BrowserBridgeSecurityTests {
         let statusCode = try #require((response as? HTTPURLResponse)?.statusCode)
         return (statusCode, String(data: data, encoding: .utf8) ?? "")
     }
+}
+
+private final class NoopScriptMessageHandler: NSObject, WKScriptMessageHandler {
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {}
 }
 
 private actor LockedEndpoint {

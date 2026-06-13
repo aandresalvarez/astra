@@ -53,7 +53,10 @@ enum CapabilityPackageSourceReader {
 
         let data: Data
         do {
-            data = try Data(contentsOf: manifestURL)
+            data = try HostFileAccessBroker(fileManager: fileManager).readData(
+                at: manifestURL,
+                intent: .explicitUserSelection
+            )
         } catch {
             throw CapabilityPackageSourceReadError.unreadable(manifestURL, error)
         }
@@ -136,7 +139,10 @@ enum CapabilityIconAssetPolicy {
     }
 
     static func sha256Hex(for url: URL) throws -> String {
-        let data = try Data(contentsOf: url)
+        let data = try HostFileAccessBroker().readData(
+            at: url,
+            intent: .astraManagedStorage(root: url.deletingLastPathComponent())
+        )
         let digest = SHA256.hash(data: data)
         return digest.map { String(format: "%02x", $0) }.joined()
     }

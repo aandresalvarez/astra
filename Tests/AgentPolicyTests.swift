@@ -659,6 +659,39 @@ struct AgentPolicyTests {
         }
     }
 
+    @Test("Shell command approvals touching privacy-sensitive machine paths are not task-reusable")
+    func shellCommandApprovalsTouchingPrivacySensitiveMachinePathsAreNotTaskReusable() throws {
+        let commands = [
+            "git -C ~/Pictures status --short",
+            "git -C /Applications status --short",
+            "defaults read ~/Library/Photos",
+            "git -C /tmp/Photos.photoslibrary status --short",
+            "git -C /tmp/Music.musiclibrary status --short",
+            "git -C /tmp/Preview.app status --short"
+        ]
+
+        for command in commands {
+            let assessment = try #require(ShellCommandRiskClassifier.assessment(forShellSegment: command))
+            #expect(assessment.risk == .read)
+            #expect(assessment.allowsTaskScopedReuse == false)
+        }
+    }
+
+    @Test("Shell command approvals only treat media roots as sensitive at path boundaries")
+    func shellCommandApprovalsOnlyTreatMediaRootsAsSensitiveAtPathBoundaries() throws {
+        let reusableCommands = [
+            "git -C /tmp/music-output status --short",
+            "git -C /tmp/project/picturesque status --short",
+            "git -C /tmp/src/music status --short"
+        ]
+
+        for command in reusableCommands {
+            let assessment = try #require(ShellCommandRiskClassifier.assessment(forShellSegment: command))
+            #expect(assessment.risk == .read)
+            #expect(assessment.allowsTaskScopedReuse)
+        }
+    }
+
     @Test("Shell command risk classifier refuses unsupported shell constructs")
     func shellCommandRiskClassifierRefusesUnsupportedShellConstructs() {
         let unsupported = [
@@ -1376,6 +1409,60 @@ struct RunPermissionManifestTests {
 
         #expect(decoded.providerRender.runtimeSupportTools.isEmpty)
         #expect(decoded.providerRender.allowedTools == ["read"])
+    }
+
+    @MainActor
+    @Test("Post-run summary records provider sandbox write denials")
+    func postRunSummaryRecordsProviderSandboxWriteDenials() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Sandbox Summary", primaryPath: "/Users/alvaro/Documents/Code/monorepo")
+        let task = AgentTask(title: "Sandbox Summary", goal: "Write outside workspace", workspace: workspace)
+        task.runtimeID = AgentRuntimeID.cursorCLI.rawValue
+        let run = TaskRun(task: task)
+        run.status = .completed
+        run.stopReason = "completed"
+        run.completedAt = Date()
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        _ = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .cursorCLI,
+            model: "auto",
+            workspacePath: workspace.primaryPath,
+            phase: "resume",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            modelContext: context
+        )
+        context.insert(TaskEvent(
+            task: task,
+            type: "agent.thinking",
+            payload: "A file write was rejected, likely because the target path sits outside the workspace sandbox.",
+            run: run
+        ))
+        context.insert(TaskEvent(
+            task: task,
+            type: "agent.response",
+            payload: "I tried to create `/Users/alvaro/Documents/Code/flujo/flujo/test.sh`, but writes to that path were blocked from this session — it’s outside your open Cursor workspace roots.",
+            run: run
+        ))
+        try context.save()
+
+        AgentPolicyManifestService.recordPostRunSummary(task: task, run: run, modelContext: context)
+        try context.save()
+
+        let summaryEvent = try #require(task.events.last { $0.type == AgentPolicyManifestService.summaryEventType })
+        let object = try #require(JSONSerialization.jsonObject(with: Data(summaryEvent.payload.utf8)) as? [String: Any])
+        let deniedActions = try #require(object["deniedActions"] as? [String])
+
+        #expect(object["deniedCount"] as? Int == 1)
+        #expect(deniedActions.contains { $0.contains("provider_sandbox_blocked_write") })
+        #expect(deniedActions.contains { $0.contains("/Users/alvaro/Documents/Code/flujo/flujo/test.sh") })
     }
 
     @Test("Preflight manifest replays task-scoped broker grants through the active provider adapter")

@@ -52,7 +52,11 @@ enum SSHConnectionManager {
     static func load(workspacePath: String) -> [SSHConnection] {
         migrateLegacyConnectionsIfNeeded(workspacePath: workspacePath)
         let path = connectionsFilePath(for: workspacePath)
-        guard let data = FileManager.default.contents(atPath: path) else { return [] }
+        let hostFileAccess = HostFileAccessBroker()
+        guard let data = try? hostFileAccess.readData(
+            at: URL(fileURLWithPath: path),
+            intent: .astraManagedStorage(root: URL(fileURLWithPath: workspacePath, isDirectory: true))
+        ) else { return [] }
         return (try? JSONDecoder().decode([SSHConnection].self, from: data)) ?? []
     }
 
@@ -105,7 +109,11 @@ enum SSHConnectionManager {
     /// Parse hosts from an SSH config file (e.g., ~/.ssh/config).
     static func parseSSHConfig(at path: String) -> [SSHConfigHost] {
         let expandedPath = (path as NSString).expandingTildeInPath
-        guard let content = try? String(contentsOfFile: expandedPath, encoding: .utf8) else { return [] }
+        guard let content = try? HostFileAccessBroker().readString(
+            at: URL(fileURLWithPath: expandedPath),
+            encoding: .utf8,
+            intent: .explicitUserSelection
+        ) else { return [] }
         return parseSSHConfig(from: content)
     }
 

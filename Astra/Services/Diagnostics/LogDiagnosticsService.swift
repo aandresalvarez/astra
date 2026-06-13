@@ -518,10 +518,12 @@ enum LogDiagnosticsService {
         interval: DateInterval?,
         fileManager: FileManager
     ) -> [URL] {
-        guard let files = try? fileManager.contentsOfDirectory(
+        let broker = HostFileAccessBroker(fileManager: fileManager)
+        guard let files = try? broker.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey, .isRegularFileKey],
-            options: [.skipsHiddenFiles]
+            options: [.skipsHiddenFiles],
+            intent: .astraManagedStorage(root: directory)
         ) else { return [] }
 
         return Array(files
@@ -2267,9 +2269,10 @@ enum LogDiagnosticsService {
     }
 
     private static func diagnosticLogFiles(in directory: URL) -> [URL] {
-        guard let files = try? FileManager.default.contentsOfDirectory(
+        guard let files = try? HostFileAccessBroker().contentsOfDirectory(
             at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey]
+            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+            intent: .astraManagedStorage(root: directory)
         ) else { return [] }
 
         let mainLogs = files
@@ -2293,7 +2296,11 @@ enum LogDiagnosticsService {
     }
 
     private static func tailLines(from url: URL, maxLines: Int) -> [String] {
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        guard let content = try? HostFileAccessBroker().readString(
+            at: url,
+            encoding: .utf8,
+            intent: .astraManagedStorage(root: url.deletingLastPathComponent())
+        ) else { return [] }
         let lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         guard lines.count > maxLines else { return lines }
         return Array(lines.suffix(maxLines))

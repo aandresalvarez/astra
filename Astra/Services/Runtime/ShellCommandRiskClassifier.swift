@@ -33,12 +33,17 @@ enum ShellCommandRiskClassifier {
         let normalizedExecutable = executable.lowercased()
         let risk = riskForCommand(executable: normalizedExecutable, args: args)
         let pattern = shellApprovalPattern(executable: normalizedExecutable, args: args, risk: risk)
+        let containsSensitiveArgument = args.contains(where: containsSensitivePathToken)
         guard !pattern.isEmpty else { return nil }
         return Assessment(
             executable: executable,
             pattern: pattern,
             risk: risk,
-            allowsTaskScopedReuse: allowsTaskScopedReuse(risk: risk, executable: normalizedExecutable, pattern: pattern)
+            allowsTaskScopedReuse: allowsTaskScopedReuse(
+                risk: risk,
+                pattern: pattern,
+                containsSensitiveArgument: containsSensitiveArgument
+            )
         )
     }
 
@@ -63,7 +68,12 @@ enum ShellCommandRiskClassifier {
         return broadGrantDeniedRoots.contains(executable)
     }
 
-    private static func allowsTaskScopedReuse(risk: Risk, executable: String, pattern: String) -> Bool {
+    private static func allowsTaskScopedReuse(
+        risk: Risk,
+        pattern: String,
+        containsSensitiveArgument: Bool
+    ) -> Bool {
+        guard !containsSensitiveArgument else { return false }
         switch risk {
         case .read, .networkRead:
             return !containsSensitivePathToken(pattern)
@@ -488,6 +498,27 @@ enum ShellCommandRiskClassifier {
             || lower.contains("token")
             || lower.contains("secret")
             || lower.contains("credential")
+            || privacySensitivePathFragments.contains { matchesSensitivePathFragment(lower, fragment: $0) }
+    }
+
+    private static func matchesSensitivePathFragment(_ token: String, fragment: String) -> Bool {
+        let normalizedToken = token.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        if fragment.hasPrefix(".") {
+            return normalizedToken.hasSuffix(fragment) || normalizedToken.contains(fragment + "/")
+        }
+        if fragment.hasPrefix("~/") {
+            return normalizedToken == fragment || normalizedToken.hasPrefix(fragment + "/")
+        }
+        if normalizedToken == fragment || normalizedToken.hasPrefix(fragment + "/") {
+            return true
+        }
+
+        guard fragment.hasPrefix("/") else { return false }
+        let components = normalizedToken.split(separator: "/").map(String.init)
+        guard components.count >= 3, components[0] == "users" else { return false }
+        let homeRelativePath = components.dropFirst(2).joined(separator: "/")
+        let fragmentPath = String(fragment.dropFirst())
+        return homeRelativePath == fragmentPath || homeRelativePath.hasPrefix(fragmentPath + "/")
     }
 
     private static var grantMetacharacters: CharacterSet {
@@ -516,6 +547,30 @@ enum ShellCommandRiskClassifier {
     private static let fileReadRoots: Set<String> = fileContentReadRoots.union([
         "ls", "find", "stat", "file", "du", "wc"
     ])
+
+    private static let privacySensitivePathFragments: [String] = [
+        "~/pictures",
+        "/pictures",
+        "~/music",
+        "/music",
+        "~/movies",
+        "/movies",
+        "~/library/photos",
+        "/library/photos",
+        "~/library/mail",
+        "/library/mail",
+        "~/library/messages",
+        "/library/messages",
+        "~/library/calendars",
+        "/library/calendars",
+        "~/library/application support/addressbook",
+        "/library/application support/addressbook",
+        "/applications",
+        ".photoslibrary",
+        ".musiclibrary",
+        ".medialibrary",
+        ".app"
+    ]
 
     private static let credentialRoots: Set<String> = [
         "security", "op", "pass", "vault", "keychain", "ssh-add"
