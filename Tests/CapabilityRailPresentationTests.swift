@@ -388,6 +388,42 @@ struct CapabilityRailPresentationTests {
         ) == "1 added folder")
     }
 
+    @Test("workspace folder setup ignores additional paths matching root")
+    func workspaceFolderSetupIgnoresAdditionalPathsMatchingRoot() {
+        let primaryPath = "/tmp/astra-review"
+        let descriptors = WorkspaceSetupChecklistPresentation.userConfiguredFolderDescriptors(
+            primaryPath: primaryPath,
+            additionalPaths: [
+                "/tmp/astra-review",
+                "/tmp/astra-review/./",
+                " /tmp/astra-review/docs/ "
+            ]
+        )
+
+        #expect(descriptors.map(\.path) == ["/tmp/astra-review/docs"])
+        #expect(WorkspaceSetupChecklistPresentation.userConfiguredFolderCount(
+            primaryPath: primaryPath,
+            additionalPaths: [
+                "/tmp/astra-review",
+                "/tmp/astra-review/./"
+            ]
+        ) == 0)
+        #expect(WorkspaceSetupChecklistPresentation.folderState(
+            primaryPath: primaryPath,
+            additionalPaths: [
+                "/tmp/astra-review",
+                "/tmp/astra-review/./"
+            ]
+        ) == .reference)
+        #expect(WorkspaceSetupChecklistPresentation.folderSubtitle(
+            primaryPath: primaryPath,
+            additionalPaths: [
+                "/tmp/astra-review",
+                "/tmp/astra-review/./"
+            ]
+        ) == "Workspace root only")
+    }
+
     @Test("workspace folder removal drops every normalized duplicate path")
     func workspaceFolderRemovalDropsEveryNormalizedDuplicatePath() {
         let remaining = WorkspaceSetupChecklistPresentation.remainingAdditionalPaths(

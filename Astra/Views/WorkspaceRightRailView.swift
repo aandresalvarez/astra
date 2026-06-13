@@ -98,11 +98,27 @@ enum WorkspaceSetupChecklistPresentation {
     }
 
     static func userConfiguredFolderDescriptors(_ additionalPaths: [String]) -> [WorkspacePathDescriptor] {
-        WorkspacePathPresentation.descriptors(primaryPath: "", additionalPaths: additionalPaths)
+        userConfiguredFolderDescriptors(primaryPath: "", additionalPaths: additionalPaths)
+    }
+
+    static func userConfiguredFolderDescriptors(
+        primaryPath: String,
+        additionalPaths: [String]
+    ) -> [WorkspacePathDescriptor] {
+        let rootPath = WorkspacePathPresentation.standardizedPath(primaryPath)
+        let folderPaths = additionalPaths.filter { rawPath in
+            let folderPath = WorkspacePathPresentation.standardizedPath(rawPath)
+            return rootPath.isEmpty || folderPath != rootPath
+        }
+        return WorkspacePathPresentation.descriptors(primaryPath: "", additionalPaths: folderPaths)
     }
 
     static func userConfiguredFolderCount(_ additionalPaths: [String]) -> Int {
         userConfiguredFolderDescriptors(additionalPaths).count
+    }
+
+    static func userConfiguredFolderCount(primaryPath: String, additionalPaths: [String]) -> Int {
+        userConfiguredFolderDescriptors(primaryPath: primaryPath, additionalPaths: additionalPaths).count
     }
 
     static func remainingAdditionalPaths(
@@ -129,14 +145,16 @@ enum WorkspaceSetupChecklistPresentation {
 
     static func folderState(primaryPath: String, additionalPaths: [String]) -> State {
         guard !shouldShowWorkspaceRootMissingMessage(primaryPath: primaryPath) else { return .missing }
-        return userConfiguredFolderCount(additionalPaths) > 0 ? State.configured : State.reference
+        return userConfiguredFolderCount(primaryPath: primaryPath, additionalPaths: additionalPaths) > 0
+            ? State.configured
+            : State.reference
     }
 
     static func folderSubtitle(primaryPath: String, additionalPaths: [String]) -> String {
         guard !shouldShowWorkspaceRootMissingMessage(primaryPath: primaryPath) else {
             return missingWorkspaceRootSubtitle
         }
-        let count = userConfiguredFolderCount(additionalPaths)
+        let count = userConfiguredFolderCount(primaryPath: primaryPath, additionalPaths: additionalPaths)
         guard count > 0 else { return referenceOnlyFolderSubtitle }
         return "\(count) added \(count == 1 ? "folder" : "folders")"
     }
@@ -1562,7 +1580,10 @@ struct WorkspaceRightRailView: View {
                 additionalPaths: []
             ).first
             let additionalDescriptors = WorkspaceSetupChecklistPresentation
-                .userConfiguredFolderDescriptors(workspace.additionalPaths)
+                .userConfiguredFolderDescriptors(
+                    primaryPath: workspace.primaryPath,
+                    additionalPaths: workspace.additionalPaths
+                )
 
             if isWorkspaceRootMissing {
                 setupEmptyDetail(WorkspaceSetupChecklistPresentation.missingWorkspaceRootSubtitle)
