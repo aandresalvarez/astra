@@ -32,15 +32,21 @@ enum PrivacySensitivePathPolicy {
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> Bool {
         let path = normalizedPath(url)
-        if let scanRoot, path == normalizedPath(scanRoot) {
-            return false
-        }
+        let protectedPaths = protectedDirectoryPaths(homeDirectory: homeDirectory)
 
         if protectedPackageExtensions.contains(url.pathExtension.lowercased()) {
             return true
         }
 
-        return protectedDirectoryPaths(homeDirectory: homeDirectory).contains { protectedPath in
+        if let scanRoot {
+            let rootPath = normalizedPath(scanRoot)
+            if protectedPaths.contains(where: { isPath(rootPath, insideOrEqualTo: $0) }),
+               isPath(path, insideOrEqualTo: rootPath) {
+                return false
+            }
+        }
+
+        return protectedPaths.contains { protectedPath in
             path == protectedPath || path.hasPrefix(protectedPath + "/")
         }
     }
@@ -57,5 +63,9 @@ enum PrivacySensitivePathPolicy {
 
     private static func normalizedPath(_ url: URL) -> String {
         url.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    private static func isPath(_ path: String, insideOrEqualTo rootPath: String) -> Bool {
+        path == rootPath || path.hasPrefix(rootPath + "/")
     }
 }

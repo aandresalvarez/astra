@@ -31,6 +31,19 @@ struct PrivacySensitivePathPolicyTests {
             homeDirectory: home
         ))
     }
+
+    @Test("Implicit scans allow descendants inside the selected scan root")
+    func implicitScansAllowDescendantsInsideSelectedScanRoot() {
+        let home = URL(fileURLWithPath: "/tmp/astra-fake-home", isDirectory: true)
+        let scanRoot = home.appendingPathComponent("Pictures/project", isDirectory: true)
+        let descendant = scanRoot.appendingPathComponent("notes.md")
+
+        #expect(PrivacySensitivePathPolicy.shouldSkipImplicitScan(
+            of: descendant,
+            scanRoot: scanRoot,
+            homeDirectory: home
+        ) == false)
+    }
 }
 
 @Suite("Host File Access Broker")

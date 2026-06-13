@@ -1,6 +1,7 @@
 import Testing
 import AppKit
 import SwiftUI
+import Darwin
 @testable import ASTRA
 import ASTRACore
 
@@ -67,6 +68,21 @@ extension TaskThreadSnapshotTests {
         #expect(destinations["index.html"] == .browser)
         #expect(destinations["query.sql"] == .query)
         #expect(!files.contains { $0.path.hasSuffix(".runtime-bin/astra-browser") })
+    }
+
+    @Test("Task file index ignores non-regular entries")
+    func taskFileIndexIgnoresNonRegularEntries() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-task-file-index-nonregular-\(UUID().uuidString)")
+        let pipe = root.appendingPathComponent("stream.md")
+
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        #expect(mkfifo(pipe.path, S_IRUSR | S_IWUSR) == 0)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let files = TaskFileIndex.scanTaskFolder(root.path)
+
+        #expect(!files.contains { $0.path == pipe.path })
     }
 
     @Test("Task file index merges visible files without duplicates")

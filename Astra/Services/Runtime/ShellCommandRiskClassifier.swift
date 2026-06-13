@@ -498,7 +498,24 @@ enum ShellCommandRiskClassifier {
             || lower.contains("token")
             || lower.contains("secret")
             || lower.contains("credential")
-            || privacySensitivePathFragments.contains { lower.contains($0) }
+            || privacySensitivePathFragments.contains { matchesSensitivePathFragment(lower, fragment: $0) }
+    }
+
+    private static func matchesSensitivePathFragment(_ token: String, fragment: String) -> Bool {
+        let normalizedToken = token.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        if fragment.hasPrefix("~/") {
+            return normalizedToken == fragment || normalizedToken.hasPrefix(fragment + "/")
+        }
+        if normalizedToken == fragment || normalizedToken.hasPrefix(fragment + "/") {
+            return true
+        }
+
+        guard fragment.hasPrefix("/") else { return false }
+        let components = normalizedToken.split(separator: "/").map(String.init)
+        guard components.count >= 3, components[0] == "users" else { return false }
+        let homeRelativePath = components.dropFirst(2).joined(separator: "/")
+        let fragmentPath = String(fragment.dropFirst())
+        return homeRelativePath == fragmentPath || homeRelativePath.hasPrefix(fragmentPath + "/")
     }
 
     private static var grantMetacharacters: CharacterSet {

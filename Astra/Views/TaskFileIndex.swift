@@ -142,7 +142,7 @@ enum TaskFileIndex {
               rootIsDirectory.boolValue,
               let enumerator = hostFileAccess.enumerator(
                 at: rootURL,
-                includingPropertiesForKeys: [.isDirectoryKey],
+                includingPropertiesForKeys: [.isRegularFileKey],
                 intent: accessIntent
               ) else { return [] }
 
@@ -158,7 +158,7 @@ enum TaskFileIndex {
             guard itemURL.path.hasPrefix(rootPath) else { continue }
             let relativePath = String(itemURL.path.dropFirst(rootPath.count))
             guard TaskGeneratedFiles.shouldDisplayTaskFolderFile(relativePath: relativePath) else { continue }
-            guard (try? itemURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) != true else { continue }
+            guard (try? itemURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
 
             files.append(fileItem(
                 path: itemURL.path,

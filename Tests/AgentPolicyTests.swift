@@ -674,6 +674,21 @@ struct AgentPolicyTests {
         }
     }
 
+    @Test("Shell command approvals only treat media roots as sensitive at path boundaries")
+    func shellCommandApprovalsOnlyTreatMediaRootsAsSensitiveAtPathBoundaries() throws {
+        let reusableCommands = [
+            "git -C /tmp/music-output status --short",
+            "git -C /tmp/project/picturesque status --short",
+            "git -C /tmp/src/music status --short"
+        ]
+
+        for command in reusableCommands {
+            let assessment = try #require(ShellCommandRiskClassifier.assessment(forShellSegment: command))
+            #expect(assessment.risk == .read)
+            #expect(assessment.allowsTaskScopedReuse)
+        }
+    }
+
     @Test("Shell command risk classifier refuses unsupported shell constructs")
     func shellCommandRiskClassifierRefusesUnsupportedShellConstructs() {
         let unsupported = [
