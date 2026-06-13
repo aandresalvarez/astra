@@ -607,6 +607,38 @@ struct AgentRuntimeBudgetPolicyTests {
         #expect(!task.events.contains { $0.type == "budget.exceeded" })
     }
 
+    @Test("Warning mode records budget notice when prompt contributes to launch overage")
+    func warningModeRecordsNoticeWhenPromptContributesToLaunchOverage() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Budget", goal: "Goal", tokenBudget: 200_000)
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        // The 190k-token prompt fits under the 200k task budget, and Claude Code's
+        // 120k fixed launch overhead also fits under the budget. The combined
+        // estimate is still over budget, but trimming prompt context can help, so
+        // Warning mode should surface the advisory budget event.
+        let prompt = String(repeating: "x", count: 760_000)
+        let allowed = AgentRuntimeBudgetPolicy.enforcePromptBudgetIfNeeded(
+            prompt: prompt,
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "run",
+            runtime: .claudeCode,
+            budgetEnforcementMode: .warning
+        )
+
+        #expect(AgentProcessMonitor.estimatedTokenCount(for: prompt) == 190_000)
+        #expect(allowed)
+        #expect(task.status == .draft)
+        #expect(run.status == .running)
+        #expect(task.events.contains { $0.type == "budget.warning" && $0.run?.id == run.id })
+        #expect(!task.events.contains { $0.type == "budget.exceeded" })
+    }
+
     @Test("Reported usage above budget is enforced only in hard stop mode")
     func reportedUsageAboveBudgetFollowsEnforcementMode() {
         let task = AgentTask(title: "Budget", goal: "Goal", tokenBudget: 10)

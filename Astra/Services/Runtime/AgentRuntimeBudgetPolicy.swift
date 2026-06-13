@@ -50,7 +50,7 @@ enum AgentRuntimeBudgetPolicy {
         // essentially every task with no actionable remedy — so we suppress the
         // user-facing warning and keep only a debug breadcrumb. Hard-stop still
         // blocks below: a budget under the provider's fixed floor cannot complete.
-        let isLaunchOverheadFloor = promptTokens <= tokenBudget
+        let isLaunchOverheadFloor = tokenBudget <= launchOverhead && promptTokens <= tokenBudget
 
         let fields = [
             "phase": phase,
