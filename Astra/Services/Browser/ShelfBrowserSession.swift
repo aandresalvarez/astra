@@ -51,6 +51,30 @@ enum ShelfBrowserEngine: String, CaseIterable, Identifiable {
 enum ShelfBrowserPrivacyBoundary {
     static let blocksEmbeddedPreviewFilePickers = true
     static let blocksEmbeddedPreviewMediaCapture = true
+    static let usesEphemeralEmbeddedPreviewDataStore = true
+}
+
+enum ShelfBrowserWebViewConfigurationFactory {
+    @MainActor
+    static func makeEmbeddedConfiguration(pageReadMessageHandler: WKScriptMessageHandler) -> WKWebViewConfiguration {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
+        configuration.mediaTypesRequiringUserActionForPlayback = .all
+        // Keep the lightweight reporter installed in the preview WebView even when
+        // Controlled mode is active, so switching back to Embedded does not require
+        // rebuilding WebKit configuration or reloading the page.
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: BrowserAutomationScripts.embeddedPageReadReporterScript(),
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: false
+        ))
+        configuration.userContentController.add(
+            pageReadMessageHandler,
+            name: BrowserAutomationScripts.pageReadMessageHandlerName
+        )
+        return configuration
+    }
 }
 
 @MainActor
@@ -237,19 +261,10 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     }
 
     override init() {
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .default()
-        configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         let pageReadHandler = WeakPageReadMessageHandler()
-        // Keep the lightweight reporter installed in the preview WebView even when
-        // Controlled mode is active, so switching back to Embedded does not require
-        // rebuilding WebKit configuration or reloading the page.
-        configuration.userContentController.addUserScript(WKUserScript(
-            source: BrowserAutomationScripts.embeddedPageReadReporterScript(),
-            injectionTime: .atDocumentEnd,
-            forMainFrameOnly: false
-        ))
-        configuration.userContentController.add(pageReadHandler, name: BrowserAutomationScripts.pageReadMessageHandlerName)
+        let configuration = ShelfBrowserWebViewConfigurationFactory.makeEmbeddedConfiguration(
+            pageReadMessageHandler: pageReadHandler
+        )
 
         webView = WKWebView(frame: .zero, configuration: configuration)
         pageReadMessageHandler = pageReadHandler

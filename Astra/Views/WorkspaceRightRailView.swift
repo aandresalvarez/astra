@@ -37,9 +37,19 @@ private enum WorkspaceSetupItem: Hashable {
     case routines
 }
 
+struct WorkspaceFolderDetailRowPresentation: Equatable {
+    let title: String
+    let subtitle: String
+    let path: String
+    let copyPathHelp: String
+    let canRemove: Bool
+    let showsPathInBody: Bool
+}
+
 enum WorkspaceSetupChecklistPresentation {
     static let sectionTitle = "Workspace setup"
     static let missingGroupTitle = "Needs setup"
+    static let referenceGroupTitle = "Reference"
     static let configuredGroupTitle = "Configured"
     static let configuredSummaryTitle = "Configured items"
     static let configuredSummaryActionTitle = "Show all"
@@ -54,14 +64,26 @@ enum WorkspaceSetupChecklistPresentation {
     static let collapsedDisclosureIcon = "chevron.right"
     static let expandedDisclosureIcon = "chevron.down"
     static let detailPreviewLimit = 4
+    static let folderAccessTitle = "Folder access"
+    static let addFolderActionTitle = "Add folder"
+    static let workspaceRootReferenceTitle = "Workspace root"
+    static let workspaceRootReferenceRole = "Reference"
+    static let workspaceRootFolderSubtitle = "Workspace root"
+    static let additionalFolderSubtitle = "Additional folder"
+    static let copyFolderPathHelp = "Copy folder path"
+    static let showsFolderPathInDetailRows = false
+    static let missingWorkspaceRootSubtitle = "No workspace root selected."
+    static let referenceOnlyFolderSubtitle = "Workspace root only"
 
     enum State: Equatable {
         case configured
+        case reference
         case missing
 
         var label: String {
             switch self {
             case .configured: "Configured"
+            case .reference: "Reference"
             case .missing: "Missing"
             }
         }
@@ -69,6 +91,72 @@ enum WorkspaceSetupChecklistPresentation {
 
     static func summary(configured: Int, total: Int) -> String {
         configured == 0 ? "Empty" : "\(configured) of \(total) configured"
+    }
+
+    static func shouldShowWorkspaceRootMissingMessage(primaryPath: String) -> Bool {
+        WorkspacePathPresentation.standardizedPath(primaryPath).isEmpty
+    }
+
+    static func userConfiguredFolderDescriptors(_ additionalPaths: [String]) -> [WorkspacePathDescriptor] {
+        userConfiguredFolderDescriptors(primaryPath: "", additionalPaths: additionalPaths)
+    }
+
+    static func userConfiguredFolderDescriptors(
+        primaryPath: String,
+        additionalPaths: [String]
+    ) -> [WorkspacePathDescriptor] {
+        let rootPath = WorkspacePathPresentation.standardizedPath(primaryPath)
+        let folderPaths = additionalPaths.filter { rawPath in
+            let folderPath = WorkspacePathPresentation.standardizedPath(rawPath)
+            return rootPath.isEmpty || folderPath != rootPath
+        }
+        return WorkspacePathPresentation.descriptors(primaryPath: "", additionalPaths: folderPaths)
+    }
+
+    static func userConfiguredFolderCount(_ additionalPaths: [String]) -> Int {
+        userConfiguredFolderDescriptors(additionalPaths).count
+    }
+
+    static func userConfiguredFolderCount(primaryPath: String, additionalPaths: [String]) -> Int {
+        userConfiguredFolderDescriptors(primaryPath: primaryPath, additionalPaths: additionalPaths).count
+    }
+
+    static func remainingAdditionalPaths(
+        afterRemovingFolderMatching path: String,
+        from additionalPaths: [String]
+    ) -> [String] {
+        let removedPath = WorkspacePathPresentation.standardizedPath(path)
+        guard !removedPath.isEmpty else { return additionalPaths }
+        return additionalPaths.filter { rawPath in
+            WorkspacePathPresentation.standardizedPath(rawPath) != removedPath
+        }
+    }
+
+    static func folderDetailRow(for descriptor: WorkspacePathDescriptor) -> WorkspaceFolderDetailRowPresentation {
+        WorkspaceFolderDetailRowPresentation(
+            title: descriptor.title,
+            subtitle: descriptor.role == .primary ? workspaceRootFolderSubtitle : additionalFolderSubtitle,
+            path: descriptor.path,
+            copyPathHelp: copyFolderPathHelp,
+            canRemove: descriptor.role == .additional,
+            showsPathInBody: showsFolderPathInDetailRows
+        )
+    }
+
+    static func folderState(primaryPath: String, additionalPaths: [String]) -> State {
+        guard !shouldShowWorkspaceRootMissingMessage(primaryPath: primaryPath) else { return .missing }
+        return userConfiguredFolderCount(primaryPath: primaryPath, additionalPaths: additionalPaths) > 0
+            ? State.configured
+            : State.reference
+    }
+
+    static func folderSubtitle(primaryPath: String, additionalPaths: [String]) -> String {
+        guard !shouldShowWorkspaceRootMissingMessage(primaryPath: primaryPath) else {
+            return missingWorkspaceRootSubtitle
+        }
+        let count = userConfiguredFolderCount(primaryPath: primaryPath, additionalPaths: additionalPaths)
+        guard count > 0 else { return referenceOnlyFolderSubtitle }
+        return "\(count) added \(count == 1 ? "folder" : "folders")"
     }
 
     /// Count metadata shown beneath the noun-first configured summary title.
@@ -1087,6 +1175,12 @@ struct WorkspaceRightRailView: View {
                     }
                 }
 
+                if workspaceSetupReferenceCount > 0 {
+                    workspaceSetupGroup(WorkspaceSetupChecklistPresentation.referenceGroupTitle) {
+                        workspaceSetupRows(for: .reference)
+                    }
+                }
+
                 if workspaceSetupConfiguredCount > 0 {
                     workspaceSetupConfiguredGroup
                 }
@@ -1205,7 +1299,7 @@ struct WorkspaceRightRailView: View {
         case .memory:
             return "Memory"
         case .folders:
-            return "Folders"
+            return WorkspaceSetupChecklistPresentation.folderAccessTitle
         case .remoteAccess:
             return "Remote access"
         case .routines:
@@ -1220,7 +1314,10 @@ struct WorkspaceRightRailView: View {
         case .memory:
             workspace.memories.isEmpty ? .missing : .configured
         case .folders:
-            workspaceFolderCount > 0 ? .configured : .missing
+            WorkspaceSetupChecklistPresentation.folderState(
+                primaryPath: workspace.primaryPath,
+                additionalPaths: workspace.additionalPaths
+            )
         case .remoteAccess:
             sshConnections.isEmpty ? .missing : .configured
         case .routines:
@@ -1270,12 +1367,13 @@ struct WorkspaceRightRailView: View {
             workspaceSetupChecklistRow(
                 item: .folders,
                 icon: "folder",
-                title: "Folders",
-                subtitle: workspace.primaryPath.isEmpty
-                    ? "No folder selected"
-                    : "Primary \(compactPath(workspace.primaryPath))",
+                title: WorkspaceSetupChecklistPresentation.folderAccessTitle,
+                subtitle: WorkspaceSetupChecklistPresentation.folderSubtitle(
+                    primaryPath: workspace.primaryPath,
+                    additionalPaths: workspace.additionalPaths
+                ),
                 state: workspaceSetupState(for: .folders),
-                actionTitle: workspaceFolderCount > 0 ? "Add" : "Choose…",
+                actionTitle: "Add",
                 action: {
                     withAnimation(disclosureAnimation) {
                         _ = expandedWorkspaceSetupItems.insert(.folders)
@@ -1475,23 +1573,34 @@ struct WorkspaceRightRailView: View {
 
     private var foldersSetupDetails: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if workspaceFolderCount == 0 {
-                setupEmptyDetail("No workspace folder selected.")
-            } else {
-                let descriptors = WorkspacePathPresentation.descriptors(
+            let isWorkspaceRootMissing = WorkspaceSetupChecklistPresentation
+                .shouldShowWorkspaceRootMissingMessage(primaryPath: workspace.primaryPath)
+            let rootDescriptor = WorkspacePathPresentation.descriptors(
+                primaryPath: workspace.primaryPath,
+                additionalPaths: []
+            ).first
+            let additionalDescriptors = WorkspaceSetupChecklistPresentation
+                .userConfiguredFolderDescriptors(
                     primaryPath: workspace.primaryPath,
                     additionalPaths: workspace.additionalPaths
                 )
-                ForEach(descriptors) { descriptor in
-                    let canRemove = descriptor.role == .additional
-                    setupFolderRow(
-                        title: descriptor.title,
-                        roleLabel: descriptor.roleLabel,
-                        path: descriptor.path,
-                        canRemove: canRemove,
-                        removeAction: canRemove ? { removeAdditionalPath(at: descriptor.index - 1) } : nil
-                    )
-                }
+
+            if isWorkspaceRootMissing {
+                setupEmptyDetail(WorkspaceSetupChecklistPresentation.missingWorkspaceRootSubtitle)
+            }
+
+            if !isWorkspaceRootMissing, let rootDescriptor {
+                setupFolderRow(
+                    WorkspaceSetupChecklistPresentation.folderDetailRow(for: rootDescriptor),
+                    removeAction: nil
+                )
+            }
+
+            ForEach(additionalDescriptors) { descriptor in
+                setupFolderRow(
+                    WorkspaceSetupChecklistPresentation.folderDetailRow(for: descriptor),
+                    removeAction: { removeAdditionalPaths(matching: descriptor.path) }
+                )
             }
 
             Button {
@@ -1500,7 +1609,7 @@ struct WorkspaceRightRailView: View {
                 HStack(spacing: 5) {
                     Image(systemName: "plus")
                         .font(Stanford.ui(10, weight: .semibold))
-                    Text("Add path")
+                    Text(WorkspaceSetupChecklistPresentation.addFolderActionTitle)
                         .font(Stanford.caption(11).weight(.medium))
                 }
                 .foregroundStyle(Stanford.lagunita)
@@ -1623,41 +1732,40 @@ struct WorkspaceRightRailView: View {
     }
 
     private func setupFolderRow(
-        title: String,
-        roleLabel: String,
-        path: String,
-        canRemove: Bool = false,
+        _ row: WorkspaceFolderDetailRowPresentation,
         removeAction: (() -> Void)? = nil
     ) -> some View {
         HStack(alignment: .center, spacing: 7) {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
-                    Text(title)
-                        .font(Stanford.caption(10).weight(.semibold))
-                        .foregroundStyle(.secondary)
+                    Text(row.title)
+                        .font(Stanford.caption(11).weight(.semibold))
+                        .foregroundStyle(.primary)
                         .lineLimit(1)
                         .truncationMode(.middle)
 
-                    Text(roleLabel)
+                    Text(row.subtitle)
                         .font(Stanford.caption(9).weight(.medium))
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                 }
 
-                Text(compactPath(path))
-                    .font(Stanford.mono(10))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(path)
+                if row.showsPathInBody {
+                    Text(compactPath(row.path))
+                        .font(Stanford.mono(10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
             .layoutPriority(1)
+            .help(row.path)
 
             Spacer(minLength: 0)
 
             Button {
                 NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(path, forType: .string)
+                NSPasteboard.general.setString(row.path, forType: .string)
             } label: {
                 Image(systemName: "doc.on.doc")
                     .font(Stanford.ui(10))
@@ -1665,13 +1773,13 @@ struct WorkspaceRightRailView: View {
                     .frame(width: 18, height: 22)
             }
             .buttonStyle(.plain)
-            .help("Copy path")
+            .help(row.copyPathHelp)
 
-            if canRemove, let removeAction {
+            if row.canRemove, let removeAction {
                 Button {
                     pendingRailDeletion = PendingRailDeletion(
                         title: "Remove folder?",
-                        message: "\(compactPath(path)) will no longer be available to the agent. The folder itself is not deleted.",
+                        message: "\(compactPath(row.path)) will no longer be available to the agent. The folder itself is not deleted.",
                         confirmTitle: "Remove",
                         perform: removeAction
                     )
@@ -1682,7 +1790,7 @@ struct WorkspaceRightRailView: View {
                         .frame(width: 18, height: 22)
                 }
                 .buttonStyle(.plain)
-                .help("Remove path")
+                .help("Remove folder")
             }
         }
         .padding(.horizontal, 7)
@@ -1754,27 +1862,16 @@ struct WorkspaceRightRailView: View {
         Stanford.lagunita
     }
 
-    private var workspaceFolderCount: Int {
-        (workspace.primaryPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 1)
-            + workspace.additionalPaths.count
+    private var workspaceSetupConfiguredCount: Int {
+        workspaceSetupRowItems(for: .configured).count
     }
 
-    private var workspaceSetupConfiguredCount: Int {
-        var count = 0
-        if hasWorkspaceInstructions { count += 1 }
-        if !workspace.memories.isEmpty { count += 1 }
-        if workspaceFolderCount > 0 { count += 1 }
-        if !sshConnections.isEmpty { count += 1 }
-        if !workspace.schedules.isEmpty { count += 1 }
-        return count
+    private var workspaceSetupReferenceCount: Int {
+        workspaceSetupRowItems(for: .reference).count
     }
 
     private var workspaceSetupMissingCount: Int {
-        workspaceSetupTotalCount - workspaceSetupConfiguredCount
-    }
-
-    private var workspaceSetupTotalCount: Int {
-        4 + (workspace.schedules.isEmpty ? 0 : 1)
+        workspaceSetupRowItems(for: .missing).count
     }
 
     // MARK: - Access Section
@@ -1788,9 +1885,13 @@ struct WorkspaceRightRailView: View {
         WorkspacePersistenceCoordinator.scheduleAutoExport(workspace: workspace, modelContext: modelContext)
     }
 
-    private func removeAdditionalPath(at index: Int) {
-        guard workspace.additionalPaths.indices.contains(index) else { return }
-        workspace.additionalPaths.remove(at: index)
+    private func removeAdditionalPaths(matching path: String) {
+        let remaining = WorkspaceSetupChecklistPresentation.remainingAdditionalPaths(
+            afterRemovingFolderMatching: path,
+            from: workspace.additionalPaths
+        )
+        guard remaining.count != workspace.additionalPaths.count else { return }
+        workspace.additionalPaths = remaining
         markWorkspaceConfigurationChanged()
     }
 
