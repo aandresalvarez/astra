@@ -558,8 +558,10 @@ struct AgentRuntimeBudgetPolicyTests {
         context.insert(task)
         context.insert(run)
 
+        // The prompt itself exceeds the budget — an actionable overage, so the
+        // warning fires even though enforcement is advisory.
         let allowed = AgentRuntimeBudgetPolicy.enforcePromptBudgetIfNeeded(
-            prompt: "small",
+            prompt: "this prompt is long enough on its own to exceed the tiny budget",
             task: task,
             run: run,
             modelContext: context,
@@ -572,6 +574,36 @@ struct AgentRuntimeBudgetPolicyTests {
         #expect(task.status == .draft)
         #expect(run.status == .running)
         #expect(task.events.contains { $0.type == "budget.warning" && $0.run?.id == run.id })
+        #expect(!task.events.contains { $0.type == "budget.exceeded" })
+    }
+
+    @Test("Warning mode suppresses budget notice when only launch overhead exceeds the budget")
+    func warningModeSuppressesLaunchOverheadFloorNotice() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        // Default-sized budget; the prompt fits well within it on its own.
+        let task = AgentTask(title: "Budget", goal: "Goal", tokenBudget: 100_000)
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        // claude_code's fixed launch overhead (120k) alone exceeds the 100k budget,
+        // but the prompt is tiny — this is the unavoidable platform floor, not task
+        // work, so advisory Warning mode must not emit a per-task budget event.
+        let allowed = AgentRuntimeBudgetPolicy.enforcePromptBudgetIfNeeded(
+            prompt: "small prompt",
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "run",
+            runtime: .claudeCode,
+            budgetEnforcementMode: .warning
+        )
+
+        #expect(allowed)
+        #expect(task.status == .draft)
+        #expect(run.status == .running)
+        #expect(!task.events.contains { $0.type == "budget.warning" })
         #expect(!task.events.contains { $0.type == "budget.exceeded" })
     }
 
