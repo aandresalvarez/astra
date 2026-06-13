@@ -555,6 +555,34 @@ struct WorkspacePersistenceTests {
         #expect(workspaces.first?.tasks.first?.isDone == true)
     }
 
+    @Test("automatic recovery skips privacy-sensitive user media folders")
+    func recoverySkipsPrivacySensitiveUserMediaFolders() throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_recovery_privacy_\(UUID().uuidString)")
+        let ordinaryWorkspace = root.appendingPathComponent("Projects/safe-project", isDirectory: true)
+        let photosWorkspace = root.appendingPathComponent("Pictures/photo-project", isDirectory: true)
+        let musicWorkspace = root.appendingPathComponent("Music/music-project", isDirectory: true)
+        try FileManager.default.createDirectory(at: ordinaryWorkspace, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: photosWorkspace, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: musicWorkspace, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try Data("{}".utf8).write(to: ordinaryWorkspace.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName))
+        try Data("{}".utf8).write(to: photosWorkspace.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName))
+        try Data("{}".utf8).write(to: musicWorkspace.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName))
+
+        let configs = WorkspaceRecoveryService.discoverWorkspaceConfigFiles(
+            extraRoots: [root.path],
+            includeDefaultRoots: false,
+            privacyHomeDirectory: root
+        )
+        let discoveredParents = Set(configs.map { $0.deletingLastPathComponent().path })
+
+        #expect(discoveredParents.count == 1)
+        #expect(discoveredParents.first?.hasSuffix("/Projects/safe-project") == true)
+        #expect(!discoveredParents.contains { $0.hasSuffix("/Pictures/photo-project") })
+        #expect(!discoveredParents.contains { $0.hasSuffix("/Music/music-project") })
+    }
+
     @Test("auto-export skips unavailable workspace paths")
     func autoExportTargetSkipsUnavailableWorkspacePaths() {
         let missing = "/tmp/astra_missing_workspace_\(UUID().uuidString)"

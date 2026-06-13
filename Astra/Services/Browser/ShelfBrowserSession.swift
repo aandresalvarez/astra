@@ -48,6 +48,11 @@ enum ShelfBrowserEngine: String, CaseIterable, Identifiable {
     }
 }
 
+enum ShelfBrowserPrivacyBoundary {
+    static let blocksEmbeddedPreviewFilePickers = true
+    static let blocksEmbeddedPreviewMediaCapture = true
+}
+
 @MainActor
 final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     @Published var engine: ShelfBrowserEngine = .embedded {
@@ -718,6 +723,28 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     func webView(
         _ webView: WKWebView,
+        runOpenPanelWith parameters: WKOpenPanelParameters,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping ([URL]?) -> Void
+    ) {
+        logEmbeddedPrivacyRequestBlocked(action: "open_panel", sourceURL: frame.request.url)
+        completionHandler(nil)
+    }
+
+    @available(macOS 12.0, *)
+    func webView(
+        _ webView: WKWebView,
+        requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+        initiatedByFrame frame: WKFrameInfo,
+        type: WKMediaCaptureType,
+        decisionHandler: @escaping (WKPermissionDecision) -> Void
+    ) {
+        logEmbeddedPrivacyRequestBlocked(action: "media_capture", sourceURL: frame.request.url)
+        decisionHandler(.deny)
+    }
+
+    func webView(
+        _ webView: WKWebView,
         didReceive challenge: URLAuthenticationChallenge,
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
@@ -727,6 +754,26 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         }
 
         completionHandler(.performDefaultHandling, nil)
+    }
+
+    private func logEmbeddedPrivacyRequestBlocked(action: String, sourceURL: URL?) {
+        var fields: [String: String] = [
+            "action": action,
+            "result": "blocked",
+            "reason": "embedded_preview_privacy_boundary",
+            "engine": engine.rawValue,
+            "is_presented": String(isPresented)
+        ]
+        if let sourceURL {
+            fields.merge(ShelfBrowserURLLogFields.fields(for: sourceURL, prefix: "source"), uniquingKeysWith: { current, _ in current })
+        }
+        AppLogger.audit(
+            .shelfBrowserAction,
+            category: "Browser",
+            taskID: boundTaskID,
+            fields: fields,
+            level: .warning
+        )
     }
 
     private func installObservers() {

@@ -1045,16 +1045,20 @@ enum AgentPolicyManifestService {
     static func recordPostRunSummary(task: AgentTask, run: TaskRun, modelContext: ModelContext) {
         let runEvents = task.events.filter { $0.run?.id == run.id }
         let manifest = latestManifest(in: runEvents)
+        let deniedActionValues = deniedActions(from: runEvents)
+        let explicitDeniedEventCount = runEvents.filter {
+            $0.type == "permission.denied" || $0.type == "permission.approval.requested"
+        }.count
         let summary = PolicyRunSummary(
             runID: run.id,
             status: run.status.rawValue,
             stopReason: run.stopReason,
             toolUseCount: runEvents.filter { $0.type == "tool.use" }.count,
-            deniedCount: runEvents.filter { $0.type == "permission.denied" || $0.type == "permission.approval.requested" }.count,
+            deniedCount: max(explicitDeniedEventCount, deniedActionValues.count),
             fileChangeCount: run.fileChanges.count,
             toolsUsed: toolsUsed(from: runEvents),
             commandsRun: commandsRun(from: runEvents),
-            deniedActions: deniedActions(from: runEvents),
+            deniedActions: deniedActionValues,
             filesChanged: run.fileChanges.map(\.path).sorted(),
             externalDomains: externalDomains(from: runEvents),
             environmentKeyNames: manifest?.environmentKeyNames ?? [],
@@ -1185,10 +1189,32 @@ enum AgentPolicyManifestService {
     }
 
     private static func deniedActions(from events: [TaskEvent]) -> [String] {
-        uniqueLimited(events.compactMap { event in
+        let explicitActions: [String] = events.compactMap { event -> String? in
             guard event.type == "permission.denied" || event.type == "permission.approval.requested" else { return nil }
             return LogSanitizer.sanitize(event.payload, maxLength: 240)
-        })
+        }
+        let providerSandboxActions: [String] = events.compactMap(providerSandboxDeniedAction(from:))
+        return uniqueLimited(explicitActions + providerSandboxActions)
+    }
+
+    private static func providerSandboxDeniedAction(from event: TaskEvent) -> String? {
+        guard event.type == "agent.response" || event.type == "agent.thinking" else { return nil }
+        let lower = event.payload.lowercased()
+        guard lower.contains("write") || lower.contains("create") else { return nil }
+        guard lower.contains("blocked") || lower.contains("rejected") || lower.contains("denied") else { return nil }
+        guard lower.contains("sandbox") || lower.contains("outside") || lower.contains("workspace") else { return nil }
+        guard let path = filesystemPaths(in: event.payload).first else { return nil }
+        return "provider_sandbox_blocked_write path=\(path)"
+    }
+
+    private static func filesystemPaths(in text: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: #"(?:~|/)[^\s`"'<>]+"#) else { return [] }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return regex.matches(in: text, range: range).compactMap { match in
+            guard let valueRange = Range(match.range, in: text) else { return nil }
+            let value = String(text[valueRange]).trimmingCharacters(in: CharacterSet(charactersIn: ".,);:"))
+            return value.isEmpty ? nil : value
+        }
     }
 
     private static func externalDomains(from events: [TaskEvent]) -> [String] {

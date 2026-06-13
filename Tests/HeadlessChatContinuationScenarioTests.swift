@@ -690,7 +690,7 @@ extension HeadlessChatScenarioTests {
               printf '%s\\n' '1.0.3'
               exit 0
             fi
-            printf '%s\\n' "$@" > '\(restrictedArgsURL.path)'
+            printf '%s\\n' "$@" > \(Self.shQuoteSandboxPath(restrictedArgsURL.path))
             printf '%s\\n' 'restricted response'
             exit 0
             """
@@ -725,7 +725,7 @@ extension HeadlessChatScenarioTests {
               printf '%s\\n' '1.0.3'
               exit 0
             fi
-            printf '%s\\n' "$@" > '\(autoArgsURL.path)'
+            printf '%s\\n' "$@" > \(Self.shQuoteSandboxPath(autoArgsURL.path))
             printf '%s\\n' 'autonomous response'
             exit 0
             """

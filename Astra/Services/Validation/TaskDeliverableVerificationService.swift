@@ -177,8 +177,15 @@ enum TaskDeliverableVerificationService {
             )
         ]
 
+        let hostFileAccess = HostFileAccessBroker()
+        let artifactRoot = URL(fileURLWithPath: TaskWorkspaceAccess(task: task).taskFolder, isDirectory: true)
         for file in files.prefix(12) {
-            checks.append(contentsOf: await checksForFile(file, environment: environment))
+            checks.append(contentsOf: await checksForFile(
+                file,
+                environment: environment,
+                hostFileAccess: hostFileAccess,
+                artifactRoot: artifactRoot
+            ))
         }
 
         let hasFailure = checks.contains { $0.status == .failed }
@@ -418,7 +425,11 @@ enum TaskDeliverableVerificationService {
     }
 
     private static func readSyntaxOutput(_ url: URL) -> String {
-        guard let data = try? Data(contentsOf: url),
+        let hostFileAccess = HostFileAccessBroker()
+        guard let data = try? hostFileAccess.readData(
+            at: url,
+            intent: .astraManagedStorage(root: url.deletingLastPathComponent())
+        ),
               let text = String(data: data, encoding: .utf8) else {
             return ""
         }
@@ -494,7 +505,9 @@ enum TaskDeliverableVerificationService {
 
     private static func checksForFile(
         _ file: TaskOutputDiscoveredFile,
-        environment: TaskDeliverableVerificationEnvironment
+        environment: TaskDeliverableVerificationEnvironment,
+        hostFileAccess: HostFileAccessBroker,
+        artifactRoot: URL
     ) async -> [TaskDeliverableCheck] {
         guard let size = fileSize(file.path), size > 0 else {
             return [
@@ -520,15 +533,26 @@ enum TaskDeliverableVerificationService {
         }
 
         let ext = URL(fileURLWithPath: file.path).pathExtension.lowercased()
+        let intent = HostFileAccessIntent.astraManagedStorage(root: artifactRoot)
         switch ext {
         case "html", "htm":
-            return await htmlChecks(file, environment: environment)
+            return await htmlChecks(
+                file,
+                environment: environment,
+                hostFileAccess: hostFileAccess,
+                intent: intent
+            )
         case "js", "mjs", "cjs":
-            return await javascriptChecks(file, environment: environment)
+            return await javascriptChecks(
+                file,
+                environment: environment,
+                hostFileAccess: hostFileAccess,
+                intent: intent
+            )
         case "json":
-            return jsonChecks(file)
+            return jsonChecks(file, hostFileAccess: hostFileAccess, intent: intent)
         case "md", "markdown", "txt", "csv", "tsv", "sql", "css", "svg", "xml", "yaml", "yml":
-            return readableTextChecks(file)
+            return readableTextChecks(file, hostFileAccess: hostFileAccess, intent: intent)
         default:
             return [
                 TaskDeliverableCheck(
@@ -544,9 +568,15 @@ enum TaskDeliverableVerificationService {
 
     private static func htmlChecks(
         _ file: TaskOutputDiscoveredFile,
-        environment: TaskDeliverableVerificationEnvironment
+        environment: TaskDeliverableVerificationEnvironment,
+        hostFileAccess: HostFileAccessBroker,
+        intent: HostFileAccessIntent
     ) async -> [TaskDeliverableCheck] {
-        guard let html = try? String(contentsOfFile: file.path, encoding: .utf8) else {
+        guard let html = try? hostFileAccess.readString(
+            at: URL(fileURLWithPath: file.path),
+            encoding: .utf8,
+            intent: intent
+        ) else {
             return [unreadableCheck(path: file.path)]
         }
 
@@ -603,9 +633,15 @@ enum TaskDeliverableVerificationService {
 
     private static func javascriptChecks(
         _ file: TaskOutputDiscoveredFile,
-        environment: TaskDeliverableVerificationEnvironment
+        environment: TaskDeliverableVerificationEnvironment,
+        hostFileAccess: HostFileAccessBroker,
+        intent: HostFileAccessIntent
     ) async -> [TaskDeliverableCheck] {
-        guard let source = try? String(contentsOfFile: file.path, encoding: .utf8) else {
+        guard let source = try? hostFileAccess.readString(
+            at: URL(fileURLWithPath: file.path),
+            encoding: .utf8,
+            intent: intent
+        ) else {
             return [unreadableCheck(path: file.path)]
         }
         return [
@@ -654,8 +690,15 @@ enum TaskDeliverableVerificationService {
         }
     }
 
-    private static func jsonChecks(_ file: TaskOutputDiscoveredFile) -> [TaskDeliverableCheck] {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: file.path)) else {
+    private static func jsonChecks(
+        _ file: TaskOutputDiscoveredFile,
+        hostFileAccess: HostFileAccessBroker,
+        intent: HostFileAccessIntent
+    ) -> [TaskDeliverableCheck] {
+        guard let data = try? hostFileAccess.readData(
+            at: URL(fileURLWithPath: file.path),
+            intent: intent
+        ) else {
             return [unreadableCheck(path: file.path)]
         }
         do {
@@ -682,8 +725,16 @@ enum TaskDeliverableVerificationService {
         }
     }
 
-    private static func readableTextChecks(_ file: TaskOutputDiscoveredFile) -> [TaskDeliverableCheck] {
-        guard (try? String(contentsOfFile: file.path, encoding: .utf8)) != nil else {
+    private static func readableTextChecks(
+        _ file: TaskOutputDiscoveredFile,
+        hostFileAccess: HostFileAccessBroker,
+        intent: HostFileAccessIntent
+    ) -> [TaskDeliverableCheck] {
+        guard (try? hostFileAccess.readString(
+            at: URL(fileURLWithPath: file.path),
+            encoding: .utf8,
+            intent: intent
+        )) != nil else {
             return [unreadableCheck(path: file.path)]
         }
         return [

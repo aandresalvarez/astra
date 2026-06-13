@@ -73,6 +73,23 @@ struct WorkspaceImportDiscoveryTests {
         #expect(candidates.first?.configURL == nil)
     }
 
+    @Test("automatic parent expansion skips privacy-sensitive child folders")
+    func automaticParentExpansionSkipsPrivacySensitiveChildFolders() throws {
+        let home = try makeTemporaryDirectory(named: "Home")
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let pictures = try makeDirectory("Pictures", in: home)
+        try Data("{}".utf8).write(to: pictures.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName))
+
+        let project = try makeDirectory("Projects", in: home)
+        try Data("{}".utf8).write(to: project.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName))
+
+        let broker = HostFileAccessBroker(homeDirectory: home)
+        let candidates = WorkspaceImportDiscovery.candidates(for: [home], hostFileAccess: broker)
+
+        #expect(candidates.map { $0.folderURL.lastPathComponent } == ["Projects"])
+    }
+
     @Test("folder with direct config imports as one configured workspace")
     func directConfigImportsAsSingleWorkspace() throws {
         let root = try makeTemporaryDirectory(named: "one-workspace")

@@ -91,12 +91,17 @@ struct ExecutionSandboxRunnerTests {
     }
 
     private func withStandardEnforcement(_ value: ExecutionSandboxEnforcement, _ body: () -> Void) {
-        let key = AppStorageKeys.sandboxEnforcement
-        let original = UserDefaults.standard.string(forKey: key)
-        UserDefaults.standard.set(value.rawValue, forKey: key)
+        let enforcementKey = AppStorageKeys.sandboxEnforcement
+        let readScopeKey = AppStorageKeys.sandboxReadScope
+        let originalEnforcement = UserDefaults.standard.string(forKey: enforcementKey)
+        let originalReadScope = UserDefaults.standard.string(forKey: readScopeKey)
+        UserDefaults.standard.set(value.rawValue, forKey: enforcementKey)
+        UserDefaults.standard.set(ExecutionSandboxReadScope.audit.rawValue, forKey: readScopeKey)
         defer {
-            if let original { UserDefaults.standard.set(original, forKey: key) }
-            else { UserDefaults.standard.removeObject(forKey: key) }
+            if let originalEnforcement { UserDefaults.standard.set(originalEnforcement, forKey: enforcementKey) }
+            else { UserDefaults.standard.removeObject(forKey: enforcementKey) }
+            if let originalReadScope { UserDefaults.standard.set(originalReadScope, forKey: readScopeKey) }
+            else { UserDefaults.standard.removeObject(forKey: readScopeKey) }
         }
         body()
     }
@@ -244,8 +249,10 @@ struct ExecutionSandboxRunnerTests {
             return messages
         }
 
-        #expect(messagesForDecision(enforcement: .bestEffort, currentDirectory: ws.path)
-            .contains { $0.hasPrefix("sandbox.applied") })
+        let appliedMessages = messagesForDecision(enforcement: .bestEffort, currentDirectory: ws.path)
+        #expect(appliedMessages.contains { $0.hasPrefix("sandbox.applied") })
+        #expect(appliedMessages.contains { $0.contains("read_scope=audit") })
+        #expect(appliedMessages.contains { $0.contains("read_scope_audit=true") })
         #expect(messagesForDecision(enforcement: .off, currentDirectory: ws.path)
             .contains { $0.hasPrefix("sandbox.skipped") })
         #expect(messagesForDecision(enforcement: .bestEffort, currentDirectory: "")

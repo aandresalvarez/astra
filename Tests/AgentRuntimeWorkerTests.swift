@@ -903,6 +903,26 @@ struct BuildPromptTests {
         #expect(prompt.contains("ASTRA_EVENT {\"v\":1,\"type\":\"complete\""))
     }
 
+    @Test("Prompt warns sandboxed runtimes not to claim full access")
+    func promptWarnsSandboxedRuntimesNotToClaimFullAccess() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Test", primaryPath: "/tmp/prompt-sandbox-language")
+        ctx.insert(ws)
+        let task = AgentTask(title: "T", goal: "G", workspace: ws)
+        task.runtimeID = AgentRuntimeID.cursorCLI.rawValue
+        ctx.insert(task)
+        try ctx.save()
+
+        let initialPrompt = AgentPromptBuilder.buildPrompt(for: task)
+        let followUpPrompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: "Continue", task: task)
+
+        for prompt in [initialPrompt, followUpPrompt] {
+            #expect(prompt.contains("Do not describe sandbox retries as full access"))
+            #expect(prompt.contains("If a file read or write is blocked by policy or sandboxing"))
+        }
+    }
+
     @Test("Follow-up prompt includes the same Astra Run Protocol instructions")
     func followUpPromptIncludesAstraRunProtocol() throws {
         let container = try makeContainer()

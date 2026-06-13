@@ -84,10 +84,11 @@ enum CapabilityRuntimeResourceMatcher {
     }
 
     private static func directoryFingerprint(for directory: URL) -> DirectoryFingerprint {
-        guard let urls = try? FileManager.default.contentsOfDirectory(
+        guard let urls = try? HostFileAccessBroker().contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
+            options: [.skipsHiddenFiles],
+            intent: .astraManagedStorage(root: directory)
         ) else {
             return DirectoryFingerprint(fileCount: 0, latestModificationTime: 0)
         }
