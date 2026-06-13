@@ -50,6 +50,18 @@ enum CapabilityRuntimeIntegrityService {
         let resolvedConnectors = resolvedScope.connectors
         let resolvedTools = resolvedScope.localTools
         let enabledBrowserAdapters = Set(resolvedScope.enabledBrowserAdapters)
+        // Resource EXISTENCE is judged against the full workspace inventory (before
+        // focus-pruning), not the pruned launch scope. A workspace-enabled skill/
+        // tool/connector that exists but was pruned for focus is still reachable —
+        // the agent learns about it from the prompt's capability roster and can
+        // invoke it under the permission gate — so it must not be reported as
+        // "missing", which previously hard-failed the launch
+        // (capability_runtime_resources_missing). Genuinely absent instances and
+        // host problems (executable/auth/policy) below still surface. The pruned
+        // scope is kept only for the relevance gate (shouldCheckEnabledPackage).
+        let reachableSkills = resolver.allBehaviorSkills
+        let reachableConnectors = resolver.allConnectors
+        let reachableTools = resolver.allLocalTools
         let selectedSkillNames = liveSelectedPackageSkillNames(
             for: task,
             resolvedSkills: resolvedSkills,
@@ -97,10 +109,10 @@ enum CapabilityRuntimeIntegrityService {
             issues += resourceIssues(
                 package: package,
                 source: source,
-                resolvedSkills: resolvedSkills,
-                resolvedConnectors: resolvedConnectors,
+                reachableSkills: reachableSkills,
+                reachableConnectors: reachableConnectors,
                 availableConnectors: availableConnectors,
-                resolvedTools: resolvedTools,
+                reachableTools: reachableTools,
                 enabledBrowserAdapters: enabledBrowserAdapters,
                 prerequisiteStatuses: prerequisiteStatuses,
                 checkExecutables: checkExecutables
@@ -135,10 +147,10 @@ enum CapabilityRuntimeIntegrityService {
     private static func resourceIssues(
         package: PluginPackage,
         source: CapabilityRuntimeIntegrityIssue.Source,
-        resolvedSkills: [Skill],
-        resolvedConnectors: [Connector],
+        reachableSkills: [Skill],
+        reachableConnectors: [Connector],
         availableConnectors: [Connector],
-        resolvedTools: [LocalTool],
+        reachableTools: [LocalTool],
         enabledBrowserAdapters: Set<String>,
         prerequisiteStatuses: [String: HealthStatus],
         checkExecutables: Bool
@@ -149,22 +161,22 @@ enum CapabilityRuntimeIntegrityService {
             for pluginSkill in package.skills where !isPackageSkillResolved(
                 pluginSkill,
                 package: package,
-                resolvedSkills: resolvedSkills,
-                resolvedConnectors: resolvedConnectors,
-                resolvedTools: resolvedTools
+                resolvedSkills: reachableSkills,
+                resolvedConnectors: reachableConnectors,
+                resolvedTools: reachableTools
             ) {
                 issues.append(issue(
                     package: package,
                     source: source,
                     kind: .skill,
                     name: pluginSkill.name,
-                    message: "skill \(pluginSkill.name) is not active for this task"
+                    message: "skill \(pluginSkill.name) is not installed for this workspace"
                 ))
             }
         }
 
         for pluginConnector in package.connectors {
-            let matches = resolvedConnectors.filter {
+            let matches = reachableConnectors.filter {
                 CapabilityRuntimeResourceMatcher.connectorMatches(pluginConnector, connector: $0)
             }
             if matches.isEmpty {
@@ -176,7 +188,7 @@ enum CapabilityRuntimeIntegrityService {
                     message: inactiveConnectorMessage(
                         for: pluginConnector,
                         availableConnectors: availableConnectors,
-                        resolvedConnectors: resolvedConnectors
+                        resolvedConnectors: reachableConnectors
                     )
                 ))
                 continue
@@ -198,7 +210,7 @@ enum CapabilityRuntimeIntegrityService {
         }
 
         for pluginTool in package.localTools {
-            let matches = resolvedTools.filter {
+            let matches = reachableTools.filter {
                 CapabilityRuntimeResourceMatcher.toolMatches(pluginTool, tool: $0)
             }
             if matches.isEmpty {
@@ -207,7 +219,7 @@ enum CapabilityRuntimeIntegrityService {
                     source: source,
                     kind: .localTool,
                     name: pluginTool.name,
-                    message: "local tool \(pluginTool.name) is not active for this workspace"
+                    message: "local tool \(pluginTool.name) is not installed for this workspace"
                 ))
                 continue
             }

@@ -1221,6 +1221,9 @@ enum AgentPromptBuilder {
             to sections: inout [PromptContextSection]
         ) {
             if context.mode == .initialRun {
+                if let roster = CapabilityRosterBuilder.roster(for: context.task.workspace) {
+                    appendSection(roster, kind: .tools, to: &sections, sourcePointers: [sourcePointer(label: "enabled capabilities", target: "workspace")])
+                }
                 appendSkillInstructions(from: context.capabilityScope, to: &sections)
             }
             appendConnectorContext(from: context.capabilityScope, to: &sections)

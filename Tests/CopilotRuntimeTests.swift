@@ -612,6 +612,28 @@ struct AgentRuntimeFailureDiagnosticsTests {
         #expect(fields["stderr_was_warning_only"] == "false")
     }
 
+    @Test("Empty stderr falls back to the provider result payload as the surfaced cause")
+    func emptyStderrSurfacesResultPayload() {
+        let diagnostic = AgentRuntimeFailureDiagnostic.classify(
+            runtime: .claudeCode,
+            model: "claude-opus-4-6",
+            exitCode: 1,
+            rawError: "",
+            runOutput: "Error: SessionStart hook exited with status 1 before any response was produced",
+            providerVersion: "claude 1.0.0",
+            stream: nil
+        )
+
+        // Stderr was empty, but the real cause survived in the result payload and
+        // must no longer be hidden behind has_error_output=false / empty summary.
+        #expect(diagnostic.redactedSummary.contains("SessionStart hook"))
+        let fields = diagnostic.auditFields(phase: "run", stream: nil)
+        #expect(fields["summary_source"] == "result_output")
+        #expect(fields["has_result_output"] == "true")
+        #expect(fields["has_error_output"] == "false")
+        #expect((Int(fields["result_output_chars"] ?? "0") ?? 0) > 0)
+    }
+
     @Test("Auth keyword is matched before the noVisibleOutput branch")
     func authKeywordWinsOverNoVisibleOutput() {
         let diagnostic = AgentRuntimeFailureDiagnostic.classify(
