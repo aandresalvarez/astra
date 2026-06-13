@@ -1650,6 +1650,12 @@ enum AgentPromptBuilder {
 
     private static func appendAstraRunProtocolInstructions(to sections: inout [PromptContextSection]) {
         appendSection("""
+        Runtime permission language:
+        If a file read or write is blocked by policy or sandboxing, say it was blocked and name the path when known.
+        Do not describe sandbox retries as full access, elevated access, or broad access unless ASTRA explicitly granted that permission for this run.
+        """, kind: .tools, to: &sections, sourcePointers: [sourcePointer(label: "runtime permissions", target: "sandbox reporting contract")])
+
+        appendSection("""
         Astra Run Protocol v1:
         Emit structured progress markers only when useful, each on its own line and outside code fences.
         Marker prefix must be exactly `ASTRA_EVENT ` followed by one JSON object.
