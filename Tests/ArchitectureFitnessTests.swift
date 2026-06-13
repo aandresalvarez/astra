@@ -777,10 +777,10 @@ struct ArchitectureFitnessTests {
             .map(String.init)
 
         let matches = lines.enumerated().compactMap { index, line -> String? in
-            guard line.contains("WorkspaceConfigManager.loadConfig(from: configURL)") else {
+            guard line.contains("WorkspaceConfigManager.loadConfig") else {
                 return nil
             }
-            let window = lines[index..<min(lines.count, index + 3)].joined(separator: "\n")
+            let window = lines[index..<min(lines.count, index + 6)].joined(separator: "\n")
             return window.contains("accessIntent:") ? nil : "\(relativePath):\(index + 1)"
         }
 

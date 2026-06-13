@@ -109,6 +109,34 @@ struct HostFileAccessBrokerTests {
         #expect(text == "selected context")
     }
 
+    @Test("Broker reads use injected file manager")
+    func brokerReadsUseInjectedFileManager() throws {
+        let fileManager = StubContentFileManager(contents: Data("injected content".utf8))
+        let broker = HostFileAccessBroker(fileManager: fileManager)
+        let url = URL(fileURLWithPath: "/tmp/astra-injected-file-manager.txt")
+
+        let text = try broker.readString(
+            at: url,
+            encoding: .utf8,
+            intent: .explicitUserSelection
+        )
+
+        #expect(text == "injected content")
+        #expect(fileManager.requestedPaths == [url.path])
+    }
+
+    @Test("Broker read data reports missing injected file manager content")
+    func brokerReadDataReportsMissingInjectedFileManagerContent() throws {
+        let broker = HostFileAccessBroker(fileManager: StubContentFileManager(contents: nil))
+
+        #expect(throws: CocoaError.self) {
+            try broker.readData(
+                at: URL(fileURLWithPath: "/tmp/astra-missing-injected-content.txt"),
+                intent: .explicitUserSelection
+            )
+        }
+    }
+
     @Test("ASTRA-managed storage reads stay inside the declared root")
     func astraManagedStorageReadsStayInsideDeclaredRoot() throws {
         let base = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
@@ -135,6 +163,21 @@ struct HostFileAccessBrokerTests {
                 intent: .astraManagedStorage(root: taskFolder)
             )
         }
+    }
+}
+
+private final class StubContentFileManager: FileManager {
+    let contents: Data?
+    private(set) var requestedPaths: [String] = []
+
+    init(contents: Data?) {
+        self.contents = contents
+        super.init()
+    }
+
+    override func contents(atPath path: String) -> Data? {
+        requestedPaths.append(path)
+        return contents
     }
 }
 

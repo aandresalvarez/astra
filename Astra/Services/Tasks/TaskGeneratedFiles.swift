@@ -69,7 +69,10 @@ enum TaskGeneratedFiles {
 
         var files: [String] = []
         while let url = enumerator.nextObject() as? URL {
-            guard !hostFileAccess.shouldSkip(url, intent: accessIntent) else { continue }
+            guard !hostFileAccess.shouldSkip(url, intent: accessIntent) else {
+                enumerator.skipDescendants()
+                continue
+            }
             let itemURL = url
                 .resolvingSymlinksInPath()
                 .standardizedFileURL

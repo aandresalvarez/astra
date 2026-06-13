@@ -1608,7 +1608,10 @@ enum AgentPromptBuilder {
 
         var files: [String] = []
         while let url = enumerator.nextObject() as? URL {
-            guard !hostFileAccess.shouldSkip(url, intent: accessIntent) else { continue }
+            guard !hostFileAccess.shouldSkip(url, intent: accessIntent) else {
+                enumerator.skipDescendants()
+                continue
+            }
             guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
             let itemURL = url
                 .resolvingSymlinksInPath()

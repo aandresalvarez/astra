@@ -51,7 +51,10 @@ struct HostFileAccessBroker {
 
     func readData(at url: URL, intent: HostFileAccessIntent) throws -> Data {
         try requireAccess(to: url, intent: intent)
-        return try Data(contentsOf: url)
+        guard let data = fileManager.contents(atPath: url.path) else {
+            throw CocoaError(.fileReadNoSuchFile)
+        }
+        return data
     }
 
     func readString(
@@ -59,8 +62,11 @@ struct HostFileAccessBroker {
         encoding: String.Encoding = .utf8,
         intent: HostFileAccessIntent
     ) throws -> String {
-        try requireAccess(to: url, intent: intent)
-        return try String(contentsOf: url, encoding: encoding)
+        let data = try readData(at: url, intent: intent)
+        guard let string = String(data: data, encoding: encoding) else {
+            throw CocoaError(.fileReadInapplicableStringEncoding)
+        }
+        return string
     }
 
     func contentsOfDirectory(

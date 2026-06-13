@@ -234,7 +234,10 @@ enum TaskDeliverableExpectation {
 
         var scannedEntries = 0
         for case let fileURL as URL in enumerator {
-            guard !hostFileAccess.shouldSkip(fileURL, intent: accessIntent) else { continue }
+            guard !hostFileAccess.shouldSkip(fileURL, intent: accessIntent) else {
+                enumerator.skipDescendants()
+                continue
+            }
             scannedEntries += 1
             guard scannedEntries <= entryLimit else {
                 return false
