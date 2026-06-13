@@ -13,6 +13,7 @@ enum WorkspaceHomePresentation {
     static let usesKanbanMeasuredPageRail = true
     static let contextRowsUseSummaryPattern = true
     static let contextCardShowsCapabilitiesRow = true
+    static let contextCardShowsAppStudioRow = true
     static let contextCardAlignsWithBoardColumns = true
     static let headerShowsWorkspaceStatus = false
     static let headerUsesOverviewMetrics = false
@@ -32,6 +33,7 @@ enum WorkspaceHomePresentation {
     static let rowSpacing: CGFloat = 14
     static let cardCornerRadius: CGFloat = 12
     static let minimumWelcomeRailWidth = WorkspaceHomeLayout.minimumPageRailWidth
+    static let appStudioActionTitle = "New App"
 }
 
 struct WorkspaceInstructionBlock: Equatable {
@@ -260,6 +262,7 @@ struct WorkspaceHomeContainerView: View {
     let workspace: Workspace
     let taskQueue: TaskQueue
     let onCreateTask: () -> Void
+    let onCreateApp: () -> Void
     let onOpenTask: (AgentTask) -> Void
     let onDeleteTask: (AgentTask) -> Void
     var onSetDoneState: ((AgentTask, Bool) -> Void)?
@@ -275,6 +278,7 @@ struct WorkspaceHomeContainerView: View {
         workspace: Workspace,
         taskQueue: TaskQueue,
         onCreateTask: @escaping () -> Void,
+        onCreateApp: @escaping () -> Void,
         onOpenTask: @escaping (AgentTask) -> Void,
         onDeleteTask: @escaping (AgentTask) -> Void,
         onSetDoneState: ((AgentTask, Bool) -> Void)? = nil,
@@ -287,6 +291,7 @@ struct WorkspaceHomeContainerView: View {
         self.workspace = workspace
         self.taskQueue = taskQueue
         self.onCreateTask = onCreateTask
+        self.onCreateApp = onCreateApp
         self.onOpenTask = onOpenTask
         self.onDeleteTask = onDeleteTask
         self.onSetDoneState = onSetDoneState
@@ -313,6 +318,7 @@ struct WorkspaceHomeContainerView: View {
             // appears here the moment it's queued/run.
             tasks: tasks.filter { !TaskHygiene.isHiddenFromBoard($0) },
             onCreateTask: onCreateTask,
+            onCreateApp: onCreateApp,
             onOpenTask: onOpenTask,
             onDeleteTask: onDeleteTask,
             onSetDoneState: onSetDoneState,
@@ -328,6 +334,7 @@ struct WorkspaceHomeView: View {
     let workspace: Workspace
     let tasks: [AgentTask]
     let onCreateTask: () -> Void
+    let onCreateApp: () -> Void
     let onOpenTask: (AgentTask) -> Void
     let onDeleteTask: (AgentTask) -> Void
     var onSetDoneState: ((AgentTask, Bool) -> Void)?
@@ -477,6 +484,10 @@ struct WorkspaceHomeView: View {
             workspaceDivider
 
             capabilitiesSummaryRow
+
+            workspaceDivider
+
+            appStudioSummaryRow
         }
         .workspaceSectionPanel()
     }
@@ -714,6 +725,30 @@ struct WorkspaceHomeView: View {
         }
     }
 
+    private var appStudioSummaryRow: some View {
+        WorkspaceHomeSummaryRow(
+            icon: "plus.app",
+            iconColor: Stanford.lagunita,
+            title: "App Studio",
+            subtitle: appStudioSubtitle,
+            onSelect: onCreateApp
+        ) {
+            HStack(spacing: 12) {
+                Button(action: onCreateApp) {
+                    Text(WorkspaceHomePresentation.appStudioActionTitle)
+                        .font(Stanford.caption(12).weight(.medium))
+                        .foregroundStyle(Stanford.lagunita)
+                }
+                .buttonStyle(.plain)
+                .help("Create Workspace App draft")
+
+                Image(systemName: "chevron.right")
+                    .font(Stanford.ui(12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
     private var workspaceDivider: some View {
         Rectangle()
             .fill(Color.primary.opacity(0.055))
@@ -765,6 +800,18 @@ struct WorkspaceHomeView: View {
         }
         let count = capabilityCount
         return "\(count) active — \(parts.joined(separator: ", "))"
+    }
+
+    private var appStudioSubtitle: String {
+        let contextParts: [String] = [
+            countPhrase(tasks.count, singular: "task", plural: "tasks"),
+            capabilityCount > 0 ? capabilityHeadline.lowercased() : nil
+        ].compactMap { $0 }
+
+        guard !contextParts.isEmpty else {
+            return "Draft from workspace context"
+        }
+        return "Draft from \(contextParts.joined(separator: ", "))"
     }
 
     private func countPhrase(_ count: Int, singular: String, plural: String) -> String? {
