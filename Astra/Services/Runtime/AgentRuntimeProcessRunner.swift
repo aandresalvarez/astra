@@ -15,7 +15,16 @@ struct AgentRuntimeBudgetProfile: Sendable, Equatable {
 }
 
 final class AgentRuntimeProcessRunner {
+    typealias SandboxSettingsProvider = @MainActor (PermissionPolicy) -> ExecutionSandboxSettings
+
     private var currentProcess: AgentRuntimeProcessControl?
+    private let sandboxSettingsProvider: SandboxSettingsProvider
+
+    init(sandboxSettingsProvider: @escaping SandboxSettingsProvider = { permissionPolicy in
+        ExecutionSandboxSettings.current(permissionPolicy: permissionPolicy)
+    }) {
+        self.sandboxSettingsProvider = sandboxSettingsProvider
+    }
 
     func cancel() {
         currentProcess?.terminate()
@@ -73,7 +82,7 @@ final class AgentRuntimeProcessRunner {
         // for override-autonomous runs — matching how the preflight manifest
         // resolves the sandbox tier.
         let effectivePermissionPolicy = context.executionPolicy.permissionPolicyOverride ?? context.permissionPolicy
-        let settings = ExecutionSandboxSettings.current(permissionPolicy: effectivePermissionPolicy)
+        let settings = sandboxSettingsProvider(effectivePermissionPolicy)
         // Multi-path workspaces: the agent is granted the workspace's additional
         // paths + input dirs (same set passed to providers via `--add-dir` and
         // honored by the in-band policy guard), so include them in the sandbox's
@@ -90,6 +99,8 @@ final class AgentRuntimeProcessRunner {
             AppLogger.audit(.sandboxApplied, category: "Worker", taskID: taskID, fields: [
                 "runtime": plan.runtime.rawValue,
                 "enforcement": settings.enforcement.rawValue,
+                "read_scope": settings.readScope.rawValue,
+                "read_scope_audit": String(settings.readScope == .audit),
                 "writable_root_count": String(writableRoots.count),
                 "allow_network": String(settings.allowNetwork)
             ], level: .debug)
@@ -602,7 +613,11 @@ final class AgentRuntimeProcessRunner {
         do {
             try fileManager.createDirectory(atPath: shimDirectory, withIntermediateDirectories: true)
             try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: shimDirectory)
-            let existing = try? String(contentsOfFile: shimPath, encoding: .utf8)
+            let existing = try? HostFileAccessBroker(fileManager: fileManager).readString(
+                at: URL(fileURLWithPath: shimPath),
+                encoding: .utf8,
+                intent: .astraManagedStorage(root: URL(fileURLWithPath: TaskWorkspaceAccess(task: task).taskFolder, isDirectory: true))
+            )
             if existing != script {
                 try script.write(toFile: shimPath, atomically: true, encoding: .utf8)
             }

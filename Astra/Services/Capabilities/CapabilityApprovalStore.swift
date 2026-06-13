@@ -85,9 +85,12 @@ struct CapabilityApprovalStore {
     }
 
     func records() -> [CapabilityApprovalRecord] {
-        guard let files = try? fileManager.contentsOfDirectory(
+        let hostFileAccess = HostFileAccessBroker(fileManager: fileManager)
+        let accessIntent = HostFileAccessIntent.astraManagedStorage(root: directory)
+        guard let files = try? hostFileAccess.contentsOfDirectory(
             at: directory,
-            includingPropertiesForKeys: nil
+            includingPropertiesForKeys: nil,
+            intent: accessIntent
         ) else {
             return []
         }
@@ -96,7 +99,7 @@ struct CapabilityApprovalStore {
         return files
             .filter { $0.pathExtension == "json" }
             .compactMap { url in
-                guard let data = try? Data(contentsOf: url) else { return nil }
+                guard let data = try? hostFileAccess.readData(at: url, intent: accessIntent) else { return nil }
                 return try? decoder.decode(CapabilityApprovalRecord.self, from: data)
             }
             .sorted {

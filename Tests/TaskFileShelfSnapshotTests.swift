@@ -516,6 +516,42 @@ extension TaskThreadSnapshotTests {
         #expect(!hiddenPaths.contains(".astra/tasks/ABC12345/current_state.md"))
     }
 
+    @Test("Workspace file scan skips privacy-sensitive user media folders")
+    func workspaceFileScanSkipsPrivacySensitiveUserMediaFolders() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-workspace-privacy-folders-\(UUID().uuidString)")
+        let sources = root.appendingPathComponent("Sources", isDirectory: true)
+        let pictures = root.appendingPathComponent("Pictures", isDirectory: true)
+        let music = root.appendingPathComponent("Music", isDirectory: true)
+
+        try FileManager.default.createDirectory(at: sources, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: pictures, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: music, withIntermediateDirectories: true)
+        try "swift".write(to: sources.appendingPathComponent("App.swift"), atomically: true, encoding: .utf8)
+        try "photo-metadata".write(to: pictures.appendingPathComponent("library.txt"), atomically: true, encoding: .utf8)
+        try "music-metadata".write(to: music.appendingPathComponent("library.txt"), atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let rootModel = WorkspaceFileRoot(
+            id: "primary:\(root.standardizedFileURL.path)",
+            kind: .primary,
+            title: "Primary",
+            path: root.standardizedFileURL.path,
+            isDirectory: true
+        )
+
+        let paths = Set(WorkspaceFileIndexService.scanSync(
+            roots: [rootModel],
+            privacyHomeDirectory: root
+        ).nodes.map(\.relativePath))
+
+        #expect(paths.contains("Sources/App.swift"))
+        #expect(!paths.contains("Pictures"))
+        #expect(!paths.contains("Pictures/library.txt"))
+        #expect(!paths.contains("Music"))
+        #expect(!paths.contains("Music/library.txt"))
+    }
+
     @Test("Workspace file scan hides task folder runtime documents")
     func workspaceFileScanHidesTaskFolderRuntimeDocuments() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())

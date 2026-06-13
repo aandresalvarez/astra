@@ -30,9 +30,21 @@ enum PromptContextIOSnapshotLoader {
 
     static func snapshot(taskFolder: String, window: TranscriptWindow = .standard) -> PromptContextIOSnapshot {
         guard !taskFolder.isEmpty else { return .empty }
+        let hostFileAccess = HostFileAccessBroker()
+        let taskFolderURL = URL(fileURLWithPath: taskFolder, isDirectory: true)
         return PromptContextIOSnapshot(
-            recentConversationTranscript: recentSessionOutputTranscript(taskFolder: taskFolder, window: window),
-            sessionHistorySummary: sessionHistorySummary(taskFolder: taskFolder, window: window)
+            recentConversationTranscript: recentSessionOutputTranscript(
+                taskFolder: taskFolder,
+                window: window,
+                hostFileAccess: hostFileAccess,
+                accessRoot: taskFolderURL
+            ),
+            sessionHistorySummary: sessionHistorySummary(
+                taskFolder: taskFolder,
+                window: window,
+                hostFileAccess: hostFileAccess,
+                accessRoot: taskFolderURL
+            )
         )
     }
 
@@ -42,15 +54,26 @@ enum PromptContextIOSnapshotLoader {
 
     private static func recentSessionOutputTranscript(
         taskFolder: String,
-        window: TranscriptWindow
+        window: TranscriptWindow,
+        hostFileAccess: HostFileAccessBroker,
+        accessRoot: URL
     ) -> PromptContextSnapshotText? {
-        let turnFiles = outputTurnFilePaths(taskFolder: taskFolder)
+        let turnFiles = outputTurnFilePaths(
+            taskFolder: taskFolder,
+            hostFileAccess: hostFileAccess,
+            accessRoot: accessRoot
+        )
             .suffix(window.fileLimit)
 
         guard !turnFiles.isEmpty else { return nil }
 
+        let intent = HostFileAccessIntent.astraManagedStorage(root: accessRoot)
         let transcriptSections = turnFiles.enumerated().compactMap { offset, path -> String? in
-            guard let text = try? String(contentsOfFile: path, encoding: .utf8),
+            guard let text = try? hostFileAccess.readString(
+                at: URL(fileURLWithPath: path),
+                encoding: .utf8,
+                intent: intent
+            ),
                   !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 return nil
             }
@@ -79,10 +102,16 @@ enum PromptContextIOSnapshotLoader {
 
     private static func sessionHistorySummary(
         taskFolder: String,
-        window: TranscriptWindow
+        window: TranscriptWindow,
+        hostFileAccess: HostFileAccessBroker,
+        accessRoot: URL
     ) -> PromptContextSnapshotText? {
         let historyPath = SessionHistoryManager.historyPath(taskFolder: taskFolder)
-        guard let history = try? String(contentsOfFile: historyPath, encoding: .utf8),
+        guard let history = try? hostFileAccess.readString(
+            at: URL(fileURLWithPath: historyPath),
+            encoding: .utf8,
+            intent: .astraManagedStorage(root: accessRoot)
+        ),
               !history.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return nil
         }
@@ -92,12 +121,18 @@ enum PromptContextIOSnapshotLoader {
         )
     }
 
-    static func outputTurnFilePaths(taskFolder: String) -> [String] {
+    static func outputTurnFilePaths(
+        taskFolder: String,
+        hostFileAccess: HostFileAccessBroker = HostFileAccessBroker(),
+        accessRoot: URL? = nil
+    ) -> [String] {
+        let root = accessRoot ?? URL(fileURLWithPath: taskFolder, isDirectory: true)
         let outputDirectory = (taskFolder as NSString).appendingPathComponent("outputs")
-        guard let urls = try? FileManager.default.contentsOfDirectory(
+        guard let urls = try? hostFileAccess.contentsOfDirectory(
             at: URL(fileURLWithPath: outputDirectory),
             includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
+            options: [.skipsHiddenFiles],
+            intent: .astraManagedStorage(root: root)
         ) else { return [] }
 
         return urls

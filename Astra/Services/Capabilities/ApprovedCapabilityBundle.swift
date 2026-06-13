@@ -10,7 +10,10 @@ enum ApprovedCapabilityBundle {
         let decoder = JSONDecoder()
         return urls
             .compactMap { url -> PluginPackage? in
-                guard let data = try? Data(contentsOf: url),
+                guard let data = try? HostFileAccessBroker().readData(
+                    at: url,
+                    intent: .astraManagedStorage(root: url.deletingLastPathComponent())
+                ),
                       var package = try? decoder.decode(PluginPackage.self, from: data) else {
                     return nil
                 }

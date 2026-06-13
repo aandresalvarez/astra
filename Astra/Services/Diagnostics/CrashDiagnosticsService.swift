@@ -74,10 +74,12 @@ enum CrashDiagnosticsService {
         guard !normalizedPrefixes.isEmpty, limit > 0 else { return [] }
 
         let reports = searchDirectories.flatMap { directory -> [CrashReportSummary] in
-            guard let files = try? fileManager.contentsOfDirectory(
+            let broker = HostFileAccessBroker(fileManager: fileManager)
+            guard let files = try? broker.contentsOfDirectory(
                 at: directory,
                 includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey, .isRegularFileKey],
-                options: [.skipsHiddenFiles]
+                options: [.skipsHiddenFiles],
+                intent: .astraManagedStorage(root: directory)
             ) else { return [] }
 
             return files.compactMap { file in

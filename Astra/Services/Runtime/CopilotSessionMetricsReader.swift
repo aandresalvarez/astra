@@ -30,12 +30,16 @@ enum CopilotSessionMetricsReader {
         fileManager: FileManager = .default
     ) -> CopilotSessionMetrics? {
         guard !copilotHome.isEmpty else { return nil }
-        let sessionStateURL = URL(fileURLWithPath: copilotHome, isDirectory: true)
+        let copilotHomeURL = URL(fileURLWithPath: copilotHome, isDirectory: true)
+        let hostFileAccess = HostFileAccessBroker(fileManager: fileManager)
+        let accessIntent = HostFileAccessIntent.astraManagedStorage(root: copilotHomeURL)
+        let sessionStateURL = copilotHomeURL
             .appendingPathComponent("session-state", isDirectory: true)
-        guard let children = try? fileManager.contentsOfDirectory(
+        guard let children = try? hostFileAccess.contentsOfDirectory(
             at: sessionStateURL,
             includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
+            options: [.skipsHiddenFiles],
+            intent: accessIntent
         ) else {
             return nil
         }
@@ -44,7 +48,7 @@ enum CopilotSessionMetricsReader {
         let shortTaskID = String(lowerTaskID.prefix(8))
         let candidates = children.compactMap { sessionURL -> (url: URL, modified: Date)? in
             let eventsURL = sessionURL.appendingPathComponent("events.jsonl")
-            guard fileManager.fileExists(atPath: eventsURL.path) else { return nil }
+            guard hostFileAccess.fileExists(at: eventsURL, intent: accessIntent) else { return nil }
             let modified = (try? eventsURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
                 ?? .distantPast
             return (eventsURL, modified)
@@ -53,7 +57,11 @@ enum CopilotSessionMetricsReader {
         .sorted { $0.modified > $1.modified }
 
         for candidate in candidates {
-            guard let content = try? String(contentsOf: candidate.url, encoding: .utf8) else {
+            guard let content = try? hostFileAccess.readString(
+                at: candidate.url,
+                encoding: .utf8,
+                intent: accessIntent
+            ) else {
                 continue
             }
             let lowerContent = content.lowercased()

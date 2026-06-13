@@ -567,17 +567,42 @@ struct ArtifactsTabView: View {
         let folder = TaskWorkspaceAccess(task: task).taskFolder
         Task {
             let scanned: [ArtifactFile] = await Task.detached(priority: .userInitiated) {
-                guard !folder.isEmpty, FileManager.default.fileExists(atPath: folder) else { return [] }
-                guard let enumerator = FileManager.default.enumerator(atPath: folder) else { return [] }
+                guard !folder.isEmpty else { return [] }
+                let rootURL = URL(fileURLWithPath: folder, isDirectory: true)
+                    .resolvingSymlinksInPath()
+                    .standardizedFileURL
+                let broker = HostFileAccessBroker()
+                let accessIntent = HostFileAccessIntent.astraManagedStorage(root: rootURL)
+                var rootIsDirectory = ObjCBool(false)
+                guard broker.fileExists(at: rootURL, isDirectory: &rootIsDirectory, intent: accessIntent),
+                      rootIsDirectory.boolValue,
+                      let enumerator = broker.enumerator(
+                        at: rootURL,
+                        includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey],
+                        intent: accessIntent
+                      ) else { return [] }
 
                 var files: [ArtifactFile] = []
-                while let relativePath = enumerator.nextObject() as? String {
-                    let fullPath = (folder as NSString).appendingPathComponent(relativePath)
-                    var isDir: ObjCBool = false
-                    FileManager.default.fileExists(atPath: fullPath, isDirectory: &isDir)
-                    if isDir.boolValue { continue }
-                    let size = (try? FileManager.default.attributesOfItem(atPath: fullPath)[.size] as? Int64) ?? 0
-                    files.append(ArtifactFile(path: fullPath, name: URL(fileURLWithPath: fullPath).lastPathComponent, isDirectory: false, size: size, source: "output"))
+                while let url = enumerator.nextObject() as? URL {
+                    let itemURL = url
+                        .resolvingSymlinksInPath()
+                        .standardizedFileURL
+                    if broker.shouldSkip(itemURL, intent: accessIntent) {
+                        enumerator.skipDescendants()
+                        continue
+                    }
+                    guard let values = try? itemURL.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey]),
+                          values.isDirectory != true else {
+                        continue
+                    }
+                    let size = Int64(values.fileSize ?? 0)
+                    files.append(ArtifactFile(
+                        path: itemURL.path,
+                        name: itemURL.lastPathComponent,
+                        isDirectory: false,
+                        size: size,
+                        source: "output"
+                    ))
                 }
                 return files
             }.value

@@ -659,6 +659,21 @@ struct AgentPolicyTests {
         }
     }
 
+    @Test("Shell command approvals touching privacy-sensitive machine paths are not task-reusable")
+    func shellCommandApprovalsTouchingPrivacySensitiveMachinePathsAreNotTaskReusable() throws {
+        let commands = [
+            "git -C ~/Pictures status --short",
+            "git -C /Applications status --short",
+            "defaults read ~/Library/Photos"
+        ]
+
+        for command in commands {
+            let assessment = try #require(ShellCommandRiskClassifier.assessment(forShellSegment: command))
+            #expect(assessment.risk == .read)
+            #expect(assessment.allowsTaskScopedReuse == false)
+        }
+    }
+
     @Test("Shell command risk classifier refuses unsupported shell constructs")
     func shellCommandRiskClassifierRefusesUnsupportedShellConstructs() {
         let unsupported = [

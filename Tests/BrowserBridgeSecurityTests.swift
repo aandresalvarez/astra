@@ -4,6 +4,12 @@ import Testing
 
 @Suite("Browser Bridge Security")
 struct BrowserBridgeSecurityTests {
+    @Test("Embedded preview blocks WebKit file and media pickers")
+    func embeddedPreviewBlocksWebKitFileAndMediaPickers() {
+        #expect(ShelfBrowserPrivacyBoundary.blocksEmbeddedPreviewFilePickers)
+        #expect(ShelfBrowserPrivacyBoundary.blocksEmbeddedPreviewMediaCapture)
+    }
+
     @Test("Bridge requires per-session access token")
     func bridgeRequiresAccessToken() async throws {
         let endpoint = LockedEndpoint()

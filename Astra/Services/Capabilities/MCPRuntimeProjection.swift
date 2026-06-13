@@ -252,9 +252,10 @@ enum MCPRuntimeProjection {
         olderThan interval: TimeInterval = 24 * 60 * 60
     ) {
         let cutoff = Date().addingTimeInterval(-interval)
-        let urls = (try? FileManager.default.contentsOfDirectory(
+        let urls = (try? HostFileAccessBroker().contentsOfDirectory(
             at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey]
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            intent: .astraManagedStorage(root: directory)
         )) ?? []
         for url in urls where url.pathExtension == "json" {
             let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)

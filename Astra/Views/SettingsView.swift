@@ -11,6 +11,7 @@ struct SettingsView: View {
     // Defaults derive from ExecutionSandboxSettings so the UI's initial state and
     // the resolved (current()) behavior share one source of truth and can't drift.
     @AppStorage(AppStorageKeys.sandboxEnforcement) private var sandboxEnforcementRaw = ExecutionSandboxSettings.defaultEnforcement.rawValue
+    @AppStorage(AppStorageKeys.sandboxReadScope) private var sandboxReadScopeRaw = ExecutionSandboxSettings.defaultReadScope.rawValue
     @AppStorage(AppStorageKeys.sandboxAllowNetwork) private var sandboxAllowNetwork = ExecutionSandboxSettings.defaultAllowNetwork
     @AppStorage(AppStorageKeys.sandboxLayerNativeProviders) private var sandboxLayerNativeProviders = ExecutionSandboxSettings.defaultLayerNativeProviders
     @AppStorage(AppStorageKeys.defaultRuntimeID) private var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
@@ -192,6 +193,12 @@ struct SettingsView: View {
             }
 
             Section("Runtime Guardrails") {
+                runtimeHostPrivacyBoundaryRow
+
+                Text(RuntimeGuardrailsPresentation.hostPrivacyDetail)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+
                 Picker("Default Budget", selection: $defaultTokenBudget) {
                     ForEach(budgetPresets, id: \.self) { b in
                         Text(b == 0 ? "Unlimited" : "\(b / 1000)k tokens").tag(b)
@@ -231,6 +238,18 @@ struct SettingsView: View {
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
 
+                Picker("Read Scope", selection: sandboxReadScopeSelectionBinding) {
+                    ForEach(ExecutionSandboxReadScope.allCases) { mode in
+                        Text(mode.displayName).tag(mode.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .disabled(selectedSandboxEnforcement != .bestEffort)
+
+                Text(selectedSandboxReadScope.helpText)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+
                 Toggle("Allow Network In Sandbox", isOn: $sandboxAllowNetwork)
                     .disabled(selectedSandboxEnforcement == .off)
 
@@ -249,6 +268,18 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var runtimeHostPrivacyBoundaryRow: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Label(
+                RuntimeGuardrailsPresentation.hostPrivacyTitle,
+                systemImage: RuntimeGuardrailsPresentation.hostPrivacySystemImage
+            )
+            Spacer()
+            Text(RuntimeGuardrailsPresentation.hostPrivacyStatus)
+                .foregroundStyle(.secondary)
+        }
     }
 
     private func providerDisclosureRow(_ runtime: AgentRuntimeID) -> some View {
@@ -899,6 +930,17 @@ struct SettingsView: View {
         ExecutionSandboxEnforcement.normalized(sandboxEnforcementRaw)
     }
 
+    private var selectedSandboxReadScope: ExecutionSandboxReadScope {
+        switch selectedSandboxEnforcement {
+        case .off:
+            return .open
+        case .bestEffort:
+            return ExecutionSandboxReadScope.normalized(sandboxReadScopeRaw)
+        case .strict:
+            return .enforce
+        }
+    }
+
     /// Normalizing binding so the segmented Picker always reads/writes a canonical
     /// raw value. A legacy/unknown stored value (which `normalized` tolerates)
     /// therefore still maps to a valid segment instead of leaving the control with
@@ -907,6 +949,13 @@ struct SettingsView: View {
         Binding(
             get: { ExecutionSandboxEnforcement.normalized(sandboxEnforcementRaw).rawValue },
             set: { sandboxEnforcementRaw = ExecutionSandboxEnforcement.normalized($0).rawValue }
+        )
+    }
+
+    private var sandboxReadScopeSelectionBinding: Binding<String> {
+        Binding(
+            get: { selectedSandboxReadScope.rawValue },
+            set: { sandboxReadScopeRaw = ExecutionSandboxReadScope.normalized($0).rawValue }
         )
     }
 

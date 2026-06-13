@@ -4,6 +4,140 @@ import Security
 @testable import ASTRA
 import ASTRACore
 
+@Suite("Privacy-sensitive path policy")
+struct PrivacySensitivePathPolicyTests {
+    @Test("Implicit scans skip protected home media roots")
+    func implicitScansSkipProtectedHomeMediaRoots() {
+        let home = URL(fileURLWithPath: "/tmp/astra-fake-home", isDirectory: true)
+
+        #expect(PrivacySensitivePathPolicy.shouldSkipImplicitScan(
+            of: home.appendingPathComponent("Pictures", isDirectory: true),
+            homeDirectory: home
+        ))
+        #expect(PrivacySensitivePathPolicy.shouldSkipImplicitScan(
+            of: home.appendingPathComponent("Music/Music Library.musiclibrary", isDirectory: true),
+            homeDirectory: home
+        ))
+        #expect(PrivacySensitivePathPolicy.shouldSkipImplicitScan(
+            of: URL(fileURLWithPath: "/tmp/workspace/Pictures", isDirectory: true),
+            homeDirectory: home
+        ) == false)
+        #expect(PrivacySensitivePathPolicy.shouldSkipImplicitScan(
+            of: URL(fileURLWithPath: "/Volumes/SharedDrive", isDirectory: true),
+            homeDirectory: home
+        ))
+        #expect(PrivacySensitivePathPolicy.shouldSkipImplicitScan(
+            of: URL(fileURLWithPath: "/Network/Servers/SharedDrive", isDirectory: true),
+            homeDirectory: home
+        ))
+    }
+}
+
+@Suite("Host File Access Broker")
+struct HostFileAccessBrokerTests {
+    @Test("Implicit directory scans filter privacy-sensitive children")
+    func implicitDirectoryScansFilterPrivacySensitiveChildren() throws {
+        let home = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("astra-host-file-broker-\(UUID().uuidString)", isDirectory: true)
+        let pictures = home.appendingPathComponent("Pictures", isDirectory: true)
+        let music = home.appendingPathComponent("Music", isDirectory: true)
+        let project = home.appendingPathComponent("Projects/App", isDirectory: true)
+
+        try FileManager.default.createDirectory(at: pictures, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: music, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let broker = HostFileAccessBroker(homeDirectory: home)
+        let children = try broker.contentsOfDirectory(
+            at: home,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            intent: .implicitScan(root: home)
+        )
+
+        let names = Set(children.map(\.lastPathComponent))
+        #expect(names == ["Projects"])
+    }
+
+    @Test("Explicit user selected roots can include privacy-sensitive folders")
+    func explicitUserSelectedRootsCanIncludePrivacySensitiveFolders() throws {
+        let home = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("astra-host-file-broker-explicit-\(UUID().uuidString)", isDirectory: true)
+        let pictures = home.appendingPathComponent("Pictures", isDirectory: true)
+        let selectedFile = pictures.appendingPathComponent("selected.txt")
+
+        try FileManager.default.createDirectory(at: pictures, withIntermediateDirectories: true)
+        try "ok".write(to: selectedFile, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let broker = HostFileAccessBroker(homeDirectory: home)
+        let children = try broker.contentsOfDirectory(
+            at: pictures,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            intent: .explicitUserSelection
+        )
+
+        #expect(children.map(\.lastPathComponent) == ["selected.txt"])
+        #expect(!broker.shouldSkip(
+            pictures,
+            intent: .explicitUserSelection
+        ))
+        #expect(broker.shouldSkip(
+            pictures,
+            intent: .implicitScan(root: home)
+        ))
+    }
+
+    @Test("Broker reads explicit user-selected protected files")
+    func brokerReadsExplicitUserSelectedProtectedFiles() throws {
+        let home = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("astra-host-file-broker-read-\(UUID().uuidString)", isDirectory: true)
+        let pictures = home.appendingPathComponent("Pictures", isDirectory: true)
+        let selectedFile = pictures.appendingPathComponent("notes.txt")
+
+        try FileManager.default.createDirectory(at: pictures, withIntermediateDirectories: true)
+        try "selected context".write(to: selectedFile, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let broker = HostFileAccessBroker(homeDirectory: home)
+        let text = try broker.readString(
+            at: selectedFile,
+            encoding: .utf8,
+            intent: .explicitUserSelection
+        )
+
+        #expect(text == "selected context")
+    }
+
+    @Test("ASTRA-managed storage reads stay inside the declared root")
+    func astraManagedStorageReadsStayInsideDeclaredRoot() throws {
+        let base = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("astra-host-file-broker-internal-\(UUID().uuidString)", isDirectory: true)
+        let taskFolder = base.appendingPathComponent("task", isDirectory: true)
+        let inside = taskFolder.appendingPathComponent("current_state.json")
+        let outside = base.appendingPathComponent("outside.json")
+
+        try FileManager.default.createDirectory(at: taskFolder, withIntermediateDirectories: true)
+        try "{}".write(to: inside, atomically: true, encoding: .utf8)
+        try "leak".write(to: outside, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        let broker = HostFileAccessBroker()
+        #expect(try broker.readString(
+            at: inside,
+            encoding: .utf8,
+            intent: .astraManagedStorage(root: taskFolder)
+        ) == "{}")
+        #expect(throws: HostFileAccessError.self) {
+            try broker.readString(
+                at: outside,
+                encoding: .utf8,
+                intent: .astraManagedStorage(root: taskFolder)
+            )
+        }
+    }
+}
+
 @Suite("Permission Policy")
 struct PermissionPolicyTests {
 

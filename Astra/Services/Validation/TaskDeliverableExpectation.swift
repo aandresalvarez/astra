@@ -221,16 +221,20 @@ enum TaskDeliverableExpectation {
         let root = URL(fileURLWithPath: folder)
             .resolvingSymlinksInPath()
             .standardizedFileURL
-        guard let enumerator = FileManager.default.enumerator(
+        let hostFileAccess = HostFileAccessBroker()
+        let accessIntent = HostFileAccessIntent.astraManagedStorage(root: root)
+        guard let enumerator = hostFileAccess.enumerator(
             at: root,
             includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .creationDateKey, .contentModificationDateKey],
-            options: [.skipsHiddenFiles]
+            options: [.skipsHiddenFiles],
+            intent: accessIntent
         ) else {
             return false
         }
 
         var scannedEntries = 0
         for case let fileURL as URL in enumerator {
+            guard !hostFileAccess.shouldSkip(fileURL, intent: accessIntent) else { continue }
             scannedEntries += 1
             guard scannedEntries <= entryLimit else {
                 return false

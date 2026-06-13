@@ -1,7 +1,7 @@
 # ASTRA Seatbelt Execution Sandbox
 
 Date created: 2026-06-06
-Last reviewed: 2026-06-06
+Last reviewed: 2026-06-12
 
 Tracking issue: [#9 — Implement robust local sandboxing for execution tasks
 using macOS Seatbelt](https://github.com/aandresalvarez/astra/issues/9)
@@ -68,6 +68,22 @@ All phases implemented and tested.
   - The `@AppStorage` architecture-fitness ratchet was bumped 125 → 129 for the
     three new sandbox settings (user-facing toggles following the existing
     pattern).
+- **Runtime read-scope hardening (2026-06-12).** The Seatbelt profile now has a
+  read-scope mode in addition to the write boundary:
+  - `open` preserves the original compatibility behavior: broad filesystem reads
+    with workspace-scoped writes.
+  - `audit` (default for best-effort) emits Seatbelt `debug deny file-read*`
+    would-deny reports while still allowing the read, so dogfood runs reveal
+    missing allowlist roots before enforcement breaks providers.
+  - `enforce` (forced by strict/autonomous) denies `file-read*` and re-allows
+    only explicit workspace/input/additional paths, ASTRA task/shim folders,
+    provider state/cache, temp, `/dev`, and system/toolchain roots. User-data
+    roots such as `/Applications`, `~/Pictures`, and `~/Music` are deliberately
+    excluded.
+  - Settings exposes the read-scope mode under Runtime Guardrails. Strict shows
+    the effective `enforce` mode; Off shows `open`.
+  - The `@AppStorage` architecture-fitness ratchet is now 130 for the added
+    `sandboxReadScope` setting.
 - **Multi-path workspace support (2026-06-06).** A workspace can span multiple
   paths (`Workspace.additionalPaths`) plus input directories; the agent is
   granted these via `--add-dir`, told about them in the prompt, and the in-band
@@ -104,10 +120,12 @@ All phases implemented and tested.
 Add an ASTRA-owned, OS-level execution sandbox that wraps every provider CLI
 process in a macOS Seatbelt (`sandbox-exec`) profile. The profile confines
 filesystem **writes** to an allowlist anchored on the task's execution
-directory, while leaving reads broad and network outbound open so the agent can
-still reach its model API. This gives Astra a kernel-enforced boundary that is
-independent of, and stronger than, the in-band brokered permission layer it
-relies on today.
+directory. Best-effort runs default to read-audit mode, and strict/autonomous
+runs additionally confine filesystem **reads** to explicit workspace/input paths,
+ASTRA task folders, provider state/cache, temp, and system/toolchain roots.
+Network outbound stays open by default so the provider CLI can still reach its
+model API. This gives Astra a kernel-enforced boundary that is independent of,
+and stronger than, the in-band brokered permission layer it relies on today.
 
 This work fills an enforcement tier that the data model already anticipates but
 no code path ever produces: `PolicyEnforcementTier.osSandboxed`
@@ -141,7 +159,7 @@ independent of provider cooperation.
   `PermissionBroker`) or the provider-native sandbox flags. Those stay.
 - Per-domain network allowlisting. Seatbelt network filtering is coarse; URL
   policy remains with the brokered/provider layer. The OS sandbox owns
-  **filesystem write-scoping**.
+  filesystem write-scoping and, in strict mode, filesystem read-scoping.
 - Linux/Bubblewrap support. Astra is Apple-Silicon macOS only
   (`Package.swift`, `platforms: [.macOS(.v14)]`).
 
@@ -184,6 +202,10 @@ changes.
 `/usr/bin/sandbox-exec` to confine its children. (You cannot nest Seatbelt
 inside the App Sandbox; we are clear.) `sandbox-exec` is the same mechanism
 Chromium, Bazel, and Codex itself use.
+
+Phase 5 assessment: keep the host App Sandbox entitlement disabled until ASTRA
+has a helper/bookmark migration that preserves runtime Seatbelt wrapping. See
+`docs/security/host-app-sandbox-assessment.md`.
 
 ### Process-group compatibility
 
@@ -229,8 +251,16 @@ The difficulty is not wiring; it is writing a profile that confines writes
 **without breaking the agent**. A naïve "allow only the workspace" profile fails
 every run. Three concerns, deliberately separated:
 
-**Reads — broad.** Agents read system libraries, `/usr`, `/bin`, the resolved
-CLI and its dependency tree (Node/Python/Homebrew). Use `(allow file-read*)`.
+**Reads — mode-driven.**
+
+- `open`: broad filesystem reads, matching the original write-only boundary.
+- `audit`: `debug deny file-read*` against the strict allowlist, so macOS reports
+  would-deny reads without breaking the run.
+- `enforce`: deny `file-read*`, then re-allow the workspace/input/additional
+  paths, ASTRA task/shim folders, provider state/cache, temp, `/dev`, and
+  system/toolchain roots (`/System`, `/bin`, `/usr`, Homebrew/MacPorts roots,
+  developer tools, and small system config roots). Do not allow user-data roots
+  such as `/Applications`, `~/Pictures`, or `~/Music`.
 
 **Writes — scoped allowlist (the security boundary).**
 
@@ -255,10 +285,10 @@ Profile sketch (parameterized — see below):
 
 ```scheme
 (version 1)
-(deny default)
-(allow process-fork)
-(allow process-exec*)          ; agent spawns bash / git / build tools
-(allow file-read*)             ; broad read
+(allow default)
+; open: no file-read rule
+; audit:   (debug deny file-read*) + strict read allowlist
+; enforce: (deny file-read*)       + strict read allowlist
 (allow file-write*
     (subpath (param "WORKSPACE"))
     (subpath (param "TASK_FOLDER"))
@@ -328,7 +358,9 @@ or escape its scope. Resolve every path to its canonical real path first
   - write **inside** `$WORKSPACE` succeeds,
   - write to `$HOME/escape` and `/tmp/escape` (outside scope) **fails with
     EPERM**,
-  - read outside scope succeeds.
+  - open-mode reads outside scope succeed,
+  - audit-mode reads outside scope succeed while writes remain blocked,
+  - strict-mode reads outside the readable-root allowlist fail.
   This proves the kernel boundary end-to-end and runs in `swift test` on macOS
   CI.
 
@@ -384,10 +416,16 @@ or escape its scope. Resolve every path to its canonical real path first
 - **`sandbox-exec` is deprecated** by Apple (still fully functional, widely
   used). Acceptable and matches the issue's Codex reference; long-term hardening
   could move to an Endpoint Security helper. Documented, not blocking.
+- **Host App Sandbox is not a one-flag hardening step.** Enabling
+  `com.apple.security.app-sandbox` on the host would need a replacement launcher
+  or helper strategy so ASTRA does not lose runtime Seatbelt confinement. The
+  current Phase 5 decision is recorded in
+  `docs/security/host-app-sandbox-assessment.md`.
 - **Subprocess depth.** Confirm agents that spawn build tools / language
   runtimes inherit the profile correctly (they do — Seatbelt is inherited across
-  `exec`/`fork`), and that `(allow process-exec*)` plus broad read cover the
-  toolchain.
+  `exec`/`fork`), and that the strict readable-root allowlist covers the
+  toolchain paths providers need before making read-scope enforcement the
+  day-to-day default.
 - **Decisions to confirm** (recommended defaults in bold):
   - Layer over Codex/Cursor/Antigravity, or skip? → **Skip by default, opt-in
     layer.**
