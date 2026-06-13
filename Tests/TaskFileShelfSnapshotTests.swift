@@ -85,6 +85,24 @@ extension TaskThreadSnapshotTests {
         #expect(!files.contains { $0.path == pipe.path })
     }
 
+    @Test("Task detail artifact scan ignores non-regular entries")
+    func taskDetailArtifactScanIgnoresNonRegularEntries() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-task-detail-artifacts-nonregular-\(UUID().uuidString)")
+        let report = root.appendingPathComponent("report.md")
+        let pipe = root.appendingPathComponent("stream.md")
+
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try "# Report".write(to: report, atomically: true, encoding: .utf8)
+        #expect(mkfifo(pipe.path, S_IRUSR | S_IWUSR) == 0)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let files = TaskDetailArtifactScanner.scanTaskFolder(root.path)
+
+        #expect(files.contains { $0.path == report.path })
+        #expect(!files.contains { $0.path == pipe.path })
+    }
+
     @Test("Task file index merges visible files without duplicates")
     func taskFileIndexMergesVisibleFilesWithoutDuplicates() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())

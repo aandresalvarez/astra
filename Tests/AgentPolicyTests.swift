@@ -664,7 +664,10 @@ struct AgentPolicyTests {
         let commands = [
             "git -C ~/Pictures status --short",
             "git -C /Applications status --short",
-            "defaults read ~/Library/Photos"
+            "defaults read ~/Library/Photos",
+            "git -C /tmp/Photos.photoslibrary status --short",
+            "git -C /tmp/Music.musiclibrary status --short",
+            "git -C /tmp/Preview.app status --short"
         ]
 
         for command in commands {

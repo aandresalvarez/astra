@@ -567,44 +567,7 @@ struct ArtifactsTabView: View {
         let folder = TaskWorkspaceAccess(task: task).taskFolder
         Task {
             let scanned: [ArtifactFile] = await Task.detached(priority: .userInitiated) {
-                guard !folder.isEmpty else { return [] }
-                let rootURL = URL(fileURLWithPath: folder, isDirectory: true)
-                    .resolvingSymlinksInPath()
-                    .standardizedFileURL
-                let broker = HostFileAccessBroker()
-                let accessIntent = HostFileAccessIntent.astraManagedStorage(root: rootURL)
-                var rootIsDirectory = ObjCBool(false)
-                guard broker.fileExists(at: rootURL, isDirectory: &rootIsDirectory, intent: accessIntent),
-                      rootIsDirectory.boolValue,
-                      let enumerator = broker.enumerator(
-                        at: rootURL,
-                        includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey],
-                        intent: accessIntent
-                      ) else { return [] }
-
-                var files: [ArtifactFile] = []
-                while let url = enumerator.nextObject() as? URL {
-                    let itemURL = url
-                        .resolvingSymlinksInPath()
-                        .standardizedFileURL
-                    if broker.shouldSkip(itemURL, intent: accessIntent) {
-                        enumerator.skipDescendants()
-                        continue
-                    }
-                    guard let values = try? itemURL.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey]),
-                          values.isDirectory != true else {
-                        continue
-                    }
-                    let size = Int64(values.fileSize ?? 0)
-                    files.append(ArtifactFile(
-                        path: itemURL.path,
-                        name: itemURL.lastPathComponent,
-                        isDirectory: false,
-                        size: size,
-                        source: "output"
-                    ))
-                }
-                return files
+                TaskDetailArtifactScanner.scanTaskFolder(folder)
             }.value
             taskFolderFiles = scanned
         }
@@ -695,6 +658,52 @@ struct ArtifactsTabView: View {
         if bytes < 1024 { return "\(bytes) B" }
         if bytes < 1024 * 1024 { return String(format: "%.1f KB", Double(bytes) / 1024) }
         return String(format: "%.1f MB", Double(bytes) / (1024 * 1024))
+    }
+}
+
+enum TaskDetailArtifactScanner {
+    static func scanTaskFolder(
+        _ folder: String,
+        fileManager: FileManager = .default
+    ) -> [ArtifactsTabView.ArtifactFile] {
+        guard !folder.isEmpty else { return [] }
+        let rootURL = URL(fileURLWithPath: folder, isDirectory: true)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let broker = HostFileAccessBroker(fileManager: fileManager)
+        let accessIntent = HostFileAccessIntent.astraManagedStorage(root: rootURL)
+        var rootIsDirectory = ObjCBool(false)
+        guard broker.fileExists(at: rootURL, isDirectory: &rootIsDirectory, intent: accessIntent),
+              rootIsDirectory.boolValue,
+              let enumerator = broker.enumerator(
+                at: rootURL,
+                includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+                intent: accessIntent
+              ) else { return [] }
+
+        var files: [ArtifactsTabView.ArtifactFile] = []
+        while let url = enumerator.nextObject() as? URL {
+            let itemURL = url
+                .resolvingSymlinksInPath()
+                .standardizedFileURL
+            if broker.shouldSkip(itemURL, intent: accessIntent) {
+                enumerator.skipDescendants()
+                continue
+            }
+            guard let values = try? itemURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+                  values.isRegularFile == true else {
+                continue
+            }
+            let size = Int64(values.fileSize ?? 0)
+            files.append(ArtifactsTabView.ArtifactFile(
+                path: itemURL.path,
+                name: itemURL.lastPathComponent,
+                isDirectory: false,
+                size: size,
+                source: "output"
+            ))
+        }
+        return files
     }
 }
 

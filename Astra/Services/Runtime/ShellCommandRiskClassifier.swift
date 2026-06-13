@@ -503,6 +503,9 @@ enum ShellCommandRiskClassifier {
 
     private static func matchesSensitivePathFragment(_ token: String, fragment: String) -> Bool {
         let normalizedToken = token.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        if fragment.hasPrefix(".") {
+            return normalizedToken.hasSuffix(fragment) || normalizedToken.contains(fragment + "/")
+        }
         if fragment.hasPrefix("~/") {
             return normalizedToken == fragment || normalizedToken.hasPrefix(fragment + "/")
         }
