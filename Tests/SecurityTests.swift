@@ -59,6 +59,71 @@ struct HostFileAccessBrokerTests {
         #expect(names == ["Projects"])
     }
 
+    @Test("Implicit directory scans avoid resource-key prefetch before filtering")
+    func implicitDirectoryScansAvoidResourceKeyPrefetchBeforeFiltering() throws {
+        let home = URL(fileURLWithPath: "/tmp/astra-host-prefetch-home", isDirectory: true)
+        let pictures = home.appendingPathComponent("Pictures", isDirectory: true)
+        let project = home.appendingPathComponent("Projects", isDirectory: true)
+        let fileManager = SpyDirectoryFileManager(childrenByPath: [
+            home.path: [pictures, project]
+        ])
+        let broker = HostFileAccessBroker(fileManager: fileManager, homeDirectory: home)
+
+        let children = try broker.contentsOfDirectory(
+            at: home,
+            includingPropertiesForKeys: [.isDirectoryKey, .isPackageKey],
+            intent: .implicitScan(root: home)
+        )
+
+        #expect(children == [project])
+        #expect(fileManager.directoryRequests.map(\.keys) == [nil])
+    }
+
+    @Test("Implicit enumerators do not yield privacy-sensitive descendants")
+    func implicitEnumeratorsDoNotYieldPrivacySensitiveDescendants() throws {
+        let home = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("astra-host-file-broker-enumerator-\(UUID().uuidString)", isDirectory: true)
+        let pictures = home.appendingPathComponent("Pictures", isDirectory: true)
+        let music = home.appendingPathComponent("Music", isDirectory: true)
+        let project = home.appendingPathComponent("Projects/App", isDirectory: true)
+
+        try FileManager.default.createDirectory(at: pictures, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: music, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        try "photo".write(to: pictures.appendingPathComponent("library.txt"), atomically: true, encoding: .utf8)
+        try "music".write(to: music.appendingPathComponent("library.txt"), atomically: true, encoding: .utf8)
+        try "swift".write(to: project.appendingPathComponent("App.swift"), atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let broker = HostFileAccessBroker(homeDirectory: home)
+        let resolvedHome = home
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let resolvedHomePrefix = resolvedHome.path.hasSuffix("/") ? resolvedHome.path : resolvedHome.path + "/"
+        let enumerator = try #require(broker.enumerator(
+            at: home,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            intent: .implicitScan(root: home)
+        ))
+
+        var relativePaths: Set<String> = []
+        while let url = enumerator.nextObject() as? URL {
+            let itemURL = url
+                .resolvingSymlinksInPath()
+                .standardizedFileURL
+            let relativePath = String(itemURL.path.dropFirst(resolvedHomePrefix.count))
+            relativePaths.insert(relativePath)
+        }
+
+        #expect(relativePaths.contains("Projects"))
+        #expect(relativePaths.contains("Projects/App"))
+        #expect(relativePaths.contains("Projects/App/App.swift"))
+        #expect(!relativePaths.contains("Pictures"))
+        #expect(!relativePaths.contains("Pictures/library.txt"))
+        #expect(!relativePaths.contains("Music"))
+        #expect(!relativePaths.contains("Music/library.txt"))
+    }
+
     @Test("Explicit user selected roots can include privacy-sensitive folders")
     func explicitUserSelectedRootsCanIncludePrivacySensitiveFolders() throws {
         let home = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
@@ -178,6 +243,30 @@ private final class StubContentFileManager: FileManager {
     override func contents(atPath path: String) -> Data? {
         requestedPaths.append(path)
         return contents
+    }
+}
+
+private final class SpyDirectoryFileManager: FileManager {
+    struct DirectoryRequest: Equatable {
+        let path: String
+        let keys: Set<URLResourceKey>?
+    }
+
+    let childrenByPath: [String: [URL]]
+    private(set) var directoryRequests: [DirectoryRequest] = []
+
+    init(childrenByPath: [String: [URL]]) {
+        self.childrenByPath = childrenByPath
+        super.init()
+    }
+
+    override func contentsOfDirectory(
+        at url: URL,
+        includingPropertiesForKeys keys: [URLResourceKey]?,
+        options mask: FileManager.DirectoryEnumerationOptions = []
+    ) throws -> [URL] {
+        directoryRequests.append(DirectoryRequest(path: url.path, keys: keys.map(Set.init)))
+        return childrenByPath[url.path] ?? []
     }
 }
 

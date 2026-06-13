@@ -78,9 +78,10 @@ struct HostFileAccessBroker {
         guard !shouldSkip(url, intent: intent) else {
             return []
         }
+        let requestedKeys = safeResourceKeys(keys, intent: intent)
         return try fileManager.contentsOfDirectory(
             at: url,
-            includingPropertiesForKeys: keys,
+            includingPropertiesForKeys: requestedKeys,
             options: mask
         )
         .filter { !shouldSkip($0, intent: intent) }
@@ -95,11 +96,17 @@ struct HostFileAccessBroker {
         guard !shouldSkip(url, intent: intent) else {
             return nil
         }
-        return fileManager.enumerator(
+        let requestedKeys = safeResourceKeys(keys, intent: intent)
+        guard let enumerator = fileManager.enumerator(
             at: url,
-            includingPropertiesForKeys: keys,
+            includingPropertiesForKeys: requestedKeys,
             options: mask
-        )
+        ) else {
+            return nil
+        }
+        return FilteringDirectoryEnumerator(base: enumerator) { child in
+            shouldSkip(child, intent: intent)
+        }
     }
 
     private func requireAccess(to url: URL, intent: HostFileAccessIntent) throws {
@@ -116,5 +123,65 @@ struct HostFileAccessBroker {
 
     private static func normalizedPath(_ url: URL) -> String {
         url.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    private func safeResourceKeys(
+        _ keys: [URLResourceKey]?,
+        intent: HostFileAccessIntent
+    ) -> [URLResourceKey]? {
+        switch intent {
+        case .implicitScan:
+            return nil
+        case .explicitUserSelection, .astraManagedStorage:
+            return keys
+        }
+    }
+}
+
+private final class FilteringDirectoryEnumerator: FileManager.DirectoryEnumerator {
+    private let base: FileManager.DirectoryEnumerator
+    private let shouldSkip: (URL) -> Bool
+
+    init(
+        base: FileManager.DirectoryEnumerator,
+        shouldSkip: @escaping (URL) -> Bool
+    ) {
+        self.base = base
+        self.shouldSkip = shouldSkip
+        super.init()
+    }
+
+    override var fileAttributes: [FileAttributeKey: Any]? {
+        base.fileAttributes
+    }
+
+    override var directoryAttributes: [FileAttributeKey: Any]? {
+        base.directoryAttributes
+    }
+
+    override var level: Int {
+        base.level
+    }
+
+    override func nextObject() -> Any? {
+        while let next = base.nextObject() {
+            guard let url = next as? URL else {
+                return next
+            }
+            if shouldSkip(url) {
+                base.skipDescendants()
+                continue
+            }
+            return url
+        }
+        return nil
+    }
+
+    override func skipDescendants() {
+        base.skipDescendants()
+    }
+
+    override func skipDescendents() {
+        base.skipDescendents()
     }
 }
