@@ -137,6 +137,38 @@ struct TaskLifecycleResumeTests {
         #expect(task.events.contains { $0.type == "error" })
     }
 
+    @Test("Resume preserves a queue-recorded .failed instead of reverting over it")
+    func resumePreservesQueueRecordedFailure() async throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+
+        // A regular file where the workspace root should be: ensureTaskFolder's
+        // createDirectory then throws, so TaskQueue.prepareTaskFolder sets
+        // `.failed`, records its own error, and returns false *after* mutating.
+        let blocker = (env.root as NSString).appendingPathComponent("blocker")
+        FileManager.default.createFile(atPath: blocker, contents: Data("x".utf8))
+        let wsPath = (blocker as NSString).appendingPathComponent("ws")
+
+        // A real worker (poolSize 1) so continueSession gets past the
+        // worker/lock guards and actually reaches prepareTaskFolder.
+        let queue = TaskQueue(poolSize: 1)
+        let coordinator = TaskLifecycleCoordinator(modelContext: env.context, taskQueue: queue)
+
+        let workspace = Workspace(name: "Folder Fail", primaryPath: wsPath)
+        let task = AgentTask(title: "Folder Fail", goal: "Complete the original goal", workspace: workspace)
+        task.status = .pendingUser
+        task.sessionId = "sess-folder-fail"
+        env.context.insert(workspace)
+        env.context.insert(task)
+
+        await coordinator.resumeTask(task)?.value
+
+        // The queue's `.failed` must survive — not be overwritten back to
+        // pendingUser — and only one error event should exist (the queue's).
+        #expect(task.status == .failed)
+        #expect(task.events.filter { $0.type == "error" }.count == 1)
+    }
+
     @Test("Resume continuation uses the canonical continue message")
     func resumeContinuationMessageIsStable() {
         #expect(

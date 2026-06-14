@@ -157,9 +157,9 @@ final class TaskLifecycleCoordinator {
 
     /// Reverts an optimistic `.running` transition when the queue could not admit
     /// the continuation. `continueSession` returns `false` before any worker runs
-    /// (no available worker, resource-lock timeout, or task-folder prep failure);
-    /// without restoring status the task is stranded in `.running` with no worker,
-    /// so it appears active forever and the user can't act on it.
+    /// (no available worker, resource-lock wait cancelled, or task-folder prep
+    /// failure); without restoring status the task is stranded in `.running` with
+    /// no worker, so it appears active forever and the user can't act on it.
     private func finishContinuationLaunch(
         _ task: AgentTask,
         didStart: Bool,
@@ -174,14 +174,29 @@ final class TaskLifecycleCoordinator {
             ])
             return
         }
+        // continueSession can return false *after* already moving the task to a
+        // terminal state — prepareTaskFolder sets `.failed`, records its own error
+        // event, and marks unread. Only roll back the optimistic transition if it
+        // is still in place; otherwise respect the failure the queue recorded
+        // rather than overwriting it (and double-recording an error).
+        guard task.status == .running else {
+            AppLogger.audit(.workerBlocked, category: "UI", taskID: task.id, fields: [
+                "reason": "continuation_not_admitted",
+                "preserved_status": task.status.rawValue,
+                "source": source
+            ], level: .debug)
+            return
+        }
         task.status = previousStatus
         task.completedAt = previousCompletedAt
         task.updatedAt = Date()
-        task.markRead()
+        // Surface the failure: keep the task unread for its restored status so the
+        // user notices the inserted error rather than silently clearing it.
+        task.markUnreadForCurrentStatus()
         modelContext.insert(TaskEvent(
             task: task,
             eventType: TaskEventTypes.System.error,
-            payload: "Couldn't continue this task: no worker was available to start it. Try again in a moment."
+            payload: "Couldn't continue this task — it couldn't be started right now. Try again in a moment."
         ))
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         AppLogger.audit(.workerBlocked, category: "UI", taskID: task.id, fields: [
