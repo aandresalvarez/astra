@@ -625,6 +625,30 @@ struct AgentPolicyTests {
         ])
     }
 
+    @Test("Broker scopes commands despite benign redirections but not file writes")
+    func brokerScopesCommandsDespiteBenignRedirectionsButNotFileWrites() {
+        // The exact prod failure: a read-only command with `2>&1` must still
+        // produce a scoped grant instead of an empty (run-killing) result.
+        let redirected = PermissionBroker.approvalGrants(for: .shell(
+            command: "git -C /repo status 2>&1",
+            toolName: "bash"
+        ))
+        let discarded = PermissionBroker.approvalGrants(for: .shell(
+            command: "git log --oneline >/dev/null 2>&1",
+            toolName: "bash"
+        ))
+        // A redirection to a named file is a write that must NOT be folded into
+        // a base-command grant — it stays unscopable (empty grants).
+        let fileWrite = PermissionBroker.approvalGrants(for: .shell(
+            command: "git log > out.log",
+            toolName: "bash"
+        ))
+
+        #expect(redirected == [.shellCommand(executable: "git", pattern: "status *")])
+        #expect(discarded == [.shellCommand(executable: "git", pattern: "log --oneline *")])
+        #expect(fileWrite.isEmpty)
+    }
+
     @Test("Shell command risk classifier covers common command families")
     func shellCommandRiskClassifierCoversCommonCommandFamilies() throws {
         let cases: [(String, ShellCommandRiskClassifier.Risk, Bool, PermissionGrant)] = [
