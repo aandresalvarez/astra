@@ -248,6 +248,7 @@ struct WorkspaceRightRailView: View {
     // previously one stray tap away with no undo — gate both behind a confirm.
     @State private var pendingRailDeletion: PendingRailDeletion?
     @State private var approvedCapabilityPackages: [PluginPackage] = PluginCatalog.builtInPackages
+    @State private var approvedCapabilityRecords: [CapabilityApprovalRecord] = []
     @State private var capabilityError: String?
     @State private var capabilityPrerequisiteStatuses: [String: HealthStatus] = [:]
     @State private var scrollMetrics = RightRailScrollMetrics()
@@ -263,18 +264,24 @@ struct WorkspaceRightRailView: View {
     }()
 
     private var capabilities: WorkspaceCapabilities {
+        // Inject the catalog already cached in view state so `body`-path
+        // capability resolution never re-scans the Capabilities directory.
         WorkspaceCapabilities(
             workspace: workspace,
             globalSkills: globalSkills,
             globalConnectors: globalConnectors,
-            globalTools: globalTools
+            globalTools: globalTools,
+            packageDefinitions: approvedCapabilityPackages
         )
     }
 
     private var catalogPolicyContext: CapabilityCatalogPolicyContext {
+        // Reads from the records cached in view state — see
+        // refreshApprovedCapabilities — so policy resolution does not scan the
+        // CapabilityApprovals directory on every body re-evaluation.
         CapabilityCatalogPolicyContext.currentUser(
             workspace: workspace,
-            approvalRecords: CapabilityApprovalStore().records()
+            approvalRecords: approvedCapabilityRecords
         )
     }
 
@@ -1096,13 +1103,21 @@ struct WorkspaceRightRailView: View {
     }
 
     private func refreshApprovedCapabilities() {
-        let packages = PerformanceTelemetry.measure(
+        // The only synchronous capability-storage scan in this view, run once on
+        // appear rather than on every body re-evaluation. Both the installed
+        // catalog and the approval records are cached into view state and read
+        // back by `capabilities` / `catalogPolicyContext`.
+        let snapshot = PerformanceTelemetry.measure(
             "workspace_right_rail_capability_load",
             thresholdMilliseconds: 20
         ) {
-            CapabilityLibrary().installedPackages()
+            (
+                packages: CapabilityLibrary().installedPackages(),
+                records: CapabilityApprovalStore().records()
+            )
         }
-        approvedCapabilityPackages = packages.isEmpty ? PluginCatalog.builtInPackages : packages
+        approvedCapabilityPackages = snapshot.packages.isEmpty ? PluginCatalog.builtInPackages : snapshot.packages
+        approvedCapabilityRecords = snapshot.records
     }
 
     private func refreshCapabilityPrerequisiteStatuses() {
