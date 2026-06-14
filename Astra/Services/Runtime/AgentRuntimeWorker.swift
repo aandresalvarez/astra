@@ -824,7 +824,7 @@ final class AgentRuntimeWorker {
             runtime: selectedRuntime,
             model: task.model,
             exitCode: result.exitCode,
-            rawError: result.error,
+            rawError: result.error, runOutput: run.output,
             providerVersion: result.providerVersion,
             stream: streamSnapshot,
             timedOut: result.timedOut,

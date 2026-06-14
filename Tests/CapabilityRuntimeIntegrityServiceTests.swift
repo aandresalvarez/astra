@@ -192,6 +192,57 @@ struct CapabilityRuntimeIntegrityServiceTests {
         #expect(issues.first?.message.contains("Run `gh auth login`.") == true)
     }
 
+    @Test("inactive matching local tool reports active workspace wording")
+    func inactiveMatchingLocalToolReportsActiveWorkspaceWording() throws {
+        let container = try makeRuntimeIntegrityContainer()
+        let context = container.mainContext
+        let package = PluginPackage(
+            id: "runtime-local-tool",
+            name: "Runtime Local Tool",
+            icon: "terminal",
+            description: "Package requiring a local tool",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [
+                PluginLocalTool(
+                    name: "Shared Helper",
+                    description: "Shared helper",
+                    icon: "terminal",
+                    toolType: "cli",
+                    command: "shared-helper",
+                    arguments: ""
+                )
+            ],
+            templates: [],
+            governance: .builtInApproved()
+        )
+        let workspace = Workspace(name: "Runtime Local Tool", primaryPath: "/tmp/runtime-local-tool")
+        workspace.enabledCapabilityIDs = [package.id]
+        context.insert(workspace)
+
+        let globalTool = LocalTool(name: "Shared Helper", toolType: "cli", command: "shared-helper")
+        globalTool.isGlobal = true
+        context.insert(globalTool)
+
+        let task = AgentTask(title: "Use local tool", goal: "Use shared helper", workspace: workspace)
+        context.insert(task)
+        try context.save()
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [package],
+            checkExecutables: false
+        )
+
+        #expect(issues.map(\.resourceKind) == [.localTool])
+        #expect(issues.first?.resourceName == "Shared Helper")
+        #expect(issues.first?.message == "local tool Shared Helper is not active for this workspace")
+    }
+
     @Test("unknown browser adapter IDs are runtime integrity issues")
     func unknownBrowserAdapterIDsAreRuntimeIntegrityIssues() throws {
         let container = try makeRuntimeIntegrityContainer()
