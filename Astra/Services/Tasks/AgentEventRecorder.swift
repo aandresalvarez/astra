@@ -21,6 +21,13 @@ final class AgentEventRecordingState {
         runsWithCompletedOutput.insert(run.id)
     }
 
+    /// Call when streamed `.text` deltas are appended to `run.output`: the output
+    /// is now stream-assembled, so a later `.completed` envelope must not replace
+    /// it even if an earlier `.completed` had seeded the output first.
+    func clearOutputFromCompletedSummary(for run: TaskRun) {
+        runsWithCompletedOutput.remove(run.id)
+    }
+
     func outputCameFromCompletedSummary(for run: TaskRun) -> Bool {
         runsWithCompletedOutput.contains(run.id)
     }
@@ -698,6 +705,9 @@ enum AgentEventRecorder {
         let textToAppend = AgentEventRecordingPresentation.responseTextToAppend(text, after: run.output)
         guard !textToAppend.isEmpty else { return }
         run.output += textToAppend
+        // Output now contains streamed deltas; a later `.completed` envelope must
+        // not clobber it even if an earlier `.completed` seeded the output.
+        recordingState?.clearOutputFromCompletedSummary(for: run)
         appendConversationChunk(
             eventType: TaskEventTypes.Conversation.agentResponse,
             text: textToAppend,

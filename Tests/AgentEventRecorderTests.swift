@@ -181,4 +181,42 @@ struct AgentEventRecorderTests {
 
         #expect(run.output == "Streamed answer body.")
     }
+
+    @Test("Completed envelope after streamed text does not clobber, even when a completed seeded output first")
+    func completedAfterStreamedTextDoesNotClobberAcrossSeededCompleted() throws {
+        let container = try makeAgentEventRecorderContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Streaming", goal: "Record interleaved output")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        let recordingState = AgentEventRecordingState()
+        // A completed preamble seeds output (and marks the completed-source flag)...
+        AgentEventRecorder.recordCopilotEvent(
+            .completed(summary: "Preamble. "),
+            to: task,
+            run: run,
+            modelContext: context,
+            recordingState: recordingState
+        )
+        // ...then real streamed deltas append (clearing the flag)...
+        AgentEventRecorder.recordCopilotEvent(
+            .text(text: "Streamed body."),
+            to: task,
+            run: run,
+            modelContext: context,
+            recordingState: recordingState
+        )
+        // ...so a trailing completed envelope must not overwrite the stream.
+        AgentEventRecorder.recordCopilotEvent(
+            .completed(summary: "Envelope echo that should be ignored."),
+            to: task,
+            run: run,
+            modelContext: context,
+            recordingState: recordingState
+        )
+
+        #expect(run.output == "Preamble. Streamed body.")
+    }
 }
