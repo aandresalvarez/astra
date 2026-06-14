@@ -1185,19 +1185,9 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         let mcpConfigURL = MCPRuntimeProjection.writeClaudeConfig(servers: mcpServers, taskID: context.task.id, allowEmpty: true)
         let mcpAllowedTools = mcpConfigURL == nil ? [] : MCPRuntimeProjection.allowedToolPermissions(servers: mcpServers)
         let mcpDeniedTools = mcpConfigURL == nil ? [] : MCPRuntimeProjection.deniedToolPermissions(servers: mcpServers)
-        let nativeAllowedTools = Array(Set(
-            providerAllowed + askFirstToolPermissions + runtimeSupportTools + artifactBootstrapTools + mcpAllowedTools
-        )).sorted()
-        let usesArtifactBootstrapProfile = !artifactBootstrapTools.isEmpty
-        let visibleTools = Self.visibleProviderTools(
-            from: nativeAllowedTools,
-            task: context.task,
-            permissionPolicy: effectivePermissionPolicy
-        )
-        let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
-        // Live approvals use the stdio control protocol, which requires
-        // stream-json input — the prompt then travels over stdin instead of
-        // the positional argument.
+        // Live approvals use the stdio control protocol (stream-json input, so
+        // the prompt travels over stdin). Resolved before the allow-list so it
+        // can decide whether ask-first tools are gated at the provider prompt.
         let interactiveAsk: AgentRuntimeInteractiveAskPlan? = {
             guard context.liveApprovalsEnabled,
                   effectivePermissionPolicy != .autonomous,
@@ -1206,6 +1196,22 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             }
             return AgentRuntimeInteractiveAskPlan(initialStdinMessage: initialMessage)
         }()
+        // Withhold ask-first tools from the pre-allow set (launch --allowedTools
+        // and settings.local.json) when the live channel will gate them at the
+        // provider's permission prompt. Otherwise the provider never asks, the
+        // tool runs ungated, and only a post-hoc kill remains. They stay visible
+        // (re-added below) so the model can still invoke them and be prompted.
+        let nativeAllowedTools = Array(Set(
+            providerAllowed + runtimeSupportTools + artifactBootstrapTools + mcpAllowedTools
+                + (interactiveAsk == nil ? askFirstToolPermissions : [])
+        )).sorted()
+        let usesArtifactBootstrapProfile = !artifactBootstrapTools.isEmpty
+        let visibleTools = Self.visibleProviderTools(
+            from: Array(Set(nativeAllowedTools + askFirstToolPermissions)).sorted(),
+            task: context.task,
+            permissionPolicy: effectivePermissionPolicy
+        )
+        let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
         var args = interactiveAsk == nil ? ["-p", context.prompt] : ["-p"]
         if let sessionID = context.nativeContinuationSessionID,
            !sessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

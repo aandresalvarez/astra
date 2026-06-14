@@ -85,7 +85,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             guard !suppressEngineTransitionHandler else { return }
             browserAnalysisCache.invalidate()
             let controlledHandoffAddress = oldValue == .embedded && engine == .controlled
-                ? Self.controlledBrowserHandoffAddress(currentURL: currentURL, webViewURL: webView.url)
+                ? Self.controlledBrowserHandoffAddress(currentURL: currentURL, webViewURL: _webView?.url)
                 : nil
             let embeddedHandoffAddress = oldValue == .controlled && engine == .embedded
                 ? Self.embeddedBrowserHandoffAddress(currentURL: currentURL, controlledURL: controlledBrowser.currentURL)
@@ -128,7 +128,27 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     }
     @Published private(set) var agentControlPermissionIssue: MacOSPermissionIssue?
 
-    let webView: WKWebView
+    private var _webView: WKWebView?
+
+    /// The embedded WebKit view, created lazily on first real use — rendering
+    /// the browser panel or driving navigation. Deferring it keeps WebKit, and
+    /// the Photos/Music media frameworks it transitively loads, off the launch
+    /// path: simply holding a (usually off-screen) browser session no longer
+    /// spins up WebKit and triggers media-library TCC prompts at app startup.
+    /// Lifecycle code (teardown, state sync, engine handoff) reads `_webView`
+    /// directly so it never forces creation of a view that was never shown.
+    var webView: WKWebView {
+        if let _webView { return _webView }
+        let created = makeWebView()
+        _webView = created
+        return created
+    }
+
+    /// Whether the embedded WebKit view has actually been instantiated. False
+    /// for a session that exists but was never shown — the state that keeps
+    /// app launch off the Photos/Music media frameworks. Lets callers (and
+    /// tests) observe lazy creation without forcing it.
+    var isWebViewLoaded: Bool { _webView != nil }
     let controlledBrowser = ControlledBrowserController()
 
     private var observations: [NSKeyValueObservation] = []
@@ -261,20 +281,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     }
 
     override init() {
-        let pageReadHandler = WeakPageReadMessageHandler()
-        let configuration = ShelfBrowserWebViewConfigurationFactory.makeEmbeddedConfiguration(
-            pageReadMessageHandler: pageReadHandler
-        )
-
-        webView = WKWebView(frame: .zero, configuration: configuration)
-        pageReadMessageHandler = pageReadHandler
-        webView.allowsBackForwardNavigationGestures = true
-
         super.init()
-        pageReadHandler.session = self
-
-        webView.navigationDelegate = self
-        webView.uiDelegate = self
         controlledBrowserCancellable = controlledBrowser.objectWillChange.sink { [weak self] _ in
             Task { @MainActor in
                 guard let self, self.isUsingControlledBrowser else { return }
@@ -283,8 +290,27 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 self.objectWillChange.send()
             }
         }
-        installObservers()
         startBridge()
+    }
+
+    /// Builds the embedded WebKit view and wires its delegates and KVO
+    /// observers. Invoked once, lazily, the first time `webView` is accessed —
+    /// never during session construction — so WebKit (and the media frameworks
+    /// it pulls in) stay off the launch path. The freshly built view is passed
+    /// to `installObservers` so observer setup can't re-enter the lazy getter.
+    private func makeWebView() -> WKWebView {
+        let pageReadHandler = WeakPageReadMessageHandler()
+        pageReadHandler.session = self
+        pageReadMessageHandler = pageReadHandler
+        let configuration = ShelfBrowserWebViewConfigurationFactory.makeEmbeddedConfiguration(
+            pageReadMessageHandler: pageReadHandler
+        )
+        let created = WKWebView(frame: .zero, configuration: configuration)
+        created.allowsBackForwardNavigationGestures = true
+        created.navigationDelegate = self
+        created.uiDelegate = self
+        installObservers(on: created)
+        return created
     }
 
     deinit {
@@ -312,9 +338,9 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     /// bridge listener, KVO observers) before the store drops it. Only call on
     /// an `isEvictable` session.
     func teardown() {
-        webView.stopLoading()
-        webView.navigationDelegate = nil
-        webView.uiDelegate = nil
+        _webView?.stopLoading()
+        _webView?.navigationDelegate = nil
+        _webView?.uiDelegate = nil
         observations.forEach { $0.invalidate() }
         observations.removeAll()
         controlledBrowserCancellable?.cancel()
@@ -323,8 +349,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         bridgeServer?.stop()
         bridgeServer = nil
         ShelfBrowserBridgeRegistry.shared.resetIfActive(taskID: boundTaskID)
-        // Drop the page so WebKit can reclaim the DOM/JS heap.
-        webView.loadHTMLString("", baseURL: nil)
+        // Release the WebContent process and message handler outright. Keeping a
+        // strong `_webView` ref would hold WebKit (and its helper process) alive
+        // for a session that's being evicted but not yet deallocated. A later
+        // access — rare for an evicted session — lazily recreates a fresh view.
+        pageReadMessageHandler = nil
+        _webView = nil
     }
 
     func setPresented(_ isPresented: Bool) {
@@ -791,7 +821,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         )
     }
 
-    private func installObservers() {
+    private func installObservers(on webView: WKWebView) {
         observations = [
             webView.observe(\.url, options: [.initial, .new]) { [weak self] webView, _ in
                 Task { @MainActor [weak self] in
@@ -924,12 +954,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             canGoBack = false
             canGoForward = false
         } else {
-            currentURL = webView.url?.absoluteString ?? ""
-            pageTitle = webView.title ?? ""
-            isLoading = webView.isLoading
-            estimatedProgress = webView.estimatedProgress
-            canGoBack = webView.canGoBack
-            canGoForward = webView.canGoForward
+            currentURL = _webView?.url?.absoluteString ?? ""
+            pageTitle = _webView?.title ?? ""
+            isLoading = _webView?.isLoading ?? false
+            estimatedProgress = _webView?.estimatedProgress ?? 0
+            canGoBack = _webView?.canGoBack ?? false
+            canGoForward = _webView?.canGoForward ?? false
         }
     }
 

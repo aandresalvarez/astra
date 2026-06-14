@@ -892,6 +892,12 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     let noSemanticProgressTimeoutSeconds: TimeInterval
     let taskID: UUID
     let policyGuard: AgentRuntimePolicyGuard?
+    /// True when the provider's live permission prompt (the stdio control
+    /// channel) gates ask-first tools before they run. When set, the post-hoc
+    /// guard stops re-flagging ask-first approvals — the live channel already
+    /// owns them — so it can't double-prompt or kill a run whose command simply
+    /// can't be reduced to a replayable scoped grant. Hard denies still stop.
+    let liveApprovalsActive: Bool
 
     private let lock = NSLock()
 
@@ -958,7 +964,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         idleTimeoutSeconds: TimeInterval = 600,
         noSemanticProgressTimeoutSeconds: TimeInterval? = nil,
         taskID: UUID = UUID(),
-        policyGuard: AgentRuntimePolicyGuard? = nil
+        policyGuard: AgentRuntimePolicyGuard? = nil,
+        liveApprovalsActive: Bool = false
     ) {
         self.tokenBudget = tokenBudget
         self.budgetEnforcementMode = budgetEnforcementMode
@@ -968,6 +975,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         self.noSemanticProgressTimeoutSeconds = noSemanticProgressTimeoutSeconds ?? min(idleTimeoutSeconds, 180)
         self.taskID = taskID
         self.policyGuard = policyGuard
+        self.liveApprovalsActive = liveApprovalsActive
     }
 
     static func estimatedTokenCount(for text: String) -> Int {
@@ -1011,6 +1019,16 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         }
 
         if let violation = policyGuard?.violation(for: parsed) {
+            // When the live channel gates ask-first tools at the provider's
+            // permission prompt, it has already approved (or denied) anything
+            // that ran. Re-flagging an ask-first approval here would double-
+            // prompt the user or, when the command can't be reduced to a
+            // replayable scoped grant, kill the run outright. Defer to the live
+            // channel for approvals; every non-approval violation (denies,
+            // out-of-scope paths) still terminates as a backstop.
+            if violation.requiresApproval, liveApprovalsActive {
+                return false
+            }
             return recordPolicyViolation(violation, process: process)
         }
 
