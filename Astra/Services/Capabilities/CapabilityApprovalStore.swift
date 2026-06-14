@@ -2,6 +2,14 @@ import CryptoKit
 import Foundation
 import ASTRACore
 
+extension Notification.Name {
+    /// Posted after the approval store persists a record, so live UI that caches
+    /// approval state (the workspace right rail reads records once into `@State`
+    /// to stay off the per-body filesystem path) can refresh instead of going
+    /// stale until it is recreated.
+    static let capabilityApprovalsChanged = Notification.Name("astra.capabilityApprovalsChanged")
+}
+
 struct CapabilityApprovalRecord: Codable, Equatable, Identifiable, Sendable {
     var packageID: String
     var packageVersion: String
@@ -141,6 +149,7 @@ struct CapabilityApprovalStore {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(record)
         try data.write(to: recordURL(for: record), options: [.atomic])
+        NotificationCenter.default.post(name: .capabilityApprovalsChanged, object: nil)
         return record
     }
 

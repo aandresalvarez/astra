@@ -491,6 +491,15 @@ struct WorkspaceRightRailView: View {
                 isAccessCollapsed = false
             }
         }
+        // Approval state is cached into @State (see refreshApprovedCapabilities)
+        // to keep it off the per-body filesystem path. Re-sync when an approval
+        // is written from any surface (catalog/configure) while the rail stays
+        // mounted, so policy visibility decisions never go stale.
+        .onReceive(NotificationCenter.default.publisher(for: .capabilityApprovalsChanged)) { _ in
+            DispatchQueue.main.async {
+                refreshApprovedCapabilities()
+            }
+        }
         .onChange(of: isConfiguredWorkspaceSetupExpanded) { _, value in
             RailDisclosureStore.setBool(value, workspaceDisclosureID, .configuredSetupExpanded)
         }
