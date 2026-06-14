@@ -125,14 +125,17 @@ final class TaskLifecycleCoordinator {
         }
     }
 
-    func resumeTask(_ task: AgentTask) {
+    @discardableResult
+    func resumeTask(_ task: AgentTask) -> Task<Void, Never>? {
         guard task.hasProviderSession else {
             AppLogger.audit(.workerSessionCleared, category: "UI", taskID: task.id, fields: [
                 "reason": "missing_session_id"
             ], level: .warning)
-            return
+            return nil
         }
         AppLogger.audit(.taskResumed, category: "UI", taskID: task.id)
+        let previousStatus = task.status
+        let previousCompletedAt = task.completedAt
         task.status = .running
         task.updatedAt = Date()
         task.completedAt = nil
@@ -140,13 +143,52 @@ final class TaskLifecycleCoordinator {
         let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.resumed, payload: "Resuming previous session — continuing where the agent left off.")
         modelContext.insert(event)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
-        Task {
-            await taskQueue.continueSession(task: task, message: Self.resumeContinuationMessage, modelContext: modelContext)
+        return Task {
+            let didStart = await taskQueue.continueSession(task: task, message: Self.resumeContinuationMessage, modelContext: modelContext)
+            finishContinuationLaunch(
+                task,
+                didStart: didStart,
+                revertingTo: previousStatus,
+                previousCompletedAt: previousCompletedAt,
+                source: "resume"
+            )
+        }
+    }
+
+    /// Reverts an optimistic `.running` transition when the queue could not admit
+    /// the continuation. `continueSession` returns `false` before any worker runs
+    /// (no available worker, resource-lock timeout, or task-folder prep failure);
+    /// without restoring status the task is stranded in `.running` with no worker,
+    /// so it appears active forever and the user can't act on it.
+    private func finishContinuationLaunch(
+        _ task: AgentTask,
+        didStart: Bool,
+        revertingTo previousStatus: TaskStatus,
+        previousCompletedAt: Date?,
+        source: String
+    ) {
+        guard !didStart else {
             AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
                 "status": task.status.rawValue,
-                "source": "resume"
+                "source": source
             ])
+            return
         }
+        task.status = previousStatus
+        task.completedAt = previousCompletedAt
+        task.updatedAt = Date()
+        task.markRead()
+        modelContext.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.System.error,
+            payload: "Couldn't continue this task: no worker was available to start it. Try again in a moment."
+        ))
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+        AppLogger.audit(.workerBlocked, category: "UI", taskID: task.id, fields: [
+            "reason": "continuation_not_admitted",
+            "restored_status": previousStatus.rawValue,
+            "source": source
+        ], level: .warning)
     }
 
     @discardableResult
@@ -274,6 +316,8 @@ final class TaskLifecycleCoordinator {
             "runtime": runtime.rawValue,
             "grant_count": String(taskScopedGrants.count)
         ])
+        let previousStatus = task.status
+        let previousCompletedAt = task.completedAt
         task.status = .running
         task.updatedAt = Date()
         task.completedAt = nil
@@ -301,16 +345,19 @@ final class TaskLifecycleCoordinator {
             scopeDescription: "task-scoped runtime permission for similar requests in this task"
         )
         return Task {
-            await taskQueue.continueSession(
+            let didStart = await taskQueue.continueSession(
                 task: task,
                 message: resumeMessage,
                 modelContext: modelContext,
                 executionPolicy: .default
             )
-            AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
-                "status": task.status.rawValue,
-                "source": "runtime_permission_task_approval"
-            ])
+            finishContinuationLaunch(
+                task,
+                didStart: didStart,
+                revertingTo: previousStatus,
+                previousCompletedAt: previousCompletedAt,
+                source: "runtime_permission_task_approval"
+            )
         }
     }
 
@@ -319,6 +366,8 @@ final class TaskLifecycleCoordinator {
             "approval_type": "runtime_permission",
             "runtime": task.resolvedRuntimeID.rawValue
         ])
+        let previousStatus = task.status
+        let previousCompletedAt = task.completedAt
         task.status = .running
         task.updatedAt = Date()
         task.completedAt = nil
@@ -346,16 +395,19 @@ final class TaskLifecycleCoordinator {
         let executionPolicy = PermissionBroker.executionPolicy(forRuntime: runtime, grants: approvedGrants)
         let resumeMessage = Self.runtimePermissionApprovalResumeMessage(for: task, grants: approvedGrants)
         return Task {
-            await taskQueue.continueSession(
+            let didStart = await taskQueue.continueSession(
                 task: task,
                 message: resumeMessage,
                 modelContext: modelContext,
                 executionPolicy: executionPolicy
             )
-            AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
-                "status": task.status.rawValue,
-                "source": "runtime_permission_approval"
-            ])
+            finishContinuationLaunch(
+                task,
+                didStart: didStart,
+                revertingTo: previousStatus,
+                previousCompletedAt: previousCompletedAt,
+                source: "runtime_permission_approval"
+            )
         }
     }
 
