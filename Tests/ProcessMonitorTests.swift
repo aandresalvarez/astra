@@ -1347,6 +1347,105 @@ struct RuntimePolicyGuardTests {
         #expect(monitor.policyViolation == false)
     }
 
+    @Test("Live approvals defer ask-first tools to the channel instead of post-hoc gating")
+    func liveApprovalsDeferAskFirstToolsToChannel() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Bash"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest),
+            liveApprovalsActive: true
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": "git -C /repo status"]),
+            process: nil
+        )
+
+        // The live channel gated this pre-execution; the post-hoc guard must not
+        // re-prompt or terminate.
+        #expect(shouldKill == false)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolation == false)
+        #expect(monitor.runtimeStopped == false)
+    }
+
+    @Test("Live approvals avoid permission_unresumable on unscopable ask-first shell")
+    func liveApprovalsAvoidUnresumableOnUnscopableShell() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Bash"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest),
+            liveApprovalsActive: true
+        )
+
+        // `2>&1` is exactly the redirect that produced empty approval grants and
+        // killed the original prod run with `permission_unresumable`.
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": "git -C /repo status 2>&1"]),
+            process: nil
+        )
+
+        #expect(shouldKill == false)
+        #expect(monitor.runtimeStopReason != "permission_unresumable")
+        #expect(monitor.runtimeStopped == false)
+    }
+
+    @Test("Live approvals still terminate on a denied command as a backstop")
+    func liveApprovalsStillTerminateOnDeniedCommand() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Bash"],
+            deniedShellPatterns: ["git push:*"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest),
+            liveApprovalsActive: true
+        )
+
+        // Deferring ask-first approvals must NOT defer hard denies: the post-hoc
+        // guard stays a defense-in-depth backstop for the deny-list.
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": "git push origin main"]),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyApprovalRequired == false)
+    }
+
+    @Test("Without live approvals ask-first shell still pauses post-hoc")
+    func withoutLiveApprovalsAskFirstShellStillPausesPostHoc() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Bash"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": "git -C /repo status"]),
+            process: nil
+        )
+
+        // Legacy (no live channel): the post-hoc guard remains the gate.
+        #expect(shouldKill == true)
+        #expect(monitor.policyApprovalRequired == true)
+    }
+
     @Test("JSON-wrapped shell arguments produce usable approval grants")
     func jsonWrappedShellArgumentsProduceUsableApprovalGrants() {
         let manifest = runtimePolicyManifest(

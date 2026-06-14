@@ -23,6 +23,12 @@ enum ShellCommandRiskClassifier {
     }
 
     static func assessment(forShellSegment segment: String) -> Assessment? {
+        // Benign redirections (fd duplications like `2>&1`, discards to
+        // /dev/null) must not make an otherwise-scopable command
+        // unclassifiable — that is what turned a read-only `git status 2>&1`
+        // into an un-grantable, run-killing request. Redirections to a named
+        // file are left intact and still rejected as unsupported syntax below.
+        let segment = strippingBenignRedirections(segment)
         guard !containsUnsupportedShellSyntax(segment) else { return nil }
         let tokens = shellTokens(segment)
         guard let rawExecutable = tokens.first,
@@ -50,6 +56,54 @@ enum ShellCommandRiskClassifier {
     static func approvalGrant(forShellSegment segment: String) -> PermissionGrant? {
         guard let assessment = assessment(forShellSegment: segment) else { return nil }
         return .shellCommand(executable: assessment.executable, pattern: assessment.pattern)
+    }
+
+    /// Removes provably-benign I/O redirections from a single (already
+    /// operator-split) shell segment so the underlying command stays
+    /// classifiable for grant synthesis. Only file-descriptor duplications
+    /// (`2>&1`, `>&2`, `2>&-`) and discards to `/dev/null` are removed — both
+    /// add no new resource. A redirection to any named file is left in place,
+    /// so the segment still trips `containsUnsupportedShellSyntax` and is
+    /// conservatively rejected: a real write must never be folded silently into
+    /// a base-command grant.
+    private static func strippingBenignRedirections(_ segment: String) -> String {
+        // Backslashes carry escape semantics (line continuations, escaped
+        // whitespace/metacharacters) that whitespace re-tokenization would
+        // silently reshape. Leave such segments untouched so the syntax check
+        // still rejects them rather than mis-parsing a continuation as benign.
+        guard !segment.contains("\\") else { return segment }
+        let tokens = segment.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        var kept: [String] = []
+        var index = 0
+        while index < tokens.count {
+            let token = tokens[index]
+            if isFileDescriptorDupToken(token) || isDiscardRedirectToken(token) {
+                index += 1
+                continue
+            }
+            // Two-token discard: `2>` `/dev/null`, `>` `/dev/null`.
+            if isBareRedirectOperatorToken(token),
+               index + 1 < tokens.count,
+               tokens[index + 1] == "/dev/null" {
+                index += 2
+                continue
+            }
+            kept.append(token)
+            index += 1
+        }
+        return kept.joined(separator: " ")
+    }
+
+    private static func isFileDescriptorDupToken(_ token: String) -> Bool {
+        token.range(of: #"^[0-9]*>&([0-9]+|-)$"#, options: .regularExpression) != nil
+    }
+
+    private static func isDiscardRedirectToken(_ token: String) -> Bool {
+        token.range(of: #"^(&|[0-9]*)>>?/dev/null$"#, options: .regularExpression) != nil
+    }
+
+    private static func isBareRedirectOperatorToken(_ token: String) -> Bool {
+        token.range(of: #"^(&|[0-9]*)>>?$"#, options: .regularExpression) != nil
     }
 
     static func allowsTaskScopedReuse(_ grant: PermissionGrant) -> Bool {

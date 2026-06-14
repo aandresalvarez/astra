@@ -282,7 +282,8 @@ final class AgentRuntimeProcessRunner {
                 maxRepetitions: 8,
                 idleTimeoutSeconds: timeoutSeconds,
                 taskID: task.id,
-                policyGuard: permissionManifest.map(AgentRuntimePolicyGuard.init)
+                policyGuard: permissionManifest.map(AgentRuntimePolicyGuard.init),
+                liveApprovalsActive: plan.interactiveAsk != nil
             )
 
             let handleLine: (String) -> Void = { line in
