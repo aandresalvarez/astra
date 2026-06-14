@@ -6,9 +6,23 @@ import ASTRACore
 final class AgentEventRecordingState {
     private let maxCoalescedPayloadLength: Int
     private var lastConversationEventByKey: [String: TaskEvent] = [:]
+    /// Runs whose `run.output` was last written by a `.completed` summary.
+    /// Providers like Codex emit several `agent_message` items per turn (progress
+    /// notes first, the final answer last). Tracking this lets a later
+    /// `.completed` replace an earlier one (last-completed-wins) while never
+    /// clobbering output assembled from streamed `.text` deltas.
+    private var runsWithCompletedOutput: Set<UUID> = []
 
     init(maxCoalescedPayloadLength: Int = 4_096) {
         self.maxCoalescedPayloadLength = maxCoalescedPayloadLength
+    }
+
+    func markOutputFromCompletedSummary(for run: TaskRun) {
+        runsWithCompletedOutput.insert(run.id)
+    }
+
+    func outputCameFromCompletedSummary(for run: TaskRun) -> Bool {
+        runsWithCompletedOutput.contains(run.id)
     }
 
     func appendConversationChunk(
@@ -606,10 +620,18 @@ enum AgentEventRecorder {
 
         case .completed(let summary):
             recordingState?.breakConversationCoalescing(for: run)
-            if let summary, run.output.isEmpty {
+            if let summary {
                 let visibleText = AgentEventRecordingPresentation.visibleTextWithoutProtocolMarkers(summary)
-                if !visibleText.isEmpty {
+                // First-completed sets the output; a later completed message
+                // replaces it (last-completed-wins) so multi-message providers
+                // like Codex keep the final answer rather than an opening
+                // preamble. Output already assembled from streamed `.text`
+                // deltas is never overwritten here.
+                let mayReplace = run.output.isEmpty
+                    || (recordingState?.outputCameFromCompletedSummary(for: run) ?? false)
+                if !visibleText.isEmpty, mayReplace {
                     run.output = visibleText
+                    recordingState?.markOutputFromCompletedSummary(for: run)
                 }
             }
 
