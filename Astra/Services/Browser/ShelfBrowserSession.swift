@@ -349,8 +349,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         bridgeServer?.stop()
         bridgeServer = nil
         ShelfBrowserBridgeRegistry.shared.resetIfActive(taskID: boundTaskID)
-        // Drop the page so WebKit can reclaim the DOM/JS heap.
-        _webView?.loadHTMLString("", baseURL: nil)
+        // Release the WebContent process and message handler outright. Keeping a
+        // strong `_webView` ref would hold WebKit (and its helper process) alive
+        // for a session that's being evicted but not yet deallocated. A later
+        // access — rare for an evicted session — lazily recreates a fresh view.
+        pageReadMessageHandler = nil
+        _webView = nil
     }
 
     func setPresented(_ isPresented: Bool) {
