@@ -1101,6 +1101,127 @@ struct TaskCapabilityResolverTests {
         #expect(issues.first?.message.contains("catalog policy blocks runtime activation") == true)
     }
 
+    // Shared setup: an enabled github-workflow capability whose workspace skill +
+    // tool instances exist but carry MINIMAL text, so launch-time pruning drops
+    // them for any task that doesn't literally mention "github"/"gh". The package
+    // definition itself stays rich, so packageMatchesTaskIntent can still fire.
+    private func makeGitHubEnabledWorkspace(in context: ModelContext, name: String) throws -> (Workspace, PluginPackage) {
+        let githubPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "github-workflow" })
+        let workspace = Workspace(name: name, primaryPath: "/tmp/\(name)")
+        workspace.enabledCapabilityIDs = [githubPackage.id]
+        context.insert(workspace)
+
+        let githubSkill = Skill(
+            name: "GitHub Agent",
+            skillDescription: "x",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "x"
+        )
+        githubSkill.workspace = workspace
+        context.insert(githubSkill)
+
+        let githubTool = LocalTool(
+            name: "gh — GitHub CLI",
+            toolDescription: "x",
+            toolType: "cli",
+            command: "gh"
+        )
+        githubTool.workspace = workspace
+        context.insert(githubTool)
+        return (workspace, githubPackage)
+    }
+
+    @Test("Launch pruning drops an enabled capability that an unrelated task doesn't need")
+    func enabledCapabilityPrunedFromUnrelatedTaskScope() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let (workspace, _) = try makeGitHubEnabledWorkspace(in: context, name: "github-prune")
+
+        let task = AgentTask(
+            title: "Bake a cake",
+            goal: "Bake a chocolate sponge cake and write the recipe",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let scope = TaskCapabilityResolver(task: task)
+            .resolvedScope(.providerLaunch(contextText: task.goal))
+
+        // Advisory pruning (focus): the enabled capability is reachable in the
+        // workspace but, since this task doesn't need it, its verbose instructions
+        // and tool are kept out of the launch scope — least privilege by default.
+        #expect(scope.prunedForBrowserTask)
+        #expect(!scope.behaviorSkills.map(\.name).contains("GitHub Agent"))
+        #expect(!scope.localTools.contains { $0.command == "gh" })
+        #expect(scope.excludedSkillNames.contains("GitHub Agent"))
+    }
+
+    @Test("A pruned-but-existing enabled capability is not a launch failure")
+    func prunedEnabledCapabilityIsNotALaunchFailure() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let (workspace, githubPackage) = try makeGitHubEnabledWorkspace(in: context, name: "github-integrity")
+
+        // Matches the github-workflow package intent ("pull requests") but NOT the
+        // minimal workspace skill/tool text — so the package is enforced while its
+        // skill + tool get pruned from scope. This is the exact shape that used to
+        // hard-fail with capability_runtime_resources_missing.
+        let task = AgentTask(
+            title: "List pull requests",
+            goal: "list open pull requests for me",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        // Precondition: the skill + tool really are pruned from the launch scope.
+        let scope = TaskCapabilityResolver(task: task)
+            .resolvedScope(.providerLaunch(contextText: task.goal))
+        #expect(!scope.behaviorSkills.map(\.name).contains("GitHub Agent"))
+        #expect(!scope.localTools.contains { $0.command == "gh" })
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [githubPackage],
+            checkExecutables: false,
+            scope: .providerLaunch(contextText: task.goal)
+        )
+
+        // The regression: the real failure reported missing resource_kinds=skill,
+        // local_tool. Because the skill + tool exist in the workspace (reachable),
+        // pruning them for focus must not be reported as missing.
+        #expect(!issues.contains { $0.resourceKind == .skill })
+        #expect(!issues.contains { $0.resourceKind == .localTool })
+    }
+
+    @Test("Capability roster advertises enabled capabilities with an invocation hint")
+    func capabilityRosterAdvertisesEnabledCapabilities() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "github-roster", primaryPath: "/tmp/github-roster")
+        workspace.enabledCapabilityIDs = ["github-workflow"]
+        context.insert(workspace)
+        try context.save()
+
+        let roster = try #require(CapabilityRosterBuilder.roster(for: workspace))
+        #expect(roster.contains("GitHub"))
+        #expect(roster.contains("`gh`"))
+        // Awareness must instruct the agent to surface, not silently skip, gaps.
+        #expect(roster.lowercased().contains("do not silently skip"))
+    }
+
+    @Test("Capability roster is nil when no capabilities are enabled")
+    func capabilityRosterNilWhenNothingEnabled() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "empty-roster", primaryPath: "/tmp/empty-roster")
+        context.insert(workspace)
+        try context.save()
+
+        #expect(CapabilityRosterBuilder.roster(for: workspace) == nil)
+    }
+
     @Test("Runtime integrity checks MCP stdio command readiness")
     func runtimeIntegrityChecksMCPStdioCommandReadiness() throws {
         let container = try makeTaskCapabilityResolverContainer()
