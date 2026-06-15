@@ -302,6 +302,118 @@ struct CapabilityRailPresentationTests {
         )
     }
 
+    @Test("workspace instruction editor distinguishes draft from saved guidance")
+    func workspaceInstructionEditorDistinguishesDraftFromSavedGuidance() {
+        #expect(WorkspaceInstructionEditorPresentation.saveActionTitle == "Save")
+        #expect(WorkspaceInstructionEditorPresentation.clearActionTitle == "Clear")
+        #expect(WorkspaceInstructionEditorPresentation.savedStatusTitle == "Saved")
+        #expect(WorkspaceInstructionEditorPresentation.unsavedStatusTitle == "Unsaved changes")
+        #expect(
+            WorkspaceInstructionEditorPresentation.hasUnsavedChanges(
+                draft: "  Run focused tests before full suites.  ",
+                persisted: ""
+            ) == true
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.persistedInstructions(
+                fromDraft: "  Run focused tests before full suites.  "
+            ) == "Run focused tests before full suites."
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.hasUnsavedChanges(
+                draft: "Run focused tests before full suites.",
+                persisted: "Run focused tests before full suites."
+            ) == false
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.statusTitle(
+                draft: "Run focused tests before full suites.",
+                persisted: "Run focused tests before full suites.",
+                didRecentlySave: true
+            ) == "Saved"
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.statusTitle(
+                draft: "Prefer root-cause fixes.",
+                persisted: "Run focused tests before full suites.",
+                didRecentlySave: true
+            ) == "Unsaved changes"
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.statusTitle(
+                draft: "",
+                persisted: "",
+                didRecentlySave: false
+            ) == nil
+        )
+    }
+
+    @Test("workspace instruction editor renders persisted instructions before draft sync")
+    func workspaceInstructionEditorRendersPersistedInstructionsBeforeDraftSync() {
+        #expect(
+            WorkspaceInstructionEditorPresentation.effectiveDraft(
+                localDraft: "",
+                persisted: "Existing workspace guidance",
+                isSynced: false
+            ) == "Existing workspace guidance"
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.hasUnsavedChanges(
+                localDraft: "",
+                persisted: "Existing workspace guidance",
+                isSynced: false
+            ) == false
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.statusTitle(
+                localDraft: "",
+                persisted: "Existing workspace guidance",
+                isSynced: false,
+                didRecentlySave: false
+            ) == "Saved"
+        )
+
+        #expect(
+            WorkspaceInstructionEditorPresentation.effectiveDraft(
+                localDraft: "",
+                persisted: "Existing workspace guidance",
+                isSynced: true
+            ) == ""
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.hasUnsavedChanges(
+                localDraft: "",
+                persisted: "Existing workspace guidance",
+                isSynced: true
+            ) == true
+        )
+    }
+
+    @Test("workspace instruction editor shows clear action for visible persisted draft before sync")
+    func workspaceInstructionEditorShowsClearActionForVisiblePersistedDraftBeforeSync() {
+        #expect(
+            WorkspaceInstructionEditorPresentation.shouldShowClearAction(
+                localDraft: "",
+                persisted: "Existing workspace guidance",
+                isSynced: false
+            ) == true
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.shouldShowClearAction(
+                localDraft: "",
+                persisted: "Existing workspace guidance",
+                isSynced: true
+            ) == false
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.shouldShowClearAction(
+                localDraft: "Draft guidance",
+                persisted: "",
+                isSynced: true
+            ) == true
+        )
+    }
+
     @Test("workspace folder setup treats primary path as reference")
     func workspaceFolderSetupTreatsPrimaryPathAsReference() {
         #expect(WorkspaceSetupChecklistPresentation.folderAccessTitle == "Folder access")

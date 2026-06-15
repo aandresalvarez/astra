@@ -135,7 +135,16 @@ struct CodexCLIRuntimeTests {
             resumeSessionID: "thread-abc-123"
         )
 
-        #expect(plan.arguments.starts(with: ["exec", "resume", "thread-abc-123", "--json"]))
+        #expect(plan.arguments.starts(with: ["exec", "resume", "--json"]))
+        #expect(plan.arguments.contains("thread-abc-123"))
+        #expect(!plan.arguments.contains("--color"))
+        #expect(!plan.arguments.contains("--cd"))
+        #expect(!plan.arguments.contains("--add-dir"))
+        // `exec resume` rejects -s/--sandbox, so the restricted policy preserves
+        // its run-phase sandbox mode via the supported `-c sandbox_mode` override.
+        #expect(!plan.arguments.contains("--sandbox"))
+        #expect(plan.arguments.contains("-c"))
+        #expect(plan.arguments.contains(#"sandbox_mode="workspace-write""#))
         #expect(plan.arguments.contains("--ephemeral") == false)
         #expect(plan.arguments.last == "Continue the work")
 
@@ -153,6 +162,23 @@ struct CodexCLIRuntimeTests {
             phase: "run",
             result: AgentProcessResult(exitCode: 1, error: "session not found")
         ))
+    }
+
+    @Test("Codex resume preserves the sandbox policy via -c since --sandbox is invalid on resume")
+    func codexResumePreservesSandboxPolicyViaConfigOverride() {
+        // Parity with codexPermissionArguments: each non-autonomous policy maps to
+        // the matching `sandbox_mode`, and no bare --sandbox flag leaks onto resume.
+        let restricted = CodexCLIRuntime.codexResumePermissionArguments(policy: .restricted)
+        #expect(restricted == ["-c", "sandbox_mode=\"workspace-write\""])
+        #expect(!restricted.contains("--sandbox"))
+
+        let interactive = CodexCLIRuntime.codexResumePermissionArguments(policy: .interactive)
+        #expect(interactive == ["-c", "sandbox_mode=\"read-only\""])
+        #expect(!interactive.contains("--sandbox"))
+
+        // Autonomous stays externally sandboxed via the bypass flag (no -c needed).
+        let autonomous = CodexCLIRuntime.codexResumePermissionArguments(policy: .autonomous)
+        #expect(autonomous == ["--dangerously-bypass-approvals-and-sandbox"])
     }
 
     @Test("Codex autonomous policy grants full access without interactive approvals")
