@@ -135,7 +135,13 @@ struct CodexCLIRuntimeTests {
             resumeSessionID: "thread-abc-123"
         )
 
-        #expect(plan.arguments.starts(with: ["exec", "resume", "thread-abc-123", "--json"]))
+        #expect(plan.arguments.starts(with: ["exec", "resume", "--json"]))
+        #expect(plan.arguments.contains("thread-abc-123"))
+        #expect(!plan.arguments.contains("--color"))
+        #expect(!plan.arguments.contains("--cd"))
+        #expect(!plan.arguments.contains("--add-dir"))
+        #expect(!plan.arguments.contains("--sandbox"))
+        #expect(!plan.arguments.contains("workspace-write"))
         #expect(plan.arguments.contains("--ephemeral") == false)
         #expect(plan.arguments.last == "Continue the work")
 

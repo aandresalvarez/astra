@@ -509,10 +509,12 @@ extension HeadlessChatScenarioTests {
             .split(separator: "\n")
             .map(String.init)
         let resumeIndex = try #require(args.firstIndex(of: "resume"))
-        #expect(args.count > resumeIndex + 1)
-        if args.count > resumeIndex + 1 {
-            #expect(args[resumeIndex + 1] == "codex-thread-1")
-        }
+        let sessionIndex = try #require(args.firstIndex(of: "codex-thread-1"))
+        #expect(sessionIndex > resumeIndex)
+        #expect(!args.contains("--color"))
+        #expect(!args.contains("--cd"))
+        #expect(!args.contains("--add-dir"))
+        #expect(!args.contains("--sandbox"))
         #expect(rawArgs.contains("User's follow-up request:\nContinue from the prior thread"))
         #expect(task.runs.count == 2)
         #expect(task.status == .completed)

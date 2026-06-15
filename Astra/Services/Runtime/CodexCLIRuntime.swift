@@ -50,27 +50,38 @@ enum CodexCLIRuntime {
         // No `--ephemeral`: native continuation needs the session persisted so a
         // follow-up turn can `exec resume` it. CODEX_HOME scoping (below) keeps
         // ASTRA-run sessions out of the user's own Codex history when configured.
-        var args = ["exec"]
-        if let resumeSessionID = resumeSessionID?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !resumeSessionID.isEmpty {
-            args += ["resume", resumeSessionID]
-        }
-        args += [
-            "--json",
-            "--color", "never",
-            "--ignore-user-config",
-            "--ignore-rules",
-            "--model", providerModel,
-            "--cd", workspacePath
-        ]
+        let trimmedResumeSessionID = resumeSessionID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let usesResume = !trimmedResumeSessionID.isEmpty
+        var args = usesResume ? ["exec", "resume"] : ["exec"]
 
-        let uniquePaths = Array(Set(additionalPaths.filter { !$0.isEmpty && $0 != workspacePath })).sorted()
-        for path in uniquePaths {
-            args += ["--add-dir", path]
-        }
+        if usesResume {
+            args += [
+                "--json",
+                "--ignore-user-config",
+                "--ignore-rules",
+                "--model", providerModel
+            ]
+            args += codexResumePermissionArguments(policy: permissionPolicy)
+            args.append("--skip-git-repo-check")
+            args.append(trimmedResumeSessionID)
+        } else {
+            args += [
+                "--json",
+                "--color", "never",
+                "--ignore-user-config",
+                "--ignore-rules",
+                "--model", providerModel,
+                "--cd", workspacePath
+            ]
 
-        args += codexPermissionArguments(policy: permissionPolicy)
-        args.append("--skip-git-repo-check")
+            let uniquePaths = Array(Set(additionalPaths.filter { !$0.isEmpty && $0 != workspacePath })).sorted()
+            for path in uniquePaths {
+                args += ["--add-dir", path]
+            }
+
+            args += codexPermissionArguments(policy: permissionPolicy)
+            args.append("--skip-git-repo-check")
+        }
         args.append(prompt)
 
         var extraVars: [String: String] = [
@@ -110,6 +121,15 @@ enum CodexCLIRuntime {
             return ["--sandbox", "workspace-write"]
         case .interactive:
             return ["--sandbox", "read-only"]
+        }
+    }
+
+    static func codexResumePermissionArguments(policy: PermissionPolicy) -> [String] {
+        switch policy {
+        case .autonomous:
+            return ["--dangerously-bypass-approvals-and-sandbox"]
+        case .restricted, .interactive:
+            return []
         }
     }
 
