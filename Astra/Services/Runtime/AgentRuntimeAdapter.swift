@@ -699,6 +699,7 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
     let providerVersion: String?
     let parsesJSONLines: Bool
     let directoriesToCreate: [String]
+    let sandboxReadablePaths: [String]
     let providerDetectedFields: [String: String]
     let commandPlannedFields: [String: String]
     var interactiveAsk: AgentRuntimeInteractiveAskPlan?
@@ -713,6 +714,7 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
         providerVersion: String?,
         parsesJSONLines: Bool,
         directoriesToCreate: [String] = [],
+        sandboxReadablePaths: [String] = [],
         providerDetectedFields: [String: String] = [:],
         commandPlannedFields: [String: String] = [:],
         interactiveAsk: AgentRuntimeInteractiveAskPlan? = nil
@@ -726,6 +728,7 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
         self.providerVersion = providerVersion
         self.parsesJSONLines = parsesJSONLines
         self.directoriesToCreate = directoriesToCreate
+        self.sandboxReadablePaths = sandboxReadablePaths
         self.providerDetectedFields = providerDetectedFields
         self.commandPlannedFields = commandPlannedFields
         self.interactiveAsk = interactiveAsk
@@ -1183,6 +1186,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         // allowEmpty: strict mode must apply even with zero governed servers,
         // or a repository's own .mcp.json loads ungoverned on those runs.
         let mcpConfigURL = MCPRuntimeProjection.writeClaudeConfig(servers: mcpServers, taskID: context.task.id, allowEmpty: true)
+        let mcpConfigReadablePaths = mcpConfigURL.map { [$0.deletingLastPathComponent().path] } ?? []
         let mcpAllowedTools = mcpConfigURL == nil ? [] : MCPRuntimeProjection.allowedToolPermissions(servers: mcpServers)
         let mcpDeniedTools = mcpConfigURL == nil ? [] : MCPRuntimeProjection.deniedToolPermissions(servers: mcpServers)
         // Live approvals use the stdio control protocol (stream-json input, so
@@ -1255,7 +1259,6 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         if !mcpDeniedTools.isEmpty {
             args += ["--disallowedTools"] + mcpDeniedTools
         }
-
         return AgentRuntimeProcessLaunchPlan(
             runtime: id,
             executablePath: context.executablePath,
@@ -1271,6 +1274,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             providerVersion: nil,
             parsesJSONLines: true,
             directoriesToCreate: [],
+            sandboxReadablePaths: mcpConfigReadablePaths,
             providerDetectedFields: [
                 "runtime": id.rawValue,
                 "executable_configured": String(!context.executablePath.isEmpty),
