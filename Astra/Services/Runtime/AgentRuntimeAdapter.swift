@@ -1885,7 +1885,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let capabilities = CopilotCLIRuntime.capabilities(executablePath: executable)
         let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
         let additionalPaths = AgentRuntimeProcessRunner.copilotAdditionalPaths(for: context.task)
-        var localToolCommands = AgentRuntimeProcessRunner.copilotLocalToolCommands(for: context.task)
+        var localToolCommands = AgentRuntimeProcessRunner.copilotLocalToolCommands(for: context.task, contextText: context.contextText)
         if taskEnv["ASTRA_BROWSER_URL"] != nil {
             localToolCommands.append("astra-browser")
         }
@@ -1902,7 +1902,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             taskEnvironment: taskEnv,
             copilotHome: context.providerHomeDirectory,
             pathPrefix: pathPrefix,
-            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task)
+            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task, contextText: context.contextText)
                 || taskEnv["ASTRA_BROWSER_URL"] != nil,
             localToolCommands: localToolCommands,
             runtimeSupportTools: runtimeSupportTools,
@@ -2619,7 +2619,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             taskEnvironment: taskEnv,
             providerHomeDirectory: context.providerHomeDirectory,
             pathPrefix: pathPrefix,
-            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task)
+            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task, contextText: context.contextText)
                 || taskEnv["ASTRA_BROWSER_URL"] != nil,
             diagnosticLogPath: diagnosticLogPath
         )

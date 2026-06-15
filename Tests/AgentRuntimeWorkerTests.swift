@@ -10,6 +10,42 @@ private func makeContainer() throws -> ModelContainer {
     return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
 }
 
+@Suite("Provider launch capability scope")
+struct ProviderLaunchCapabilityScopeTests {
+
+    @Test("Worker capability launch records use provider launch context")
+    func workerCapabilityLaunchRecordsUseProviderLaunchContext() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let workerURL = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Runtime")
+            .appendingPathComponent("AgentRuntimeWorker.swift")
+        let auditURL = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Runtime")
+            .appendingPathComponent("AgentRuntimeCapabilityLaunchAudit.swift")
+        let workerSource = try String(contentsOf: workerURL, encoding: .utf8)
+        let auditSource = try String(contentsOf: auditURL, encoding: .utf8)
+
+        #expect(workerSource.contains("AgentRuntimeCapabilityLaunchAudit.logResolution("))
+        #expect(workerSource.contains("AgentRuntimeCapabilityLaunchAudit.logGitHubCLIPreflightIfNeeded("))
+        #expect(workerSource.contains("contextText: providerLaunchContextText"))
+        #expect(workerSource.contains("""
+        Self.providerLaunchSignature(
+                    for: task,
+                    manifest: manifest,
+                    contextText: providerLaunchContextText
+                )
+        """))
+        #expect(auditSource.contains("TaskCapabilityResolver(task: task).promptScope(contextText: contextText)"))
+        #expect(!auditSource.contains("promptScope()"))
+    }
+}
+
 // MARK: - Cancel
 
 @Suite("AgentRuntimeWorker Cancel")
