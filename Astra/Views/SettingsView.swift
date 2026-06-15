@@ -1021,9 +1021,8 @@ struct SettingsView: View {
                         selection.wrappedValue = model
                     } label: {
                         ModelMenuItemLabel(
-                            model: model,
-                            displayName: RuntimeModelAvailability.displayName(
-                                for: model,
+                            presentation: RuntimeModelMenuOptionPresentation(
+                                model: model,
                                 runtime: selectedRuntime,
                                 cache: runtimeModelCache
                             ),
@@ -1063,9 +1062,8 @@ struct SettingsView: View {
                         roleModelBinding(for: role).wrappedValue = model
                     } label: {
                         ModelMenuItemLabel(
-                            model: model,
-                            displayName: RuntimeModelAvailability.displayName(
-                                for: model,
+                            presentation: RuntimeModelMenuOptionPresentation(
+                                model: model,
                                 runtime: runtime,
                                 cache: runtimeModelCache
                             ),

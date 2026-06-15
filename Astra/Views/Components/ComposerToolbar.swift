@@ -325,14 +325,13 @@ struct ComposerToolbar: View {
                 let candidates = runtimeModels(for: resolvedRuntime)
                 let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmedModel.isEmpty, !candidates.contains(trimmedModel) {
-                    Label("Custom: \(modelDisplayName(trimmedModel))", systemImage: "pencil")
+                    Label("Custom: \(modelPresentation(trimmedModel, runtime: resolvedRuntime).title)", systemImage: "pencil")
                     Divider()
                 }
                 ForEach(candidates, id: \.self) { candidate in
                     Button { onModelChange?(candidate) } label: {
                         ModelMenuItemLabel(
-                            model: candidate,
-                            displayName: modelDisplayName(candidate),
+                            presentation: modelPresentation(candidate, runtime: resolvedRuntime),
                             isSelected: model == candidate
                         )
                     }
@@ -867,12 +866,19 @@ struct ComposerToolbar: View {
         submitIcon == "arrow.up.circle.fill" ? "arrow.up" : submitIcon
     }
 
-    private func modelDisplayName(_ model: String) -> String {
-        RuntimeModelAvailability.displayName(
-            for: model,
-            runtime: resolvedRuntime,
+    private func modelPresentation(
+        _ model: String,
+        runtime: AgentRuntimeID
+    ) -> RuntimeModelMenuOptionPresentation {
+        RuntimeModelMenuOptionPresentation(
+            model: model,
+            runtime: runtime,
             cache: runtimeModelCache
         )
+    }
+
+    private func modelDisplayName(_ model: String) -> String {
+        modelPresentation(model, runtime: resolvedRuntime).compactTitle
     }
 
     private func runtimeModels(for runtime: AgentRuntimeID) -> [String] {
@@ -901,38 +907,11 @@ struct ComposerToolbar: View {
     }
 
     private func shortModelDisplayName(_ model: String) -> String {
-        let normalized = modelDisplayName(model)
-        let lower = normalized.lowercased()
-
-        if lower.contains("sonnet") {
-            return versionedModelName("Sonnet", from: normalized)
+        var compact = modelPresentation(model, runtime: resolvedRuntime).compactTitle
+        if resolvedRuntime == .claudeCode, compact.hasPrefix("Claude ") {
+            compact.removeFirst("Claude ".count)
         }
-        if lower.contains("opus") {
-            return versionedModelName("Opus", from: normalized)
-        }
-        if lower.contains("haiku") {
-            return versionedModelName("Haiku", from: normalized)
-        }
-        if lower.hasPrefix("gpt-") {
-            return normalized
-                .replacingOccurrences(of: "gpt-", with: "GPT-")
-                .replacingOccurrences(of: "-mini", with: " Mini")
-        }
-        // Keep the pill compact: "Default (recommended)" → "Default".
-        return normalized.replacingOccurrences(
-            of: #"\s*\([^)]*\)$"#,
-            with: "",
-            options: .regularExpression
-        )
-    }
-
-    private func versionedModelName(_ family: String, from model: String) -> String {
-        let parts = model.split(separator: "-")
-        let numbers = parts.filter { part in
-            part.allSatisfy(\.isNumber)
-        }
-        guard numbers.count >= 2 else { return family }
-        return "\(family) \(numbers[0]).\(numbers[1])"
+        return compact
     }
 
     private var resolvedRuntime: AgentRuntimeID {
