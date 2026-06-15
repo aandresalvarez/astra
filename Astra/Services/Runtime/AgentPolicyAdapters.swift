@@ -962,6 +962,10 @@ enum AgentPolicyManifestService {
             existingProviderConfigSummary: runtimeAdapter.existingProviderConfigSummary(workspacePath: workspacePath)
         )
         var render = providerPolicyAdapter.render(policy: policy, context: context)
+        render.allowedShellPatterns = uniqueStrings(
+            render.allowedShellPatterns
+                + runtimeSupportAllowedShellPatterns(environmentKeyNames: envKeys)
+        )
         render.diagnostics = providerPolicyAdapter.validate(render: render, context: context)
         // Reflect ASTRA's OS-level Seatbelt sandbox in the declared enforcement
         // tiers — but only when the run will both be wrapped (runtime in scope)
@@ -1092,6 +1096,28 @@ enum AgentPolicyManifestService {
         let skillKeys = capabilityScope.behaviorSkills.flatMap(\.environmentKeys)
         let connectorKeys = capabilityScope.connectors.flatMap(\.credentialKeys)
         return Array(Set(skillKeys + connectorKeys)).sorted()
+    }
+
+    private static func runtimeSupportAllowedShellPatterns(environmentKeyNames: [String]) -> [String] {
+        guard environmentKeyNames.contains("ASTRA_CONNECTORS") else { return [] }
+        return [
+            #"echo "$ASTRA_CONNECTORS""#,
+            #"echo "$ASTRA_CONNECTORS" | head"#,
+            #"echo "$ASTRA_CONNECTORS" | head -50"#,
+            #"echo "$ASTRA_CONNECTORS" | head -n 50"#,
+            #"echo $ASTRA_CONNECTORS"#,
+            #"echo $ASTRA_CONNECTORS | head"#,
+            #"echo $ASTRA_CONNECTORS | head -50"#,
+            #"echo $ASTRA_CONNECTORS | head -n 50"#,
+            #"printf "%s\n" "$ASTRA_CONNECTORS""#,
+            #"printf "%s\n" "$ASTRA_CONNECTORS" | head"#,
+            #"printf "%s\n" "$ASTRA_CONNECTORS" | head -50"#,
+            #"printf "%s\n" "$ASTRA_CONNECTORS" | head -n 50"#,
+            #"printf '%s\n' "$ASTRA_CONNECTORS""#,
+            #"printf '%s\n' "$ASTRA_CONNECTORS" | head"#,
+            #"printf '%s\n' "$ASTRA_CONNECTORS" | head -50"#,
+            #"printf '%s\n' "$ASTRA_CONNECTORS" | head -n 50"#
+        ]
     }
 
     private static func uniqueStrings(_ values: [String]) -> [String] {

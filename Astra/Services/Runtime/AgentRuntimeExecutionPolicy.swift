@@ -39,10 +39,11 @@ struct AgentRuntimeExecutionPolicy: Equatable {
     static func approvedRuntimePermission(
         runtime _: AgentRuntimeID,
         allowedTools: [String],
-        grants: [PermissionGrant] = []
+        grants: [PermissionGrant] = [],
+        permissionPolicy: PermissionPolicy = .restricted
     ) -> AgentRuntimeExecutionPolicy {
         AgentRuntimeExecutionPolicy(
-            permissionPolicyOverride: .restricted,
+            permissionPolicyOverride: permissionPolicy,
             allowedToolsOverride: allowedTools,
             permissionGrantsOverride: grants
         )

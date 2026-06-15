@@ -1885,6 +1885,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let capabilities = CopilotCLIRuntime.capabilities(executablePath: executable)
         let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
         let additionalPaths = AgentRuntimeProcessRunner.copilotAdditionalPaths(for: context.task)
+        let userHome = FileManager.default.homeDirectoryForCurrentUser.path
+        let copilotStateHome = CopilotCLIRuntime.defaultHome(userHome: userHome)
         var localToolCommands = AgentRuntimeProcessRunner.copilotLocalToolCommands(for: context.task)
         if taskEnv["ASTRA_BROWSER_URL"] != nil {
             localToolCommands.append("astra-browser")
@@ -1901,6 +1903,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             capabilities: capabilities,
             taskEnvironment: taskEnv,
             copilotHome: context.providerHomeDirectory,
+            copilotStateHome: copilotStateHome,
+            userHome: userHome,
             pathPrefix: pathPrefix,
             includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task)
                 || taskEnv["ASTRA_BROWSER_URL"] != nil,
@@ -1918,7 +1922,12 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             browserShimDirectory: browserShimDirectory,
             providerVersion: providerVersion,
             parsesJSONLines: plan.parsesJSONLines,
-            directoriesToCreate: [context.providerHomeDirectory],
+            directoriesToCreate: CopilotCLIRuntime.directoriesToCreate(
+                copilotHome: context.providerHomeDirectory,
+                copilotStateHome: copilotStateHome,
+                userHome: userHome
+            ),
+            sandboxReadablePaths: CopilotCLIRuntime.authReadablePaths(userHome: userHome),
             providerDetectedFields: [
                 "runtime": id.rawValue,
                 "provider_version": providerVersion ?? "unknown",
@@ -2202,14 +2211,23 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
 
     @MainActor
     func recordPostProcessEvents(context: AgentRuntimePostProcessContext) {
-        guard context.run.tokensUsed == 0,
-              let metrics = CopilotSessionMetricsReader.finalMetrics(
-                copilotHome: context.homeDirectory,
-                taskID: context.task.id,
-                runStartedAt: context.runStartedAt
-              ) else {
+        guard context.run.tokensUsed == 0 else {
             return
         }
+        let homes = [context.homeDirectory, CopilotCLIRuntime.defaultHome()]
+        var seenHomes: Set<String> = []
+        var metrics: CopilotSessionMetrics?
+        for home in homes {
+            let trimmed = home.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seenHomes.insert(trimmed).inserted else { continue }
+            metrics = CopilotSessionMetricsReader.finalMetrics(
+                copilotHome: trimmed,
+                taskID: context.task.id,
+                runStartedAt: context.runStartedAt
+            )
+            if metrics != nil { break }
+        }
+        guard let metrics else { return }
 
         AgentEventRecorder.recordCopilotEvent(
             metrics.event,

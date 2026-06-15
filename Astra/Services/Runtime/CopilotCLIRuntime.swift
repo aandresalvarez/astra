@@ -15,6 +15,8 @@ struct CopilotCLICapabilities: Equatable {
     var supportsNoCustomInstructions: Bool
     var supportsAvailableTools: Bool
     var supportsExcludedTools: Bool
+    var supportsLogDir: Bool
+    var supportsNoAutoUpdate: Bool
 
     static let conservative = CopilotCLICapabilities(
         supportsOutputFormatJSON: false,
@@ -29,7 +31,9 @@ struct CopilotCLICapabilities: Equatable {
         requiresAllowAllToolsForPrompt: true,
         supportsNoCustomInstructions: false,
         supportsAvailableTools: false,
-        supportsExcludedTools: false
+        supportsExcludedTools: false,
+        supportsLogDir: false,
+        supportsNoAutoUpdate: false
     )
 
     init(helpText: String) {
@@ -47,6 +51,8 @@ struct CopilotCLICapabilities: Equatable {
         supportsNoCustomInstructions = Self.hasOption("--no-custom-instructions", in: helpText)
         supportsAvailableTools = Self.hasOption("--available-tools", in: helpText)
         supportsExcludedTools = Self.hasOption("--excluded-tools", in: helpText)
+        supportsLogDir = Self.hasOption("--log-dir", in: helpText)
+        supportsNoAutoUpdate = Self.hasOption("--no-auto-update", in: helpText)
     }
 
     private init(
@@ -62,7 +68,9 @@ struct CopilotCLICapabilities: Equatable {
         requiresAllowAllToolsForPrompt: Bool,
         supportsNoCustomInstructions: Bool,
         supportsAvailableTools: Bool,
-        supportsExcludedTools: Bool
+        supportsExcludedTools: Bool,
+        supportsLogDir: Bool,
+        supportsNoAutoUpdate: Bool
     ) {
         self.supportsOutputFormatJSON = supportsOutputFormatJSON
         self.supportsStreamingFlag = supportsStreamingFlag
@@ -77,6 +85,8 @@ struct CopilotCLICapabilities: Equatable {
         self.supportsNoCustomInstructions = supportsNoCustomInstructions
         self.supportsAvailableTools = supportsAvailableTools
         self.supportsExcludedTools = supportsExcludedTools
+        self.supportsLogDir = supportsLogDir
+        self.supportsNoAutoUpdate = supportsNoAutoUpdate
     }
 
     private static func hasOption(_ option: String, in helpText: String) -> Bool {
@@ -160,6 +170,8 @@ enum CopilotCLIRuntime {
         capabilities: CopilotCLICapabilities,
         taskEnvironment: [String: String],
         copilotHome: String,
+        copilotStateHome: String? = nil,
+        userHome: String? = nil,
         providerEnvironment: [String: String] = [:],
         pathPrefix: [String] = [],
         includeAstraToolsPath: Bool = false,
@@ -169,6 +181,12 @@ enum CopilotCLIRuntime {
         disableCustomInstructions: Bool = false
     ) -> CopilotCLICommandPlan {
         var args = ["--prompt", prompt, "--model", model, "--no-color", "--log-level", "error"]
+        if capabilities.supportsNoAutoUpdate {
+            args += ["--no-auto-update"]
+        }
+        if capabilities.supportsLogDir, let logDirectory = managedLogDirectory(copilotHome: copilotHome) {
+            args += ["--log-dir", logDirectory]
+        }
 
         // Self-contained helper prompts (commit messages, PR drafts, etc.) must not
         // inherit the repository's AGENTS.md operating guide, which otherwise turns a
@@ -228,7 +246,6 @@ enum CopilotCLIRuntime {
         }
 
         var extraVars: [String: String] = [
-            "COPILOT_HOME": copilotHome,
             "NO_COLOR": "1",
         ]
         let parentTerm = ProcessInfo.processInfo.environment["TERM"]
@@ -237,6 +254,13 @@ enum CopilotCLIRuntime {
             extraVars[key] = value
         }
         for (key, value) in providerEnvironment {
+            extraVars[key] = value
+        }
+        for (key, value) in providerHomeEnvironment(
+            copilotHome: copilotHome,
+            copilotStateHome: copilotStateHome,
+            userHome: userHome
+        ) {
             extraVars[key] = value
         }
         let env = RuntimeProcessEnvironment.enriched(
@@ -250,6 +274,82 @@ enum CopilotCLIRuntime {
             environment: env,
             parsesJSONLines: capabilities.supportsOutputFormatJSON
         )
+    }
+
+    static func defaultHome(userHome: String = FileManager.default.homeDirectoryForCurrentUser.path) -> String {
+        (userHome as NSString).appendingPathComponent(".copilot")
+    }
+
+    static func providerHomeEnvironment(
+        copilotHome: String,
+        copilotStateHome: String? = nil,
+        userHome: String? = nil
+    ) -> [String: String] {
+        let trimmedManagedHome = copilotHome.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedStateHome = (copilotStateHome ?? copilotHome).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedStateHome.isEmpty else {
+            return ["COPILOT_HOME": copilotHome]
+        }
+        let trimmedUserHome = userHome?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        var environment = [
+            "COPILOT_HOME": trimmedStateHome,
+            "HOME": trimmedUserHome.isEmpty ? trimmedStateHome : trimmedUserHome
+        ]
+        guard !trimmedManagedHome.isEmpty else { return environment }
+        environment["XDG_CACHE_HOME"] = (trimmedManagedHome as NSString).appendingPathComponent(".cache")
+        environment["XDG_CONFIG_HOME"] = (trimmedManagedHome as NSString).appendingPathComponent(".config")
+        environment["XDG_DATA_HOME"] = (trimmedManagedHome as NSString).appendingPathComponent(".local/share")
+        environment["XDG_STATE_HOME"] = (trimmedManagedHome as NSString).appendingPathComponent(".local/state")
+        return environment
+    }
+
+    static func directoriesToCreate(
+        copilotHome: String,
+        copilotStateHome: String? = nil,
+        userHome: String? = nil
+    ) -> [String] {
+        let trimmedHome = copilotHome.trimmingCharacters(in: .whitespacesAndNewlines)
+        var paths = [copilotStateHome ?? ""]
+        if !trimmedHome.isEmpty {
+            paths += [
+                trimmedHome,
+                managedLogDirectory(copilotHome: trimmedHome) ?? "",
+                (trimmedHome as NSString).appendingPathComponent(".cache"),
+                (trimmedHome as NSString).appendingPathComponent(".config"),
+                (trimmedHome as NSString).appendingPathComponent(".local/share"),
+                (trimmedHome as NSString).appendingPathComponent(".local/state"),
+                (trimmedHome as NSString).appendingPathComponent("Library/Caches")
+            ]
+        }
+        if let userHome {
+            paths += macOSCacheWritablePaths(userHome: userHome)
+        }
+        return uniqueNonEmptyPaths(paths)
+    }
+
+    static func macOSCacheWritablePaths(userHome: String = FileManager.default.homeDirectoryForCurrentUser.path) -> [String] {
+        let trimmedHome = userHome.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedHome.isEmpty else { return [] }
+        return uniqueNonEmptyPaths([
+            (trimmedHome as NSString).appendingPathComponent("Library/Caches/copilot")
+        ])
+    }
+
+    static func authReadablePaths(userHome: String = FileManager.default.homeDirectoryForCurrentUser.path) -> [String] {
+        let trimmedHome = userHome.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedHome.isEmpty else { return [] }
+        return uniqueNonEmptyPaths([
+            defaultHome(userHome: trimmedHome),
+            (trimmedHome as NSString).appendingPathComponent(".config/gh"),
+            (trimmedHome as NSString).appendingPathComponent("Library/Keychains/login.keychain-db"),
+            (trimmedHome as NSString).appendingPathComponent("Library/Keychains/metadata.keychain-db")
+        ])
+    }
+
+    static func managedLogDirectory(copilotHome: String) -> String? {
+        let trimmedHome = copilotHome.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedHome.isEmpty else { return nil }
+        return (trimmedHome as NSString).appendingPathComponent("logs")
     }
 
     private static func uniqueNonEmptyPaths(_ paths: [String]) -> [String] {
@@ -465,26 +565,30 @@ enum CopilotCLIRuntime {
         let lower = trimmed.lowercased()
         switch lower {
         case "read":
-            return ["view", "grep", "glob", "rg"]
+            return ["view", "grep", "glob"]
         case "view":
             return ["view"]
         case "grep":
-            return ["grep", "rg"]
+            return ["grep"]
         case "glob", "ls":
             return ["glob"]
         case "write":
-            return ["create", "edit", "apply_patch"]
+            return ["create", "edit"]
         case "create":
-            return ["create", "apply_patch"]
+            return ["create"]
         case "edit", "multiedit", "multi_edit":
-            return ["edit", "apply_patch"]
-        case "bash", "shell", "webfetch", "websearch":
-            return ["shell"]
+            return ["edit"]
+        case "bash", "shell":
+            return ["bash"]
+        case "webfetch", "web_fetch":
+            return ["web_fetch"]
+        case "websearch", "web_search":
+            return ["web_fetch"]
         case "agent", "task":
             return ["task"]
         default:
             if lower.hasPrefix("bash(") || lower.hasPrefix("shell(") {
-                return ["shell"]
+                return ["bash"]
             }
             return trimmed.isEmpty ? [] : [trimmed]
         }

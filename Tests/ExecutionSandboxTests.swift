@@ -89,6 +89,28 @@ struct ExecutionSandboxTests {
         #expect(!profile.contains("(debug deny file-read*)"))
     }
 
+    @Test("Strict read-scope profile allows readable root metadata literals")
+    func profileStrictReadScopeAllowsReadableMetadataLiterals() {
+        let profile = ExecutionSandbox.makeProfile(
+            writableRootCount: 1,
+            readableRootCount: 1,
+            readableMetadataRootCount: 1,
+            allowNetwork: true,
+            readScope: .enforce
+        )
+        let args = ExecutionSandbox.makeArguments(
+            profile: profile,
+            writableRoots: ["/tmp/astra-workspace"],
+            readableRoots: ["/opt/homebrew"],
+            readableMetadataRoots: ["/opt"],
+            executablePath: "/bin/echo",
+            arguments: ["hello"]
+        )
+
+        #expect(profile.contains("(literal (param \"READ_LITERAL_ROOT_0\"))"))
+        #expect(args.contains("READ_LITERAL_ROOT_0=/opt"))
+    }
+
     @Test("Audit read-scope profile reports would-deny reads without disabling write denies")
     func profileAuditReadScopeShape() {
         let profile = ExecutionSandbox.makeProfile(
@@ -205,8 +227,160 @@ struct ExecutionSandboxTests {
         #expect(roots.contains("/private/tmp/provider/bin"))
         #expect(roots.contains("/System"))
         #expect(roots.contains("/usr"))
+        #expect(roots.contains("/opt/homebrew"))
         #expect(!roots.contains("/Applications"))
         #expect(roots.count == Set(roots).count)
+    }
+
+    @Test("Readable metadata roots include parent chain for Homebrew executables")
+    func readableMetadataRootsIncludeParentChainForHomebrewExecutables() {
+        let roots = ExecutionSandbox.readableMetadataRoots(for: [
+            "/opt/homebrew",
+            "/opt/homebrew/bin"
+        ])
+
+        #expect(roots.contains("/opt"))
+        #expect(roots.contains("/opt/homebrew"))
+        #expect(roots.contains("/opt/homebrew/bin"))
+        #expect(!roots.contains("/"))
+        #expect(roots.count == Set(roots).count)
+    }
+
+    @Test("Strict read-scope starts the Homebrew Copilot CLI under sandbox")
+    func strictReadScopeStartsHomebrewCopilotCLI() throws {
+        let fm = FileManager.default
+        guard fm.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
+
+        let copilotPath = "/opt/homebrew/bin/copilot"
+        guard fm.isExecutableFile(atPath: copilotPath) else { return }
+
+        let base = fm.temporaryDirectory.appendingPathComponent("astra-copilot-sandbox-\(UUID().uuidString)")
+        let workspace = base.appendingPathComponent("workspace")
+        let providerHome = base.appendingPathComponent("copilot-home")
+        try fm.createDirectory(at: workspace, withIntermediateDirectories: true)
+        try fm.createDirectory(at: providerHome, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: base) }
+
+        let environment = RuntimeProcessEnvironment.enriched(extraVariables: [
+            "COPILOT_HOME": providerHome.path,
+            "HOME": providerHome.path,
+            "TMPDIR": fm.temporaryDirectory.path
+        ])
+        let plan = makePlan(
+            runtime: .copilotCLI,
+            executablePath: copilotPath,
+            arguments: ["--version"],
+            currentDirectory: workspace.path,
+            environment: environment,
+            directoriesToCreate: [providerHome.path]
+        )
+
+        let decision = ExecutionSandbox.decide(
+            plan: plan,
+            providerHomeDirectory: providerHome.path,
+            settings: ExecutionSandboxSettings(enforcement: .strict, allowNetwork: true, readScope: .enforce)
+        )
+        guard case .applied(let wrapped, _) = decision else {
+            Issue.record("Expected strict sandbox to apply, got \(decision)")
+            return
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: wrapped.executablePath)
+        process.arguments = wrapped.arguments
+        process.environment = wrapped.environment
+        process.currentDirectoryURL = workspace
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        do {
+            try process.run()
+        } catch {
+            Issue.record("Failed to launch sandboxed Copilot CLI: \(error)")
+            return
+        }
+        let stdoutData = stdout.fileHandleForReading.readDataToEndOfFile()
+        let stderrData = stderr.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        let output = String(data: stdoutData + stderrData, encoding: .utf8) ?? ""
+        if process.terminationStatus != 0 {
+            Issue.record("Sandboxed Copilot CLI exited \(process.terminationStatus): \(output)")
+        }
+        #expect(process.terminationStatus == 0)
+        #expect(output.contains("GitHub Copilot CLI"))
+    }
+
+    @Test("Copilot startup cache roots are scoped to provider home")
+    func copilotStartupCacheRootsAreScopedToProviderHome() {
+        let providerHome = "/tmp/astra-copilot-home-\(UUID().uuidString)"
+        let userHome = "/tmp/astra-copilot-user-\(UUID().uuidString)"
+        let copilotStateHome = "\(userHome)/.copilot"
+        let command = CopilotCLIRuntime.buildCommand(
+            executablePath: "/opt/homebrew/bin/copilot",
+            prompt: "Review issues",
+            model: "claude-sonnet-4.6",
+            workspacePath: "/tmp/astra-workspace",
+            additionalPaths: [],
+            permissionPolicy: .autonomous,
+            allowedTools: [],
+            timeoutSeconds: 60,
+            capabilities: CopilotCLICapabilities(helpText: "--output-format=FORMAT --stream=MODE --no-ask-user --allow-all"),
+            taskEnvironment: ["HOME": "/tmp/task-home", "XDG_CACHE_HOME": "/tmp/task-cache"],
+            copilotHome: providerHome,
+            copilotStateHome: copilotStateHome,
+            userHome: userHome,
+            providerEnvironment: ["HOME": "/tmp/provider-home"]
+        )
+        let plan = makePlan(
+            runtime: .copilotCLI,
+            executablePath: command.executablePath,
+            arguments: command.arguments,
+            currentDirectory: "/tmp/astra-workspace",
+            environment: command.environment,
+            directoriesToCreate: CopilotCLIRuntime.directoriesToCreate(
+                copilotHome: providerHome,
+                copilotStateHome: copilotStateHome,
+                userHome: userHome
+            ),
+            sandboxReadablePaths: CopilotCLIRuntime.authReadablePaths(userHome: userHome)
+        )
+
+        let writableRoots = ExecutionSandbox.writableRoots(
+            plan: plan,
+            providerHomeDirectory: providerHome,
+            canonicalWorkspace: "/tmp/astra-workspace"
+        )
+        let readableRoots = ExecutionSandbox.readableRoots(
+            plan: plan,
+            providerHomeDirectory: providerHome,
+            canonicalWorkspace: "/tmp/astra-workspace"
+        )
+        let userCaches = (userHome as NSString).appendingPathComponent("Library/Caches")
+        let copilotUserCaches = (userHome as NSString).appendingPathComponent("Library/Caches/copilot")
+        let keychains = (userHome as NSString).appendingPathComponent("Library/Keychains")
+        let loginKeychain = (keychains as NSString).appendingPathComponent("login.keychain-db")
+        let metadataKeychain = (keychains as NSString).appendingPathComponent("metadata.keychain-db")
+
+        #expect(command.environment["COPILOT_HOME"] == copilotStateHome)
+        #expect(command.environment["HOME"] == userHome)
+        #expect(command.environment["XDG_CACHE_HOME"] == "\(providerHome)/.cache")
+        #expect(writableRoots.contains(providerHome))
+        #expect(writableRoots.contains(copilotStateHome))
+        #expect(writableRoots.contains("\(providerHome)/.cache"))
+        #expect(writableRoots.contains("\(providerHome)/Library/Caches"))
+        #expect(writableRoots.contains(copilotUserCaches))
+        #expect(readableRoots.contains(copilotStateHome))
+        #expect(readableRoots.contains("\(providerHome)/.cache"))
+        #expect(readableRoots.contains("\(providerHome)/Library/Caches"))
+        #expect(readableRoots.contains(copilotUserCaches))
+        #expect(readableRoots.contains(loginKeychain))
+        #expect(readableRoots.contains(metadataKeychain))
+        #expect(!readableRoots.contains(keychains))
+        #expect(!writableRoots.contains(userCaches))
+        #expect(!readableRoots.contains(userCaches))
     }
 
     // MARK: - Decision logic
