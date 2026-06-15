@@ -6,7 +6,7 @@ import Testing
 struct SettingsViewPrivacyTests {
     @Test("Runtime guardrails disclose the always-on ASTRA host privacy boundary")
     func runtimeGuardrailsDiscloseHostPrivacyBoundary() throws {
-        let source = try settingsViewSource()
+        let source = try runtimeSettingsSource()
 
         #expect(RuntimeGuardrailsPresentation.hostPrivacyTitle == "ASTRA App Privacy Boundary")
         #expect(RuntimeGuardrailsPresentation.hostPrivacyStatus == "Always On")
@@ -22,7 +22,7 @@ struct SettingsViewPrivacyTests {
 
     @Test("Runtime guardrails expose read-scope audit controls")
     func runtimeGuardrailsExposeReadScopeAuditControls() throws {
-        let source = try settingsViewSource()
+        let source = try runtimeSettingsSource()
 
         #expect(source.contains(#"@AppStorage(AppStorageKeys.sandboxReadScope)"#))
         #expect(source.contains(#"Picker("Read Scope""#))
@@ -43,13 +43,22 @@ struct SettingsViewPrivacyTests {
         #expect(source.contains("embedded WebKit uses page instrumentation"))
     }
 
-    @Test("Readiness section copy scopes checks to default provider")
-    func readinessSectionCopyScopesChecksToDefaultProvider() throws {
+    @Test("Runtime setup copy scopes checks to the selected provider")
+    func runtimeSetupCopyScopesChecksToSelectedProvider() throws {
         let source = try settingsViewSource()
 
-        #expect(source.contains(#"Section("Default Provider Readiness")"#))
-        #expect(source.contains("Run a readiness check to verify the default provider"))
+        #expect(source.contains("SettingsRuntimeTab("))
         #expect(!source.contains(#"Section("Technical Readiness")"#))
+    }
+
+    @Test("Runtime settings reuse the shared runtime setup section")
+    func runtimeSettingsReuseSharedRuntimeSetupSection() throws {
+        let source = try settingsViewSource()
+        let runtimeTabSource = try runtimeTabSource()
+
+        #expect(source.contains("SettingsRuntimeTab("))
+        #expect(runtimeTabSource.contains("RuntimeSetupSection(model: settingsRuntimeSetup"))
+        #expect(!source.contains(#"Section("Provider Selection")"#))
     }
 
     private func settingsViewSource() throws -> String {
@@ -60,5 +69,19 @@ struct SettingsViewPrivacyTests {
             contentsOf: packageRoot.appendingPathComponent("Astra/Views/SettingsView.swift"),
             encoding: .utf8
         )
+    }
+
+    private func runtimeTabSource() throws -> String {
+        let packageRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return try String(
+            contentsOf: packageRoot.appendingPathComponent("Astra/Views/SettingsRuntimeTab.swift"),
+            encoding: .utf8
+        )
+    }
+
+    private func runtimeSettingsSource() throws -> String {
+        try [settingsViewSource(), runtimeTabSource()].joined(separator: "\n")
     }
 }

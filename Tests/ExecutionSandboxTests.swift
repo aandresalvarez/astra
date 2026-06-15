@@ -15,7 +15,8 @@ struct ExecutionSandboxTests {
         arguments: [String] = ["--print", "do work"],
         currentDirectory: String = "/tmp/astra-workspace",
         environment: [String: String] = ["HOME": "/tmp/astra-home"],
-        directoriesToCreate: [String] = []
+        directoriesToCreate: [String] = [],
+        sandboxReadablePaths: [String] = []
     ) -> AgentRuntimeProcessLaunchPlan {
         AgentRuntimeProcessLaunchPlan(
             runtime: runtime,
@@ -27,6 +28,7 @@ struct ExecutionSandboxTests {
             providerVersion: nil,
             parsesJSONLines: true,
             directoriesToCreate: directoriesToCreate,
+            sandboxReadablePaths: sandboxReadablePaths,
             providerDetectedFields: [:],
             commandPlannedFields: [:]
         )
@@ -185,7 +187,8 @@ struct ExecutionSandboxTests {
             executablePath: "/tmp/provider/bin/claude",
             currentDirectory: "/tmp/astra-workspace",
             environment: ["HOME": "/tmp/astra-home", "TMPDIR": "/tmp"],
-            directoriesToCreate: ["/tmp/astra-workspace/.astra/tasks/ab"]
+            directoriesToCreate: ["/tmp/astra-workspace/.astra/tasks/ab"],
+            sandboxReadablePaths: ["/tmp/astra-mcp-configs"]
         )
         let workspace = ExecutionSandbox.canonicalize(plan.currentDirectory)!
         let roots = ExecutionSandbox.readableRoots(
@@ -197,6 +200,7 @@ struct ExecutionSandboxTests {
 
         #expect(roots.contains(workspace))
         #expect(roots.contains("/private/tmp/extra-input"))
+        #expect(roots.contains("/private/tmp/astra-mcp-configs"))
         #expect(roots.contains("/private/tmp/astra-home/.claude"))
         #expect(roots.contains("/private/tmp/provider/bin"))
         #expect(roots.contains("/System"))

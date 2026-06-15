@@ -527,6 +527,7 @@ enum ExecutionSandbox {
     ) -> [String] {
         var raw: [String] = [canonicalWorkspace]
         raw.append(contentsOf: plan.directoriesToCreate)
+        raw.append(contentsOf: plan.sandboxReadablePaths)
         raw.append(contentsOf: additionalReadablePaths)
         raw.append(contentsOf: providerStateRoots(plan: plan, providerHomeDirectory: providerHomeDirectory))
 
@@ -570,6 +571,7 @@ enum ExecutionSandbox {
     ) -> [String] {
         var raw: [String] = [canonicalWorkspace]
         raw.append(contentsOf: plan.directoriesToCreate)
+        raw.append(contentsOf: plan.sandboxReadablePaths)
         raw.append(contentsOf: additionalReadablePaths)
 
         var seen: Set<String> = []
@@ -832,6 +834,7 @@ enum ExecutionSandbox {
             providerVersion: plan.providerVersion,
             parsesJSONLines: plan.parsesJSONLines,
             directoriesToCreate: plan.directoriesToCreate,
+            sandboxReadablePaths: plan.sandboxReadablePaths,
             providerDetectedFields: plan.providerDetectedFields,
             commandPlannedFields: plan.commandPlannedFields,
             interactiveAsk: plan.interactiveAsk
