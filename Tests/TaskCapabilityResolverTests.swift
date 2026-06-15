@@ -1238,6 +1238,28 @@ struct TaskCapabilityResolverTests {
         #expect(scope.excludedSkillNames.contains("GitHub Agent"))
     }
 
+    @Test("Provider launch context activates CLI tools for follow-up scoped requests")
+    func providerLaunchContextActivatesCLIToolsForFollowUpScopedRequests() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let (workspace, _) = try makeGitHubEnabledWorkspace(in: context, name: "github-followup-scope")
+
+        let task = AgentTask(
+            title: "Bake a cake",
+            goal: "Bake a chocolate sponge cake and write the recipe",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        #expect(AgentRuntimeProcessRunner.runtimeLocalToolCommands(for: task).isEmpty)
+        #expect(!AgentRuntimeProcessRunner.hasActiveCLITools(task))
+
+        let followUpContext = "Use GitHub to list the open pull requests for this repository."
+        #expect(AgentRuntimeProcessRunner.runtimeLocalToolCommands(for: task, contextText: followUpContext) == ["gh"])
+        #expect(AgentRuntimeProcessRunner.hasActiveCLITools(task, contextText: followUpContext))
+    }
+
     @Test("A pruned-but-existing enabled capability is not a launch failure")
     func prunedEnabledCapabilityIsNotALaunchFailure() throws {
         let container = try makeTaskCapabilityResolverContainer()

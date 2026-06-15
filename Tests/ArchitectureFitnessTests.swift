@@ -919,7 +919,7 @@ struct ArchitectureFitnessTests {
             "Astra/Views/ContentView.swift": 5_000,
             "Astra/Views/WorkspaceRightRailView.swift": 3_500,
             "Astra/Views/ChatPanelView.swift": 3_200,
-            "Astra/Services/Runtime/AgentRuntimeAdapter.swift": 2_910,
+            "Astra/Services/Runtime/AgentRuntimeAdapter.swift": 2_930,
             "Astra/Views/PluginCatalogView.swift": 2_900,
             "Astra/Views/ShelfMarkdownPanelView.swift": 2_850,
             "Astra/Views/WorkspaceGitSectionView.swift": 2_650,

@@ -182,9 +182,70 @@ enum CodexCLIRuntime {
         return nil
     }
 
-    static func directoriesToCreate(providerHomeDirectory: String) -> [String] {
+    static func directoriesToCreate(
+        providerHomeDirectory: String,
+        environment: [String: String] = [:]
+    ) -> [String] {
         let trimmed = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? [] : [trimmed]
+        if !trimmed.isEmpty {
+            return [trimmed]
+        }
+        let inheritedHome = environment["CODEX_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return inheritedHome.isEmpty ? [] : [inheritedHome]
+    }
+
+    static func sandboxReadablePaths(
+        providerHomeDirectory: String,
+        environment: [String: String],
+        processHomeDirectory: String = NSHomeDirectory()
+    ) -> [String] {
+        var paths: [String] = []
+        if let codexHome = codexHomeDirectory(
+            providerHomeDirectory: providerHomeDirectory,
+            environment: environment,
+            processHomeDirectory: processHomeDirectory
+        ) {
+            paths.append(codexHome)
+        }
+        paths.append("/etc/codex")
+        #if os(macOS)
+        paths.append(contentsOf: [
+            "/Library/Managed Preferences",
+            "/Library/Preferences"
+        ])
+        #endif
+        return uniqueNonEmpty(paths)
+    }
+
+    private static func codexHomeDirectory(
+        providerHomeDirectory: String,
+        environment: [String: String],
+        processHomeDirectory: String
+    ) -> String? {
+        let configuredHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !configuredHome.isEmpty {
+            return configuredHome
+        }
+        let inheritedCodexHome = environment["CODEX_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !inheritedCodexHome.isEmpty {
+            return inheritedCodexHome
+        }
+        let inheritedHome = environment["HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let home = inheritedHome.isEmpty
+            ? processHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+            : inheritedHome
+        return home.isEmpty ? nil : (home as NSString).appendingPathComponent(".codex")
+    }
+
+    private static func uniqueNonEmpty(_ paths: [String]) -> [String] {
+        var seen: Set<String> = []
+        return paths.compactMap { rawPath in
+            let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else {
+                return nil
+            }
+            return trimmed
+        }
     }
 
     static func extractUtilityText(from output: String) -> String {

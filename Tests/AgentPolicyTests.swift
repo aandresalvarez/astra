@@ -1754,6 +1754,58 @@ struct RunPermissionManifestTests {
         #expect(manifest.providerRender.allowedTools.contains("Bash(astra-browser *)"))
     }
 
+    @Test("Preflight manifest uses provider launch context for scoped local tool grants")
+    func preflightManifestUsesProviderLaunchContextForScopedLocalToolGrants() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "github-workflow" })
+        let workspace = Workspace(name: "GitHub Follow-up Policy", primaryPath: "/tmp/github-followup-policy")
+        workspace.enabledCapabilityIDs = [package.id]
+        let skill = Skill(
+            name: "GitHub Agent",
+            skillDescription: "x",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "x"
+        )
+        skill.workspace = workspace
+        let tool = LocalTool(
+            name: "gh — GitHub CLI",
+            toolDescription: "x",
+            toolType: "cli",
+            command: "gh"
+        )
+        tool.workspace = workspace
+        let task = AgentTask(
+            title: "Bake a cake",
+            goal: "Bake a chocolate sponge cake and write the recipe",
+            workspace: workspace
+        )
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(skill)
+        context.insert(tool)
+        context.insert(task)
+        context.insert(run)
+        TaskPolicyStore.recordSelection(level: .build, task: task, modelContext: context, source: "test")
+        try context.save()
+
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .claudeCode,
+            model: "claude-sonnet-4-6",
+            workspacePath: workspace.primaryPath,
+            phase: "resume",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            contextText: "Use GitHub to list the open pull requests for this repository.",
+            modelContext: context
+        )
+
+        #expect(manifest.providerRender.allowedTools.contains("Bash(gh *)"))
+    }
+
     @Test("Preflight manifest excludes pruned artifact task capabilities")
     func preflightManifestExcludesPrunedArtifactTaskCapabilities() throws {
         ShelfBrowserBridgeRegistry.shared.reset()
