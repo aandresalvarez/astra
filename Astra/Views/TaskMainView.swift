@@ -188,7 +188,7 @@ struct TaskMainView: View {
     @State private var showDiffsSheet = false
     @State private var showContextPreview = false
     @State private var showCheckpointBrowser = false
-    @State private var expandedRunActivity: Set<UUID> = []
+    @State private var runActivityDisclosureState = RunActivityDisclosureState()
     @State private var expandedRunNetworkDetails: Set<UUID> = []
     @State private var expandedRunPolicyManifests: Set<UUID> = []
     @State private var expandedRunNotices: Set<UUID> = []
@@ -2240,7 +2240,7 @@ struct TaskMainView: View {
         presentation: RunActivityPresentation,
         notices: [TaskRunNotice]
     ) -> some View {
-        let isExpanded = expandedRunActivity.contains(run.id)
+        let isExpanded = runActivityDisclosureState.isExpanded(runID: run.id, presentation: presentation)
         let accent = runActivitySummaryColor(run: run, notices: notices)
         let title = runActivityDisclosureTitle(run: run, notices: notices)
         // Static snapshot for the accessibility label only; the visible
@@ -2257,11 +2257,7 @@ struct TaskMainView: View {
         return VStack(alignment: .leading, spacing: 6) {
             Button {
                 withAnimation(chatStatusDisclosureAnimation) {
-                    if isExpanded {
-                        expandedRunActivity.remove(run.id)
-                    } else {
-                        expandedRunActivity.insert(run.id)
-                    }
+                    runActivityDisclosureState.toggle(runID: run.id, presentation: presentation)
                 }
             } label: {
                 HStack(spacing: 7) {
