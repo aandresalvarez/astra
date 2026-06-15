@@ -728,8 +728,8 @@ struct TaskCapabilityResolverTests {
         workspace.enabledGlobalConnectorIDs = [jiraConnector.id.uuidString, gcloudConnector.id.uuidString]
 
         let task = AgentTask(
-            title: "review if i have open issues to adress",
-            goal: "review if i have open issues to adress",
+            title: "review if i have open issues to address",
+            goal: "review if i have open issues to address",
             workspace: workspace
         )
         task.skills = [jiraSkill]

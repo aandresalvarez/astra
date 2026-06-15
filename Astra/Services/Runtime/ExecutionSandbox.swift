@@ -312,6 +312,11 @@ enum ExecutionSandbox {
         "/Library/Developer",
         "/Library/Apple",
         "/private/etc",
+        // /var/run holds host runtime state — the mDNSResponder name-resolution
+        // socket, other system daemon sockets, lock/pid files — that network-
+        // capable provider CLIs reach (e.g. to resolve hostnames). Read-only
+        // system state, not user data. Could be narrowed to the specific socket
+        // paths (e.g. /var/run/mDNSResponder) once the exact need is pinned down.
         "/private/var/run",
         "/etc",
         "/dev"
