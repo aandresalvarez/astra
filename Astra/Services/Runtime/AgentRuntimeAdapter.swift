@@ -2066,6 +2066,10 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let copilotHome = configuration.homeDirectory(for: id).isEmpty
             ? CopilotCLIRuntime.channelHome()
             : configuration.homeDirectory(for: id)
+        // Share terminal auth (~/.copilot) like the main launch path so Copilot
+        // helper prompts stay authenticated after a plain `copilot` /login.
+        let userHome = FileManager.default.homeDirectoryForCurrentUser.path
+        let copilotStateHome = CopilotCLIRuntime.defaultHome(userHome: userHome)
         let capabilities = CopilotCLIRuntime.capabilities(executablePath: executable)
         let allowedTools = toolMode == .readOnly ? ["Read", "Glob", "Grep"] : []
         let plan = CopilotCLIRuntime.buildCommand(
@@ -2080,6 +2084,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             capabilities: capabilities,
             taskEnvironment: [:],
             copilotHome: copilotHome,
+            copilotStateHome: copilotStateHome,
+            userHome: userHome,
             disableCustomInstructions: true
         )
 
