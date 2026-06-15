@@ -39,14 +39,20 @@ static NSString *const kAstraBootstrapAccount = @"keychain-bootstrap-password";
             return (SecKeychainRef)[cached pointerValue];
         }
 
-        NSData *password = [self bootstrapPasswordForService:bootstrapService create:YES];
-        if (password.length == 0) {
-            return NULL;
-        }
-
         const char *cPath = path.fileSystemRepresentation;
         SecKeychainRef keychain = NULL;
         BOOL exists = [[NSFileManager defaultManager] fileExistsAtPath:path];
+
+        // Only mint a fresh bootstrap password when creating a brand-new keychain
+        // file. If the file already exists but its bootstrap item is gone (e.g.
+        // the user deleted it from the login keychain), generating a new password
+        // here would both fail to unlock the existing keychain AND leave an
+        // orphaned wrong password behind — so for an existing file we require the
+        // stored password and otherwise fail closed.
+        NSData *password = [self bootstrapPasswordForService:bootstrapService create:!exists];
+        if (password.length == 0) {
+            return NULL;
+        }
 
         if (exists) {
             OSStatus openStatus = SecKeychainOpen(cPath, &keychain);
@@ -68,7 +74,7 @@ static NSString *const kAstraBootstrapAccount = @"keychain-bootstrap-password";
             // references, never an implicit default search, so a sibling
             // process can't enumerate it through securityd.
             CFArrayRef priorSearchList = NULL;
-            SecKeychainCopySearchList(&priorSearchList);
+            OSStatus copyStatus = SecKeychainCopySearchList(&priorSearchList);
 
             OSStatus createStatus = SecKeychainCreate(cPath,
                                                       (UInt32)password.length,
@@ -81,9 +87,20 @@ static NSString *const kAstraBootstrapAccount = @"keychain-bootstrap-password";
                 if (keychain != NULL) { CFRelease(keychain); }
                 return NULL;
             }
-            if (priorSearchList != NULL) {
-                SecKeychainSetSearchList(priorSearchList);
-                CFRelease(priorSearchList);
+
+            // Restore the prior search list so the new keychain stays out of it.
+            // If we cannot (couldn't snapshot it, or the restore failed), the
+            // keychain may remain globally searchable, defeating the isolation —
+            // so delete it and fail closed rather than ship a weaker boundary.
+            OSStatus restoreStatus =
+                (copyStatus == errSecSuccess && priorSearchList != NULL)
+                    ? SecKeychainSetSearchList(priorSearchList)
+                    : errSecParam;
+            if (priorSearchList != NULL) { CFRelease(priorSearchList); }
+            if (restoreStatus != errSecSuccess) {
+                SecKeychainDelete(keychain);
+                CFRelease(keychain);
+                return NULL;
             }
         }
 
@@ -173,7 +190,7 @@ static NSString *const kAstraBootstrapAccount = @"keychain-bootstrap-password";
 + (BOOL)saveSecret:(NSString *)value
         forAccount:(NSString *)account
            service:(NSString *)service
-             label:(NSString *)label
+             label:(nullable NSString *)label
       keychainPath:(NSString *)keychainPath
   bootstrapService:(NSString *)bootstrapService {
     SecKeychainRef keychain = [self dedicatedKeychainForPath:keychainPath bootstrapService:bootstrapService];
@@ -211,10 +228,10 @@ static NSString *const kAstraBootstrapAccount = @"keychain-bootstrap-password";
     return SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL) == errSecSuccess;
 }
 
-+ (NSString *)secretForAccount:(NSString *)account
-                       service:(NSString *)service
-                  keychainPath:(NSString *)keychainPath
-              bootstrapService:(NSString *)bootstrapService {
++ (nullable NSString *)secretForAccount:(NSString *)account
+                                service:(NSString *)service
+                           keychainPath:(NSString *)keychainPath
+                       bootstrapService:(NSString *)bootstrapService {
     SecKeychainRef keychain = [self dedicatedKeychainForPath:keychainPath bootstrapService:bootstrapService];
     if (keychain == NULL) { return nil; }
 
@@ -366,7 +383,7 @@ static NSString *const kAstraBootstrapAccount = @"keychain-bootstrap-password";
 }
 
 + (BOOL)loginKeychainContainsService:(NSString *)service
-                             account:(NSString *)account {
+                             account:(nullable NSString *)account {
     SecKeychainRef login = NULL;
     if (SecKeychainCopyDefault(&login) != errSecSuccess || login == NULL) {
         return NO;

@@ -172,22 +172,32 @@ struct AstraSecureKeychainTests {
     @Test("KeychainService connector secrets do not land in the login keychain",
           .enabled(if: AstraSecureKeychainTestSupport.isAvailable))
     func keychainServiceConnectorSecretsAvoidLogin() {
-        // End-to-end through the production wiring (KeychainService → facade →
-        // the real per-channel astra keychain). A throwaway connector UUID keeps
-        // it isolated; cleaned up afterwards.
+        // Exercise the production wiring (KeychainService → AstraSecureKeychainStore
+        // → dedicated keychain, never login) but redirect the store at a throwaway
+        // temp keychain via task-local overrides. This keeps the test hermetic: the
+        // real per-channel keychain and its bootstrap item are never touched, and
+        // nothing is shared with concurrently-running real-keychain tests, so
+        // teardown can safely delete everything it created.
+        let tempPath = AstraSecureKeychainTestSupport.tempKeychainPath()
+        let tempBootstrap = "astra-test-bootstrap-\(UUID().uuidString)"
         let connectorID = UUID()
         let service = KeychainSecretStore.connectorEntityID(for: connectorID)
         defer {
-            KeychainService.deleteAll(connectorID: connectorID)
-            AstraSecureKeychainTestSupport.deleteLoginItems(service: service)
+            AstraSecureKeychainTestSupport.cleanup(
+                keychainPath: tempPath, bootstrapService: tempBootstrap, services: [service]
+            )
         }
 
-        #expect(KeychainService.save(key: "API_KEY", value: "live-secret", connectorID: connectorID))
-        #expect(KeychainService.load(key: "API_KEY", connectorID: connectorID) == "live-secret")
-        #expect(KeychainService.exists(key: "API_KEY", connectorID: connectorID))
-        // The whole point: it is not in the login keychain.
-        #expect(!AstraSecureKeychainStore.loginKeychainContains(service: service, account: "API_KEY"))
-        #expect(!AstraSecureKeychainStore.loginKeychainContains(service: service))
+        AstraSecureKeychainStore.$keychainPathOverride.withValue(tempPath) {
+            AstraSecureKeychainStore.$bootstrapServiceOverride.withValue(tempBootstrap) {
+                #expect(KeychainService.save(key: "API_KEY", value: "live-secret", connectorID: connectorID))
+                #expect(KeychainService.load(key: "API_KEY", connectorID: connectorID) == "live-secret")
+                #expect(KeychainService.exists(key: "API_KEY", connectorID: connectorID))
+                // The whole point: it is written to the dedicated keychain, not login.
+                #expect(!AstraSecureKeychainStore.loginKeychainContains(service: service, account: "API_KEY"))
+                #expect(!AstraSecureKeychainStore.loginKeychainContains(service: service))
+            }
+        }
     }
 
     // MARK: - Migration from the login keychain

@@ -18,8 +18,23 @@ import AstraObjCSupport
 /// silently falling back to `login.keychain-db`.
 enum AstraSecureKeychainStore {
 
-    private static var keychainPath: String { AppChannel.current.astraKeychainPath }
-    private static var bootstrapService: String { AppChannel.current.astraKeychainBootstrapService }
+    /// Test-only redirect of the dedicated keychain file path. Task-local so a
+    /// test can point the store at a throwaway keychain without touching the real
+    /// per-channel file and without leaking the override to concurrently-running
+    /// tests. `nil` in production → the channel's real keychain path.
+    @TaskLocal static var keychainPathOverride: String?
+
+    /// Test-only redirect of the login-keychain bootstrap service (paired with
+    /// `keychainPathOverride`). `nil` in production.
+    @TaskLocal static var bootstrapServiceOverride: String?
+
+    private static var keychainPath: String {
+        keychainPathOverride ?? AppChannel.current.astraKeychainPath
+    }
+
+    private static var bootstrapService: String {
+        bootstrapServiceOverride ?? AppChannel.current.astraKeychainBootstrapService
+    }
 
     // MARK: - CRUD
 
