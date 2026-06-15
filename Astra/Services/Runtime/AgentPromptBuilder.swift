@@ -384,24 +384,7 @@ enum AgentPromptBuilder {
 
     private static func appendInputs(for task: AgentTask, to sections: inout [PromptContextSection]) {
         guard !task.inputs.isEmpty else { return }
-        var contextParts: [String] = []
-        for input in task.inputs {
-            if input.hasPrefix("/") || input.hasPrefix("~") {
-                let path = (input as NSString).expandingTildeInPath
-                var isDirectory: ObjCBool = false
-                if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
-                   isDirectory.boolValue {
-                    contextParts.append("Folder: \(path)\nUse this folder as routine context when needed.")
-                } else if let content = try? String(contentsOfFile: path, encoding: .utf8) {
-                    let truncated = content.count > 5000 ? String(content.prefix(5000)) + "\n... (truncated)" : content
-                    contextParts.append("File: \(input)\n```\n\(truncated)\n```")
-                } else {
-                    contextParts.append("Context: \(input)")
-                }
-            } else {
-                contextParts.append("Context: \(input)")
-            }
-        }
+        let contextParts = PromptInputContextReader.contextParts(for: task.inputs)
         appendSection(
             "Context/Inputs:\n" + contextParts.joined(separator: "\n\n"),
             kind: .supportingContext,
@@ -1238,6 +1221,9 @@ enum AgentPromptBuilder {
             to sections: inout [PromptContextSection]
         ) {
             if context.mode == .initialRun {
+                if let roster = CapabilityRosterBuilder.roster(for: context.task.workspace) {
+                    appendSection(roster, kind: .tools, to: &sections, sourcePointers: [sourcePointer(label: "enabled capabilities", target: "workspace")])
+                }
                 appendSkillInstructions(from: context.capabilityScope, to: &sections)
             }
             appendConnectorContext(from: context.capabilityScope, to: &sections)
@@ -1610,19 +1596,25 @@ enum AgentPromptBuilder {
     }
 
     private static func listTaskFolderFiles(_ folder: String) -> [String] {
-        let fm = FileManager.default
         let rootURL = URL(fileURLWithPath: folder)
             .resolvingSymlinksInPath()
             .standardizedFileURL
         let rootPath = rootURL.path.hasSuffix("/") ? rootURL.path : rootURL.path + "/"
-        guard let enumerator = fm.enumerator(
+        let hostFileAccess = HostFileAccessBroker()
+        let accessIntent = HostFileAccessIntent.astraManagedStorage(root: rootURL)
+        guard let enumerator = hostFileAccess.enumerator(
             at: rootURL,
             includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
+            options: [.skipsHiddenFiles],
+            intent: accessIntent
         ) else { return [] }
 
         var files: [String] = []
         while let url = enumerator.nextObject() as? URL {
+            guard !hostFileAccess.shouldSkip(url, intent: accessIntent) else {
+                enumerator.skipDescendants()
+                continue
+            }
             guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
             let itemURL = url
                 .resolvingSymlinksInPath()
@@ -1660,6 +1652,12 @@ enum AgentPromptBuilder {
     }
 
     private static func appendAstraRunProtocolInstructions(to sections: inout [PromptContextSection]) {
+        appendSection("""
+        Runtime permission language:
+        If a file read or write is blocked by policy or sandboxing, say it was blocked and name the path when known.
+        Do not describe sandbox retries as full access, elevated access, or broad access unless ASTRA explicitly granted that permission for this run.
+        """, kind: .tools, to: &sections, sourcePointers: [sourcePointer(label: "runtime permissions", target: "sandbox reporting contract")])
+
         appendSection("""
         Astra Run Protocol v1:
         Emit structured progress markers only when useful, each on its own line and outside code fences.

@@ -7,7 +7,7 @@ final class AgentRuntimeWorker {
     private(set) var isRunning = false
     private var cancellationRequested = false
     private var runtimeConfiguration = AgentRuntimeConfiguration()
-    private let processRunner = AgentRuntimeProcessRunner()
+    private let processRunner: AgentRuntimeProcessRunner
     var budgetEnforcementModeOverride: BudgetEnforcementMode?
 
     private var currentBudgetEnforcementMode: BudgetEnforcementMode {
@@ -56,9 +56,8 @@ final class AgentRuntimeWorker {
     }
 
     var defaultAgentPolicyLevelRaw: String = AgentPolicyLevel.review.rawValue
-
-    @MainActor
-    init() {
+    @MainActor init(processRunner: AgentRuntimeProcessRunner = AgentRuntimeProcessRunner()) {
+        self.processRunner = processRunner
         AppLogger.audit(.workerStarted, category: "Worker", fields: [
             "phase": "initialized",
             "default_runtime": defaultRuntimeID.rawValue,
@@ -665,7 +664,8 @@ final class AgentRuntimeWorker {
             : nil
         let beforeDirtyFingerprints = beforeGitStatus.map {
             AgentFileChangeDetector.fileFingerprints(
-                for: AgentFileChangeDetector.absolutePaths(fromGitStatus: $0, workspacePath: executionPath)
+                for: AgentFileChangeDetector.absolutePaths(fromGitStatus: $0, workspacePath: executionPath),
+                workspacePath: executionPath
             )
         }
         let capabilityScope = TaskCapabilityResolver(task: task).promptScope()
@@ -824,7 +824,7 @@ final class AgentRuntimeWorker {
             runtime: selectedRuntime,
             model: task.model,
             exitCode: result.exitCode,
-            rawError: result.error,
+            rawError: result.error, runOutput: run.output,
             providerVersion: result.providerVersion,
             stream: streamSnapshot,
             timedOut: result.timedOut,

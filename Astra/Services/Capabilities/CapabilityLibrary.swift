@@ -67,7 +67,7 @@ struct CapabilityLibrary {
     func installedPackages(
         trustedBuiltInIDs: Set<String> = CapabilityLibrary.trustedBuiltInPackageIDs
     ) -> [PluginPackage] {
-        guard let entries = try? fileManager.contentsOfDirectory(
+        guard let entries = libraryContents(
             at: directory,
             includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey]
         ) else {
@@ -199,7 +199,7 @@ struct CapabilityLibrary {
         for package in packages {
             let approved = approvedPackage(package)
             let url = packageStorageURL(for: package.id)
-            if let data = try? Data(contentsOf: url),
+            if let data = readLibraryData(at: url),
                let existing = try? decoder.decode(PluginPackage.self, from: data),
                shouldPreserveExistingPackage(existing, insteadOf: approved) {
                 continue
@@ -214,10 +214,10 @@ struct CapabilityLibrary {
 
         let approvedIDs = Set(packages.map(\.id))
         let decoder = JSONDecoder()
-        let files = (try? fileManager.contentsOfDirectory(
+        let files = libraryContents(
             at: directory,
             includingPropertiesForKeys: nil
-        )) ?? []
+        ) ?? []
 
         for url in files {
             let manifestURL: URL
@@ -232,7 +232,7 @@ struct CapabilityLibrary {
                 continue
             }
 
-            guard let data = try? Data(contentsOf: manifestURL),
+            guard let data = readLibraryData(at: manifestURL),
                   let package = try? decoder.decode(PluginPackage.self, from: data),
                   package.sourceMetadata?.kind == "built-in",
                   !approvedIDs.contains(package.id) else {
@@ -248,7 +248,7 @@ struct CapabilityLibrary {
         trustedBuiltInIDs: Set<String> = CapabilityLibrary.trustedBuiltInPackageIDs
     ) throws -> PluginPackage {
         let url = installedPackageStorageURL(for: id)
-        guard let data = try? Data(contentsOf: url) else {
+        guard let data = readLibraryData(at: url) else {
             throw RemovalError.notInstalled(id)
         }
 
@@ -374,6 +374,26 @@ struct CapabilityLibrary {
         return packageURL(for: id)
     }
 
+    private func readLibraryData(at url: URL) -> Data? {
+        try? HostFileAccessBroker(fileManager: fileManager).readData(
+            at: url,
+            intent: .astraManagedStorage(root: directory)
+        )
+    }
+
+    private func libraryContents(
+        at url: URL,
+        includingPropertiesForKeys keys: [URLResourceKey]?,
+        options mask: FileManager.DirectoryEnumerationOptions = []
+    ) -> [URL]? {
+        try? HostFileAccessBroker(fileManager: fileManager).contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: keys,
+            options: mask,
+            intent: .astraManagedStorage(root: directory)
+        )
+    }
+
     private func assetRootURL(from url: URL?) -> URL? {
         guard let url else { return nil }
         let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
@@ -384,7 +404,7 @@ struct CapabilityLibrary {
         at url: URL,
         trustedBuiltInIDs: Set<String>
     ) -> PluginPackage? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
+        guard let data = readLibraryData(at: url) else { return nil }
         guard var package = try? JSONDecoder().decode(PluginPackage.self, from: data) else { return nil }
         if package.sourceMetadata == nil {
             package.sourceMetadata = .localLibrary()

@@ -130,19 +130,38 @@ enum TaskFileIndex {
     }
 
     static func scanTaskFolder(_ folder: String, fileManager: FileManager = .default) -> [TaskFileItem] {
-        guard !folder.isEmpty, fileManager.fileExists(atPath: folder) else { return [] }
-        guard let enumerator = fileManager.enumerator(atPath: folder) else { return [] }
+        guard !folder.isEmpty else { return [] }
+        let rootURL = URL(fileURLWithPath: folder, isDirectory: true)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let rootPath = rootURL.path.hasSuffix("/") ? rootURL.path : rootURL.path + "/"
+        let hostFileAccess = HostFileAccessBroker(fileManager: fileManager)
+        let accessIntent = HostFileAccessIntent.astraManagedStorage(root: rootURL)
+        var rootIsDirectory = ObjCBool(false)
+        guard hostFileAccess.fileExists(at: rootURL, isDirectory: &rootIsDirectory, intent: accessIntent),
+              rootIsDirectory.boolValue,
+              let enumerator = hostFileAccess.enumerator(
+                at: rootURL,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                intent: accessIntent
+              ) else { return [] }
 
         var files: [TaskFileItem] = []
-        while let relativePath = enumerator.nextObject() as? String {
+        while let url = enumerator.nextObject() as? URL {
+            let itemURL = url
+                .resolvingSymlinksInPath()
+                .standardizedFileURL
+            if hostFileAccess.shouldSkip(itemURL, intent: accessIntent) {
+                enumerator.skipDescendants()
+                continue
+            }
+            guard itemURL.path.hasPrefix(rootPath) else { continue }
+            let relativePath = String(itemURL.path.dropFirst(rootPath.count))
             guard TaskGeneratedFiles.shouldDisplayTaskFolderFile(relativePath: relativePath) else { continue }
-            let fullPath = (folder as NSString).appendingPathComponent(relativePath)
-            var isDirectory = ObjCBool(false)
-            fileManager.fileExists(atPath: fullPath, isDirectory: &isDirectory)
-            if isDirectory.boolValue { continue }
+            guard (try? itemURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
 
             files.append(fileItem(
-                path: fullPath,
+                path: itemURL.path,
                 isDirectory: false,
                 source: "output",
                 fileManager: fileManager

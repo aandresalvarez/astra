@@ -174,7 +174,8 @@ enum WorkspaceFileIndexService {
         maxDepth: Int = 8,
         maxNodes: Int = 5_000,
         includeHidden: Bool = false,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        privacyHomeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) async -> WorkspaceFileIndexSnapshot {
         let scanTask = Task(priority: .utility) {
             scanSync(
@@ -182,7 +183,11 @@ enum WorkspaceFileIndexService {
                 maxDepth: maxDepth,
                 maxNodes: maxNodes,
                 includeHidden: includeHidden,
-                fileManager: fileManager
+                fileManager: fileManager,
+                hostFileAccess: HostFileAccessBroker(
+                    fileManager: fileManager,
+                    homeDirectory: privacyHomeDirectory
+                )
             )
         }
 
@@ -198,8 +203,14 @@ enum WorkspaceFileIndexService {
         maxDepth: Int = 8,
         maxNodes: Int = 5_000,
         includeHidden: Bool = false,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        privacyHomeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        hostFileAccess: HostFileAccessBroker? = nil
     ) -> WorkspaceFileIndexSnapshot {
+        let hostFileAccess = hostFileAccess ?? HostFileAccessBroker(
+            fileManager: fileManager,
+            homeDirectory: privacyHomeDirectory
+        )
         var nodes: [WorkspaceFileNode] = []
         var errors: [WorkspaceFileIndexError] = []
         var isTruncated = false
@@ -211,7 +222,7 @@ enum WorkspaceFileIndexService {
                 maxDepth: maxDepth,
                 maxNodes: maxNodes,
                 includeHidden: includeHidden,
-                fileManager: fileManager,
+                hostFileAccess: hostFileAccess,
                 nodes: &nodes,
                 errors: &errors,
                 isTruncated: &isTruncated
@@ -248,7 +259,7 @@ enum WorkspaceFileIndexService {
         maxDepth: Int,
         maxNodes: Int,
         includeHidden: Bool,
-        fileManager: FileManager,
+        hostFileAccess: HostFileAccessBroker,
         nodes: inout [WorkspaceFileNode],
         errors: inout [WorkspaceFileIndexError],
         isTruncated: inout Bool
@@ -260,10 +271,12 @@ enum WorkspaceFileIndexService {
 
         let rootURL = URL(fileURLWithPath: root.path, isDirectory: true)
         let resolvedRoot = resolvingSymlinks(root.path)
-        guard let enumerator = fileManager.enumerator(
+        let intent = HostFileAccessIntent.implicitScan(root: rootURL)
+        guard let enumerator = hostFileAccess.enumerator(
             at: rootURL,
             includingPropertiesForKeys: Array(resourceKeys),
-            options: [.skipsPackageDescendants]
+            options: [.skipsPackageDescendants],
+            intent: intent
         ) else {
             errors.append(WorkspaceFileIndexError(rootID: root.id, path: root.path, message: "Could not read folder"))
             return
@@ -277,6 +290,11 @@ enum WorkspaceFileIndexService {
             let depth = relativePath.split(separator: "/", omittingEmptySubsequences: true).count - 1
 
             guard depth <= maxDepth else {
+                enumerator.skipDescendants()
+                continue
+            }
+
+            if hostFileAccess.shouldSkip(url, intent: intent) {
                 enumerator.skipDescendants()
                 continue
             }

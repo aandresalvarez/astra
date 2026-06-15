@@ -612,6 +612,28 @@ struct AgentRuntimeFailureDiagnosticsTests {
         #expect(fields["stderr_was_warning_only"] == "false")
     }
 
+    @Test("Empty stderr falls back to the provider result payload as the surfaced cause")
+    func emptyStderrSurfacesResultPayload() {
+        let diagnostic = AgentRuntimeFailureDiagnostic.classify(
+            runtime: .claudeCode,
+            model: "claude-opus-4-6",
+            exitCode: 1,
+            rawError: "",
+            runOutput: "Error: SessionStart hook exited with status 1 before any response was produced",
+            providerVersion: "claude 1.0.0",
+            stream: nil
+        )
+
+        // Stderr was empty, but the real cause survived in the result payload and
+        // must no longer be hidden behind has_error_output=false / empty summary.
+        #expect(diagnostic.redactedSummary.contains("SessionStart hook"))
+        let fields = diagnostic.auditFields(phase: "run", stream: nil)
+        #expect(fields["summary_source"] == "result_output")
+        #expect(fields["has_result_output"] == "true")
+        #expect(fields["has_error_output"] == "false")
+        #expect((Int(fields["result_output_chars"] ?? "0") ?? 0) > 0)
+    }
+
     @Test("Auth keyword is matched before the noVisibleOutput branch")
     func authKeywordWinsOverNoVisibleOutput() {
         let diagnostic = AgentRuntimeFailureDiagnostic.classify(
@@ -1738,29 +1760,8 @@ struct CopilotWorkerExecutionTests {
           echo "copilot fake 1.0"
           exit 0
         fi
-        /usr/bin/python3 -u - <<'PY'
-        import json
-        print(json.dumps({
-            "type": "tool.execution_start",
-            "data": {
-                "toolCallId": "toolu_browser",
-                "toolName": "bash",
-                "arguments": {"command": "astra-browser google-docs-read-document"}
-            },
-            "id": "event-start"
-        }), flush=True)
-        print(json.dumps({
-            "type": "tool.execution_complete",
-            "data": {
-                "toolCallId": "toolu_browser",
-                "success": True,
-                "result": {
-                    "content": "{\\"ok\\":false,\\"error\\":\\"google_docs_controlled_browser_required\\",\\"reason\\":\\"embedded_webkit_clipboard_unavailable\\"}"
-                }
-            },
-            "id": "event-complete"
-        }), flush=True)
-        PY
+        printf '%s\\n' '{"type":"tool.execution_start","data":{"toolCallId":"toolu_browser","toolName":"bash","arguments":{"command":"astra-browser google-docs-read-document"}},"id":"event-start"}'
+        printf '%s\\n' '{"type":"tool.execution_complete","data":{"toolCallId":"toolu_browser","success":true,"result":{"content":"{\\"ok\\":false,\\"error\\":\\"google_docs_controlled_browser_required\\",\\"reason\\":\\"embedded_webkit_clipboard_unavailable\\"}"}},"id":"event-complete"}'
         exit 0
         """
         try script.write(to: binURL, atomically: true, encoding: .utf8)
@@ -1814,55 +1815,11 @@ struct CopilotWorkerExecutionTests {
           echo "copilot fake 1.0"
           exit 0
         fi
-        /usr/bin/python3 -u - <<'PY'
-        import json
-        def emit(obj):
-            print(json.dumps(obj), flush=True)
-        emit({
-            "type": "tool.execution_start",
-            "data": {
-                "toolCallId": "toolu_visible",
-                "toolName": "bash",
-                "arguments": {"command": "astra-browser google-docs-read-visible-page --format markdown --limit 50000"}
-            },
-            "id": "event-visible-start"
-        })
-        emit({
-            "type": "tool.execution_complete",
-            "data": {
-                "toolCallId": "toolu_visible",
-                "success": True,
-                "result": {
-                    "content": "{\\"ok\\":true,\\"googleDocsMode\\":\\"visible_page\\",\\"partialSummaryAllowed\\":true,\\"coverage\\":\\"partial\\",\\"content\\":\\"Visible page content\\"}"
-                }
-            },
-            "id": "event-visible-complete"
-        })
-        emit({
-            "type": "tool.execution_start",
-            "data": {
-                "toolCallId": "toolu_full",
-                "toolName": "bash",
-                "arguments": {"command": "astra-browser google-docs-read-document"}
-            },
-            "id": "event-full-start"
-        })
-        emit({
-            "type": "tool.execution_complete",
-            "data": {
-                "toolCallId": "toolu_full",
-                "success": True,
-                "result": {
-                    "content": "{\\"ok\\":false,\\"error\\":\\"google_docs_controlled_browser_required\\",\\"reason\\":\\"embedded_webkit_clipboard_unavailable\\"}"
-                }
-            },
-            "id": "event-full-complete"
-        })
-        emit({
-            "type": "assistant.message",
-            "data": {"content": "Partial summary: Visible page content"}
-        })
-        PY
+        printf '%s\\n' '{"type":"tool.execution_start","data":{"toolCallId":"toolu_visible","toolName":"bash","arguments":{"command":"astra-browser google-docs-read-visible-page --format markdown --limit 50000"}},"id":"event-visible-start"}'
+        printf '%s\\n' '{"type":"tool.execution_complete","data":{"toolCallId":"toolu_visible","success":true,"result":{"content":"{\\"ok\\":true,\\"googleDocsMode\\":\\"visible_page\\",\\"partialSummaryAllowed\\":true,\\"coverage\\":\\"partial\\",\\"content\\":\\"Visible page content\\"}"}},"id":"event-visible-complete"}'
+        printf '%s\\n' '{"type":"tool.execution_start","data":{"toolCallId":"toolu_full","toolName":"bash","arguments":{"command":"astra-browser google-docs-read-document"}},"id":"event-full-start"}'
+        printf '%s\\n' '{"type":"tool.execution_complete","data":{"toolCallId":"toolu_full","success":true,"result":{"content":"{\\"ok\\":false,\\"error\\":\\"google_docs_controlled_browser_required\\",\\"reason\\":\\"embedded_webkit_clipboard_unavailable\\"}"}},"id":"event-full-complete"}'
+        printf '%s\\n' '{"type":"assistant.message","data":{"content":"Partial summary: Visible page content"}}'
         exit 0
         """
         try script.write(to: binURL, atomically: true, encoding: .utf8)

@@ -38,6 +38,7 @@ enum AgentFileChangeDetector {
         runStart: Date
     ) {
         var paths = Set<String>()
+        let hostFileAccess = HostFileAccessBroker()
         let afterGitStatus = gitStatusSnapshot(workspacePath: workspacePath)
         if !afterGitStatus.isEmpty || !beforeGitStatus.isEmpty {
             for line in afterGitStatus.subtracting(beforeGitStatus) {
@@ -50,7 +51,11 @@ enum AgentFileChangeDetector {
                 fromGitStatus: afterGitStatus.union(beforeGitStatus),
                 workspacePath: workspacePath
             )
-            let afterDirtyFingerprints = fileFingerprints(for: dirtyCandidates)
+            let afterDirtyFingerprints = fileFingerprints(
+                for: dirtyCandidates,
+                workspacePath: workspacePath,
+                hostFileAccess: hostFileAccess
+            )
             for path in dirtyCandidates {
                 guard let before = beforeDirtyFingerprints[path],
                       afterDirtyFingerprints[path] != before else { continue }
@@ -59,10 +64,15 @@ enum AgentFileChangeDetector {
             paths.formUnion(recentlyModifiedFiles(
                 workspacePath: workspacePath,
                 since: runStart,
-                limitedTo: dirtyCandidates
+                limitedTo: dirtyCandidates,
+                hostFileAccess: hostFileAccess
             ))
         } else {
-            paths.formUnion(recentlyModifiedFiles(workspacePath: workspacePath, since: runStart))
+            paths.formUnion(recentlyModifiedFiles(
+                workspacePath: workspacePath,
+                since: runStart,
+                hostFileAccess: hostFileAccess
+            ))
         }
 
         let userPaths = paths.filter { !isIgnoredRuntimePath($0, workspacePath: workspacePath) }
@@ -86,9 +96,20 @@ enum AgentFileChangeDetector {
         Set(lines.compactMap { absolutePath(fromGitStatusLine: $0, workspacePath: workspacePath) })
     }
 
-    static func fileFingerprints(for paths: Set<String>) -> [String: FileFingerprint] {
-        Dictionary(uniqueKeysWithValues: paths.compactMap { path in
-            guard let fingerprint = fileFingerprint(path: path) else { return nil }
+    static func fileFingerprints(
+        for paths: Set<String>,
+        workspacePath: String? = nil,
+        hostFileAccess: HostFileAccessBroker = HostFileAccessBroker()
+    ) -> [String: FileFingerprint] {
+        let intent = workspacePath.map {
+            HostFileAccessIntent.implicitScan(root: URL(fileURLWithPath: $0, isDirectory: true))
+        } ?? .explicitUserSelection
+        return Dictionary(uniqueKeysWithValues: paths.compactMap { path in
+            guard let fingerprint = fileFingerprint(
+                path: path,
+                hostFileAccess: hostFileAccess,
+                intent: intent
+            ) else { return nil }
             return (path, fingerprint)
         })
     }
@@ -100,7 +121,11 @@ enum AgentFileChangeDetector {
         return (workspacePath as NSString).appendingPathComponent(normalized)
     }
 
-    private static func fileFingerprint(path: String) -> FileFingerprint? {
+    private static func fileFingerprint(
+        path: String,
+        hostFileAccess: HostFileAccessBroker,
+        intent: HostFileAccessIntent
+    ) -> FileFingerprint? {
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
               let type = attributes[.type] as? FileAttributeType,
               type == .typeRegular else {
@@ -110,7 +135,7 @@ enum AgentFileChangeDetector {
         let modified = attributes[.modificationDate] as? Date
         let checksum: UInt64?
         if size <= 5_000_000,
-           let data = try? Data(contentsOf: URL(fileURLWithPath: path)) {
+           let data = try? hostFileAccess.readData(at: URL(fileURLWithPath: path), intent: intent) {
             checksum = data.reduce(UInt64(14_695_981_039_346_656_037)) { partial, byte in
                 (partial ^ UInt64(byte)) &* 1_099_511_628_211
             }
@@ -123,7 +148,8 @@ enum AgentFileChangeDetector {
     private static func recentlyModifiedFiles(
         workspacePath: String,
         since: Date,
-        limitedTo candidates: Set<String>? = nil
+        limitedTo candidates: Set<String>? = nil,
+        hostFileAccess: HostFileAccessBroker = HostFileAccessBroker()
     ) -> Set<String> {
         let root = URL(fileURLWithPath: workspacePath)
             .resolvingSymlinksInPath()
@@ -132,10 +158,12 @@ enum AgentFileChangeDetector {
         let normalizedCandidates = candidates.map { paths in
             Set(paths.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path })
         }
-        guard let enumerator = FileManager.default.enumerator(
+        let intent = HostFileAccessIntent.implicitScan(root: root)
+        guard let enumerator = hostFileAccess.enumerator(
             at: root,
             includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+            options: [.skipsHiddenFiles, .skipsPackageDescendants],
+            intent: intent
         ) else { return [] }
 
         var result = Set<String>()
@@ -147,6 +175,10 @@ enum AgentFileChangeDetector {
                 .resolvingSymlinksInPath()
                 .standardizedFileURL
             guard itemURL.path.hasPrefix(rootPath) else { continue }
+            if hostFileAccess.shouldSkip(itemURL, intent: intent) {
+                enumerator.skipDescendants()
+                continue
+            }
             let rel = String(itemURL.path.dropFirst(rootPath.count))
             if isIgnoredRuntimeRelativePath(rel) {
                 continue

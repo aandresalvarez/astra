@@ -9,10 +9,11 @@ enum BundledToolInstaller {
         let destination = URL(fileURLWithPath: RuntimePathResolver.astraToolsPath, isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
-            let tools = try FileManager.default.contentsOfDirectory(
+            let tools = try HostFileAccessBroker().contentsOfDirectory(
                 at: bundledTools,
                 includingPropertiesForKeys: [.isRegularFileKey],
-                options: [.skipsHiddenFiles]
+                options: [.skipsHiddenFiles],
+                intent: .astraManagedStorage(root: bundledTools)
             )
             for tool in tools {
                 let target = destination.appendingPathComponent(tool.lastPathComponent)

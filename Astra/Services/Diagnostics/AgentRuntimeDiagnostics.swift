@@ -24,11 +24,24 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
     let category: AgentRuntimeFailureCategory
     let redactedSummary: String
     let rawErrorCharacterCount: Int
+    let resultOutputCharacterCount: Int
+    let summarySource: SummarySource
     let userMessage: String
     let stderrWasWarningOnly: Bool
 
+    enum SummarySource: String, Sendable {
+        case stderr
+        case resultOutput = "result_output"
+        case fallback
+        case none
+    }
+
     var hasErrorOutput: Bool {
         rawErrorCharacterCount > 0
+    }
+
+    var hasResultOutput: Bool {
+        resultOutputCharacterCount > 0
     }
 
     static func classify(
@@ -36,6 +49,7 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
         model: String,
         exitCode: Int,
         rawError: String?,
+        runOutput: String? = nil,
         providerVersion: String?,
         stream: AgentRuntimeStreamTelemetrySnapshot?,
         timedOut: Bool = false,
@@ -51,11 +65,20 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
         // newline must not count as a warning.
         let hadStderr = !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let warningOnly = hadStderr && meaningful.isEmpty
-        let redacted = LogSanitizer.sanitize(meaningful, maxLength: 800)
-        // Keyword classification (auth/model/quota/...) still inspects the FULL
-        // output so a real error embedded alongside a warning is matched first.
-        let haystack = "\(raw)\n\(redacted)".lowercased()
-        // The noVisibleOutput empty-check uses only the warning-stripped text.
+        let redactedStderr = LogSanitizer.sanitize(meaningful, maxLength: 800)
+        // When stderr is empty or only benign warnings, the provider's real failure
+        // message often survives only in its stdout/result payload (e.g. Claude Code
+        // exiting 1 after a SessionStart hook: 0 tokens, empty stderr, but a short
+        // result string). Fall back to that payload so the cause is not lost behind
+        // has_error_output=false / an empty error_summary.
+        let resultOutput = (runOutput ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let redactedResult = LogSanitizer.sanitize(resultOutput, maxLength: 800)
+        // Keyword classification (auth/model/quota/...) inspects stderr AND the
+        // result payload so a real error carried only in stdout is still matched.
+        let haystack = "\(raw)\n\(redactedStderr)\n\(redactedResult)".lowercased()
+        // The noVisibleOutput empty-check still uses only the warning-stripped
+        // stderr, so a substantive result payload upgrades the surfaced summary
+        // without changing the "produced events but no visible output" verdict.
         let meaningfulHaystack = meaningful.trimmingCharacters(in: .whitespacesAndNewlines)
         let category = classifyCategory(
             haystack: haystack,
@@ -65,7 +88,19 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
             budgetExceeded: budgetExceeded,
             maxTurnsExceeded: maxTurnsExceeded
         )
-        let summary = redacted.isEmpty ? fallbackSummary(for: category, runtime: runtime) : redacted
+        let summarySource: SummarySource
+        let summary: String
+        if !redactedStderr.isEmpty {
+            summarySource = .stderr
+            summary = redactedStderr
+        } else if !redactedResult.isEmpty {
+            summarySource = .resultOutput
+            summary = redactedResult
+        } else {
+            let fallback = fallbackSummary(for: category, runtime: runtime)
+            summarySource = fallback.isEmpty ? .none : .fallback
+            summary = fallback
+        }
         let resolvedModel = RuntimeModelAvailability.normalizedModel(model, for: runtime)
         return AgentRuntimeFailureDiagnostic(
             runtime: runtime,
@@ -75,6 +110,8 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
             category: category,
             redactedSummary: summary,
             rawErrorCharacterCount: raw.count,
+            resultOutputCharacterCount: resultOutput.count,
+            summarySource: summarySource,
             userMessage: userMessage(for: category, runtime: runtime, model: resolvedModel),
             stderrWasWarningOnly: warningOnly
         )
@@ -90,6 +127,9 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
             "failure_category": category.rawValue,
             "has_error_output": String(hasErrorOutput),
             "raw_error_chars": String(rawErrorCharacterCount),
+            "has_result_output": String(hasResultOutput),
+            "result_output_chars": String(resultOutputCharacterCount),
+            "summary_source": summarySource.rawValue,
             "error_summary": redactedSummary,
             "stderr_was_warning_only": String(stderrWasWarningOnly)
         ]

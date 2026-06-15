@@ -545,6 +545,14 @@ struct AgentRuntimeAdapterTests {
         #expect(claudePlan.commandPlannedFields["uses_native_continuation"] == "false")
         #expect(claudePlan.parsesJSONLines)
         #expect(claudePlan.providerVersion == nil)
+        #expect(claudePlan.arguments.contains("--strict-mcp-config"))
+        if let configIndex = claudePlan.arguments.firstIndex(of: "--mcp-config"),
+           claudePlan.arguments.indices.contains(configIndex + 1) {
+            let configDirectory = (claudePlan.arguments[configIndex + 1] as NSString).deletingLastPathComponent
+            #expect(claudePlan.sandboxReadablePaths.contains(configDirectory))
+        } else {
+            Issue.record("Claude launch plan should include a governed MCP config file")
+        }
         #expect(claudeResumePlan.arguments.starts(with: ["-p", "hello", "--resume", "claude-session-1"]))
         #expect(claudeResumePlan.commandPlannedFields["phase"] == "resume")
         #expect(claudeResumePlan.commandPlannedFields["uses_native_continuation"] == "true")
@@ -1045,6 +1053,107 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.commandPlannedFields["artifact_bootstrap_profile"] == "false")
         #expect(plan.commandPlannedFields["launch_effort"] == "default")
         #expect(!plan.arguments.contains("--effort"))
+    }
+
+    @Test("Live approvals withhold ask-first tools from the Claude allow-list but keep them visible")
+    @MainActor
+    func liveApprovalsWithholdAskFirstToolsFromAllowListButKeepVisible() throws {
+        let workspaceURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-claude-live-approvals-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: workspaceURL) }
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Claude Live Approvals", primaryPath: workspaceURL.path)
+        let task = AgentTask(
+            title: "Status",
+            goal: "explain who you are",
+            workspace: workspace,
+            model: "claude-sonnet-4-6",
+            runtime: .claudeCode
+        )
+        let providerRender = ProviderPolicyRender(
+            providerID: .claudeCode,
+            adapterVersion: 1,
+            policyLevel: .review,
+            configOwnership: .generated,
+            permissionMode: PermissionPolicy.restricted.rawValue,
+            allowedTools: ["Read"],
+            runtimeSupportTools: [],
+            askFirstTools: ["Write", "Edit", "Bash"],
+            deniedTools: [],
+            allowedShellPatterns: [],
+            askFirstShellPatterns: [],
+            deniedShellPatterns: [],
+            allowedURLPatterns: [],
+            deniedURLPatterns: [],
+            cliArgumentsSummary: [],
+            settingsSummary: "test",
+            generatedConfigPreview: "",
+            enforcementTiers: [.providerNative, .astraBrokered],
+            diagnostics: [],
+            usesBroadProviderPermissions: false
+        )
+        let manifest = RunPermissionManifest(
+            taskID: task.id,
+            runID: UUID(),
+            phase: "test",
+            providerID: .claudeCode,
+            providerVersion: nil,
+            model: "claude-sonnet-4-6",
+            policyLevel: .review,
+            policyScope: .builtInDefault,
+            providerRender: providerRender,
+            workspacePath: workspace.primaryPath,
+            additionalPaths: [],
+            environmentKeyNames: [],
+            credentialLabels: [],
+            approvalsGranted: [],
+            approvalGrants: []
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .claudeCode)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/claude",
+                providerHomeDirectory: "",
+                permissionPolicy: .restricted,
+                executionPolicy: .approvedPlan(runtime: .claudeCode, currentPermissionPolicy: .restricted, allowedTools: ["Read"]),
+                permissionManifest: manifest,
+                timeoutSeconds: 30,
+                liveApprovalsEnabled: true
+            ))
+
+        // The provider is launched for live approvals…
+        #expect(plan.arguments.contains("--permission-prompt-tool"))
+        // …ask-first tools stay visible so the model can still invoke them…
+        let toolsFlagIndex = try #require(plan.arguments.firstIndex(of: "--tools"))
+        #expect(plan.arguments[toolsFlagIndex + 1] == "Bash,Edit,Read,Write")
+        // …but are NOT pre-allowed (separate --allowedTools args), so the
+        // provider must ask before running them. Read stays allowed.
+        #expect(plan.arguments.contains("--allowedTools"))
+        #expect(plan.arguments.contains("Read"))
+        #expect(!plan.arguments.contains("Bash"))
+        #expect(!plan.arguments.contains("Edit"))
+        #expect(!plan.arguments.contains("Write"))
+        #expect(plan.commandPlannedFields["provider_launch_allowed_tool_count"] == "1")
+        #expect(plan.commandPlannedFields["uses_live_approvals"] == "true")
+
+        // The generated settings.local.json must not pre-allow ask-first tools
+        // either — that was the floor hole that bypassed the live channel.
+        let settingsURL = workspaceURL
+            .appendingPathComponent(".claude", isDirectory: true)
+            .appendingPathComponent("settings.local.json")
+        let data = try Data(contentsOf: settingsURL)
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let permissions = try #require(json["permissions"] as? [String: Any])
+        let allow = try #require(permissions["allow"] as? [String])
+        #expect(allow.contains("Read(*)"))
+        #expect(!allow.contains("Bash(*)"))
+        #expect(!allow.contains("Write(*)"))
+        #expect(!allow.contains("Edit(*)"))
     }
 
     @Test("Antigravity declares shared launch state and suggestion-only model availability")
