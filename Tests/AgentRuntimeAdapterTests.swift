@@ -574,7 +574,16 @@ struct AgentRuntimeAdapterTests {
         let keychainRoot = (FileManager.default.homeDirectoryForCurrentUser.path as NSString)
             .appendingPathComponent("Library/Keychains")
         #expect(copilotPlan.sandboxReadablePaths.contains("\(keychainRoot)/login.keychain-db"))
-        #expect(copilotPlan.sandboxReadablePaths.contains("\(keychainRoot)/metadata.keychain-db"))
+        // metadata.keychain-db is intentionally NOT granted: it is unnecessary for
+        // token retrieval and would leak the names of every stored credential.
+        #expect(!copilotPlan.sandboxReadablePaths.contains("\(keychainRoot)/metadata.keychain-db"))
+        // The shared-home injection-sensitive config files are carved out as read-only.
+        #expect(copilotPlan.sandboxProtectedWriteDenyPaths.contains(
+            (CopilotCLIRuntime.defaultHome() as NSString).appendingPathComponent("config.json")
+        ))
+        #expect(copilotPlan.sandboxProtectedWriteDenyPaths.contains(
+            (CopilotCLIRuntime.defaultHome() as NSString).appendingPathComponent("mcp-config.json")
+        ))
         #expect(copilotPlan.environment["COPILOT_HOME"] == CopilotCLIRuntime.defaultHome())
         #expect(copilotPlan.environment["HOME"] == FileManager.default.homeDirectoryForCurrentUser.path)
         #expect(copilotPlan.environment["XDG_CACHE_HOME"] == "/tmp/astra-provider-home/.cache")

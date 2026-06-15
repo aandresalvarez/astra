@@ -700,6 +700,9 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
     let parsesJSONLines: Bool
     let directoriesToCreate: [String]
     let sandboxReadablePaths: [String]
+    /// Files carved back out of a writable root as read-only (write-deny over
+    /// write-allow). See `CopilotCLIRuntime.configWriteDenyPaths`.
+    let sandboxProtectedWriteDenyPaths: [String]
     let providerDetectedFields: [String: String]
     let commandPlannedFields: [String: String]
     var interactiveAsk: AgentRuntimeInteractiveAskPlan?
@@ -715,6 +718,7 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
         parsesJSONLines: Bool,
         directoriesToCreate: [String] = [],
         sandboxReadablePaths: [String] = [],
+        sandboxProtectedWriteDenyPaths: [String] = [],
         providerDetectedFields: [String: String] = [:],
         commandPlannedFields: [String: String] = [:],
         interactiveAsk: AgentRuntimeInteractiveAskPlan? = nil
@@ -729,6 +733,7 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
         self.parsesJSONLines = parsesJSONLines
         self.directoriesToCreate = directoriesToCreate
         self.sandboxReadablePaths = sandboxReadablePaths
+        self.sandboxProtectedWriteDenyPaths = sandboxProtectedWriteDenyPaths
         self.providerDetectedFields = providerDetectedFields
         self.commandPlannedFields = commandPlannedFields
         self.interactiveAsk = interactiveAsk
@@ -1928,6 +1933,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
                 userHome: userHome
             ),
             sandboxReadablePaths: CopilotCLIRuntime.authReadablePaths(userHome: userHome),
+            sandboxProtectedWriteDenyPaths: CopilotCLIRuntime.configWriteDenyPaths(userHome: userHome),
             providerDetectedFields: [
                 "runtime": id.rawValue,
                 "provider_version": providerVersion ?? "unknown",
