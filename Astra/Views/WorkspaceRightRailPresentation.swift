@@ -35,6 +35,34 @@ enum WorkspaceRightRailPresentation {
     static let hideActionTitle = "Hide"
 }
 
+enum WorkspaceInstructionEditorPresentation {
+    static let saveActionTitle = "Save"
+    static let clearActionTitle = "Clear"
+    static let savedStatusTitle = "Saved"
+    static let unsavedStatusTitle = "Unsaved changes"
+    static let includedInPromptHint = "Included in every new task prompt."
+
+    static func persistedInstructions(fromDraft draft: String) -> String {
+        draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func hasUnsavedChanges(draft: String, persisted: String) -> Bool {
+        persistedInstructions(fromDraft: draft) != persistedInstructions(fromDraft: persisted)
+    }
+
+    static func statusTitle(draft: String, persisted: String, didRecentlySave: Bool) -> String? {
+        if hasUnsavedChanges(draft: draft, persisted: persisted) {
+            return unsavedStatusTitle
+        }
+
+        if didRecentlySave || !persistedInstructions(fromDraft: persisted).isEmpty {
+            return savedStatusTitle
+        }
+
+        return nil
+    }
+}
+
 enum CapabilityRailLayout {
     static let compactContentPadding: CGFloat = 16
     static let regularContentPadding: CGFloat = 14

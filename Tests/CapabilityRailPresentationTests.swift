@@ -302,6 +302,52 @@ struct CapabilityRailPresentationTests {
         )
     }
 
+    @Test("workspace instruction editor distinguishes draft from saved guidance")
+    func workspaceInstructionEditorDistinguishesDraftFromSavedGuidance() {
+        #expect(WorkspaceInstructionEditorPresentation.saveActionTitle == "Save")
+        #expect(WorkspaceInstructionEditorPresentation.clearActionTitle == "Clear")
+        #expect(WorkspaceInstructionEditorPresentation.savedStatusTitle == "Saved")
+        #expect(WorkspaceInstructionEditorPresentation.unsavedStatusTitle == "Unsaved changes")
+        #expect(
+            WorkspaceInstructionEditorPresentation.hasUnsavedChanges(
+                draft: "  Run focused tests before full suites.  ",
+                persisted: ""
+            ) == true
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.persistedInstructions(
+                fromDraft: "  Run focused tests before full suites.  "
+            ) == "Run focused tests before full suites."
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.hasUnsavedChanges(
+                draft: "Run focused tests before full suites.",
+                persisted: "Run focused tests before full suites."
+            ) == false
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.statusTitle(
+                draft: "Run focused tests before full suites.",
+                persisted: "Run focused tests before full suites.",
+                didRecentlySave: true
+            ) == "Saved"
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.statusTitle(
+                draft: "Prefer root-cause fixes.",
+                persisted: "Run focused tests before full suites.",
+                didRecentlySave: true
+            ) == "Unsaved changes"
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.statusTitle(
+                draft: "",
+                persisted: "",
+                didRecentlySave: false
+            ) == nil
+        )
+    }
+
     @Test("workspace folder setup treats primary path as reference")
     func workspaceFolderSetupTreatsPrimaryPathAsReference() {
         #expect(WorkspaceSetupChecklistPresentation.folderAccessTitle == "Folder access")

@@ -243,6 +243,8 @@ struct WorkspaceRightRailView: View {
     @State private var isConfiguredWorkspaceSetupExpanded = false
     @State private var newMemoryText = ""
     @State private var isMemoryComposerVisible = false
+    @State private var draftWorkspaceInstructions = ""
+    @State private var didRecentlySaveWorkspaceInstructions = false
     @State private var expandedWorkspaceSetupItems: Set<WorkspaceSetupItem> = []
     // Removing a configured folder or saved memory is destructive and was
     // previously one stray tap away with no undo — gate both behind a confirm.
@@ -481,6 +483,17 @@ struct WorkspaceRightRailView: View {
         .onChange(of: workspace.primaryPath) {
             loadSSHConnections()
             checkGitRepositories()
+        }
+        .onChange(of: workspace.id) {
+            syncInstructionDraftFromWorkspace()
+        }
+        .onChange(of: workspace.instructions) { oldValue, newValue in
+            guard !WorkspaceInstructionEditorPresentation.hasUnsavedChanges(
+                draft: draftWorkspaceInstructions,
+                persisted: oldValue
+            ) else { return }
+            draftWorkspaceInstructions = newValue
+            didRecentlySaveWorkspaceInstructions = false
         }
         .onChange(of: workspace.additionalPaths) {
             checkGitRepositories()
@@ -1533,7 +1546,7 @@ struct WorkspaceRightRailView: View {
     private var instructionsSetupDetails: some View {
         VStack(alignment: .leading, spacing: 8) {
             ZStack(alignment: .topLeading) {
-                if workspace.instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if draftWorkspaceInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Text("Add guidance for how tasks in this workspace should run...")
                         .font(Stanford.caption(12))
                         .foregroundStyle(.tertiary)
@@ -1542,7 +1555,7 @@ struct WorkspaceRightRailView: View {
                         .allowsHitTesting(false)
                 }
 
-                TextEditor(text: workspaceInstructionsBinding)
+                TextEditor(text: draftWorkspaceInstructionsBinding)
                     .font(Stanford.caption(12))
                     .scrollContentBackground(.hidden)
                     .frame(minHeight: 78, maxHeight: 140)
@@ -1556,23 +1569,44 @@ struct WorkspaceRightRailView: View {
             )
 
             HStack(spacing: 8) {
-                Text("Included in every new task prompt.")
+                let hasUnsavedChanges = hasUnsavedWorkspaceInstructions
+
+                Text(WorkspaceInstructionEditorPresentation.includedInPromptHint)
                     .font(Stanford.caption(10))
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
 
                 Spacer(minLength: 0)
 
-                if hasWorkspaceInstructions {
+                if let statusTitle = workspaceInstructionStatusTitle {
+                    Text(statusTitle)
+                        .font(Stanford.caption(10).weight(.medium))
+                        .foregroundStyle(hasUnsavedChanges ? Stanford.poppy : Stanford.paloAltoGreen)
+                        .lineLimit(1)
+                }
+
+                Button {
+                    saveWorkspaceInstructions()
+                } label: {
+                    Text(WorkspaceInstructionEditorPresentation.saveActionTitle)
+                        .font(Stanford.caption(11).weight(.semibold))
+                        .foregroundStyle(hasUnsavedChanges ? Stanford.lagunita : Stanford.sandstone)
+                }
+                .buttonStyle(.plain)
+                .disabled(!hasUnsavedChanges)
+                .help(hasUnsavedChanges ? "Save workspace instructions" : "Workspace instructions are saved")
+                .accessibilityLabel("Save workspace instructions")
+
+                if !draftWorkspaceInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Button {
-                        workspace.instructions = ""
-                        markWorkspaceConfigurationChanged()
+                        clearDraftWorkspaceInstructions()
                     } label: {
-                        Text("Clear")
+                        Text(WorkspaceInstructionEditorPresentation.clearActionTitle)
                             .font(Stanford.caption(11).weight(.medium))
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
+                    .help("Clear instruction draft")
                 }
             }
         }
@@ -1703,12 +1737,12 @@ struct WorkspaceRightRailView: View {
         return remotePath.isEmpty ? target : "\(target)  \(remotePath)"
     }
 
-    private var workspaceInstructionsBinding: Binding<String> {
+    private var draftWorkspaceInstructionsBinding: Binding<String> {
         Binding(
-            get: { workspace.instructions },
+            get: { draftWorkspaceInstructions },
             set: { value in
-                workspace.instructions = value
-                markWorkspaceConfigurationChanged()
+                draftWorkspaceInstructions = value
+                didRecentlySaveWorkspaceInstructions = false
             }
         )
     }
@@ -1909,6 +1943,52 @@ struct WorkspaceRightRailView: View {
         WorkspacePersistenceCoordinator.scheduleAutoExport(workspace: workspace, modelContext: modelContext)
     }
 
+    private func syncInstructionDraftFromWorkspace() {
+        draftWorkspaceInstructions = workspace.instructions
+        didRecentlySaveWorkspaceInstructions = false
+    }
+
+    private var hasUnsavedWorkspaceInstructions: Bool {
+        WorkspaceInstructionEditorPresentation.hasUnsavedChanges(
+            draft: draftWorkspaceInstructions,
+            persisted: workspace.instructions
+        )
+    }
+
+    private var workspaceInstructionStatusTitle: String? {
+        WorkspaceInstructionEditorPresentation.statusTitle(
+            draft: draftWorkspaceInstructions,
+            persisted: workspace.instructions,
+            didRecentlySave: didRecentlySaveWorkspaceInstructions
+        )
+    }
+
+    private func saveWorkspaceInstructions() {
+        let savedInstructions = WorkspaceInstructionEditorPresentation.persistedInstructions(
+            fromDraft: draftWorkspaceInstructions
+        )
+        guard savedInstructions != workspace.instructions.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            draftWorkspaceInstructions = savedInstructions
+            didRecentlySaveWorkspaceInstructions = true
+            return
+        }
+
+        workspace.instructions = savedInstructions
+        draftWorkspaceInstructions = savedInstructions
+        didRecentlySaveWorkspaceInstructions = true
+        markWorkspaceConfigurationChanged()
+
+        withAnimation(disclosureAnimation) {
+            _ = expandedWorkspaceSetupItems.insert(.instructions)
+            isConfiguredWorkspaceSetupExpanded = !savedInstructions.isEmpty
+        }
+    }
+
+    private func clearDraftWorkspaceInstructions() {
+        draftWorkspaceInstructions = ""
+        didRecentlySaveWorkspaceInstructions = false
+    }
+
     private func removeAdditionalPaths(matching path: String) {
         let remaining = WorkspaceSetupChecklistPresentation.remainingAdditionalPaths(
             afterRemovingFolderMatching: path,
@@ -1958,6 +2038,7 @@ struct WorkspaceRightRailView: View {
         isToolsExpanded = false
         isTemplatesExpanded = false
         isMemoryComposerVisible = false
+        syncInstructionDraftFromWorkspace()
         expandedWorkspaceSetupItems = []
 
         // Restore the section expand/collapse choices the user made last time in
