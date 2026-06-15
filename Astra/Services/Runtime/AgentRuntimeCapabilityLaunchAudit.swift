@@ -82,8 +82,8 @@ enum AgentRuntimeCapabilityLaunchAudit {
             timeout: 5,
             environment: nil
         )
-        fields["auth_result"] = runResultLabel(auth)
-        fields["result"] = auth.isSuccess ? "authenticated" : runResultLabel(auth)
+        fields["auth_result"] = runResultLabel(auth, nonZeroExitLabel: "auth_failed")
+        fields["result"] = auth.isSuccess ? "authenticated" : runResultLabel(auth, nonZeroExitLabel: "auth_failed")
         AppLogger.audit(
             .localToolTested,
             category: "Worker",
@@ -94,12 +94,12 @@ enum AgentRuntimeCapabilityLaunchAudit {
         )
     }
 
-    private static func runResultLabel(_ result: RunResult) -> String {
+    static func runResultLabel(_ result: RunResult, nonZeroExitLabel: String? = nil) -> String {
         switch result.outcome {
         case .exited(code: 0):
             return "success"
-        case .exited:
-            return "auth_failed"
+        case .exited(let code):
+            return nonZeroExitLabel ?? "exit_\(code)"
         case .timedOut:
             return "timeout"
         case .cancelled:
