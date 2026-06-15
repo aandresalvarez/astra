@@ -389,6 +389,31 @@ struct CapabilityRailPresentationTests {
         )
     }
 
+    @Test("workspace instruction editor shows clear action for visible persisted draft before sync")
+    func workspaceInstructionEditorShowsClearActionForVisiblePersistedDraftBeforeSync() {
+        #expect(
+            WorkspaceInstructionEditorPresentation.shouldShowClearAction(
+                localDraft: "",
+                persisted: "Existing workspace guidance",
+                isSynced: false
+            ) == true
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.shouldShowClearAction(
+                localDraft: "",
+                persisted: "Existing workspace guidance",
+                isSynced: true
+            ) == false
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.shouldShowClearAction(
+                localDraft: "Draft guidance",
+                persisted: "",
+                isSynced: true
+            ) == true
+        )
+    }
+
     @Test("workspace folder setup treats primary path as reference")
     func workspaceFolderSetupTreatsPrimaryPathAsReference() {
         #expect(WorkspaceSetupChecklistPresentation.folderAccessTitle == "Folder access")

@@ -1600,7 +1600,7 @@ struct WorkspaceRightRailView: View {
                 .help(hasUnsavedChanges ? "Save workspace instructions" : "Workspace instructions are saved")
                 .accessibilityLabel("Save workspace instructions")
 
-                if !draftWorkspaceInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if shouldShowClearWorkspaceInstructionsAction {
                     Button {
                         clearDraftWorkspaceInstructions()
                     } label: {
@@ -1979,6 +1979,14 @@ struct WorkspaceRightRailView: View {
             persisted: workspace.instructions,
             isSynced: isWorkspaceInstructionDraftSynced,
             didRecentlySave: didRecentlySaveWorkspaceInstructions
+        )
+    }
+
+    private var shouldShowClearWorkspaceInstructionsAction: Bool {
+        WorkspaceInstructionEditorPresentation.shouldShowClearAction(
+            localDraft: draftWorkspaceInstructions,
+            persisted: workspace.instructions,
+            isSynced: isWorkspaceInstructionDraftSynced
         )
     }
 

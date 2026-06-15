@@ -61,6 +61,12 @@ enum WorkspaceInstructionEditorPresentation {
         )
     }
 
+    static func shouldShowClearAction(localDraft: String, persisted: String, isSynced: Bool) -> Bool {
+        !persistedInstructions(
+            fromDraft: effectiveDraft(localDraft: localDraft, persisted: persisted, isSynced: isSynced)
+        ).isEmpty
+    }
+
     static func statusTitle(draft: String, persisted: String, didRecentlySave: Bool) -> String? {
         if hasUnsavedChanges(draft: draft, persisted: persisted) {
             return unsavedStatusTitle
