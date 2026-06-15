@@ -21,9 +21,7 @@ enum RuntimeModelDisplayName {
     }
 
     static func familyVersionLabel(in value: String) -> String? {
-        let pattern = #"(?i)(?:^|[^a-z])(opus|sonnet|haiku|fable|mythos)[\s._-]+([0-9]+)[\s._-]+([0-9]+)(?:[^0-9]|$)"#
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let match = regex.firstMatch(
+        guard let match = familyVersionRegex.firstMatch(
                 in: value,
                 range: NSRange(value.startIndex..<value.endIndex, in: value)
               ),
@@ -37,6 +35,10 @@ enum RuntimeModelDisplayName {
         let family = displayFamily(String(value[familyRange]))
         return "\(family) \(value[majorRange]).\(value[minorRange])"
     }
+
+    private static let familyVersionRegex = try! NSRegularExpression(
+        pattern: #"(?i)(?:^|[^a-z])(opus|sonnet|haiku|fable|mythos)[\s._-]+([0-9]+)[\s._-]+([0-9]+)(?:[^0-9]|$)"#
+    )
 
     private static func displayFamily(_ family: String) -> String {
         let lower = family.lowercased()
