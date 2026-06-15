@@ -23,7 +23,17 @@ struct TaskWorkspaceAccess {
            fileSystem.fileExists(atPath: pinned) {
             return pinned
         }
-        return task.workspace?.resolvedWorkingPath ?? effectiveWorkspacePath
+        if let workspace = task.workspace {
+            let resolved = workspace.resolvedWorkingPath
+            if resolved != workspace.primaryPath {
+                return resolved
+            }
+            if let soleGitRepository = soleConfiguredGitRepository(in: workspace) {
+                return soleGitRepository
+            }
+            return resolved
+        }
+        return effectiveWorkspacePath
     }
 
     var runtimeAdditionalPaths: [String] {
@@ -76,5 +86,22 @@ struct TaskWorkspaceAccess {
             }
             return path
         }
+    }
+
+    private func soleConfiguredGitRepository(in workspace: Workspace) -> String? {
+        guard !isGitRepository(workspace.primaryPath) else { return nil }
+        let gitRepositories = workspace.additionalPaths
+            .map { ($0 as NSString).expandingTildeInPath }
+            .filter { !$0.isEmpty && isGitRepository($0) }
+        guard gitRepositories.count == 1 else { return nil }
+        return gitRepositories[0]
+    }
+
+    private func isGitRepository(_ path: String) -> Bool {
+        let expanded = (path as NSString).expandingTildeInPath
+        guard fileSystem.directoryExists(atPath: expanded) else { return false }
+        return fileSystem.fileExists(
+            atPath: (expanded as NSString).appendingPathComponent(".git")
+        )
     }
 }
