@@ -302,6 +302,7 @@ struct RunActivityPresentation: Hashable, Sendable {
     let policy: PolicySummaryPresentation?
     let technicalOutputs: [TechnicalOutputPresentation]
     let stats: [RunFactPresentation]
+    let prefersExpandedDetails: Bool
 
     init(
         run: TaskRunSnapshot,
@@ -351,10 +352,32 @@ struct RunActivityPresentation: Hashable, Sendable {
         )
         technicalOutputs = technicalRows
         stats = Self.statsFacts(for: run)
+        prefersExpandedDetails = Self.prefersExpandedDetails(
+            run: run,
+            issues: issueRows,
+            technicalOutputs: technicalRows
+        )
     }
 
     var hasVisibleDetails: Bool {
         !issues.isEmpty || !approvals.isEmpty || !progressMessages.isEmpty || !tools.isEmpty || !files.isEmpty || policy != nil || !technicalOutputs.isEmpty || !stats.isEmpty
+    }
+
+    private static func prefersExpandedDetails(
+        run: TaskRunSnapshot,
+        issues: [RunIssuePresentation],
+        technicalOutputs: [TechnicalOutputPresentation]
+    ) -> Bool {
+        if run.status.prefersExpandedRunActivityDetails {
+            return true
+        }
+        if issues.contains(where: { $0.severity == .error }) {
+            return true
+        }
+        if technicalOutputs.contains(where: { $0.severity == .error }) {
+            return true
+        }
+        return false
     }
 
     private static func groupToolCalls(_ calls: [TaskToolCall]) -> [ToolActivityPresentation] {
@@ -431,7 +454,8 @@ struct RunActivityPresentation: Hashable, Sendable {
         files: [],
         policy: nil,
         technicalOutputs: [],
-        stats: []
+        stats: [],
+        prefersExpandedDetails: false
     )
 
     private init(
@@ -442,7 +466,8 @@ struct RunActivityPresentation: Hashable, Sendable {
         files: [StoredFileChange],
         policy: PolicySummaryPresentation?,
         technicalOutputs: [TechnicalOutputPresentation],
-        stats: [RunFactPresentation]
+        stats: [RunFactPresentation],
+        prefersExpandedDetails: Bool
     ) {
         self.issues = issues
         self.approvals = approvals
@@ -452,6 +477,49 @@ struct RunActivityPresentation: Hashable, Sendable {
         self.policy = policy
         self.technicalOutputs = technicalOutputs
         self.stats = stats
+        self.prefersExpandedDetails = prefersExpandedDetails
+    }
+}
+
+struct RunActivityDisclosureState: Hashable, Sendable {
+    private var manuallyExpandedRunIDs: Set<UUID> = []
+    private var manuallyCollapsedRunIDs: Set<UUID> = []
+
+    func isExpanded(
+        runID: UUID,
+        presentation: RunActivityPresentation
+    ) -> Bool {
+        if manuallyCollapsedRunIDs.contains(runID) {
+            return false
+        }
+        if manuallyExpandedRunIDs.contains(runID) {
+            return true
+        }
+        return presentation.prefersExpandedDetails
+    }
+
+    mutating func toggle(
+        runID: UUID,
+        presentation: RunActivityPresentation
+    ) {
+        if isExpanded(runID: runID, presentation: presentation) {
+            manuallyExpandedRunIDs.remove(runID)
+            manuallyCollapsedRunIDs.insert(runID)
+        } else {
+            manuallyCollapsedRunIDs.remove(runID)
+            manuallyExpandedRunIDs.insert(runID)
+        }
+    }
+}
+
+private extension RunStatus {
+    var prefersExpandedRunActivityDetails: Bool {
+        switch self {
+        case .failed, .timeout, .budgetExceeded:
+            true
+        case .running, .completed, .cancelled:
+            false
+        }
     }
 }
 
