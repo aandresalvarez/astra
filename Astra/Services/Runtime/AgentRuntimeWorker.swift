@@ -604,8 +604,18 @@ final class AgentRuntimeWorker {
             isRunning = false
             return
         }
-        Self.logCapabilityResolution(for: task, runtime: selectedRuntime, phase: auditPhase)
-        await logGitHubCLIPreflightIfNeeded(for: task, phase: auditPhase)
+        AgentRuntimeCapabilityLaunchAudit.logResolution(
+            for: task,
+            runtime: selectedRuntime,
+            phase: auditPhase,
+            contextText: providerLaunchContextText
+        )
+        await AgentRuntimeCapabilityLaunchAudit.logGitHubCLIPreflightIfNeeded(
+            for: task,
+            runtime: selectedRuntime,
+            phase: auditPhase,
+            contextText: providerLaunchContextText
+        )
         let policyRenderer = AgentRuntimeAdapterRegistry.policyRenderer(for: selectedRuntime)
         let providerCapabilities = policyRenderer.policyCapabilities(executablePath: launchSettings.executablePath)
         let runPermissionPolicy = effectivePermissionPolicy(for: task, executionPolicy: executionPolicy)
@@ -620,6 +630,7 @@ final class AgentRuntimeWorker {
             executionPolicy: executionPolicy,
             defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
             providerCapabilities: providerCapabilities,
+            contextText: providerLaunchContextText,
             modelContext: modelContext
         )
         guard shouldStartProvider(with: manifest, task: task, run: run, modelContext: modelContext, phase: auditPhase) else {
@@ -628,7 +639,11 @@ final class AgentRuntimeWorker {
             }
             return
         }
-        let launchSignature = Self.providerLaunchSignature(for: task, manifest: manifest)
+        let launchSignature = Self.providerLaunchSignature(
+            for: task,
+            manifest: manifest,
+            contextText: providerLaunchContextText
+        )
         let nativeContinuationDecision = Self.nativeContinuationSessionID(
             for: task,
             currentRun: run,
@@ -668,7 +683,7 @@ final class AgentRuntimeWorker {
                 workspacePath: executionPath
             )
         }
-        let capabilityScope = TaskCapabilityResolver(task: task).promptScope()
+        let capabilityScope = TaskCapabilityResolver(task: task).promptScope(contextText: providerLaunchContextText)
         if !capabilityScope.behaviorSkills.isEmpty {
             let skillNames = capabilityScope.behaviorSkills.map(\.name).joined(separator: ", ")
             let skillEvent = TaskEvent(task: task, eventType: TaskEventTypes.System.skillActive,
@@ -1731,9 +1746,10 @@ final class AgentRuntimeWorker {
     @MainActor
     private static func providerLaunchSignature(
         for task: AgentTask,
-        manifest: RunPermissionManifest
+        manifest: RunPermissionManifest,
+        contextText: String
     ) -> ProviderLaunchSignaturePayload {
-        let scope = TaskCapabilityResolver(task: task).promptScope()
+        let scope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
         let supportTools = manifest.providerRender.runtimeSupportTools.map { descriptor in
             [
                 descriptor.name,
@@ -1817,116 +1833,6 @@ final class AgentRuntimeWorker {
 
     private static func runtimeID(from rawValue: String?) -> AgentRuntimeID? {
         rawValue.flatMap(AgentRuntimeID.init(rawValue:))
-    }
-
-    @MainActor
-    private static func logCapabilityResolution(for task: AgentTask, runtime: AgentRuntimeID, phase: String) {
-        let resolver = TaskCapabilityResolver(task: task)
-        let scope = resolver.promptScope()
-        let connectors = scope.connectors
-        let tools = scope.localTools
-        let skills = scope.behaviorSkills
-        AppLogger.audit(.capabilityResolved, category: "Worker", taskID: task.id, fields: [
-            "runtime": runtime.rawValue,
-            "phase": phase,
-            "scope_pruned": String(scope.prunedForBrowserTask),
-            "scope_excluded_skill_names": compactNames(scope.excludedSkillNames),
-            "workspace_id": task.workspace?.id.uuidString ?? "none",
-            "workspace_enabled_capabilities_count": String(task.workspace?.enabledCapabilityIDs.count ?? 0),
-            "workspace_enabled_capability_ids": CapabilityAudit.compactNames(task.workspace?.enabledCapabilityIDs ?? []),
-            "workspace_enabled_global_skills_count": String(task.workspace?.enabledGlobalSkillIDs.count ?? 0),
-            "workspace_enabled_global_connectors_count": String(task.workspace?.enabledGlobalConnectorIDs.count ?? 0),
-            "workspace_enabled_global_tools_count": String(task.workspace?.enabledGlobalToolIDs.count ?? 0),
-            "task_skill_count": String(task.skills.count),
-            "task_skill_snapshot_count": String(task.skillSnapshots.count),
-            "resolved_skill_count": String(skills.count),
-            "connector_count": String(connectors.count),
-            "local_tool_count": String(tools.count),
-            "skill_names": compactNames(task.skills.map(\.name)),
-            "resolved_skill_names": compactNames(skills.map(\.name)),
-            "connector_names": compactNames(connectors.map(\.name)),
-            "connector_service_types": compactNames(connectors.map(\.serviceType)),
-            "local_tool_names": compactNames(tools.map(\.name))
-        ], level: .debug, fieldMaxLength: 240)
-    }
-
-    @MainActor
-    private func logGitHubCLIPreflightIfNeeded(for task: AgentTask, phase: String) async {
-        let resolver = TaskCapabilityResolver(task: task)
-        let scope = resolver.promptScope()
-        let tools = scope.localTools
-        let hasGitHubTool = tools.contains { tool in
-            tool.command.trimmingCharacters(in: .whitespacesAndNewlines) == "gh"
-        }
-        let hasGitHubSkill = scope.behaviorSkills.contains { skill in
-            let name = skill.name.lowercased()
-            return name.contains("github") || name.contains("git hub")
-        }
-        guard hasGitHubTool || hasGitHubSkill else { return }
-
-        let gh = RuntimePathResolver.detectExecutablePath(named: "gh")
-        var fields: [String: String] = [
-            "source": "task_preflight",
-            "phase": phase,
-            "command": "gh",
-            "matched_tool": String(hasGitHubTool),
-            "matched_skill": String(hasGitHubSkill),
-            "runtime": runtimeConfiguration.selectedRuntime(for: task).rawValue
-        ]
-
-        guard !gh.isEmpty, FileManager.default.isExecutableFile(atPath: gh) else {
-            fields["result"] = "executable_missing"
-            AppLogger.audit(.localToolTested, category: "Worker", taskID: task.id, fields: fields, level: .warning)
-            return
-        }
-
-        fields["executable_path"] = gh
-        let runner = ProcessBinaryRunner()
-        let version = await runner.run(path: gh, args: ["--version"], timeout: 3, environment: nil)
-        fields["version_result"] = Self.runResultLabel(version)
-        if version.isSuccess,
-           let firstLine = version.stdout.split(separator: "\n").first {
-            fields["version_summary"] = String(firstLine)
-        }
-
-        let auth = await runner.run(
-            path: gh,
-            args: ["auth", "status", "--hostname", "github.com"],
-            timeout: 5,
-            environment: nil
-        )
-        fields["auth_result"] = Self.runResultLabel(auth)
-        fields["result"] = auth.isSuccess ? "authenticated" : Self.runResultLabel(auth)
-        AppLogger.audit(
-            .localToolTested,
-            category: "Worker",
-            taskID: task.id,
-            fields: fields,
-            level: auth.isSuccess ? .debug : .warning,
-            fieldMaxLength: 220
-        )
-    }
-
-    private static func runResultLabel(_ result: RunResult) -> String {
-        switch result.outcome {
-        case .exited(code: 0):
-            return "success"
-        case .exited:
-            return "auth_failed"
-        case .timedOut:
-            return "timeout"
-        case .cancelled:
-            return "cancelled"
-        case .launchFailed:
-            return "launch_failed"
-        }
-    }
-
-    private static func compactNames(_ names: [String], limit: Int = 8) -> String {
-        let visible = names.prefix(limit).joined(separator: ",")
-        let remaining = names.count - min(names.count, limit)
-        guard remaining > 0 else { return visible }
-        return visible.isEmpty ? "+\(remaining)_more" : "\(visible),+\(remaining)_more"
     }
 
     private static func approvedPlanExecutionPolicy(

@@ -464,13 +464,13 @@ final class AgentRuntimeProcessRunner {
     }
 
     @MainActor
-    static func copilotLocalToolCommands(for task: AgentTask) -> [String] {
-        runtimeLocalToolCommands(for: task)
+    static func copilotLocalToolCommands(for task: AgentTask, contextText: String = "") -> [String] {
+        runtimeLocalToolCommands(for: task, contextText: contextText)
     }
 
     @MainActor
-    static func runtimeLocalToolCommands(for task: AgentTask) -> [String] {
-        let capabilityScope = TaskCapabilityResolver(task: task).promptScope()
+    static func runtimeLocalToolCommands(for task: AgentTask, contextText: String = "") -> [String] {
+        let capabilityScope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
         return Array(Set(capabilityScope.localTools.compactMap { tool in
             guard tool.toolType != "mcp" else { return nil }
             let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -787,8 +787,8 @@ final class AgentRuntimeProcessRunner {
     }
 
     @MainActor
-    static func hasActiveCLITools(_ task: AgentTask) -> Bool {
-        TaskCapabilityResolver(task: task).promptScope().localTools.contains { tool in
+    static func hasActiveCLITools(_ task: AgentTask, contextText: String = "") -> Bool {
+        TaskCapabilityResolver(task: task).promptScope(contextText: contextText).localTools.contains { tool in
             tool.toolType != "mcp" && !tool.command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
     }

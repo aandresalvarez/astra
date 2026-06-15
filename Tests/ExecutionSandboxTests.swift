@@ -209,6 +209,53 @@ struct ExecutionSandboxTests {
         #expect(roots.count == Set(roots).count)
     }
 
+    @Test("Codex launch roots enter strict readable and writable allowlists")
+    func codexLaunchRootsEnterStrictAllowlists() {
+        let sandboxReadablePaths = CodexCLIRuntime.sandboxReadablePaths(
+            providerHomeDirectory: "",
+            environment: [
+                "CODEX_HOME": "/tmp/astra-codex-env-home",
+                "HOME": "/tmp/astra-home"
+            ],
+            processHomeDirectory: "/tmp/process-home"
+        )
+        let directoriesToCreate = CodexCLIRuntime.directoriesToCreate(
+            providerHomeDirectory: "",
+            environment: ["CODEX_HOME": "/tmp/astra-codex-env-home"]
+        )
+        let plan = makePlan(
+            runtime: .codexCLI,
+            executablePath: "/tmp/provider/bin/codex",
+            currentDirectory: "/tmp/astra-workspace",
+            environment: [
+                "CODEX_HOME": "/tmp/astra-codex-env-home",
+                "HOME": "/tmp/astra-home"
+            ],
+            directoriesToCreate: directoriesToCreate,
+            sandboxReadablePaths: sandboxReadablePaths
+        )
+        let workspace = ExecutionSandbox.canonicalize(plan.currentDirectory)!
+        let readable = ExecutionSandbox.readableRoots(
+            plan: plan,
+            providerHomeDirectory: "",
+            canonicalWorkspace: workspace
+        )
+        let writable = ExecutionSandbox.writableRoots(
+            plan: plan,
+            providerHomeDirectory: "",
+            canonicalWorkspace: workspace
+        )
+
+        #expect(readable.contains("/private/tmp/astra-codex-env-home"))
+        #expect(writable.contains("/private/tmp/astra-codex-env-home"))
+        #expect(readable.contains("/private/etc/codex"))
+        #expect(readable.contains("/etc/codex"))
+        #if os(macOS)
+        #expect(readable.contains("/Library/Managed Preferences"))
+        #expect(readable.contains("/Library/Preferences"))
+        #endif
+    }
+
     // MARK: - Decision logic
 
     @Test("Disabled enforcement skips wrapping")

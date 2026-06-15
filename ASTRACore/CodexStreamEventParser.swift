@@ -50,11 +50,13 @@ public enum CodexStreamEventParser {
         case "thread.started":
             return [.started(sessionID: string(in: object, keys: ["thread_id", "threadId", "id"]), model: nil)]
         case "turn.started":
-            return []
+            return [.control(type: "turn.started")]
         case "turn.completed":
             return usageEvent(from: object).map { [$0] } ?? []
         case "turn.failed", "error", "failed":
             return [.failed(message: textValue(in: object) ?? raw)]
+        case "item.started":
+            return startedItemEvents(from: object, raw: raw)
         case "item.completed":
             return completedItemEvents(from: object, raw: raw)
         case "assistant.message_delta", "assistant.message", "assistant.reasoning_delta", "assistant.reasoning":
@@ -64,11 +66,42 @@ public enum CodexStreamEventParser {
         }
     }
 
+    private static func startedItemEvents(from object: [String: Any], raw: String) -> [AgentEvent] {
+        guard let item = object["item"] as? [String: Any] else {
+            return [.unknown(provider: "codex", type: "item.started", raw: raw)]
+        }
+        let itemType = string(in: item, keys: ["type", "kind"])?.lowercased() ?? "unknown"
+        if itemType == "command_execution" {
+            return [commandToolUseEvent(from: item)]
+        }
+        if itemType == "file_change" {
+            return [fileChangeEvent(from: item) ?? .control(type: "item.started.file_change")]
+        }
+        if itemType == "agent_message" || itemType == "message" || itemType == "assistant_message" {
+            return [.control(type: "item.started.\(itemType)")]
+        }
+        if itemType.contains("reasoning") {
+            return [.control(type: "item.started.\(itemType)")]
+        }
+        if itemType.contains("tool") || item["tool"] != nil || item["name"] != nil {
+            let name = string(in: item, keys: ["name", "tool", "tool_name", "toolName"]) ?? "tool"
+            let id = string(in: item, keys: ["id", "call_id", "callId"]) ?? ""
+            return [.toolUse(name: name, id: id, inputSummary: inputSummary(in: item))]
+        }
+        return [.unknown(provider: "codex", type: "item.started.\(itemType)", raw: raw)]
+    }
+
     private static func completedItemEvents(from object: [String: Any], raw: String) -> [AgentEvent] {
         guard let item = object["item"] as? [String: Any] else {
             return [.unknown(provider: "codex", type: "item.completed", raw: raw)]
         }
         let itemType = string(in: item, keys: ["type", "kind"])?.lowercased() ?? "unknown"
+        if itemType == "command_execution" {
+            return [.toolResult(id: string(in: item, keys: ["id", "call_id", "callId"]) ?? "", content: commandResultSummary(in: item))]
+        }
+        if itemType == "file_change" {
+            return [fileChangeEvent(from: item) ?? .control(type: "item.completed.file_change")]
+        }
         if itemType == "agent_message" || itemType == "message" || itemType == "assistant_message" {
             return [.completed(summary: textValue(in: item))]
         }
@@ -87,6 +120,39 @@ public enum CodexStreamEventParser {
         return [.unknown(provider: "codex", type: "item.completed.\(itemType)", raw: raw)]
     }
 
+    private static func commandToolUseEvent(from item: [String: Any]) -> AgentEvent {
+        let id = string(in: item, keys: ["id", "call_id", "callId"]) ?? ""
+        return .toolUse(name: "command_execution", id: id, inputSummary: inputSummary(in: item))
+    }
+
+    private static func commandResultSummary(in item: [String: Any]) -> String {
+        var pieces: [String] = []
+        for key in ["aggregated_output", "output", "stdout", "stderr", "text", "message"] {
+            if let value = string(in: item, keys: [key]) {
+                pieces.append(value)
+            }
+        }
+        if let exitCode = int(in: item, keys: ["exit_code", "exitCode"]) {
+            pieces.append("exit_code=\(exitCode)")
+        }
+        if let status = string(in: item, keys: ["status"]) {
+            pieces.append("status=\(status)")
+        }
+        let summary = pieces
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+        return summary.isEmpty ? "command_execution completed" : summary
+    }
+
+    private static func fileChangeEvent(from item: [String: Any]) -> AgentEvent? {
+        guard let path = string(in: item, keys: ["path", "file_path", "filePath", "filename", "name"]) else {
+            return nil
+        }
+        let kind = string(in: item, keys: ["kind", "change_type", "changeType", "status"]) ?? "modified"
+        return .fileChange(path: path, kind: kind, summary: textValue(in: item))
+    }
+
     private static func usageEvent(from object: [String: Any]) -> AgentEvent? {
         let usage = object["usage"] as? [String: Any] ?? object
         let input = (int(in: usage, keys: ["input_tokens", "inputTokens", "prompt_tokens", "promptTokens"]) ?? 0)
@@ -100,6 +166,8 @@ public enum CodexStreamEventParser {
 
     private static func parsedEvent(from event: AgentEvent) -> ParsedEvent? {
         switch event {
+        case .control:
+            return nil
         case .started(let sessionID, let model):
             return .systemInit(model: model, sessionId: sessionID)
         case .thinking(let text):
@@ -156,7 +224,7 @@ public enum CodexStreamEventParser {
     }
 
     private static func textValue(in object: [String: Any]) -> String? {
-        if let text = string(in: object, keys: ["text", "delta", "message", "content", "output", "error"]),
+        if let text = string(in: object, keys: ["text", "delta", "message", "content", "output", "error", "summary", "aggregated_output"]),
            !text.isEmpty {
             return text
         }
@@ -182,7 +250,7 @@ public enum CodexStreamEventParser {
     }
 
     private static func inputSummary(in object: [String: Any]) -> String? {
-        for key in ["input", "arguments", "args"] {
+        for key in ["command", "cmd", "input", "arguments", "args"] {
             guard let value = object[key] else { continue }
             if let text = value as? String {
                 return text

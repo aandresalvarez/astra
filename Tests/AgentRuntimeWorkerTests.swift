@@ -10,6 +10,68 @@ private func makeContainer() throws -> ModelContainer {
     return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
 }
 
+@Suite("Provider launch capability scope")
+struct ProviderLaunchCapabilityScopeTests {
+
+    @Test("Worker capability launch records use provider launch context")
+    func workerCapabilityLaunchRecordsUseProviderLaunchContext() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let workerURL = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Runtime")
+            .appendingPathComponent("AgentRuntimeWorker.swift")
+        let auditURL = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Runtime")
+            .appendingPathComponent("AgentRuntimeCapabilityLaunchAudit.swift")
+        let workerSource = try String(contentsOf: workerURL, encoding: .utf8)
+        let auditSource = try String(contentsOf: auditURL, encoding: .utf8)
+
+        #expect(sourceContains(workerSource, "AgentRuntimeCapabilityLaunchAudit.logResolution("))
+        #expect(sourceContains(workerSource, "AgentRuntimeCapabilityLaunchAudit.logGitHubCLIPreflightIfNeeded("))
+        #expect(sourceContains(workerSource, "contextText: providerLaunchContextText"))
+        #expect(sourceContains(
+            workerSource,
+            """
+            Self.providerLaunchSignature(
+                for: task,
+                manifest: manifest,
+                contextText: providerLaunchContextText
+            )
+            """
+        ))
+        #expect(auditSource.contains("TaskCapabilityResolver(task: task).promptScope(contextText: contextText)"))
+        #expect(!auditSource.contains("promptScope()"))
+    }
+
+    @Test("GitHub CLI preflight labels distinguish generic exits from auth failures")
+    func githubCLIPreflightLabelsDistinguishGenericExitsFromAuthFailures() {
+        let failedVersion = RunResult.exited(code: 2, stdout: "", stderr: "bad flag")
+        let failedAuth = RunResult.exited(code: 1, stdout: "", stderr: "not logged in")
+
+        #expect(AgentRuntimeCapabilityLaunchAudit.runResultLabel(failedVersion) == "exit_2")
+        #expect(AgentRuntimeCapabilityLaunchAudit.runResultLabel(
+            failedAuth,
+            nonZeroExitLabel: "auth_failed"
+        ) == "auth_failed")
+        #expect(AgentRuntimeCapabilityLaunchAudit.runResultLabel(
+            RunResult.exited(code: 0, stdout: "ok", stderr: "")
+        ) == "success")
+    }
+
+    private func sourceContains(_ source: String, _ expected: String) -> Bool {
+        normalizeWhitespace(source).contains(normalizeWhitespace(expected))
+    }
+
+    private func normalizeWhitespace(_ text: String) -> String {
+        text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+}
+
 // MARK: - Cancel
 
 @Suite("AgentRuntimeWorker Cancel")

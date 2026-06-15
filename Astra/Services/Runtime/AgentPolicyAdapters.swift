@@ -910,6 +910,7 @@ enum AgentPolicyManifestService {
         providerCapabilities: AgentRuntimePolicyCapabilities = .conservative,
         capabilityPackages: [PluginPackage]? = nil,
         approvalRecords: [CapabilityApprovalRecord]? = nil,
+        contextText: String = "",
         modelContext: ModelContext
     ) -> RunPermissionManifest {
         let defaultLevel = AgentPolicyDefaults.effectiveUserFacingLevel(
@@ -924,7 +925,7 @@ enum AgentPolicyManifestService {
         )
         let basePolicy = resolution.policy
         let taskCapabilityResolver = TaskCapabilityResolver(task: task)
-        let taskCapabilityScope = taskCapabilityResolver.promptScope()
+        let taskCapabilityScope = taskCapabilityResolver.promptScope(contextText: contextText)
         let taskScopedGrants = TaskRuntimePermissionGrants.approvedGrants(for: task)
         let executionGrants = executionPolicy.permissionGrantsOverride ?? []
         let effectiveGrants = PermissionBroker.sanitizeApprovedGrants(taskScopedGrants + executionGrants)
@@ -954,9 +955,9 @@ enum AgentPolicyManifestService {
             workspacePath: workspacePath,
             additionalPaths: runtimePaths,
             requestedAllowedTools: requestedAllowedTools,
-            localToolCommands: localToolCommands(for: task),
+            localToolCommands: localToolCommands(for: task, contextText: contextText),
             environmentKeyNames: envKeys,
-            credentialLabels: credentialLabels(for: task),
+            credentialLabels: credentialLabels(for: task, contextText: contextText),
             providerFeatures: providerPolicyAdapter.supportedFeatures,
             providerConfigOwnership: configOwnership,
             existingProviderConfigSummary: runtimeAdapter.existingProviderConfigSummary(workspacePath: workspacePath)
@@ -998,7 +999,7 @@ enum AgentPolicyManifestService {
             workspacePath: workspacePath,
             additionalPaths: runtimePaths,
             environmentKeyNames: envKeys,
-            credentialLabels: credentialLabels(for: task),
+            credentialLabels: credentialLabels(for: task, contextText: contextText),
             mcpServers: capabilityPackages.map {
                 TaskCapabilityResolver.enabledMCPServerManifests(
                     for: task.workspace,
@@ -1073,8 +1074,8 @@ enum AgentPolicyManifestService {
     }
 
     @MainActor
-    private static func localToolCommands(for task: AgentTask) -> [String] {
-        let capabilityScope = TaskCapabilityResolver(task: task).promptScope()
+    private static func localToolCommands(for task: AgentTask, contextText: String) -> [String] {
+        let capabilityScope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
         var commands: [String] = capabilityScope.localTools.compactMap { tool in
             guard tool.toolType != "mcp" else { return nil }
             let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1087,8 +1088,8 @@ enum AgentPolicyManifestService {
     }
 
     @MainActor
-    private static func credentialLabels(for task: AgentTask) -> [String] {
-        let capabilityScope = TaskCapabilityResolver(task: task).promptScope()
+    private static func credentialLabels(for task: AgentTask, contextText: String) -> [String] {
+        let capabilityScope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
         let skillKeys = capabilityScope.behaviorSkills.flatMap(\.environmentKeys)
         let connectorKeys = capabilityScope.connectors.flatMap(\.credentialKeys)
         return Array(Set(skillKeys + connectorKeys)).sorted()
