@@ -545,6 +545,14 @@ struct AgentRuntimeAdapterTests {
         #expect(claudePlan.commandPlannedFields["uses_native_continuation"] == "false")
         #expect(claudePlan.parsesJSONLines)
         #expect(claudePlan.providerVersion == nil)
+        #expect(claudePlan.arguments.contains("--strict-mcp-config"))
+        if let configIndex = claudePlan.arguments.firstIndex(of: "--mcp-config"),
+           claudePlan.arguments.indices.contains(configIndex + 1) {
+            let configDirectory = (claudePlan.arguments[configIndex + 1] as NSString).deletingLastPathComponent
+            #expect(claudePlan.sandboxReadablePaths.contains(configDirectory))
+        } else {
+            Issue.record("Claude launch plan should include a governed MCP config file")
+        }
         #expect(claudeResumePlan.arguments.starts(with: ["-p", "hello", "--resume", "claude-session-1"]))
         #expect(claudeResumePlan.commandPlannedFields["phase"] == "resume")
         #expect(claudeResumePlan.commandPlannedFields["uses_native_continuation"] == "true")
