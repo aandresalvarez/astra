@@ -4,9 +4,14 @@ import Testing
 
 @Suite("Run activity disclosure state")
 struct RunActivityDisclosureStateTests {
+    private static let failedRunID = UUID(uuidString: "00000000-0000-0000-0000-000000000101")!
+    private static let successfulRunID = UUID(uuidString: "00000000-0000-0000-0000-000000000102")!
+    private static let completedIssueRunID = UUID(uuidString: "00000000-0000-0000-0000-000000000103")!
+    private static let completedTechnicalOutputRunID = UUID(uuidString: "00000000-0000-0000-0000-000000000104")!
+
     @Test("failed run details open by default and still respect manual collapse")
     func failedRunDetailsOpenByDefaultAndStillRespectManualCollapse() {
-        let runID = UUID()
+        let runID = Self.failedRunID
         let presentation = failedRunPresentation()
         var state = RunActivityDisclosureState()
 
@@ -20,7 +25,7 @@ struct RunActivityDisclosureStateTests {
 
     @Test("nonfailure run details stay compact until manually opened")
     func nonfailureRunDetailsStayCompactUntilManuallyOpened() {
-        let runID = UUID()
+        let runID = Self.successfulRunID
         let presentation = successfulToolRunPresentation()
         var state = RunActivityDisclosureState()
 
@@ -32,10 +37,45 @@ struct RunActivityDisclosureStateTests {
         #expect(state.isExpanded(runID: runID, presentation: presentation))
     }
 
+    @Test("completed run with visible error issue opens details by severity")
+    func completedRunWithVisibleErrorIssueOpensDetailsBySeverity() {
+        let notice = TaskRunNotice(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000201")!,
+            type: "error",
+            payload: "Provider stopped before ASTRA received a visible response."
+        )
+        let presentation = RunActivityPresentation(
+            run: completedRunSnapshot(id: Self.completedIssueRunID),
+            activity: .empty,
+            notices: [notice]
+        )
+
+        #expect(presentation.issues.contains { $0.severity == .error })
+        #expect(presentation.prefersExpandedDetails)
+    }
+
+    @Test("completed run with error technical output opens details by severity")
+    func completedRunWithErrorTechnicalOutputOpensDetailsBySeverity() {
+        let notice = TaskRunNotice(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000202")!,
+            type: "error",
+            payload: "Copilot exited with code 1.\n\nProvider error:\nraw stack output"
+        )
+        let presentation = RunActivityPresentation(
+            run: completedRunSnapshot(id: Self.completedTechnicalOutputRunID),
+            activity: .empty,
+            notices: [notice],
+            suppressedNoticeIDs: [notice.id]
+        )
+
+        #expect(presentation.technicalOutputs.contains { $0.severity == .error })
+        #expect(presentation.prefersExpandedDetails)
+    }
+
     private func failedRunPresentation() -> RunActivityPresentation {
         let task = makeTask(status: .failed)
         let run = TaskRun(task: task)
-        run.id = UUID(uuidString: "00000000-0000-0000-0000-000000000101")!
+        run.id = Self.failedRunID
         run.status = .failed
         run.completedAt = Date(timeIntervalSince1970: 2)
         run.stopReason = "capability_runtime_resources_missing"
@@ -59,7 +99,7 @@ struct RunActivityDisclosureStateTests {
     private func successfulToolRunPresentation() -> RunActivityPresentation {
         let task = makeTask(status: .completed)
         let run = TaskRun(task: task)
-        run.id = UUID(uuidString: "00000000-0000-0000-0000-000000000102")!
+        run.id = Self.successfulRunID
         run.status = .completed
         run.completedAt = Date(timeIntervalSince1970: 2)
         run.stopReason = "completed"
@@ -74,5 +114,15 @@ struct RunActivityDisclosureStateTests {
         ]
         let snapshot = TaskThreadSnapshot(goal: task.goal, createdAt: task.createdAt, events: events, runs: [run])
         return snapshot.activityPresentation(for: snapshot.latestRun!)
+    }
+
+    private func completedRunSnapshot(id: UUID) -> TaskRunSnapshot {
+        let task = makeTask(status: .completed)
+        let run = TaskRun(task: task)
+        run.id = id
+        run.status = .completed
+        run.completedAt = Date(timeIntervalSince1970: 2)
+        run.stopReason = "completed"
+        return TaskRunSnapshot(input: TaskRunSnapshotInput(run: run))
     }
 }
