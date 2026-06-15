@@ -50,6 +50,17 @@ enum WorkspaceInstructionEditorPresentation {
         persistedInstructions(fromDraft: draft) != persistedInstructions(fromDraft: persisted)
     }
 
+    static func effectiveDraft(localDraft: String, persisted: String, isSynced: Bool) -> String {
+        isSynced ? localDraft : persisted
+    }
+
+    static func hasUnsavedChanges(localDraft: String, persisted: String, isSynced: Bool) -> Bool {
+        hasUnsavedChanges(
+            draft: effectiveDraft(localDraft: localDraft, persisted: persisted, isSynced: isSynced),
+            persisted: persisted
+        )
+    }
+
     static func statusTitle(draft: String, persisted: String, didRecentlySave: Bool) -> String? {
         if hasUnsavedChanges(draft: draft, persisted: persisted) {
             return unsavedStatusTitle
@@ -60,6 +71,19 @@ enum WorkspaceInstructionEditorPresentation {
         }
 
         return nil
+    }
+
+    static func statusTitle(
+        localDraft: String,
+        persisted: String,
+        isSynced: Bool,
+        didRecentlySave: Bool
+    ) -> String? {
+        statusTitle(
+            draft: effectiveDraft(localDraft: localDraft, persisted: persisted, isSynced: isSynced),
+            persisted: persisted,
+            didRecentlySave: didRecentlySave
+        )
     }
 }
 

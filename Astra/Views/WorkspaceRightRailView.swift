@@ -244,6 +244,7 @@ struct WorkspaceRightRailView: View {
     @State private var newMemoryText = ""
     @State private var isMemoryComposerVisible = false
     @State private var draftWorkspaceInstructions = ""
+    @State private var draftWorkspaceInstructionsWorkspaceID: UUID?
     @State private var didRecentlySaveWorkspaceInstructions = false
     @State private var expandedWorkspaceSetupItems: Set<WorkspaceSetupItem> = []
     // Removing a configured folder or saved memory is destructive and was
@@ -489,10 +490,12 @@ struct WorkspaceRightRailView: View {
         }
         .onChange(of: workspace.instructions) { oldValue, newValue in
             guard !WorkspaceInstructionEditorPresentation.hasUnsavedChanges(
-                draft: draftWorkspaceInstructions,
-                persisted: oldValue
+                localDraft: draftWorkspaceInstructions,
+                persisted: oldValue,
+                isSynced: isWorkspaceInstructionDraftSynced
             ) else { return }
             draftWorkspaceInstructions = newValue
+            draftWorkspaceInstructionsWorkspaceID = workspace.id
             didRecentlySaveWorkspaceInstructions = false
         }
         .onChange(of: workspace.additionalPaths) {
@@ -1546,7 +1549,7 @@ struct WorkspaceRightRailView: View {
     private var instructionsSetupDetails: some View {
         VStack(alignment: .leading, spacing: 8) {
             ZStack(alignment: .topLeading) {
-                if draftWorkspaceInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if effectiveDraftWorkspaceInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Text("Add guidance for how tasks in this workspace should run...")
                         .font(Stanford.caption(12))
                         .foregroundStyle(.tertiary)
@@ -1739,9 +1742,10 @@ struct WorkspaceRightRailView: View {
 
     private var draftWorkspaceInstructionsBinding: Binding<String> {
         Binding(
-            get: { draftWorkspaceInstructions },
+            get: { effectiveDraftWorkspaceInstructions },
             set: { value in
                 draftWorkspaceInstructions = value
+                draftWorkspaceInstructionsWorkspaceID = workspace.id
                 didRecentlySaveWorkspaceInstructions = false
             }
         )
@@ -1945,36 +1949,53 @@ struct WorkspaceRightRailView: View {
 
     private func syncInstructionDraftFromWorkspace() {
         draftWorkspaceInstructions = workspace.instructions
+        draftWorkspaceInstructionsWorkspaceID = workspace.id
         didRecentlySaveWorkspaceInstructions = false
+    }
+
+    private var isWorkspaceInstructionDraftSynced: Bool {
+        draftWorkspaceInstructionsWorkspaceID == workspace.id
+    }
+
+    private var effectiveDraftWorkspaceInstructions: String {
+        WorkspaceInstructionEditorPresentation.effectiveDraft(
+            localDraft: draftWorkspaceInstructions,
+            persisted: workspace.instructions,
+            isSynced: isWorkspaceInstructionDraftSynced
+        )
     }
 
     private var hasUnsavedWorkspaceInstructions: Bool {
         WorkspaceInstructionEditorPresentation.hasUnsavedChanges(
-            draft: draftWorkspaceInstructions,
-            persisted: workspace.instructions
+            localDraft: draftWorkspaceInstructions,
+            persisted: workspace.instructions,
+            isSynced: isWorkspaceInstructionDraftSynced
         )
     }
 
     private var workspaceInstructionStatusTitle: String? {
         WorkspaceInstructionEditorPresentation.statusTitle(
-            draft: draftWorkspaceInstructions,
+            localDraft: draftWorkspaceInstructions,
             persisted: workspace.instructions,
+            isSynced: isWorkspaceInstructionDraftSynced,
             didRecentlySave: didRecentlySaveWorkspaceInstructions
         )
     }
 
     private func saveWorkspaceInstructions() {
         let savedInstructions = WorkspaceInstructionEditorPresentation.persistedInstructions(
-            fromDraft: draftWorkspaceInstructions
+            fromDraft: effectiveDraftWorkspaceInstructions
         )
         guard savedInstructions != workspace.instructions.trimmingCharacters(in: .whitespacesAndNewlines) else {
             draftWorkspaceInstructions = savedInstructions
+            draftWorkspaceInstructionsWorkspaceID = workspace.id
             didRecentlySaveWorkspaceInstructions = true
             return
         }
 
         workspace.instructions = savedInstructions
         draftWorkspaceInstructions = savedInstructions
+        draftWorkspaceInstructionsWorkspaceID = workspace.id
         didRecentlySaveWorkspaceInstructions = true
         markWorkspaceConfigurationChanged()
 
@@ -1986,6 +2007,7 @@ struct WorkspaceRightRailView: View {
 
     private func clearDraftWorkspaceInstructions() {
         draftWorkspaceInstructions = ""
+        draftWorkspaceInstructionsWorkspaceID = workspace.id
         didRecentlySaveWorkspaceInstructions = false
     }
 

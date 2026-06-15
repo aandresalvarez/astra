@@ -348,6 +348,47 @@ struct CapabilityRailPresentationTests {
         )
     }
 
+    @Test("workspace instruction editor renders persisted instructions before draft sync")
+    func workspaceInstructionEditorRendersPersistedInstructionsBeforeDraftSync() {
+        #expect(
+            WorkspaceInstructionEditorPresentation.effectiveDraft(
+                localDraft: "",
+                persisted: "Existing workspace guidance",
+                isSynced: false
+            ) == "Existing workspace guidance"
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.hasUnsavedChanges(
+                localDraft: "",
+                persisted: "Existing workspace guidance",
+                isSynced: false
+            ) == false
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.statusTitle(
+                localDraft: "",
+                persisted: "Existing workspace guidance",
+                isSynced: false,
+                didRecentlySave: false
+            ) == "Saved"
+        )
+
+        #expect(
+            WorkspaceInstructionEditorPresentation.effectiveDraft(
+                localDraft: "",
+                persisted: "Existing workspace guidance",
+                isSynced: true
+            ) == ""
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.hasUnsavedChanges(
+                localDraft: "",
+                persisted: "Existing workspace guidance",
+                isSynced: true
+            ) == true
+        )
+    }
+
     @Test("workspace folder setup treats primary path as reference")
     func workspaceFolderSetupTreatsPrimaryPathAsReference() {
         #expect(WorkspaceSetupChecklistPresentation.folderAccessTitle == "Folder access")
