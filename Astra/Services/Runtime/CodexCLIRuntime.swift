@@ -125,11 +125,19 @@ enum CodexCLIRuntime {
     }
 
     static func codexResumePermissionArguments(policy: PermissionPolicy) -> [String] {
+        // `codex exec resume` rejects `-s/--sandbox` (it's an `exec`-only flag),
+        // so preserve the run-phase sandbox mode via the supported `-c` config
+        // override instead. Without this a restricted (workspace-write) task would
+        // silently fall back to codex's default sandbox on a resumed turn,
+        // diverging from `codexPermissionArguments` above. The value spellings
+        // match the `--sandbox` enum (`sandbox_mode` config key).
         switch policy {
         case .autonomous:
             return ["--dangerously-bypass-approvals-and-sandbox"]
-        case .restricted, .interactive:
-            return []
+        case .restricted:
+            return ["-c", "sandbox_mode=\"workspace-write\""]
+        case .interactive:
+            return ["-c", "sandbox_mode=\"read-only\""]
         }
     }
 
