@@ -35,6 +35,64 @@ enum WorkspaceRightRailPresentation {
     static let hideActionTitle = "Hide"
 }
 
+enum WorkspaceInstructionEditorPresentation {
+    static let saveActionTitle = "Save"
+    static let clearActionTitle = "Clear"
+    static let savedStatusTitle = "Saved"
+    static let unsavedStatusTitle = "Unsaved changes"
+    static let includedInPromptHint = "Included in every new task prompt."
+
+    static func persistedInstructions(fromDraft draft: String) -> String {
+        draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func hasUnsavedChanges(draft: String, persisted: String) -> Bool {
+        persistedInstructions(fromDraft: draft) != persistedInstructions(fromDraft: persisted)
+    }
+
+    static func effectiveDraft(localDraft: String, persisted: String, isSynced: Bool) -> String {
+        isSynced ? localDraft : persisted
+    }
+
+    static func hasUnsavedChanges(localDraft: String, persisted: String, isSynced: Bool) -> Bool {
+        hasUnsavedChanges(
+            draft: effectiveDraft(localDraft: localDraft, persisted: persisted, isSynced: isSynced),
+            persisted: persisted
+        )
+    }
+
+    static func shouldShowClearAction(localDraft: String, persisted: String, isSynced: Bool) -> Bool {
+        !persistedInstructions(
+            fromDraft: effectiveDraft(localDraft: localDraft, persisted: persisted, isSynced: isSynced)
+        ).isEmpty
+    }
+
+    static func statusTitle(draft: String, persisted: String, didRecentlySave: Bool) -> String? {
+        if hasUnsavedChanges(draft: draft, persisted: persisted) {
+            return unsavedStatusTitle
+        }
+
+        if didRecentlySave || !persistedInstructions(fromDraft: persisted).isEmpty {
+            return savedStatusTitle
+        }
+
+        return nil
+    }
+
+    static func statusTitle(
+        localDraft: String,
+        persisted: String,
+        isSynced: Bool,
+        didRecentlySave: Bool
+    ) -> String? {
+        statusTitle(
+            draft: effectiveDraft(localDraft: localDraft, persisted: persisted, isSynced: isSynced),
+            persisted: persisted,
+            didRecentlySave: didRecentlySave
+        )
+    }
+}
+
 enum CapabilityRailLayout {
     static let compactContentPadding: CGFloat = 16
     static let regularContentPadding: CGFloat = 14
