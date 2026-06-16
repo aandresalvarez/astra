@@ -312,4 +312,30 @@ struct WorkspaceAppDetailDataLoaderTests {
         #expect(snapshot.storageTables.isEmpty)
         #expect(snapshot.errorMessage == "Could not load app manifest.")
     }
+
+    @Test("run history surfaces waiting/blocked runs as the attention queue (B4)")
+    func runHistoryAttentionQueuePartition() {
+        func snap(_ status: WorkspaceAppRunStatus, _ action: String) -> WorkspaceAppRunSnapshot {
+            WorkspaceAppRunSnapshot(
+                id: UUID(),
+                actionID: action,
+                trigger: .user,
+                status: status,
+                startedAt: Date(timeIntervalSince1970: 0),
+                completedAt: nil,
+                outputSummary: "",
+                errorMessage: nil,
+                linkedTaskID: nil,
+                linkedArtifactPath: nil
+            )
+        }
+        let presentation = WorkspaceAppRunHistoryPresentationBuilder.presentation(runs: [
+            snap(.completed, "done_step"),
+            snap(.waiting, "await_step"),
+            snap(.blocked, "budget_step"),
+            snap(.running, "running_step")
+        ])
+        #expect(presentation.rows.count == 4)
+        #expect(Set(presentation.attentionRows.map(\.actionID)) == ["await_step", "budget_step"])
+    }
 }

@@ -34,6 +34,7 @@ struct WorkspaceAppDetailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     appSurface
+                    attentionSection
                     dependencySection
                     automationSection
                     nativeSurfaceSection
@@ -328,6 +329,39 @@ struct WorkspaceAppDetailView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var attentionSection: some View {
+        let attention = WorkspaceAppRunHistoryPresentationBuilder
+            .presentation(runs: dataSnapshot.runs)
+            .attentionRows
+        if !attention.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Label("Needs attention", systemImage: "clock.badge.exclamationmark")
+                        .font(Stanford.ui(15, weight: .semibold))
+                        .foregroundStyle(Stanford.lagunita)
+                    Text("\(attention.count)")
+                        .font(Stanford.caption(11).weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+
+                Text("Workflow runs paused on an agent task or held for review.")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(attention) { row in
+                        WorkspaceAppRunHistoryRow(row: row)
+                    }
+                }
+            }
+            .padding(12)
+            .background(Stanford.lagunita.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
     }
 

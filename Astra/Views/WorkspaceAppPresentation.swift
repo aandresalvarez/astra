@@ -85,6 +85,12 @@ struct WorkspaceAppRunHistoryPresentation: Equatable {
     var isEmpty: Bool {
         rows.isEmpty
     }
+
+    // B4: runs paused on an awaited agent task (.waiting) or held for review
+    // (.blocked, e.g. budget overrun) form the approval/attention queue.
+    var attentionRows: [WorkspaceAppRunHistoryRowPresentation] {
+        rows.filter(\.needsAttention)
+    }
 }
 
 struct WorkspaceAppRunHistoryRowPresentation: Identifiable, Equatable {
@@ -96,6 +102,7 @@ struct WorkspaceAppRunHistoryRowPresentation: Identifiable, Equatable {
     var timeLabel: String
     var summary: String
     var linkedLabel: String?
+    var needsAttention: Bool = false
 }
 
 struct WorkspaceAppMetricPresentation: Identifiable, Equatable {
@@ -494,7 +501,8 @@ enum WorkspaceAppRunHistoryPresentationBuilder {
                     triggerLabel: triggerLabel(run.trigger),
                     timeLabel: relativeTime(from: run.startedAt, now: now),
                     summary: summary(for: run),
-                    linkedLabel: linkedLabel(for: run)
+                    linkedLabel: linkedLabel(for: run),
+                    needsAttention: run.status == .waiting || run.status == .blocked
                 )
             }
         )
