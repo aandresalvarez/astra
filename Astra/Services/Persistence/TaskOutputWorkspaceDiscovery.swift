@@ -47,7 +47,8 @@ enum TaskOutputWorkspaceDiscovery {
                 continue
             }
 
-            guard let relative = root.relativePath(for: item) else { continue }
+            guard let rawRelative = root.relativePath(for: item) else { continue }
+            let relative = TaskOutputArtifactPathPolicy.normalizedRelativePath(rawRelative)
             let depth = relativeDepth(of: relative)
             guard let values = try? url.resourceValues(
                 forKeys: [.isDirectoryKey, .isRegularFileKey, .creationDateKey, .contentModificationDateKey]
@@ -56,7 +57,7 @@ enum TaskOutputWorkspaceDiscovery {
             }
 
             if values.isDirectory == true {
-                if depth >= scanDepthLimit {
+                if TaskOutputArtifactPathPolicy.isRuntimeDiagnosticRelativePath(relative) || depth >= scanDepthLimit {
                     enumerator.skipDescendants()
                 }
                 continue
@@ -64,7 +65,7 @@ enum TaskOutputWorkspaceDiscovery {
 
             guard depth <= scanDepthLimit,
                   values.isRegularFile == true,
-                  TaskGeneratedFiles.shouldDisplayTaskFolderFile(relativePath: relative),
+                  TaskOutputArtifactPathPolicy.isDisplayableUserArtifactRelativePath(relative),
                   wasChangedDuringRun(values, run: run) else {
                 continue
             }

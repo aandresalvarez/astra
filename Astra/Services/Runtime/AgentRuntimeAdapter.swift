@@ -1888,7 +1888,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         if browserBridgeMetadata.isAttached {
             localToolCommands.append("astra-browser")
         }
-        let surfacedAskFirstTools = artifactBootstrapTools.isEmpty ? askFirstTools : []
+        let surfacedAskFirstTools = askFirstTools
         let plan = CopilotCLIRuntime.buildCommand(
             executablePath: executable,
             prompt: context.prompt,

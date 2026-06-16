@@ -56,7 +56,6 @@ struct CopilotCLICapabilities: Equatable {
         supportsLogDir = Self.hasOption("--log-dir", in: helpText)
         supportsNoAutoUpdate = Self.hasOption("--no-auto-update", in: helpText)
         supportsReasoningEffort = Self.hasOption("--effort", in: helpText)
-            || Self.hasOption("--reasoning-effort", in: helpText)
     }
 
     private init(

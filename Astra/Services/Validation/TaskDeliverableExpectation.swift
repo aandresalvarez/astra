@@ -352,7 +352,7 @@ enum TaskDeliverableExpectation {
             }
 
             guard let relative = relativePath(of: fileURL, taskFolder: root) else { continue }
-            guard !isRuntimeDiagnosticRelativePath(relative) else { continue }
+            guard !TaskOutputArtifactPathPolicy.isRuntimeDiagnosticRelativePath(relative) else { continue }
             let depth = relativeDepth(of: relative)
             if depth > depthLimit {
                 enumerator.skipDescendants()
@@ -396,7 +396,7 @@ enum TaskDeliverableExpectation {
         let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
         guard !taskFolder.isEmpty else { return true }
         let normalizedPath = path.replacingOccurrences(of: "\\", with: "/")
-        if !normalizedPath.hasPrefix("/"), isRuntimeDiagnosticRelativePath(normalizedPath) {
+        if !normalizedPath.hasPrefix("/"), TaskOutputArtifactPathPolicy.isRuntimeDiagnosticRelativePath(normalizedPath) {
             return false
         }
         let root = URL(fileURLWithPath: taskFolder)
@@ -406,7 +406,7 @@ enum TaskDeliverableExpectation {
             ? URL(fileURLWithPath: normalizedPath)
             : root.appendingPathComponent(normalizedPath)
         if let relative = relativePath(of: url, taskFolder: root) {
-            return !isRuntimeDiagnosticRelativePath(relative)
+            return !TaskOutputArtifactPathPolicy.isRuntimeDiagnosticRelativePath(relative)
         }
 
         let workspacePath = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
@@ -415,23 +415,11 @@ enum TaskDeliverableExpectation {
                 .resolvingSymlinksInPath()
                 .standardizedFileURL
             if let workspaceRelative = relativePath(of: url, taskFolder: workspaceRoot) {
-                return !isRuntimeDiagnosticRelativePath(workspaceRelative)
+                return !TaskOutputArtifactPathPolicy.isRuntimeDiagnosticRelativePath(workspaceRelative)
             }
         }
 
         return true
-    }
-
-    private static func isRuntimeDiagnosticRelativePath(_ relative: String) -> Bool {
-        let normalized = relative
-            .replacingOccurrences(of: "\\", with: "/")
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        return normalized == "diagnostics"
-            || normalized.hasPrefix("diagnostics/")
-            || normalized == "cache/projects.json"
-            || normalized.hasPrefix(".astra/")
-            || normalized.hasPrefix(".agentflow/")
-            || normalized.hasPrefix(".claude/")
     }
 
     private static func relativeDepth(of relative: String) -> Int {

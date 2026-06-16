@@ -46,6 +46,70 @@ struct TaskOutputDiscoveryTests {
         #expect(!files.contains { $0.path == stale })
     }
 
+    @Test("run file changes ignore workspace runtime diagnostics")
+    func runFileChangesIgnoreWorkspaceRuntimeDiagnostics() throws {
+        let fixture = try makeFixture(goal: "Create ./summary.md")
+        defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+
+        let cacheURL = URL(fileURLWithPath: fixture.root)
+            .appendingPathComponent("cache", isDirectory: true)
+            .appendingPathComponent("projects.json")
+        try FileManager.default.createDirectory(at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "{}".write(to: cacheURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: fixture.run.startedAt.addingTimeInterval(-30)],
+            ofItemAtPath: cacheURL.path
+        )
+        fixture.run.appendFileChange(StoredFileChange(
+            path: cacheURL.path,
+            changeType: StoredFileChangeKind.write.rawValue,
+            content: "{}",
+            oldString: nil,
+            newString: nil,
+            timestamp: fixture.run.startedAt.addingTimeInterval(5)
+        ))
+
+        let summary = try writeWorkspaceFile("summary.md", contents: "# Summary\n", fixture: fixture)
+        fixture.run.appendFileChange(StoredFileChange(
+            path: summary,
+            changeType: StoredFileChangeKind.write.rawValue,
+            content: "# Summary\n",
+            oldString: nil,
+            newString: nil,
+            timestamp: fixture.run.startedAt.addingTimeInterval(5)
+        ))
+
+        let files = TaskOutputDiscovery.files(for: fixture.task, run: fixture.run)
+
+        #expect(files.contains { $0.path == summary && $0.relativePath == "summary.md" })
+        #expect(!files.contains { $0.path == cacheURL.path || $0.relativePath == "cache/projects.json" })
+    }
+
+    @Test("workspace scan ignores runtime diagnostics")
+    func workspaceScanIgnoresRuntimeDiagnostics() throws {
+        let fixture = try makeFixture(goal: "Create ./report.md")
+        defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+
+        let cacheURL = URL(fileURLWithPath: fixture.root)
+            .appendingPathComponent("cache", isDirectory: true)
+            .appendingPathComponent("projects.json")
+        try FileManager.default.createDirectory(at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "{}".write(to: cacheURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: fixture.run.startedAt.addingTimeInterval(5)],
+            ofItemAtPath: cacheURL.path
+        )
+
+        let report = try writeWorkspaceFile("report.md", contents: "# Report\n", fixture: fixture)
+        let files = TaskOutputWorkspaceDiscovery.filesChangedDuringRun(
+            workspacePath: fixture.root,
+            taskFolder: TaskWorkspaceAccess(task: fixture.task).taskFolder,
+            run: fixture.run
+        )
+
+        #expect(files.map(\.path) == [report])
+    }
+
     @Test("deliverable verification finds unrecorded workspace-root required file")
     func deliverableVerificationFindsUnrecordedWorkspaceRootRequiredFile() async throws {
         let fixture = try makeFixture(goal: """

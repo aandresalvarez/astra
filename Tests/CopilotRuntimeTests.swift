@@ -706,6 +706,27 @@ struct CopilotCLICommandPlanningTests {
         let effortIndex = try #require(supportedPlan.arguments.firstIndex(of: "--effort"))
         #expect(supportedPlan.arguments[supportedPlan.arguments.index(after: effortIndex)] == "none")
 
+        let alternateOnlyCapabilities = CopilotCLICapabilities(
+            helpText: "--output-format=FORMAT --stream=MODE --no-ask-user --reasoning-effort LEVEL"
+        )
+        let alternateOnlyPlan = CopilotCLIRuntime.buildCommand(
+            executablePath: "/bin/copilot",
+            prompt: "Create index.html",
+            model: "claude-sonnet-4.6",
+            workspacePath: "/tmp/ws",
+            additionalPaths: [],
+            permissionPolicy: .restricted,
+            allowedTools: ["Read", "Write"],
+            timeoutSeconds: 60,
+            capabilities: alternateOnlyCapabilities,
+            taskEnvironment: [:],
+            copilotHome: "/tmp/copilot-home",
+            reasoningEffort: "none"
+        )
+
+        #expect(!alternateOnlyCapabilities.supportsReasoningEffort)
+        #expect(!alternateOnlyPlan.arguments.contains("--effort"))
+
         let unsupportedCapabilities = CopilotCLICapabilities(
             helpText: "--output-format=FORMAT --stream=MODE --no-ask-user"
         )

@@ -120,10 +120,9 @@ enum TaskOutputDiscovery {
             return nil
         }
 
-        let relative = String(standardizedPath.dropFirst(taskFolderPath.count))
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard !relative.isEmpty,
-              TaskGeneratedFiles.shouldDisplayTaskFolderFile(relativePath: relative) else {
+        guard let relative = TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(
+            String(standardizedPath.dropFirst(taskFolderPath.count))
+        ) else {
             return nil
         }
 
@@ -161,10 +160,9 @@ enum TaskOutputDiscovery {
         }
 
         let rootPath = URL(fileURLWithPath: root).standardizedFileURL.path
-        let relative = String(standardizedPath.dropFirst(rootPath.count))
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard !relative.isEmpty,
-              TaskGeneratedFiles.shouldDisplayTaskFolderFile(relativePath: relative) else {
+        guard let relative = TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(
+            String(standardizedPath.dropFirst(rootPath.count))
+        ) else {
             return nil
         }
 
