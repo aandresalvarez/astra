@@ -1515,9 +1515,36 @@ enum ASTRASchemaV6: VersionedSchema {
     }
 }
 
+enum ASTRASchemaV7: VersionedSchema {
+    static var versionIdentifier = Schema.Version(7, 0, 0)
+
+    static var models: [any PersistentModel.Type] {
+        [
+            Workspace.self,
+            AgentTask.self,
+            TaskRun.self,
+            TaskEvent.self,
+            Artifact.self,
+            Skill.self,
+            Connector.self,
+            LocalTool.self,
+            TaskTemplate.self,
+            TaskSchedule.self,
+            // Workspace App Studio runtime (F1 re-land): additive, flat
+            // UUID-keyed models with no relationships to existing entities,
+            // so V6 -> V7 is a lightweight migration.
+            WorkspaceApp.self,
+            WorkspaceAppRun.self,
+            WorkspaceAppRunEvent.self,
+            WorkspaceAppDependencyBinding.self,
+            WorkspaceAppAutomationState.self
+        ]
+    }
+}
+
 enum ASTRASchema {
     static var current: Schema {
-        Schema(versionedSchema: ASTRASchemaV6.self)
+        Schema(versionedSchema: ASTRASchemaV7.self)
     }
 }
 
@@ -1529,7 +1556,8 @@ enum ASTRAMigrationPlan: SchemaMigrationPlan {
             ASTRASchemaV3.self,
             ASTRASchemaV4.self,
             ASTRASchemaV5.self,
-            ASTRASchemaV6.self
+            ASTRASchemaV6.self,
+            ASTRASchemaV7.self
         ]
     }
 
@@ -1539,7 +1567,8 @@ enum ASTRAMigrationPlan: SchemaMigrationPlan {
             .lightweight(fromVersion: ASTRASchemaV2.self, toVersion: ASTRASchemaV3.self),
             .lightweight(fromVersion: ASTRASchemaV3.self, toVersion: ASTRASchemaV4.self),
             .lightweight(fromVersion: ASTRASchemaV4.self, toVersion: ASTRASchemaV5.self),
-            .lightweight(fromVersion: ASTRASchemaV5.self, toVersion: ASTRASchemaV6.self)
+            .lightweight(fromVersion: ASTRASchemaV5.self, toVersion: ASTRASchemaV6.self),
+            .lightweight(fromVersion: ASTRASchemaV6.self, toVersion: ASTRASchemaV7.self)
         ]
     }
 }

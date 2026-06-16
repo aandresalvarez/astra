@@ -67,14 +67,24 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV6.versionIdentifier == Schema.Version(6, 0, 0))
     }
 
-    @Test("Migration plan lists SchemaV1 through SchemaV6")
-    func migrationPlanHasVersions() {
-        #expect(ASTRAMigrationPlan.schemas.count == 6)
+    @Test("SchemaV7 declares 15 model types (10 + 5 Workspace App models)")
+    func v7ModelCount() {
+        #expect(ASTRASchemaV7.models.count == 15)
     }
 
-    @Test("Migration plan has V1 to V6 lightweight stages")
+    @Test("SchemaV7 version identifier is 7.0.0")
+    func v7VersionIdentifier() {
+        #expect(ASTRASchemaV7.versionIdentifier == Schema.Version(7, 0, 0))
+    }
+
+    @Test("Migration plan lists SchemaV1 through SchemaV7")
+    func migrationPlanHasVersions() {
+        #expect(ASTRAMigrationPlan.schemas.count == 7)
+    }
+
+    @Test("Migration plan has V1 to V7 lightweight stages")
     func migrationPlanHasStage() {
-        #expect(ASTRAMigrationPlan.stages.count == 5)
+        #expect(ASTRAMigrationPlan.stages.count == 6)
     }
 
     @Test("ModelContainer can be created with versioned schema")
@@ -85,7 +95,7 @@ struct SchemaVersionTests {
             migrationPlan: ASTRAMigrationPlan.self,
             configurations: [config]
         )
-        #expect(container.schema.entities.count == 10)
+        #expect(container.schema.entities.count == 15)
     }
 
     @MainActor

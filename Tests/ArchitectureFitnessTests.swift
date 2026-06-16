@@ -34,7 +34,8 @@ struct ArchitectureFitnessTests {
             "Security",
             "Settings",
             "Tasks",
-            "Validation"
+            "Validation",
+            "WorkspaceApps"
         ])
     }
 
