@@ -268,8 +268,10 @@ struct WorkspaceHomeContainerView: View {
     var onNewSchedule: (() -> Void)?
     var onEditSchedule: ((TaskSchedule) -> Void)?
     var onManageCapabilities: (() -> Void)?
+    var onOpenWorkspaceApp: ((WorkspaceApp) -> Void)?
 
     @Query private var tasks: [AgentTask]
+    @Query private var workspaceApps: [WorkspaceApp]
 
     init(
         workspace: Workspace,
@@ -282,7 +284,8 @@ struct WorkspaceHomeContainerView: View {
         onConfigure: @escaping () -> Void,
         onNewSchedule: (() -> Void)? = nil,
         onEditSchedule: ((TaskSchedule) -> Void)? = nil,
-        onManageCapabilities: (() -> Void)? = nil
+        onManageCapabilities: (() -> Void)? = nil,
+        onOpenWorkspaceApp: ((WorkspaceApp) -> Void)? = nil
     ) {
         self.workspace = workspace
         self.taskQueue = taskQueue
@@ -295,6 +298,7 @@ struct WorkspaceHomeContainerView: View {
         self.onNewSchedule = onNewSchedule
         self.onEditSchedule = onEditSchedule
         self.onManageCapabilities = onManageCapabilities
+        self.onOpenWorkspaceApp = onOpenWorkspaceApp
 
         let workspaceID = workspace.id
         _tasks = Query(
@@ -302,6 +306,12 @@ struct WorkspaceHomeContainerView: View {
                 task.workspace?.id == workspaceID
             },
             sort: \AgentTask.queuePosition
+        )
+        _workspaceApps = Query(
+            filter: #Predicate<WorkspaceApp> { app in
+                app.workspaceID == workspaceID
+            },
+            sort: \WorkspaceApp.name
         )
     }
 
@@ -312,6 +322,7 @@ struct WorkspaceHomeContainerView: View {
             // work, so drafts (in-composition chats) are never surfaced. A task
             // appears here the moment it's queued/run.
             tasks: tasks.filter { !TaskHygiene.isHiddenFromBoard($0) },
+            workspaceApps: workspaceApps,
             onCreateTask: onCreateTask,
             onOpenTask: onOpenTask,
             onDeleteTask: onDeleteTask,
@@ -319,7 +330,8 @@ struct WorkspaceHomeContainerView: View {
             onConfigure: onConfigure,
             onNewSchedule: onNewSchedule,
             onEditSchedule: onEditSchedule,
-            onManageCapabilities: onManageCapabilities
+            onManageCapabilities: onManageCapabilities,
+            onOpenWorkspaceApp: onOpenWorkspaceApp
         )
     }
 }
@@ -327,6 +339,7 @@ struct WorkspaceHomeContainerView: View {
 struct WorkspaceHomeView: View {
     let workspace: Workspace
     let tasks: [AgentTask]
+    var workspaceApps: [WorkspaceApp] = []
     let onCreateTask: () -> Void
     let onOpenTask: (AgentTask) -> Void
     let onDeleteTask: (AgentTask) -> Void
@@ -335,6 +348,7 @@ struct WorkspaceHomeView: View {
     var onNewSchedule: (() -> Void)?
     var onEditSchedule: ((TaskSchedule) -> Void)?
     var onManageCapabilities: (() -> Void)?
+    var onOpenWorkspaceApp: ((WorkspaceApp) -> Void)?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isEditingInstructions = false
@@ -477,8 +491,50 @@ struct WorkspaceHomeView: View {
             workspaceDivider
 
             capabilitiesSummaryRow
+
+            if onOpenWorkspaceApp != nil, !workspaceApps.isEmpty {
+                workspaceDivider
+
+                appsSummaryRow
+            }
         }
         .workspaceSectionPanel()
+    }
+
+    // F7: lists the workspace's published apps so they can be re-opened. Only
+    // shown when a host has provided an open handler and at least one app exists.
+    private var appsSummaryRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "square.grid.2x2")
+                    .font(Stanford.ui(13, weight: .semibold))
+                    .foregroundStyle(Stanford.lagunita)
+                Text("Apps")
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            ForEach(workspaceApps) { app in
+                Button {
+                    onOpenWorkspaceApp?(app)
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: app.icon.isEmpty ? "square.grid.2x2" : app.icon)
+                            .font(Stanford.ui(12))
+                            .foregroundStyle(Stanford.lagunita)
+                        Text(app.name)
+                            .font(Stanford.body(13))
+                            .foregroundStyle(Stanford.black)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(Stanford.ui(11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
     }
 
     @ViewBuilder

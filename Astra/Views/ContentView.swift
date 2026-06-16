@@ -650,6 +650,7 @@ struct ContentView: View {
             onMoveToDraft: moveTaskToDraft,
             onForkTask: setSelectedTask,
             onCreateTask: startComposingTask,
+            onOpenWorkspaceApp: setSelectedWorkspaceApp,
             onOpenTask: openExistingTask,
             onDeleteTask: requestDeleteTask,
             onSetDoneState: setDoneState,
@@ -2846,6 +2847,7 @@ private struct ContentDetailAreaView: View {
     let onMoveToDraft: (AgentTask) -> Void
     let onForkTask: (AgentTask) -> Void
     let onCreateTask: () -> Void
+    var onOpenWorkspaceApp: ((WorkspaceApp) -> Void)?
     let onOpenTask: (AgentTask) -> Void
     let onDeleteTask: (AgentTask) -> Void
     let onSetDoneState: (AgentTask, Bool) -> Void
@@ -3214,6 +3216,7 @@ private struct ContentDetailAreaView: View {
             onMoveToDraft: onMoveToDraft,
             onForkTask: onForkTask,
             onCreateTask: onCreateTask,
+            onOpenWorkspaceApp: onOpenWorkspaceApp,
             onOpenTask: onOpenTask,
             onDeleteTask: onDeleteTask,
             onSetDoneState: onSetDoneState,
@@ -3298,6 +3301,7 @@ private struct ContentDetailContentView: View {
     let onMoveToDraft: (AgentTask) -> Void
     let onForkTask: (AgentTask) -> Void
     let onCreateTask: () -> Void
+    var onOpenWorkspaceApp: ((WorkspaceApp) -> Void)?
     let onOpenTask: (AgentTask) -> Void
     let onDeleteTask: (AgentTask) -> Void
     let onSetDoneState: (AgentTask, Bool) -> Void
@@ -3378,7 +3382,8 @@ private struct ContentDetailContentView: View {
                     onConfigure: onConfigure,
                     onNewSchedule: onNewSchedule,
                     onEditSchedule: onEditSchedule,
-                    onManageCapabilities: onManageCapabilities
+                    onManageCapabilities: onManageCapabilities,
+                    onOpenWorkspaceApp: onOpenWorkspaceApp
                 )
             }
         case .workspaceApp, .workspaceAppStudio:
