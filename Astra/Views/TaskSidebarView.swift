@@ -101,6 +101,9 @@ enum SidebarLeanPresentation {
     static let newTaskVerticalPadding: CGFloat = 7
     static let newTaskRestFillOpacity = 0.045
     static let newTaskHoverFillOpacity = 0.075
+    static let appAccessFooterIsBottomAnchored = true
+    static let appAccessFooterMenuTitle = "ASTRA"
+    static let appAccessFooterMinimumHeight: CGFloat = 44
 }
 
 enum SidebarThreadRowLayout {
@@ -412,6 +415,8 @@ struct TaskSidebarView: View {
                 }
                 .padding(.bottom, 12)
             }
+
+            appAccessFooter
         }
         .onAppear {
             loadSidebarDisclosure()
@@ -452,6 +457,17 @@ struct TaskSidebarView: View {
         } message: {
             Text("Enter a new name for this task.")
         }
+    }
+
+    private var appAccessFooter: some View {
+        VStack(spacing: 0) {
+            Divider()
+                .opacity(0.35)
+            AppAccessMenu()
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+        }
+        .accessibilityIdentifier("AppAccessSidebarFooter")
     }
 
     // MARK: - Pinned Section
