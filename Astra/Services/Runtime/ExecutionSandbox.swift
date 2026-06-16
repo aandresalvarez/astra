@@ -391,12 +391,14 @@ enum ExecutionSandbox {
             explicitReadRoots: explicitReadRoots,
             protectedReadRoots: protectedReadRoots
         )
+        let protectedWriteDenyRoots = protectedWriteDenyRoots(plan: plan, writableRoots: roots)
         let profile = makeProfile(
             writableRootCount: roots.count,
             readableRootCount: readableRoots.count,
             readableMetadataRootCount: readableMetadataRoots.count,
             protectedReadRootCount: protectedReadRoots.count,
             explicitProtectedReadAllowRootCount: explicitProtectedReadAllowRoots.count,
+            protectedWriteDenyRootCount: protectedWriteDenyRoots.count,
             allowNetwork: settings.allowNetwork,
             readScope: settings.readScope
         )
@@ -407,6 +409,7 @@ enum ExecutionSandbox {
             readableMetadataRoots: readableMetadataRoots,
             protectedReadRoots: protectedReadRoots,
             explicitProtectedReadAllowRoots: explicitProtectedReadAllowRoots,
+            protectedWriteDenyRoots: protectedWriteDenyRoots,
             executablePath: plan.executablePath,
             arguments: plan.arguments
         )
@@ -626,6 +629,24 @@ enum ExecutionSandbox {
         return result
     }
 
+    /// Specific files to keep read-only even though they sit inside a writable
+    /// root (e.g. injection-sensitive config under a shared provider home). Only
+    /// paths that actually fall under a granted writable root are emitted — a
+    /// deny for a path nothing can write would be a no-op. Returned as literal
+    /// spellings so only the exact files (not their parents) are denied.
+    static func protectedWriteDenyRoots(
+        plan: AgentRuntimeProcessLaunchPlan,
+        writableRoots: [String]
+    ) -> [String] {
+        guard !plan.sandboxProtectedWriteDenyPaths.isEmpty else { return [] }
+        var seen: Set<String> = []
+        return plan.sandboxProtectedWriteDenyPaths
+            .compactMap { canonicalize($0) }
+            .filter { path in writableRoots.contains { isSameOrDescendant(path, of: $0) } }
+            .flatMap(sandboxPathSpellings)
+            .filter { seen.insert($0).inserted }
+    }
+
     private static func providerStateRoots(
         plan: AgentRuntimeProcessLaunchPlan,
         providerHomeDirectory: String
@@ -675,6 +696,7 @@ enum ExecutionSandbox {
         readableMetadataRootCount: Int = 0,
         protectedReadRootCount: Int = 0,
         explicitProtectedReadAllowRootCount: Int = 0,
+        protectedWriteDenyRootCount: Int = 0,
         allowNetwork: Bool,
         readScope: ExecutionSandboxReadScope = .open
     ) -> String {
@@ -717,24 +739,48 @@ enum ExecutionSandbox {
         // these and they are not user data.
         allow.append("    (subpath \"/dev\"))")
         lines.append(contentsOf: allow)
+        // Carve specific files back out of the writable allow above. Last match
+        // wins in SBPL, so this deny overrides the broad write-allow for exactly
+        // these literals (e.g. shared-home config the next session would load).
+        lines.append(contentsOf: protectedWriteDenyBlock(protectedWriteDenyRootCount: protectedWriteDenyRootCount))
 
         return lines.joined(separator: "\n") + "\n"
+    }
+
+    private static func protectedWriteDenyBlock(protectedWriteDenyRootCount: Int) -> [String] {
+        guard protectedWriteDenyRootCount > 0 else { return [] }
+        var deny: [String] = ["(deny file-write*"]
+        for index in 0..<protectedWriteDenyRootCount {
+            deny.append("    (literal (param \"\(protectedWriteDenyRootParameterName(index))\"))")
+        }
+        deny.append(")")
+        return deny
     }
 
     private static func readAllowBlock(
         readableRootCount: Int,
         readableMetadataRootCount: Int
     ) -> [String] {
-        var allow: [String] = ["(allow file-read*"]
-        allow.append("    (literal \"/\")")
-        for index in 0..<readableMetadataRootCount {
-            allow.append("    (literal (param \"\(readMetadataRootParameterName(index))\"))")
-        }
+        var lines: [String] = ["(allow file-read*"]
+        lines.append("    (literal \"/\")")
         for index in 0..<readableRootCount {
-            allow.append("    (subpath (param \"\(readRootParameterName(index))\"))")
+            lines.append("    (subpath (param \"\(readRootParameterName(index))\"))")
         }
-        allow.append("    (subpath \"/dev\"))")
-        return allow
+        lines.append("    (subpath \"/dev\"))")
+        // Ancestor directories of readable roots get METADATA-ONLY access: the
+        // kernel can stat/resolve a path through them, but the sandboxed process
+        // cannot list their contents (readdir). This lets a deep auth root like
+        // ~/.copilot be reached without granting a readable listing of ~ or
+        // /Users. file-read* on the roots themselves (above) still allows the
+        // actual reads.
+        if readableMetadataRootCount > 0 {
+            lines.append("(allow file-read-metadata")
+            for index in 0..<readableMetadataRootCount {
+                lines.append("    (literal (param \"\(readMetadataRootParameterName(index))\"))")
+            }
+            lines.append(")")
+        }
+        return lines
     }
 
     private static func protectedReadDenyBlock(protectedReadRootCount: Int) -> [String] {
@@ -779,6 +825,10 @@ enum ExecutionSandbox {
         "READ_LITERAL_ROOT_\(index)"
     }
 
+    static func protectedWriteDenyRootParameterName(_ index: Int) -> String {
+        "PROTECTED_WRITE_DENY_ROOT_\(index)"
+    }
+
     /// Assembles the full `sandbox-exec` argument vector:
     /// `-p <profile> -D ROOT_0=<path> -D READ_ROOT_0=<path> ... <realExecutable> <realArgs...>`.
     static func makeArguments(
@@ -788,6 +838,7 @@ enum ExecutionSandbox {
         readableMetadataRoots: [String] = [],
         protectedReadRoots: [String] = [],
         explicitProtectedReadAllowRoots: [String] = [],
+        protectedWriteDenyRoots: [String] = [],
         executablePath: String,
         arguments: [String]
     ) -> [String] {
@@ -811,6 +862,10 @@ enum ExecutionSandbox {
         for (index, root) in explicitProtectedReadAllowRoots.enumerated() {
             result.append("-D")
             result.append("\(explicitProtectedReadAllowRootParameterName(index))=\(root)")
+        }
+        for (index, root) in protectedWriteDenyRoots.enumerated() {
+            result.append("-D")
+            result.append("\(protectedWriteDenyRootParameterName(index))=\(root)")
         }
         result.append(canonicalize(executablePath) ?? executablePath)
         result.append(contentsOf: arguments)

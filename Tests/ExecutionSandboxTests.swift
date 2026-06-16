@@ -16,7 +16,8 @@ struct ExecutionSandboxTests {
         currentDirectory: String = "/tmp/astra-workspace",
         environment: [String: String] = ["HOME": "/tmp/astra-home"],
         directoriesToCreate: [String] = [],
-        sandboxReadablePaths: [String] = []
+        sandboxReadablePaths: [String] = [],
+        sandboxProtectedWriteDenyPaths: [String] = []
     ) -> AgentRuntimeProcessLaunchPlan {
         AgentRuntimeProcessLaunchPlan(
             runtime: runtime,
@@ -29,6 +30,7 @@ struct ExecutionSandboxTests {
             parsesJSONLines: true,
             directoriesToCreate: directoriesToCreate,
             sandboxReadablePaths: sandboxReadablePaths,
+            sandboxProtectedWriteDenyPaths: sandboxProtectedWriteDenyPaths,
             providerDetectedFields: [:],
             commandPlannedFields: [:]
         )
@@ -109,6 +111,18 @@ struct ExecutionSandboxTests {
 
         #expect(profile.contains("(literal (param \"READ_LITERAL_ROOT_0\"))"))
         #expect(args.contains("READ_LITERAL_ROOT_0=/opt"))
+        // Metadata roots are granted metadata-only (stat/traverse), NOT full
+        // file-read* — so the process can resolve paths through ancestor dirs
+        // like /Users without being able to list their contents.
+        let metadataBlock = profile.range(of: "(allow file-read-metadata")
+        #expect(metadataBlock != nil)
+        if let metadataBlock {
+            let literalRange = profile.range(of: "(literal (param \"READ_LITERAL_ROOT_0\"))")
+            #expect(literalRange != nil)
+            if let literalRange {
+                #expect(literalRange.lowerBound > metadataBlock.lowerBound)
+            }
+        }
     }
 
     @Test("Audit read-scope profile reports would-deny reads without disabling write denies")
@@ -345,7 +359,8 @@ struct ExecutionSandboxTests {
                 copilotStateHome: copilotStateHome,
                 userHome: userHome
             ),
-            sandboxReadablePaths: CopilotCLIRuntime.authReadablePaths(userHome: userHome)
+            sandboxReadablePaths: CopilotCLIRuntime.authReadablePaths(userHome: userHome),
+            sandboxProtectedWriteDenyPaths: CopilotCLIRuntime.configWriteDenyPaths(userHome: userHome)
         )
 
         let writableRoots = ExecutionSandbox.writableRoots(
@@ -358,11 +373,15 @@ struct ExecutionSandboxTests {
             providerHomeDirectory: providerHome,
             canonicalWorkspace: "/tmp/astra-workspace"
         )
+        let writeDenyRoots = ExecutionSandbox.protectedWriteDenyRoots(plan: plan, writableRoots: writableRoots)
         let userCaches = (userHome as NSString).appendingPathComponent("Library/Caches")
         let copilotUserCaches = (userHome as NSString).appendingPathComponent("Library/Caches/copilot")
         let keychains = (userHome as NSString).appendingPathComponent("Library/Keychains")
         let loginKeychain = (keychains as NSString).appendingPathComponent("login.keychain-db")
         let metadataKeychain = (keychains as NSString).appendingPathComponent("metadata.keychain-db")
+        let copilotConfig = (copilotStateHome as NSString).appendingPathComponent("config.json")
+        let copilotMcpConfig = (copilotStateHome as NSString).appendingPathComponent("mcp-config.json")
+        let copilotSessionDB = (copilotStateHome as NSString).appendingPathComponent("session-store.db")
 
         #expect(command.environment["COPILOT_HOME"] == copilotStateHome)
         #expect(command.environment["HOME"] == userHome)
@@ -377,10 +396,46 @@ struct ExecutionSandboxTests {
         #expect(readableRoots.contains("\(providerHome)/Library/Caches"))
         #expect(readableRoots.contains(copilotUserCaches))
         #expect(readableRoots.contains(loginKeychain))
-        #expect(readableRoots.contains(metadataKeychain))
+        // metadata.keychain-db is intentionally not granted (credential-name leak).
+        #expect(!readableRoots.contains(metadataKeychain))
         #expect(!readableRoots.contains(keychains))
         #expect(!writableRoots.contains(userCaches))
         #expect(!readableRoots.contains(userCaches))
+        // Injection-sensitive shared-home config is carved back out as read-only
+        // (write-deny over the writable home) while transient session state stays
+        // writable, so a task cannot tamper with the next terminal session.
+        #expect(writeDenyRoots.contains(copilotConfig))
+        #expect(writeDenyRoots.contains(copilotMcpConfig))
+        #expect(!writeDenyRoots.contains(copilotSessionDB))
+    }
+
+    @Test("Strict profile denies writes to carved-out config under a writable home")
+    func strictProfileDeniesWritesToCarvedOutConfig() {
+        let profile = ExecutionSandbox.makeProfile(
+            writableRootCount: 1,
+            protectedWriteDenyRootCount: 2,
+            allowNetwork: true,
+            readScope: .enforce
+        )
+        let args = ExecutionSandbox.makeArguments(
+            profile: profile,
+            writableRoots: ["/tmp/copilot-home"],
+            protectedWriteDenyRoots: ["/tmp/copilot-home/config.json", "/tmp/copilot-home/mcp-config.json"],
+            executablePath: "/bin/echo",
+            arguments: ["hi"]
+        )
+
+        // The deny block must appear AFTER the write-allow so last-match-wins
+        // makes deny win for the literal config files.
+        let denyRange = profile.range(of: "(deny file-write*\n    (literal (param \"PROTECTED_WRITE_DENY_ROOT_0\"))")
+        let allowRange = profile.range(of: "(allow file-write*")
+        #expect(denyRange != nil)
+        #expect(allowRange != nil)
+        if let denyRange, let allowRange {
+            #expect(allowRange.lowerBound < denyRange.lowerBound)
+        }
+        #expect(args.contains("PROTECTED_WRITE_DENY_ROOT_0=/tmp/copilot-home/config.json"))
+        #expect(args.contains("PROTECTED_WRITE_DENY_ROOT_1=/tmp/copilot-home/mcp-config.json"))
     }
 
     @Test("Codex launch roots enter strict readable and writable allowlists")
