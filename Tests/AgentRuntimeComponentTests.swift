@@ -58,6 +58,51 @@ struct AgentRuntimeAsyncWorkTests {
     }
 }
 
+@Suite("Agent Runtime Progress Timeout Policy")
+@MainActor
+struct AgentRuntimeProgressTimeoutPolicyTests {
+    @Test("Artifact tasks receive a wider bounded semantic progress window")
+    func artifactTasksReceiveWiderBoundedSemanticProgressWindow() {
+        let workspace = Workspace(name: "Progress Timeout", primaryPath: "/tmp/progress-timeout")
+        let artifactTask = AgentTask(
+            title: "Create Masterball page",
+            goal: "createa web page wit a masterball with a solver in javascript",
+            workspace: workspace
+        )
+        let informationalTask = AgentTask(
+            title: "Explain",
+            goal: "explain the Masterball puzzle",
+            workspace: workspace
+        )
+
+        #expect(AgentRuntimeProgressTimeoutPolicy.semanticProgressTimeout(
+            task: artifactTask,
+            phase: "run",
+            idleTimeoutSeconds: 180
+        ) == 360)
+        #expect(AgentRuntimeProgressTimeoutPolicy.semanticProgressTimeout(
+            task: artifactTask,
+            phase: "run",
+            idleTimeoutSeconds: 240
+        ) == 360)
+        #expect(AgentRuntimeProgressTimeoutPolicy.semanticProgressTimeout(
+            task: artifactTask,
+            phase: "run",
+            idleTimeoutSeconds: 30
+        ) == 60)
+        #expect(AgentRuntimeProgressTimeoutPolicy.semanticProgressTimeout(
+            task: artifactTask,
+            phase: "resume",
+            idleTimeoutSeconds: 240
+        ) == 180)
+        #expect(AgentRuntimeProgressTimeoutPolicy.semanticProgressTimeout(
+            task: informationalTask,
+            phase: "run",
+            idleTimeoutSeconds: 240
+        ) == 180)
+    }
+}
+
 @Suite("Agent Runtime Launch Preflight")
 @MainActor
 struct AgentRuntimeLaunchPreflightTests {

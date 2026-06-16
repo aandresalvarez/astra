@@ -32,6 +32,32 @@ enum TaskDeliverableExpectation {
         ])
     }
 
+    static func requiredOutputFilenames(_ task: AgentTask) -> Set<String> {
+        let text = [
+            deliverableRelevantText(from: task.title),
+            deliverableRelevantText(from: task.goal),
+            deliverableRelevantText(from: task.inputs.joined(separator: " ")),
+            deliverableRelevantText(from: task.acceptanceCriteria.joined(separator: " "))
+        ]
+            .joined(separator: "\n")
+
+        var filenames: Set<String> = []
+        for rawLine in text.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+
+            if let listSegment = explicitDeliverableListSegment(from: line) {
+                filenames.formUnion(outputFilenames(in: listSegment))
+                continue
+            }
+
+            if lineStatesNamedOutput(line) {
+                filenames.formUnion(outputFilenames(in: line))
+            }
+        }
+        return filenames
+    }
+
     static func hasArtifact(
         for task: AgentTask,
         run: TaskRun,
@@ -99,6 +125,63 @@ enum TaskDeliverableExpectation {
         return tokens.contains { token in
             joinedArticleWords.contains(String(token))
         }
+    }
+
+    private static func explicitDeliverableListSegment(from line: String) -> String? {
+        guard let listText = removingListMarker(from: line) else { return nil }
+        let delimiters = [":", " - ", " -- "]
+        let delimiterIndex = delimiters.compactMap { delimiter in
+            listText.range(of: delimiter)?.lowerBound
+        }.min()
+
+        let segment: Substring
+        if let delimiterIndex {
+            segment = listText[..<delimiterIndex]
+        } else {
+            segment = Substring(listText)
+        }
+
+        let trimmed = segment.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func removingListMarker(from line: String) -> String? {
+        for prefix in ["- ", "* ", "+ "] where line.hasPrefix(prefix) {
+            return String(line.dropFirst(prefix.count))
+        }
+
+        guard let range = line.range(of: #"^\d+[\.)]\s+"#, options: .regularExpression) else {
+            return nil
+        }
+        return String(line[range.upperBound...])
+    }
+
+    private static func lineStatesNamedOutput(_ line: String) -> Bool {
+        let lower = line.lowercased()
+        let actionWords = [
+            "write", "create", "creat", "cerate", "crefate", "build", "buid",
+            "make", "generate", "save", "produce", "include"
+        ]
+        return containsAnyWholeWord(lower, actionWords)
+            || containsAnyWholeWord(lower, ["required", "deliverable", "deliverables"])
+            || lower.contains("named ")
+            || lower.contains("file named")
+            || lower.contains("must include")
+    }
+
+    private static func outputFilenames(in text: String) -> Set<String> {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"(?i)(?:\./)?([A-Za-z0-9][A-Za-z0-9._-]*\.(?:html|css|js|mjs|cjs|ts|tsx|jsx|py|rb|go|rs|swift|java|kt|json|md|txt|csv|tsv|yaml|yml|xml|pdf|docx|pptx|xlsx))\b"#
+        ) else { return [] }
+
+        let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
+        return Set(regex.matches(in: text, range: nsRange).compactMap { match in
+            guard match.numberOfRanges > 1,
+                  let range = Range(match.range(at: 1), in: text) else {
+                return nil
+            }
+            return String(text[range]).lowercased()
+        })
     }
 
     private static func deliverableRelevantText(from rawText: String) -> String {

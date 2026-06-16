@@ -218,6 +218,52 @@ struct ExecutionSandboxTests {
         #expect(roots.count == Set(roots).count)
     }
 
+    @Test("Provider state roots include Claude application support")
+    func providerStateRootsIncludeClaudeApplicationSupport() {
+        let plan = makePlan(
+            currentDirectory: "/tmp/astra-workspace",
+            environment: ["HOME": "/tmp/astra-home", "TMPDIR": "/tmp"]
+        )
+        let workspace = ExecutionSandbox.canonicalize(plan.currentDirectory)!
+        let readableRoots = ExecutionSandbox.readableRoots(
+            plan: plan,
+            providerHomeDirectory: "",
+            canonicalWorkspace: workspace
+        )
+        let writableRoots = ExecutionSandbox.writableRoots(
+            plan: plan,
+            providerHomeDirectory: "",
+            canonicalWorkspace: workspace
+        )
+
+        #expect(readableRoots.contains("/private/tmp/astra-home/Library/Application Support/Claude"))
+        #expect(writableRoots.contains("/private/tmp/astra-home/Library/Application Support/Claude"))
+    }
+
+    @Test("Claude auth readable roots grant login keychain without metadata")
+    func claudeAuthReadableRootsGrantLoginKeychainWithoutMetadata() {
+        let userHome = "/tmp/astra-claude-user-\(UUID().uuidString)"
+        let plan = makePlan(
+            runtime: .claudeCode,
+            currentDirectory: "/tmp/astra-workspace",
+            environment: ["HOME": userHome, "TMPDIR": "/tmp"],
+            sandboxReadablePaths: ClaudeCodeRuntime.authReadablePaths(userHome: userHome)
+        )
+        let workspace = ExecutionSandbox.canonicalize(plan.currentDirectory)!
+        let readableRoots = ExecutionSandbox.readableRoots(
+            plan: plan,
+            providerHomeDirectory: "",
+            canonicalWorkspace: workspace
+        )
+        let keychains = (userHome as NSString).appendingPathComponent("Library/Keychains")
+        let loginKeychain = (keychains as NSString).appendingPathComponent("login.keychain-db")
+        let metadataKeychain = (keychains as NSString).appendingPathComponent("metadata.keychain-db")
+
+        #expect(readableRoots.contains(loginKeychain))
+        #expect(!readableRoots.contains(metadataKeychain))
+        #expect(!readableRoots.contains(keychains))
+    }
+
     @Test("Readable roots include explicit roots, provider state, and system toolchain roots")
     func readableRoots() {
         let plan = makePlan(

@@ -698,6 +698,11 @@ final class AgentRuntimeWorker {
         let recordingState = AgentEventRecordingState()
         let streamTelemetry = runtimeAdapter.recordsStreamTelemetry ? AgentRuntimeStreamTelemetry() : nil
         let streamDebugCapture = AgentRuntimeStreamDebugCapture.makeIfEnabled()
+        let semanticProgressTimeout = AgentRuntimeProgressTimeoutPolicy.semanticProgressTimeout(
+            task: task,
+            phase: auditPhase,
+            idleTimeoutSeconds: timeoutSeconds
+        )
         let result = await processRunner.runRuntimeProcess(
             adapter: runtimeAdapter,
             prompt: prompt,
@@ -715,6 +720,7 @@ final class AgentRuntimeWorker {
             nativeContinuationSessionID: nativeContinuationSessionID,
             runID: run.id,
             liveApprovalsEnabled: liveApprovalsEnabled,
+            noSemanticProgressTimeoutSeconds: semanticProgressTimeout,
             onInteractiveAsk: Self.interactiveAskHandler(
                 runtime: selectedRuntime, task: task, run: run,
                 permissionPolicy: runPermissionPolicy, manifest: manifest,
@@ -835,7 +841,8 @@ final class AgentRuntimeWorker {
                 exitCode: result.exitCode
             )
         }
-        let failureDiagnostic = (result.exitCode == 0 || result.runtimeStopped || result.repetitionKilled) ? nil : AgentRuntimeFailureDiagnostic.classify(
+        let processSucceeded = result.exitCode == 0 || result.terminatedAfterTerminalProgress
+        let failureDiagnostic = (processSucceeded || result.runtimeStopped || result.repetitionKilled) ? nil : AgentRuntimeFailureDiagnostic.classify(
             runtime: selectedRuntime,
             model: task.model,
             exitCode: result.exitCode,
@@ -858,8 +865,9 @@ final class AgentRuntimeWorker {
         AppLogger.audit(.workerExited, category: "Worker", taskID: task.id, fields: [
             "exit_code": String(result.exitCode),
             "runtime": selectedRuntime.rawValue,
-            "phase": auditPhase
-        ], level: result.exitCode == 0 ? .info : .warning)
+            "phase": auditPhase,
+            "terminated_after_terminal_progress": String(result.terminatedAfterTerminalProgress)
+        ], level: processSucceeded ? .info : .warning)
 
         if cancellationRequested || task.status == .cancelled {
             run.status = .cancelled
@@ -919,7 +927,7 @@ final class AgentRuntimeWorker {
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Budget.exceeded,
                                   payload: "\(reason) (\(task.tokensUsed)/\(task.tokenBudget)). \(outcome)", run: run)
             modelContext.insert(event)
-        } else if result.exitCode == 0,
+        } else if processSucceeded,
                   runtimeAdapter.requiresVisibleResultForSuccessfulRun(phase: auditPhase),
                   Self.applyEmptySuccessfulRunIfNeeded(
                     runtimeAdapter: runtimeAdapter,
@@ -929,7 +937,7 @@ final class AgentRuntimeWorker {
                     result: result,
                     phase: auditPhase
                   ) {
-        } else if result.exitCode == 0 {
+        } else if processSucceeded {
             run.status = .completed
             run.typedStopReason = .completed
             AgentRuntimeBudgetPolicy.recordFinalBudgetWarningIfNeeded(
@@ -1913,7 +1921,8 @@ final class AgentRuntimeWorker {
             .providerPermissionDeniedBroadPermissions,
             .providerPermissionUnresumable,
             .providerNoActionableProgress,
-            .providerNoSemanticProgress
+            .providerNoSemanticProgress,
+            .providerSemanticProgressStalled
         ].contains(stopReason)
     }
 

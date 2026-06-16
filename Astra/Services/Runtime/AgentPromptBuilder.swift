@@ -179,6 +179,7 @@ enum AgentPromptBuilder {
 
         Artifact first-action requirement:
         The user asked for a generated artifact. Your first provider-visible action should be to create or update a useful baseline deliverable in \(relativePath), preferably \(suggestedFile) when that fits the request.
+        A text reply such as "I'll create it" does not satisfy this requirement. The first meaningful action must be a file write/create/update for the deliverable itself.
         Do not spend an extended period on hidden planning before creating the baseline artifact. Create the baseline first, then improve it.
         If file-write permission is required, request that permission immediately instead of continuing hidden planning.
         """
@@ -340,6 +341,7 @@ enum AgentPromptBuilder {
         return """
         Artifact delivery contract:
         The user asked for a generated artifact. Create the first useful deliverable promptly in \(location), preferably as \(suggestedFile) when that fits the request.
+        Do not send a visible text reply such as "I'll create it" before the file exists; text promises do not count as delivery. The first meaningful action must be a file write/create/update for the deliverable itself.
         Do not spend an extended period perfecting design, puzzle mechanics, algorithms, or research before writing the initial artifact. Write a working baseline first, then improve it.
         If a tool permission is needed to create the artifact, request that tool permission instead of continuing hidden planning.
         """
@@ -877,7 +879,7 @@ enum AgentPromptBuilder {
         ) {
             let task = context.task
             guard task.useAgentTeam else { return }
-            var teamBlock = "Create an agent team with \(task.teamSize) teammates to accomplish the goal below. Coordinate them to work in parallel and synthesize their results."
+            var teamBlock = "Create an agent team with \(task.teamSize) teammates to accomplish the goal below. Coordinate them to work in parallel and synthesize their results. Do not produce the final answer or final artifact until teammate results have been collected and incorporated."
             if !task.teamInstructions.isEmpty {
                 teamBlock += "\n\(task.teamInstructions)"
             }

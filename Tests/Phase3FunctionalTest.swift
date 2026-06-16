@@ -79,13 +79,14 @@ struct Phase3FunctionalTest {
         task.useAgentTeam = runtimeCase.expectsTeamEvents
         task.teamSize = runtimeCase.expectsTeamEvents ? 3 : 1
         task.teamInstructions = """
-        Create an agent team with 3 teammates:
+        Before writing state-decision.md, use the teammate/Agent tool to create an agent team with 3 teammates:
         - Teammate 1 advocates for Redux Toolkit
         - Teammate 2 advocates for Zustand
         - Teammate 3 advocates for React Context API
         Have them debate from general knowledge only; do not use web search. Each teammate should \
         respond with no more than 3 concise bullets covering bundle size, boilerplate, ease of use, \
         TypeScript support, and performance. They must challenge one assumption from another option. \
+        Do not create a baseline or final state-decision.md before teammate responses are returned. \
         Once they reach a consensus, output a final markdown file named state-decision.md with a \
         comparison matrix and recommendation. Use at most one pass per teammate and finish immediately \
         after writing the file.
@@ -112,10 +113,15 @@ struct Phase3FunctionalTest {
                 receivedEvents.append(event)
             }
         }
+        LiveProviderDiagnostics.printSummary(
+            label: "Phase 3 swarm \(runtimeCase.runtimeID.displayName)",
+            task: task,
+            workspacePath: testDir,
+            receivedEvents: receivedEvents
+        )
 
         // 5. Verify task lifecycle
-        let isTerminal = task.isTerminal || task.status == .pendingUser || task.status == .budgetExceeded
-        #expect(isTerminal, "Task should reach terminal status, got: \(task.status.rawValue)")
+        #expect(task.status == .completed, "Swarm artifact E2E should complete, got: \(task.status.rawValue)")
         if runtimeCase.expectsUsageStats {
             #expect(task.tokensUsed > 0, "Tokens used: \(task.tokensUsed)")
         }
@@ -253,6 +259,11 @@ struct Phase3FunctionalTest {
         try await E2ETestSupport.withLiveProviderSlot {
             await worker.execute(task: task, modelContext: context) { _ in }
         }
+        LiveProviderDiagnostics.printSummary(
+            label: "Phase 3 budget \(runtimeCase.runtimeID.displayName)",
+            task: task,
+            workspacePath: testDir
+        )
 
         // 4. Verify task reached a terminal state without crashing
         let isTerminal = task.isTerminal || task.status == .pendingUser || task.status == .budgetExceeded

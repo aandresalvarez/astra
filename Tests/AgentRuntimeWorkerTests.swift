@@ -712,8 +712,10 @@ struct BuildPromptTests {
             #expect(prompt.contains("For informational tasks, summaries, reviews, lookups, and status checks, return the useful answer in chat"))
             #expect(prompt.contains("Artifact first-action requirement:"))
             #expect(prompt.contains("Your first provider-visible action should be to create or update a useful baseline deliverable"))
+            #expect(prompt.contains("A text reply such as \"I'll create it\" does not satisfy this requirement"))
             #expect(prompt.contains("Artifact delivery contract:"))
             #expect(prompt.contains("Create the first useful deliverable promptly"))
+            #expect(prompt.contains("text promises do not count as delivery"))
             #expect(prompt.contains("preferably as index.html"))
             #expect(prompt.contains("Do not spend an extended period perfecting design, puzzle mechanics, algorithms, or research before writing the initial artifact"))
             #expect(prompt.contains("If a tool permission is needed to create the artifact, request that tool permission instead of continuing hidden planning"))
@@ -944,6 +946,7 @@ struct BuildPromptTests {
         let worker = AgentRuntimeWorker.scenarioWorker()
         let prompt = worker.buildPrompt(for: task)
         #expect(prompt.contains("Create an agent team with 3 teammates"))
+        #expect(prompt.contains("Do not produce the final answer or final artifact until teammate results have been collected"))
         #expect(prompt.contains("Focus on security"))
     }
 

@@ -9,6 +9,10 @@ private let realProviderSmokeEnabled = ProcessInfo.processInfo.environment["RUN_
 @Suite("Real Provider Smoke Tests", .serialized)
 @MainActor
 struct RealProviderSmokeTests {
+    private static var liveConfig: LiveProviderTestConfiguration {
+        LiveProviderTestConfiguration()
+    }
+
     @Test(
         "Real GitHub CLI is authenticated",
         .enabled(if: realProviderSmokeEnabled, "Set RUN_REAL_PROVIDERS=1 to run account-backed provider smoke tests")
@@ -72,8 +76,8 @@ struct RealProviderSmokeTests {
 
         let claudePath = try #require(Self.findExecutable("claude"))
         let copilotPath = try #require(Self.findExecutable("copilot"))
-        let claudeModel = ProcessInfo.processInfo.environment["REAL_CLAUDE_MODEL"] ?? "claude-sonnet-4-6"
-        let copilotModel = ProcessInfo.processInfo.environment["REAL_COPILOT_MODEL"] ?? AgentRuntimeAdapterRegistry.defaultModel(for: .copilotCLI)
+        let claudeModel = Self.liveConfig.claudeModel
+        let copilotModel = Self.liveConfig.copilotModel
 
         let worker = harness.makeWorker(claudePath: claudePath, copilotPath: copilotPath)
         let task = harness.makeTask(
@@ -121,8 +125,8 @@ struct RealProviderSmokeTests {
 
         let claudePath = try #require(Self.findExecutable("claude"))
         let copilotPath = try #require(Self.findExecutable("copilot"))
-        let claudeModel = ProcessInfo.processInfo.environment["REAL_CLAUDE_MODEL"] ?? "claude-sonnet-4-6"
-        let copilotModel = ProcessInfo.processInfo.environment["REAL_COPILOT_MODEL"] ?? AgentRuntimeAdapterRegistry.defaultModel(for: .copilotCLI)
+        let claudeModel = Self.liveConfig.claudeModel
+        let copilotModel = Self.liveConfig.copilotModel
 
         let worker = harness.makeWorker(claudePath: claudePath, copilotPath: copilotPath)
         let task = harness.makeTask(
@@ -169,9 +173,7 @@ struct RealProviderSmokeTests {
         defer { harness.cleanup() }
 
         let claudePath = try #require(Self.findExecutable("claude"))
-        let model = ProcessInfo.processInfo.environment["REAL_CLAUDE_ARTIFACT_MODEL"]
-            ?? ProcessInfo.processInfo.environment["REAL_CLAUDE_MODEL"]
-            ?? "claude-opus-4-6@default"
+        let model = Self.liveConfig.claudeArtifactModel
         let worker = harness.makeWorker(claudePath: claudePath)
         worker.timeoutSeconds = TimeInterval(ProcessInfo.processInfo.environment["REAL_PROVIDER_ARTIFACT_TIMEOUT"] ?? "")
             ?? 120
@@ -236,9 +238,7 @@ struct RealProviderSmokeTests {
         defer { harness.cleanup() }
 
         let claudePath = try #require(Self.findExecutable("claude"))
-        let model = ProcessInfo.processInfo.environment["REAL_CLAUDE_ARTIFACT_MODEL"]
-            ?? ProcessInfo.processInfo.environment["REAL_CLAUDE_MODEL"]
-            ?? "claude-opus-4-6@default"
+        let model = Self.liveConfig.claudeArtifactModel
         let worker = harness.makeWorker(claudePath: claudePath)
         worker.timeoutSeconds = TimeInterval(ProcessInfo.processInfo.environment["REAL_PROVIDER_ARTIFACT_TIMEOUT"] ?? "")
             ?? 180
@@ -290,9 +290,7 @@ struct RealProviderSmokeTests {
         defer { harness.cleanup() }
 
         let copilotPath = try #require(Self.findExecutable("copilot"))
-        let model = ProcessInfo.processInfo.environment["REAL_COPILOT_ARTIFACT_MODEL"]
-            ?? ProcessInfo.processInfo.environment["REAL_COPILOT_MODEL"]
-            ?? "gpt-5.3-codex"
+        let model = Self.liveConfig.copilotArtifactModel
         let worker = harness.makeWorker(copilotPath: copilotPath)
         worker.timeoutSeconds = TimeInterval(ProcessInfo.processInfo.environment["REAL_PROVIDER_ARTIFACT_TIMEOUT"] ?? "")
             ?? 240
@@ -551,17 +549,15 @@ struct RealProviderSmokeTests {
     }
 
     private static func claudeModel() -> String {
-        ProcessInfo.processInfo.environment["REAL_CLAUDE_MODEL"] ?? "claude-sonnet-4-6"
+        liveConfig.claudeModel
     }
 
     private static func copilotModel() -> String {
-        ProcessInfo.processInfo.environment["REAL_COPILOT_MODEL"]
-            ?? AgentRuntimeAdapterRegistry.defaultModel(for: .copilotCLI)
+        liveConfig.copilotModel
     }
 
     private static func antigravityModel() -> String {
-        ProcessInfo.processInfo.environment["REAL_ANTIGRAVITY_MODEL"]
-            ?? AgentRuntimeAdapterRegistry.defaultModel(for: .antigravityCLI)
+        liveConfig.antigravityModel
     }
 
     /// Randomized fact/question pair for a two-turn recall probe. The expected

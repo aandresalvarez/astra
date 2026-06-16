@@ -294,6 +294,7 @@ enum ExecutionSandbox {
         ".npm",
         ".local/share",
         ".local/state",
+        "Library/Application Support/Claude",
         "Library/Caches"
     ]
 

@@ -861,6 +861,49 @@ struct ProcessMonitorTests {
         #expect(monitor.runtimeStopMessage?.contains("provider-side liveness") == true)
     }
 
+    @Test("Provider liveness after progress stops as stalled semantic progress")
+    func providerLivenessAfterProgressStopsAsStalledSemanticProgress() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            noSemanticProgressTimeoutSeconds: 0
+        )
+        let process = MonitorMockProcess()
+
+        let visibleProgressStopped = monitor.processEvent(.text(text: "Working on it"), process: process)
+        let livenessStopped = monitor.processEvent(.thinking(text: "Still thinking"), process: process)
+        let watchdogStopped = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+
+        #expect(visibleProgressStopped == false)
+        #expect(livenessStopped == false)
+        #expect(watchdogStopped == true)
+        #expect(process.didTerminate == true)
+        #expect(monitor.runtimeStopReason == "provider_semantic_progress_stalled")
+        #expect(monitor.runtimeStopMessage?.contains("stopped advancing") == true)
+    }
+
+    @Test("Terminal progress exit grace terminates without runtime stop")
+    func terminalProgressExitGraceTerminatesWithoutRuntimeStop() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            noSemanticProgressTimeoutSeconds: 60,
+            terminalProgressExitGraceSeconds: 0
+        )
+        let process = MonitorMockProcess()
+
+        let shouldKillEvent = monitor.processEvent(
+            .astraProtocol(.valid(.complete(summary: "Done", verifiedBy: nil))),
+            process: process
+        )
+        let watchdogStopped = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+
+        #expect(shouldKillEvent == false)
+        #expect(watchdogStopped == true)
+        #expect(process.didTerminate == true)
+        #expect(monitor.terminatedAfterTerminalProgress == true)
+        #expect(monitor.runtimeStopReason == nil)
+        #expect(monitor.timedOut == false)
+    }
+
     @Test("Default liveness-only timeout gives real providers a bounded action window")
     func defaultLivenessOnlyTimeoutGivesRealProvidersBoundedActionWindow() {
         let shortRun = AgentRuntimeWorker.ProcessMonitor(
@@ -906,7 +949,7 @@ struct ProcessMonitorTests {
     func visibleProviderTextPreventsLivenessOnlyStop() {
         let monitor = AgentRuntimeWorker.ProcessMonitor(
             tokenBudget: Int.max,
-            noSemanticProgressTimeoutSeconds: 0
+            noSemanticProgressTimeoutSeconds: 60
         )
         let process = MonitorMockProcess()
 
