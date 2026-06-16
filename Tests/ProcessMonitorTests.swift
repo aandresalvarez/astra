@@ -2071,6 +2071,31 @@ struct RuntimePolicyGuardTests {
         #expect(monitor.policyViolation == false)
     }
 
+    @Test("Allowed shell pattern can authorize ask-first Bash support command")
+    func allowedShellPatternCanAuthorizeAskFirstBashSupportCommand() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Bash"],
+            allowedShellPatterns: [#"echo "$ASTRA_CONNECTORS" | head -50"#],
+            deniedShellPatterns: ["rm:*"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": #"echo "$ASTRA_CONNECTORS" | head -50"#]),
+            process: nil
+        )
+
+        #expect(shouldKill == false)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolation == false)
+        #expect(monitor.runtimeStopped == false)
+    }
+
     @Test("Allowed shell patterns must cover every command segment")
     func allowedShellPatternsMustCoverEveryCommandSegment() {
         let manifest = runtimePolicyManifest(

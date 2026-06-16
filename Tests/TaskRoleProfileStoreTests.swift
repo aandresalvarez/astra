@@ -26,6 +26,29 @@ struct TaskRoleProfileStoreTests {
         #expect(selection.profile.policyLevelRaw == AgentPolicyLevel.review.rawValue)
     }
 
+    @Test("composer policy overrides role default for launch selection")
+    func composerPolicyOverridesRoleDefaultForLaunchSelection() {
+        let selection = TaskRoleProfileSelection(
+            profile: TaskRoleProfile(
+                role: .worker,
+                runtimeID: AgentRuntimeID.copilotCLI.rawValue,
+                model: "claude-sonnet-4.6",
+                tokenBudget: 0,
+                policyLevelRaw: AgentPolicyLevel.review.rawValue
+            ),
+            source: "default"
+        )
+
+        let updated = TaskComposerPolicySelection.applyingComposerPolicy(
+            .autonomous,
+            to: selection,
+            source: "composer_policy"
+        )
+
+        #expect(updated.profile.policyLevelRaw == AgentPolicyLevel.autonomous.rawValue)
+        #expect(updated.source == "composer_policy")
+    }
+
     @MainActor
     @Test("task worker profile uses task override without mutating global settings")
     func taskWorkerProfileUsesTaskOverrideWithoutMutatingGlobalSettings() throws {

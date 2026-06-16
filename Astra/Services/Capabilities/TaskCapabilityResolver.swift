@@ -368,7 +368,7 @@ struct TaskCapabilityResolver {
                 return true
             }
             guard let skill = connector.skill else { return false }
-            return includedSkillIDs.contains(skill.id) && Self.matchesConnector(connector, taskText: searchableText)
+            return includedSkillIDs.contains(skill.id)
         }
 
         let includedLocalTools = tools.filter { tool in

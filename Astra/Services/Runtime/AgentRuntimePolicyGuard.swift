@@ -238,12 +238,21 @@ struct AgentRuntimePolicyGuard: Sendable {
             return violation
         }
 
+        let matchesAllowedShellPattern = observed.command.map { command in
+            isShellTool(toolName)
+                && shellCommandAllowedByPatterns(
+                    command,
+                    patterns: manifest.providerRender.allowedShellPatterns
+                )
+        } ?? false
+
         let matchesAllowedTool = toolMatches(
             toolName,
             command: observed.command,
             candidates: manifest.providerRender.allowedTools,
             shellMatchMode: .allActionableSegments
-        ) || matchesTaskOutputFileMutation(observed, toolName: toolName)
+        ) || matchesAllowedShellPattern
+            || matchesTaskOutputFileMutation(observed, toolName: toolName)
 
         if !matchesAllowedTool,
            requiresApproval(toolName: toolName, command: observed.command) {
@@ -773,8 +782,10 @@ struct AgentRuntimePolicyGuard: Sendable {
         if patterns.contains("*") { return true }
         let segments = Self.actionableShellSegments(command)
         let normalizedCommand = Self.normalizedShellText(command)
-        if segments.count <= 1,
-           patterns.contains(where: { matchesFullShellCommand(normalizedCommand, pattern: $0) }) {
+        if patterns.contains(where: {
+            canMatchFullShellCommand(pattern: $0, segmentCount: segments.count)
+                && matchesFullShellCommand(normalizedCommand, pattern: $0)
+        }) {
             return true
         }
         guard !segments.isEmpty else { return false }
@@ -787,7 +798,7 @@ struct AgentRuntimePolicyGuard: Sendable {
     private func shellCommandAllowedByPattern(_ command: String, pattern: String) -> Bool {
         let segments = Self.actionableShellSegments(command)
         let normalizedCommand = Self.normalizedShellText(command)
-        if segments.count <= 1,
+        if canMatchFullShellCommand(pattern: pattern, segmentCount: segments.count),
            matchesFullShellCommand(normalizedCommand, pattern: pattern) {
             return true
         }
@@ -816,6 +827,17 @@ struct AgentRuntimePolicyGuard: Sendable {
     private func matchesFullShellCommand(_ normalizedCommand: String, pattern: String) -> Bool {
         let normalizedPattern = normalizedShellPattern(pattern)
         return Self.wildcardMatch(normalizedCommand, pattern: normalizedPattern)
+    }
+
+    private func canMatchFullShellCommand(pattern: String, segmentCount: Int) -> Bool {
+        guard segmentCount > 1 else { return true }
+        let normalizedPattern = normalizedShellPattern(pattern)
+        return normalizedPattern.contains("|")
+            || normalizedPattern.contains(";")
+            || normalizedPattern.contains("&&")
+            || normalizedPattern.contains("||")
+            || normalizedPattern.contains("$(")
+            || normalizedPattern.contains("`")
     }
 
     private func matchesShellSegment(_ segment: String, pattern: String) -> Bool {

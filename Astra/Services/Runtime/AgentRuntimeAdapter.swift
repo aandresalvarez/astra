@@ -700,6 +700,9 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
     let parsesJSONLines: Bool
     let directoriesToCreate: [String]
     let sandboxReadablePaths: [String]
+    /// Files carved back out of a writable root as read-only (write-deny over
+    /// write-allow). See `CopilotCLIRuntime.configWriteDenyPaths`.
+    let sandboxProtectedWriteDenyPaths: [String]
     let providerDetectedFields: [String: String]
     let commandPlannedFields: [String: String]
     var interactiveAsk: AgentRuntimeInteractiveAskPlan?
@@ -715,6 +718,7 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
         parsesJSONLines: Bool,
         directoriesToCreate: [String] = [],
         sandboxReadablePaths: [String] = [],
+        sandboxProtectedWriteDenyPaths: [String] = [],
         providerDetectedFields: [String: String] = [:],
         commandPlannedFields: [String: String] = [:],
         interactiveAsk: AgentRuntimeInteractiveAskPlan? = nil
@@ -729,6 +733,7 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
         self.parsesJSONLines = parsesJSONLines
         self.directoriesToCreate = directoriesToCreate
         self.sandboxReadablePaths = sandboxReadablePaths
+        self.sandboxProtectedWriteDenyPaths = sandboxProtectedWriteDenyPaths
         self.providerDetectedFields = providerDetectedFields
         self.commandPlannedFields = commandPlannedFields
         self.interactiveAsk = interactiveAsk
@@ -1886,6 +1891,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
         let additionalPaths = AgentRuntimeProcessRunner.copilotAdditionalPaths(for: context.task)
         let browserBridgeMetadata = BrowserBridgeRuntimeLaunchGuard.planMetadata(runtime: id, environment: taskEnv)
+        let userHome = FileManager.default.homeDirectoryForCurrentUser.path
+        let copilotStateHome = CopilotCLIRuntime.defaultHome(userHome: userHome)
         var localToolCommands = AgentRuntimeProcessRunner.copilotLocalToolCommands(for: context.task, contextText: context.contextText)
         if browserBridgeMetadata.isAttached {
             localToolCommands.append("astra-browser")
@@ -1902,6 +1909,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             capabilities: capabilities,
             taskEnvironment: taskEnv,
             copilotHome: context.providerHomeDirectory,
+            copilotStateHome: copilotStateHome,
+            userHome: userHome,
             pathPrefix: pathPrefix,
             includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task, contextText: context.contextText)
                 || browserBridgeMetadata.isAttached,
@@ -1919,7 +1928,13 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             browserShimDirectory: browserShimDirectory,
             providerVersion: providerVersion,
             parsesJSONLines: plan.parsesJSONLines,
-            directoriesToCreate: [context.providerHomeDirectory],
+            directoriesToCreate: CopilotCLIRuntime.directoriesToCreate(
+                copilotHome: context.providerHomeDirectory,
+                copilotStateHome: copilotStateHome,
+                userHome: userHome
+            ),
+            sandboxReadablePaths: CopilotCLIRuntime.authReadablePaths(userHome: userHome),
+            sandboxProtectedWriteDenyPaths: CopilotCLIRuntime.configWriteDenyPaths(userHome: userHome),
             providerDetectedFields: [
                 "runtime": id.rawValue,
                 "provider_version": providerVersion ?? "unknown",
@@ -2045,6 +2060,10 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let copilotHome = configuration.homeDirectory(for: id).isEmpty
             ? CopilotCLIRuntime.channelHome()
             : configuration.homeDirectory(for: id)
+        // Share terminal auth (~/.copilot) like the main launch path so Copilot
+        // helper prompts stay authenticated after a plain `copilot` /login.
+        let userHome = FileManager.default.homeDirectoryForCurrentUser.path
+        let copilotStateHome = CopilotCLIRuntime.defaultHome(userHome: userHome)
         let capabilities = CopilotCLIRuntime.capabilities(executablePath: executable)
         let allowedTools = toolMode == .readOnly ? ["Read", "Glob", "Grep"] : []
         let plan = CopilotCLIRuntime.buildCommand(
@@ -2059,6 +2078,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             capabilities: capabilities,
             taskEnvironment: [:],
             copilotHome: copilotHome,
+            copilotStateHome: copilotStateHome,
+            userHome: userHome,
             disableCustomInstructions: true
         )
 
@@ -2196,14 +2217,23 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
 
     @MainActor
     func recordPostProcessEvents(context: AgentRuntimePostProcessContext) {
-        guard context.run.tokensUsed == 0,
-              let metrics = CopilotSessionMetricsReader.finalMetrics(
-                copilotHome: context.homeDirectory,
-                taskID: context.task.id,
-                runStartedAt: context.runStartedAt
-              ) else {
+        guard context.run.tokensUsed == 0 else {
             return
         }
+        let homes = [context.homeDirectory, CopilotCLIRuntime.defaultHome()]
+        var seenHomes: Set<String> = []
+        var metrics: CopilotSessionMetrics?
+        for home in homes {
+            let trimmed = home.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seenHomes.insert(trimmed).inserted else { continue }
+            metrics = CopilotSessionMetricsReader.finalMetrics(
+                copilotHome: trimmed,
+                taskID: context.task.id,
+                runStartedAt: context.runStartedAt
+            )
+            if metrics != nil { break }
+        }
+        guard let metrics else { return }
 
         AgentEventRecorder.recordCopilotEvent(
             metrics.event,
