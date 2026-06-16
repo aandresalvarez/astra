@@ -60,9 +60,24 @@ struct WorkspaceAppRunResumptionService {
             let barrier = barrierTaskIDs(for: run)
             guard !barrier.isEmpty else { continue }
             let tasks = barrier.compactMap { agentTask(id: $0, modelContext: modelContext) }
-            guard tasks.count == barrier.count,
-                  tasks.allSatisfy({ $0.status == .completed }),
-                  let workspace = workspace(id: run.workspaceID, modelContext: modelContext),
+
+            // Hold the barrier while every awaited task is present and any is still in flight.
+            if tasks.count == barrier.count, tasks.contains(where: { !$0.isTerminal }) {
+                continue
+            }
+
+            let allCompleted = tasks.count == barrier.count && tasks.allSatisfy { $0.status == .completed }
+            guard allCompleted else {
+                // A task ended terminal-but-not-completed (failed/cancelled/budget) or was
+                // removed -> the barrier can never be satisfied. Fail the run instead of
+                // stranding it in .waiting forever, surfacing why.
+                run.status = .failed
+                run.completedAt = Date()
+                run.errorMessage = barrierFailureMessage(barrier: barrier, tasks: tasks)
+                try? modelContext.save()
+                continue
+            }
+            guard let workspace = workspace(id: run.workspaceID, modelContext: modelContext),
                   let app = workspaceApp(id: run.appID, modelContext: modelContext),
                   let manifest = manifest(for: app, workspace: workspace) else {
                 continue
@@ -86,6 +101,14 @@ struct WorkspaceAppRunResumptionService {
 
     private func barrierTaskIDs(for run: WorkspaceAppRun) -> [UUID] {
         run.awaitedTaskIDs.isEmpty ? (run.linkedTaskID.map { [$0] } ?? []) : run.awaitedTaskIDs
+    }
+
+    private func barrierFailureMessage(barrier: [UUID], tasks: [AgentTask]) -> String {
+        if tasks.count != barrier.count {
+            return "Fan-out failed: an awaited task was removed before completing."
+        }
+        let failed = tasks.filter { $0.status != .completed }
+        return "Fan-out failed: " + failed.map { "\($0.title) (\($0.status.rawValue))" }.joined(separator: ", ")
     }
 
     private func consumedTokens(for task: AgentTask) -> Int {

@@ -50,7 +50,12 @@ enum WorkspaceAppManifestValidator {
             issues: &issues
         )
         validateViews(manifest.views, storageTables: storageTables, actionIDs: actionIDs, issues: &issues)
-        validateAutomations(manifest.automations, actionIDs: actionIDs, issues: &issues)
+        validateAutomations(
+            manifest.automations,
+            actionIDs: actionIDs,
+            actionsByID: Dictionary(manifest.actions.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }),
+            issues: &issues
+        )
         validatePermissions(manifest.permissions, issues: &issues)
 
         return WorkspaceAppManifestValidationReport(issues: issues)
@@ -439,6 +444,11 @@ enum WorkspaceAppManifestValidator {
                 } else if !actionIDs.contains(stepID) {
                     issues.append(blocker(stepPath, "\(action.type == "loop.run" ? "Loop" : "Pipeline") step references unknown action '\(stepID)'."))
                 }
+                // task.fanOut suspends on a barrier and is only resumable as a direct
+                // pipeline.run step; a loop cannot suspend/resume mid-iteration.
+                if action.type == "loop.run", actionsByID[stepID]?.type == "task.fanOut" {
+                    issues.append(blocker(stepPath, "Loop step '\(stepID)' is a task.fanOut, which is only supported as a direct pipeline step."))
+                }
             }
             if action.type == "loop.run" {
                 validateLoopAction(action, path: path, issues: &issues)
@@ -501,6 +511,24 @@ enum WorkspaceAppManifestValidator {
         action.steps + (action.fanOutStep.map { [$0] } ?? [])
     }
 
+    // True if `actionID` is, or can transitively reach, an async task action
+    // (task.createAndRun / task.fanOut). A gate.branch target runs inline and must
+    // never be able to suspend, so its whole reachable subtree must be async-free.
+    private static func reachesAsyncTask(
+        _ actionID: String,
+        actionsByID: [String: WorkspaceAppActionSpec],
+        visited: Set<String>
+    ) -> Bool {
+        guard !visited.contains(actionID), let action = actionsByID[actionID] else { return false }
+        if action.type == "task.createAndRun" || action.type == "task.fanOut" { return true }
+        guard isCompositeAction(action) else { return false }
+        var visited = visited
+        visited.insert(actionID)
+        return compositeEdges(action).contains {
+            reachesAsyncTask($0, actionsByID: actionsByID, visited: visited)
+        }
+    }
+
     private static func validateFanOutAction(
         _ action: WorkspaceAppActionSpec,
         actionsByID: [String: WorkspaceAppActionSpec],
@@ -553,9 +581,8 @@ enum WorkspaceAppManifestValidator {
             } else if !action.steps.contains(target) {
                 issues.append(blocker("\(path)/\(key)", "Branch target '\(target)' must also be listed in steps."))
             }
-            if let targetAction = actionsByID[target],
-               targetAction.type == "task.createAndRun" || targetAction.type == "task.fanOut" {
-                issues.append(blocker("\(path)/\(key)", "Branch cannot target an async task action '\(target)' in this version."))
+            if reachesAsyncTask(target, actionsByID: actionsByID, visited: []) {
+                issues.append(blocker("\(path)/\(key)", "Branch cannot target an action that can launch an async task ('\(target)') in this version."))
             }
         }
     }
@@ -657,6 +684,7 @@ enum WorkspaceAppManifestValidator {
     private static func validateAutomations(
         _ automations: [WorkspaceAppAutomationSpec],
         actionIDs: Set<String>,
+        actionsByID: [String: WorkspaceAppActionSpec],
         issues: inout [WorkspaceAppManifestValidationReport.Issue]
     ) {
         var seen = Set<String>()
@@ -673,8 +701,12 @@ enum WorkspaceAppManifestValidator {
             if automation.enabledByDefault {
                 issues.append(blocker("\(path)/enabledByDefault", "Imported or generated automations must default disabled."))
             }
-            if let action = automation.action, !actionIDs.contains(action) {
-                issues.append(blocker("\(path)/action", "Automation references unknown action '\(action)'."))
+            if let action = automation.action {
+                if !actionIDs.contains(action) {
+                    issues.append(blocker("\(path)/action", "Automation references unknown action '\(action)'."))
+                } else if actionsByID[action]?.type == "task.fanOut" {
+                    issues.append(blocker("\(path)/action", "Automation cannot run a task.fanOut directly; it is only supported as a pipeline step."))
+                }
             }
             validateAutomationSchedule(automation, path: path, issues: &issues)
         }

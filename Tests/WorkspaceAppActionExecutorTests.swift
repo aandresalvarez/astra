@@ -891,6 +891,75 @@ struct WorkspaceAppActionExecutorTests {
     }
 
     @MainActor
+    @Test("fan-out barrier fails the run (not strands) when an awaited task fails (C1 review)")
+    func fanOutBarrierFailsRunWhenAwaitedTaskFails() throws {
+        let fixture = try Self.makePublishedApp(permissionMode: .preApproved)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        for id in ["item-1", "item-2"] {
+            _ = try WorkspaceAppActionExecutor().execute(
+                actionID: "addItem",
+                app: fixture.app,
+                workspace: fixture.workspace,
+                manifest: fixture.manifest,
+                input: WorkspaceAppActionInput(
+                    table: "items",
+                    record: ["id": .text(id), "name": .text(id), "category": .text("Produce")]
+                ),
+                modelContext: fixture.context
+            )
+        }
+        let suspended = try WorkspaceAppActionExecutor().execute(
+            actionID: "fanOutPipeline",
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: fixture.manifest,
+            modelContext: fixture.context
+        )
+        let tasks = try fixture.context.fetch(FetchDescriptor<AgentTask>())
+            .filter { suspended.run.awaitedTaskIDs.contains($0.id) }
+        #expect(tasks.count == 2)
+        // One completes, one FAILS -> the barrier can never be satisfied.
+        tasks[0].status = .completed
+        tasks[1].status = .failed
+        try fixture.context.save()
+        let results = WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: fixture.context)
+        #expect(results.isEmpty)
+        #expect(suspended.run.status == .failed) // failed, not stranded in .waiting
+        #expect(suspended.run.errorMessage?.contains("Fan-out failed") == true)
+    }
+
+    @MainActor
+    @Test("validation rejects a branch that transitively reaches an async task (C2 review)")
+    func branchTransitiveAsyncTargetRejected() throws {
+        let fixture = try Self.makePublishedApp(permissionMode: .preApproved)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        var manifest = fixture.manifest
+        // asyncInner is a synchronous-looking pipeline that actually contains a task step.
+        manifest.actions.append(WorkspaceAppActionSpec(id: "asyncInner", type: "pipeline.run", steps: ["runReviewTask"]))
+        manifest.actions.append(WorkspaceAppActionSpec(
+            id: "badBranch", type: "gate.branch", gateField: "category", gateOperator: "equals",
+            gateValue: .text("x"), steps: ["asyncInner"], thenStep: "asyncInner"))
+        #expect(!WorkspaceAppManifestValidator.validate(manifest).isValid)
+    }
+
+    @MainActor
+    @Test("validation rejects task.fanOut as a loop step or automation action (C1 review)")
+    func fanOutPlacementRejected() throws {
+        let fixture = try Self.makePublishedApp(permissionMode: .preApproved)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        // task.fanOut as a loop step (a loop cannot suspend/resume a barrier).
+        var loopManifest = fixture.manifest
+        loopManifest.actions.append(WorkspaceAppActionSpec(
+            id: "badLoop", type: "loop.run", gateField: "status", gateOperator: "equals",
+            gateValue: .text("done"), steps: ["fanOutAction"], maxIterations: 3, timeoutSeconds: 60))
+        #expect(!WorkspaceAppManifestValidator.validate(loopManifest).isValid)
+        // task.fanOut as a direct automation action.
+        var autoManifest = fixture.manifest
+        autoManifest.automations.append(WorkspaceAppAutomationSpec(id: "badAuto", type: "manual", action: "fanOutAction"))
+        #expect(!WorkspaceAppManifestValidator.validate(autoManifest).isValid)
+    }
+
+    @MainActor
     @Test("gate.branch runs the then-step when the upstream predicate passes (C2)")
     func branchSelectsThenStepFromUpstreamData() throws {
         let fixture = try Self.makePublishedApp(permissionMode: .draftOnly)
