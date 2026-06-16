@@ -231,6 +231,10 @@ enum KanbanBoardPresentation {
     static let cardHoverFillOpacity: Double = 0.032
     static let cardStrokeOpacity: Double = 0.045
     static let cardHoverStrokeOpacity: Double = 0.10
+
+    static func cardThreadMessageCount(goal: String) -> Int {
+        goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 1
+    }
 }
 
 enum KanbanBoardLayout {
@@ -1660,8 +1664,14 @@ struct KanbanTaskCardView: View {
     @State private var isHovered = false
 
     private var threadMessageLabel: String {
-        let count = task.threadMessageCount
-        return count == 1 ? "1 message" : "\(count) messages"
+        // Keep Kanban card layout independent from the live TaskEvent
+        // relationship. SwiftUI can render many cards during layout, and
+        // materializing event faults here has crashed production SwiftData.
+        Self.threadMessageLabel(for: KanbanBoardPresentation.cardThreadMessageCount(goal: task.goal))
+    }
+
+    static func threadMessageLabel(for count: Int) -> String {
+        count == 1 ? "1 message" : "\(count) messages"
     }
 
     /// Outcome metadata for the Review / Closed lanes. The visual signal is the
