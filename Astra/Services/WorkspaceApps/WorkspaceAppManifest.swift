@@ -304,6 +304,12 @@ struct WorkspaceAppActionSpec: Codable, Sendable, Equatable {
     var maxIterations: Int?
     var timeoutSeconds: Int?
     var delaySeconds: Int?
+    // Slice 9 Phase C composite/leaf action fields.
+    var fanOutStep: String?       // task.fanOut: child task.createAndRun template (one task per bound row)
+    var thenStep: String?         // gate.branch: step to run when the predicate passes
+    var elseStep: String?         // gate.branch: step to run when the predicate fails (optional)
+    var reduceStrategy: String?   // rows.reduce: count | sum | concat | first | last
+    var reduceColumn: String?     // rows.reduce: row key to fold over
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -335,6 +341,11 @@ struct WorkspaceAppActionSpec: Codable, Sendable, Equatable {
         case maxIterations
         case timeoutSeconds
         case delaySeconds
+        case fanOutStep
+        case thenStep
+        case elseStep
+        case reduceStrategy
+        case reduceColumn
     }
 
     init(
@@ -366,7 +377,12 @@ struct WorkspaceAppActionSpec: Codable, Sendable, Equatable {
         steps: [String] = [],
         maxIterations: Int? = nil,
         timeoutSeconds: Int? = nil,
-        delaySeconds: Int? = nil
+        delaySeconds: Int? = nil,
+        fanOutStep: String? = nil,
+        thenStep: String? = nil,
+        elseStep: String? = nil,
+        reduceStrategy: String? = nil,
+        reduceColumn: String? = nil
     ) {
         self.id = id
         self.type = type
@@ -397,6 +413,11 @@ struct WorkspaceAppActionSpec: Codable, Sendable, Equatable {
         self.maxIterations = maxIterations
         self.timeoutSeconds = timeoutSeconds
         self.delaySeconds = delaySeconds
+        self.fanOutStep = fanOutStep
+        self.thenStep = thenStep
+        self.elseStep = elseStep
+        self.reduceStrategy = reduceStrategy
+        self.reduceColumn = reduceColumn
     }
 
     init(from decoder: Decoder) throws {
@@ -430,6 +451,11 @@ struct WorkspaceAppActionSpec: Codable, Sendable, Equatable {
         maxIterations = try container.decodeIfPresent(Int.self, forKey: .maxIterations)
         timeoutSeconds = try container.decodeIfPresent(Int.self, forKey: .timeoutSeconds)
         delaySeconds = try container.decodeIfPresent(Int.self, forKey: .delaySeconds)
+        fanOutStep = try container.decodeIfPresent(String.self, forKey: .fanOutStep)
+        thenStep = try container.decodeIfPresent(String.self, forKey: .thenStep)
+        elseStep = try container.decodeIfPresent(String.self, forKey: .elseStep)
+        reduceStrategy = try container.decodeIfPresent(String.self, forKey: .reduceStrategy)
+        reduceColumn = try container.decodeIfPresent(String.self, forKey: .reduceColumn)
     }
 }
 

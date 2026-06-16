@@ -824,6 +824,55 @@ struct WorkspaceAppActionExecutorTests {
         #expect(blocked.outputSummary.contains("budget exceeded"))
     }
 
+    @MainActor
+    @Test("rows.reduce folds a pipeline's prior step rows into one row (C3)")
+    func reduceFoldsPriorStepRows() throws {
+        let fixture = try Self.makePublishedApp(permissionMode: .draftOnly)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        for id in ["item-1", "item-2"] {
+            _ = try WorkspaceAppActionExecutor().execute(
+                actionID: "addItem",
+                app: fixture.app,
+                workspace: fixture.workspace,
+                manifest: fixture.manifest,
+                input: WorkspaceAppActionInput(
+                    table: "items",
+                    record: ["id": .text(id), "name": .text(id), "category": .text("Produce")]
+                ),
+                modelContext: fixture.context
+            )
+        }
+        // reducePipeline = [listItems (query -> 2 rows) -> reduceCount (rows.reduce count)].
+        let result = try WorkspaceAppActionExecutor().execute(
+            actionID: "reducePipeline",
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: fixture.manifest,
+            modelContext: fixture.context
+        )
+        #expect(result.run.status == .completed)
+        #expect(result.rows.count == 1)
+        #expect(result.rows.first?["count"] == .integer(2))
+    }
+
+    @MainActor
+    @Test("manifest validation guards rows.reduce strategy + column (C3)")
+    func reduceActionValidation() throws {
+        let fixture = try Self.makePublishedApp(permissionMode: .draftOnly)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        var manifest = fixture.manifest
+        // count needs no column -> valid.
+        manifest.actions.append(WorkspaceAppActionSpec(id: "count_ok", type: "rows.reduce", reduceStrategy: "count"))
+        #expect(WorkspaceAppManifestValidator.validate(manifest).isValid)
+        // unsupported strategy -> invalid.
+        manifest.actions.append(WorkspaceAppActionSpec(id: "bad_strategy", type: "rows.reduce", reduceStrategy: "median"))
+        #expect(!WorkspaceAppManifestValidator.validate(manifest).isValid)
+        manifest.actions.removeLast()
+        // sum without a column -> invalid.
+        manifest.actions.append(WorkspaceAppActionSpec(id: "sum_nocol", type: "rows.reduce", reduceStrategy: "sum"))
+        #expect(!WorkspaceAppManifestValidator.validate(manifest).isValid)
+    }
+
     @Test("action input binds the first upstream row when no explicit record (B1)")
     func actionInputBindsFirstUpstreamRow() {
         let bound: [[String: WorkspaceAppStorageValue]] = [
@@ -1394,6 +1443,18 @@ struct WorkspaceAppActionExecutorTests {
                     type: "pipeline.run",
                     label: "Budget Pipeline",
                     steps: ["runReviewTask", "agentGate"]
+                ),
+                WorkspaceAppActionSpec(
+                    id: "reduceCount",
+                    type: "rows.reduce",
+                    label: "Reduce Count",
+                    reduceStrategy: "count"
+                ),
+                WorkspaceAppActionSpec(
+                    id: "reducePipeline",
+                    type: "pipeline.run",
+                    label: "Reduce Pipeline",
+                    steps: ["listItems", "reduceCount"]
                 ),
                 WorkspaceAppActionSpec(
                     id: "approvalGate",

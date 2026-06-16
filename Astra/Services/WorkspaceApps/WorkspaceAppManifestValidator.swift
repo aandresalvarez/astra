@@ -414,6 +414,9 @@ enum WorkspaceAppManifestValidator {
             if action.type == "gate.agentRecommendation" {
                 validateAgentRecommendationGate(action, path: path, issues: &issues)
             }
+            if action.type == "rows.reduce" {
+                validateReduceAction(action, path: path, issues: &issues)
+            }
         }
 
         for (index, action) in actions.enumerated() where action.type == "pipeline.run" || action.type == "loop.run" {
@@ -481,6 +484,29 @@ enum WorkspaceAppManifestValidator {
 
     private static func isCompositeAction(_ action: WorkspaceAppActionSpec) -> Bool {
         action.type == "pipeline.run" || action.type == "loop.run"
+    }
+
+    private static func validateReduceAction(
+        _ action: WorkspaceAppActionSpec,
+        path: String,
+        issues: inout [WorkspaceAppManifestValidationReport.Issue]
+    ) {
+        let strategy = action.reduceStrategy?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let supported = ["count", "sum", "concat", "first", "last"]
+        if strategy.isEmpty {
+            issues.append(blocker("\(path)/reduceStrategy", "Reduce action must declare a strategy."))
+        } else if !supported.contains(strategy) {
+            issues.append(blocker("\(path)/reduceStrategy", "Reduce strategy '\(strategy)' is not supported."))
+        }
+        // `count` can fold without a column; every other strategy folds a specific column.
+        if strategy != "count" {
+            let column = action.reduceColumn?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if column.isEmpty {
+                issues.append(blocker("\(path)/reduceColumn", "Reduce strategy '\(strategy)' must declare a column to fold over."))
+            } else {
+                validateIdentifier(column, path: "\(path)/reduceColumn", label: "Reduce column", issues: &issues)
+            }
+        }
     }
 
     private static func validateLoopAction(

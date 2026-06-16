@@ -37,7 +37,8 @@ final class WorkspaceAppRun: Identifiable {
     // B2 resumable runs: when a pipeline/loop suspends on an async agent task,
     // `pendingActionID` is the suspended pipeline/loop action and
     // `pendingStepIndex` the next step to execute on resume. `linkedTaskID` holds
-    // the awaited task. Defaulted so the V7 -> V8 migration stays lightweight.
+    // the awaited task. Defaulted so it is absorbed into schema V7's fresh tables
+    // (the V6 -> V7 stage), no new schema version.
     var pendingActionID: String?
     var pendingStepIndex: Int = 0
     // B3: tokens consumed by the run's awaited agent tasks so far, accumulated on

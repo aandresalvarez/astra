@@ -716,9 +716,69 @@ struct WorkspaceAppActionExecutor {
                 run: run,
                 modelContext: modelContext
             )
+        case "rows.reduce":
+            return executeReduce(action: action, input: input, run: run, modelContext: modelContext)
         default:
             throw WorkspaceAppActionExecutionError.unsupportedActionType(action.type)
         }
+    }
+
+    // C3: fold the previous step's bound rows into one row (count/sum/concat/first/last).
+    // A pure in-memory fan-in — the natural consumer of a multi-row producer (a query
+    // or a task.fanOut barrier). Reads the full input.boundRows (not effectiveRecord,
+    // which collapses to the first row).
+    private func executeReduce(
+        action: WorkspaceAppActionSpec,
+        input: WorkspaceAppActionInput,
+        run: WorkspaceAppRun,
+        modelContext: ModelContext
+    ) -> (
+        rows: [[String: WorkspaceAppStorageValue]],
+        outputSummary: String,
+        linkedTaskID: UUID?,
+        linkedArtifactPath: String?
+    ) {
+        let strategy = action.reduceStrategy?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "count"
+        let column = action.reduceColumn?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let inputRows = input.boundRows
+
+        let outputKey: String
+        let value: WorkspaceAppStorageValue
+        switch strategy {
+        case "sum":
+            outputKey = column
+            value = .real(inputRows.reduce(0.0) { $0 + (numericValue($1[column]) ?? 0) })
+        case "concat":
+            outputKey = column
+            let parts = inputRows.compactMap { row -> String? in
+                switch row[column] {
+                case .none, .some(.null): return nil
+                case .some(let cell): return describeGateValue(cell)
+                }
+            }
+            value = .text(parts.joined(separator: ", "))
+        case "first":
+            outputKey = column
+            value = inputRows.first?[column] ?? .null
+        case "last":
+            outputKey = column
+            value = inputRows.last?[column] ?? .null
+        default: // count
+            outputKey = column.isEmpty ? "count" : column
+            value = .integer(Int64(inputRows.count))
+        }
+
+        recorder.recordEvent(
+            run: run,
+            type: "workspaceApp.rows.reduced",
+            payload: [
+                "strategy": .text(strategy),
+                "column": .text(column),
+                "inputRows": .integer(Int64(inputRows.count))
+            ],
+            modelContext: modelContext
+        )
+        return ([[outputKey: value]], "Reduced \(inputRows.count) rows by \(strategy).", nil, nil)
     }
 
     private func executeShowNotification(
@@ -1462,7 +1522,7 @@ struct WorkspaceAppActionExecutor {
 
     private func effect(for actionType: String) -> WorkspaceAppContractEffect {
         switch actionType {
-        case "appStorage.query", "capability.read", "task.open", "artifact.open", "artifact.export", "url.open", "clipboard.copy", "pipeline.run", "loop.run", "gate.humanApproval", "gate.expression":
+        case "appStorage.query", "capability.read", "task.open", "artifact.open", "artifact.export", "url.open", "clipboard.copy", "pipeline.run", "loop.run", "gate.humanApproval", "gate.expression", "rows.reduce":
             .read
         case "gate.agentRecommendation":
             .read
