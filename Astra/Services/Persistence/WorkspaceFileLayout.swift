@@ -32,6 +32,56 @@ enum WorkspaceFileLayout {
         return (support as NSString).appendingPathComponent("tasks")
     }
 
+    static func appRoot(for workspacePath: String) -> String {
+        let support = supportDirectory(for: workspacePath)
+        guard !support.isEmpty else { return "" }
+        return (support as NSString).appendingPathComponent("apps")
+    }
+
+    static func appDirectory(workspacePath: String, appID: String) -> String {
+        let root = appRoot(for: workspacePath)
+        guard !root.isEmpty else { return "" }
+        return (root as NSString).appendingPathComponent(appID)
+    }
+
+    static func appManifestFile(workspacePath: String, appID: String) -> String {
+        let directory = appDirectory(workspacePath: workspacePath, appID: appID)
+        guard !directory.isEmpty else { return "" }
+        return (directory as NSString).appendingPathComponent("manifest.json")
+    }
+
+    static func appDatabaseFile(workspacePath: String, appID: String) -> String {
+        let directory = appDataDirectory(workspacePath: workspacePath, appID: appID)
+        guard !directory.isEmpty else { return "" }
+        return (directory as NSString).appendingPathComponent("app.sqlite")
+    }
+
+    static func appDataDirectory(workspacePath: String, appID: String) -> String {
+        let directory = appDirectory(workspacePath: workspacePath, appID: appID)
+        guard !directory.isEmpty else { return "" }
+        return (directory as NSString).appendingPathComponent("data")
+    }
+
+    static func appArtifactExportDirectory(workspacePath: String, appID: String) -> String {
+        let directory = appDirectory(workspacePath: workspacePath, appID: appID)
+        guard !directory.isEmpty else { return "" }
+        return (directory as NSString).appendingPathComponent("exports")
+    }
+
+    static func appPackageExportRoot(workspacePath: String) -> String {
+        let root = appRoot(for: workspacePath)
+        guard !root.isEmpty else { return "" }
+        return (root as NSString).appendingPathComponent("exports")
+    }
+
+    static func relativeAppDirectory(appID: String) -> String {
+        "\(supportDirectoryName)/apps/\(appID)"
+    }
+
+    static func relativeAppManifestFile(appID: String) -> String {
+        "\(relativeAppDirectory(appID: appID))/manifest.json"
+    }
+
     static func legacyTaskRoot(for workspacePath: String) -> String {
         guard !workspacePath.isEmpty else { return "" }
         return (workspacePath as NSString).appendingPathComponent("tasks")

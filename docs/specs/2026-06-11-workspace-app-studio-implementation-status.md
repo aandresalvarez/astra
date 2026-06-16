@@ -382,12 +382,19 @@ order, smallest dependency first:
   `WorkspaceAppManifest` Codable types; `WorkspaceAppManifestValidator`;
   `SchemaVersions` registration. Tests: `WorkspaceAppManifestTests`,
   `SchemaVersionTests`. No executor, no UI. Pure-data foundation.
-- **F2 — App-owned storage + service.** `WorkspaceAppStorageService`,
-  `WorkspaceAppService`, `WorkspaceFileLayout` additions. Tests:
-  `WorkspaceAppStorageTests`.
+- **F2 — App-owned storage.** `WorkspaceAppStorageService` (SQLite CRUD +
+  migration planner) and the additive `WorkspaceFileLayout` app-path methods.
+  Tests: `WorkspaceAppStorageTests`. NOTE: `WorkspaceAppService` was originally
+  grouped here but depends on `WorkspaceAppContractRegistry` (F3) and the
+  automation scheduler, so it re-lands in F3.5 (below), not F2.
 - **F3 — Contracts + sources.** `WorkspaceAppContractRegistry`,
   `WorkspaceAppSourceResolver`, `WorkspaceAppNativeCapabilitySourceClient`.
   Tests: `WorkspaceAppContractRegistryTests`, `WorkspaceAppSourceResolverTests`.
+- **F3.5 — App lifecycle service.** `WorkspaceAppService` (app create/duplicate/
+  delete, manifest writes + digest, dependency-binding resolution via the
+  contract registry, automation-state enable). Depends on F1+F2+F3. Tests: the
+  service half of the susom `WorkspaceAppManifestTests` (createApp / remap /
+  automation / lifecycle / duplicate / delete).
 - **F4 — Action executor.** `WorkspaceAppActionExecutor` (the
   `task.createAndRun`, `gate.agentRecommendation`, `gate.humanApproval`,
   `loop.run`, `pipeline.run` dispatch). Tests: `WorkspaceAppActionExecutorTests`.
