@@ -618,6 +618,50 @@ struct AgentRuntimeAdapterTests {
         #expect(openCodePlan.commandPlannedFields["permission_policy"] == PermissionPolicy.restricted.rawValue)
     }
 
+    @Test("Codex launch allows external read-only SSH config access for SSH workspaces")
+    @MainActor
+    func codexLaunchAllowsExternalReadOnlySSHConfigAccess() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-codex-ssh-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "SSH", primaryPath: root.path)
+        SSHConnectionManager.save([
+            SSHConnection(
+                name: "deid-jsn-workbench",
+                host: "deid-as-service-jsn",
+                user: "alvaro1_stanford_edu",
+                keyPath: "~/.ssh/google_compute_engine",
+                configAlias: "deid-jsn-workbench"
+            )
+        ], workspacePath: root.path)
+        let task = AgentTask(
+            title: "SSH task",
+            goal: "Check the remote server",
+            workspace: workspace,
+            model: "gpt-5.5",
+            runtime: .codexCLI
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .codexCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "ssh deid-jsn-workbench 'echo OK'",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/codex-not-present",
+                providerHomeDirectory: "/tmp/astra-codex-home",
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30
+            ))
+
+        #expect(plan.arguments.contains("--config"))
+        #expect(plan.arguments.contains("sandbox_permissions=[\"disk-full-read-access\"]"))
+    }
+
     @Test("Copilot launch audit separates task and runtime support tools")
     @MainActor
     func copilotLaunchAuditSeparatesTaskAndRuntimeSupportTools() {

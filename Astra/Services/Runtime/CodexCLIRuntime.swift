@@ -44,6 +44,7 @@ enum CodexCLIRuntime {
         providerHomeDirectory: String = "",
         pathPrefix: [String] = [],
         includeAstraToolsPath: Bool = false,
+        allowExternalFileReadsForSSH: Bool = false,
         resumeSessionID: String? = nil
     ) -> CodexCLICommandPlan {
         let providerModel = resolvedModelName(model)
@@ -63,6 +64,9 @@ enum CodexCLIRuntime {
             "--model", providerModel,
             "--cd", workspacePath
         ]
+        if allowExternalFileReadsForSSH, permissionPolicy != .autonomous {
+            args += ["--config", "sandbox_permissions=[\"disk-full-read-access\"]"]
+        }
 
         let uniquePaths = Array(Set(additionalPaths.filter { !$0.isEmpty && $0 != workspacePath })).sorted()
         for path in uniquePaths {

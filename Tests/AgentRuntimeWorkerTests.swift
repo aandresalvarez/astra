@@ -684,6 +684,45 @@ struct BuildPromptTests {
         #expect(!prompt.contains("Create the first useful deliverable promptly"))
     }
 
+    @Test("Prompt explains SSH config aliases for remote workspaces")
+    func promptExplainsSSHConfigAliasesForRemoteWorkspaces() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-prompt-ssh-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        SSHConnectionManager.save([
+            SSHConnection(
+                name: "deid-jsn-workbench",
+                host: "deid-as-service-jsn",
+                user: "alvaro1_stanford_edu",
+                remotePath: "/home/jupyter/users/alvaro1_stanford_edu/project",
+                keyPath: "~/.ssh/google_compute_engine",
+                configAlias: "deid-jsn-workbench"
+            )
+        ], workspacePath: root.path)
+
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "JSL", primaryPath: root.path)
+        ctx.insert(ws)
+        let task = AgentTask(
+            title: "Deploy",
+            goal: "Deploy files to the remote",
+            workspace: ws
+        )
+        ctx.insert(task)
+        try ctx.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(prompt.contains("Connect with: ssh deid-jsn-workbench"))
+        #expect(prompt.contains("requires ~/.ssh/config"))
+        #expect(prompt.contains("ProxyCommand/IAP"))
+        #expect(prompt.contains("Identity file: ~/.ssh/google_compute_engine"))
+        #expect(prompt.contains("prefer the alias over the raw hostname"))
+    }
+
     @Test("OpenCode prompt steers task state reads to inline context")
     func openCodePromptSteersTaskStateReadsToInlineContext() throws {
         let container = try makeContainer()

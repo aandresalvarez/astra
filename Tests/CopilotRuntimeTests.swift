@@ -785,6 +785,29 @@ struct CopilotCLICommandPlanningTests {
         #expect(!plan.arguments.contains("--allow-all"))
     }
 
+    @Test("Restricted SSH workspaces opt into all path reads when CLI supports it")
+    func restrictedSSHWorkspaceUsesAllowAllPathsWhenSupported() {
+        let help = "--output-format=FORMAT --stream=MODE --no-ask-user --allow-tool TOOL --allow-all-paths"
+        let capabilities = CopilotCLICapabilities(helpText: help)
+        let plan = CopilotCLIRuntime.buildCommand(
+            executablePath: "/bin/copilot",
+            prompt: "ssh deid-jsn-workbench 'echo OK'",
+            model: "gpt-5",
+            workspacePath: "/tmp/ws",
+            additionalPaths: [],
+            permissionPolicy: .restricted,
+            allowedTools: ["Bash"],
+            timeoutSeconds: 60,
+            capabilities: capabilities,
+            taskEnvironment: [:],
+            copilotHome: "/tmp/copilot-home",
+            allowAllPathsForSSHConnections: true
+        )
+
+        #expect(plan.arguments.contains("--allow-all-paths"))
+        #expect(!plan.arguments.contains("--allow-all"))
+    }
+
     @Test("Utility helper disables custom instructions when supported")
     func utilityDisablesCustomInstructions() {
         let help = "--output-format=FORMAT --stream=MODE --no-ask-user --no-custom-instructions --secret-env-vars=VAR"

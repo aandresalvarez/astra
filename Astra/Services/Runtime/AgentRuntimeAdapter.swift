@@ -1896,7 +1896,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
                 || taskEnv["ASTRA_BROWSER_URL"] != nil,
             localToolCommands: localToolCommands,
             runtimeSupportTools: runtimeSupportTools,
-            askFirstTools: askFirstTools
+            askFirstTools: askFirstTools,
+            allowAllPathsForSSHConnections: AgentRuntimeProcessRunner.hasWorkspaceSSHConnections(for: context.task)
         )
 
         return AgentRuntimeProcessLaunchPlan(

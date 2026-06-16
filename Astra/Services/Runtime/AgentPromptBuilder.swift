@@ -229,6 +229,12 @@ enum AgentPromptBuilder {
             sshBlock += "\n- Name: \(conn.displayLabel)"
             sshBlock += "\n- Connect with: ssh \(alias)"
             sshBlock += "\n- Remote path: \(conn.remotePath)"
+            if !conn.configAlias.isEmpty {
+                sshBlock += "\n- SSH config: this alias requires ~/.ssh/config and may include ProxyCommand/IAP settings; prefer the alias over the raw hostname."
+            }
+            if !conn.keyPath.isEmpty {
+                sshBlock += "\n- Identity file: \(conn.keyPath)"
+            }
             sshBlock += "\nWhen the user says \"the server\", \"the remote\", \"this connection\", or \"it\" in the context of SSH, they mean this server."
             sshBlock += "\nTo run commands: ssh \(alias) '<command>'"
             sshBlock += "\nTo run commands in a specific directory: ssh \(alias) 'cd \(conn.remotePath) && <command>'"
@@ -244,7 +250,10 @@ enum AgentPromptBuilder {
                 let alias = conn.configAlias.isEmpty ? conn.sshTarget : conn.configAlias
                 sshBlock += "\n- \(conn.displayLabel): ssh \(alias) (remote path: \(conn.remotePath))"
                 if !conn.configAlias.isEmpty {
-                    sshBlock += " [uses ~/.ssh/config alias]"
+                    sshBlock += " [uses ~/.ssh/config alias; may include ProxyCommand/IAP]"
+                }
+                if !conn.keyPath.isEmpty {
+                    sshBlock += " [identity: \(conn.keyPath)]"
                 }
             }
             sshBlock += "\nTo run commands on a remote server, use: ssh <alias> '<command>'"

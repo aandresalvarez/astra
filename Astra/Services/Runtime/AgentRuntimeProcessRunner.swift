@@ -761,6 +761,12 @@ final class AgentRuntimeProcessRunner {
         return taskEnv
     }
 
+    @MainActor
+    static func hasWorkspaceSSHConnections(for task: AgentTask) -> Bool {
+        guard let workspace = task.workspace else { return false }
+        return !SSHConnectionManager.load(workspacePath: workspace.primaryPath).isEmpty
+    }
+
     /// Namespace invariant for the Shelf browser bridge: it may only
     /// contribute its own `ASTRA_BROWSER_*` variables, never overwrite
     /// PATH/HOME or connector credentials. The trailing underscore keeps the

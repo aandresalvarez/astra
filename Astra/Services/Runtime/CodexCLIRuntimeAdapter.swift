@@ -247,6 +247,7 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
             pathPrefix: pathPrefix,
             includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task)
                 || taskEnv["ASTRA_BROWSER_URL"] != nil,
+            allowExternalFileReadsForSSH: AgentRuntimeProcessRunner.hasWorkspaceSSHConnections(for: context.task),
             resumeSessionID: context.nativeContinuationSessionID
         )
 

@@ -166,7 +166,8 @@ enum CopilotCLIRuntime {
         localToolCommands: [String] = [],
         runtimeSupportTools: [String] = [],
         askFirstTools: [String] = [],
-        disableCustomInstructions: Bool = false
+        disableCustomInstructions: Bool = false,
+        allowAllPathsForSSHConnections: Bool = false
     ) -> CopilotCLICommandPlan {
         var args = ["--prompt", prompt, "--model", model, "--no-color", "--log-level", "error"]
 
@@ -208,6 +209,12 @@ enum CopilotCLIRuntime {
             requiresAllowAllToolsForPrompt: capabilities.requiresAllowAllToolsForPrompt
         )
         args += permissionArgs
+        if allowAllPathsForSSHConnections,
+           permissionPolicy != .autonomous,
+           capabilities.supportsAllowAllPaths,
+           !args.contains("--allow-all-paths") {
+            args.append("--allow-all-paths")
+        }
         args += copilotToolSurfaceArguments(
             policy: permissionPolicy,
             allowedTools: allowedTools,
