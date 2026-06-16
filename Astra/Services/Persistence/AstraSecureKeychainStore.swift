@@ -103,8 +103,8 @@ enum AstraSecureKeychainStore {
     }
 
     /// Whether the login keychain still holds an item for `service` (optionally a
-    /// specific `account`). Used by the readiness diagnostic and by tests that
-    /// assert ASTRA secrets are not left behind in `login.keychain-db`.
+    /// specific `account`). Used by tests that assert ASTRA secrets are not left
+    /// behind in `login.keychain-db`.
     static func loginKeychainContains(service: String, account: String? = nil) -> Bool {
         AstraSecureKeychain.loginKeychainContainsService(service, account: account)
     }

@@ -17,14 +17,21 @@ enum AstraSecureKeychainTestSupport {
 
     /// Remove a temp keychain file and its login-keychain bootstrap password.
     static func cleanup(keychainPath: String, bootstrapService: String, services: [String]) {
-        for service in services {
-            AstraSecureKeychain.deleteAllSecrets(
-                forService: service,
-                keychainPath: keychainPath,
-                bootstrapService: bootstrapService
-            )
+        // Only delete from the dedicated keychain if it actually exists — calling
+        // through AstraSecureKeychain would otherwise create the keychain (and a
+        // bootstrap item) just to delete from it, defeating the cleanup.
+        if FileManager.default.fileExists(atPath: keychainPath) {
+            for service in services {
+                AstraSecureKeychain.deleteAllSecrets(
+                    forService: service,
+                    keychainPath: keychainPath,
+                    bootstrapService: bootstrapService
+                )
+            }
+            try? FileManager.default.removeItem(atPath: keychainPath)
         }
-        try? FileManager.default.removeItem(atPath: keychainPath)
+        // Idempotent login-keychain delete; safe even if setup failed before the
+        // dedicated file was created.
         deleteLoginItems(service: bootstrapService)
     }
 
