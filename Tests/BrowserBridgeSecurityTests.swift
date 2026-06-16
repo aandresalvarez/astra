@@ -202,6 +202,7 @@ struct BrowserBridgeSecurityTests {
     func bridgeActionsResponsePreservesMetadataContract() throws {
         let response = ShelfBrowserBridgeCommandRouter.actionsResponse(
             backend: "controlled Chromium profile",
+            automationEngine: BrowserAutomationEngineDescriptor(kind: .controlledCDP),
             capabilities: ["actions", "google.drive.open"],
             canUseGoogleDriveOpen: true,
             googleDriveOpenDefaultTimeoutSeconds: 24
@@ -209,6 +210,10 @@ struct BrowserBridgeSecurityTests {
 
         #expect(response["ok"] as? Bool == true)
         #expect(response["backend"] as? String == "controlled Chromium profile")
+        let engine = try #require(response["automationEngine"] as? [String: Any])
+        #expect(engine["kind"] as? String == "controlled-cdp")
+        #expect(engine["providerToolName"] as? String == "astra-browser")
+        #expect(engine["exposesRawDebugEndpoint"] as? Bool == false)
         #expect(response["actionMetadataVersion"] as? Int == 1)
         #expect(response["capabilities"] as? [String] == ["actions", "google.drive.open"])
 

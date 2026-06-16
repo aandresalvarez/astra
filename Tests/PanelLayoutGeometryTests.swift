@@ -196,6 +196,61 @@ struct PanelLayoutGeometryTests {
         ))
     }
 
+    @Test("Browser shelf remains visible when a task is created from the open browser")
+    func browserShelfRemainsVisibleWhenTaskIsCreatedFromOpenBrowser() {
+        #expect(WorkspaceCanvasItemSelectionTransition.itemAfterTaskSelectionChange(
+            currentItem: .browser,
+            previousTaskID: nil,
+            nextTaskID: UUID(),
+            isComposingTask: false
+        ) == .browser)
+    }
+
+    @Test("Browser shelf remains visible when switching between task threads")
+    func browserShelfRemainsVisibleWhenSwitchingBetweenTaskThreads() {
+        #expect(WorkspaceCanvasItemSelectionTransition.itemAfterTaskSelectionChange(
+            currentItem: .browser,
+            previousTaskID: UUID(),
+            nextTaskID: UUID(),
+            isComposingTask: false
+        ) == .browser)
+    }
+
+    @Test("Task-specific shelves close when switching task threads")
+    func taskSpecificShelvesCloseWhenSwitchingTaskThreads() {
+        let previousTaskID = UUID()
+        let nextTaskID = UUID()
+
+        #expect(WorkspaceCanvasItemSelectionTransition.itemAfterTaskSelectionChange(
+            currentItem: .plan,
+            previousTaskID: previousTaskID,
+            nextTaskID: nextTaskID,
+            isComposingTask: false
+        ) == nil)
+        #expect(WorkspaceCanvasItemSelectionTransition.itemAfterTaskSelectionChange(
+            currentItem: .markdown,
+            previousTaskID: previousTaskID,
+            nextTaskID: nextTaskID,
+            isComposingTask: false
+        ) == nil)
+        #expect(WorkspaceCanvasItemSelectionTransition.itemAfterTaskSelectionChange(
+            currentItem: .query,
+            previousTaskID: previousTaskID,
+            nextTaskID: nextTaskID,
+            isComposingTask: false
+        ) == nil)
+    }
+
+    @Test("Browser shelf closes when there is no open task thread")
+    func browserShelfClosesWhenThereIsNoOpenTaskThread() {
+        #expect(WorkspaceCanvasItemSelectionTransition.itemAfterTaskSelectionChange(
+            currentItem: .browser,
+            previousTaskID: UUID(),
+            nextTaskID: nil,
+            isComposingTask: false
+        ) == nil)
+    }
+
     // MARK: - isCompactPanelLayout
 
     @Test("isCompactPanelLayout is false for zero or negative widths (layout not measured yet)")

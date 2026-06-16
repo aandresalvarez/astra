@@ -16,6 +16,7 @@ struct BrowserBridgeEnvGuardTests {
         #expect(AgentRuntimeProcessRunner.isBrowserBridgeEnvKeyAllowed("ASTRA_BROWSER_URL"))
         #expect(AgentRuntimeProcessRunner.isBrowserBridgeEnvKeyAllowed("ASTRA_BROWSER_TOKEN"))
         #expect(AgentRuntimeProcessRunner.isBrowserBridgeEnvKeyAllowed("ASTRA_BROWSER_DEBUG_CAPTURE"))
+        #expect(AgentRuntimeProcessRunner.isBrowserBridgeEnvKeyAllowed("ASTRA_BROWSER_REQUIRED_ENGINE"))
         // The trailing underscore is required: a delimiter-less prefix match
         // would let an unrelated future ASTRA_BROWSER* key through.
         for hostile in ["PATH", "HOME", "DYLD_INSERT_LIBRARIES", "ANTHROPIC_API_KEY", "ASTRA_CONNECTORS", "ASTRA_BROWSERX", "ASTRA_BROWSER"] {

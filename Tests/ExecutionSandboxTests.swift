@@ -16,7 +16,8 @@ struct ExecutionSandboxTests {
         currentDirectory: String = "/tmp/astra-workspace",
         environment: [String: String] = ["HOME": "/tmp/astra-home"],
         directoriesToCreate: [String] = [],
-        sandboxReadablePaths: [String] = []
+        sandboxReadablePaths: [String] = [],
+        commandPlannedFields: [String: String] = [:]
     ) -> AgentRuntimeProcessLaunchPlan {
         AgentRuntimeProcessLaunchPlan(
             runtime: runtime,
@@ -30,7 +31,7 @@ struct ExecutionSandboxTests {
             directoriesToCreate: directoriesToCreate,
             sandboxReadablePaths: sandboxReadablePaths,
             providerDetectedFields: [:],
-            commandPlannedFields: [:]
+            commandPlannedFields: commandPlannedFields
         )
     }
 
@@ -286,6 +287,24 @@ struct ExecutionSandboxTests {
             settings: ExecutionSandboxSettings(enforcement: .strict)
         )
         #expect(decision == .failClosed(reason: "no_execution_path"))
+    }
+
+    @Test("Browser bridge launch block fails closed when provider lacks shell tool")
+    func browserBridgeLaunchBlockFailsClosedWhenProviderLacksShellTool() throws {
+        let plan = makePlan(
+            runtime: .copilotCLI,
+            environment: ["ASTRA_BROWSER_URL": "http://127.0.0.1:49152"],
+            commandPlannedFields: [
+                "browser_bridge_shell_tool_supported": "false",
+                "browser_bridge_launch_block_reason": "provider_missing_browser_shell_tool"
+            ]
+        )
+
+        let result = try #require(BrowserBridgeRuntimeLaunchGuard.launchBlock(for: plan))
+
+        #expect(result.exitCode == -1)
+        #expect(result.runtimeStopReason == "provider_missing_browser_shell_tool")
+        #expect(result.runtimeStopMessage?.contains("cannot execute the astra-browser command") == true)
     }
 
     @Test("Best-effort enforcement falls back when there is no execution path")
