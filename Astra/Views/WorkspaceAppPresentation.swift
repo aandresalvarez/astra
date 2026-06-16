@@ -908,6 +908,39 @@ enum WorkspaceAppDetailActionsPresentation {
                 )
             )
 
+        case "task.createAndRun":
+            return WorkspaceAppDetailActionPresentation(
+                id: action.id,
+                label: label?.isEmpty == false ? label! : action.id,
+                type: action.type,
+                isEnabled: true,
+                disabledReason: nil,
+                input: WorkspaceAppActionInput(
+                    taskTitle: action.taskTitle,
+                    taskGoal: action.taskGoal
+                )
+            )
+
+        case "pipeline.run", "loop.run":
+            return WorkspaceAppDetailActionPresentation(
+                id: action.id,
+                label: label?.isEmpty == false ? label! : action.id,
+                type: action.type,
+                isEnabled: true,
+                disabledReason: nil,
+                input: WorkspaceAppActionInput()
+            )
+
+        case "gate.humanApproval", "gate.agentRecommendation", "gate.expression":
+            return WorkspaceAppDetailActionPresentation(
+                id: action.id,
+                label: label?.isEmpty == false ? label! : action.id,
+                type: action.type,
+                isEnabled: true,
+                disabledReason: nil,
+                input: WorkspaceAppActionInput()
+            )
+
         default:
             return WorkspaceAppDetailActionPresentation(
                 id: action.id,

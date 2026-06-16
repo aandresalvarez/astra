@@ -16,6 +16,7 @@ struct WorkspaceAppDetailView: View {
     @State private var actionStatusMessage = ""
     @State private var packageStatusMessage = ""
     @State private var activeRecordAction: WorkspaceAppDetailActionPresentation?
+    @State private var activeGateAction: WorkspaceAppDetailActionPresentation?
     @State private var recordFormValues: [String: String] = [:]
     @State private var recordFormError = ""
     @State private var pendingDeleteRecordID: String?
@@ -317,6 +318,10 @@ struct WorkspaceAppDetailView: View {
                     )
                 }
 
+                if let activeGateAction, let spec = gateSpec(for: activeGateAction) {
+                    gateDecisionForm(action: activeGateAction, spec: spec)
+                }
+
                 if !actionStatusMessage.isEmpty {
                     Text(actionStatusMessage)
                         .font(Stanford.caption(12))
@@ -401,14 +406,94 @@ struct WorkspaceAppDetailView: View {
     }
 
     private func handleAction(_ action: WorkspaceAppDetailActionPresentation) {
-        if action.type == "appStorage.insert" {
+        switch action.type {
+        case "appStorage.insert":
             showRecordForm(for: action)
-        } else {
+        case "gate.humanApproval", "gate.agentRecommendation":
+            showGateForm(for: action)
+        default:
             runAction(action)
         }
     }
 
+    private func showGateForm(for action: WorkspaceAppDetailActionPresentation) {
+        clearRecordForm()
+        activeGateAction = action
+    }
+
+    private func clearGateForm() {
+        activeGateAction = nil
+    }
+
+    private func gateSpec(for action: WorkspaceAppDetailActionPresentation) -> WorkspaceAppActionSpec? {
+        dataSnapshot.manifest?.actions.first { $0.id == action.id }
+    }
+
+    private func runGate(
+        _ action: WorkspaceAppDetailActionPresentation,
+        spec: WorkspaceAppActionSpec,
+        decision: String
+    ) {
+        let input: WorkspaceAppActionInput
+        if spec.type == "gate.agentRecommendation" {
+            input = WorkspaceAppActionInput(
+                confirmedApproval: true,
+                agentRecommendationDecision: decision
+            )
+        } else {
+            input = WorkspaceAppActionInput(confirmedApproval: true)
+        }
+        clearGateForm()
+        runAction(
+            WorkspaceAppDetailActionPresentation(
+                id: action.id,
+                label: action.label,
+                type: action.type,
+                isEnabled: action.isEnabled,
+                disabledReason: action.disabledReason,
+                input: input
+            )
+        )
+    }
+
+    @ViewBuilder
+    private func gateDecisionForm(
+        action: WorkspaceAppDetailActionPresentation,
+        spec: WorkspaceAppActionSpec
+    ) -> some View {
+        let isAgentGate = spec.type == "gate.agentRecommendation"
+        let prompt = (isAgentGate ? spec.agentPrompt : spec.approvalPrompt) ?? ""
+        let decisions = isAgentGate ? spec.agentDecisions : spec.approvalDecisions
+        VStack(alignment: .leading, spacing: 8) {
+            Text(action.label)
+                .font(Stanford.body(13).weight(.semibold))
+                .foregroundStyle(Stanford.black)
+            if !prompt.isEmpty {
+                Text(prompt)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 8) {
+                ForEach(decisions, id: \.self) { decision in
+                    Button(decision) {
+                        runGate(action, spec: spec, decision: decision)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+                Button("Cancel", action: clearGateForm)
+                    .buttonStyle(.plain)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+        .background(Stanford.fog.opacity(0.6))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
     private func showRecordForm(for action: WorkspaceAppDetailActionPresentation) {
+        activeGateAction = nil
         activeRecordAction = action
         recordFormValues = [:]
         recordFormError = ""
