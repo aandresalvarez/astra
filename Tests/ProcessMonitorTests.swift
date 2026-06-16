@@ -142,6 +142,41 @@ struct ProcessMonitorTests {
         #expect(monitor.policyViolation == false)
     }
 
+    @Test("Provider missing Bash tool for astra-browser stops provider")
+    func providerMissingBashToolForAstraBrowserStopsProvider() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+        let process = MonitorMockProcess()
+
+        let shouldKill = monitor.processEvent(
+            .text(text: """
+            I need to run shell commands to use astra-browser, but I don't have a Bash execution tool available in my current tool set. The tools I have are: view, create, edit, grep, glob, report_intent, fetch_copilot_cli_documentation.
+            """),
+            process: process
+        )
+
+        #expect(shouldKill == true)
+        #expect(process.didTerminate == true)
+        #expect(monitor.runtimeStopped == true)
+        #expect(monitor.runtimeStopReason == "provider_missing_browser_shell_tool")
+        #expect(monitor.budgetExceeded == false)
+        #expect(monitor.policyViolation == false)
+    }
+
+    @Test("Informational astra-browser text does not stop provider")
+    func informationalAstraBrowserTextDoesNotStopProvider() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+        let process = MonitorMockProcess()
+
+        let shouldKill = monitor.processEvent(
+            .text(text: "Use astra-browser analyze before clicking a browser control."),
+            process: process
+        )
+
+        #expect(shouldKill == false)
+        #expect(process.didTerminate == false)
+        #expect(monitor.runtimeStopped == false)
+    }
+
     @Test("Browser action budget result stops provider")
     func browserActionBudgetResultStopsProvider() {
         let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)

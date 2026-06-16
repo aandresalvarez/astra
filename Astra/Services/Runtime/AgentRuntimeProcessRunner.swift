@@ -77,6 +77,15 @@ final class AgentRuntimeProcessRunner {
         context: AgentRuntimeProcessLaunchContext
     ) -> SandboxedPlanOutcome {
         let plan = adapter.makeProcessLaunchPlan(context: context)
+        if let block = BrowserBridgeRuntimeLaunchGuard.launchBlock(for: plan) {
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.task.id, fields: [
+                "runtime": plan.runtime.rawValue,
+                "reason": block.runtimeStopReason ?? BrowserBridgeRuntimeLaunchGuard.missingShellToolReason,
+                "source": "runtime_launch_preflight",
+                "has_browser_bridge": "true"
+            ], level: .error)
+            return .blocked(block)
+        }
         // Use the run's effective permission policy (an execution-policy override
         // wins over the base policy) so best-effort correctly escalates to strict
         // for override-autonomous runs — matching how the preflight manifest
@@ -593,6 +602,10 @@ final class AgentRuntimeProcessRunner {
         if browserToken?.rangeOfCharacter(from: .newlines) != nil {
             return nil
         }
+        let requiredEngine = taskEnv[BrowserAutomationEngineRequirement.environmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if requiredEngine?.rangeOfCharacter(from: .newlines) != nil {
+            return nil
+        }
 
         guard fileManager.isExecutableFile(atPath: realToolPath),
               realToolPath.rangeOfCharacter(from: .newlines) == nil,
@@ -605,9 +618,12 @@ final class AgentRuntimeProcessRunner {
         let tokenExport = browserToken?.isEmpty == false
             ? "\nexport ASTRA_BROWSER_TOKEN=\(shellSingleQuoted(browserToken!))"
             : ""
+        let requiredEngineExport = requiredEngine?.isEmpty == false
+            ? "\nexport \(BrowserAutomationEngineRequirement.environmentKey)=\(shellSingleQuoted(requiredEngine!))"
+            : ""
         let script = """
         #!/bin/sh
-        export ASTRA_BROWSER_URL=\(shellSingleQuoted(endpoint))\(tokenExport)
+        export ASTRA_BROWSER_URL=\(shellSingleQuoted(endpoint))\(tokenExport)\(requiredEngineExport)
         exec \(shellSingleQuoted(realToolPath)) "$@"
         """
 
@@ -627,7 +643,8 @@ final class AgentRuntimeProcessRunner {
                 "action": "browser_tool_shim",
                 "result": "ready",
                 "has_endpoint": "true",
-                "has_token": String(browserToken?.isEmpty == false)
+                "has_token": String(browserToken?.isEmpty == false),
+                "has_required_engine": String(requiredEngine?.isEmpty == false)
             ], level: .debug)
             return shimDirectory
         } catch {
@@ -772,6 +789,9 @@ final class AgentRuntimeProcessRunner {
                     continue
                 }
                 taskEnv[key] = value
+            }
+            if let requiredEngine = BrowserAutomationEngineRequirement.requiredEngine(for: task, contextText: contextText) {
+                taskEnv[BrowserAutomationEngineRequirement.environmentKey] = requiredEngine.rawValue
             }
         }
         return taskEnv

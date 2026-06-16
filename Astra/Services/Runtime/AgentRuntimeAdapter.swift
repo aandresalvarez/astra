@@ -1890,10 +1890,11 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let capabilities = CopilotCLIRuntime.capabilities(executablePath: executable)
         let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
         let additionalPaths = AgentRuntimeProcessRunner.copilotAdditionalPaths(for: context.task)
+        let browserBridgeMetadata = BrowserBridgeRuntimeLaunchGuard.planMetadata(runtime: id, environment: taskEnv)
         let userHome = FileManager.default.homeDirectoryForCurrentUser.path
         let copilotStateHome = CopilotCLIRuntime.defaultHome(userHome: userHome)
         var localToolCommands = AgentRuntimeProcessRunner.copilotLocalToolCommands(for: context.task, contextText: context.contextText)
-        if taskEnv["ASTRA_BROWSER_URL"] != nil {
+        if browserBridgeMetadata.isAttached {
             localToolCommands.append("astra-browser")
         }
         let plan = CopilotCLIRuntime.buildCommand(
@@ -1912,7 +1913,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             userHome: userHome,
             pathPrefix: pathPrefix,
             includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task, contextText: context.contextText)
-                || taskEnv["ASTRA_BROWSER_URL"] != nil,
+                || browserBridgeMetadata.isAttached,
             localToolCommands: localToolCommands,
             runtimeSupportTools: runtimeSupportTools,
             askFirstTools: askFirstTools
@@ -1985,16 +1986,9 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "uses_allow_tool": String(plan.arguments.contains("--allow-tool")),
                 "uses_available_tools": String(plan.arguments.contains("--available-tools")),
                 "uses_excluded_tools": String(plan.arguments.contains("--excluded-tools")),
-                "excludes_task_tool": String(Self.argumentList(plan.arguments, after: "--excluded-tools").contains("task"))
-            ]
+                "excludes_task_tool": String(AgentRuntimeArgumentInspector.argumentList(plan.arguments, after: "--excluded-tools").contains("task"))
+            ].merging(browserBridgeMetadata.commandPlannedFields) { current, _ in current }
         )
-    }
-
-    private static func argumentList(_ arguments: [String], after flag: String) -> [String] {
-        guard let index = arguments.firstIndex(of: flag) else { return [] }
-        let start = arguments.index(after: index)
-        guard start < arguments.endIndex else { return [] }
-        return Array(arguments[start...].prefix { !$0.hasPrefix("--") })
     }
 
     func parseProcessEvents(line: String, parsesJSONLines: Bool) -> [ParsedEvent] {

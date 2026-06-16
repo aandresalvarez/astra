@@ -1303,6 +1303,126 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.browserShimDirectory?.hasSuffix(".runtime-bin") == true)
     }
 
+    @Test("Copilot browser bridge launch plan records missing shell execution support")
+    @MainActor
+    func copilotBrowserBridgeLaunchPlanRecordsMissingShellExecutionSupport() throws {
+        ShelfBrowserBridgeRegistry.shared.reset()
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-browser-shell-gap-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            ShelfBrowserBridgeRegistry.shared.reset()
+            try? FileManager.default.removeItem(at: root)
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Browser Shell Gap", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Use browser",
+            goal: "Use the browser shelf",
+            workspace: workspace,
+            model: "gpt-5",
+            runtime: .copilotCLI
+        )
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: nil,
+            currentTitle: nil,
+            taskID: task.id,
+            isPresented: false,
+            isEnabled: true
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .copilotCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "Use the browser shelf",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/copilot-not-present",
+                providerHomeDirectory: root.appendingPathComponent("copilot-home").path,
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30,
+                phase: "run",
+                contextText: "Use the browser shelf to inspect the current page."
+            ))
+
+        #expect(plan.environment["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+        #expect(plan.commandPlannedFields["browser_bridge_shell_tool_supported"] == "false")
+        #expect(plan.commandPlannedFields["browser_bridge_launch_block_reason"] == "provider_missing_browser_shell_tool")
+    }
+
+    @Test("CDP-only browser tasks inject required controlled engine into browser environment")
+    @MainActor
+    func cdpOnlyBrowserTasksInjectRequiredControlledEngineIntoBrowserEnvironment() throws {
+        ShelfBrowserBridgeRegistry.shared.reset()
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-controlled-browser-required-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            ShelfBrowserBridgeRegistry.shared.reset()
+            try? FileManager.default.removeItem(at: root)
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Controlled Browser Requirement", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Use controlled browser",
+            goal: "Use the ASTRA Controlled Browser / CDP browser automation engine. Do not use the embedded WebKit browser path.",
+            workspace: workspace,
+            model: "claude-sonnet-4-6",
+            runtime: .claudeCode
+        )
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "https://example.com",
+            currentTitle: "Example",
+            taskID: task.id,
+            isPresented: true,
+            isEnabled: true
+        )
+
+        let env = AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: task)
+
+        #expect(env["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+        #expect(env["ASTRA_BROWSER_REQUIRED_ENGINE"] == "controlled-cdp")
+    }
+
+    @Test("Generic browser tasks do not inject a required engine")
+    @MainActor
+    func genericBrowserTasksDoNotInjectRequiredEngine() throws {
+        ShelfBrowserBridgeRegistry.shared.reset()
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-generic-browser-required-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            ShelfBrowserBridgeRegistry.shared.reset()
+            try? FileManager.default.removeItem(at: root)
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Generic Browser", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Use browser",
+            goal: "Use the browser shelf to inspect the current page.",
+            workspace: workspace,
+            model: "claude-sonnet-4-6",
+            runtime: .claudeCode
+        )
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "https://example.com",
+            currentTitle: "Example",
+            taskID: task.id,
+            isPresented: true,
+            isEnabled: true
+        )
+
+        let env = AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: task)
+
+        #expect(env["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+        #expect(env["ASTRA_BROWSER_REQUIRED_ENGINE"] == nil)
+    }
+
     private static func copilotManifest(
         task: AgentTask,
         workspacePath: String,

@@ -1079,6 +1079,10 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             }
         }
 
+        if let stop = BrowserBridgeRuntimeLaunchGuard.transcriptStop(from: parsed) {
+            return recordRuntimeStop(reason: stop.reason, message: stop.message, process: process)
+        }
+
         if case .result = parsed {
             _turnCount += 1
             if maxTurns > 0 && _turnCount >= maxTurns {
