@@ -80,6 +80,9 @@ struct WorkspaceAppActionInput: Codable, Sendable, Equatable {
     var confirmedDestructive: Bool
     var confirmedApproval: Bool
     var agentRecommendationDecision: String?
+    // B1 output binding: rows produced by the previous pipeline/loop step,
+    // threaded forward so a downstream step can consume upstream output.
+    var boundRows: [[String: WorkspaceAppStorageValue]]
 
     init(
         table: String? = nil,
@@ -90,7 +93,8 @@ struct WorkspaceAppActionInput: Codable, Sendable, Equatable {
         taskGoal: String? = nil,
         confirmedDestructive: Bool = false,
         confirmedApproval: Bool = false,
-        agentRecommendationDecision: String? = nil
+        agentRecommendationDecision: String? = nil,
+        boundRows: [[String: WorkspaceAppStorageValue]] = []
     ) {
         self.table = table
         self.record = record
@@ -101,6 +105,19 @@ struct WorkspaceAppActionInput: Codable, Sendable, Equatable {
         self.confirmedDestructive = confirmedDestructive
         self.confirmedApproval = confirmedApproval
         self.agentRecommendationDecision = agentRecommendationDecision
+        self.boundRows = boundRows
+    }
+
+    // The effective record for a write step: an explicit record wins; otherwise
+    // the first row bound from the previous step (B1 output binding).
+    var effectiveRecord: [String: WorkspaceAppStorageValue] {
+        record.isEmpty ? (boundRows.first ?? [:]) : record
+    }
+
+    func bindingForward(rows: [[String: WorkspaceAppStorageValue]]) -> WorkspaceAppActionInput {
+        var copy = self
+        copy.boundRows = rows
+        return copy
     }
 }
 
@@ -405,20 +422,22 @@ struct WorkspaceAppActionExecutor {
         switch action.type {
         case "appStorage.insert":
             guard let table = input.table else { throw WorkspaceAppActionExecutionError.missingTable }
-            guard !input.record.isEmpty else { throw WorkspaceAppActionExecutionError.missingRecord }
+            let insertRecord = input.effectiveRecord
+            guard !insertRecord.isEmpty else { throw WorkspaceAppActionExecutionError.missingRecord }
             do {
-                try storageService.insertRecord(input.record, into: table, databaseURL: databaseURL)
+                try storageService.insertRecord(insertRecord, into: table, databaseURL: databaseURL)
             } catch {
                 throw WorkspaceAppActionExecutionError.storageFailed(String(describing: error))
             }
             return ([], "Inserted 1 record into \(table).", nil, nil)
         case "appStorage.update":
             guard let table = input.table ?? action.table else { throw WorkspaceAppActionExecutionError.missingTable }
-            guard !input.record.isEmpty else { throw WorkspaceAppActionExecutionError.missingRecord }
+            let updateRecord = input.effectiveRecord
+            guard !updateRecord.isEmpty else { throw WorkspaceAppActionExecutionError.missingRecord }
             let primaryKey = try primaryKeyColumn(in: table, manifest: manifest)
             do {
                 try storageService.updateRecord(
-                    input.record,
+                    updateRecord,
                     in: table,
                     primaryKey: primaryKey,
                     databaseURL: databaseURL
@@ -951,14 +970,16 @@ struct WorkspaceAppActionExecutor {
 
         for stepID in action.steps {
             let step = try actionSpec(actionID: stepID, manifest: manifest)
-            try enforcePermission(for: step, app: app, input: input)
+            // B1 output binding: each step sees the previous step's rows.
+            let stepInput = input.bindingForward(rows: rows)
+            try enforcePermission(for: step, app: app, input: stepInput)
             let result = try execute(
                 action: step,
                 app: app,
                 workspace: workspace,
                 manifest: manifest,
                 dependencyBindings: dependencyBindings,
-                input: input,
+                input: stepInput,
                 run: run,
                 modelContext: modelContext
             )
@@ -968,6 +989,8 @@ struct WorkspaceAppActionExecutor {
                 payload: [
                     "pipelineID": .text(action.id),
                     "stepID": .text(stepID),
+                    "boundRows": .integer(Int64(stepInput.boundRows.count)),
+                    "outputRows": .integer(Int64(result.rows.count)),
                     "summary": .text(result.outputSummary)
                 ],
                 modelContext: modelContext
@@ -1044,14 +1067,16 @@ struct WorkspaceAppActionExecutor {
 
             for stepID in action.steps {
                 let step = try actionSpec(actionID: stepID, manifest: manifest)
-                try enforcePermission(for: step, app: app, input: input)
+                // B1 output binding: each step sees the previous step's rows.
+                let stepInput = input.bindingForward(rows: rows)
+                try enforcePermission(for: step, app: app, input: stepInput)
                 let result = try execute(
                     action: step,
                     app: app,
                     workspace: workspace,
                     manifest: manifest,
                     dependencyBindings: dependencyBindings,
-                    input: input,
+                    input: stepInput,
                     run: run,
                     modelContext: modelContext
                 )
@@ -1062,6 +1087,7 @@ struct WorkspaceAppActionExecutor {
                         "loopID": .text(action.id),
                         "iteration": .integer(Int64(iteration)),
                         "stepID": .text(stepID),
+                        "boundRows": .integer(Int64(stepInput.boundRows.count)),
                         "summary": .text(result.outputSummary)
                     ],
                     modelContext: modelContext

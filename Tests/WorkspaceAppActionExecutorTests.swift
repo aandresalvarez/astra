@@ -607,6 +607,65 @@ struct WorkspaceAppActionExecutorTests {
     }
 
     @MainActor
+    @Test("pipeline binds a step's output rows into the next step (B1)")
+    func pipelineBindsStepOutputIntoNextStep() throws {
+        let fixture = try Self.makePublishedApp(permissionMode: .draftOnly)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        // Seed one record so listItems has a row to bind forward.
+        _ = try WorkspaceAppActionExecutor().execute(
+            actionID: "addItem",
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: fixture.manifest,
+            input: WorkspaceAppActionInput(
+                table: "items",
+                record: [
+                    "id": .text("item-1"),
+                    "name": .text("Apples"),
+                    "category": .text("Produce")
+                ]
+            ),
+            modelContext: fixture.context
+        )
+
+        // bindingPipeline = [listItems (query) -> updateItem (update with NO explicit
+        // record)]. Without output binding, updateItem throws missingRecord; with B1 it
+        // consumes the row listItems produced and the pipeline completes.
+        let result = try WorkspaceAppActionExecutor().execute(
+            actionID: "bindingPipeline",
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: fixture.manifest,
+            modelContext: fixture.context
+        )
+
+        #expect(result.run.status == .completed)
+        #expect(result.outputSummary.contains("updateItem: Updated 1 record in items."))
+
+        let events = try fixture.context.fetch(FetchDescriptor<WorkspaceAppRunEvent>())
+            .filter { $0.runID == result.run.id }
+        #expect(events.contains {
+            $0.type == "workspaceApp.pipeline.step.completed"
+                && $0.payload.contains("updateItem")
+                && $0.payload.contains("boundRows")
+        })
+    }
+
+    @Test("action input binds the first upstream row when no explicit record (B1)")
+    func actionInputBindsFirstUpstreamRow() {
+        let bound: [[String: WorkspaceAppStorageValue]] = [
+            ["id": .text("a")],
+            ["id": .text("b")]
+        ]
+        #expect(WorkspaceAppActionInput().bindingForward(rows: bound).effectiveRecord == ["id": .text("a")])
+        #expect(
+            WorkspaceAppActionInput(record: ["id": .text("explicit")])
+                .bindingForward(rows: bound).effectiveRecord == ["id": .text("explicit")]
+        )
+        #expect(WorkspaceAppActionInput().effectiveRecord.isEmpty)
+    }
+
+    @MainActor
     @Test("pipeline human approval gates block until confirmed")
     func pipelineHumanApprovalGatesBlockUntilConfirmed() throws {
         let fixture = try Self.makePublishedApp(permissionMode: .draftOnly)
@@ -1138,6 +1197,12 @@ struct WorkspaceAppActionExecutorTests {
                     type: "pipeline.run",
                     label: "Export Pipeline",
                     steps: ["listItems", "exportItems"]
+                ),
+                WorkspaceAppActionSpec(
+                    id: "bindingPipeline",
+                    type: "pipeline.run",
+                    label: "Binding Pipeline",
+                    steps: ["listItems", "updateItem"]
                 ),
                 WorkspaceAppActionSpec(
                     id: "approvalGate",
