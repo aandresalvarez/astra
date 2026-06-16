@@ -215,6 +215,11 @@ struct ContentView: View {
     @Query(sort: \Workspace.name) private var workspaces: [Workspace]
     @State private var selectedTask: AgentTask?
     @State private var selectedWorkspace: Workspace?
+    // F7: Workspace App surfaces. selectedWorkspaceApp renders the app detail;
+    // isComposingWorkspaceApp renders the App Studio builder. Mutually exclusive
+    // with task selection (set/cleared together).
+    @State private var selectedWorkspaceApp: WorkspaceApp?
+    @State private var isComposingWorkspaceApp = false
     @State private var showingConfigure = false
     @State private var configureInitialTab: ConfigureTab = .capabilities
     @State private var configureFocusItemID: UUID?
@@ -604,7 +609,18 @@ struct ContentView: View {
         )
     }
 
+    @ViewBuilder
     private var detailArea: some View {
+        if let app = selectedWorkspaceApp {
+            workspaceAppDetailArea(app: app)
+        } else if isComposingWorkspaceApp, let workspace = effectiveWorkspace {
+            workspaceAppStudioArea(workspace: workspace)
+        } else {
+            taskAndHomeDetailArea
+        }
+    }
+
+    private var taskAndHomeDetailArea: some View {
         ContentDetailAreaView(
             selectedTask: selectedTask,
             effectiveWorkspace: effectiveWorkspace,
@@ -654,6 +670,95 @@ struct ContentView: View {
         )
     }
 
+    // MARK: - F7 Workspace App surfaces
+
+    private enum WorkspaceAppUIError: LocalizedError {
+        case noWorkspace
+        case exportUnavailableFromDetail
+
+        var errorDescription: String? {
+            switch self {
+            case .noWorkspace:
+                return "Select a workspace before running this app action."
+            case .exportUnavailableFromDetail:
+                return "Export this app from the App Studio sharing flow."
+            }
+        }
+    }
+
+    private func workspaceAppDetailArea(app: WorkspaceApp) -> some View {
+        WorkspaceAppDetailView(
+            app: app,
+            workspace: effectiveWorkspace,
+            onOpenStudio: { startWorkspaceAppStudio() },
+            onRefresh: {},
+            onExportPackage: { throw WorkspaceAppUIError.exportUnavailableFromDetail },
+            onRunAction: { action, manifest, input in
+                try runWorkspaceAppAction(app: app, action: action, manifest: manifest, input: input)
+            }
+        )
+        .id(app.id)
+    }
+
+    private func workspaceAppStudioArea(workspace: Workspace) -> some View {
+        WorkspaceAppStudioView(
+            workspace: workspace,
+            initialIntent: "Build a Workspace App for \(workspace.name).",
+            existingManifest: nil,
+            onCancel: { isComposingWorkspaceApp = false },
+            onPublish: { draft in try publishWorkspaceApp(draft, workspace: workspace) }
+        )
+    }
+
+    private func startWorkspaceAppStudio() {
+        selectedTask = nil
+        selectedWorkspaceApp = nil
+        isComposingTask = false
+        isComposingWorkspaceApp = true
+    }
+
+    private func setSelectedWorkspaceApp(_ app: WorkspaceApp?) {
+        selectedTask = nil
+        isComposingTask = false
+        isComposingWorkspaceApp = false
+        selectedWorkspaceApp = app
+    }
+
+    private func runWorkspaceAppAction(
+        app: WorkspaceApp,
+        action: WorkspaceAppActionSpec,
+        manifest: WorkspaceAppManifest,
+        input: WorkspaceAppActionInput
+    ) throws -> WorkspaceAppActionExecutionResult {
+        guard let workspace = effectiveWorkspace else {
+            throw WorkspaceAppUIError.noWorkspace
+        }
+        let appID = app.id
+        let bindings = (try? modelContext.fetch(
+            FetchDescriptor<WorkspaceAppDependencyBinding>()
+        ))?.filter { $0.appID == appID } ?? []
+        return try WorkspaceAppActionExecutor().execute(
+            actionID: action.id,
+            app: app,
+            workspace: workspace,
+            manifest: manifest,
+            dependencyBindings: bindings,
+            input: input,
+            modelContext: modelContext
+        )
+    }
+
+    private func publishWorkspaceApp(_ draft: WorkspaceAppStudioDraft, workspace: Workspace) throws {
+        let result = try WorkspaceAppService().createApp(
+            manifest: draft.manifest,
+            in: workspace,
+            modelContext: modelContext
+        )
+        try? modelContext.save()
+        isComposingWorkspaceApp = false
+        setSelectedWorkspaceApp(result.app)
+    }
+
     /// Keeps ⌘F toggling search even though the visible search button lives in
     /// the leading titlebar accessory (`AstraLeadingCommandBar`), which sits
     /// outside the window's key responder chain where a `.keyboardShortcut`
@@ -665,6 +770,19 @@ struct ContentView: View {
             .keyboardShortcut("f", modifiers: .command)
             .opacity(0)
             .accessibilityHidden(true)
+    }
+
+    // F7: ⌘⇧A opens the Workspace App Studio (New App). Hidden hotkey mirroring
+    // searchHotkey so it registers without threading a button through the detail
+    // view hierarchy; only active when a workspace is selected.
+    private var newWorkspaceAppHotkey: some View {
+        Button(action: { if effectiveWorkspace != nil { startWorkspaceAppStudio() } }) {
+            Color.clear.frame(width: 0, height: 0)
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut("a", modifiers: [.command, .shift])
+        .opacity(0)
+        .accessibilityHidden(true)
     }
 
     // Split out of `body` so each modifier chain stays small enough for the
@@ -682,6 +800,7 @@ struct ContentView: View {
             isSidebarHidden: presentation.isSidebarHidden
         )
         .background(searchHotkey)
+        .background(newWorkspaceAppHotkey)
         .astraHiddenToolbarBackground()
         // Right-rail toggle. Attached to the NavigationSplitView root so
         // .primaryAction lands at the WINDOW's trailing edge — past the
@@ -1951,6 +2070,11 @@ struct ContentView: View {
         if let taskWorkspace = task?.workspace,
            selectedWorkspace?.id != taskWorkspace.id {
             selectedWorkspace = taskWorkspace
+        }
+        if task != nil {
+            // Workspace App surfaces and task selection are mutually exclusive.
+            selectedWorkspaceApp = nil
+            isComposingWorkspaceApp = false
         }
         selectedTask = task
         if previousTaskID != task?.id {
@@ -3257,6 +3381,11 @@ private struct ContentDetailContentView: View {
                     onManageCapabilities: onManageCapabilities
                 )
             }
+        case .workspaceApp, .workspaceAppStudio:
+            // Workspace App surfaces are rendered at the ContentView detailArea
+            // level (gated on selectedWorkspaceApp / isComposingWorkspaceApp), so
+            // they never reach this inner switch.
+            EmptyView()
         case .noWorkspace:
             WorkspaceEmptyStateView(
                 onCreateWorkspace: onCreateWorkspace,
