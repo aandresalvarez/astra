@@ -1892,8 +1892,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             taskEnvironment: taskEnv,
             copilotHome: context.providerHomeDirectory,
             pathPrefix: pathPrefix,
-            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task)
-                || taskEnv["ASTRA_BROWSER_URL"] != nil,
+            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task) || taskEnv["ASTRA_BROWSER_URL"] != nil,
             localToolCommands: localToolCommands,
             runtimeSupportTools: runtimeSupportTools,
             askFirstTools: askFirstTools,
