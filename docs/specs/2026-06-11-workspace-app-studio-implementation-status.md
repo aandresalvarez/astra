@@ -435,14 +435,17 @@ logic unit-tested (`WorkspaceAppDetailPresentationTests`, 4) and no regressions
 This gives a complete functional loop for Slice 9: ⌘⇧A -> App Studio -> publish ->
 detail -> run governed agentic-workflow actions.
 
-Residual (best done with the app running — `/run` / `/verify`):
-- A visible/persistent **app list** to re-open existing apps: thread
-  `onOpenWorkspaceApp` (+ a `@Query` of `WorkspaceApp`) into `WorkspaceHomeView`
-  (Apps section) and/or `TaskSidebarView` (app rows). Calls
-  `setSelectedWorkspaceApp`.
-- Live verification of navigation/rendering/run behavior (unit tests can't cover
-  SwiftUI runtime).
-- Optional: port the app-specific cases from susom `ViewTests` /
+Visible re-open list — DONE (F7b): `onOpenWorkspaceApp` is threaded from
+`ContentView` through `ContentDetailAreaView` / `ContentDetailContentView` into
+`WorkspaceHomeContainerView`, which `@Query`s the workspace's `WorkspaceApp`s and
+renders an Apps section in the home context card (tap to open). Re-open loop is
+closed.
+
+Residual (only live verification now — `/run` / `/verify`):
+- Live verification of navigation/rendering/run behavior on the running app (unit
+  tests can't cover SwiftUI runtime); confirm the Apps-section layout reads well.
+- Optional: a `TaskSidebarView` app-rows surface (the home Apps list already
+  re-opens apps), and porting the app-specific cases from susom `ViewTests` /
   `WorkspaceHomePresentationTests` / `TaskEventTimelineSidebarTests` under
   non-colliding names.
 
