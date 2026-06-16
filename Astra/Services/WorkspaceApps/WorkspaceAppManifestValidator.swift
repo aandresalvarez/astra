@@ -421,6 +421,9 @@ enum WorkspaceAppManifestValidator {
             if action.type == "gate.branch" {
                 validateBranchAction(action, actionsByID: actionsByID, path: path, issues: &issues)
             }
+            if action.type == "task.fanOut" {
+                validateFanOutAction(action, actionsByID: actionsByID, path: path, issues: &issues)
+            }
         }
 
         for (index, action) in actions.enumerated() where action.type == "pipeline.run" || action.type == "loop.run" || action.type == "gate.branch" {
@@ -476,18 +479,48 @@ enum WorkspaceAppManifestValidator {
               isCompositeAction(action) else {
             return false
         }
-        if action.steps.contains(targetID) {
+        let edges = compositeEdges(action)
+        if edges.contains(targetID) {
             return true
         }
         var visited = visited
         visited.insert(actionID)
-        return action.steps.contains {
+        return edges.contains {
             compositeAction($0, reaches: targetID, actionsByID: actionsByID, visited: visited)
         }
     }
 
     private static func isCompositeAction(_ action: WorkspaceAppActionSpec) -> Bool {
-        action.type == "pipeline.run" || action.type == "loop.run" || action.type == "gate.branch"
+        action.type == "pipeline.run" || action.type == "loop.run"
+            || action.type == "gate.branch" || action.type == "task.fanOut"
+    }
+
+    // The child action ids a composite action can reach: its steps plus a fan-out's
+    // single child template.
+    private static func compositeEdges(_ action: WorkspaceAppActionSpec) -> [String] {
+        action.steps + (action.fanOutStep.map { [$0] } ?? [])
+    }
+
+    private static func validateFanOutAction(
+        _ action: WorkspaceAppActionSpec,
+        actionsByID: [String: WorkspaceAppActionSpec],
+        path: String,
+        issues: inout [WorkspaceAppManifestValidationReport.Issue]
+    ) {
+        guard let child = action.fanOutStep?.trimmingCharacters(in: .whitespacesAndNewlines), !child.isEmpty else {
+            issues.append(blocker("\(path)/fanOutStep", "Fan-out action must declare a child task step."))
+            return
+        }
+        validateIdentifier(child, path: "\(path)/fanOutStep", label: "Fan-out child action ID", issues: &issues)
+        if child == action.id {
+            issues.append(blocker("\(path)/fanOutStep", "Fan-out action cannot reference itself."))
+        } else if let childAction = actionsByID[child] {
+            if childAction.type != "task.createAndRun" {
+                issues.append(blocker("\(path)/fanOutStep", "Fan-out child '\(child)' must be a task.createAndRun action."))
+            }
+        } else {
+            issues.append(blocker("\(path)/fanOutStep", "Fan-out child references unknown action '\(child)'."))
+        }
     }
 
     private static func validateBranchAction(

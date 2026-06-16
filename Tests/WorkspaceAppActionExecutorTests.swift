@@ -825,6 +825,72 @@ struct WorkspaceAppActionExecutorTests {
     }
 
     @MainActor
+    @Test("task.fanOut launches N tasks, suspends on a barrier, resumes when all complete (C1)")
+    func fanOutSuspendsOnBarrierAndResumesWhenAllComplete() throws {
+        let fixture = try Self.makePublishedApp(permissionMode: .preApproved)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        for id in ["item-1", "item-2"] {
+            _ = try WorkspaceAppActionExecutor().execute(
+                actionID: "addItem",
+                app: fixture.app,
+                workspace: fixture.workspace,
+                manifest: fixture.manifest,
+                input: WorkspaceAppActionInput(
+                    table: "items",
+                    record: ["id": .text(id), "name": .text(id), "category": .text("Produce")]
+                ),
+                modelContext: fixture.context
+            )
+        }
+        // fanOutPipeline = [listItems (2 rows) -> fanOutAction (one task per row, barrier)
+        // -> reduceCount]. The fan-out launches 2 tasks and suspends on the SET.
+        let suspended = try WorkspaceAppActionExecutor().execute(
+            actionID: "fanOutPipeline",
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: fixture.manifest,
+            modelContext: fixture.context
+        )
+        #expect(suspended.run.status == .waiting)
+        #expect(suspended.run.awaitedTaskIDs.count == 2)
+        #expect(suspended.run.pendingStepIndex == 2)
+
+        let tasks = try fixture.context.fetch(FetchDescriptor<AgentTask>())
+            .filter { suspended.run.awaitedTaskIDs.contains($0.id) }
+        #expect(tasks.count == 2)
+
+        // Only one task completed -> the barrier holds, nothing resumes.
+        tasks[0].status = .completed
+        try fixture.context.save()
+        #expect(WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: fixture.context).isEmpty)
+
+        // All tasks completed -> the barrier resolves; the run resumes through reduce.
+        tasks[1].status = .completed
+        try fixture.context.save()
+        let results = WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: fixture.context)
+        #expect(results.count == 1)
+        #expect(results.first?.run.status == .completed)
+        #expect(results.first?.rows.first?["count"] == .integer(2))
+    }
+
+    @MainActor
+    @Test("manifest validation guards task.fanOut child (C1)")
+    func fanOutActionValidation() throws {
+        let fixture = try Self.makePublishedApp(permissionMode: .preApproved)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        var manifest = fixture.manifest
+        // The fixture's fanOutAction (child = runReviewTask, a task.createAndRun) is valid.
+        #expect(WorkspaceAppManifestValidator.validate(manifest).isValid)
+        // Missing child -> invalid.
+        manifest.actions.append(WorkspaceAppActionSpec(id: "fan_nochild", type: "task.fanOut"))
+        #expect(!WorkspaceAppManifestValidator.validate(manifest).isValid)
+        manifest.actions.removeLast()
+        // Child that is not a task.createAndRun -> invalid.
+        manifest.actions.append(WorkspaceAppActionSpec(id: "fan_badchild", type: "task.fanOut", fanOutStep: "listItems"))
+        #expect(!WorkspaceAppManifestValidator.validate(manifest).isValid)
+    }
+
+    @MainActor
     @Test("gate.branch runs the then-step when the upstream predicate passes (C2)")
     func branchSelectsThenStepFromUpstreamData() throws {
         let fixture = try Self.makePublishedApp(permissionMode: .draftOnly)
@@ -1523,6 +1589,18 @@ struct WorkspaceAppActionExecutorTests {
                     type: "pipeline.run",
                     label: "Branch Pipeline",
                     steps: ["listItems", "branchAction"]
+                ),
+                WorkspaceAppActionSpec(
+                    id: "fanOutAction",
+                    type: "task.fanOut",
+                    label: "Fan Out Review",
+                    fanOutStep: "runReviewTask"
+                ),
+                WorkspaceAppActionSpec(
+                    id: "fanOutPipeline",
+                    type: "pipeline.run",
+                    label: "Fan Out Pipeline",
+                    steps: ["listItems", "fanOutAction", "reduceCount"]
                 ),
                 WorkspaceAppActionSpec(
                     id: "approvalGate",

@@ -50,25 +50,42 @@ struct WorkspaceAppRunResumptionService {
     @discardableResult
     func resumeCompletedRuns(modelContext: ModelContext) -> [WorkspaceAppActionExecutionResult] {
         let waitingRuns = ((try? modelContext.fetch(FetchDescriptor<WorkspaceAppRun>())) ?? [])
-            .filter { $0.status == .waiting && $0.linkedTaskID != nil }
+            .filter { $0.status == .waiting }
 
         var results: [WorkspaceAppActionExecutionResult] = []
         for run in waitingRuns {
-            guard let taskID = run.linkedTaskID,
-                  let task = agentTask(id: taskID, modelContext: modelContext),
-                  task.status == .completed,
-                  let workspace = workspace(id: run.workspaceID, modelContext: modelContext) else {
+            // C1 barrier: a fanned-out run awaits a SET of tasks; a B2 single-task run
+            // is the degenerate one-element set (via linkedTaskID). Resume only when
+            // EVERY awaited task has completed, re-derived authoritatively from the store.
+            let barrier = barrierTaskIDs(for: run)
+            guard !barrier.isEmpty else { continue }
+            let tasks = barrier.compactMap { agentTask(id: $0, modelContext: modelContext) }
+            guard tasks.count == barrier.count,
+                  tasks.allSatisfy({ $0.status == .completed }),
+                  let workspace = workspace(id: run.workspaceID, modelContext: modelContext),
+                  let app = workspaceApp(id: run.appID, modelContext: modelContext),
+                  let manifest = manifest(for: app, workspace: workspace) else {
                 continue
             }
-            results += resumeRuns(
-                awaitingTaskID: taskID,
-                taskOutputRows: [taskOutputRow(for: task)],
-                consumedTokens: consumedTokens(for: task),
+            let outputRows = tasks.map { taskOutputRow(for: $0) }
+            let consumed = tasks.reduce(0) { $0 + consumedTokens(for: $1) }
+            if let result = try? executor.resume(
+                run: run,
+                app: app,
                 workspace: workspace,
+                manifest: manifest,
+                taskOutputRows: outputRows,
+                consumedTokens: consumed,
                 modelContext: modelContext
-            )
+            ) {
+                results.append(result)
+            }
         }
         return results
+    }
+
+    private func barrierTaskIDs(for run: WorkspaceAppRun) -> [UUID] {
+        run.awaitedTaskIDs.isEmpty ? (run.linkedTaskID.map { [$0] } ?? []) : run.awaitedTaskIDs
     }
 
     private func consumedTokens(for task: AgentTask) -> Int {

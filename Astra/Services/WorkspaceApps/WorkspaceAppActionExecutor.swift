@@ -272,7 +272,9 @@ struct WorkspaceAppRunRecorder {
 // run, and marks the run `.waiting` (not failed). resume() continues from there
 // once the task completes.
 private struct WorkspaceAppPipelineSuspension: Error {
-    let taskID: UUID
+    // A SET of awaited task ids (one element for a B2 single task.createAndRun step,
+    // N for a C1 task.fanOut barrier).
+    let taskIDs: [UUID]
     let pipelineActionID: String
     let nextStepIndex: Int
 }
@@ -348,7 +350,7 @@ struct WorkspaceAppActionExecutor {
             return WorkspaceAppActionExecutionResult(
                 run: run,
                 rows: [],
-                outputSummary: "Workflow '\(suspension.pipelineActionID)' is waiting on task \(suspension.taskID.uuidString)."
+                outputSummary: "Workflow '\(suspension.pipelineActionID)' is waiting on \(suspension.taskIDs.count) task(s)."
             )
         } catch {
             recorder.failRun(
@@ -451,7 +453,7 @@ struct WorkspaceAppActionExecutor {
             return WorkspaceAppActionExecutionResult(
                 run: run,
                 rows: [],
-                outputSummary: "Workflow '\(suspension.pipelineActionID)' is waiting on task \(suspension.taskID.uuidString)."
+                outputSummary: "Workflow '\(suspension.pipelineActionID)' is waiting on \(suspension.taskIDs.count) task(s)."
             )
         } catch {
             recorder.failRun(run, error: error, blocked: isPermissionError(error), modelContext: modelContext)
@@ -466,14 +468,16 @@ struct WorkspaceAppActionExecutor {
         modelContext: ModelContext
     ) {
         run.status = .waiting
-        run.linkedTaskID = suspension.taskID
+        run.awaitedTaskIDs = suspension.taskIDs
+        run.linkedTaskID = suspension.taskIDs.first  // single-await fast path / back-compat
         run.pendingActionID = suspension.pipelineActionID
         run.pendingStepIndex = suspension.nextStepIndex
         recorder.recordEvent(
             run: run,
             type: "workspaceApp.run.waiting",
             payload: [
-                "taskID": .text(suspension.taskID.uuidString),
+                "taskIDs": .text(suspension.taskIDs.map(\.uuidString).joined(separator: ",")),
+                "taskCount": .integer(Int64(suspension.taskIDs.count)),
                 "pipelineID": .text(suspension.pipelineActionID),
                 "nextStepIndex": .integer(Int64(suspension.nextStepIndex))
             ],
@@ -1268,7 +1272,47 @@ struct WorkspaceAppActionExecutor {
                     modelContext: modelContext
                 )
                 throw WorkspaceAppPipelineSuspension(
-                    taskID: task.id,
+                    taskIDs: [task.id],
+                    pipelineActionID: action.id,
+                    nextStepIndex: index + 1
+                )
+            }
+            // C1: parallel fan-out — launch one queued agent task per upstream bound
+            // row, then suspend the run on a barrier over the whole set. The permission
+            // gate above covers the whole fan-out once. Zero rows launches nothing and
+            // continues (so the run never strands in .waiting).
+            if step.type == "task.fanOut" {
+                guard let childID = step.fanOutStep?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !childID.isEmpty,
+                      let childTemplate = manifest.actions.first(where: { $0.id == childID }) else {
+                    throw WorkspaceAppActionExecutionError.unsupportedActionType(step.type)
+                }
+                let fanRows = stepInput.boundRows
+                if fanRows.isEmpty { continue }
+                var launchedIDs: [UUID] = []
+                for row in fanRows {
+                    let task = try createTask(
+                        action: childTemplate,
+                        manifest: manifest,
+                        input: stepInput.bindingForward(rows: [row]),
+                        workspace: workspace,
+                        status: .queued,
+                        modelContext: modelContext
+                    )
+                    launchedIDs.append(task.id)
+                }
+                recorder.recordEvent(
+                    run: run,
+                    type: "workspaceApp.pipeline.step.fannedOut",
+                    payload: [
+                        "pipelineID": .text(action.id),
+                        "stepID": .text(stepID),
+                        "taskCount": .integer(Int64(launchedIDs.count))
+                    ],
+                    modelContext: modelContext
+                )
+                throw WorkspaceAppPipelineSuspension(
+                    taskIDs: launchedIDs,
                     pipelineActionID: action.id,
                     nextStepIndex: index + 1
                 )
@@ -1599,7 +1643,7 @@ struct WorkspaceAppActionExecutor {
             .read
         case "appStorage.insert", "appStorage.update", "notification.show", "task.createDraft":
             .localWrite
-        case "capability.write", "task.createAndRun":
+        case "capability.write", "task.createAndRun", "task.fanOut":
             .externalWrite
         case "appStorage.delete":
             .destructive

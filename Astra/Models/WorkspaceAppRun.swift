@@ -44,6 +44,11 @@ final class WorkspaceAppRun: Identifiable {
     // B3: tokens consumed by the run's awaited agent tasks so far, accumulated on
     // each resume to enforce a whole-run token budget. Defaulted (lightweight).
     var consumedTokens: Int = 0
+    // C1 parallel fan-out barrier: the SET of agent tasks a fanned-out run awaits,
+    // stored as a JSON [UUID] string (SwiftData has no [UUID] attribute; defaulted,
+    // absorbed into V7). The single-task B2 case is the degenerate one-element
+    // barrier; linkedTaskID is retained for the single-await fast path + back-compat.
+    var awaitedTaskIDsJSON: String = "[]"
 
     init(
         id: UUID = UUID(),
@@ -79,6 +84,15 @@ final class WorkspaceAppRun: Identifiable {
     var trigger: WorkspaceAppRunTrigger {
         get { WorkspaceAppRunTrigger(rawValue: triggerRaw) ?? .user }
         set { triggerRaw = newValue.rawValue }
+    }
+
+    var awaitedTaskIDs: [UUID] {
+        get { (try? JSONDecoder().decode([UUID].self, from: Data(awaitedTaskIDsJSON.utf8))) ?? [] }
+        set {
+            if let data = try? JSONEncoder().encode(newValue), let json = String(data: data, encoding: .utf8) {
+                awaitedTaskIDsJSON = json
+            }
+        }
     }
 }
 
