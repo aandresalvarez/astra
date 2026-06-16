@@ -940,6 +940,7 @@ enum ExecutionSandbox {
             parsesJSONLines: plan.parsesJSONLines,
             directoriesToCreate: plan.directoriesToCreate,
             sandboxReadablePaths: plan.sandboxReadablePaths,
+            sandboxProtectedWriteDenyPaths: plan.sandboxProtectedWriteDenyPaths,
             providerDetectedFields: plan.providerDetectedFields,
             commandPlannedFields: plan.commandPlannedFields,
             interactiveAsk: plan.interactiveAsk
