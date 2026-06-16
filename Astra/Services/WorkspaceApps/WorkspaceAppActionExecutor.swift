@@ -718,9 +718,80 @@ struct WorkspaceAppActionExecutor {
             )
         case "rows.reduce":
             return executeReduce(action: action, input: input, run: run, modelContext: modelContext)
+        case "gate.branch":
+            return try executeBranch(
+                action: action,
+                app: app,
+                workspace: workspace,
+                manifest: manifest,
+                dependencyBindings: dependencyBindings,
+                input: input,
+                run: run,
+                modelContext: modelContext
+            )
         default:
             throw WorkspaceAppActionExecutionError.unsupportedActionType(action.type)
         }
+    }
+
+    // C2: evaluate a predicate against the upstream bound output and run exactly one
+    // chosen target step inline (then/else). Synchronous, non-suspending — branch
+    // targets are validator-restricted to non-task action types.
+    private func executeBranch(
+        action: WorkspaceAppActionSpec,
+        app: WorkspaceApp,
+        workspace: Workspace,
+        manifest: WorkspaceAppManifest,
+        dependencyBindings: [WorkspaceAppDependencyBinding],
+        input: WorkspaceAppActionInput,
+        run: WorkspaceAppRun,
+        modelContext: ModelContext
+    ) throws -> (
+        rows: [[String: WorkspaceAppStorageValue]],
+        outputSummary: String,
+        linkedTaskID: UUID?,
+        linkedArtifactPath: String?
+    ) {
+        let field = action.gateField?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard let gateOperator = WorkspaceAppExpressionGateOperator(
+            rawValue: action.gateOperator?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        ) else {
+            throw WorkspaceAppActionExecutionError.gateBlocked(action.id)
+        }
+        // Condition on UPSTREAM produced output (boundRows), falling back to the input record.
+        let actualValue = input.boundRows.first?[field] ?? input.record[field]
+        let passed = evaluateExpressionGate(
+            gateOperator: gateOperator,
+            actualValue: actualValue,
+            expectedValue: action.gateValue
+        )
+        let targetID = passed ? action.thenStep : action.elseStep
+        recorder.recordEvent(
+            run: run,
+            type: "workspaceApp.branch.evaluated",
+            payload: [
+                "branchID": .text(action.id),
+                "passed": .bool(passed),
+                "target": .text(targetID ?? "none")
+            ],
+            modelContext: modelContext
+        )
+        guard let targetID,
+              let target = manifest.actions.first(where: { $0.id == targetID }) else {
+            // No branch taken (e.g. no elseStep on a failed predicate) — pass the rows through.
+            return (input.boundRows, "Branch '\(action.id)' took no step.", nil, nil)
+        }
+        try enforcePermission(for: target, app: app, input: input)
+        return try execute(
+            action: target,
+            app: app,
+            workspace: workspace,
+            manifest: manifest,
+            dependencyBindings: dependencyBindings,
+            input: input,
+            run: run,
+            modelContext: modelContext
+        )
     }
 
     // C3: fold the previous step's bound rows into one row (count/sum/concat/first/last).
@@ -1522,7 +1593,7 @@ struct WorkspaceAppActionExecutor {
 
     private func effect(for actionType: String) -> WorkspaceAppContractEffect {
         switch actionType {
-        case "appStorage.query", "capability.read", "task.open", "artifact.open", "artifact.export", "url.open", "clipboard.copy", "pipeline.run", "loop.run", "gate.humanApproval", "gate.expression", "rows.reduce":
+        case "appStorage.query", "capability.read", "task.open", "artifact.open", "artifact.export", "url.open", "clipboard.copy", "pipeline.run", "loop.run", "gate.humanApproval", "gate.expression", "rows.reduce", "gate.branch":
             .read
         case "gate.agentRecommendation":
             .read

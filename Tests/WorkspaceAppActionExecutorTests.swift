@@ -825,6 +825,57 @@ struct WorkspaceAppActionExecutorTests {
     }
 
     @MainActor
+    @Test("gate.branch runs the then-step when the upstream predicate passes (C2)")
+    func branchSelectsThenStepFromUpstreamData() throws {
+        let fixture = try Self.makePublishedApp(permissionMode: .draftOnly)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        for id in ["item-1", "item-2"] {
+            _ = try WorkspaceAppActionExecutor().execute(
+                actionID: "addItem",
+                app: fixture.app,
+                workspace: fixture.workspace,
+                manifest: fixture.manifest,
+                input: WorkspaceAppActionInput(
+                    table: "items",
+                    record: ["id": .text(id), "name": .text(id), "category": .text("Produce")]
+                ),
+                modelContext: fixture.context
+            )
+        }
+        // branchPipeline = [listItems (rows with category=Produce) -> branchAction].
+        // predicate category==Produce passes -> thenStep reduceCount folds the rows.
+        let result = try WorkspaceAppActionExecutor().execute(
+            actionID: "branchPipeline",
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: fixture.manifest,
+            modelContext: fixture.context
+        )
+        #expect(result.run.status == .completed)
+        #expect(result.rows.first?["count"] == .integer(2))
+    }
+
+    @MainActor
+    @Test("manifest validation guards gate.branch targets + predicate (C2)")
+    func branchActionValidation() throws {
+        let fixture = try Self.makePublishedApp(permissionMode: .draftOnly)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        var manifest = fixture.manifest
+        // The fixture's branchAction is well-formed.
+        #expect(WorkspaceAppManifestValidator.validate(manifest).isValid)
+        // No targets -> invalid.
+        manifest.actions.append(WorkspaceAppActionSpec(
+            id: "bad_branch", type: "gate.branch", gateField: "category", gateOperator: "equals", gateValue: .text("x")))
+        #expect(!WorkspaceAppManifestValidator.validate(manifest).isValid)
+        manifest.actions.removeLast()
+        // Target not listed in steps -> invalid.
+        manifest.actions.append(WorkspaceAppActionSpec(
+            id: "bad_branch2", type: "gate.branch", gateField: "category", gateOperator: "equals",
+            gateValue: .text("x"), steps: [], thenStep: "listItems"))
+        #expect(!WorkspaceAppManifestValidator.validate(manifest).isValid)
+    }
+
+    @MainActor
     @Test("rows.reduce folds a pipeline's prior step rows into one row (C3)")
     func reduceFoldsPriorStepRows() throws {
         let fixture = try Self.makePublishedApp(permissionMode: .draftOnly)
@@ -1455,6 +1506,23 @@ struct WorkspaceAppActionExecutorTests {
                     type: "pipeline.run",
                     label: "Reduce Pipeline",
                     steps: ["listItems", "reduceCount"]
+                ),
+                WorkspaceAppActionSpec(
+                    id: "branchAction",
+                    type: "gate.branch",
+                    label: "Branch On Category",
+                    gateField: "category",
+                    gateOperator: "equals",
+                    gateValue: .text("Produce"),
+                    steps: ["reduceCount", "listItems"],
+                    thenStep: "reduceCount",
+                    elseStep: "listItems"
+                ),
+                WorkspaceAppActionSpec(
+                    id: "branchPipeline",
+                    type: "pipeline.run",
+                    label: "Branch Pipeline",
+                    steps: ["listItems", "branchAction"]
                 ),
                 WorkspaceAppActionSpec(
                     id: "approvalGate",

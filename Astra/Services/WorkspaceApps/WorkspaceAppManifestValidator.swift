@@ -307,6 +307,7 @@ enum WorkspaceAppManifestValidator {
     ) -> Set<String> {
         var seen = Set<String>()
         var actionIDs = Set<String>()
+        let actionsByID = Dictionary(actions.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         for (index, action) in actions.enumerated() {
             let path = "/actions/\(index)"
             validateUniqueIdentifier(
@@ -417,9 +418,12 @@ enum WorkspaceAppManifestValidator {
             if action.type == "rows.reduce" {
                 validateReduceAction(action, path: path, issues: &issues)
             }
+            if action.type == "gate.branch" {
+                validateBranchAction(action, actionsByID: actionsByID, path: path, issues: &issues)
+            }
         }
 
-        for (index, action) in actions.enumerated() where action.type == "pipeline.run" || action.type == "loop.run" {
+        for (index, action) in actions.enumerated() where action.type == "pipeline.run" || action.type == "loop.run" || action.type == "gate.branch" {
             let path = "/actions/\(index)"
             if action.steps.isEmpty {
                 issues.append(blocker("\(path)/steps", "\(action.type == "loop.run" ? "Loop" : "Pipeline") action must declare at least one step."))
@@ -483,7 +487,44 @@ enum WorkspaceAppManifestValidator {
     }
 
     private static func isCompositeAction(_ action: WorkspaceAppActionSpec) -> Bool {
-        action.type == "pipeline.run" || action.type == "loop.run"
+        action.type == "pipeline.run" || action.type == "loop.run" || action.type == "gate.branch"
+    }
+
+    private static func validateBranchAction(
+        _ action: WorkspaceAppActionSpec,
+        actionsByID: [String: WorkspaceAppActionSpec],
+        path: String,
+        issues: inout [WorkspaceAppManifestValidationReport.Issue]
+    ) {
+        // Predicate reuses the expression-gate operator vocabulary.
+        let field = action.gateField?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if field.isEmpty {
+            issues.append(blocker("\(path)/gateField", "Branch action must declare a field to evaluate."))
+        }
+        let op = action.gateOperator?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if op.isEmpty {
+            issues.append(blocker("\(path)/gateOperator", "Branch action must declare an operator."))
+        } else if !WorkspaceAppExpressionGateOperator.allRawValues.contains(op) {
+            issues.append(blocker("\(path)/gateOperator", "Branch operator '\(op)' is not supported."))
+        } else if WorkspaceAppExpressionGateOperator.requiresExpectedValue(op), action.gateValue == nil {
+            issues.append(blocker("\(path)/gateValue", "Branch operator '\(op)' must declare a comparison value."))
+        }
+        // Targets: at least one of then/else, each a known non-async action listed in steps.
+        if action.thenStep == nil && action.elseStep == nil {
+            issues.append(blocker("\(path)/thenStep", "Branch action must declare a thenStep or elseStep."))
+        }
+        for (key, target) in [("thenStep", action.thenStep), ("elseStep", action.elseStep)] {
+            guard let target = target?.trimmingCharacters(in: .whitespacesAndNewlines), !target.isEmpty else { continue }
+            if target == action.id {
+                issues.append(blocker("\(path)/\(key)", "Branch action cannot target itself."))
+            } else if !action.steps.contains(target) {
+                issues.append(blocker("\(path)/\(key)", "Branch target '\(target)' must also be listed in steps."))
+            }
+            if let targetAction = actionsByID[target],
+               targetAction.type == "task.createAndRun" || targetAction.type == "task.fanOut" {
+                issues.append(blocker("\(path)/\(key)", "Branch cannot target an async task action '\(target)' in this version."))
+            }
+        }
     }
 
     private static func validateReduceAction(
