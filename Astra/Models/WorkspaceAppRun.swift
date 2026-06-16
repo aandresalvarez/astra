@@ -40,6 +40,9 @@ final class WorkspaceAppRun: Identifiable {
     // the awaited task. Defaulted so the V7 -> V8 migration stays lightweight.
     var pendingActionID: String?
     var pendingStepIndex: Int = 0
+    // B3: tokens consumed by the run's awaited agent tasks so far, accumulated on
+    // each resume to enforce a whole-run token budget. Defaulted (lightweight).
+    var consumedTokens: Int = 0
 
     init(
         id: UUID = UUID(),

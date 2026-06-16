@@ -373,11 +373,40 @@ struct WorkspaceAppActionExecutor {
         manifest: WorkspaceAppManifest,
         dependencyBindings: [WorkspaceAppDependencyBinding] = [],
         taskOutputRows: [[String: WorkspaceAppStorageValue]] = [],
+        consumedTokens: Int = 0,
         modelContext: ModelContext
     ) throws -> WorkspaceAppActionExecutionResult {
         guard run.status == .waiting, let pipelineID = run.pendingActionID else {
             throw WorkspaceAppActionExecutionError.unsupportedActionType(
                 "resume requires a waiting run with a pending workflow action"
+            )
+        }
+        // B3: accumulate the awaited task's token usage and enforce the workflow's
+        // whole-run budget — block (don't fail) the run if it overruns.
+        run.consumedTokens += consumedTokens
+        if WorkspaceAppWorkflowBudget.exceedsBudget(
+            consumed: run.consumedTokens,
+            manifest: manifest,
+            pipelineActionID: pipelineID
+        ) {
+            run.status = .blocked
+            recorder.recordEvent(
+                run: run,
+                type: "workspaceApp.run.budgetExceeded",
+                payload: [
+                    "pipelineID": .text(pipelineID),
+                    "consumedTokens": .integer(Int64(run.consumedTokens)),
+                    "budget": .integer(Int64(WorkspaceAppWorkflowBudget.declaredTokenBudget(
+                        for: manifest, pipelineActionID: pipelineID
+                    )))
+                ],
+                modelContext: modelContext
+            )
+            try? modelContext.save()
+            return WorkspaceAppActionExecutionResult(
+                run: run,
+                rows: [],
+                outputSummary: "Workflow '\(pipelineID)' blocked: token budget exceeded (\(run.consumedTokens) tokens consumed)."
             )
         }
         let action = try actionSpec(actionID: pipelineID, manifest: manifest)
@@ -1083,6 +1112,9 @@ struct WorkspaceAppActionExecutor {
             let step = try actionSpec(actionID: stepID, manifest: manifest)
             // B1 output binding: each step sees the previous step's rows.
             let stepInput = input.bindingForward(rows: rows)
+            // Enforce the step's permission BEFORE any side effect (incl. launching
+            // an async agent task), so an unapproved workflow can't queue work.
+            try enforcePermission(for: step, app: app, input: stepInput)
             // B2: await an async agent step — launch the task and suspend the run
             // until it completes (resumed via WorkspaceAppActionExecutor.resume).
             if step.type == "task.createAndRun" {
@@ -1110,7 +1142,6 @@ struct WorkspaceAppActionExecutor {
                     nextStepIndex: index + 1
                 )
             }
-            try enforcePermission(for: step, app: app, input: stepInput)
             let result = try execute(
                 action: step,
                 app: app,

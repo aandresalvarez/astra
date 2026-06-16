@@ -14,6 +14,7 @@ struct WorkspaceAppRunResumptionService {
     func resumeRuns(
         awaitingTaskID taskID: UUID,
         taskOutputRows: [[String: WorkspaceAppStorageValue]] = [],
+        consumedTokens: Int = 0,
         workspace: Workspace,
         modelContext: ModelContext
     ) -> [WorkspaceAppActionExecutionResult] {
@@ -32,6 +33,7 @@ struct WorkspaceAppRunResumptionService {
                 workspace: workspace,
                 manifest: manifest,
                 taskOutputRows: taskOutputRows,
+                consumedTokens: consumedTokens,
                 modelContext: modelContext
             ) {
                 results.append(result)
@@ -61,11 +63,16 @@ struct WorkspaceAppRunResumptionService {
             results += resumeRuns(
                 awaitingTaskID: taskID,
                 taskOutputRows: [taskOutputRow(for: task)],
+                consumedTokens: consumedTokens(for: task),
                 workspace: workspace,
                 modelContext: modelContext
             )
         }
         return results
+    }
+
+    private func consumedTokens(for task: AgentTask) -> Int {
+        task.runs.reduce(0) { $0 + $1.outputTokens }
     }
 
     @MainActor

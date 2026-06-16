@@ -654,7 +654,7 @@ struct WorkspaceAppActionExecutorTests {
     @MainActor
     @Test("pipeline suspends on an async agent step and resumes to completion (B2)")
     func pipelineSuspendsOnAgentStepAndResumes() throws {
-        let fixture = try Self.makePublishedApp(permissionMode: .draftOnly)
+        let fixture = try Self.makePublishedApp(permissionMode: .preApproved)
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         // Seed the record the resumed update step will modify.
         _ = try WorkspaceAppActionExecutor().execute(
@@ -711,7 +711,7 @@ struct WorkspaceAppActionExecutorTests {
     @MainActor
     @Test("resumption service resumes a waiting run when its task completes (B2)")
     func resumptionServiceResumesWaitingRun() throws {
-        let fixture = try Self.makePublishedApp(permissionMode: .draftOnly)
+        let fixture = try Self.makePublishedApp(permissionMode: .preApproved)
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         _ = try WorkspaceAppActionExecutor().execute(
             actionID: "addItem",
@@ -757,7 +757,7 @@ struct WorkspaceAppActionExecutorTests {
     @MainActor
     @Test("resumption sweep resumes runs only once their awaited task completes (B2-live)")
     func resumptionSweepResumesCompletedTaskRuns() throws {
-        let fixture = try Self.makePublishedApp(permissionMode: .draftOnly)
+        let fixture = try Self.makePublishedApp(permissionMode: .preApproved)
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let suspended = try WorkspaceAppActionExecutor().execute(
             actionID: "awaitQueryPipeline",
@@ -783,6 +783,45 @@ struct WorkspaceAppActionExecutorTests {
         let results = WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: fixture.context)
         #expect(results.count == 1)
         #expect(results.first?.run.status == .completed)
+    }
+
+    @MainActor
+    @Test("whole-run token budget blocks a resume that overruns (B3)")
+    func workflowTokenBudgetBlocksOverrun() throws {
+        let fixture = try Self.makePublishedApp(permissionMode: .preApproved)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        // Declared whole-run budget = sum of agent-gate token budgets in the pipeline.
+        #expect(WorkspaceAppWorkflowBudget.declaredTokenBudget(
+            for: fixture.manifest, pipelineActionID: "budgetPipeline") == 500)
+        #expect(WorkspaceAppWorkflowBudget.exceedsBudget(
+            consumed: 600, manifest: fixture.manifest, pipelineActionID: "budgetPipeline"))
+        #expect(!WorkspaceAppWorkflowBudget.exceedsBudget(
+            consumed: 400, manifest: fixture.manifest, pipelineActionID: "budgetPipeline"))
+
+        // budgetPipeline = [runReviewTask -> agentGate]; suspends at the task step.
+        let suspended = try WorkspaceAppActionExecutor().execute(
+            actionID: "budgetPipeline",
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: fixture.manifest,
+            modelContext: fixture.context
+        )
+        #expect(suspended.run.status == .waiting)
+
+        // Resume reporting more consumption than the 500-token budget -> the run is
+        // BLOCKED (held for review), not continued to the next step.
+        let blocked = try WorkspaceAppActionExecutor().resume(
+            run: suspended.run,
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: fixture.manifest,
+            consumedTokens: 600,
+            modelContext: fixture.context
+        )
+        #expect(blocked.run.status == .blocked)
+        #expect(blocked.run.consumedTokens == 600)
+        #expect(blocked.outputSummary.contains("budget exceeded"))
     }
 
     @Test("action input binds the first upstream row when no explicit record (B1)")
@@ -1349,6 +1388,12 @@ struct WorkspaceAppActionExecutorTests {
                     type: "pipeline.run",
                     label: "Await Query Pipeline",
                     steps: ["runReviewTask", "listItems"]
+                ),
+                WorkspaceAppActionSpec(
+                    id: "budgetPipeline",
+                    type: "pipeline.run",
+                    label: "Budget Pipeline",
+                    steps: ["runReviewTask", "agentGate"]
                 ),
                 WorkspaceAppActionSpec(
                     id: "approvalGate",
