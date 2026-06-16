@@ -232,8 +232,8 @@ enum KanbanBoardPresentation {
     static let cardStrokeOpacity: Double = 0.045
     static let cardHoverStrokeOpacity: Double = 0.10
 
-    static func cardThreadMessageCount(goal: String) -> Int {
-        goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 1
+    static func cardThreadMessageFallbackCount(goal: String) -> Int {
+        AgentTask.fallbackThreadMessageCount(forGoal: goal)
     }
 }
 
@@ -1667,7 +1667,7 @@ struct KanbanTaskCardView: View {
         // Keep Kanban card layout independent from the live TaskEvent
         // relationship. SwiftUI can render many cards during layout, and
         // materializing event faults here has crashed production SwiftData.
-        Self.threadMessageLabel(for: KanbanBoardPresentation.cardThreadMessageCount(goal: task.goal))
+        Self.threadMessageLabel(for: KanbanBoardPresentation.cardThreadMessageFallbackCount(goal: task.goal))
     }
 
     static func threadMessageLabel(for count: Int) -> String {
