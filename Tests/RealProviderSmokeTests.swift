@@ -714,17 +714,7 @@ struct RealProviderSmokeTests {
     }
 
     private static func redacted(_ value: String) -> String {
-        value
-            .replacingOccurrences(
-                of: #"gho_[A-Za-z0-9_]+"#,
-                with: "gho_[redacted]",
-                options: .regularExpression
-            )
-            .replacingOccurrences(
-                of: #"sk-[A-Za-z0-9_-]+"#,
-                with: "sk-[redacted]",
-                options: .regularExpression
-            )
+        LiveProviderDiagnostics.redacted(value)
     }
 }
 

@@ -270,6 +270,22 @@ struct TaskDeliverableExpectationTests {
         )
 
         #expect(TaskDeliverableExpectation.requiresStandaloneArtifact(task))
+        #expect(TaskDeliverableExpectation.requiresDeliverableArtifact(task))
+    }
+
+    @Test("Named deliverables require artifact evidence without action words")
+    func namedDeliverablesRequireArtifactEvidenceWithoutActionWords() {
+        let task = AgentTask(
+            title: "Report",
+            goal: """
+            Final deliverables:
+            - ./results.txt
+            """
+        )
+
+        #expect(!TaskDeliverableExpectation.requiresStandaloneArtifact(task))
+        #expect(TaskDeliverableExpectation.requiredOutputFilenames(task) == ["results.txt"])
+        #expect(TaskDeliverableExpectation.requiresDeliverableArtifact(task))
     }
 
     @Test("Artifact detector ignores ASTRA scaffold around informational file context")

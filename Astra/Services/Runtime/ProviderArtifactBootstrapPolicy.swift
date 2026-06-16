@@ -9,7 +9,7 @@ enum ProviderArtifactBootstrapPolicy {
         askFirstTools: [String]
     ) -> [String] {
         guard permissionPolicy == .restricted,
-              TaskDeliverableExpectation.requiresStandaloneArtifact(task),
+              TaskDeliverableExpectation.requiresDeliverableArtifact(task),
               !providerAllowedTools.contains(where: isFileMutationTool),
               askFirstTools.contains(where: isFileMutationTool) else {
             return []

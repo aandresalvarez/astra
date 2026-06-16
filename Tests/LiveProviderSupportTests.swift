@@ -39,13 +39,25 @@ struct LiveProviderDiagnosticsTests {
     @Test("redaction removes common provider secrets")
     func redactionRemovesCommonProviderSecrets() {
         let redacted = LiveProviderDiagnostics.redacted(
-            "OPENAI_API_KEY=sk-test-secret gh token gho_abcdefghijklmnop"
+            """
+            OPENAI_API_KEY=sk-test-secret
+            gh oauth token gho_abcdefghijklmnop
+            gh classic pat ghp_1234567890abcdef1234567890abcdef1234
+            gh server token ghs_1234567890abcdef1234567890abcdef1234
+            gh fine grained github_pat_1234567890abcdef_1234567890abcdef
+            """
         )
 
         #expect(!redacted.contains("sk-test-secret"))
         #expect(!redacted.contains("gho_abcdefghijklmnop"))
+        #expect(!redacted.contains("ghp_1234567890abcdef1234567890abcdef1234"))
+        #expect(!redacted.contains("ghs_1234567890abcdef1234567890abcdef1234"))
+        #expect(!redacted.contains("github_pat_1234567890abcdef_1234567890abcdef"))
         #expect(redacted.contains("sk-[redacted]"))
         #expect(redacted.contains("gho_[redacted]"))
+        #expect(redacted.contains("ghp_[redacted]"))
+        #expect(redacted.contains("ghs_[redacted]"))
+        #expect(redacted.contains("github_pat_[redacted]"))
     }
 
     @Test("summary includes redacted launch evidence")

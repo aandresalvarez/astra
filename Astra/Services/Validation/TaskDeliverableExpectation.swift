@@ -32,6 +32,10 @@ enum TaskDeliverableExpectation {
         ])
     }
 
+    static func requiresDeliverableArtifact(_ task: AgentTask) -> Bool {
+        requiresStandaloneArtifact(task) || !requiredOutputFilenames(task).isEmpty
+    }
+
     static func requiredOutputFilenames(_ task: AgentTask) -> Set<String> {
         let text = [
             deliverableRelevantText(from: task.title),

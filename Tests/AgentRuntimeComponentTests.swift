@@ -74,6 +74,14 @@ struct AgentRuntimeProgressTimeoutPolicyTests {
             goal: "explain the Masterball puzzle",
             workspace: workspace
         )
+        let namedDeliverableTask = AgentTask(
+            title: "Report",
+            goal: """
+            Final deliverables:
+            - ./results.txt
+            """,
+            workspace: workspace
+        )
 
         #expect(AgentRuntimeProgressTimeoutPolicy.semanticProgressTimeout(
             task: artifactTask,
@@ -100,6 +108,12 @@ struct AgentRuntimeProgressTimeoutPolicyTests {
             phase: "run",
             idleTimeoutSeconds: 240
         ) == 180)
+        #expect(!TaskDeliverableExpectation.requiresStandaloneArtifact(namedDeliverableTask))
+        #expect(AgentRuntimeProgressTimeoutPolicy.semanticProgressTimeout(
+            task: namedDeliverableTask,
+            phase: "run",
+            idleTimeoutSeconds: 240
+        ) == 360)
     }
 }
 

@@ -1156,7 +1156,7 @@ final class AgentRuntimeWorker {
         task.completedAt = nil
 
         let providerName = runtimeAdapter.descriptor.displayName
-        let requiredArtifact = TaskDeliverableExpectation.requiresStandaloneArtifact(task)
+        let requiredArtifact = TaskDeliverableExpectation.requiresDeliverableArtifact(task)
         let antigravityDiagnostic = runtimeAdapter.id == .antigravityCLI
             ? AntigravityCLIRuntime.diagnosticSummary(
                 logPath: AntigravityCLIRuntime.diagnosticLogPath(task: task, runID: run.id)

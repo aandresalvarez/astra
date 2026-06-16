@@ -752,9 +752,24 @@ struct AgentRuntimeAdapterTests {
             workspace: workspace,
             runtime: .copilotCLI
         )
+        let namedDeliverableTask = AgentTask(
+            title: "Report",
+            goal: """
+            Final deliverables:
+            - ./results.txt
+            """,
+            workspace: workspace,
+            runtime: .copilotCLI
+        )
 
         #expect(ProviderArtifactBootstrapPolicy.launchTools(
             task: artifactTask,
+            permissionPolicy: .restricted,
+            providerAllowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Write", "Edit", "Bash"]
+        ) == ["Write"])
+        #expect(ProviderArtifactBootstrapPolicy.launchTools(
+            task: namedDeliverableTask,
             permissionPolicy: .restricted,
             providerAllowedTools: ["Read", "Glob", "Grep"],
             askFirstTools: ["Write", "Edit", "Bash"]

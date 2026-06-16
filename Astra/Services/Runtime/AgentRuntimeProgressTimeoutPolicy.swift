@@ -7,7 +7,7 @@ enum AgentRuntimeProgressTimeoutPolicy {
         idleTimeoutSeconds: TimeInterval
     ) -> TimeInterval {
         guard phase == "run",
-              TaskDeliverableExpectation.requiresStandaloneArtifact(task) else {
+              TaskDeliverableExpectation.requiresDeliverableArtifact(task) else {
             return min(idleTimeoutSeconds, 180)
         }
 

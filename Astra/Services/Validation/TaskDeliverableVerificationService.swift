@@ -123,9 +123,8 @@ enum TaskDeliverableVerificationService {
         modelContext: ModelContext? = nil,
         environment: TaskDeliverableVerificationEnvironment = .live
     ) async -> TaskDeliverableVerificationResult {
-        let requiresArtifact = TaskDeliverableExpectation.requiresStandaloneArtifact(task)
         let requiredFilenames = TaskDeliverableExpectation.requiredOutputFilenames(task)
-        let requiresDeliverableArtifact = requiresArtifact || !requiredFilenames.isEmpty
+        let requiresDeliverableArtifact = TaskDeliverableExpectation.requiresDeliverableArtifact(task)
         let discoveredFiles = TaskOutputDiscovery.files(for: task, run: run)
         let artifactReconciliation = TaskArtifactPersistenceService.reconcileTaskOutputArtifacts(
             discoveredFiles,

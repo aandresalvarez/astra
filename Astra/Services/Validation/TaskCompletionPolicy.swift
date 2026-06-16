@@ -123,7 +123,7 @@ enum TaskCompletionPolicy {
 
     @MainActor
     static func decideManualCompletion(task: AgentTask, run: TaskRun) -> TaskCompletionPolicyDecision {
-        let requiresArtifact = TaskDeliverableExpectation.requiresStandaloneArtifact(task)
+        let requiresArtifact = TaskDeliverableExpectation.requiresDeliverableArtifact(task)
         let hasArtifact = TaskDeliverableExpectation.hasArtifact(for: task, run: run)
         let fields = [
             "gate": TaskCompletionPolicyGate.manualArtifactRequirement.rawValue,

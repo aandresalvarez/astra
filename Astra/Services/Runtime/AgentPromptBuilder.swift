@@ -170,7 +170,7 @@ enum AgentPromptBuilder {
     }
 
     private static func initialArtifactActionContract(for task: AgentTask) -> String {
-        guard TaskDeliverableExpectation.requiresStandaloneArtifact(task) else { return "" }
+        guard TaskDeliverableExpectation.requiresDeliverableArtifact(task) else { return "" }
 
         let taskDir = TaskWorkspaceAccess(task: task).taskFolder
         let relativePath = relativeTaskFolderPath(for: task, taskDir: taskDir) ?? taskDir
@@ -334,7 +334,7 @@ enum AgentPromptBuilder {
         relativePath: String?,
         taskDir: String
     ) -> String {
-        guard TaskDeliverableExpectation.requiresStandaloneArtifact(task) else { return "" }
+        guard TaskDeliverableExpectation.requiresDeliverableArtifact(task) else { return "" }
 
         let location = relativePath ?? taskDir
         let suggestedFile = suggestedStandaloneArtifactFilename(for: task)

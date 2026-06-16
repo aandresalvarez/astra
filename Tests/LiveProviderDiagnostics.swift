@@ -78,21 +78,25 @@ enum LiveProviderDiagnostics {
     }
 
     static func redacted(_ value: String) -> String {
-        value
-            .replacingOccurrences(
-                of: #"gho_[A-Za-z0-9_]+"#,
-                with: "gho_[redacted]",
+        var output = value
+        let replacements: [(String, String)] = [
+            (#"\bgithub_pat_[A-Za-z0-9_]+\b"#, "github_pat_[redacted]"),
+            (#"\bgho_[A-Za-z0-9_]+\b"#, "gho_[redacted]"),
+            (#"\bghp_[A-Za-z0-9_]+\b"#, "ghp_[redacted]"),
+            (#"\bghu_[A-Za-z0-9_]+\b"#, "ghu_[redacted]"),
+            (#"\bghs_[A-Za-z0-9_]+\b"#, "ghs_[redacted]"),
+            (#"\bghr_[A-Za-z0-9_]+\b"#, "ghr_[redacted]"),
+            (#"\bsk-[A-Za-z0-9_-]+\b"#, "sk-[redacted]"),
+            (#"(?i)(OPENAI_API_KEY|ANTHROPIC_API_KEY|GITHUB_TOKEN)=(?!\[redacted\]|sk-\[redacted\]|github_pat_\[redacted\]|gh[pousr]_\[redacted\])\S+"#, "$1=[redacted]")
+        ]
+
+        for (pattern, replacement) in replacements {
+            output = output.replacingOccurrences(
+                of: pattern,
+                with: replacement,
                 options: .regularExpression
             )
-            .replacingOccurrences(
-                of: #"sk-[A-Za-z0-9_-]+"#,
-                with: "sk-[redacted]",
-                options: .regularExpression
-            )
-            .replacingOccurrences(
-                of: #"(?i)(OPENAI_API_KEY|ANTHROPIC_API_KEY|GITHUB_TOKEN)=(?!\[redacted\]|sk-\[redacted\]|gho_\[redacted\])\S+"#,
-                with: "$1=[redacted]",
-                options: .regularExpression
-            )
+        }
+        return output
     }
 }
