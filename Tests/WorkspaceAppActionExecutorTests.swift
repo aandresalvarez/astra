@@ -708,6 +708,52 @@ struct WorkspaceAppActionExecutorTests {
         #expect(rows.first?["name"] == .text("FromTask"))
     }
 
+    @MainActor
+    @Test("resumption service resumes a waiting run when its task completes (B2)")
+    func resumptionServiceResumesWaitingRun() throws {
+        let fixture = try Self.makePublishedApp(permissionMode: .draftOnly)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        _ = try WorkspaceAppActionExecutor().execute(
+            actionID: "addItem",
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: fixture.manifest,
+            input: WorkspaceAppActionInput(
+                table: "items",
+                record: ["id": .text("item-1"), "name": .text("Apples"), "category": .text("Produce")]
+            ),
+            modelContext: fixture.context
+        )
+        let suspended = try WorkspaceAppActionExecutor().execute(
+            actionID: "awaitPipeline",
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: fixture.manifest,
+            modelContext: fixture.context
+        )
+        let taskID = try #require(suspended.run.linkedTaskID)
+
+        // Simulate the awaited task completing: the resumption service finds the
+        // waiting run, loads its manifest, and resumes it to completion.
+        let results = WorkspaceAppRunResumptionService().resumeRuns(
+            awaitingTaskID: taskID,
+            taskOutputRows: [["id": .text("item-1"), "name": .text("FromTask"), "category": .text("Produce")]],
+            workspace: fixture.workspace,
+            modelContext: fixture.context
+        )
+        #expect(results.count == 1)
+        #expect(results.first?.run.status == .completed)
+
+        // An unknown task id resumes nothing.
+        #expect(
+            WorkspaceAppRunResumptionService().resumeRuns(
+                awaitingTaskID: UUID(),
+                workspace: fixture.workspace,
+                modelContext: fixture.context
+            ).isEmpty
+        )
+    }
+
     @Test("action input binds the first upstream row when no explicit record (B1)")
     func actionInputBindsFirstUpstreamRow() {
         let bound: [[String: WorkspaceAppStorageValue]] = [
