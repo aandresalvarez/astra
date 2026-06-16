@@ -416,13 +416,37 @@ order, smallest dependency first:
   `WorkspaceAppPackage*`, `WorkspaceAppWebViewBridge`, `WorkspaceAppStudioView`,
   `WorkspaceAppPackageImportReviewView`. Tests: package + automation suites.
 
-### F7 — UI entry-point wiring (REMAINING — needs the running app to verify)
+### F7 — UI entry-point wiring (CORE LANDED; visible list + live verify residual)
 
-Everything above is landed and unit-tested. The only remaining gap is wiring the
-app surfaces into the heavily-diverged ContentView/sidebar/home. This is SwiftUI +
-action-execution integration that `swift build` and unit tests cannot validate
-(navigation/state/rendering need the running GUI app), so it must be done in an
-app-running session, not as a mechanical port. Precise checklist:
+Core wiring landed (`ContentView` + `ContentSceneState`), compiling, with routing
+logic unit-tested (`WorkspaceAppDetailPresentationTests`, 4) and no regressions
+(ViewTests 44, ArchitectureFitnessTests 40):
+
+- `ContentDetailPresentation` gains `.workspaceApp` / `.workspaceAppStudio` +
+  `resolve(selectedWorkspaceApp:, isComposingWorkspaceApp:)` (defaulted) +
+  `WorkspaceAppStudioEntryPresentation.shouldShowNewAppEntry`.
+- `ContentView` renders `WorkspaceAppDetailView` / `WorkspaceAppStudioView` at the
+  `detailArea` level (gated on `selectedWorkspaceApp` / `isComposingWorkspaceApp`),
+  mutually exclusive with task selection. `onRunAction` wires
+  `WorkspaceAppActionExecutor` (+ `ModelContext` + per-app bindings); publish wires
+  `WorkspaceAppService.createApp` and auto-opens the new app. New App opens via a
+  hidden ⌘⇧A hotkey (mirrors `searchHotkey`).
+
+This gives a complete functional loop for Slice 9: ⌘⇧A -> App Studio -> publish ->
+detail -> run governed agentic-workflow actions.
+
+Residual (best done with the app running — `/run` / `/verify`):
+- A visible/persistent **app list** to re-open existing apps: thread
+  `onOpenWorkspaceApp` (+ a `@Query` of `WorkspaceApp`) into `WorkspaceHomeView`
+  (Apps section) and/or `TaskSidebarView` (app rows). Calls
+  `setSelectedWorkspaceApp`.
+- Live verification of navigation/rendering/run behavior (unit tests can't cover
+  SwiftUI runtime).
+- Optional: port the app-specific cases from susom `ViewTests` /
+  `WorkspaceHomePresentationTests` / `TaskEventTimelineSidebarTests` under
+  non-colliding names.
+
+Original full checklist (for reference):
 
 - `ContentSceneState`: add `.workspaceApp` / `.workspaceAppStudio` cases to
   `ContentDetailPresentation`, thread `selectedWorkspaceApp` through
