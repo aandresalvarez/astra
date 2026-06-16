@@ -312,6 +312,12 @@ enum ExecutionSandbox {
         "/Library/Developer",
         "/Library/Apple",
         "/private/etc",
+        // /var/run holds host runtime state — the mDNSResponder name-resolution
+        // socket, other system daemon sockets, lock/pid files — that network-
+        // capable provider CLIs reach (e.g. to resolve hostnames). Read-only
+        // system state, not user data. Could be narrowed to the specific socket
+        // paths (e.g. /var/run/mDNSResponder) once the exact need is pinned down.
+        "/private/var/run",
         "/etc",
         "/dev"
     ]
@@ -377,6 +383,9 @@ enum ExecutionSandbox {
                 additionalReadablePaths: additionalWritablePaths,
                 canonicalWorkspace: workspace
             )
+        let readableMetadataRoots = settings.readScope == .open
+            ? []
+            : readableMetadataRoots(for: readableRoots)
         let protectedReadRoots = protectedReadRoots()
         let explicitProtectedReadAllowRoots = protectedReadAllowRoots(
             explicitReadRoots: explicitReadRoots,
@@ -385,6 +394,7 @@ enum ExecutionSandbox {
         let profile = makeProfile(
             writableRootCount: roots.count,
             readableRootCount: readableRoots.count,
+            readableMetadataRootCount: readableMetadataRoots.count,
             protectedReadRootCount: protectedReadRoots.count,
             explicitProtectedReadAllowRootCount: explicitProtectedReadAllowRoots.count,
             allowNetwork: settings.allowNetwork,
@@ -394,6 +404,7 @@ enum ExecutionSandbox {
             profile: profile,
             writableRoots: roots,
             readableRoots: readableRoots,
+            readableMetadataRoots: readableMetadataRoots,
             protectedReadRoots: protectedReadRoots,
             explicitProtectedReadAllowRoots: explicitProtectedReadAllowRoots,
             executablePath: plan.executablePath,
@@ -598,6 +609,23 @@ enum ExecutionSandbox {
             .filter { seen.insert($0).inserted }
     }
 
+    static func readableMetadataRoots(for readableRoots: [String]) -> [String] {
+        var seen: Set<String> = ["/"]
+        var result: [String] = []
+        for root in readableRoots {
+            var current = root
+            while current != "/" && !current.isEmpty {
+                for spelling in sandboxPathSpellings(current) where seen.insert(spelling).inserted {
+                    result.append(spelling)
+                }
+                let parent = (current as NSString).deletingLastPathComponent
+                guard parent != current else { break }
+                current = parent
+            }
+        }
+        return result
+    }
+
     private static func providerStateRoots(
         plan: AgentRuntimeProcessLaunchPlan,
         providerHomeDirectory: String
@@ -644,6 +672,7 @@ enum ExecutionSandbox {
     static func makeProfile(
         writableRootCount: Int,
         readableRootCount: Int = 0,
+        readableMetadataRootCount: Int = 0,
         protectedReadRootCount: Int = 0,
         explicitProtectedReadAllowRootCount: Int = 0,
         allowNetwork: Bool,
@@ -658,10 +687,16 @@ enum ExecutionSandbox {
             break
         case .audit:
             lines.append("(debug deny file-read*)")
-            lines.append(contentsOf: readAllowBlock(readableRootCount: readableRootCount))
+            lines.append(contentsOf: readAllowBlock(
+                readableRootCount: readableRootCount,
+                readableMetadataRootCount: readableMetadataRootCount
+            ))
         case .enforce:
             lines.append("(deny file-read*)")
-            lines.append(contentsOf: readAllowBlock(readableRootCount: readableRootCount))
+            lines.append(contentsOf: readAllowBlock(
+                readableRootCount: readableRootCount,
+                readableMetadataRootCount: readableMetadataRootCount
+            ))
         }
         lines.append(contentsOf: protectedReadDenyBlock(protectedReadRootCount: protectedReadRootCount))
         lines.append(contentsOf: explicitProtectedReadAllowBlock(
@@ -686,9 +721,15 @@ enum ExecutionSandbox {
         return lines.joined(separator: "\n") + "\n"
     }
 
-    private static func readAllowBlock(readableRootCount: Int) -> [String] {
+    private static func readAllowBlock(
+        readableRootCount: Int,
+        readableMetadataRootCount: Int
+    ) -> [String] {
         var allow: [String] = ["(allow file-read*"]
         allow.append("    (literal \"/\")")
+        for index in 0..<readableMetadataRootCount {
+            allow.append("    (literal (param \"\(readMetadataRootParameterName(index))\"))")
+        }
         for index in 0..<readableRootCount {
             allow.append("    (subpath (param \"\(readRootParameterName(index))\"))")
         }
@@ -734,12 +775,17 @@ enum ExecutionSandbox {
         "EXPLICIT_PROTECTED_READ_ALLOW_ROOT_\(index)"
     }
 
+    static func readMetadataRootParameterName(_ index: Int) -> String {
+        "READ_LITERAL_ROOT_\(index)"
+    }
+
     /// Assembles the full `sandbox-exec` argument vector:
     /// `-p <profile> -D ROOT_0=<path> -D READ_ROOT_0=<path> ... <realExecutable> <realArgs...>`.
     static func makeArguments(
         profile: String,
         writableRoots: [String],
         readableRoots: [String] = [],
+        readableMetadataRoots: [String] = [],
         protectedReadRoots: [String] = [],
         explicitProtectedReadAllowRoots: [String] = [],
         executablePath: String,
@@ -753,6 +799,10 @@ enum ExecutionSandbox {
         for (index, root) in readableRoots.enumerated() {
             result.append("-D")
             result.append("\(readRootParameterName(index))=\(root)")
+        }
+        for (index, root) in readableMetadataRoots.enumerated() {
+            result.append("-D")
+            result.append("\(readMetadataRootParameterName(index))=\(root)")
         }
         for (index, root) in protectedReadRoots.enumerated() {
             result.append("-D")

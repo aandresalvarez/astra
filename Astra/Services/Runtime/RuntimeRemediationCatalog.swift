@@ -68,9 +68,9 @@ enum RuntimeRemediationCatalog {
             return RuntimeRemediation(
                 install: .managed,
                 auth: RuntimeAuthRemediation(
-                    terminalCommand: "COPILOT_HOME=\(shellQuoted(CopilotCLIRuntime.channelHome())) copilot",
+                    terminalCommand: "copilot",
                     displayCommand: "copilot",
-                    instruction: "Type /login when Copilot opens, then quit it. ASTRA keeps its own Copilot home, so a plain terminal login is not visible to tasks.",
+                    instruction: "Type /login when Copilot opens, then quit it. ASTRA uses the same Copilot state as Terminal for authentication while keeping task cache and logs scoped to ASTRA.",
                     verification: .deferredToTaskStart(
                         note: "Copilot confirms the account when your first task starts."
                     )

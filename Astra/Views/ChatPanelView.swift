@@ -482,6 +482,14 @@ struct ChatPanelView: View {
         )
     }
 
+    private var composerWorkerSelection: TaskRoleProfileSelection {
+        TaskComposerPolicySelection.applyingComposerPolicy(
+            currentAgentPolicyLevel,
+            to: workerRoleSelection,
+            source: "composer_policy"
+        )
+    }
+
     private func alignDefaultModelWithRuntime() {
         defaultModel = RuntimeModelAvailability.normalizedModel(
             defaultModel,
@@ -1636,7 +1644,7 @@ struct ChatPanelView: View {
         let input = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty else { return }
         let traceID = AuditTrace.make("quick-run")
-        let workerSelection = workerRoleSelection
+        let workerSelection = composerWorkerSelection
         let runtime = workerSelection.profile.runtime
         let model = workerSelection.profile.model
         AppLogger.breadcrumb(action: "quick_run_clicked", category: "UI", traceID: traceID, fields: [
@@ -1666,7 +1674,7 @@ struct ChatPanelView: View {
 
         modelContext.insert(task)
         TaskRoleProfileStore.recordSelected(workerSelection, task: task, modelContext: modelContext)
-        recordPolicySelection(on: task, level: workerSelection.profile.policyLevel, source: "quick_run")
+        recordPolicySelection(on: task, level: currentAgentPolicyLevel, source: "quick_run")
         saveConversationAsEvents(on: task)
         promoteDraft(to: task)
         messageText = ""
@@ -1817,7 +1825,7 @@ struct ChatPanelView: View {
     private func createTaskFromSpec() {
         guard let spec = extractedSpec else { return }
         let traceID = AuditTrace.make("conversation-spec")
-        let workerSelection = workerRoleSelection
+        let workerSelection = composerWorkerSelection
         let runtime = workerSelection.profile.runtime
         let model = workerSelection.profile.model
         AppLogger.breadcrumb(action: "create_task_from_spec_clicked", category: "UI", traceID: traceID, fields: [
@@ -1851,7 +1859,7 @@ struct ChatPanelView: View {
 
         modelContext.insert(task)
         TaskRoleProfileStore.recordSelected(workerSelection, task: task, modelContext: modelContext)
-        recordPolicySelection(on: task, level: workerSelection.profile.policyLevel, source: "conversation_spec")
+        recordPolicySelection(on: task, level: currentAgentPolicyLevel, source: "conversation_spec")
 
         // Persist conversation history as events so it survives draft→queued→draft transitions
         saveConversationAsEvents(on: task)
@@ -2592,7 +2600,7 @@ struct ChatPanelView: View {
               let json = String(data: data, encoding: .utf8) else { return draftTask }
 
         if let draft = draftTask {
-            let workerSelection = workerRoleSelection
+            let workerSelection = composerWorkerSelection
             let runtime = workerSelection.profile.runtime
             let model = workerSelection.profile.model
             // Update existing draft
@@ -2607,8 +2615,8 @@ struct ChatPanelView: View {
             TaskCapabilitySnapshotter.capture(for: draft)
             draft.useAgentTeam = useAgentTeam
             draft.teamSize = teamSize
-            if TaskPolicyStore.latestSelectedLevel(for: draft) != workerSelection.profile.policyLevel {
-                recordPolicySelection(on: draft, level: workerSelection.profile.policyLevel, source: "draft_updated")
+            if TaskPolicyStore.latestSelectedLevel(for: draft) != currentAgentPolicyLevel {
+                recordPolicySelection(on: draft, level: currentAgentPolicyLevel, source: "draft_updated")
             }
             TaskRoleProfileStore.recordSelected(workerSelection, task: draft, modelContext: modelContext)
             draft.updatedAt = Date()
@@ -2629,7 +2637,7 @@ struct ChatPanelView: View {
                     return nil
                 }
             }
-            let workerSelection = workerRoleSelection
+            let workerSelection = composerWorkerSelection
             let runtime = workerSelection.profile.runtime
             let model = workerSelection.profile.model
             // Create new draft
@@ -2651,7 +2659,7 @@ struct ChatPanelView: View {
             draft.teamSize = teamSize
             modelContext.insert(draft)
             TaskRoleProfileStore.recordSelected(workerSelection, task: draft, modelContext: modelContext)
-            recordPolicySelection(on: draft, level: workerSelection.profile.policyLevel, source: "draft_created")
+            recordPolicySelection(on: draft, level: currentAgentPolicyLevel, source: "draft_created")
             draftTask = draft
             return draft
         }
@@ -2664,11 +2672,8 @@ struct ChatPanelView: View {
             skipPermissions = selected == .autonomous
             return
         }
-        let level = AgentPolicyDefaults.effectiveLevel(
-            workspace: workspace,
-            globalDefaultRaw: defaultAgentPolicyLevelRaw,
-            skipPermissions: skipPermissions
-        )
+        let roleLevel = workerRoleSelection.profile.policyLevel
+        let level = skipPermissions ? .autonomous : roleLevel
         composerPolicyLevelRaw = level.rawValue
     }
 
