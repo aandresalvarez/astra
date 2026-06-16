@@ -754,6 +754,37 @@ struct WorkspaceAppActionExecutorTests {
         )
     }
 
+    @MainActor
+    @Test("resumption sweep resumes runs only once their awaited task completes (B2-live)")
+    func resumptionSweepResumesCompletedTaskRuns() throws {
+        let fixture = try Self.makePublishedApp(permissionMode: .draftOnly)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let suspended = try WorkspaceAppActionExecutor().execute(
+            actionID: "awaitQueryPipeline",
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: fixture.manifest,
+            modelContext: fixture.context
+        )
+        #expect(suspended.run.status == .waiting)
+        let taskID = try #require(suspended.run.linkedTaskID)
+
+        // The launched task is still queued -> the sweep resumes nothing.
+        #expect(WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: fixture.context).isEmpty)
+
+        // Mark the awaited task completed, as the runtime would on finish.
+        let task = try #require(
+            try fixture.context.fetch(FetchDescriptor<AgentTask>()).first { $0.id == taskID }
+        )
+        task.status = .completed
+        try fixture.context.save()
+
+        // Now the sweep finds the waiting run and resumes it to completion.
+        let results = WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: fixture.context)
+        #expect(results.count == 1)
+        #expect(results.first?.run.status == .completed)
+    }
+
     @Test("action input binds the first upstream row when no explicit record (B1)")
     func actionInputBindsFirstUpstreamRow() {
         let bound: [[String: WorkspaceAppStorageValue]] = [
@@ -1312,6 +1343,12 @@ struct WorkspaceAppActionExecutorTests {
                     type: "pipeline.run",
                     label: "Await Pipeline",
                     steps: ["runReviewTask", "updateItem"]
+                ),
+                WorkspaceAppActionSpec(
+                    id: "awaitQueryPipeline",
+                    type: "pipeline.run",
+                    label: "Await Query Pipeline",
+                    steps: ["runReviewTask", "listItems"]
                 ),
                 WorkspaceAppActionSpec(
                     id: "approvalGate",
