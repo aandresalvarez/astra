@@ -124,6 +124,8 @@ enum TaskDeliverableVerificationService {
         environment: TaskDeliverableVerificationEnvironment = .live
     ) async -> TaskDeliverableVerificationResult {
         let requiresArtifact = TaskDeliverableExpectation.requiresStandaloneArtifact(task)
+        let requiredFilenames = TaskDeliverableExpectation.requiredOutputFilenames(task)
+        let requiresDeliverableArtifact = requiresArtifact || !requiredFilenames.isEmpty
         let discoveredFiles = TaskOutputDiscovery.files(for: task, run: run)
         let artifactReconciliation = TaskArtifactPersistenceService.reconcileTaskOutputArtifacts(
             discoveredFiles,
@@ -131,9 +133,9 @@ enum TaskDeliverableVerificationService {
             modelContext: modelContext
         )
         let files = artifactReconciliation.discoveredFiles
-        let profile = profile(for: task, files: files, requiresArtifact: requiresArtifact)
+        let profile = profile(for: task, files: files, requiresArtifact: requiresDeliverableArtifact)
 
-        guard requiresArtifact || !files.isEmpty else {
+        guard requiresDeliverableArtifact || !files.isEmpty else {
             return result(
                 profile: .notRequired,
                 level: .notApplicable,
@@ -163,7 +165,7 @@ enum TaskDeliverableVerificationService {
                         summary: "No displayable task output artifact was found.",
                         path: nil
                     )
-                ],
+                ] + requiredFileChecks(requiredFilenames: requiredFilenames, discoveredFilenames: []),
                 evidencePaths: [],
                 run: run
             )
@@ -178,18 +180,11 @@ enum TaskDeliverableVerificationService {
                 path: nil
             )
         ]
-        let requiredFilenames = TaskDeliverableExpectation.requiredOutputFilenames(task)
         if !requiredFilenames.isEmpty {
             let discoveredFilenames = Set(files.map { URL(fileURLWithPath: $0.path).lastPathComponent.lowercased() })
-            let missing = requiredFilenames.subtracting(discoveredFilenames).sorted()
-            checks.append(TaskDeliverableCheck(
-                id: "artifact.required_files",
-                title: "Required deliverable files",
-                status: missing.isEmpty ? .passed : .failed,
-                summary: missing.isEmpty
-                    ? "All explicitly requested deliverable files were found."
-                    : "Missing explicitly requested deliverable file\(missing.count == 1 ? "" : "s"): \(missing.joined(separator: ", ")).",
-                path: nil
+            checks.append(contentsOf: requiredFileChecks(
+                requiredFilenames: requiredFilenames,
+                discoveredFilenames: discoveredFilenames
             ))
         }
 
@@ -605,6 +600,26 @@ enum TaskDeliverableVerificationService {
             return rootURL
         }
         return nil
+    }
+
+    private static func requiredFileChecks(
+        requiredFilenames: Set<String>,
+        discoveredFilenames: Set<String>
+    ) -> [TaskDeliverableCheck] {
+        guard !requiredFilenames.isEmpty else { return [] }
+
+        let missing = requiredFilenames.subtracting(discoveredFilenames).sorted()
+        return [
+            TaskDeliverableCheck(
+                id: "artifact.required_files",
+                title: "Required deliverable files",
+                status: missing.isEmpty ? .passed : .failed,
+                summary: missing.isEmpty
+                    ? "All explicitly requested deliverable files were found."
+                    : "Missing explicitly requested deliverable file\(missing.count == 1 ? "" : "s"): \(missing.joined(separator: ", ")).",
+                path: nil
+            )
+        ]
     }
 
     private static func htmlChecks(

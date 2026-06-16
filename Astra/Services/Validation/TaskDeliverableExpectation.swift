@@ -52,7 +52,7 @@ enum TaskDeliverableExpectation {
             }
 
             if lineStatesNamedOutput(line) {
-                filenames.formUnion(outputFilenames(in: line))
+                filenames.formUnion(outputFilenames(in: proseOutputSegment(from: line)))
             }
         }
         return filenames
@@ -158,15 +158,40 @@ enum TaskDeliverableExpectation {
 
     private static func lineStatesNamedOutput(_ line: String) -> Bool {
         let lower = line.lowercased()
-        let actionWords = [
-            "write", "create", "creat", "cerate", "crefate", "build", "buid",
-            "make", "generate", "save", "produce", "include"
-        ]
-        return containsAnyWholeWord(lower, actionWords)
+        return outputActionRange(in: lower) != nil
             || containsAnyWholeWord(lower, ["required", "deliverable", "deliverables"])
             || lower.contains("named ")
             || lower.contains("file named")
-            || lower.contains("must include")
+    }
+
+    private static func proseOutputSegment(from line: String) -> String {
+        let outputSegment: String
+        if let actionRange = outputActionRange(in: line) {
+            outputSegment = String(line[actionRange.lowerBound...])
+        } else {
+            outputSegment = line
+        }
+        return removingInputReferenceSuffix(from: outputSegment)
+    }
+
+    private static func outputActionRange(in line: String) -> Range<String.Index>? {
+        line.range(
+            of: #"(?i)\b(?:write|create|creat|cerate|crefate|build|buid|make|generate|save|produce)\b"#,
+            options: .regularExpression
+        )
+    }
+
+    private static func removingInputReferenceSuffix(from line: String) -> String {
+        guard let inputRange = line.range(
+            of: #"(?i)\b(?:from|using|based\s+on|derived\s+from|generated\s+from|sourced\s+from|by\s+reading|by\s+running|after\s+running|with\s+input|with\s+source)\b"#,
+            options: .regularExpression
+        ) else {
+            return line
+        }
+
+        let prefix = String(line[..<inputRange.lowerBound])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return outputFilenames(in: prefix).isEmpty ? line : prefix
     }
 
     private static func outputFilenames(in text: String) -> Set<String> {

@@ -126,6 +126,33 @@ struct TaskDeliverableVerificationServiceTests {
         #expect(result.checks.contains { $0.id == "artifact.discovery" && $0.status == .failed })
     }
 
+    @Test("named deliverable list without action words hard blocks when missing")
+    func namedDeliverableListWithoutActionWordsHardBlocksWhenMissing() async throws {
+        let fixture = try makeFixture(goal: """
+        Final deliverables:
+        - ./results.txt
+        """)
+        defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+
+        let result = await TaskDeliverableVerificationService.evaluate(
+            task: fixture.task,
+            run: fixture.run,
+            environment: TaskDeliverableVerificationEnvironment(checkJavaScriptSyntax: { _, _ in .passed })
+        )
+
+        #expect(!result.canComplete)
+        #expect(result.status == "failed")
+        #expect(result.level == .noArtifact)
+        #expect(result.checks.contains { check in
+            check.id == "artifact.required_files"
+                && check.status == .failed
+                && check.summary.contains("results.txt")
+        })
+        let decision = TaskCompletionPolicy.decide(deliverableVerification: result)
+        #expect(decision.shouldBlockCompletion)
+        #expect(decision.stopReason == "no_usable_result")
+    }
+
     @Test("invalid JSON hard blocks completion")
     func invalidJSONHardBlocksCompletion() async throws {
         let fixture = try makeFixture(goal: "create a json file named config.json")
@@ -306,6 +333,68 @@ struct TaskDeliverableVerificationServiceTests {
                 && check.status == .passed
                 && !check.summary.contains("word_counter.py")
                 && !check.summary.contains("sample.txt")
+        })
+    }
+
+    @Test("prose output line does not require input filenames")
+    func proseOutputLineDoesNotRequireInputFilenames() async throws {
+        let fixture = try makeFixture(goal: "Create summary.md from data.csv.")
+        defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+
+        let summary = (fixture.root as NSString).appendingPathComponent("summary.md")
+        try "# Summary\n\nDone.".write(toFile: summary, atomically: true, encoding: .utf8)
+        fixture.run.appendFileChange(StoredFileChange(
+            path: summary,
+            changeType: StoredFileChangeKind.write.rawValue,
+            content: try String(contentsOfFile: summary, encoding: .utf8),
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        ))
+
+        let result = await TaskDeliverableVerificationService.evaluate(
+            task: fixture.task,
+            run: fixture.run,
+            environment: .init(checkJavaScriptSyntax: { _, _ in .passed })
+        )
+
+        #expect(result.canComplete)
+        #expect(result.status != "failed")
+        #expect(result.checks.contains { check in
+            check.id == "artifact.required_files"
+                && check.status == .passed
+                && !check.summary.contains("data.csv")
+        })
+    }
+
+    @Test("input-first prose output line does not require input filenames")
+    func inputFirstProseOutputLineDoesNotRequireInputFilenames() async throws {
+        let fixture = try makeFixture(goal: "Use data.csv to create summary.md.")
+        defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+
+        let summary = (fixture.root as NSString).appendingPathComponent("summary.md")
+        try "# Summary\n\nDone.".write(toFile: summary, atomically: true, encoding: .utf8)
+        fixture.run.appendFileChange(StoredFileChange(
+            path: summary,
+            changeType: StoredFileChangeKind.write.rawValue,
+            content: try String(contentsOfFile: summary, encoding: .utf8),
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        ))
+
+        let result = await TaskDeliverableVerificationService.evaluate(
+            task: fixture.task,
+            run: fixture.run,
+            environment: .init(checkJavaScriptSyntax: { _, _ in .passed })
+        )
+
+        #expect(result.canComplete)
+        #expect(result.status != "failed")
+        #expect(result.checks.contains { check in
+            check.id == "artifact.required_files"
+                && check.status == .passed
+                && !check.summary.contains("data.csv")
         })
     }
 

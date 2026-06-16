@@ -992,6 +992,17 @@ struct ProcessMonitorTests {
         #expect(result.timedOut == false)
     }
 
+    @Test("ProcessResult normalizes terminal-progress termination exit code")
+    func processResultNormalizesTerminalProgressTerminationExitCode() {
+        let result = AgentRuntimeWorker.ProcessResult(
+            exitCode: 143,
+            terminatedAfterTerminalProgress: true
+        )
+
+        #expect(result.exitCode == 0)
+        #expect(result.terminatedAfterTerminalProgress)
+    }
+
     // MARK: - Resume Budget Calculation
 
     @Test("Resume budget is remaining tokens")

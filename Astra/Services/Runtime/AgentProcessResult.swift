@@ -36,7 +36,7 @@ struct AgentProcessResult {
         repetitionKilled: Bool = false,
         maxTurnsExceeded: Bool = false
     ) {
-        self.exitCode = exitCode
+        self.exitCode = terminatedAfterTerminalProgress ? 0 : exitCode
         self.error = error
         self.providerVersion = providerVersion
         self.policyViolation = policyViolation
