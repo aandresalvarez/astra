@@ -221,6 +221,7 @@ struct ExecutionSandboxTests {
     @Test("Provider state roots include Claude application support")
     func providerStateRootsIncludeClaudeApplicationSupport() {
         let plan = makePlan(
+            runtime: .claudeCode,
             currentDirectory: "/tmp/astra-workspace",
             environment: ["HOME": "/tmp/astra-home", "TMPDIR": "/tmp"]
         )
@@ -238,6 +239,30 @@ struct ExecutionSandboxTests {
 
         #expect(readableRoots.contains("/private/tmp/astra-home/Library/Application Support/Claude"))
         #expect(writableRoots.contains("/private/tmp/astra-home/Library/Application Support/Claude"))
+    }
+
+    @Test("Copilot provider state roots omit Claude application support")
+    func copilotProviderStateRootsOmitClaudeApplicationSupport() {
+        let plan = makePlan(
+            runtime: .copilotCLI,
+            executablePath: "/usr/local/bin/copilot",
+            currentDirectory: "/tmp/astra-workspace",
+            environment: ["HOME": "/tmp/astra-home", "TMPDIR": "/tmp"]
+        )
+        let workspace = ExecutionSandbox.canonicalize(plan.currentDirectory)!
+        let readableRoots = ExecutionSandbox.readableRoots(
+            plan: plan,
+            providerHomeDirectory: "",
+            canonicalWorkspace: workspace
+        )
+        let writableRoots = ExecutionSandbox.writableRoots(
+            plan: plan,
+            providerHomeDirectory: "",
+            canonicalWorkspace: workspace
+        )
+
+        #expect(!readableRoots.contains("/private/tmp/astra-home/Library/Application Support/Claude"))
+        #expect(!writableRoots.contains("/private/tmp/astra-home/Library/Application Support/Claude"))
     }
 
     @Test("Claude auth readable roots grant login keychain without metadata")

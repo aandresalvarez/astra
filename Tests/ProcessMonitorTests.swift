@@ -883,10 +883,12 @@ struct ProcessMonitorTests {
 
     @Test("Terminal progress exit grace terminates without runtime stop")
     func terminalProgressExitGraceTerminatesWithoutRuntimeStop() {
+        let taskID = UUID()
         let monitor = AgentRuntimeWorker.ProcessMonitor(
             tokenBudget: Int.max,
             noSemanticProgressTimeoutSeconds: 60,
-            terminalProgressExitGraceSeconds: 0
+            terminalProgressExitGraceSeconds: 0,
+            taskID: taskID
         )
         let process = MonitorMockProcess()
 
@@ -902,6 +904,12 @@ struct ProcessMonitorTests {
         #expect(monitor.terminatedAfterTerminalProgress == true)
         #expect(monitor.runtimeStopReason == nil)
         #expect(monitor.timedOut == false)
+
+        AppLogger.flushForTesting()
+        let taskLogMessages = AppLogger.entries
+            .filter { $0.taskID == taskID }
+            .map(\.message)
+        #expect(!taskLogMessages.contains { $0.contains(AuditEvent.workerTimeout.rawValue) })
     }
 
     @Test("Default liveness-only timeout gives real providers a bounded action window")

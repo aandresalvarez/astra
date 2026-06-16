@@ -282,20 +282,32 @@ enum ExecutionSandbox {
 
     /// Directories under the provider HOME that CLIs need to write (config,
     /// session, and cache state). Without these the provider breaks on launch.
-    static let homeWritableRelativePaths: [String] = [
-        ".claude",
-        ".claude.json",
+    static let sharedHomeWritableRelativePaths: [String] = [
         ".config",
         ".cache",
-        ".codex",
-        ".cursor",
-        ".gemini",
-        ".antigravity",
         ".npm",
         ".local/share",
         ".local/state",
-        "Library/Application Support/Claude",
         "Library/Caches"
+    ]
+
+    static let claudeHomeWritableRelativePaths: [String] = [
+        ".claude",
+        ".claude.json",
+        "Library/Application Support/Claude"
+    ]
+
+    static let codexHomeWritableRelativePaths: [String] = [
+        ".codex"
+    ]
+
+    static let cursorHomeWritableRelativePaths: [String] = [
+        ".cursor"
+    ]
+
+    static let antigravityHomeWritableRelativePaths: [String] = [
+        ".antigravity",
+        ".gemini"
     ]
 
     /// System and toolchain roots providers commonly need to execute CLIs,
@@ -510,7 +522,7 @@ enum ExecutionSandbox {
         // top-level paths like "/.claude".
         let home = effectiveHome(plan: plan, providerHomeDirectory: trimmedHome)
         if !home.isEmpty, let canonicalHome = canonicalize(home), !isOverlyBroadRoot(canonicalHome) {
-            for relative in homeWritableRelativePaths {
+            for relative in homeWritableRelativePaths(for: plan.runtime) {
                 raw.append((home as NSString).appendingPathComponent(relative))
             }
         }
@@ -659,8 +671,23 @@ enum ExecutionSandbox {
               !isOverlyBroadRoot(canonicalHome) else {
             return []
         }
-        return homeWritableRelativePaths.map { relative in
+        return homeWritableRelativePaths(for: plan.runtime).map { relative in
             (home as NSString).appendingPathComponent(relative)
+        }
+    }
+
+    private static func homeWritableRelativePaths(for runtime: AgentRuntimeID) -> [String] {
+        switch runtime {
+        case .claudeCode:
+            return sharedHomeWritableRelativePaths + claudeHomeWritableRelativePaths
+        case .codexCLI:
+            return sharedHomeWritableRelativePaths + codexHomeWritableRelativePaths
+        case .cursorCLI:
+            return sharedHomeWritableRelativePaths + cursorHomeWritableRelativePaths
+        case .antigravityCLI:
+            return sharedHomeWritableRelativePaths + antigravityHomeWritableRelativePaths
+        default:
+            return sharedHomeWritableRelativePaths
         }
     }
 

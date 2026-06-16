@@ -1862,13 +1862,6 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
 
         if let terminalIdleDuration,
            terminalIdleDuration >= terminalProgressExitGraceSeconds {
-            let reason = "provider_terminal_progress_exit_grace_elapsed"
-            AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: [
-                "reason": reason,
-                "terminal_idle_seconds": String(Int(terminalIdleDuration)),
-                "last_event_age_seconds": String(Int(anyIdleDuration)),
-                "limit_seconds": String(Int(terminalProgressExitGraceSeconds))
-            ], level: .warning)
             lock.lock()
             _terminatedAfterTerminalProgress = true
             lock.unlock()
