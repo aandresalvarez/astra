@@ -111,6 +111,18 @@ struct ExecutionSandboxTests {
 
         #expect(profile.contains("(literal (param \"READ_LITERAL_ROOT_0\"))"))
         #expect(args.contains("READ_LITERAL_ROOT_0=/opt"))
+        // Metadata roots are granted metadata-only (stat/traverse), NOT full
+        // file-read* — so the process can resolve paths through ancestor dirs
+        // like /Users without being able to list their contents.
+        let metadataBlock = profile.range(of: "(allow file-read-metadata")
+        #expect(metadataBlock != nil)
+        if let metadataBlock {
+            let literalRange = profile.range(of: "(literal (param \"READ_LITERAL_ROOT_0\"))")
+            #expect(literalRange != nil)
+            if let literalRange {
+                #expect(literalRange.lowerBound > metadataBlock.lowerBound)
+            }
+        }
     }
 
     @Test("Audit read-scope profile reports would-deny reads without disabling write denies")

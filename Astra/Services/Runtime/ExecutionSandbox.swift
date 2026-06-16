@@ -761,16 +761,26 @@ enum ExecutionSandbox {
         readableRootCount: Int,
         readableMetadataRootCount: Int
     ) -> [String] {
-        var allow: [String] = ["(allow file-read*"]
-        allow.append("    (literal \"/\")")
-        for index in 0..<readableMetadataRootCount {
-            allow.append("    (literal (param \"\(readMetadataRootParameterName(index))\"))")
-        }
+        var lines: [String] = ["(allow file-read*"]
+        lines.append("    (literal \"/\")")
         for index in 0..<readableRootCount {
-            allow.append("    (subpath (param \"\(readRootParameterName(index))\"))")
+            lines.append("    (subpath (param \"\(readRootParameterName(index))\"))")
         }
-        allow.append("    (subpath \"/dev\"))")
-        return allow
+        lines.append("    (subpath \"/dev\"))")
+        // Ancestor directories of readable roots get METADATA-ONLY access: the
+        // kernel can stat/resolve a path through them, but the sandboxed process
+        // cannot list their contents (readdir). This lets a deep auth root like
+        // ~/.copilot be reached without granting a readable listing of ~ or
+        // /Users. file-read* on the roots themselves (above) still allows the
+        // actual reads.
+        if readableMetadataRootCount > 0 {
+            lines.append("(allow file-read-metadata")
+            for index in 0..<readableMetadataRootCount {
+                lines.append("    (literal (param \"\(readMetadataRootParameterName(index))\"))")
+            }
+            lines.append(")")
+        }
+        return lines
     }
 
     private static func protectedReadDenyBlock(protectedReadRootCount: Int) -> [String] {
