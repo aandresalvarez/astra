@@ -574,7 +574,16 @@ struct AgentRuntimeAdapterTests {
         let keychainRoot = (FileManager.default.homeDirectoryForCurrentUser.path as NSString)
             .appendingPathComponent("Library/Keychains")
         #expect(copilotPlan.sandboxReadablePaths.contains("\(keychainRoot)/login.keychain-db"))
-        #expect(copilotPlan.sandboxReadablePaths.contains("\(keychainRoot)/metadata.keychain-db"))
+        // metadata.keychain-db is intentionally NOT granted: it is unnecessary for
+        // token retrieval and would leak the names of every stored credential.
+        #expect(!copilotPlan.sandboxReadablePaths.contains("\(keychainRoot)/metadata.keychain-db"))
+        // The shared-home injection-sensitive config files are carved out as read-only.
+        #expect(copilotPlan.sandboxProtectedWriteDenyPaths.contains(
+            (CopilotCLIRuntime.defaultHome() as NSString).appendingPathComponent("config.json")
+        ))
+        #expect(copilotPlan.sandboxProtectedWriteDenyPaths.contains(
+            (CopilotCLIRuntime.defaultHome() as NSString).appendingPathComponent("mcp-config.json")
+        ))
         #expect(copilotPlan.environment["COPILOT_HOME"] == CopilotCLIRuntime.defaultHome())
         #expect(copilotPlan.environment["HOME"] == FileManager.default.homeDirectoryForCurrentUser.path)
         #expect(copilotPlan.environment["XDG_CACHE_HOME"] == "/tmp/astra-provider-home/.cache")
@@ -607,9 +616,15 @@ struct AgentRuntimeAdapterTests {
         #expect(codexPlan.parsesJSONLines)
         #expect(codexPlan.environment["CODEX_HOME"] == "/tmp/astra-codex-home")
         #expect(codexPlan.directoriesToCreate == ["/tmp/astra-codex-home"])
+        #expect(codexPlan.sandboxReadablePaths.contains("/tmp/astra-codex-home"))
+        #expect(codexPlan.sandboxReadablePaths.contains("/etc/codex"))
+        #if os(macOS)
+        #expect(codexPlan.sandboxReadablePaths.contains("/Library/Managed Preferences"))
+        #endif
         #expect(codexPlan.providerDetectedFields["runtime"] == AgentRuntimeID.codexCLI.rawValue)
         #expect(codexPlan.providerDetectedFields["provider_home_configured"] == "true")
         #expect(codexPlan.commandPlannedFields["permission_policy"] == PermissionPolicy.restricted.rawValue)
+        #expect(codexPlan.commandPlannedFields["sandbox_readable_path_count"] == String(codexPlan.sandboxReadablePaths.count))
 
         #expect(cursorPlan.runtime == .cursorCLI)
         #expect(cursorPlan.executablePath == "/bin/cursor-agent-not-present")
@@ -1286,6 +1301,126 @@ struct AgentRuntimeAdapterTests {
 
         #expect(plan.environment["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
         #expect(plan.browserShimDirectory?.hasSuffix(".runtime-bin") == true)
+    }
+
+    @Test("Copilot browser bridge launch plan records missing shell execution support")
+    @MainActor
+    func copilotBrowserBridgeLaunchPlanRecordsMissingShellExecutionSupport() throws {
+        ShelfBrowserBridgeRegistry.shared.reset()
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-browser-shell-gap-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            ShelfBrowserBridgeRegistry.shared.reset()
+            try? FileManager.default.removeItem(at: root)
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Browser Shell Gap", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Use browser",
+            goal: "Use the browser shelf",
+            workspace: workspace,
+            model: "gpt-5",
+            runtime: .copilotCLI
+        )
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: nil,
+            currentTitle: nil,
+            taskID: task.id,
+            isPresented: false,
+            isEnabled: true
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .copilotCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "Use the browser shelf",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/copilot-not-present",
+                providerHomeDirectory: root.appendingPathComponent("copilot-home").path,
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30,
+                phase: "run",
+                contextText: "Use the browser shelf to inspect the current page."
+            ))
+
+        #expect(plan.environment["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+        #expect(plan.commandPlannedFields["browser_bridge_shell_tool_supported"] == "false")
+        #expect(plan.commandPlannedFields["browser_bridge_launch_block_reason"] == "provider_missing_browser_shell_tool")
+    }
+
+    @Test("CDP-only browser tasks inject required controlled engine into browser environment")
+    @MainActor
+    func cdpOnlyBrowserTasksInjectRequiredControlledEngineIntoBrowserEnvironment() throws {
+        ShelfBrowserBridgeRegistry.shared.reset()
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-controlled-browser-required-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            ShelfBrowserBridgeRegistry.shared.reset()
+            try? FileManager.default.removeItem(at: root)
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Controlled Browser Requirement", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Use controlled browser",
+            goal: "Use the ASTRA Controlled Browser / CDP browser automation engine. Do not use the embedded WebKit browser path.",
+            workspace: workspace,
+            model: "claude-sonnet-4-6",
+            runtime: .claudeCode
+        )
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "https://example.com",
+            currentTitle: "Example",
+            taskID: task.id,
+            isPresented: true,
+            isEnabled: true
+        )
+
+        let env = AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: task)
+
+        #expect(env["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+        #expect(env["ASTRA_BROWSER_REQUIRED_ENGINE"] == "controlled-cdp")
+    }
+
+    @Test("Generic browser tasks do not inject a required engine")
+    @MainActor
+    func genericBrowserTasksDoNotInjectRequiredEngine() throws {
+        ShelfBrowserBridgeRegistry.shared.reset()
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-generic-browser-required-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            ShelfBrowserBridgeRegistry.shared.reset()
+            try? FileManager.default.removeItem(at: root)
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Generic Browser", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Use browser",
+            goal: "Use the browser shelf to inspect the current page.",
+            workspace: workspace,
+            model: "claude-sonnet-4-6",
+            runtime: .claudeCode
+        )
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "https://example.com",
+            currentTitle: "Example",
+            taskID: task.id,
+            isPresented: true,
+            isEnabled: true
+        )
+
+        let env = AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: task)
+
+        #expect(env["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+        #expect(env["ASTRA_BROWSER_REQUIRED_ENGINE"] == nil)
     }
 
     private static func copilotManifest(

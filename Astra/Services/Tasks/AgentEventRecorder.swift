@@ -549,6 +549,9 @@ enum AgentEventRecorder {
         recordingState: AgentEventRecordingState? = nil
     ) {
         switch event {
+        case .control:
+            break
+
         case .started(let sessionID, let model):
             recordingState?.breakConversationCoalescing(for: run)
             if let sessionID {
@@ -661,6 +664,8 @@ enum AgentEventRecorder {
 
     static func parsedEvent(from event: AgentEvent) -> ParsedEvent? {
         switch event {
+        case .control:
+            return nil
         case .started(let sessionID, let model):
             return .systemInit(model: model, sessionId: sessionID)
         case .thinking(let text):

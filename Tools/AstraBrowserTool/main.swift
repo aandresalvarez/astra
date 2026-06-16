@@ -32,7 +32,10 @@ struct AstraBrowserTool {
             return try await request(endpoint: endpoint, method: "GET", path: "/actions")
         case "trace":
             let endpoint = try browserEndpoint()
-            return try await request(endpoint: endpoint, method: "GET", path: "/trace")
+            let items = args.contains("--full")
+                ? [URLQueryItem(name: "full", value: "true")]
+                : []
+            return try await request(endpoint: endpoint, method: "GET", path: "/trace", queryItems: items)
         case "benchmark":
             let endpoint = try browserEndpoint()
             var items: [URLQueryItem] = []
@@ -544,6 +547,10 @@ struct AstraBrowserTool {
            !debugCapture.isEmpty {
             request.setValue(debugCapture, forHTTPHeaderField: "X-ASTRA-Browser-Debug-Capture")
         }
+        if let requiredEngine = ProcessInfo.processInfo.environment["ASTRA_BROWSER_REQUIRED_ENGINE"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !requiredEngine.isEmpty {
+            request.setValue(requiredEngine, forHTTPHeaderField: "X-ASTRA-Browser-Required-Engine")
+        }
         if let object {
             request.httpBody = try JSONSerialization.data(withJSONObject: object)
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -568,7 +575,7 @@ struct AstraBrowserTool {
                 "astra-browser health",
                 "astra-browser analyze [--v2|--version v1|v2|--analysis-version v1|v2] [--query text] [--full] [--debug] [--limit n]  # --v2 overrides version flags",
                 "ASTRA_BROWSER_DEBUG_CAPTURE=0 astra-browser click --role button --name Save  # suppress rich failure evidence for this command",
-                "astra-browser trace",
+                "astra-browser trace [--full]",
                 "astra-browser benchmark [--suite browser-v2-smoke] [--definition-only]",
                 "astra-browser preflight --analysis ana_... --control ctl_... --action click",
                 "astra-browser read-page [--format text|markdown|json] [--limit n] [--chunk-size chars]",

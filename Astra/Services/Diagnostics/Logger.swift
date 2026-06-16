@@ -189,6 +189,7 @@ enum AuditEvent: String, CaseIterable {
 
     case keychainSaveFailed = "keychain.save_failed"
     case keychainDeleteFailed = "keychain.delete_failed"
+    case keychainSecretsMigrated = "keychain.secrets_migrated"
 
     case isolationPrepared = "isolation.prepared"
     case isolationCleanedUp = "isolation.cleaned_up"

@@ -436,6 +436,30 @@ struct BrowserAnalysisTests {
         #expect(outcome["meaningfulTextChanged"] as? Bool == true)
     }
 
+    @Test("Outcome verifier treats failed CDP settlement as unsuccessful execution evidence")
+    func outcomeVerifierTreatsFailedCDPSettlementAsUnsuccessfulExecutionEvidence() {
+        let outcome = BrowserActionOutcomeVerifier.outcome(
+            action: .click,
+            control: nil,
+            result: [
+                "ok": true,
+                "cdpSettlement": [
+                    "settled": false,
+                    "signals": ["metadata.stable"],
+                    "errors": ["runtime.exception"]
+                ]
+            ],
+            before: Self.sampleSnapshot(text: "Before", controls: []),
+            after: Self.sampleSnapshot(text: "After", controls: [])
+        )
+
+        #expect(outcome["executed"] as? Bool == true)
+        #expect(outcome["goalSatisfied"] as? Bool == false)
+        #expect(outcome["outcomeVerified"] as? Bool == true)
+        #expect(outcome["observedOutcome"] as? String == "browserActionFailed")
+        #expect(outcome["outcomeReason"] as? String == "The controlled browser reported a CDP settlement failure: runtime.exception.")
+    }
+
     @Test("Outcome verifier detects text changes from empty snapshots")
     func outcomeVerifierDetectsTextChangesFromEmptySnapshots() {
         let outcome = BrowserActionOutcomeVerifier.outcome(

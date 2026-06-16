@@ -16,7 +16,9 @@ struct ExecutionSandboxTests {
         currentDirectory: String = "/tmp/astra-workspace",
         environment: [String: String] = ["HOME": "/tmp/astra-home"],
         directoriesToCreate: [String] = [],
-        sandboxReadablePaths: [String] = []
+        sandboxReadablePaths: [String] = [],
+        sandboxProtectedWriteDenyPaths: [String] = [],
+        commandPlannedFields: [String: String] = [:]
     ) -> AgentRuntimeProcessLaunchPlan {
         AgentRuntimeProcessLaunchPlan(
             runtime: runtime,
@@ -29,8 +31,9 @@ struct ExecutionSandboxTests {
             parsesJSONLines: true,
             directoriesToCreate: directoriesToCreate,
             sandboxReadablePaths: sandboxReadablePaths,
+            sandboxProtectedWriteDenyPaths: sandboxProtectedWriteDenyPaths,
             providerDetectedFields: [:],
-            commandPlannedFields: [:]
+            commandPlannedFields: commandPlannedFields
         )
     }
 
@@ -109,6 +112,18 @@ struct ExecutionSandboxTests {
 
         #expect(profile.contains("(literal (param \"READ_LITERAL_ROOT_0\"))"))
         #expect(args.contains("READ_LITERAL_ROOT_0=/opt"))
+        // Metadata roots are granted metadata-only (stat/traverse), NOT full
+        // file-read* — so the process can resolve paths through ancestor dirs
+        // like /Users without being able to list their contents.
+        let metadataBlock = profile.range(of: "(allow file-read-metadata")
+        #expect(metadataBlock != nil)
+        if let metadataBlock {
+            let literalRange = profile.range(of: "(literal (param \"READ_LITERAL_ROOT_0\"))")
+            #expect(literalRange != nil)
+            if let literalRange {
+                #expect(literalRange.lowerBound > metadataBlock.lowerBound)
+            }
+        }
     }
 
     @Test("Audit read-scope profile reports would-deny reads without disabling write denies")
@@ -345,7 +360,8 @@ struct ExecutionSandboxTests {
                 copilotStateHome: copilotStateHome,
                 userHome: userHome
             ),
-            sandboxReadablePaths: CopilotCLIRuntime.authReadablePaths(userHome: userHome)
+            sandboxReadablePaths: CopilotCLIRuntime.authReadablePaths(userHome: userHome),
+            sandboxProtectedWriteDenyPaths: CopilotCLIRuntime.configWriteDenyPaths(userHome: userHome)
         )
 
         let writableRoots = ExecutionSandbox.writableRoots(
@@ -358,11 +374,15 @@ struct ExecutionSandboxTests {
             providerHomeDirectory: providerHome,
             canonicalWorkspace: "/tmp/astra-workspace"
         )
+        let writeDenyRoots = ExecutionSandbox.protectedWriteDenyRoots(plan: plan, writableRoots: writableRoots)
         let userCaches = (userHome as NSString).appendingPathComponent("Library/Caches")
         let copilotUserCaches = (userHome as NSString).appendingPathComponent("Library/Caches/copilot")
         let keychains = (userHome as NSString).appendingPathComponent("Library/Keychains")
         let loginKeychain = (keychains as NSString).appendingPathComponent("login.keychain-db")
         let metadataKeychain = (keychains as NSString).appendingPathComponent("metadata.keychain-db")
+        let copilotConfig = (copilotStateHome as NSString).appendingPathComponent("config.json")
+        let copilotMcpConfig = (copilotStateHome as NSString).appendingPathComponent("mcp-config.json")
+        let copilotSessionDB = (copilotStateHome as NSString).appendingPathComponent("session-store.db")
 
         #expect(command.environment["COPILOT_HOME"] == copilotStateHome)
         #expect(command.environment["HOME"] == userHome)
@@ -377,10 +397,127 @@ struct ExecutionSandboxTests {
         #expect(readableRoots.contains("\(providerHome)/Library/Caches"))
         #expect(readableRoots.contains(copilotUserCaches))
         #expect(readableRoots.contains(loginKeychain))
-        #expect(readableRoots.contains(metadataKeychain))
+        // metadata.keychain-db is intentionally not granted (credential-name leak).
+        #expect(!readableRoots.contains(metadataKeychain))
         #expect(!readableRoots.contains(keychains))
         #expect(!writableRoots.contains(userCaches))
         #expect(!readableRoots.contains(userCaches))
+        // Injection-sensitive shared-home config is carved back out as read-only
+        // (write-deny over the writable home) while transient session state stays
+        // writable, so a task cannot tamper with the next terminal session.
+        #expect(writeDenyRoots.contains(copilotConfig))
+        #expect(writeDenyRoots.contains(copilotMcpConfig))
+        #expect(!writeDenyRoots.contains(copilotSessionDB))
+    }
+
+    @Test("Strict profile denies writes to carved-out config under a writable home")
+    func strictProfileDeniesWritesToCarvedOutConfig() {
+        let profile = ExecutionSandbox.makeProfile(
+            writableRootCount: 1,
+            protectedWriteDenyRootCount: 2,
+            allowNetwork: true,
+            readScope: .enforce
+        )
+        let args = ExecutionSandbox.makeArguments(
+            profile: profile,
+            writableRoots: ["/tmp/copilot-home"],
+            protectedWriteDenyRoots: ["/tmp/copilot-home/config.json", "/tmp/copilot-home/mcp-config.json"],
+            executablePath: "/bin/echo",
+            arguments: ["hi"]
+        )
+
+        // The deny block must appear AFTER the write-allow so last-match-wins
+        // makes deny win for the literal config files.
+        let denyRange = profile.range(of: "(deny file-write*\n    (literal (param \"PROTECTED_WRITE_DENY_ROOT_0\"))")
+        let allowRange = profile.range(of: "(allow file-write*")
+        #expect(denyRange != nil)
+        #expect(allowRange != nil)
+        if let denyRange, let allowRange {
+            #expect(allowRange.lowerBound < denyRange.lowerBound)
+        }
+        #expect(args.contains("PROTECTED_WRITE_DENY_ROOT_0=/tmp/copilot-home/config.json"))
+        #expect(args.contains("PROTECTED_WRITE_DENY_ROOT_1=/tmp/copilot-home/mcp-config.json"))
+    }
+
+    @Test("Codex launch roots enter strict readable and writable allowlists")
+    func codexLaunchRootsEnterStrictAllowlists() {
+        let sandboxReadablePaths = CodexCLIRuntime.sandboxReadablePaths(
+            providerHomeDirectory: "",
+            environment: [
+                "CODEX_HOME": "/tmp/astra-codex-env-home",
+                "HOME": "/tmp/astra-home"
+            ],
+            processHomeDirectory: "/tmp/process-home"
+        )
+        let directoriesToCreate = CodexCLIRuntime.directoriesToCreate(
+            providerHomeDirectory: "",
+            environment: ["CODEX_HOME": "/tmp/astra-codex-env-home"]
+        )
+        let plan = makePlan(
+            runtime: .codexCLI,
+            executablePath: "/tmp/provider/bin/codex",
+            currentDirectory: "/tmp/astra-workspace",
+            environment: [
+                "CODEX_HOME": "/tmp/astra-codex-env-home",
+                "HOME": "/tmp/astra-home"
+            ],
+            directoriesToCreate: directoriesToCreate,
+            sandboxReadablePaths: sandboxReadablePaths
+        )
+        let workspace = ExecutionSandbox.canonicalize(plan.currentDirectory)!
+        let readable = ExecutionSandbox.readableRoots(
+            plan: plan,
+            providerHomeDirectory: "",
+            canonicalWorkspace: workspace
+        )
+        let writable = ExecutionSandbox.writableRoots(
+            plan: plan,
+            providerHomeDirectory: "",
+            canonicalWorkspace: workspace
+        )
+
+        #expect(readable.contains("/private/tmp/astra-codex-env-home"))
+        #expect(writable.contains("/private/tmp/astra-codex-env-home"))
+        #expect(readable.contains("/private/etc/codex"))
+        #expect(readable.contains("/etc/codex"))
+        #if os(macOS)
+        #expect(readable.contains("/Library/Managed Preferences"))
+        #expect(readable.contains("/Library/Preferences"))
+        #endif
+    }
+
+    @Test("Applied sandbox plan preserves protected write-deny paths through rewrite")
+    func appliedPlanPreservesProtectedWriteDenyPaths() throws {
+        let fm = FileManager.default
+        guard fm.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
+
+        let base = fm.temporaryDirectory.appendingPathComponent("astra-rewrite-\(UUID().uuidString)")
+        let workspace = base.appendingPathComponent("workspace")
+        try fm.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: base) }
+
+        let denyPaths = ["\(workspace.path)/.copilot/config.json"]
+        let plan = makePlan(
+            runtime: .copilotCLI,
+            executablePath: "/bin/echo",
+            arguments: ["hi"],
+            currentDirectory: workspace.path,
+            environment: ["HOME": workspace.path],
+            sandboxProtectedWriteDenyPaths: denyPaths
+        )
+
+        let decision = ExecutionSandbox.decide(
+            plan: plan,
+            providerHomeDirectory: workspace.path,
+            settings: ExecutionSandboxSettings(enforcement: .strict, allowNetwork: true, readScope: .enforce)
+        )
+        guard case .applied(let wrapped, _) = decision else {
+            Issue.record("Expected strict sandbox to apply, got \(decision)")
+            return
+        }
+        // The rewritten/applied plan must carry the protected write-deny paths
+        // forward (regression guard: rewrite() once dropped this field).
+        #expect(wrapped.sandboxProtectedWriteDenyPaths == denyPaths)
     }
 
     // MARK: - Decision logic
@@ -413,6 +550,24 @@ struct ExecutionSandboxTests {
             settings: ExecutionSandboxSettings(enforcement: .strict)
         )
         #expect(decision == .failClosed(reason: "no_execution_path"))
+    }
+
+    @Test("Browser bridge launch block fails closed when provider lacks shell tool")
+    func browserBridgeLaunchBlockFailsClosedWhenProviderLacksShellTool() throws {
+        let plan = makePlan(
+            runtime: .copilotCLI,
+            environment: ["ASTRA_BROWSER_URL": "http://127.0.0.1:49152"],
+            commandPlannedFields: [
+                "browser_bridge_shell_tool_supported": "false",
+                "browser_bridge_launch_block_reason": "provider_missing_browser_shell_tool"
+            ]
+        )
+
+        let result = try #require(BrowserBridgeRuntimeLaunchGuard.launchBlock(for: plan))
+
+        #expect(result.exitCode == -1)
+        #expect(result.runtimeStopReason == "provider_missing_browser_shell_tool")
+        #expect(result.runtimeStopMessage?.contains("cannot execute the astra-browser command") == true)
     }
 
     @Test("Best-effort enforcement falls back when there is no execution path")

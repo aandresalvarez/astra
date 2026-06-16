@@ -274,6 +274,9 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 "google.drive.open"
             ])
         }
+        if engine.automationDescriptor.kind == .controlledCDP {
+            capabilities.append("action.settlement.cdp")
+        }
         if isGoogleDriveAdapterEnabled {
             capabilities.append("browser.adapter.googleDrive")
         }
@@ -1022,17 +1025,30 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     private func handleBridgeRequestCore(_ request: BrowserBridgeRequest) async -> BrowserBridgeResponse {
         let route = ShelfBrowserBridgeCommandRouter.route(method: request.method, path: request.path)
 
+        if let response = browserEngineRequirementResponse(for: request) {
+            return .json(response, statusCode: 409)
+        }
+
         if route == .health {
+            let automationEngine = engine.automationDescriptor
             let flightSnapshot = browserDiagnostics.flightSnapshot
             var health: [String: Any] = [
                 "ok": true,
                 "url": currentURL,
                 "title": pageTitle,
                 "backend": engine.bridgeBackendLabel,
+                "automationEngine": automationEngine.jsonObject,
                 "controlledBrowserRunning": controlledBrowser.isRunning,
                 "controlledBrowserState": controlledBrowser.runState.rawValue,
                 "controlledBrowserStatus": controlledBrowser.statusMessage,
-                "controlledBrowserProfilePath": controlledBrowser.profilePath,
+                "controlledBrowserRuntime": BrowserAutomationEnginePublicState.controlledBrowser(
+                    isRunning: controlledBrowser.isRunning,
+                    runState: controlledBrowser.runState.rawValue,
+                    statusMessage: controlledBrowser.statusMessage,
+                    hasDebugPort: controlledBrowser.debugPort != nil,
+                    hasProcessID: controlledBrowser.processID != nil,
+                    lastErrorMessage: controlledBrowser.lastErrorMessage
+                ),
                 "bridgeEnabled": isAgentBridgeEnabled,
                 "lastPageRead": [
                     "coverage": lastPageReadCoverage ?? "",
@@ -1066,12 +1082,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             if let lastDebugCapture = browserDiagnostics.lastDebugCapture {
                 health["lastBrowserDebugCapture"] = lastDebugCapture
             }
-            if let debugPort = controlledBrowser.debugPort {
-                health["controlledBrowserDebugPort"] = Int(debugPort)
-            }
-            if let processID = controlledBrowser.processID {
-                health["controlledBrowserProcessID"] = Int(processID)
-            }
             if let error = controlledBrowser.lastErrorMessage {
                 health["controlledBrowserLastError"] = error
             }
@@ -1084,6 +1094,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         if route == .actions {
             return .json(ShelfBrowserBridgeCommandRouter.actionsResponse(
                 backend: engine.bridgeBackendLabel,
+                automationEngine: engine.automationDescriptor,
                 capabilities: bridgeCapabilities,
                 canUseGoogleDriveOpen: canUseGoogleDriveOpen,
                 googleDriveOpenDefaultTimeoutSeconds: GoogleWorkspaceBrowserService.googleDriveOpenDefaultTimeoutSeconds
@@ -1133,7 +1144,10 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 let command = try request.decodeJSON(BrowserPreflightCommand.self)
                 return .json(try await preflightResponse(command))
             case .trace:
-                return .json(browserDiagnostics.traceResponse(lastBrowserTrace: lastBrowserTrace))
+                return .json(browserDiagnostics.traceResponse(
+                    lastBrowserTrace: lastBrowserTrace,
+                    full: Self.boolQueryValue(request.queryValue("full")) ?? false
+                ))
             case .benchmark:
                 return .json(BrowserBenchmarkRunner.response(
                     suiteID: request.queryValue("suite"),
@@ -1530,6 +1544,17 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             BrowserBridgeRecoveryHints.attach(to: &response, error: "browser_bridge_error")
             return .json(response, statusCode: 400)
         }
+    }
+
+    private func browserEngineRequirementResponse(for request: BrowserBridgeRequest) -> [String: Any]? {
+        BrowserAutomationEngineRequirementBridgePolicy.mismatchResponse(
+            for: request,
+            actual: engine.automationDescriptor,
+            backend: engine.bridgeBackendLabel,
+            controlledBrowserRunning: controlledBrowser.isRunning,
+            controlledBrowserState: controlledBrowser.runState.rawValue,
+            controlledBrowserStatus: controlledBrowser.statusMessage
+        )
     }
 
     private func browserRunGuardResponse(for request: BrowserBridgeRequest) -> [String: Any]? {
@@ -2731,6 +2756,11 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             "resultOK": Self.boolValue(result["ok"]),
             "resultError": result["error"] as? String ?? ""
         ]
+        if let settlement = BrowserAutomationTraceEvidence.settlementEvidence(from: result) {
+            trace["cdpSettlement"] = settlement
+            trace["cdpSettled"] = settlement["settled"] as? Bool ?? false
+            trace["cdpSettlementErrors"] = settlement["errors"] as? [String] ?? []
+        }
         if let control {
             trace["controlID"] = control.controlID
             trace["controlRef"] = BrowserControlRef(control: control, accessibilityNode: nil).jsonObject(debug: false)

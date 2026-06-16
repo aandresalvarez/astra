@@ -700,6 +700,9 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
     let parsesJSONLines: Bool
     let directoriesToCreate: [String]
     let sandboxReadablePaths: [String]
+    /// Files carved back out of a writable root as read-only (write-deny over
+    /// write-allow). See `CopilotCLIRuntime.configWriteDenyPaths`.
+    let sandboxProtectedWriteDenyPaths: [String]
     let providerDetectedFields: [String: String]
     let commandPlannedFields: [String: String]
     var interactiveAsk: AgentRuntimeInteractiveAskPlan?
@@ -715,6 +718,7 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
         parsesJSONLines: Bool,
         directoriesToCreate: [String] = [],
         sandboxReadablePaths: [String] = [],
+        sandboxProtectedWriteDenyPaths: [String] = [],
         providerDetectedFields: [String: String] = [:],
         commandPlannedFields: [String: String] = [:],
         interactiveAsk: AgentRuntimeInteractiveAskPlan? = nil
@@ -729,6 +733,7 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
         self.parsesJSONLines = parsesJSONLines
         self.directoriesToCreate = directoriesToCreate
         self.sandboxReadablePaths = sandboxReadablePaths
+        self.sandboxProtectedWriteDenyPaths = sandboxProtectedWriteDenyPaths
         self.providerDetectedFields = providerDetectedFields
         self.commandPlannedFields = commandPlannedFields
         self.interactiveAsk = interactiveAsk
@@ -1816,10 +1821,11 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let capabilities = CopilotCLIRuntime.capabilities(executablePath: executable)
         let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
         let additionalPaths = AgentRuntimeProcessRunner.copilotAdditionalPaths(for: context.task)
+        let browserBridgeMetadata = BrowserBridgeRuntimeLaunchGuard.planMetadata(runtime: id, environment: taskEnv)
         let userHome = FileManager.default.homeDirectoryForCurrentUser.path
         let copilotStateHome = CopilotCLIRuntime.defaultHome(userHome: userHome)
-        var localToolCommands = AgentRuntimeProcessRunner.copilotLocalToolCommands(for: context.task)
-        if taskEnv["ASTRA_BROWSER_URL"] != nil {
+        var localToolCommands = AgentRuntimeProcessRunner.copilotLocalToolCommands(for: context.task, contextText: context.contextText)
+        if browserBridgeMetadata.isAttached {
             localToolCommands.append("astra-browser")
         }
         let plan = CopilotCLIRuntime.buildCommand(
@@ -1837,8 +1843,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             copilotStateHome: copilotStateHome,
             userHome: userHome,
             pathPrefix: pathPrefix,
-            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task)
-                || taskEnv["ASTRA_BROWSER_URL"] != nil,
+            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task, contextText: context.contextText)
+                || browserBridgeMetadata.isAttached,
             localToolCommands: localToolCommands,
             runtimeSupportTools: runtimeSupportTools,
             askFirstTools: askFirstTools
@@ -1859,6 +1865,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
                 userHome: userHome
             ),
             sandboxReadablePaths: CopilotCLIRuntime.authReadablePaths(userHome: userHome),
+            sandboxProtectedWriteDenyPaths: CopilotCLIRuntime.configWriteDenyPaths(userHome: userHome),
             providerDetectedFields: [
                 "runtime": id.rawValue,
                 "provider_version": providerVersion ?? "unknown",
@@ -1910,16 +1917,9 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "uses_allow_tool": String(plan.arguments.contains("--allow-tool")),
                 "uses_available_tools": String(plan.arguments.contains("--available-tools")),
                 "uses_excluded_tools": String(plan.arguments.contains("--excluded-tools")),
-                "excludes_task_tool": String(Self.argumentList(plan.arguments, after: "--excluded-tools").contains("task"))
-            ]
+                "excludes_task_tool": String(AgentRuntimeArgumentInspector.argumentList(plan.arguments, after: "--excluded-tools").contains("task"))
+            ].merging(browserBridgeMetadata.commandPlannedFields) { current, _ in current }
         )
-    }
-
-    private static func argumentList(_ arguments: [String], after flag: String) -> [String] {
-        guard let index = arguments.firstIndex(of: flag) else { return [] }
-        let start = arguments.index(after: index)
-        guard start < arguments.endIndex else { return [] }
-        return Array(arguments[start...].prefix { !$0.hasPrefix("--") })
     }
 
     func parseProcessEvents(line: String, parsesJSONLines: Bool) -> [ParsedEvent] {
@@ -1991,6 +1991,10 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let copilotHome = configuration.homeDirectory(for: id).isEmpty
             ? CopilotCLIRuntime.channelHome()
             : configuration.homeDirectory(for: id)
+        // Share terminal auth (~/.copilot) like the main launch path so Copilot
+        // helper prompts stay authenticated after a plain `copilot` /login.
+        let userHome = FileManager.default.homeDirectoryForCurrentUser.path
+        let copilotStateHome = CopilotCLIRuntime.defaultHome(userHome: userHome)
         let capabilities = CopilotCLIRuntime.capabilities(executablePath: executable)
         let allowedTools = toolMode == .readOnly ? ["Read", "Glob", "Grep"] : []
         let plan = CopilotCLIRuntime.buildCommand(
@@ -2005,6 +2009,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             capabilities: capabilities,
             taskEnvironment: [:],
             copilotHome: copilotHome,
+            copilotStateHome: copilotStateHome,
+            userHome: userHome,
             disableCustomInstructions: true
         )
 
@@ -2550,7 +2556,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             taskEnvironment: taskEnv,
             providerHomeDirectory: context.providerHomeDirectory,
             pathPrefix: pathPrefix,
-            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task)
+            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task, contextText: context.contextText)
                 || taskEnv["ASTRA_BROWSER_URL"] != nil,
             diagnosticLogPath: diagnosticLogPath
         )

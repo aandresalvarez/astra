@@ -1636,6 +1636,7 @@ enum BrowserActionOutcomeVerifier {
         let afterTextHash = stableHash(String(string(after?["text"]).prefix(1_000)))
         let textChanged = before != nil && after != nil && beforeTextHash != afterTextHash
         let meaningfulTextChanged = meaningfulTextChanged(before: before, after: after)
+        let settlementFailureReason = BrowserAutomationTraceEvidence.settlementFailureReason(from: result)
         let expected = expectedOutcome(
             action: action,
             control: control,
@@ -1683,6 +1684,10 @@ enum BrowserActionOutcomeVerifier {
             goalSatisfied = false
             outcomeVerified = true
             reason = "The browser action did not execute successfully."
+        } else if let settlementFailureReason {
+            goalSatisfied = false
+            outcomeVerified = true
+            reason = settlementFailureReason
         } else if knownDriveFile {
             goalSatisfied = observed == "googleEditorOpened"
             outcomeVerified = true
@@ -1801,6 +1806,9 @@ enum BrowserActionOutcomeVerifier {
         afterTitle: String,
         after: [String: Any]?
     ) -> String {
+        if BrowserAutomationTraceEvidence.settlementFailureReason(from: result) != nil {
+            return "browserActionFailed"
+        }
         if isGoogleEditorURL(afterURL) {
             return "googleEditorOpened"
         }
@@ -1837,6 +1845,20 @@ enum BrowserActionOutcomeVerifier {
         goalSatisfied: Bool
     ) -> [[String: Any]] {
         guard !goalSatisfied else { return [] }
+        if observedOutcome == "browserActionFailed" {
+            return [
+                [
+                    "action": "inspect-trace",
+                    "command": "astra-browser trace",
+                    "reason": "Inspect CDP settlement errors before choosing another browser strategy."
+                ],
+                [
+                    "action": "reanalyze",
+                    "command": "astra-browser analyze",
+                    "reason": "Refresh the control map if the page state or target changed after the failed action."
+                ]
+            ]
+        }
         if knownGitHubEntity {
             return [
                 [

@@ -36,14 +36,17 @@ struct AgentRuntimeExecutionPolicy: Equatable {
         )
     }
 
+    /// A one-run approval is always `.restricted`: granting specific tools for a
+    /// single run must never relax the OS-level enforcement tier. The policy is
+    /// intentionally hardcoded (not a parameter) so a caller cannot accidentally
+    /// widen a per-run approval to `.autonomous`.
     static func approvedRuntimePermission(
         runtime _: AgentRuntimeID,
         allowedTools: [String],
-        grants: [PermissionGrant] = [],
-        permissionPolicy: PermissionPolicy = .restricted
+        grants: [PermissionGrant] = []
     ) -> AgentRuntimeExecutionPolicy {
         AgentRuntimeExecutionPolicy(
-            permissionPolicyOverride: permissionPolicy,
+            permissionPolicyOverride: .restricted,
             allowedToolsOverride: allowedTools,
             permissionGrantsOverride: grants
         )

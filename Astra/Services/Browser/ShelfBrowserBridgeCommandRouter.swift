@@ -107,6 +107,7 @@ enum ShelfBrowserBridgeCommandRouter {
 
     static func actionsResponse(
         backend: String,
+        automationEngine: BrowserAutomationEngineDescriptor,
         capabilities: [String],
         canUseGoogleDriveOpen: Bool,
         googleDriveOpenDefaultTimeoutSeconds: Double
@@ -114,6 +115,7 @@ enum ShelfBrowserBridgeCommandRouter {
         [
             "ok": true,
             "backend": backend,
+            "automationEngine": automationEngine.jsonObject,
             "capabilities": capabilities,
             "actionMetadataVersion": 1,
             "actions": BrowserBridgeActionMetadata.enriched(actionMetadata(

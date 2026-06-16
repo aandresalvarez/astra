@@ -1938,7 +1938,15 @@ struct ContentView: View {
     private func setSelectedTask(_ task: AgentTask?) {
         let previousTaskID = selectedTask?.id
         if previousTaskID != task?.id {
-            setActiveWorkspaceCanvasItem(nil, remember: false)
+            let nextCanvasItem = WorkspaceCanvasItemSelectionTransition.itemAfterTaskSelectionChange(
+                currentItem: activeWorkspaceCanvasItem,
+                previousTaskID: previousTaskID,
+                nextTaskID: task?.id,
+                isComposingTask: isComposingTask
+            )
+            if nextCanvasItem != activeWorkspaceCanvasItem {
+                setActiveWorkspaceCanvasItem(nextCanvasItem, remember: false)
+            }
         }
         if let taskWorkspace = task?.workspace,
            selectedWorkspace?.id != taskWorkspace.id {

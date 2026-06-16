@@ -400,11 +400,15 @@ struct ChatPanelView: View {
     @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
     @AppStorage(AppStorageKeys.runtimeModelCacheRevision) private var runtimeModelCacheRevision = 0
     @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultBudget = TaskExecutionDefaults.tokenBudget
-    @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
+    @AppStorage(AppStorageKeys.skipPermissions) private var globalSkipPermissions = false
     @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var defaultAgentPolicyLevelRaw = AgentPolicyLevel.review.rawValue
     @State private var chainedGoal = ""
     @State private var draftTask: AgentTask?
     @State private var composerPolicyLevelRaw = AgentPolicyLevel.review.rawValue
+    // Composer-scoped skip-permissions: seeded from the global default but never
+    // written back, so picking Auto for one draft does not flip the user's
+    // global default or the workspace Auto/Ask pill (mirrors TaskMainView).
+    @State private var composerSkipPermissions = false
     @State private var useAgentTeam = false
     @State private var teamSize = 3
     @State private var activeWizard: SlashWizard?
@@ -453,7 +457,7 @@ struct ChatPanelView: View {
     }
 
     private var currentAgentPolicyLevel: AgentPolicyLevel {
-        skipPermissions ? .autonomous : AgentPolicyLevel.normalized(composerPolicyLevelRaw)
+        composerSkipPermissions ? .autonomous : AgentPolicyLevel.normalized(composerPolicyLevelRaw)
     }
 
     private var planningUtilityRuntime: AgentUtilityRuntimeConfiguration {
@@ -507,7 +511,7 @@ struct ChatPanelView: View {
             defaultRuntimeID: defaultRuntimeID,
             defaultModel: defaultModel,
             defaultBudget: defaultBudget,
-            skipPermissions: skipPermissions,
+            skipPermissions: composerSkipPermissions,
             defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
             cachedClaudeModelsJSON: claudeAvailableModels,
             cachedCopilotModelsJSON: copilotAvailableModels,
@@ -1196,17 +1200,17 @@ struct ChatPanelView: View {
         // differ from the composer default) so the label matches the mode
         // that will actually execute.
         if let draftTask {
-            return PlanCheckpointPolicy.executionMode(for: draftTask, skipPermissions: skipPermissions)
+            return PlanCheckpointPolicy.executionMode(for: draftTask, skipPermissions: composerSkipPermissions)
         }
         return PlanCheckpointPolicy.executionMode(
             runtime: AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime,
-            skipPermissions: skipPermissions
+            skipPermissions: composerSkipPermissions
         )
     }
 
     private var actionBarPrimaryTitle: String {
         if approvedDraftPlan != nil {
-            if skipPermissions { return "Run Full Plan" }
+            if composerSkipPermissions { return "Run Full Plan" }
             return actionBarPlanMode == .fullPlan ? "Run Plan with Live Approvals" : "Approve Next Step"
         }
         if pendingPlan != nil {
@@ -1217,7 +1221,7 @@ struct ChatPanelView: View {
 
     private var actionBarPrimaryIcon: String {
         if approvedDraftPlan != nil {
-            if skipPermissions { return "play.fill" }
+            if composerSkipPermissions { return "play.fill" }
             return actionBarPlanMode == .fullPlan ? "play.circle.fill" : "checkmark.circle.fill"
         }
         if pendingPlan != nil {
@@ -1345,7 +1349,7 @@ struct ChatPanelView: View {
                         ])
                     },
                     onManageSkills: onManageSkills,
-                    skipPermissions: $skipPermissions,
+                    skipPermissions: $composerSkipPermissions,
                     policyLevelRaw: $composerPolicyLevelRaw,
                     useAgentTeam: $useAgentTeam,
                     teamSize: $teamSize,
@@ -1808,7 +1812,7 @@ struct ChatPanelView: View {
         showPlanCanvasIfNeeded(for: task)
 
         Task {
-            let mode = PlanCheckpointPolicy.executionMode(for: task, skipPermissions: skipPermissions)
+            let mode = PlanCheckpointPolicy.executionMode(for: task, skipPermissions: composerSkipPermissions)
             await taskQueue?.executeApprovedPlan(task: task, plan: plan, mode: mode, modelContext: modelContext) { _ in }
             await MainActor.run {
                 _ = WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
@@ -2669,12 +2673,13 @@ struct ChatPanelView: View {
         if let draftToLoad,
            let selected = TaskPolicyStore.latestSelectedLevel(for: draftToLoad) {
             composerPolicyLevelRaw = selected.rawValue
-            skipPermissions = selected == .autonomous
+            composerSkipPermissions = selected == .autonomous
             return
         }
         let roleLevel = workerRoleSelection.profile.policyLevel
-        let level = skipPermissions ? .autonomous : roleLevel
+        let level = globalSkipPermissions ? .autonomous : roleLevel
         composerPolicyLevelRaw = level.rawValue
+        composerSkipPermissions = level == .autonomous
     }
 
     private func recordPolicySelection(on task: AgentTask, source: String) {

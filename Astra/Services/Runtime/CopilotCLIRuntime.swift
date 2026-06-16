@@ -338,11 +338,38 @@ enum CopilotCLIRuntime {
     static func authReadablePaths(userHome: String = FileManager.default.homeDirectoryForCurrentUser.path) -> [String] {
         let trimmedHome = userHome.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedHome.isEmpty else { return [] }
+        // `gh`/Copilot read the GitHub OAuth token directly out of the macOS
+        // login keychain DB file under Seatbelt — securityd reachability alone
+        // is not enough (verified: `gh auth token` returns nothing without this
+        // read), so `login.keychain-db` is load-bearing for Copilot auth and is
+        // granted as a single read-only file (never writable, never a subpath of
+        // children). `metadata.keychain-db` is deliberately NOT granted: it is
+        // not needed to fetch the token and would leak the service/account names
+        // of every credential the user has stored. The login keychain also holds
+        // ASTRA's own connector secrets; migrating those to a dedicated
+        // data-protection keychain (so this read can be narrowed further) is
+        // tracked as a follow-up.
         return uniqueNonEmptyPaths([
             defaultHome(userHome: trimmedHome),
             (trimmedHome as NSString).appendingPathComponent(".config/gh"),
-            (trimmedHome as NSString).appendingPathComponent("Library/Keychains/login.keychain-db"),
-            (trimmedHome as NSString).appendingPathComponent("Library/Keychains/metadata.keychain-db")
+            (trimmedHome as NSString).appendingPathComponent("Library/Keychains/login.keychain-db")
+        ])
+    }
+
+    /// Files inside the shared `~/.copilot` home that a sandboxed task must
+    /// never write, even though the home stays writable for transient session
+    /// state (`session-store.db`, `session-state/`, `logs/`). `config.json` and
+    /// `mcp-config.json` are loaded by the user's *next* interactive Copilot
+    /// session, so a task-side write is a cross-session config/MCP-injection
+    /// persistence vector. These are layered as write-deny literals over the
+    /// home's write-allow (last match wins in SBPL).
+    static func configWriteDenyPaths(userHome: String = FileManager.default.homeDirectoryForCurrentUser.path) -> [String] {
+        let trimmedHome = userHome.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedHome.isEmpty else { return [] }
+        let home = defaultHome(userHome: trimmedHome)
+        return uniqueNonEmptyPaths([
+            (home as NSString).appendingPathComponent("config.json"),
+            (home as NSString).appendingPathComponent("mcp-config.json")
         ])
     }
 
