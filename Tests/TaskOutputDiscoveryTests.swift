@@ -110,6 +110,32 @@ struct TaskOutputDiscoveryTests {
         #expect(files.map(\.path) == [report])
     }
 
+    @Test("workspace scan includes artifacts at shared depth boundary")
+    func workspaceScanIncludesArtifactsAtSharedDepthBoundary() throws {
+        let fixture = try makeFixture(goal: "Create ./a/b/c/d/e.txt")
+        defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+
+        let relativePath = "a/b/c/d/e.txt"
+        let artifactPath = (fixture.root as NSString).appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(
+            at: URL(fileURLWithPath: artifactPath).deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "depth boundary\n".write(toFile: artifactPath, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: fixture.run.startedAt.addingTimeInterval(5)],
+            ofItemAtPath: artifactPath
+        )
+
+        let files = TaskOutputWorkspaceDiscovery.filesChangedDuringRun(
+            workspacePath: fixture.root,
+            taskFolder: TaskWorkspaceAccess(task: fixture.task).taskFolder,
+            run: fixture.run
+        )
+
+        #expect(files.contains { $0.path == artifactPath && $0.relativePath == relativePath })
+    }
+
     @Test("deliverable verification finds unrecorded workspace-root required file")
     func deliverableVerificationFindsUnrecordedWorkspaceRootRequiredFile() async throws {
         let fixture = try makeFixture(goal: """

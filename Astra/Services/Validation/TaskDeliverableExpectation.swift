@@ -353,7 +353,7 @@ enum TaskDeliverableExpectation {
 
             guard let relative = relativePath(of: fileURL, taskFolder: root) else { continue }
             guard !TaskOutputArtifactPathPolicy.isRuntimeDiagnosticRelativePath(relative) else { continue }
-            let depth = relativeDepth(of: relative)
+            let depth = TaskOutputArtifactPathPolicy.relativeDepth(of: relative)
             if depth > depthLimit {
                 enumerator.skipDescendants()
                 continue
@@ -420,11 +420,6 @@ enum TaskDeliverableExpectation {
         }
 
         return true
-    }
-
-    private static func relativeDepth(of relative: String) -> Int {
-        guard !relative.isEmpty else { return 0 }
-        return relative.split(separator: "/", omittingEmptySubsequences: true).count - 1
     }
 
     private static func relativePath(of fileURL: URL, taskFolder: URL) -> String? {

@@ -49,7 +49,7 @@ enum TaskOutputWorkspaceDiscovery {
 
             guard let rawRelative = root.relativePath(for: item) else { continue }
             let relative = TaskOutputArtifactPathPolicy.normalizedRelativePath(rawRelative)
-            let depth = relativeDepth(of: relative)
+            let depth = TaskOutputArtifactPathPolicy.relativeDepth(of: relative)
             guard let values = try? url.resourceValues(
                 forKeys: [.isDirectoryKey, .isRegularFileKey, .creationDateKey, .contentModificationDateKey]
             ) else {
@@ -91,10 +91,6 @@ enum TaskOutputWorkspaceDiscovery {
             guard let date, date >= lowerBound else { return false }
             return date <= upperBound
         }
-    }
-
-    private static func relativeDepth(of relativePath: String) -> Int {
-        relativePath.split(separator: "/").count
     }
 }
 

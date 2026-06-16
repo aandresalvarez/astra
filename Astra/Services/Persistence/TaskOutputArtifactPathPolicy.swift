@@ -11,6 +11,12 @@ enum TaskOutputArtifactPathPolicy {
         displayableUserArtifactRelativePath(relativePath) != nil
     }
 
+    static func relativeDepth(of relativePath: String) -> Int {
+        let normalized = normalizedRelativePath(relativePath)
+        guard !normalized.isEmpty else { return 0 }
+        return normalized.split(separator: "/", omittingEmptySubsequences: true).count - 1
+    }
+
     static func displayableUserArtifactRelativePath(_ relativePath: String) -> String? {
         let normalized = normalizedRelativePath(relativePath)
         guard !normalized.isEmpty,
