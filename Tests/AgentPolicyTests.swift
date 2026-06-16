@@ -1002,6 +1002,51 @@ struct TaskPolicyStoreTests {
         #expect(!manifest.providerRender.usesBroadProviderPermissions)
     }
 
+    @Test("Copilot runtime approval stays scoped to one-run provider permissions")
+    func copilotRuntimeApprovalStaysScoped() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Policy", goal: "Fetch Jira issues", runtime: .copilotCLI)
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        let executionPolicy = PermissionBroker.executionPolicy(
+            forRuntime: .copilotCLI,
+            grants: [.shellCommand(executable: "curl", pattern: "*stanfordmed.atlassian.net*")]
+        )
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .copilotCLI,
+            model: "claude-sonnet-4.6",
+            workspacePath: "/tmp/policy-workspace",
+            phase: "resume",
+            permissionPolicy: .restricted,
+            executionPolicy: executionPolicy,
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            providerCapabilities: AgentRuntimePolicyCapabilities(
+                supportsOutputFormatJSON: true,
+                supportsStreamingFlag: true,
+                supportsNoAskUser: true,
+                supportsSilent: true,
+                supportsSecretEnvVars: true,
+                supportsAllowAll: true,
+                supportsAllowAllTools: true,
+                supportsAllowAllPaths: true,
+                supportsAllowAllURLs: true,
+                requiresAllowAllToolsForPrompt: false
+            ),
+            modelContext: context
+        )
+
+        #expect(manifest.policyLevel == .review)
+        #expect(manifest.policyScope == .oneRunEscalation)
+        #expect(manifest.providerRender.permissionMode == PermissionPolicy.restricted.rawValue)
+        #expect(!manifest.providerRender.usesBroadProviderPermissions)
+        #expect(manifest.approvalGrants == [.shellCommand(executable: "curl", pattern: "*stanfordmed.atlassian.net*")])
+    }
+
     @Test("Custom workspace policy is resolved into the preflight manifest")
     func customWorkspacePolicyResolvesIntoPreflightManifest() throws {
         let container = try makeAgentPolicyContainer()
@@ -1339,8 +1384,52 @@ struct RunPermissionManifestTests {
         #expect(!manifest.providerRender.allowedTools.contains("report_intent"))
         #expect(manifest.approvalsGranted.isEmpty)
         #expect(manifest.approvalGrants.isEmpty)
+        #expect(!manifest.providerRender.allowedShellPatterns.contains(#"echo "$ASTRA_CONNECTORS" | head -50"#))
         #expect(manifestEvent?.payload.contains("\"runtimeSupportTools\"") == true)
         #expect(manifestEvent?.payload.contains("\"fetch_copilot_cli_documentation\"") == true)
+    }
+
+    @Test("Preflight manifest allows exact connector manifest shell probe when connectors are projected")
+    func preflightManifestAllowsExactConnectorManifestShellProbeWhenConnectorsAreProjected() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Jira Connector Probe", primaryPath: "/tmp/jira-connector-probe")
+        let connector = Connector(
+            name: "Jira-new",
+            serviceType: "jira",
+            connectorDescription: "Atlassian Jira REST API v3",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "basic"
+        )
+        connector.workspace = workspace
+        connector.configKeys = ["JIRA_BASE_URL", "JIRA_PROJECTS"]
+        connector.configValues = ["https://stanfordmed.atlassian.net", "SS"]
+        let task = AgentTask(title: "Review Jira issues", goal: "List open Jira issues", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(connector)
+        context.insert(task)
+        context.insert(run)
+        try context.save()
+
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .copilotCLI,
+            model: "gpt-5",
+            workspacePath: workspace.primaryPath,
+            phase: "test",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            modelContext: context
+        )
+
+        #expect(manifest.environmentKeyNames.contains("ASTRA_CONNECTORS"))
+        #expect(manifest.providerRender.allowedShellPatterns.contains(#"echo "$ASTRA_CONNECTORS" | head -50"#))
+        #expect(manifest.providerRender.allowedShellPatterns.contains(#"printf '%s\n' "$ASTRA_CONNECTORS" | head -50"#))
+        #expect(!manifest.providerRender.allowedShellPatterns.contains("head -*"))
+        #expect(!manifest.providerRender.allowedShellPatterns.contains("echo:*"))
     }
 
     @Test("Preflight manifest includes task folder as runtime path when workspace path is code root")

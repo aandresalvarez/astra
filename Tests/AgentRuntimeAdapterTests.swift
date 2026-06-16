@@ -561,7 +561,33 @@ struct AgentRuntimeAdapterTests {
         #expect(copilotPlan.runtime == .copilotCLI)
         #expect(copilotPlan.executablePath == "/bin/copilot-not-present")
         #expect(copilotPlan.arguments.starts(with: ["--prompt", "hello", "--model"]))
-        #expect(copilotPlan.directoriesToCreate == ["/tmp/astra-provider-home"])
+        #expect(copilotPlan.directoriesToCreate.contains("/tmp/astra-provider-home"))
+        #expect(copilotPlan.directoriesToCreate.contains("/tmp/astra-provider-home/logs"))
+        #expect(copilotPlan.directoriesToCreate.contains(CopilotCLIRuntime.defaultHome()))
+        #expect(copilotPlan.directoriesToCreate.contains(
+            (FileManager.default.homeDirectoryForCurrentUser.path as NSString).appendingPathComponent("Library/Caches/copilot")
+        ))
+        #expect(copilotPlan.sandboxReadablePaths.contains(CopilotCLIRuntime.defaultHome()))
+        #expect(copilotPlan.sandboxReadablePaths.contains(
+            (FileManager.default.homeDirectoryForCurrentUser.path as NSString).appendingPathComponent(".config/gh")
+        ))
+        let keychainRoot = (FileManager.default.homeDirectoryForCurrentUser.path as NSString)
+            .appendingPathComponent("Library/Keychains")
+        #expect(copilotPlan.sandboxReadablePaths.contains("\(keychainRoot)/login.keychain-db"))
+        // metadata.keychain-db is intentionally NOT granted: it is unnecessary for
+        // token retrieval and would leak the names of every stored credential.
+        #expect(!copilotPlan.sandboxReadablePaths.contains("\(keychainRoot)/metadata.keychain-db"))
+        // The shared-home injection-sensitive config files are carved out as read-only.
+        #expect(copilotPlan.sandboxProtectedWriteDenyPaths.contains(
+            (CopilotCLIRuntime.defaultHome() as NSString).appendingPathComponent("config.json")
+        ))
+        #expect(copilotPlan.sandboxProtectedWriteDenyPaths.contains(
+            (CopilotCLIRuntime.defaultHome() as NSString).appendingPathComponent("mcp-config.json")
+        ))
+        #expect(copilotPlan.environment["COPILOT_HOME"] == CopilotCLIRuntime.defaultHome())
+        #expect(copilotPlan.environment["HOME"] == FileManager.default.homeDirectoryForCurrentUser.path)
+        #expect(copilotPlan.environment["XDG_CACHE_HOME"] == "/tmp/astra-provider-home/.cache")
+        #expect(copilotPlan.environment["XDG_CONFIG_HOME"] == "/tmp/astra-provider-home/.config")
         #expect(copilotPlan.providerDetectedFields["runtime"] == AgentRuntimeID.copilotCLI.rawValue)
 
         #expect(antigravityPlan.runtime == .antigravityCLI)
@@ -803,10 +829,12 @@ struct AgentRuntimeAdapterTests {
         #expect(allowedEntries.contains("write"))
         #expect(!allowedEntries.contains("create"))
         #expect(!allowedEntries.contains("edit"))
-        #expect(availableEntries.contains("apply_patch"))
         #expect(availableEntries.contains("create"))
         #expect(availableEntries.contains("edit"))
-        #expect(availableEntries.contains("rg"))
+        #expect(availableEntries.contains("bash"))
+        #expect(!availableEntries.contains("apply_patch"))
+        #expect(!availableEntries.contains("rg"))
+        #expect(!availableEntries.contains("shell"))
     }
 
     @Test("Copilot informational launch does not get artifact bootstrap write")
@@ -855,10 +883,12 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.commandPlannedFields["artifact_bootstrap_profile"] == "false")
         #expect(plan.commandPlannedFields["artifact_bootstrap_tool_count"] == "0")
         #expect(!allowedEntries.contains("write"))
-        #expect(availableEntries.contains("apply_patch"))
         #expect(availableEntries.contains("create"))
         #expect(availableEntries.contains("edit"))
-        #expect(availableEntries.contains("rg"))
+        #expect(availableEntries.contains("bash"))
+        #expect(!availableEntries.contains("apply_patch"))
+        #expect(!availableEntries.contains("rg"))
+        #expect(!availableEntries.contains("shell"))
     }
 
     @Test("Claude launch surfaces ask-first tools without counting them as allowed task tools")

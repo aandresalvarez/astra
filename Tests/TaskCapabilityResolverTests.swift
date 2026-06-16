@@ -675,6 +675,188 @@ struct TaskCapabilityResolverTests {
         #expect(prompt.contains("https://stanfordmed.atlassian.net"))
     }
 
+    @Test("Provider launch keeps connector owned by selected skill")
+    func providerLaunchKeepsConnectorOwnedBySelectedSkill() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Jira Issue Review", primaryPath: "/tmp/jira-issue-review")
+        context.insert(workspace)
+
+        let jiraSkill = Skill(
+            name: "Jira Agent",
+            skillDescription: "Review support issues and ticket queues",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use Jira REST APIs to review issues before answering."
+        )
+        jiraSkill.isGlobal = true
+        context.insert(jiraSkill)
+
+        let jiraConnector = Connector(
+            name: "Jira-new",
+            serviceType: "jira",
+            connectorDescription: "Atlassian Jira REST API v3",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "basic"
+        )
+        jiraConnector.isGlobal = true
+        jiraConnector.skill = jiraSkill
+        jiraConnector.configKeys = ["JIRA_BASE_URL", "JIRA_PROJECTS"]
+        jiraConnector.configValues = ["https://stanfordmed.atlassian.net", "SS"]
+        context.insert(jiraConnector)
+
+        let gcloudSkill = Skill(
+            name: "GCloud Agent",
+            skillDescription: "Inspect Google Cloud projects",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use gcloud for cloud inventory."
+        )
+        gcloudSkill.isGlobal = true
+        context.insert(gcloudSkill)
+
+        let gcloudConnector = Connector(
+            name: "Google Cloud",
+            serviceType: "gcloud",
+            connectorDescription: "Google Cloud API",
+            baseURL: "https://cloud.google.com",
+            authMethod: "none"
+        )
+        gcloudConnector.isGlobal = true
+        gcloudConnector.skill = gcloudSkill
+        context.insert(gcloudConnector)
+
+        workspace.enabledGlobalConnectorIDs = [jiraConnector.id.uuidString, gcloudConnector.id.uuidString]
+
+        let task = AgentTask(
+            title: "review if i have open issues to address",
+            goal: "review if i have open issues to address",
+            workspace: workspace
+        )
+        task.skills = [jiraSkill]
+        context.insert(task)
+        try context.save()
+
+        let scope = TaskCapabilityResolver(task: task)
+            .resolvedScope(.providerLaunch(contextText: task.goal))
+
+        #expect(scope.prunedForBrowserTask)
+        #expect(scope.behaviorSkills.map(\.name) == ["Jira Agent"])
+        #expect(scope.connectors.map(\.id) == [jiraConnector.id])
+        #expect(scope.excludedSkillNames.contains("GCloud Agent"))
+
+        let env = scope.resolver.resolvedEnvironmentVariables
+        #expect(env["JIRA_JIRA_NEW_BASE_URL"] == "https://stanfordmed.atlassian.net")
+        #expect(env["JIRA_PROJECTS"] == "SS")
+        #expect(env["ASTRA_CONNECTORS"]?.contains(#""name":"Jira-new""#) == true)
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        #expect(prompt.contains("[Jira Agent]:"))
+        #expect(prompt.contains("Jira-new"))
+        #expect(prompt.contains("ASTRA_CONNECTORS"))
+        #expect(!prompt.contains("[GCloud Agent]:"))
+    }
+
+    @Test("Provider launch includes every connector of a kept skill, but none of an excluded skill")
+    func providerLaunchOverShareBoundaryIsSkillMembershipNotConnectorText() throws {
+        // Pins the intentional credential-scope boundary established when the
+        // per-connector text gate was removed: a connector ships iff its OWNING
+        // skill is kept — even a connector whose own text is irrelevant to the
+        // task (over-share within a kept skill is accepted in the single-user
+        // trust model) — while connectors of excluded skills never ship.
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Issue Review", primaryPath: "/tmp/issue-review-overshare")
+        context.insert(workspace)
+
+        let jiraSkill = Skill(
+            name: "Jira Agent",
+            skillDescription: "Review support issues and ticket queues",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use Jira and Confluence REST APIs to review issues."
+        )
+        jiraSkill.isGlobal = true
+        context.insert(jiraSkill)
+
+        // Task-relevant connector owned by the kept skill.
+        let jiraConnector = Connector(
+            name: "Jira-new",
+            serviceType: "jira",
+            connectorDescription: "Atlassian Jira REST API v3",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "basic"
+        )
+        jiraConnector.isGlobal = true
+        jiraConnector.skill = jiraSkill
+        context.insert(jiraConnector)
+
+        // Task-IRRELEVANT connector owned by the SAME kept skill. Its text does
+        // not match "open issues" — pre-fix it was pruned, post-fix it ships
+        // because the owning skill is kept.
+        let confluenceConnector = Connector(
+            name: "Confluence Wiki",
+            serviceType: "confluence",
+            connectorDescription: "Atlassian Confluence wiki page authoring",
+            baseURL: "https://wiki.example.com",
+            authMethod: "basic"
+        )
+        confluenceConnector.isGlobal = true
+        confluenceConnector.skill = jiraSkill
+        context.insert(confluenceConnector)
+
+        // Connector owned by a skill the task does NOT keep — must stay excluded.
+        let gcloudSkill = Skill(
+            name: "GCloud Agent",
+            skillDescription: "Inspect Google Cloud projects",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use gcloud for cloud inventory."
+        )
+        gcloudSkill.isGlobal = true
+        context.insert(gcloudSkill)
+
+        let gcloudConnector = Connector(
+            name: "Google Cloud",
+            serviceType: "gcloud",
+            connectorDescription: "Google Cloud API",
+            baseURL: "https://cloud.google.com",
+            authMethod: "none"
+        )
+        gcloudConnector.isGlobal = true
+        gcloudConnector.skill = gcloudSkill
+        context.insert(gcloudConnector)
+
+        workspace.enabledGlobalConnectorIDs = [
+            jiraConnector.id.uuidString,
+            confluenceConnector.id.uuidString,
+            gcloudConnector.id.uuidString
+        ]
+
+        let task = AgentTask(
+            title: "review if i have open issues to address",
+            goal: "review if i have open issues to address",
+            workspace: workspace
+        )
+        task.skills = [jiraSkill]
+        context.insert(task)
+        try context.save()
+
+        let scope = TaskCapabilityResolver(task: task)
+            .resolvedScope(.providerLaunch(contextText: task.goal))
+
+        let connectorIDs = Set(scope.connectors.map(\.id))
+        // Both connectors of the kept skill ship (intentional over-share)...
+        #expect(connectorIDs.contains(jiraConnector.id))
+        #expect(connectorIDs.contains(confluenceConnector.id))
+        // ...the excluded skill's connector never does (the security boundary).
+        #expect(!connectorIDs.contains(gcloudConnector.id))
+        #expect(scope.excludedSkillNames.contains("GCloud Agent"))
+
+        let connectorsEnv = scope.resolver.resolvedEnvironmentVariables["ASTRA_CONNECTORS"] ?? ""
+        #expect(connectorsEnv.contains(#""name":"Jira-new""#))
+        #expect(connectorsEnv.contains(#""name":"Confluence Wiki""#))
+        #expect(!connectorsEnv.contains(#""name":"Google Cloud""#))
+    }
+
     @Test("Enabled package uses matched local tool owner when package skill name changed")
     func enabledPackageUsesMatchedLocalToolOwnerWhenPackageSkillNameChanged() throws {
         let container = try makeTaskCapabilityResolverContainer()

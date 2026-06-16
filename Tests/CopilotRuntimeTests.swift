@@ -675,7 +675,69 @@ struct CopilotCLICommandPlanningTests {
         #expect(plan.arguments.contains("--no-ask-user"))
         #expect(plan.arguments.contains("--add-dir"))
         #expect(plan.environment["COPILOT_HOME"] == "/tmp/copilot-home")
+        #expect(plan.environment["HOME"] == "/tmp/copilot-home")
+        #expect(plan.environment["XDG_CACHE_HOME"] == "/tmp/copilot-home/.cache")
+        #expect(plan.environment["XDG_CONFIG_HOME"] == "/tmp/copilot-home/.config")
+        #expect(plan.environment["XDG_DATA_HOME"] == "/tmp/copilot-home/.local/share")
+        #expect(plan.environment["XDG_STATE_HOME"] == "/tmp/copilot-home/.local/state")
         #expect(plan.environment["TOKEN"] == "secret")
+    }
+
+    @Test("Provider home overrides task and provider HOME for Copilot startup caches")
+    func providerHomeOverridesAmbientHomeForStartupCaches() {
+        let capabilities = CopilotCLICapabilities(helpText: "--output-format=FORMAT")
+        let plan = CopilotCLIRuntime.buildCommand(
+            executablePath: "/bin/copilot",
+            prompt: "Do work",
+            model: "gpt-5",
+            workspacePath: "/tmp/ws",
+            additionalPaths: [],
+            permissionPolicy: .autonomous,
+            allowedTools: [],
+            timeoutSeconds: 60,
+            capabilities: capabilities,
+            taskEnvironment: ["HOME": "/tmp/task-home", "XDG_CACHE_HOME": "/tmp/task-cache"],
+            copilotHome: "  /tmp/copilot-home  ",
+            providerEnvironment: ["HOME": "/tmp/provider-home", "XDG_CONFIG_HOME": "/tmp/provider-config"]
+        )
+
+        #expect(plan.environment["COPILOT_HOME"] == "/tmp/copilot-home")
+        #expect(plan.environment["HOME"] == "/tmp/copilot-home")
+        #expect(plan.environment["XDG_CACHE_HOME"] == "/tmp/copilot-home/.cache")
+        #expect(plan.environment["XDG_CONFIG_HOME"] == "/tmp/copilot-home/.config")
+        #expect(plan.environment["XDG_DATA_HOME"] == "/tmp/copilot-home/.local/share")
+        #expect(plan.environment["XDG_STATE_HOME"] == "/tmp/copilot-home/.local/state")
+    }
+
+    @Test("Production Copilot launch can share terminal auth while scoping caches")
+    func productionLaunchSharesTerminalAuthAndScopesCaches() throws {
+        let capabilities = CopilotCLICapabilities(helpText: "--output-format=FORMAT --log-dir DIR --no-auto-update")
+        let plan = CopilotCLIRuntime.buildCommand(
+            executablePath: "/bin/copilot",
+            prompt: "Do work",
+            model: "gpt-5",
+            workspacePath: "/tmp/ws",
+            additionalPaths: [],
+            permissionPolicy: .autonomous,
+            allowedTools: [],
+            timeoutSeconds: 60,
+            capabilities: capabilities,
+            taskEnvironment: ["HOME": "/tmp/task-home", "XDG_CACHE_HOME": "/tmp/task-cache"],
+            copilotHome: "/tmp/astra-copilot-home",
+            copilotStateHome: "/Users/test/.copilot",
+            userHome: "/Users/test",
+            providerEnvironment: ["HOME": "/tmp/provider-home", "XDG_CONFIG_HOME": "/tmp/provider-config"]
+        )
+
+        #expect(plan.environment["COPILOT_HOME"] == "/Users/test/.copilot")
+        #expect(plan.environment["HOME"] == "/Users/test")
+        #expect(plan.environment["XDG_CACHE_HOME"] == "/tmp/astra-copilot-home/.cache")
+        #expect(plan.environment["XDG_CONFIG_HOME"] == "/tmp/astra-copilot-home/.config")
+        #expect(plan.environment["XDG_DATA_HOME"] == "/tmp/astra-copilot-home/.local/share")
+        #expect(plan.environment["XDG_STATE_HOME"] == "/tmp/astra-copilot-home/.local/state")
+        #expect(plan.arguments.contains("--no-auto-update"))
+        let logIndex = try #require(plan.arguments.firstIndex(of: "--log-dir"))
+        #expect(plan.arguments[logIndex + 1] == "/tmp/astra-copilot-home/logs")
     }
 
     @Test("Task connector env vars stay available to Copilot Bash")
@@ -920,9 +982,9 @@ struct CopilotCLICommandPlanningTests {
         #expect(allowedEntries.contains("write"))
         #expect(!allowedEntries.contains("create"))
         #expect(!allowedEntries.contains("edit"))
-        #expect(availableEntries.contains("apply_patch"))
         #expect(availableEntries.contains("create"))
         #expect(availableEntries.contains("edit"))
+        #expect(!availableEntries.contains("apply_patch"))
     }
 
     @Test("Restricted command planning includes runtime support tool permissions")
@@ -1002,7 +1064,7 @@ struct CopilotCLICommandPlanningTests {
             capabilities: capabilities,
             taskEnvironment: [:],
             copilotHome: "/tmp/copilot-home",
-            askFirstTools: ["Write", "Edit", "MultiEdit"]
+            askFirstTools: ["Write", "Edit", "MultiEdit", "Bash", "WebFetch"]
         )
 
         let allowedEntries = Set(Self.argumentValues(after: "--allow-tool", in: plan.arguments))
@@ -1011,13 +1073,18 @@ struct CopilotCLICommandPlanningTests {
         #expect(allowedEntries.contains("view"))
         #expect(allowedEntries.contains("grep"))
         #expect(allowedEntries.contains("glob"))
-        #expect(availableEntries.contains("rg"))
         #expect(!allowedEntries.contains("write"))
         #expect(!allowedEntries.contains("create"))
         #expect(!allowedEntries.contains("edit"))
-        #expect(availableEntries.contains("apply_patch"))
+        #expect(!allowedEntries.contains("bash"))
+        #expect(!allowedEntries.contains("shell(git:*)"))
         #expect(availableEntries.contains("create"))
         #expect(availableEntries.contains("edit"))
+        #expect(availableEntries.contains("bash"))
+        #expect(availableEntries.contains("web_fetch"))
+        #expect(!availableEntries.contains("shell"))
+        #expect(!availableEntries.contains("rg"))
+        #expect(!availableEntries.contains("apply_patch"))
         #expect(!availableEntries.contains("task"))
     }
 
