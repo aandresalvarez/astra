@@ -617,11 +617,27 @@ Phase A (buildable on current primitives):
 
 Phase B (new plumbing):
 
-- Await long-running agent steps and resume the workflow across app sessions.
-- Bind a step's structured output into later step inputs and app storage.
-- Whole-run token budget and approval policy across all agent steps.
-- Run visualization and approval queue UI.
-- Tests for output binding, resume-after-await, and run-level budget enforcement.
+- [DONE — B1] Bind a step's structured output into later step inputs and app
+  storage. `WorkspaceAppActionInput.boundRows`/`effectiveRecord`/`bindingForward`;
+  executePipeline/executeLoop thread prior-step rows; appStorage.insert/update
+  consume the bound row. Unit-tested (WorkspaceAppActionExecutorTests 21/21).
+- [TODO — B2, keystone] Await long-running agent steps and resume the workflow
+  across app sessions. This is the architectural core the rest depends on; design:
+  - `WorkspaceAppRun` gains a suspended state (e.g. `.waiting`) + current step
+    index + `waitingOnTaskID` (new schema version + lightweight migration).
+  - Make `executePipeline`/`executeLoop` resumable: on a `task.createAndRun`
+    step, launch the `AgentTask`, persist run position, and return suspended
+    instead of running to completion.
+  - A `WorkspaceAppRunResumption` service subscribes to `TaskLifecycleCoordinator`
+    completion; on the linked task finishing, it reloads the waiting run, binds
+    the task's output forward (reuses B1), and continues from the saved step.
+  - VERIFY: requires the running app over time (cross-session resume) — not
+    unit-testable end to end; live-verify like F7c.
+- [TODO — B3, depends on B2] Whole-run token budget + approval policy across all
+  agent steps (needs real consumption from awaited tasks).
+- [TODO — B4, depends on B2] Run visualization + approval queue UI for in-flight
+  / waiting runs.
+- Tests for output binding (done), resume-after-await, and run-level budget.
 
 Phase C (later):
 
