@@ -1544,6 +1544,9 @@ enum ASTRASchemaV7: VersionedSchema {
 
 enum ASTRASchema {
     static var current: Schema {
+        // V7 introduces the WorkspaceApp models (referenced as top-level classes),
+        // so the B2 resumable-run fields added to WorkspaceAppRun are part of V7's
+        // fresh table creation in the V6 -> V7 stage. No separate version needed.
         Schema(versionedSchema: ASTRASchemaV7.self)
     }
 }

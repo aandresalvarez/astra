@@ -7,6 +7,8 @@ enum WorkspaceAppRunStatus: String, Codable, Sendable, Equatable, CaseIterable {
     case failed
     case blocked
     case cancelled
+    // B2: a pipeline/loop run suspended while an async agent task it launched runs.
+    case waiting
 }
 
 enum WorkspaceAppRunTrigger: String, Codable, Sendable, Equatable, CaseIterable {
@@ -32,6 +34,12 @@ final class WorkspaceAppRun: Identifiable {
     var errorMessage: String?
     var linkedTaskID: UUID?
     var linkedArtifactPath: String?
+    // B2 resumable runs: when a pipeline/loop suspends on an async agent task,
+    // `pendingActionID` is the suspended pipeline/loop action and
+    // `pendingStepIndex` the next step to execute on resume. `linkedTaskID` holds
+    // the awaited task. Defaulted so the V7 -> V8 migration stays lightweight.
+    var pendingActionID: String?
+    var pendingStepIndex: Int = 0
 
     init(
         id: UUID = UUID(),

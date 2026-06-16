@@ -267,6 +267,16 @@ struct WorkspaceAppRunRecorder {
     }
 }
 
+// B2: thrown by a pipeline when a step launches an async agent task the workflow
+// must await. The top-level execute() catches it, persists the resume point on the
+// run, and marks the run `.waiting` (not failed). resume() continues from there
+// once the task completes.
+private struct WorkspaceAppPipelineSuspension: Error {
+    let taskID: UUID
+    let pipelineActionID: String
+    let nextStepIndex: Int
+}
+
 struct WorkspaceAppActionExecutor {
     var storageService = WorkspaceAppStorageService()
     var sourceResolver = WorkspaceAppSourceResolver()
@@ -333,6 +343,13 @@ struct WorkspaceAppActionExecutor {
                 rows: result.rows,
                 outputSummary: result.outputSummary
             )
+        } catch let suspension as WorkspaceAppPipelineSuspension {
+            markWaiting(run: run, suspension: suspension, modelContext: modelContext)
+            return WorkspaceAppActionExecutionResult(
+                run: run,
+                rows: [],
+                outputSummary: "Workflow '\(suspension.pipelineActionID)' is waiting on task \(suspension.taskID.uuidString)."
+            )
         } catch {
             recorder.failRun(
                 run,
@@ -343,6 +360,97 @@ struct WorkspaceAppActionExecutor {
             try? modelContext.save()
             throw error
         }
+    }
+
+    // B2: resume a workflow run that suspended on an async agent task. Continues the
+    // pending pipeline from the saved step, binding the completed task's output
+    // forward. If a later step launches another task, the run suspends again.
+    @MainActor
+    func resume(
+        run: WorkspaceAppRun,
+        app: WorkspaceApp,
+        workspace: Workspace,
+        manifest: WorkspaceAppManifest,
+        dependencyBindings: [WorkspaceAppDependencyBinding] = [],
+        taskOutputRows: [[String: WorkspaceAppStorageValue]] = [],
+        modelContext: ModelContext
+    ) throws -> WorkspaceAppActionExecutionResult {
+        guard run.status == .waiting, let pipelineID = run.pendingActionID else {
+            throw WorkspaceAppActionExecutionError.unsupportedActionType(
+                "resume requires a waiting run with a pending workflow action"
+            )
+        }
+        let action = try actionSpec(actionID: pipelineID, manifest: manifest)
+        let startIndex = run.pendingStepIndex
+        run.status = .running
+        recorder.recordEvent(
+            run: run,
+            type: "workspaceApp.run.resumed",
+            payload: [
+                "pipelineID": .text(pipelineID),
+                "fromStepIndex": .integer(Int64(startIndex)),
+                "boundRows": .integer(Int64(taskOutputRows.count))
+            ],
+            modelContext: modelContext
+        )
+        do {
+            let result = try executePipeline(
+                action: action,
+                app: app,
+                workspace: workspace,
+                manifest: manifest,
+                dependencyBindings: dependencyBindings,
+                input: WorkspaceAppActionInput(boundRows: taskOutputRows),
+                run: run,
+                modelContext: modelContext,
+                startIndex: startIndex,
+                initialBoundRows: taskOutputRows
+            )
+            run.linkedArtifactPath = result.linkedArtifactPath ?? run.linkedArtifactPath
+            run.pendingActionID = nil
+            recorder.completeRun(run, outputSummary: result.outputSummary, modelContext: modelContext)
+            app.lastRunAt = Date()
+            app.updatedAt = Date()
+            try modelContext.save()
+            return WorkspaceAppActionExecutionResult(
+                run: run,
+                rows: result.rows,
+                outputSummary: result.outputSummary
+            )
+        } catch let suspension as WorkspaceAppPipelineSuspension {
+            markWaiting(run: run, suspension: suspension, modelContext: modelContext)
+            return WorkspaceAppActionExecutionResult(
+                run: run,
+                rows: [],
+                outputSummary: "Workflow '\(suspension.pipelineActionID)' is waiting on task \(suspension.taskID.uuidString)."
+            )
+        } catch {
+            recorder.failRun(run, error: error, blocked: isPermissionError(error), modelContext: modelContext)
+            try? modelContext.save()
+            throw error
+        }
+    }
+
+    private func markWaiting(
+        run: WorkspaceAppRun,
+        suspension: WorkspaceAppPipelineSuspension,
+        modelContext: ModelContext
+    ) {
+        run.status = .waiting
+        run.linkedTaskID = suspension.taskID
+        run.pendingActionID = suspension.pipelineActionID
+        run.pendingStepIndex = suspension.nextStepIndex
+        recorder.recordEvent(
+            run: run,
+            type: "workspaceApp.run.waiting",
+            payload: [
+                "taskID": .text(suspension.taskID.uuidString),
+                "pipelineID": .text(suspension.pipelineActionID),
+                "nextStepIndex": .integer(Int64(suspension.nextStepIndex))
+            ],
+            modelContext: modelContext
+        )
+        try? modelContext.save()
     }
 
     private func actionSpec(actionID: String, manifest: WorkspaceAppManifest) throws -> WorkspaceAppActionSpec {
@@ -952,7 +1060,9 @@ struct WorkspaceAppActionExecutor {
         dependencyBindings: [WorkspaceAppDependencyBinding],
         input: WorkspaceAppActionInput,
         run: WorkspaceAppRun,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        startIndex: Int = 0,
+        initialBoundRows: [[String: WorkspaceAppStorageValue]] = []
     ) throws -> (
         rows: [[String: WorkspaceAppStorageValue]],
         outputSummary: String,
@@ -963,15 +1073,43 @@ struct WorkspaceAppActionExecutor {
             throw WorkspaceAppActionExecutionError.missingPipelineSteps(action.id)
         }
 
-        var rows: [[String: WorkspaceAppStorageValue]] = []
+        var rows = initialBoundRows
         var summaries: [String] = []
         var linkedTaskID: UUID?
         var linkedArtifactPath: String?
 
-        for stepID in action.steps {
+        for (index, stepID) in action.steps.enumerated() {
+            guard index >= startIndex else { continue }
             let step = try actionSpec(actionID: stepID, manifest: manifest)
             // B1 output binding: each step sees the previous step's rows.
             let stepInput = input.bindingForward(rows: rows)
+            // B2: await an async agent step — launch the task and suspend the run
+            // until it completes (resumed via WorkspaceAppActionExecutor.resume).
+            if step.type == "task.createAndRun" {
+                let task = try createTask(
+                    action: step,
+                    manifest: manifest,
+                    input: stepInput,
+                    workspace: workspace,
+                    status: .queued,
+                    modelContext: modelContext
+                )
+                recorder.recordEvent(
+                    run: run,
+                    type: "workspaceApp.pipeline.step.suspended",
+                    payload: [
+                        "pipelineID": .text(action.id),
+                        "stepID": .text(stepID),
+                        "taskID": .text(task.id.uuidString)
+                    ],
+                    modelContext: modelContext
+                )
+                throw WorkspaceAppPipelineSuspension(
+                    taskID: task.id,
+                    pipelineActionID: action.id,
+                    nextStepIndex: index + 1
+                )
+            }
             try enforcePermission(for: step, app: app, input: stepInput)
             let result = try execute(
                 action: step,

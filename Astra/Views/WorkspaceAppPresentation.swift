@@ -507,6 +507,7 @@ enum WorkspaceAppRunHistoryPresentationBuilder {
         case .failed: "Failed"
         case .blocked: "Blocked"
         case .cancelled: "Cancelled"
+        case .waiting: "Waiting"
         }
     }
 
@@ -517,6 +518,7 @@ enum WorkspaceAppRunHistoryPresentationBuilder {
         case .failed: "xmark.octagon"
         case .blocked: "hand.raised"
         case .cancelled: "minus.circle"
+        case .waiting: "clock.arrow.circlepath"
         }
     }
 

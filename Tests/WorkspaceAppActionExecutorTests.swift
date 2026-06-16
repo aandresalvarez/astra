@@ -651,6 +651,63 @@ struct WorkspaceAppActionExecutorTests {
         })
     }
 
+    @MainActor
+    @Test("pipeline suspends on an async agent step and resumes to completion (B2)")
+    func pipelineSuspendsOnAgentStepAndResumes() throws {
+        let fixture = try Self.makePublishedApp(permissionMode: .draftOnly)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        // Seed the record the resumed update step will modify.
+        _ = try WorkspaceAppActionExecutor().execute(
+            actionID: "addItem",
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: fixture.manifest,
+            input: WorkspaceAppActionInput(
+                table: "items",
+                record: ["id": .text("item-1"), "name": .text("Apples"), "category": .text("Produce")]
+            ),
+            modelContext: fixture.context
+        )
+
+        // awaitPipeline = [runReviewTask (task.createAndRun) -> updateItem]. Step 0 launches
+        // an agent task, so the run must SUSPEND (waiting) with a resume point — not complete.
+        let suspended = try WorkspaceAppActionExecutor().execute(
+            actionID: "awaitPipeline",
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: fixture.manifest,
+            modelContext: fixture.context
+        )
+        #expect(suspended.run.status == .waiting)
+        #expect(suspended.run.linkedTaskID != nil)
+        #expect(suspended.run.pendingActionID == "awaitPipeline")
+        #expect(suspended.run.pendingStepIndex == 1)
+
+        // The awaited task "completes" with an output row; resume binds it into updateItem.
+        let resumed = try WorkspaceAppActionExecutor().resume(
+            run: suspended.run,
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: fixture.manifest,
+            taskOutputRows: [["id": .text("item-1"), "name": .text("FromTask"), "category": .text("Produce")]],
+            modelContext: fixture.context
+        )
+        #expect(resumed.run.status == .completed)
+        #expect(resumed.run.pendingActionID == nil)
+        #expect(resumed.outputSummary.contains("Updated 1 record in items."))
+
+        // The resumed update wrote the task's bound output forward.
+        let rows = try WorkspaceAppStorageService().records(
+            in: "items",
+            databaseURL: URL(fileURLWithPath: WorkspaceFileLayout.appDatabaseFile(
+                workspacePath: fixture.workspace.primaryPath,
+                appID: fixture.app.logicalID
+            )),
+            limit: 100
+        )
+        #expect(rows.first?["name"] == .text("FromTask"))
+    }
+
     @Test("action input binds the first upstream row when no explicit record (B1)")
     func actionInputBindsFirstUpstreamRow() {
         let bound: [[String: WorkspaceAppStorageValue]] = [
@@ -1203,6 +1260,12 @@ struct WorkspaceAppActionExecutorTests {
                     type: "pipeline.run",
                     label: "Binding Pipeline",
                     steps: ["listItems", "updateItem"]
+                ),
+                WorkspaceAppActionSpec(
+                    id: "awaitPipeline",
+                    type: "pipeline.run",
+                    label: "Await Pipeline",
+                    steps: ["runReviewTask", "updateItem"]
                 ),
                 WorkspaceAppActionSpec(
                     id: "approvalGate",
