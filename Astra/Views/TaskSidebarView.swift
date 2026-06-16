@@ -101,9 +101,6 @@ enum SidebarLeanPresentation {
     static let newTaskVerticalPadding: CGFloat = 7
     static let newTaskRestFillOpacity = 0.045
     static let newTaskHoverFillOpacity = 0.075
-    static let appAccessFooterIsBottomAnchored = true
-    static let appAccessFooterMenuTitle = "ASTRA"
-    static let appAccessFooterMinimumHeight: CGFloat = 44
 }
 
 enum SidebarThreadRowLayout {

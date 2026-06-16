@@ -19,7 +19,7 @@ struct AppAccessMenu: View {
                         .font(Stanford.ui(14, weight: .medium))
                         .frame(width: 18)
 
-                    Text(SidebarLeanPresentation.appAccessFooterMenuTitle)
+                    Text(AppAccessMenuPresentation.footerMenuTitle)
                         .font(Stanford.ui(13, weight: .semibold))
                         .lineLimit(1)
 
@@ -33,7 +33,7 @@ struct AppAccessMenu: View {
                 }
                 .foregroundStyle(Stanford.black)
                 .padding(.horizontal, 10)
-                .frame(maxWidth: .infinity, minHeight: SidebarLeanPresentation.appAccessFooterMinimumHeight)
+                .frame(maxWidth: .infinity, minHeight: AppAccessMenuPresentation.footerMinimumHeight)
                 .contentShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
                 .background {
                     RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)

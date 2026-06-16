@@ -7,6 +7,8 @@ enum AppWindowIDs {
 }
 
 enum AppAccessMenuPresentation {
+    static let footerMenuTitle = "ASTRA"
+    static let footerMinimumHeight: CGFloat = 44
     static let footerIconSystemName = "ellipsis.circle"
     static let footerRestFillOpacity = 0.0
     static let footerHoverFillOpacity = 0.045
