@@ -220,6 +220,24 @@ struct GitWorktreeTests {
         #expect(TaskWorkspaceAccess(task: pinned).codeWorkingDirectory == additional)
     }
 
+    @Test("codeWorkingDirectory uses the only configured git repository when primary is storage")
+    func resolverUsesSoleAdditionalGitRepositoryForLegacyTasks() throws {
+        let primary = try makeTempDir("primary-storage")
+        let repo = try makeTempGitRepo()
+        defer {
+            try? FileManager.default.removeItem(atPath: primary)
+            try? FileManager.default.removeItem(atPath: repo)
+        }
+
+        let workspace = Workspace(name: "WS", primaryPath: primary, additionalPaths: [repo])
+        let legacyTask = AgentTask(title: "t", goal: "g", workspace: workspace)
+        legacyTask.executionRootPath = nil
+
+        let access = TaskWorkspaceAccess(task: legacyTask)
+        #expect(access.codeWorkingDirectory == repo)
+        #expect(access.effectiveWorkspacePath == primary)
+    }
+
     // MARK: - Pin snapshot at creation
 
     @Test("New task pins the workspace's active code path at creation")

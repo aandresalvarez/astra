@@ -1892,7 +1892,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let additionalPaths = AgentRuntimeProcessRunner.copilotAdditionalPaths(for: context.task)
         let userHome = FileManager.default.homeDirectoryForCurrentUser.path
         let copilotStateHome = CopilotCLIRuntime.defaultHome(userHome: userHome)
-        var localToolCommands = AgentRuntimeProcessRunner.copilotLocalToolCommands(for: context.task)
+        var localToolCommands = AgentRuntimeProcessRunner.copilotLocalToolCommands(for: context.task, contextText: context.contextText)
         if taskEnv["ASTRA_BROWSER_URL"] != nil {
             localToolCommands.append("astra-browser")
         }
@@ -1911,7 +1911,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             copilotStateHome: copilotStateHome,
             userHome: userHome,
             pathPrefix: pathPrefix,
-            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task)
+            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task, contextText: context.contextText)
                 || taskEnv["ASTRA_BROWSER_URL"] != nil,
             localToolCommands: localToolCommands,
             runtimeSupportTools: runtimeSupportTools,
@@ -2649,7 +2649,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             taskEnvironment: taskEnv,
             providerHomeDirectory: context.providerHomeDirectory,
             pathPrefix: pathPrefix,
-            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task)
+            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task, contextText: context.contextText)
                 || taskEnv["ASTRA_BROWSER_URL"] != nil,
             diagnosticLogPath: diagnosticLogPath
         )

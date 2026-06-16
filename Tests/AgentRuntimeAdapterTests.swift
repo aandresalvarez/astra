@@ -616,9 +616,15 @@ struct AgentRuntimeAdapterTests {
         #expect(codexPlan.parsesJSONLines)
         #expect(codexPlan.environment["CODEX_HOME"] == "/tmp/astra-codex-home")
         #expect(codexPlan.directoriesToCreate == ["/tmp/astra-codex-home"])
+        #expect(codexPlan.sandboxReadablePaths.contains("/tmp/astra-codex-home"))
+        #expect(codexPlan.sandboxReadablePaths.contains("/etc/codex"))
+        #if os(macOS)
+        #expect(codexPlan.sandboxReadablePaths.contains("/Library/Managed Preferences"))
+        #endif
         #expect(codexPlan.providerDetectedFields["runtime"] == AgentRuntimeID.codexCLI.rawValue)
         #expect(codexPlan.providerDetectedFields["provider_home_configured"] == "true")
         #expect(codexPlan.commandPlannedFields["permission_policy"] == PermissionPolicy.restricted.rawValue)
+        #expect(codexPlan.commandPlannedFields["sandbox_readable_path_count"] == String(codexPlan.sandboxReadablePaths.count))
 
         #expect(cursorPlan.runtime == .cursorCLI)
         #expect(cursorPlan.executablePath == "/bin/cursor-agent-not-present")

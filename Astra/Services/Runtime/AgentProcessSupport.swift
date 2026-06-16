@@ -604,6 +604,7 @@ final class AgentRuntimeStreamDebugCapture: @unchecked Sendable {
 
     private static func eventType(_ event: AgentEvent) -> String {
         switch event {
+        case .control(let type): "control:\(type)"
         case .started: "started"
         case .thinking: "thinking"
         case .text: "text"
@@ -743,6 +744,8 @@ final class AgentRuntimeStreamTelemetry: @unchecked Sendable {
 
     private func record(_ event: AgentEvent) {
         switch event {
+        case .control:
+            break
         case .started:
             break
         case .thinking:
