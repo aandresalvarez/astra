@@ -1217,7 +1217,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         )).sorted()
         let usesArtifactBootstrapProfile = !artifactBootstrapTools.isEmpty
         let visibleToolSource = usesArtifactBootstrapProfile
-            ? Array(Set(providerAllowed + runtimeSupportTools + artifactBootstrapTools + mcpAllowedTools)).sorted()
+            ? Array(Set(providerAllowed + runtimeSupportTools + artifactBootstrapTools + askFirstToolPermissions + mcpAllowedTools)).sorted()
             : Array(Set(nativeAllowedTools + askFirstToolPermissions)).sorted()
         let visibleTools = Self.visibleProviderTools(
             from: visibleToolSource,
