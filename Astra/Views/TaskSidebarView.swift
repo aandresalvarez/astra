@@ -244,12 +244,15 @@ private struct SidebarTopToolbar: View {
 }
 
 enum SidebarTaskIndexInvalidation {
-    static func signature(for tasks: [AgentTask]) -> Int {
-        tasks.reduce(into: 0) { acc, task in
+    static func signature(for tasks: [AgentTask], searchText: String = "") -> Int {
+        let includesSearchableText = !searchText.isEmpty
+        return tasks.reduce(into: 0) { acc, task in
             acc ^= task.id.hashValue
             acc ^= task.workspace?.id.hashValue ?? 0
-            acc ^= task.title.hashValue
-            acc ^= task.goal.hashValue
+            if includesSearchableText {
+                acc ^= task.title.hashValue
+                acc ^= task.goal.hashValue
+            }
             acc ^= task.status.rawValue.hashValue
             acc ^= task.isPinned ? 1 : 0
             acc ^= task.isDone ? 2 : 0
@@ -344,7 +347,7 @@ struct TaskSidebarView: View {
     // Lightweight fingerprint of task fields that the sidebar index cares about.
     // Avoids rebuilding the index when unrelated fields (output, tokens) change.
     private var sidebarTasksVersion: Int {
-        SidebarTaskIndexInvalidation.signature(for: tasks)
+        SidebarTaskIndexInvalidation.signature(for: tasks, searchText: searchText)
     }
 
     private var schedulesVersion: Int {
