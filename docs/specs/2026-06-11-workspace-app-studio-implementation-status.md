@@ -387,18 +387,25 @@ order, smallest dependency first:
   Tests: `WorkspaceAppStorageTests`. NOTE: `WorkspaceAppService` was originally
   grouped here but depends on `WorkspaceAppContractRegistry` (F3) and the
   automation scheduler, so it re-lands in F3.5 (below), not F2.
-- **F3 — Contracts + sources.** `WorkspaceAppContractRegistry`,
-  `WorkspaceAppSourceResolver`, `WorkspaceAppNativeCapabilitySourceClient`.
-  Tests: `WorkspaceAppContractRegistryTests`, `WorkspaceAppSourceResolverTests`.
+- **F3 — Contract registry.** `WorkspaceAppContractRegistry` only (built-in
+  contract families + requirement resolution). Self-contained on F1. Tests:
+  `WorkspaceAppContractRegistryTests`. NOTE: `WorkspaceAppSourceResolver` and
+  `WorkspaceAppNativeCapabilitySourceClient` were originally grouped here but
+  share types (`WorkspaceAppActionInput`, `WorkspaceAppCapabilityWriteResult`,
+  `WorkspaceAppActionExecutionError`) with the executor, so they move into the
+  F4 action-runtime cluster.
 - **F3.5 — App lifecycle service.** `WorkspaceAppService` (app create/duplicate/
   delete, manifest writes + digest, dependency-binding resolution via the
   contract registry, automation-state enable). Depends on F1+F2+F3. Tests: the
   service half of the susom `WorkspaceAppManifestTests` (createApp / remap /
   automation / lifecycle / duplicate / delete).
-- **F4 — Action executor.** `WorkspaceAppActionExecutor` (the
-  `task.createAndRun`, `gate.agentRecommendation`, `gate.humanApproval`,
-  `loop.run`, `pipeline.run` dispatch). Tests: `WorkspaceAppActionExecutorTests`.
-  Watch per-file line budgets; split if needed.
+- **F4 — Action runtime.** `WorkspaceAppSourceResolver` +
+  `WorkspaceAppNativeCapabilitySourceClient` + `WorkspaceAppActionExecutor`
+  (the `task.createAndRun`, `gate.agentRecommendation`, `gate.humanApproval`,
+  `loop.run`, `pipeline.run` dispatch). These land together because they share
+  the action-input/result/error and capability-client types. Tests:
+  `WorkspaceAppSourceResolverTests`, `WorkspaceAppActionExecutorTests`. Watch
+  per-file line budgets (executor is ~1400 lines); split if needed.
 - **F5 — App-detail + Studio view shell.** `WorkspaceAppDetailView`,
   `WorkspaceAppPresentation`, `WorkspaceAppDetailDataLoader`, plus workspace
   home / sidebar / ContentView wiring. Tests: view tests.
