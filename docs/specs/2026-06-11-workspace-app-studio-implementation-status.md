@@ -633,14 +633,20 @@ Phase B (new plumbing):
     runs for a completed task, loads each manifest, and resumes them.
   - Unit-tested (WorkspaceAppActionExecutorTests 23/23): suspend->resume->complete +
     the resumption service.
-- [TODO — B2 live hookup] Subscribe to `TaskLifecycleCoordinator` completion so
-  `resumeRuns()` fires automatically when a workflow's agent task finishes (+ build
-  the `taskOutputRows` from the task's real output). Thin runtime integration; needs
-  the running app to verify cross-session resume (live-verify like F7c).
-- [TODO — B3, depends on B2 live] Whole-run token budget + approval policy across
-  all agent steps (needs real consumption from awaited tasks).
-- [TODO — B4, depends on B2 live] Run visualization + approval queue UI for
-  in-flight / waiting runs (`.waiting` already renders in run history).
+- [DONE — B2 live] `WorkspaceAppRunResumptionService.resumeCompletedRuns(modelContext:)`
+  sweeps waiting runs whose linked task is `.completed`, resolves workspace + manifest,
+  binds a task-output row, and resumes — wired into `TaskLifecycleCoordinator` after
+  `processQueue` + `executeTask` (in-session + on-open cross-session). Also fixed: a
+  pipeline step's permission is enforced BEFORE launching the agent task. Unit-tested.
+- [DONE — B3] `WorkspaceAppWorkflowBudget` (declared budget = sum of agent-gate token
+  budgets); `WorkspaceAppRun.consumedTokens` accumulates awaited-task usage; `resume()`
+  blocks (`.blocked`, not failed) the run on overrun. Unit-tested.
+- [DONE — B4] Run history exposes `attentionRows` (`.waiting`/`.blocked`); the detail
+  view renders a "Needs attention" approval/attention queue. Partition unit-tested;
+  the live visual is verifiable in the app.
+
+Phase B is complete (B1–B4 + B2-live), all unit-tested. Slice 9 Phase C (parallel
+fan-out / branching / aggregation) remains as the explicit "later" tier.
 - Tests for output binding (done), resume-after-await, and run-level budget.
 
 Phase C (later):
