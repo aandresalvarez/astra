@@ -649,12 +649,25 @@ Phase B is complete (B1–B4 + B2-live), all unit-tested. Slice 9 Phase C (paral
 fan-out / branching / aggregation) remains as the explicit "later" tier.
 - Tests for output binding (done), resume-after-await, and run-level budget.
 
-Phase C (later):
+Phase C (DONE — designed via a judge-panel workflow, adversarially reviewed):
 
-- Parallel fan-out (agent teams running concurrently) and conditional branching
-  beyond linear step lists.
-- Aggregation/reduce step for combining parallel agent outputs.
-- Tests for fan-out completion, partial failure, and aggregation.
+- [C1] `task.fanOut`: launches one queued agent task per upstream bound row and
+  suspends the run on a BARRIER over the SET of task ids (`WorkspaceAppPipelineSuspension`
+  grew `taskID` -> `taskIDs`; B2 single-task is the one-element barrier;
+  `WorkspaceAppRun.awaitedTaskIDsJSON` absorbed into V7). The run resumes only when
+  EVERY awaited task completes, the N task rows bound forward (the fan-in into reduce).
+- [C2] `gate.branch`: synchronous predicate over upstream output -> runs thenStep/elseStep
+  inline (validator blocks targets that can transitively reach an async task).
+- [C3] `rows.reduce`: folds the prior step's bound rows into one row (count/sum/concat/
+  first/last).
+- Hardening from the adversarial review: a failed/cancelled/deleted fan-out task FAILS the
+  run (no infinite `.waiting`); task.fanOut rejected as a loop step / automation action.
+- Tests: fan-out suspend/all-complete-resume + partial-failure, branch then/else +
+  transitive-async rejection, reduce fold + validation. WorkspaceApp suite 124 green.
+
+The full Workspace App Studio is now landed: runtime (F1-F6) + agentic workflows
+(Slice 9 Phase A linear, Phase B async orchestration, Phase C parallel/branching/reduce),
+all unit-tested; F7 UI wiring live-verified.
 
 Out of scope for the first milestone:
 
