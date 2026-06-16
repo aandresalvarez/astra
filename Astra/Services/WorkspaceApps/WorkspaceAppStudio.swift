@@ -339,6 +339,9 @@ enum WorkspaceAppStudioBuilder {
         if idea.id == "weekly-report-generator" {
             return reportGeneratorManifest(for: idea)
         }
+        if idea.id == "agentic-workflow" {
+            return agenticWorkflowManifest(for: idea)
+        }
         return operationalSurfaceManifest(intent: idea.name)
     }
 
@@ -954,6 +957,111 @@ enum WorkspaceAppStudioBuilder {
             permissions: WorkspaceAppPermissions(
                 reads: ["workspace.context", "appStorage.records"],
                 writes: ["appStorage.records", "task.drafts"],
+                defaultMode: idea.riskMode
+            )
+        )
+    }
+
+    // Slice 9 Phase A: an Agentic Workflow app orchestrates a workflow of governed
+    // ASTRA agents. It composes existing primitives only — task-backed steps run
+    // through the normal task runtime (spec 16.5), separated by an agent
+    // recommendation gate and a human approval gate, and bounded by a loop with a
+    // stop condition. No parallel agent runtime is introduced.
+    private static func agenticWorkflowManifest(for idea: WorkspaceAppStudioIdea) -> WorkspaceAppManifest {
+        WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(
+                id: idea.id,
+                name: idea.name,
+                icon: "person.3.sequence",
+                description: idea.problem,
+                tags: ["agentic", "workflow"],
+                archetypes: ["Agentic Workflow"]
+            ),
+            storage: WorkspaceAppStorageSchema(tables: [
+                WorkspaceAppStorageTable(name: "workflow_runs", columns: [
+                    WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true),
+                    WorkspaceAppStorageColumn(name: "step", type: "text", required: true),
+                    WorkspaceAppStorageColumn(name: "status", type: "text", required: true),
+                    WorkspaceAppStorageColumn(name: "summary", type: "text"),
+                    WorkspaceAppStorageColumn(name: "updated_at", type: "datetime")
+                ])
+            ]),
+            sources: [
+                WorkspaceAppSource(id: "workspace_process", mode: "read", sourceRef: "conversation")
+            ],
+            views: [
+                WorkspaceAppViewSpec(
+                    id: "workflow_overview",
+                    type: "pipelineRun",
+                    title: "Workflow",
+                    table: "workflow_runs",
+                    widgets: [
+                        WorkspaceAppWidgetSpec(id: "run_count", type: "metric", label: "Recorded steps", aggregation: "count"),
+                        WorkspaceAppWidgetSpec(id: "status_breakdown", type: "chart", label: "Steps by status", groupBy: "status", aggregation: "count")
+                    ]
+                ),
+                WorkspaceAppViewSpec(id: "run_history", type: "reviewQueue", title: "Run History", table: "workflow_runs")
+            ],
+            actions: [
+                WorkspaceAppActionSpec(
+                    id: "analyze",
+                    type: "task.createAndRun",
+                    label: "Analyze",
+                    taskTitle: "Analyze the problem",
+                    taskGoal: "Analyze the workflow problem and produce findings the implementation step can act on."
+                ),
+                WorkspaceAppActionSpec(
+                    id: "agent_review",
+                    type: "gate.agentRecommendation",
+                    label: "Agent review",
+                    agentPrompt: "Review the analysis and recommend whether to continue to implementation, revise the analysis, or stop the workflow.",
+                    agentDecisions: ["continue", "revise", "stop"],
+                    agentPolicyMode: "approvalRequired",
+                    agentTokenBudget: 20_000,
+                    agentRequiresApproval: true
+                ),
+                WorkspaceAppActionSpec(
+                    id: "human_approval",
+                    type: "gate.humanApproval",
+                    label: "Human approval",
+                    approvalPrompt: "Approve the agent's recommendation before the workflow implements changes?",
+                    approvalDecisions: ["approve", "reject"]
+                ),
+                WorkspaceAppActionSpec(
+                    id: "implement",
+                    type: "task.createAndRun",
+                    label: "Implement",
+                    taskTitle: "Implement the approved plan",
+                    taskGoal: "Implement the approved plan from the analysis and record the outcome in app storage."
+                ),
+                WorkspaceAppActionSpec(
+                    id: "record_outcome",
+                    type: "appStorage.insert",
+                    label: "Record outcome",
+                    table: "workflow_runs"
+                ),
+                WorkspaceAppActionSpec(
+                    id: "run_workflow",
+                    type: "pipeline.run",
+                    label: "Run workflow",
+                    steps: ["analyze", "agent_review", "human_approval", "implement", "record_outcome"]
+                ),
+                WorkspaceAppActionSpec(
+                    id: "iterate_until_done",
+                    type: "loop.run",
+                    label: "Iterate until done",
+                    gateField: "status",
+                    gateOperator: "equals",
+                    gateValue: .text("done"),
+                    steps: ["run_workflow"],
+                    maxIterations: 5,
+                    timeoutSeconds: 3600,
+                    delaySeconds: 0
+                )
+            ],
+            permissions: WorkspaceAppPermissions(
+                reads: ["workspace.context", "appStorage.records"],
+                writes: ["appStorage.records", "task.drafts", "task.runs"],
                 defaultMode: idea.riskMode
             )
         )

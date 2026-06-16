@@ -40,6 +40,8 @@ enum WorkspaceAppStudioIdeator {
         let ideas: [WorkspaceAppStudioIdea]
         if text.contains("redcap") || text.contains("bigquery") || text.contains("reconcil") {
             ideas = reconciliationIdeas()
+        } else if text.contains("agent") || text.contains("orchestrat") {
+            ideas = agenticWorkflowIdeas()
         } else if text.contains("pipeline") || text.contains("speed") || text.contains("process") {
             ideas = pipelineIdeas()
         } else if text.contains("report") {
@@ -48,6 +50,23 @@ enum WorkspaceAppStudioIdeator {
             ideas = localDatabaseIdeas()
         }
         return Array(ideas.prefix(max(1, min(limit, ideas.count))))
+    }
+
+    private static func agenticWorkflowIdeas() -> [WorkspaceAppStudioIdea] {
+        [
+            WorkspaceAppStudioIdea(
+                id: "agentic-workflow",
+                name: "Agentic Workflow",
+                problem: "Describe a problem and run a governed workflow of ASTRA agents that analyze, get reviewed, and implement a solution with approvals and run history.",
+                requiredSources: ["Workspace conversation", "App storage run history"],
+                appStorage: ["workflow_runs"],
+                mainViews: ["Workflow", "Run History"],
+                actions: ["Run workflow", "Analyze (agent task)", "Agent review gate", "Human approval", "Implement (agent task)"],
+                automation: ["Manual run; bounded loop until done"],
+                riskMode: .approvalRequired,
+                accelerationRationale: "Turns a repeated multi-step process into a reusable app that orchestrates ASTRA agents with explicit agent and human approval gates instead of ad hoc task chains."
+            )
+        ]
     }
 
     private static func reconciliationIdeas() -> [WorkspaceAppStudioIdea] {
