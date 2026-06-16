@@ -406,17 +406,49 @@ order, smallest dependency first:
   the action-input/result/error and capability-client types. Tests:
   `WorkspaceAppSourceResolverTests`, `WorkspaceAppActionExecutorTests`. Watch
   per-file line budgets (executor is ~1400 lines); split if needed.
-- **F5 — App-detail + Studio view shell.** `WorkspaceAppDetailView`,
-  `WorkspaceAppPresentation`, `WorkspaceAppDetailDataLoader`, plus workspace
-  home / sidebar / ContentView wiring. Tests: view tests.
+- **F5a — App-detail data + presentation (DONE).** `WorkspaceAppDetailDataLoader`
+  + `WorkspaceAppPresentation` (cards, inspector rows, run-history, storage form/
+  draft builders). Tests: `WorkspaceAppDetailDataLoaderTests`.
+- **F5b — App-detail view (DONE).** `WorkspaceAppDetailView` + extracted
+  `WorkspaceAppStatusPill`. Compiles; not yet reachable from the UI.
+- **F6 — Studio builder + automation + packaging + webview (DONE).**
+  `WorkspaceAppStudio`(+`Ideation`), `WorkspaceAppAutomationExecutionService`,
+  `WorkspaceAppPackage*`, `WorkspaceAppWebViewBridge`, `WorkspaceAppStudioView`,
+  `WorkspaceAppPackageImportReviewView`. Tests: package + automation suites.
 
-Automation scheduler (`WorkspaceAppAutomation*`) and packaging/sharing
-(`WorkspaceAppPackage*`) are not required for Slice 9 Phase A and can re-land
-afterward. Minimum foundation to reach Slice 9 Phase A: F1 -> F2 -> F3 -> F4 ->
-F5.
+### F7 — UI entry-point wiring (REMAINING — needs the running app to verify)
+
+Everything above is landed and unit-tested. The only remaining gap is wiring the
+app surfaces into the heavily-diverged ContentView/sidebar/home. This is SwiftUI +
+action-execution integration that `swift build` and unit tests cannot validate
+(navigation/state/rendering need the running GUI app), so it must be done in an
+app-running session, not as a mechanical port. Precise checklist:
+
+- `ContentSceneState`: add `.workspaceApp` / `.workspaceAppStudio` cases to
+  `ContentDetailPresentation`, thread `selectedWorkspaceApp` through
+  `resolve(...)` + `ContentWorkspaceSelectionCoordinator`/`...Update`, and add
+  `WorkspaceAppStudioEntryPresentation.shouldShowNewAppEntry(for:)`.
+- `ContentView`: add `@State selectedWorkspaceApp`, thread it into
+  `ContentDetailAreaView`, and handle the two new cases in the detail switch
+  (~line 3190) — render `WorkspaceAppDetailView` (wire `onRunAction` to
+  `WorkspaceAppActionExecutor` + `ModelContext`, `onRefresh`, `onExportPackage`,
+  `onOpenStudio`) and `WorkspaceAppStudioView`. Add a `startWorkspaceApp` create
+  path (`WorkspaceAppStudioBuilder` -> `WorkspaceAppService.createApp`).
+- `WorkspaceHomeView`: add an Apps section + `New App` action + the app-card
+  presentation flags the susom `WorkspaceHomePresentationTests` assert.
+- `TaskSidebarView`: app rows as workspace children (open / studio / duplicate /
+  export / delete) + the `WorkspaceAppList` activity-sort presentation that
+  `TaskEventTimelineSidebarTests` covers.
+- Coupled tests to add (without clobbering existing same-named files): the
+  app-specific cases from susom `ViewTests` / `WorkspaceHomePresentationTests` /
+  `TaskEventTimelineSidebarTests` (`WorkspaceAppStudioEntryPresentation`,
+  `ContentDetailPresentation.resolve` with apps, `WorkspaceAppsPresentation`).
+
+Automation scheduler and packaging/sharing already re-landed in F6.
 
 Each F-slice ports the corresponding susom-branch files onto current `main`,
 fixes API drift (~355 commits of divergence), and lands with its tests green.
+F1–F6 + Slice 9 Phase A are committed on `claude/loving-rhodes-87e735`.
 
 ## Recommended Next PR Slices
 
