@@ -485,6 +485,40 @@ struct ExecutionSandboxTests {
         #endif
     }
 
+    @Test("Applied sandbox plan preserves protected write-deny paths through rewrite")
+    func appliedPlanPreservesProtectedWriteDenyPaths() throws {
+        let fm = FileManager.default
+        guard fm.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
+
+        let base = fm.temporaryDirectory.appendingPathComponent("astra-rewrite-\(UUID().uuidString)")
+        let workspace = base.appendingPathComponent("workspace")
+        try fm.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: base) }
+
+        let denyPaths = ["\(workspace.path)/.copilot/config.json"]
+        let plan = makePlan(
+            runtime: .copilotCLI,
+            executablePath: "/bin/echo",
+            arguments: ["hi"],
+            currentDirectory: workspace.path,
+            environment: ["HOME": workspace.path],
+            sandboxProtectedWriteDenyPaths: denyPaths
+        )
+
+        let decision = ExecutionSandbox.decide(
+            plan: plan,
+            providerHomeDirectory: workspace.path,
+            settings: ExecutionSandboxSettings(enforcement: .strict, allowNetwork: true, readScope: .enforce)
+        )
+        guard case .applied(let wrapped, _) = decision else {
+            Issue.record("Expected strict sandbox to apply, got \(decision)")
+            return
+        }
+        // The rewritten/applied plan must carry the protected write-deny paths
+        // forward (regression guard: rewrite() once dropped this field).
+        #expect(wrapped.sandboxProtectedWriteDenyPaths == denyPaths)
+    }
+
     // MARK: - Decision logic
 
     @Test("Disabled enforcement skips wrapping")
