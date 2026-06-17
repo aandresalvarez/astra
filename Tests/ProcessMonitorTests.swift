@@ -861,6 +861,57 @@ struct ProcessMonitorTests {
         #expect(monitor.runtimeStopMessage?.contains("provider-side liveness") == true)
     }
 
+    @Test("Provider liveness after progress stops as stalled semantic progress")
+    func providerLivenessAfterProgressStopsAsStalledSemanticProgress() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            noSemanticProgressTimeoutSeconds: 0
+        )
+        let process = MonitorMockProcess()
+
+        let visibleProgressStopped = monitor.processEvent(.text(text: "Working on it"), process: process)
+        let livenessStopped = monitor.processEvent(.thinking(text: "Still thinking"), process: process)
+        let watchdogStopped = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+
+        #expect(visibleProgressStopped == false)
+        #expect(livenessStopped == false)
+        #expect(watchdogStopped == true)
+        #expect(process.didTerminate == true)
+        #expect(monitor.runtimeStopReason == "provider_semantic_progress_stalled")
+        #expect(monitor.runtimeStopMessage?.contains("stopped advancing") == true)
+    }
+
+    @Test("Terminal progress exit grace terminates without runtime stop")
+    func terminalProgressExitGraceTerminatesWithoutRuntimeStop() {
+        let taskID = UUID()
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            noSemanticProgressTimeoutSeconds: 60,
+            terminalProgressExitGraceSeconds: 0,
+            taskID: taskID
+        )
+        let process = MonitorMockProcess()
+
+        let shouldKillEvent = monitor.processEvent(
+            .astraProtocol(.valid(.complete(summary: "Done", verifiedBy: nil))),
+            process: process
+        )
+        let watchdogStopped = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+
+        #expect(shouldKillEvent == false)
+        #expect(watchdogStopped == true)
+        #expect(process.didTerminate == true)
+        #expect(monitor.terminatedAfterTerminalProgress == true)
+        #expect(monitor.runtimeStopReason == nil)
+        #expect(monitor.timedOut == false)
+
+        AppLogger.flushForTesting()
+        let taskLogMessages = AppLogger.entries
+            .filter { $0.taskID == taskID }
+            .map(\.message)
+        #expect(!taskLogMessages.contains { $0.contains(AuditEvent.workerTimeout.rawValue) })
+    }
+
     @Test("Default liveness-only timeout gives real providers a bounded action window")
     func defaultLivenessOnlyTimeoutGivesRealProvidersBoundedActionWindow() {
         let shortRun = AgentRuntimeWorker.ProcessMonitor(
@@ -906,7 +957,7 @@ struct ProcessMonitorTests {
     func visibleProviderTextPreventsLivenessOnlyStop() {
         let monitor = AgentRuntimeWorker.ProcessMonitor(
             tokenBudget: Int.max,
-            noSemanticProgressTimeoutSeconds: 0
+            noSemanticProgressTimeoutSeconds: 60
         )
         let process = MonitorMockProcess()
 
@@ -947,6 +998,17 @@ struct ProcessMonitorTests {
         #expect(result.budgetExceeded == true)
         #expect(result.repetitionKilled == true)
         #expect(result.timedOut == false)
+    }
+
+    @Test("ProcessResult normalizes terminal-progress termination exit code")
+    func processResultNormalizesTerminalProgressTerminationExitCode() {
+        let result = AgentRuntimeWorker.ProcessResult(
+            exitCode: 143,
+            terminatedAfterTerminalProgress: true
+        )
+
+        #expect(result.exitCode == 0)
+        #expect(result.terminatedAfterTerminalProgress)
     }
 
     // MARK: - Resume Budget Calculation
