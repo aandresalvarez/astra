@@ -386,6 +386,8 @@ struct TaskSidebarView: View {
                 }
                 .padding(.bottom, 12)
             }
+
+            appAccessFooter
         }
         .onAppear {
             loadSidebarDisclosure()
@@ -426,6 +428,17 @@ struct TaskSidebarView: View {
         } message: {
             Text("Enter a new name for this task.")
         }
+    }
+
+    private var appAccessFooter: some View {
+        VStack(spacing: 0) {
+            Divider()
+                .opacity(0.35)
+            AppAccessMenu()
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+        }
+        .accessibilityIdentifier("AppAccessSidebarFooter")
     }
 
     // MARK: - Pinned Section
