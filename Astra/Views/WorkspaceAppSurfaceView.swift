@@ -15,12 +15,50 @@ struct WorkspaceAppSurfaceView: View {
     let onRunAction: (WorkspaceAppActionSpec, WorkspaceAppManifest, WorkspaceAppActionInput) throws -> WorkspaceAppActionExecutionResult
     let onReload: () -> Void
 
+    // Snapshot-derived presentations, computed ONCE in init. SwiftUI does NOT re-run init on
+    // @State-driven body re-evaluations (typing in the inline record form mutates recordFormValues
+    // on every keystroke), so these no longer recompute per keystroke — only when the host passes a
+    // new snapshot after a reload. The costly bits this avoids: mermaid diagram parsing in the
+    // native surface builder, and per-table row-action derivation inside the storage ForEach.
+    private let surface: WorkspaceAppNativeSurfacePresentation
+    private let actionPresentations: [WorkspaceAppDetailActionPresentation]
+    private let runHistory: WorkspaceAppRunHistoryPresentation
+    private let rowActionsByTable: [String: WorkspaceAppStorageRowActionsPresentation]
+
     @State private var actionStatusMessage = ""
     @State private var activeRecordAction: WorkspaceAppDetailActionPresentation?
     @State private var activeGateAction: WorkspaceAppDetailActionPresentation?
     @State private var recordFormValues: [String: String] = [:]
     @State private var recordFormError = ""
     @State private var pendingDeleteRecordID: String?
+
+    init(
+        snapshot: WorkspaceAppDetailDataSnapshot,
+        onRunAction: @escaping (WorkspaceAppActionSpec, WorkspaceAppManifest, WorkspaceAppActionInput) throws -> WorkspaceAppActionExecutionResult,
+        onReload: @escaping () -> Void
+    ) {
+        self.snapshot = snapshot
+        self.onRunAction = onRunAction
+        self.onReload = onReload
+        self.surface = WorkspaceAppNativeSurfaceBuilder.presentation(
+            manifest: snapshot.manifest,
+            storageTables: snapshot.storageTables
+        )
+        self.actionPresentations = WorkspaceAppDetailActionsPresentation.actions(
+            manifest: snapshot.manifest,
+            storageTables: snapshot.storageTables
+        )
+        self.runHistory = WorkspaceAppRunHistoryPresentationBuilder.presentation(runs: snapshot.runs)
+        self.rowActionsByTable = Dictionary(
+            snapshot.storageTables.map { table in
+                (table.name, WorkspaceAppStorageRowActionPresentationBuilder.presentation(
+                    manifest: snapshot.manifest,
+                    table: table
+                ))
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -34,10 +72,6 @@ struct WorkspaceAppSurfaceView: View {
 
     @ViewBuilder
     private var nativeSurfaceSection: some View {
-        let surface = WorkspaceAppNativeSurfaceBuilder.presentation(
-            manifest: snapshot.manifest,
-            storageTables: snapshot.storageTables
-        )
         if !surface.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -107,10 +141,7 @@ struct WorkspaceAppSurfaceView: View {
 
     @ViewBuilder
     private var actionsSection: some View {
-        let actions = WorkspaceAppDetailActionsPresentation.actions(
-            manifest: snapshot.manifest,
-            storageTables: snapshot.storageTables
-        )
+        let actions = actionPresentations
         if !actions.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -165,7 +196,7 @@ struct WorkspaceAppSurfaceView: View {
 
     @ViewBuilder
     private var runHistorySection: some View {
-        let history = WorkspaceAppRunHistoryPresentationBuilder.presentation(runs: snapshot.runs)
+        let history = runHistory
         if !history.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -214,10 +245,8 @@ struct WorkspaceAppSurfaceView: View {
                 ForEach(snapshot.storageTables, id: \.name) { table in
                     WorkspaceAppStorageTableView(
                         table: table,
-                        rowActions: WorkspaceAppStorageRowActionPresentationBuilder.presentation(
-                            manifest: snapshot.manifest,
-                            table: table
-                        ),
+                        rowActions: rowActionsByTable[table.name]
+                            ?? WorkspaceAppStorageRowActionsPresentation(tableName: table.name, primaryKey: nil, updateAction: nil, deleteAction: nil, disabledReason: nil),
                         pendingDeleteRecordID: pendingDeleteRecordID,
                         onEdit: editRecord,
                         onDelete: deleteRecord
