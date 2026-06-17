@@ -39,6 +39,13 @@ struct WorkspaceAppWebViewBridgeValidation: Sendable, Equatable {
 }
 
 enum WorkspaceAppWebViewBridge {
+    /// The ONLY renderers a WebView widget may use — ASTRA-known, audited renderers,
+    /// never arbitrary imported HTML/JavaScript (Workspace App Studio milestone rule:
+    /// "no arbitrary imported custom JavaScript widgets"). Single source of truth, shared
+    /// with `WorkspaceAppManifestValidator`, so the publish-time guard and any runtime
+    /// guard can never drift apart.
+    static let allowedRenderers: Set<String> = ["mermaidDiagram", "htmlReport", "chartComposite"]
+
     static func validate(
         _ request: WorkspaceAppWebViewBridgeRequest,
         manifest: WorkspaceAppManifest

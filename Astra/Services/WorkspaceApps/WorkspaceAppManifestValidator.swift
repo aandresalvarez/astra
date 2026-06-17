@@ -252,11 +252,10 @@ enum WorkspaceAppManifestValidator {
         actionIDs: Set<String>,
         issues: inout [WorkspaceAppManifestValidationReport.Issue]
     ) {
-        let allowedRenderers = Set(["mermaidDiagram", "htmlReport", "chartComposite"])
         let renderer = widget.webRenderer?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if renderer.isEmpty {
             issues.append(blocker("\(path)/webRenderer", "WebView widget must declare an ASTRA-known renderer."))
-        } else if !allowedRenderers.contains(renderer) {
+        } else if !WorkspaceAppWebViewBridge.allowedRenderers.contains(renderer) {
             issues.append(blocker("\(path)/webRenderer", "WebView renderer '\(renderer)' is not allowed for Workspace Apps."))
         }
 
