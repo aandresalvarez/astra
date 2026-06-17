@@ -693,7 +693,10 @@ struct ContentView: View {
             workspace: effectiveWorkspace,
             onOpenStudio: { startWorkspaceAppStudio() },
             onRefresh: {},
-            onExportPackage: { throw WorkspaceAppUIError.exportUnavailableFromDetail },
+            onExportPackage: {
+                guard let workspace = effectiveWorkspace else { throw WorkspaceAppUIError.exportUnavailableFromDetail }
+                return try WorkspaceAppPackageExporter().exportTemplatePackage(app: app, workspace: workspace).packageURL
+            },
             onRunAction: { action, manifest, input in
                 try runWorkspaceAppAction(app: app, action: action, manifest: manifest, input: input)
             }
