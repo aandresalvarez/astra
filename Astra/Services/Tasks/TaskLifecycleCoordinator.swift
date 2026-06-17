@@ -895,27 +895,14 @@ final class TaskLifecycleCoordinator {
     // MARK: - Migration
 
     func migrateConnectorCredentials(workspaces: [Workspace], globalConnectors: [Connector] = []) {
-        var seen = Set<UUID>()
-        let connectors = workspaces.flatMap(\.connectors) + globalConnectors
-        for connector in connectors where seen.insert(connector.id).inserted {
-            connector.migrateToKeychain()
-            // Move any secrets older versions stored in the login keychain
-            // into ASTRA's dedicated keychain. Idempotent; runs once at launch
-            // (not on every Connector instantiation), enumerating by service
-            // so it covers every credential/OAuth key without naming them.
-            KeychainService.migrateConnectorFromLoginKeychain(connectorID: connector.id)
-        }
+        StartupCredentialMigrationService.migrateConnectorCredentials(
+            workspaces: workspaces,
+            globalConnectors: globalConnectors
+        )
     }
 
     func migrateSkillSecrets(skills: [Skill]) {
-        for skill in skills {
-            skill.migrateSecretsToKeychain()
-            // See migrateConnectorCredentials: relocate legacy login-keychain
-            // secrets into ASTRA's dedicated keychain. Done here rather than in
-            // Skill.migrateSecretsToKeychain() (which Skill.init() calls on every
-            // instantiation) to keep the per-init path free of keychain queries.
-            KeychainService.migrateSkillFromLoginKeychain(skillID: skill.id)
-        }
+        StartupCredentialMigrationService.migrateSkillSecrets(skills: skills)
     }
 
     // MARK: - Seeding

@@ -275,6 +275,8 @@ struct AstraSecureKeychainTests {
         )
         connector.isGlobal = true
         connector.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        container.mainContext.insert(connector)
+        try container.mainContext.save()
         let service = KeychainSecretStore.connectorEntityID(for: connector.id)
         defer {
             AstraSecureKeychainTestSupport.cleanup(
@@ -296,11 +298,7 @@ struct AstraSecureKeychainTests {
 
         AstraSecureKeychainStore.$keychainPathOverride.withValue(path) {
             AstraSecureKeychainStore.$bootstrapServiceOverride.withValue(bootstrap) {
-                let coordinator = TaskLifecycleCoordinator(
-                    modelContext: container.mainContext,
-                    taskQueue: TaskQueue()
-                )
-                coordinator.migrateConnectorCredentials(workspaces: [], globalConnectors: [connector])
+                StartupCredentialMigrationService.migrate(modelContext: container.mainContext)
 
                 let store = KeychainSecretStore()
                 #expect(store.load(key: "JIRA_EMAIL", entityID: service) == "user@example.com")
