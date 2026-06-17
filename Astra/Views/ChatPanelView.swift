@@ -549,7 +549,7 @@ struct ChatPanelView: View {
 
     private var isSlashCommandInput: Bool {
         let lower = messageText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return ["/skill", "/tool", "/connector", "/template", "/routine", "/schedule", "/remember", "/recap"].contains { command in
+        return ["/skill", "/tool", "/connector", "/template", "/routine", "/schedule", "/remember", "/recap", "/app"].contains { command in
             lower == command || lower.hasPrefix(command + " ")
         }
     }
@@ -573,6 +573,8 @@ struct ChatPanelView: View {
                        title: "Create Connector", description: "Set up auth for Jira, GitHub, Slack, or APIs"),
             SlashOption(id: "template", command: "/template", icon: "rectangle.3.group", color: Stanford.poppy,
                        title: "Use Template", description: "Create a multi-phase task from a template"),
+            SlashOption(id: "app", command: "/app", icon: "square.grid.2x2", color: Stanford.lagunita,
+                       title: "Build Workspace App", description: "Generate a governed local app with storage, views, and actions"),
             SlashOption(id: "schedule", command: "/routine", icon: "arrow.triangle.2.circlepath", color: Stanford.poppy,
                        title: "Create Routine", description: "Automate recurring work with instructions and capabilities"),
             SlashOption(id: "remember", command: "/remember", icon: "text.badge.checkmark", color: Stanford.lagunita,
@@ -1559,6 +1561,15 @@ struct ChatPanelView: View {
 
             // Fall through to the normal provider conversation — the slash context
             // will be injected into the system prompt
+        }
+
+        // /app — one-shot: generate a Workspace App from the description deterministically (no
+        // provider round-trip), reusing the Studio Publish path. Logic lives in WorkspaceAppChatCommand.
+        if lower == "/app" || lower.hasPrefix("/app ") {
+            messages.append(ChatMessage(role: "user", content: input))
+            messageText = ""
+            messages.append(ChatMessage(role: "assistant", content: WorkspaceAppChatCommand.reply(input: input, workspace: workspace, modelContext: modelContext)))
+            return
         }
 
         // /recap — one-shot prose summary for resuming later. Injected into skillCtx
