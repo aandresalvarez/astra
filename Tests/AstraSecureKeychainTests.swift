@@ -129,6 +129,11 @@ struct AstraSecureKeychainTests {
     @Test("Dedicated keychain reads disable UI and use file-keychain lookup")
     func dedicatedReadsAreNonInteractiveFileKeychainLookups() throws {
         let source = try astraSecureKeychainSource()
+        let readSecretBody = try methodBody(
+            startingWith: "+ (NSData *)readSecretDataForAccount:",
+            endingBefore: "+ (BOOL)isUserInteractionRecoveryStatus:",
+            in: source
+        )
         let secretBody = try methodBody(
             startingWith: "+ (nullable NSString *)secretForAccount:",
             endingBefore: "+ (BOOL)deleteSecretForAccount:",
@@ -143,22 +148,24 @@ struct AstraSecureKeychainTests {
         for body in [secretBody, existsBody] {
             #expect(body.contains("disableKeychainUserInteractionSavingPrevious"))
             #expect(body.contains("restoreKeychainUserInteraction"))
-            #expect(body.contains("SecKeychainFindGenericPassword"))
+            #expect(body.contains("readSecretDataForAccount"))
             #expect(!body.contains("SecItemCopyMatching"))
         }
+        #expect(readSecretBody.contains("SecKeychainFindGenericPassword"))
+        #expect(readSecretBody.contains("repairSecretAccessForItem"))
     }
 
-    @Test("Bootstrap password item is repairable for rebuilt ASTRA binaries")
-    func bootstrapPasswordAccessIsRepairableAcrossRebuilds() throws {
+    @Test("Keychain password and secret items are repairable for rebuilt ASTRA binaries")
+    func keychainItemAccessIsRepairableAcrossRebuilds() throws {
         let source = try astraSecureKeychainSource()
         let accessBody = try methodBody(
-            startingWith: "+ (SecAccessRef)nonPromptingBootstrapAccess",
-            endingBefore: "+ (BOOL)repairBootstrapAccessForItem:",
+            startingWith: "+ (SecAccessRef)nonPromptingAccessWithLabel:",
+            endingBefore: "+ (NSData *)readBootstrapPasswordForService:",
             in: source
         )
-        let repairBody = try methodBody(
-            startingWith: "+ (BOOL)repairBootstrapAccessForItem:",
-            endingBefore: "+ (NSData *)readBootstrapPasswordForService:",
+        let saveBody = try methodBody(
+            startingWith: "+ (BOOL)saveSecret:",
+            endingBefore: "+ (nullable NSString *)secretForAccount:",
             in: source
         )
         let bootstrapBody = try methodBody(
@@ -171,10 +178,14 @@ struct AstraSecureKeychainTests {
         #expect(accessBody.contains("SecACLSetContents"))
         #expect(accessBody.contains("kSecACLAuthorizationDecrypt"))
         #expect(accessBody.contains("NULL"))
-        #expect(repairBody.contains("SecKeychainItemSetAccess"))
+        #expect(accessBody.contains("SecKeychainItemSetAccess"))
+        #expect(accessBody.contains("repairBootstrapAccessForItem"))
+        #expect(accessBody.contains("repairSecretAccessForItem"))
         #expect(bootstrapBody.contains("temporarilyAllowKeychainUserInteraction"))
         #expect(bootstrapBody.contains("readBootstrapPasswordForService"))
         #expect(bootstrapBody.contains("addBootstrapPassword"))
+        #expect(saveBody.contains("addSecretValue"))
+        #expect(saveBody.contains("repairSecretAccessForItem"))
     }
 
     // MARK: - CRUD against the dedicated keychain

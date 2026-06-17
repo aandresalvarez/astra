@@ -18,6 +18,7 @@
 static NSString *const kAstraBootstrapAccount = @"keychain-bootstrap-password";
 static NSString *const kAstraBootstrapLabel = @"ASTRA secure keychain password";
 static NSString *const kAstraBootstrapComment = @"Unlocks ASTRA's dedicated secret keychain. Do not delete.";
+static NSString *const kAstraSecretAccessLabel = @"ASTRA secure credential";
 
 @implementation AstraSecureKeychain
 
@@ -199,9 +200,9 @@ static NSString *const kAstraBootstrapComment = @"Unlocks ASTRA's dedicated secr
 
 #pragma mark - Bootstrap password (stored in the login keychain)
 
-+ (SecAccessRef)nonPromptingBootstrapAccess {
++ (SecAccessRef)nonPromptingAccessWithLabel:(NSString *)label {
     SecAccessRef access = NULL;
-    OSStatus status = SecAccessCreate((__bridge CFStringRef)kAstraBootstrapLabel, NULL, &access);
+    OSStatus status = SecAccessCreate((__bridge CFStringRef)label, NULL, &access);
     if (status != errSecSuccess || access == NULL) {
         if (access != NULL) { CFRelease(access); }
         return NULL;
@@ -209,12 +210,12 @@ static NSString *const kAstraBootstrapComment = @"Unlocks ASTRA's dedicated secr
 
     // SecAccessCreate(NULL trusted list) defaults to trusting only the creating
     // binary. Local debug/release ASTRA builds are ad-hoc signed and their cdhash
-    // changes every rebuild, so that default makes the bootstrap item visible but
+    // changes every rebuild, so that default makes existing items visible but
     // unreadable to the next ASTRA.app. Set the decrypt ACL to applications:null
-    // (the same shape Keychain Access calls "allow all applications") so the
-    // bootstrap password can be read non-interactively across rebuilt ASTRA
-    // binaries. This item is only useful together with the dedicated keychain
-    // file, which ASTRA does not grant to sandboxed agents.
+    // (the same shape Keychain Access calls "allow all applications") so ASTRA's
+    // own dedicated-keychain items can be read non-interactively across rebuilt
+    // ASTRA binaries. These items are only useful together with the dedicated
+    // keychain file, which ASTRA does not grant to sandboxed agents.
     CFArrayRef decryptACLs = SecAccessCopyMatchingACLList(access, kSecACLAuthorizationDecrypt);
     if (decryptACLs == NULL || CFArrayGetCount(decryptACLs) == 0) {
         if (decryptACLs != NULL) { CFRelease(decryptACLs); }
@@ -229,7 +230,7 @@ static NSString *const kAstraBootstrapComment = @"Unlocks ASTRA's dedicated secr
         OSStatus aclStatus = SecACLSetContents(
             acl,
             NULL,
-            (__bridge CFStringRef)kAstraBootstrapLabel,
+            (__bridge CFStringRef)label,
             0
         );
         updated = updated || aclStatus == errSecSuccess;
@@ -243,13 +244,29 @@ static NSString *const kAstraBootstrapComment = @"Unlocks ASTRA's dedicated secr
     return access;
 }
 
-+ (BOOL)repairBootstrapAccessForItem:(SecKeychainItemRef)item {
++ (SecAccessRef)nonPromptingBootstrapAccess {
+    return [self nonPromptingAccessWithLabel:kAstraBootstrapLabel];
+}
+
++ (SecAccessRef)nonPromptingSecretAccess {
+    return [self nonPromptingAccessWithLabel:kAstraSecretAccessLabel];
+}
+
++ (BOOL)repairAccessForItem:(SecKeychainItemRef)item label:(NSString *)label {
     if (item == NULL) { return NO; }
-    SecAccessRef access = [self nonPromptingBootstrapAccess];
+    SecAccessRef access = [self nonPromptingAccessWithLabel:label];
     if (access == NULL) { return NO; }
     OSStatus status = SecKeychainItemSetAccess(item, access);
     CFRelease(access);
     return status == errSecSuccess;
+}
+
++ (BOOL)repairBootstrapAccessForItem:(SecKeychainItemRef)item {
+    return [self repairAccessForItem:item label:kAstraBootstrapLabel];
+}
+
++ (BOOL)repairSecretAccessForItem:(SecKeychainItemRef)item {
+    return [self repairAccessForItem:item label:kAstraSecretAccessLabel];
 }
 
 + (NSData *)readBootstrapPasswordForService:(NSString *)service
@@ -289,6 +306,44 @@ static NSString *const kAstraBootstrapComment = @"Unlocks ASTRA's dedicated secr
     return data;
 }
 
++ (NSData *)readSecretDataForAccount:(NSString *)account
+                              service:(NSString *)service
+                             keychain:(SecKeychainRef)keychain
+                               status:(OSStatus *)outStatus {
+    const char *serviceName = service.UTF8String;
+    const char *accountName = account.UTF8String;
+    if (serviceName == NULL || accountName == NULL) {
+        if (outStatus != NULL) { *outStatus = errSecParam; }
+        return nil;
+    }
+
+    UInt32 passwordLength = 0;
+    void *passwordData = NULL;
+    SecKeychainItemRef item = NULL;
+    OSStatus status = SecKeychainFindGenericPassword(
+        keychain,
+        (UInt32)strlen(serviceName), serviceName,
+        (UInt32)strlen(accountName), accountName,
+        &passwordLength,
+        &passwordData,
+        &item
+    );
+    if (outStatus != NULL) { *outStatus = status; }
+    if (status != errSecSuccess || passwordData == NULL) {
+        if (passwordData != NULL) { SecKeychainItemFreeContent(NULL, passwordData); }
+        if (item != NULL) { CFRelease(item); }
+        return nil;
+    }
+
+    NSData *data = [NSData dataWithBytes:passwordData length:passwordLength];
+    SecKeychainItemFreeContent(NULL, passwordData);
+    if (item != NULL) {
+        [self repairSecretAccessForItem:item];
+        CFRelease(item);
+    }
+    return data;
+}
+
 + (BOOL)isUserInteractionRecoveryStatus:(OSStatus)status {
     return status == errSecAuthFailed || status == errSecInteractionNotAllowed;
 }
@@ -313,6 +368,7 @@ static NSString *const kAstraBootstrapComment = @"Unlocks ASTRA's dedicated secr
     SecKeychainAttributeList attributeList = { 4, attributes };
 
     SecAccessRef access = [self nonPromptingBootstrapAccess];
+    if (access == NULL) { return errSecParam; }
     SecKeychainItemRef item = NULL;
     OSStatus addStatus = SecKeychainItemCreateFromContent(
         kSecGenericPasswordItemClass,
@@ -396,6 +452,44 @@ static NSString *const kAstraBootstrapComment = @"Unlocks ASTRA's dedicated secr
     return nil;
 }
 
++ (OSStatus)addSecretValue:(NSData *)valueData
+                forAccount:(NSString *)account
+                   service:(NSString *)service
+                     label:(NSString *)label
+                  keychain:(SecKeychainRef)keychain {
+    const char *serviceName = service.UTF8String;
+    const char *accountName = account.UTF8String;
+    if (serviceName == NULL || accountName == NULL || valueData.length == 0) {
+        return errSecParam;
+    }
+
+    NSString *itemLabel = label ?: @"Astra credential";
+    NSData *labelData = [itemLabel dataUsingEncoding:NSUTF8StringEncoding];
+    SecKeychainAttribute attributes[] = {
+        { kSecServiceItemAttr, (UInt32)strlen(serviceName), (void *)serviceName },
+        { kSecAccountItemAttr, (UInt32)strlen(accountName), (void *)accountName },
+        { kSecLabelItemAttr, (UInt32)labelData.length, (void *)labelData.bytes },
+        { kSecCommentItemAttr, (UInt32)labelData.length, (void *)labelData.bytes },
+    };
+    SecKeychainAttributeList attributeList = { 4, attributes };
+
+    SecAccessRef access = [self nonPromptingSecretAccess];
+    if (access == NULL) { return errSecParam; }
+    SecKeychainItemRef item = NULL;
+    OSStatus addStatus = SecKeychainItemCreateFromContent(
+        kSecGenericPasswordItemClass,
+        &attributeList,
+        (UInt32)valueData.length,
+        valueData.bytes,
+        keychain,
+        access,
+        &item
+    );
+    if (access != NULL) { CFRelease(access); }
+    if (item != NULL) { CFRelease(item); }
+    return addStatus;
+}
+
 #pragma mark - CRUD
 
 + (BOOL)saveSecret:(NSString *)value
@@ -424,40 +518,34 @@ static NSString *const kAstraBootstrapComment = @"Unlocks ASTRA's dedicated secr
         (__bridge id)kSecValueData: data,
         (__bridge id)kSecAttrComment: label ?: @"Astra credential",
     };
-    OSStatus updateStatus = SecItemUpdate((__bridge CFDictionaryRef)matchQuery,
-                                          (__bridge CFDictionaryRef)updateAttributes);
-    if (updateStatus == errSecSuccess) { return YES; }
-    if (updateStatus != errSecItemNotFound) { return NO; }
-
-    NSString *comment = label ?: @"Astra credential";
-    NSData *labelData = [comment dataUsingEncoding:NSUTF8StringEncoding];
-    SecKeychainAttribute attributes[] = {
-        { kSecLabelItemAttr, (UInt32)labelData.length, (void *)labelData.bytes },
-        { kSecCommentItemAttr, (UInt32)labelData.length, (void *)labelData.bytes },
-    };
-    SecKeychainAttributeList attributeList = { 2, attributes };
-
-    SecKeychainItemRef addedItem = NULL;
-    OSStatus addStatus = SecKeychainAddGenericPassword(
+    SecKeychainItemRef existingItem = NULL;
+    OSStatus existingStatus = SecKeychainFindGenericPassword(
         keychain,
         (UInt32)strlen(serviceName), serviceName,
         (UInt32)strlen(accountName), accountName,
-        (UInt32)data.length,
-        data.bytes,
-        &addedItem
+        NULL,
+        NULL,
+        &existingItem
     );
-    if (addStatus != errSecSuccess || addedItem == NULL) {
-        if (addedItem != NULL) { CFRelease(addedItem); }
-        return NO;
+    OSStatus updateStatus = SecItemUpdate((__bridge CFDictionaryRef)matchQuery,
+                                          (__bridge CFDictionaryRef)updateAttributes);
+    if (updateStatus == errSecSuccess) {
+        BOOL repaired = YES;
+        if (existingStatus == errSecSuccess && existingItem != NULL) {
+            repaired = [self repairSecretAccessForItem:existingItem];
+        }
+        if (existingItem != NULL) { CFRelease(existingItem); }
+        return repaired;
     }
-    OSStatus attributeStatus = SecKeychainItemModifyAttributesAndData(
-        addedItem,
-        &attributeList,
-        (UInt32)data.length,
-        data.bytes
-    );
-    CFRelease(addedItem);
-    return attributeStatus == errSecSuccess;
+    if (existingItem != NULL) { CFRelease(existingItem); }
+    if (updateStatus != errSecItemNotFound) { return NO; }
+
+    OSStatus addStatus = [self addSecretValue:data
+                                   forAccount:account
+                                      service:service
+                                        label:label
+                                     keychain:keychain];
+    return addStatus == errSecSuccess;
 }
 
 + (nullable NSString *)secretForAccount:(NSString *)account
@@ -470,24 +558,24 @@ static NSString *const kAstraBootstrapComment = @"Unlocks ASTRA's dedicated secr
     SecKeychainRef keychain = [self dedicatedKeychainForPath:keychainPath bootstrapService:bootstrapService];
     if (keychain == NULL) { return nil; }
 
-    const char *serviceName = service.UTF8String;
-    const char *accountName = account.UTF8String;
-    if (serviceName == NULL || accountName == NULL) { return nil; }
-
-    UInt32 passwordLength = 0;
-    void *passwordData = NULL;
-    OSStatus status = SecKeychainFindGenericPassword(
-        keychain,
-        (UInt32)strlen(serviceName), serviceName,
-        (UInt32)strlen(accountName), accountName,
-        &passwordLength,
-        &passwordData,
-        NULL
-    );
-    if (status != errSecSuccess || passwordData == NULL) { return nil; }
-
-    NSData *data = [NSData dataWithBytes:passwordData length:passwordLength];
-    SecKeychainItemFreeContent(NULL, passwordData);
+    OSStatus status = errSecSuccess;
+    NSData *data = [self readSecretDataForAccount:account
+                                          service:service
+                                         keychain:keychain
+                                           status:&status];
+    if (data.length == 0 && [self isUserInteractionRecoveryStatus:status]) {
+        __block NSData *recovered = nil;
+        [self temporarilyAllowKeychainUserInteraction:^{
+            OSStatus interactiveStatus = errSecSuccess;
+            recovered = [self readSecretDataForAccount:account
+                                               service:service
+                                              keychain:keychain
+                                                status:&interactiveStatus];
+            return (BOOL)(recovered.length > 0);
+        }];
+        data = recovered;
+    }
+    if (data.length == 0) { return nil; }
     return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
     } @finally {
         [self restoreKeychainUserInteraction:previousInteraction];
@@ -551,16 +639,12 @@ static NSString *const kAstraBootstrapComment = @"Unlocks ASTRA's dedicated secr
     const char *serviceName = service.UTF8String;
     const char *accountName = account.UTF8String;
     if (serviceName == NULL || accountName == NULL) { return NO; }
-    SecKeychainItemRef item = NULL;
-    OSStatus status = SecKeychainFindGenericPassword(
-        keychain,
-        (UInt32)strlen(serviceName), serviceName,
-        (UInt32)strlen(accountName), accountName,
-        NULL, NULL,
-        &item
-    );
-    if (item != NULL) { CFRelease(item); }
-    return status == errSecSuccess;
+    OSStatus status = errSecSuccess;
+    NSData *data = [self readSecretDataForAccount:account
+                                          service:service
+                                         keychain:keychain
+                                           status:&status];
+    return data.length > 0;
     } @finally {
         [self restoreKeychainUserInteraction:previousInteraction];
     }
