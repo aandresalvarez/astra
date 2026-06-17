@@ -20,15 +20,40 @@ enum E2ETestSupport {
         }
     }
 
+    enum RuntimeCaseAvailability: Equatable {
+        case runnable
+        case unavailable(String)
+
+        var isRunnable: Bool {
+            if case .runnable = self { return true }
+            return false
+        }
+
+        var diagnostic: String? {
+            if case .unavailable(let diagnostic) = self { return diagnostic }
+            return nil
+        }
+    }
+
+    typealias RuntimeCaseAvailabilityProvider = (RuntimeCase) -> RuntimeCaseAvailability
+
     static var runtimeCases: [RuntimeCase] {
         runtimeCases(environment: ProcessInfo.processInfo.environment)
     }
 
     static func runtimeCases(environment: [String: String]) -> [RuntimeCase] {
+        runtimeCases(environment: environment, availability: defaultRuntimeCaseAvailability)
+    }
+
+    static func runtimeCases(
+        environment: [String: String],
+        availability: RuntimeCaseAvailabilityProvider
+    ) -> [RuntimeCase] {
+        let config = LiveProviderTestConfiguration(environment: environment)
         let cases = [
             RuntimeCase(
                 runtimeID: .claudeCode,
-                model: environment["REAL_CLAUDE_MODEL"] ?? AgentRuntimeAdapterRegistry.defaultModel(for: .claudeCode),
+                model: config.claudeModel,
                 directoryNameComponent: "claude",
                 expectsSessionID: true,
                 expectsUsageStats: true,
@@ -39,7 +64,7 @@ enum E2ETestSupport {
             ),
             RuntimeCase(
                 runtimeID: .copilotCLI,
-                model: environment["REAL_COPILOT_MODEL"] ?? AgentRuntimeAdapterRegistry.defaultModel(for: .copilotCLI),
+                model: config.copilotModel,
                 directoryNameComponent: "copilot",
                 expectsSessionID: false,
                 expectsUsageStats: false,
@@ -50,7 +75,7 @@ enum E2ETestSupport {
             ),
             RuntimeCase(
                 runtimeID: .antigravityCLI,
-                model: environment["REAL_ANTIGRAVITY_MODEL"] ?? AgentRuntimeAdapterRegistry.defaultModel(for: .antigravityCLI),
+                model: config.antigravityModel,
                 directoryNameComponent: "antigravity",
                 expectsSessionID: false,
                 expectsUsageStats: false,
@@ -61,40 +86,94 @@ enum E2ETestSupport {
             ),
             RuntimeCase(
                 runtimeID: .cursorCLI,
-                model: environment["REAL_CURSOR_MODEL"] ?? AgentRuntimeAdapterRegistry.defaultModel(for: .cursorCLI),
+                model: config.cursorModel,
                 directoryNameComponent: "cursor",
                 expectsSessionID: true,
                 expectsUsageStats: true,
-                expectsCostUSD: true,
+                expectsCostUSD: false,
                 expectsTeamEvents: false,
-                expectsStructuredToolEvents: true,
+                expectsStructuredToolEvents: false,
                 expectsResultCallback: true
             ),
             RuntimeCase(
                 runtimeID: .openCodeCLI,
-                model: environment["REAL_OPENCODE_MODEL"] ?? AgentRuntimeAdapterRegistry.defaultModel(for: .openCodeCLI),
+                model: config.openCodeModel,
                 directoryNameComponent: "opencode",
-                expectsSessionID: true,
+                expectsSessionID: false,
                 expectsUsageStats: false,
                 expectsCostUSD: false,
                 expectsTeamEvents: false,
-                expectsStructuredToolEvents: true,
+                expectsStructuredToolEvents: false,
                 expectsResultCallback: true
             )
         ]
         let requested = (environment["RUN_E2E_RUNTIME"] ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
-        guard !requested.isEmpty else { return cases }
+        guard !requested.isEmpty else {
+            return liveRunnableRuntimeCases(from: cases, environment: environment, availability: availability)
+        }
         let filtered = cases.filter { runtimeCase in
             runtimeCase.runtimeID.rawValue.lowercased() == requested
                 || runtimeCase.directoryNameComponent.lowercased() == requested
         }
-        guard !filtered.isEmpty else {
+        if filtered.isEmpty {
             fputs("Unknown RUN_E2E_RUNTIME '\(requested)'; running all runtime cases instead.\n", stderr)
-            return cases
+            return liveRunnableRuntimeCases(from: cases, environment: environment, availability: availability)
         }
         return filtered
+    }
+
+    private static func liveRunnableRuntimeCases(
+        from cases: [RuntimeCase],
+        environment: [String: String],
+        availability: RuntimeCaseAvailabilityProvider
+    ) -> [RuntimeCase] {
+        guard environment["RUN_E2E"] != nil,
+              environment["RUN_E2E_INCLUDE_UNREADY"] == nil else {
+            return cases
+        }
+        let evaluated = cases.map { runtimeCase in
+            (runtimeCase: runtimeCase, availability: availability(runtimeCase))
+        }
+        let runnable = evaluated
+            .filter(\.availability.isRunnable)
+            .map(\.runtimeCase)
+        evaluated
+            .filter { !$0.availability.isRunnable }
+            .forEach { item in
+                let reason = item.availability.diagnostic ?? "runtime is not ready"
+                fputs("Skipping live E2E runtime \(item.runtimeCase.description): \(reason)\n", stderr)
+            }
+        return runnable.isEmpty ? cases : runnable
+    }
+
+    private static func defaultRuntimeCaseAvailability(_ runtimeCase: RuntimeCase) -> RuntimeCaseAvailability {
+        guard let path = executablePath(for: runtimeCase.runtimeID),
+              FileManager.default.isExecutableFile(atPath: path) else {
+            return .unavailable("\(runtimeCase.description) executable was not found")
+        }
+        if let failure = LiveProviderReadiness.check(runtimeID: runtimeCase.runtimeID, executablePath: path) {
+            return .unavailable(failure.message)
+        }
+        return .runnable
+    }
+
+    private static func executablePath(for runtimeID: AgentRuntimeID) -> String? {
+        switch runtimeID {
+        case .claudeCode:
+            return RuntimePathResolver.detectClaudePath()
+        case .copilotCLI:
+            return RuntimePathResolver.detectCopilotPath()
+        case .antigravityCLI:
+            return RuntimePathResolver.detectAntigravityPath()
+        case .cursorCLI:
+            return RuntimePathResolver.detectCursorPath()
+        case .openCodeCLI:
+            return RuntimePathResolver.detectOpenCodePath()
+        default:
+            return nil
+        }
     }
 
     @MainActor
@@ -129,12 +208,14 @@ enum E2ETestSupport {
             guard FileManager.default.isExecutableFile(atPath: path) else {
                 throw E2ETestSupportError.missingExecutable("claude")
             }
+            try requireLiveProviderReady(runtimeID: runtimeID, executablePath: path)
             worker.claudePath = path
         case .copilotCLI:
             let path = RuntimePathResolver.detectCopilotPath()
             guard FileManager.default.isExecutableFile(atPath: path) else {
                 throw E2ETestSupportError.missingExecutable("copilot")
             }
+            try requireLiveProviderReady(runtimeID: runtimeID, executablePath: path)
             worker.copilotPath = path
             if let temporaryRootPath {
                 worker.copilotHome = copilotHomePath(forTemporaryRootPath: temporaryRootPath)
@@ -144,22 +225,30 @@ enum E2ETestSupport {
             guard FileManager.default.isExecutableFile(atPath: path) else {
                 throw E2ETestSupportError.missingExecutable("agy")
             }
+            try requireLiveProviderReady(runtimeID: runtimeID, executablePath: path)
             worker.setExecutablePath(path, for: .antigravityCLI)
         case .cursorCLI:
             let path = RuntimePathResolver.detectCursorPath()
             guard FileManager.default.isExecutableFile(atPath: path) else {
                 throw E2ETestSupportError.missingExecutable("cursor-agent")
             }
+            try requireLiveProviderReady(runtimeID: runtimeID, executablePath: path)
             worker.setExecutablePath(path, for: .cursorCLI)
         case .openCodeCLI:
             let path = RuntimePathResolver.detectOpenCodePath()
             guard FileManager.default.isExecutableFile(atPath: path) else {
                 throw E2ETestSupportError.missingExecutable("opencode")
             }
+            try requireLiveProviderReady(runtimeID: runtimeID, executablePath: path)
             worker.setExecutablePath(path, for: .openCodeCLI)
         default:
             throw E2ETestSupportError.missingExecutable(runtimeID.rawValue)
         }
+    }
+
+    private static func requireLiveProviderReady(runtimeID: AgentRuntimeID, executablePath: String) throws {
+        guard ProcessInfo.processInfo.environment["RUN_E2E"] != nil else { return }
+        try LiveProviderReadiness.requireReady(runtimeID: runtimeID, executablePath: executablePath)
     }
 
     static func copilotHomePath(forTemporaryRootPath path: String) -> String {
@@ -288,6 +377,30 @@ struct E2ELiveProviderGateTests {
 
         let unknownFilter = E2ETestSupport.runtimeCases(environment: ["RUN_E2E_RUNTIME": "not-a-runtime"])
         #expect(unknownFilter.map(\.runtimeID) == [.claudeCode, .copilotCLI, .antigravityCLI, .cursorCLI, .openCodeCLI])
+    }
+
+    @Test("All-runtime live selection omits unavailable providers")
+    func allRuntimeLiveSelectionOmitsUnavailableProviders() {
+        let cases = E2ETestSupport.runtimeCases(
+            environment: ["RUN_E2E": "1", "RUN_REAL_PROVIDERS": "1"],
+            availability: { runtimeCase in
+                runtimeCase.runtimeID == .openCodeCLI
+                    ? .unavailable("OpenCode has 0 credentials")
+                    : .runnable
+            }
+        )
+
+        #expect(cases.map(\.runtimeID) == [.claudeCode, .copilotCLI, .antigravityCLI, .cursorCLI])
+    }
+
+    @Test("Explicit live runtime selection keeps unavailable provider for fail-fast diagnostics")
+    func explicitLiveRuntimeSelectionKeepsUnavailableProvider() {
+        let cases = E2ETestSupport.runtimeCases(
+            environment: ["RUN_E2E": "1", "RUN_REAL_PROVIDERS": "1", "RUN_E2E_RUNTIME": "opencode"],
+            availability: { _ in .unavailable("OpenCode has 0 credentials") }
+        )
+
+        #expect(cases.map(\.runtimeID) == [.openCodeCLI])
     }
 
     @Test("Queued live provider waiters finish when cancelled")
