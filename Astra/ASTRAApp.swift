@@ -4,8 +4,6 @@ import AppKit
 import AppIntents
 
 private let aboutAstraWindowID = "about-astra"
-private let logsWindowID = "astra-logs"
-private let usageWindowID = "astra-usage"
 
 enum AppWindowLayout {
     static let mainMinimumWidth: CGFloat = 900
@@ -578,7 +576,7 @@ public struct ASTRAApp: App {
         .defaultSize(width: 620, height: 560)
         .windowResizability(.contentSize)
 
-        Window("Logs", id: logsWindowID) {
+        Window("Logs", id: AppWindowIDs.logs) {
             LogViewerView()
                 .frame(minWidth: 760, minHeight: 460)
                 .tint(Stanford.interactive)
@@ -587,7 +585,7 @@ public struct ASTRAApp: App {
         .defaultSize(width: 980, height: 620)
         .keyboardShortcut("l", modifiers: [.command, .option])
 
-        Window("Usage", id: usageWindowID) {
+        Window("Usage", id: AppWindowIDs.usage) {
             UsageDashboardView()
                 .frame(minWidth: 600, minHeight: 500)
                 .tint(Stanford.interactive)
