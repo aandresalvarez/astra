@@ -323,10 +323,9 @@ enum WorkspaceAppStudioBuilder {
     }
 
     private static func manifest(for intent: String) -> WorkspaceAppManifest {
-        if isLocalDatabaseIntent(intent) {
-            return localDatabaseManifest(intent: intent)
-        }
-        return operationalSurfaceManifest(intent: intent)
+        // Route free-text intent to the best-fitting archetype recipe instead of collapsing
+        // every non-"database" intent into a read-only operational surface.
+        WorkspaceAppStudioRecipes.manifest(for: WorkspaceAppArchetype.classify(intent), intent: intent)
     }
 
     /// The deterministic template manifest for a free-text intent.
@@ -643,7 +642,7 @@ enum WorkspaceAppStudioBuilder {
         )
     }
 
-    private static func localDatabaseManifest(intent: String) -> WorkspaceAppManifest {
+    static func localDatabaseManifest(intent: String) -> WorkspaceAppManifest {
         WorkspaceAppManifest(
             app: WorkspaceAppManifestMetadata(
                 id: "grocery-tracker",
@@ -740,7 +739,7 @@ enum WorkspaceAppStudioBuilder {
         )
     }
 
-    private static func operationalSurfaceManifest(intent: String) -> WorkspaceAppManifest {
+    static func operationalSurfaceManifest(intent: String) -> WorkspaceAppManifest {
         let name = title(from: intent)
         let id = slug(from: name)
         return WorkspaceAppManifest(
@@ -1248,14 +1247,6 @@ enum WorkspaceAppStudioBuilder {
     private static func normalizedIntent(_ rawIntent: String) -> String {
         let trimmed = rawIntent.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? defaultIntent : trimmed
-    }
-
-    private static func isLocalDatabaseIntent(_ intent: String) -> Bool {
-        let lowercased = intent.lowercased()
-        return lowercased.contains("database")
-            || lowercased.contains("store my")
-            || lowercased.contains("grocery")
-            || lowercased.contains("tracker")
     }
 
     private static func title(from intent: String) -> String {

@@ -268,6 +268,15 @@ enum WorkspaceAppStudioGenerator {
         - Output JSON only inside the block; ASTRA validates it and rejects anything invalid.
         - Keep every automation disabled (enabled = false).
         - Prefer app-owned storage (contract `appStorage.records`) for local data.
+        - Choose the single best-fitting archetype for the intent and put its label in \
+        `archetypes`. Do NOT default to a read-only dashboard. Archetype recipes:
+        \(WorkspaceAppArchetype.promptMenu)
+        - USABILITY (enforced): if the app shows a storage table (a table/dashboard view or a \
+        metric/chart over it), it MUST also have a way to ADD rows — an `appStorage.insert` action \
+        (preferred) or a form bound to that table, or a pipeline/connector write. A dashboard over a \
+        table nothing can fill is rejected.
+        - An action's label MUST match its effect: a button labeled Save/Add/Create/Submit/Record \
+        must be a write action (e.g. `appStorage.insert`), never `appStorage.query`.
 
         Here is a VALID baseline manifest. Adapt it to the intent — keep its overall \
         structure, change ids/names/fields as needed:
