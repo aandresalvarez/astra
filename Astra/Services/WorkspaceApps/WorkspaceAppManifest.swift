@@ -413,6 +413,9 @@ struct WorkspaceAppActionSpec: Codable, Sendable, Equatable {
     var elseStep: String?         // gate.branch: step to run when the predicate fails (optional)
     var reduceStrategy: String?   // rows.reduce: count | sum | concat | first | last
     var reduceColumn: String?     // rows.reduce: row key to fold over
+    // Slice 10: workflow I/O binding for agent task steps (task.createDraft/createAndRun/fanOut).
+    var inputBinding: WorkspaceAppActionInputBinding?    // inject app data into the spawned agent goal
+    var outputBinding: WorkspaceAppActionOutputBinding?  // capture the agent's answer back into the workflow
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -449,6 +452,8 @@ struct WorkspaceAppActionSpec: Codable, Sendable, Equatable {
         case elseStep
         case reduceStrategy
         case reduceColumn
+        case inputBinding
+        case outputBinding
     }
 
     init(
@@ -485,7 +490,9 @@ struct WorkspaceAppActionSpec: Codable, Sendable, Equatable {
         thenStep: String? = nil,
         elseStep: String? = nil,
         reduceStrategy: String? = nil,
-        reduceColumn: String? = nil
+        reduceColumn: String? = nil,
+        inputBinding: WorkspaceAppActionInputBinding? = nil,
+        outputBinding: WorkspaceAppActionOutputBinding? = nil
     ) {
         self.id = id
         self.type = type
@@ -521,6 +528,8 @@ struct WorkspaceAppActionSpec: Codable, Sendable, Equatable {
         self.elseStep = elseStep
         self.reduceStrategy = reduceStrategy
         self.reduceColumn = reduceColumn
+        self.inputBinding = inputBinding
+        self.outputBinding = outputBinding
     }
 
     init(from decoder: Decoder) throws {
@@ -559,7 +568,31 @@ struct WorkspaceAppActionSpec: Codable, Sendable, Equatable {
         elseStep = try container.decodeIfPresent(String.self, forKey: .elseStep)
         reduceStrategy = try container.decodeIfPresent(String.self, forKey: .reduceStrategy)
         reduceColumn = try container.decodeIfPresent(String.self, forKey: .reduceColumn)
+        inputBinding = try container.decodeIfPresent(WorkspaceAppActionInputBinding.self, forKey: .inputBinding)
+        outputBinding = try container.decodeIfPresent(WorkspaceAppActionOutputBinding.self, forKey: .outputBinding)
     }
+    // No custom encode(to:): the synthesized Encodable omits nil optionals (encodeIfPresent), so a
+    // manifest without bindings encodes byte-for-byte as before — version digests stay stable.
+}
+
+/// Slice 10: injects app-owned data into a spawned agent task's goal so the AI step can actually see
+/// the app's records / the prior pipeline step's output (closing the "AI steps remember the
+/// workspace, not the app" gap). Reads only app-owned data — never an external capability — so it
+/// adds no new egress beyond what the app already reads locally.
+struct WorkspaceAppActionInputBinding: Codable, Sendable, Equatable {
+    var source: String        // "boundRows" (prior step output) | "table" (read a local storage table)
+    var table: String?        // required when source == "table"
+    var label: String?        // header for the injected block, e.g. "Records to review"
+    var limit: Int?           // cap rows injected (clamped 1...200; default 50)
+}
+
+/// Slice 10: captures a spawned agent task's answer back into the workflow as a row keyed by `field`
+/// (threaded to the next step via boundRows) and, when `table` is set, persisted to a storage column
+/// — so the agent's output becomes durable app data instead of being dropped.
+struct WorkspaceAppActionOutputBinding: Codable, Sendable, Equatable {
+    var field: String         // row key / storage column to bind the captured answer to
+    var capture: String?      // "text" (default — the raw answer) | "json" (parse a JSON object into fields)
+    var table: String?        // optional: persist the captured row into this storage table on resume
 }
 
 enum WorkspaceAppExpressionGateOperator: String, CaseIterable, Sendable {

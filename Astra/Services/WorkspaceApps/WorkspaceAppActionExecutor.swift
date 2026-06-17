@@ -414,13 +414,25 @@ struct WorkspaceAppActionExecutor {
         let action = try actionSpec(actionID: pipelineID, manifest: manifest)
         let startIndex = run.pendingStepIndex
         run.status = .running
+        // Slice 10 output binding: map the awaited task step's captured answer onto its declared
+        // outputBinding (rename to `field`, optional JSON parse, optional persist to storage) BEFORE
+        // threading it to the next step. The awaited task step sits at startIndex - 1.
+        let boundRows = applyOutputBinding(
+            taskOutputRows: taskOutputRows,
+            pipeline: action,
+            awaitedStepIndex: startIndex - 1,
+            app: app,
+            workspace: workspace,
+            manifest: manifest,
+            modelContext: modelContext
+        )
         recorder.recordEvent(
             run: run,
             type: "workspaceApp.run.resumed",
             payload: [
                 "pipelineID": .text(pipelineID),
                 "fromStepIndex": .integer(Int64(startIndex)),
-                "boundRows": .integer(Int64(taskOutputRows.count))
+                "boundRows": .integer(Int64(boundRows.count))
             ],
             modelContext: modelContext
         )
@@ -431,11 +443,11 @@ struct WorkspaceAppActionExecutor {
                 workspace: workspace,
                 manifest: manifest,
                 dependencyBindings: dependencyBindings,
-                input: WorkspaceAppActionInput(boundRows: taskOutputRows),
+                input: WorkspaceAppActionInput(boundRows: boundRows),
                 run: run,
                 modelContext: modelContext,
                 startIndex: startIndex,
-                initialBoundRows: taskOutputRows
+                initialBoundRows: boundRows
             )
             run.linkedArtifactPath = result.linkedArtifactPath ?? run.linkedArtifactPath
             run.pendingActionID = nil
@@ -663,6 +675,7 @@ struct WorkspaceAppActionExecutor {
         case "task.createDraft":
             let task = try createTask(
                 action: action,
+                app: app,
                 manifest: manifest,
                 input: input,
                 workspace: workspace,
@@ -673,6 +686,7 @@ struct WorkspaceAppActionExecutor {
         case "task.createAndRun":
             let task = try createTask(
                 action: action,
+                app: app,
                 manifest: manifest,
                 input: input,
                 workspace: workspace,
@@ -1258,6 +1272,7 @@ struct WorkspaceAppActionExecutor {
             if step.type == "task.createAndRun" {
                 let task = try createTask(
                     action: step,
+                    app: app,
                     manifest: manifest,
                     input: stepInput,
                     workspace: workspace,
@@ -1296,6 +1311,7 @@ struct WorkspaceAppActionExecutor {
                 for row in fanRows {
                     let task = try createTask(
                         action: childTemplate,
+                        app: app,
                         manifest: manifest,
                         input: stepInput.bindingForward(rows: [row]),
                         workspace: workspace,
@@ -1607,6 +1623,7 @@ struct WorkspaceAppActionExecutor {
 
     private func createTask(
         action: WorkspaceAppActionSpec,
+        app: WorkspaceApp,
         manifest: WorkspaceAppManifest,
         input: WorkspaceAppActionInput,
         workspace: Workspace,
@@ -1619,13 +1636,19 @@ struct WorkspaceAppActionExecutor {
             action.label,
             fallback: "\(manifest.app.name) task"
         )
-        let goal = normalized(
+        var goal = normalized(
             input.taskGoal,
             action.taskGoal,
             fallback: ""
         )
         guard !goal.isEmpty else {
             throw WorkspaceAppActionExecutionError.missingTaskGoal
+        }
+        // Slice 10 input binding: inject the app's own data (the prior step's rows, or a local
+        // storage table) into the goal so the AI step can see what it's working on — closing the
+        // "AI steps remember the workspace, not the app's data" gap.
+        if let binding = action.inputBinding {
+            goal += inputBindingGoalBlock(binding, input: input, app: app, workspace: workspace)
         }
 
         let task = AgentTask(title: title, goal: goal, workspace: workspace)
@@ -1636,6 +1659,108 @@ struct WorkspaceAppActionExecutor {
         ]
         modelContext.insert(task)
         return task
+    }
+
+    /// Slice 10: renders the input-binding data as a labeled JSON block appended to the agent goal.
+    /// Reads ONLY app-owned data (the prior step's boundRows, or a local storage table) — never an
+    /// external capability — so it adds no egress beyond what the app already reads locally.
+    private func inputBindingGoalBlock(
+        _ binding: WorkspaceAppActionInputBinding,
+        input: WorkspaceAppActionInput,
+        app: WorkspaceApp,
+        workspace: Workspace
+    ) -> String {
+        let limit = min(max(binding.limit ?? 50, 1), 200)
+        let rows: [[String: WorkspaceAppStorageValue]]
+        switch binding.source {
+        case "table":
+            guard let table = binding.table?.trimmingCharacters(in: .whitespacesAndNewlines), !table.isEmpty else { return "" }
+            let databaseURL = URL(fileURLWithPath: WorkspaceFileLayout.appDatabaseFile(
+                workspacePath: workspace.primaryPath,
+                appID: app.logicalID
+            ))
+            rows = (try? storageService.records(in: table, databaseURL: databaseURL, limit: limit)) ?? []
+        default:  // "boundRows"
+            rows = Array(input.boundRows.prefix(limit))
+        }
+        guard !rows.isEmpty else { return "" }
+        let label = binding.label?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let header = (label?.isEmpty == false) ? label! : "Input data"
+        return "\n\n\(header) (\(rows.count) record\(rows.count == 1 ? "" : "s")):\n\(Self.jsonStringify(rows))"
+    }
+
+    /// Deterministic JSON for a row set (sorted keys). WorkspaceAppStorageValue encodes as a scalar
+    /// (single-value container), so this yields clean `[{"col": value}]` JSON the agent can read.
+    static func jsonStringify(_ rows: [[String: WorkspaceAppStorageValue]]) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(rows), let string = String(data: data, encoding: .utf8) else {
+            return "[]"
+        }
+        return string
+    }
+
+    /// Slice 10 output binding: maps a completed agent task's captured answer (threaded in under the
+    /// `output` key by the resumption service) onto the awaited step's declared `outputBinding` —
+    /// renaming it to `field` (optionally JSON-parsing the answer into columns) and, when a `table`
+    /// is declared, persisting the row to local storage so the agent's result becomes durable app data.
+    func applyOutputBinding(
+        taskOutputRows: [[String: WorkspaceAppStorageValue]],
+        pipeline: WorkspaceAppActionSpec,
+        awaitedStepIndex: Int,
+        app: WorkspaceApp,
+        workspace: Workspace,
+        manifest: WorkspaceAppManifest,
+        modelContext: ModelContext
+    ) -> [[String: WorkspaceAppStorageValue]] {
+        guard awaitedStepIndex >= 0, awaitedStepIndex < pipeline.steps.count,
+              let step = manifest.actions.first(where: { $0.id == pipeline.steps[awaitedStepIndex] }),
+              let binding = step.outputBinding else {
+            return taskOutputRows
+        }
+        let captureJSON = (binding.capture ?? "text") == "json"
+        let mapped: [[String: WorkspaceAppStorageValue]] = taskOutputRows.map { row in
+            var out = row
+            let answer: String
+            if case let .text(value)? = row["output"] { answer = value } else { answer = "" }
+            if captureJSON,
+               let data = answer.data(using: .utf8),
+               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                for (key, value) in object { out[key] = Self.storageValue(fromJSON: value) }
+            }
+            out[binding.field] = .text(answer)
+            return out
+        }
+
+        if let tableName = binding.table?.trimmingCharacters(in: .whitespacesAndNewlines), !tableName.isEmpty,
+           let schema = manifest.storage?.tables.first(where: { $0.name == tableName }) {
+            let columns = Set(schema.columns.map(\.name))
+            let primaryKey = schema.columns.first(where: { $0.primaryKey })?.name
+            let databaseURL = URL(fileURLWithPath: WorkspaceFileLayout.appDatabaseFile(
+                workspacePath: workspace.primaryPath,
+                appID: app.logicalID
+            ))
+            for row in mapped {
+                var record = row.filter { columns.contains($0.key) }
+                if let primaryKey, record[primaryKey] == nil {
+                    record[primaryKey] = .text(UUID().uuidString)
+                }
+                guard !record.isEmpty else { continue }
+                try? storageService.insertRecord(record, into: tableName, databaseURL: databaseURL)
+            }
+        }
+        return mapped
+    }
+
+    /// Maps a JSONSerialization native (String / NSNumber / bool) to a WorkspaceAppStorageValue.
+    static func storageValue(fromJSON value: Any) -> WorkspaceAppStorageValue {
+        if let string = value as? String { return .text(string) }
+        if let number = value as? NSNumber {
+            if CFGetTypeID(number) == CFBooleanGetTypeID() { return .bool(number.boolValue) }
+            if number.doubleValue == Double(number.int64Value) { return .integer(number.int64Value) }
+            return .real(number.doubleValue)
+        }
+        return .null
     }
 
     private func effect(for actionType: String) -> WorkspaceAppContractEffect {

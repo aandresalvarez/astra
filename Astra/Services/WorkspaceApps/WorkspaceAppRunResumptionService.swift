@@ -121,10 +121,17 @@ struct WorkspaceAppRunResumptionService {
     }
 
     private func taskOutputRow(for task: AgentTask) -> [String: WorkspaceAppStorageValue] {
-        [
+        // Slice 10: capture the agent's actual answer (the latest non-empty run output), not just
+        // task metadata, so a workflow's outputBinding can bind it forward / persist it. Without
+        // this the AI step's result was silently dropped.
+        let answer = task.runs
+            .sorted { ($0.completedAt ?? $0.startedAt) > ($1.completedAt ?? $1.startedAt) }
+            .first(where: { !$0.output.isEmpty })?.output ?? ""
+        return [
             "task_id": .text(task.id.uuidString),
             "status": .text(task.status.rawValue),
-            "title": .text(task.title)
+            "title": .text(task.title),
+            "output": .text(answer)
         ]
     }
 

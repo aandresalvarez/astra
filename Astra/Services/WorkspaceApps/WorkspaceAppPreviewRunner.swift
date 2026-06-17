@@ -428,7 +428,29 @@ final class WorkspaceAppPreviewRunner {
     ) throws -> Outcome {
         try enforcePermission(action: step, mode: manifest.permissions.defaultMode, input: input)
         if step.type.hasPrefix("task.") {
-            return Outcome(rows: [], summary: "(preview — step '\(step.id)' simulated: would run task)")
+            // Slice 10 parity: simulate the agent's answer and apply the step's outputBinding so a
+            // preview pipeline exercises the SAME data round-trip as the live run (answer -> field
+            // -> optional storage). The answer is a placeholder; no agent runs in preview.
+            let answer = "(preview agent output for \(step.id))"
+            var row: [String: WorkspaceAppStorageValue] = [
+                "task_id": .text("preview"),
+                "status": .text("completed"),
+                "title": .text(step.taskTitle ?? step.label ?? step.id),
+                "output": .text(answer)
+            ]
+            guard let binding = step.outputBinding else {
+                return Outcome(rows: [row], summary: "(preview — step '\(step.id)' simulated: would run task)")
+            }
+            row[binding.field] = .text(answer)
+            if let table = binding.table?.trimmingCharacters(in: .whitespacesAndNewlines), !table.isEmpty,
+               let schema = manifest.storage?.tables.first(where: { $0.name == table }) {
+                let columns = Set(schema.columns.map(\.name))
+                let primaryKey = schema.columns.first(where: { $0.primaryKey })?.name
+                var record = row.filter { columns.contains($0.key) }
+                if let primaryKey, record[primaryKey] == nil { record[primaryKey] = .text("preview-\(step.id)") }
+                if !record.isEmpty { tables[table, default: []].append(record) }
+            }
+            return Outcome(rows: [row], summary: "(preview — step '\(step.id)' simulated: agent output captured to '\(binding.field)')")
         }
         return try dispatch(action: step, manifest: manifest, input: input, depth: depth)
     }

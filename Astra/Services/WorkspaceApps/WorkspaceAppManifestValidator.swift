@@ -542,6 +542,7 @@ enum WorkspaceAppManifestValidator {
             if action.type == "task.fanOut" {
                 validateFanOutAction(action, actionsByID: actionsByID, path: path, issues: &issues)
             }
+            validateActionBindings(action, storageTables: storageTables, path: path, issues: &issues)
         }
 
         for (index, action) in actions.enumerated() where action.type == "pipeline.run" || action.type == "loop.run" || action.type == "gate.branch" {
@@ -569,6 +570,49 @@ enum WorkspaceAppManifestValidator {
         }
         validateCompositeActionCycles(actions, issues: &issues)
         return actionIDs
+    }
+
+    /// Slice 10: validate workflow I/O bindings — input must read app-owned data (boundRows or a real
+    /// local table), and a captured output that persists must target a real column. Keeps the
+    /// app⇄agent dataflow honest before it can publish.
+    private static func validateActionBindings(
+        _ action: WorkspaceAppActionSpec,
+        storageTables: [String: Set<String>],
+        path: String,
+        issues: inout [WorkspaceAppManifestValidationReport.Issue]
+    ) {
+        if let inputBinding = action.inputBinding {
+            if !["boundRows", "table"].contains(inputBinding.source) {
+                issues.append(blocker("\(path)/inputBinding/source", "Input binding source must be 'boundRows' or 'table'."))
+            }
+            if inputBinding.source == "table" {
+                let table = inputBinding.table?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if table.isEmpty {
+                    issues.append(blocker("\(path)/inputBinding/table", "Input binding with source 'table' must name a storage table."))
+                } else if storageTables[table] == nil {
+                    issues.append(blocker("\(path)/inputBinding/table", "Input binding references unknown storage table '\(table)'."))
+                }
+            }
+        }
+
+        if let outputBinding = action.outputBinding {
+            let field = outputBinding.field.trimmingCharacters(in: .whitespacesAndNewlines)
+            if field.isEmpty {
+                issues.append(blocker("\(path)/outputBinding/field", "Output binding must declare a field to capture the result into."))
+            }
+            if let capture = outputBinding.capture, !["text", "json"].contains(capture) {
+                issues.append(blocker("\(path)/outputBinding/capture", "Output binding capture must be 'text' or 'json'."))
+            }
+            if let table = outputBinding.table?.trimmingCharacters(in: .whitespacesAndNewlines), !table.isEmpty {
+                if let columns = storageTables[table] {
+                    if !field.isEmpty && !columns.contains(field) {
+                        issues.append(blocker("\(path)/outputBinding/field", "Output binding field '\(field)' is not a column of storage table '\(table)'."))
+                    }
+                } else {
+                    issues.append(blocker("\(path)/outputBinding/table", "Output binding references unknown storage table '\(table)'."))
+                }
+            }
+        }
     }
 
     private static func validateCompositeActionCycles(

@@ -1029,7 +1029,9 @@ enum WorkspaceAppStudioBuilder {
                     type: "task.createAndRun",
                     label: "Analyze",
                     taskTitle: "Analyze the problem",
-                    taskGoal: "Analyze the workflow problem and produce findings the implementation step can act on."
+                    taskGoal: "Analyze the workflow problem and produce findings the implementation step can act on.",
+                    // Slice 10: capture the analysis answer so the later steps can see it.
+                    outputBinding: WorkspaceAppActionOutputBinding(field: "summary", capture: "text", table: nil)
                 ),
                 WorkspaceAppActionSpec(
                     id: "agent_review",
@@ -1053,7 +1055,10 @@ enum WorkspaceAppStudioBuilder {
                     type: "task.createAndRun",
                     label: "Implement",
                     taskTitle: "Implement the approved plan",
-                    taskGoal: "Implement the approved plan from the analysis and record the outcome in app storage."
+                    taskGoal: "Implement the approved plan from the analysis and record the outcome in app storage.",
+                    // Slice 10: inject the prior step's findings (the analysis) into this agent's goal
+                    // so it actually sees what to implement — the app⇄agent memory round-trip.
+                    inputBinding: WorkspaceAppActionInputBinding(source: "boundRows", table: nil, label: "Analysis findings", limit: nil)
                 ),
                 WorkspaceAppActionSpec(
                     id: "record_outcome",
