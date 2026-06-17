@@ -69,6 +69,38 @@ struct WorkspaceAppStudioPreviewSection: View {
                     }
                 }
             }
+
+            // Slice 6: pipeline / loop / gate visual flow.
+            let workflows = manifest.actions.filter { $0.type == "pipeline.run" || $0.type == "loop.run" }
+            ForEach(workflows, id: \.id) { workflow in
+                VStack(alignment: .leading, spacing: 4) {
+                    previewRow(
+                        icon: workflow.type == "loop.run" ? "arrow.triangle.2.circlepath" : "arrow.right.circle",
+                        title: workflow.label ?? workflow.id,
+                        detail: workflow.type == "loop.run" ? "loop ·\u{00a0}\(workflow.maxIterations ?? 0)×" : "pipeline"
+                    )
+                    ForEach(Array(workflow.steps.enumerated()), id: \.offset) { index, stepID in
+                        let step = manifest.actions.first { $0.id == stepID }
+                        HStack(spacing: 6) {
+                            Text("\(index + 1)")
+                                .font(Stanford.caption(10).weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 16)
+                            Image(systemName: stepIcon(step?.type))
+                                .font(Stanford.caption(11))
+                                .foregroundStyle(Stanford.lagunita)
+                            Text(step?.label ?? stepID)
+                                .font(Stanford.caption(11))
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            Text(step?.type ?? "unknown")
+                                .font(Stanford.caption(10))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.leading, 6)
+                    }
+                }
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -78,6 +110,19 @@ struct WorkspaceAppStudioPreviewSection: View {
             RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous)
                 .stroke(Color.primary.opacity(0.08), lineWidth: 1)
         )
+    }
+
+    private func stepIcon(_ type: String?) -> String {
+        switch type {
+        case "task.createAndRun", "task.createDraft": return "cpu"
+        case "task.fanOut": return "rectangle.split.3x1"
+        case "rows.reduce": return "arrow.triangle.merge"
+        case "gate.humanApproval": return "hand.raised"
+        case "gate.agentRecommendation", "gate.expression", "gate.branch": return "checkmark.shield"
+        case "appStorage.insert", "appStorage.update", "appStorage.query", "appStorage.delete": return "externaldrive"
+        case .some(let value) where value.hasPrefix("capability"): return "antenna.radiowaves.left.and.right"
+        default: return "circle"
+        }
     }
 
     private func previewRow(icon: String, title: String, detail: String) -> some View {
