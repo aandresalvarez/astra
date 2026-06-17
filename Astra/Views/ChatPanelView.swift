@@ -1622,6 +1622,7 @@ struct ChatPanelView: View {
         ])
         logChatCapabilityContext(source: shouldUseGoalMode ? "new_task_plan_chat" : "new_task_chat", traceID: traceID)
 
+        chatReplyTask?.cancel()
         chatReplyTask = Task {
             let result = await SpecEngine.chat(
                 messages: conversationHistory,
@@ -1629,8 +1630,8 @@ struct ChatPanelView: View {
                 skillContext: skillCtx,
                 utilityRuntime: planningUtilityRuntime
             )
-            guard !Task.isCancelled else { return }
             await MainActor.run {
+                guard !Task.isCancelled else { return }
                 isThinking = false
                 switch result {
                 case .success(let response):
@@ -1743,6 +1744,7 @@ struct ChatPanelView: View {
             TaskRoleProfileStore.recordSelected(selection, task: planningDraft, modelContext: modelContext)
         }
 
+        planGenerationTask?.cancel()
         planGenerationTask = Task {
             let result = await SpecEngine.chat(
                 messages: conversationHistory,
@@ -1750,8 +1752,8 @@ struct ChatPanelView: View {
                 skillContext: skillContext,
                 utilityRuntime: planningUtilityRuntime
             )
-            guard !Task.isCancelled else { return }
             await MainActor.run {
+                guard !Task.isCancelled else { return }
                 isThinking = false
                 switch result {
                 case .success(let response):
