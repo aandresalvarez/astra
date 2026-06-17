@@ -162,6 +162,9 @@ struct WorkspaceAppViewSpec: Codable, Sendable, Equatable {
     var title: String?
     var table: String?
     var widgets: [WorkspaceAppWidgetSpec]
+    // Slice 5b: a "form" view carries form fields (REDCap data-entry replacement). Optional
+    // + defaulted so existing manifests + their digests are unaffected (same pattern as widgets).
+    var formFields: [WorkspaceAppFormFieldSpec]
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -169,6 +172,7 @@ struct WorkspaceAppViewSpec: Codable, Sendable, Equatable {
         case title
         case table
         case widgets
+        case formFields
     }
 
     init(
@@ -176,13 +180,15 @@ struct WorkspaceAppViewSpec: Codable, Sendable, Equatable {
         type: String,
         title: String? = nil,
         table: String? = nil,
-        widgets: [WorkspaceAppWidgetSpec] = []
+        widgets: [WorkspaceAppWidgetSpec] = [],
+        formFields: [WorkspaceAppFormFieldSpec] = []
     ) {
         self.id = id
         self.type = type
         self.title = title
         self.table = table
         self.widgets = widgets
+        self.formFields = formFields
     }
 
     init(from decoder: Decoder) throws {
@@ -192,6 +198,93 @@ struct WorkspaceAppViewSpec: Codable, Sendable, Equatable {
         title = try container.decodeIfPresent(String.self, forKey: .title)
         table = try container.decodeIfPresent(String.self, forKey: .table)
         widgets = try container.decodeIfPresent([WorkspaceAppWidgetSpec].self, forKey: .widgets) ?? []
+        formFields = try container.decodeIfPresent([WorkspaceAppFormFieldSpec].self, forKey: .formFields) ?? []
+    }
+
+    // Custom encode so an empty formFields is OMITTED — existing form-less manifests encode
+    // byte-for-byte as before, keeping their digests (and Slice 3's revert digest check) stable.
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(type, forKey: .type)
+        try container.encodeIfPresent(title, forKey: .title)
+        try container.encodeIfPresent(table, forKey: .table)
+        try container.encode(widgets, forKey: .widgets)
+        if !formFields.isEmpty {
+            try container.encode(formFields, forKey: .formFields)
+        }
+    }
+}
+
+/// Slice 5b: a single field on a form view. Drives a draft-record input control, maps to a
+/// local draft-table column, and submits through the declared write mode. `visibleWhen` carries
+/// the field's raw REDCap branching logic and MUST be classified safe by
+/// `WorkspaceAppREDCapBranchingAnalyzer` (the validator enforces this); unsupported branching is
+/// dropped to `readOnly` + flagged by the builder rather than silently approximated.
+struct WorkspaceAppFormFieldSpec: Codable, Sendable, Equatable {
+    var name: String
+    var label: String
+    var fieldType: String          // text | textarea | number | date | choice | multichoice | yesno
+    var required: Bool
+    var choices: [WorkspaceAppFormChoice]?
+    var visibleWhen: String?       // raw REDCap branching logic; must be 5a-safe when present
+    var readOnly: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case name, label, fieldType, required, choices, visibleWhen, readOnly
+    }
+
+    init(
+        name: String,
+        label: String,
+        fieldType: String,
+        required: Bool = false,
+        choices: [WorkspaceAppFormChoice]? = nil,
+        visibleWhen: String? = nil,
+        readOnly: Bool = false
+    ) {
+        self.name = name
+        self.label = label
+        self.fieldType = fieldType
+        self.required = required
+        self.choices = choices
+        self.visibleWhen = visibleWhen
+        self.readOnly = readOnly
+    }
+
+    // Lenient decode: only name/label/fieldType are required, so a model-generated field
+    // missing the booleans/choices still decodes (untrusted output is validated afterward).
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        label = try container.decode(String.self, forKey: .label)
+        fieldType = try container.decode(String.self, forKey: .fieldType)
+        required = try container.decodeIfPresent(Bool.self, forKey: .required) ?? false
+        choices = try container.decodeIfPresent([WorkspaceAppFormChoice].self, forKey: .choices)
+        visibleWhen = try container.decodeIfPresent(String.self, forKey: .visibleWhen)
+        readOnly = try container.decodeIfPresent(Bool.self, forKey: .readOnly) ?? false
+    }
+}
+
+/// A selectable option for a `choice`/`multichoice` form field (a REDCap choice-list entry).
+struct WorkspaceAppFormChoice: Codable, Sendable, Equatable {
+    var value: String
+    var label: String
+
+    enum CodingKeys: String, CodingKey {
+        case value, label
+    }
+
+    init(value: String, label: String) {
+        self.value = value
+        self.label = label
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        value = try container.decode(String.self, forKey: .value)
+        // Fall back to the value when no display label is supplied.
+        label = try container.decodeIfPresent(String.self, forKey: .label) ?? value
     }
 }
 

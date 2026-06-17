@@ -194,6 +194,49 @@ enum WorkspaceAppManifestValidator {
                     issues: &issues
                 )
             }
+
+            validateFormFields(view, path: path, storageTables: storageTables, issues: &issues)
+        }
+    }
+
+    private static let allowedFormFieldTypes: Set<String> = [
+        "text", "textarea", "number", "date", "choice", "multichoice", "yesno"
+    ]
+
+    private static func validateFormFields(
+        _ view: WorkspaceAppViewSpec,
+        path: String,
+        storageTables: [String: Set<String>],
+        issues: inout [WorkspaceAppManifestValidationReport.Issue]
+    ) {
+        guard !view.formFields.isEmpty else { return }
+        let columns = view.table.flatMap { storageTables[$0] }
+        var seenNames = Set<String>()
+        for (index, field) in view.formFields.enumerated() {
+            let fieldPath = "\(path)/formFields/\(index)"
+            validateUniqueIdentifier(field.name, path: "\(fieldPath)/name", label: "Form field name", seen: &seenNames, issues: &issues)
+            if field.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                issues.append(blocker("\(fieldPath)/label", "Form field label is required."))
+            }
+            if !allowedFormFieldTypes.contains(field.fieldType) {
+                issues.append(blocker("\(fieldPath)/fieldType", "Form field type '\(field.fieldType)' is not supported."))
+            }
+            // Choice fields must declare a non-empty choice list.
+            if field.fieldType == "choice" || field.fieldType == "multichoice" {
+                if (field.choices ?? []).isEmpty {
+                    issues.append(blocker("\(fieldPath)/choices", "Choice field '\(field.name)' must declare at least one choice."))
+                }
+            }
+            // The field must back onto a real draft-table column (when the form declares a table).
+            if let columns, !columns.contains(field.name) {
+                issues.append(blocker("\(fieldPath)/name", "Form field '\(field.name)' has no matching column in table '\(view.table ?? "")'."))
+            }
+            // Branching the app cannot honor EXACTLY must never reach a published form.
+            if let logic = field.visibleWhen, !logic.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if case .unsupported(let reason) = WorkspaceAppREDCapBranchingAnalyzer.classify(logic) {
+                    issues.append(blocker("\(fieldPath)/visibleWhen", "Unsupported branching logic for field '\(field.name)': \(reason)"))
+                }
+            }
         }
     }
 
