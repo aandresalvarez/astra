@@ -553,6 +553,10 @@ struct AgentRuntimeAdapterTests {
         } else {
             Issue.record("Claude launch plan should include a governed MCP config file")
         }
+        let keychainRoot = (FileManager.default.homeDirectoryForCurrentUser.path as NSString)
+            .appendingPathComponent("Library/Keychains")
+        #expect(claudePlan.sandboxReadablePaths.contains("\(keychainRoot)/login.keychain-db"))
+        #expect(!claudePlan.sandboxReadablePaths.contains("\(keychainRoot)/metadata.keychain-db"))
         #expect(claudeResumePlan.arguments.starts(with: ["-p", "hello", "--resume", "claude-session-1"]))
         #expect(claudeResumePlan.commandPlannedFields["phase"] == "resume")
         #expect(claudeResumePlan.commandPlannedFields["uses_native_continuation"] == "true")
@@ -571,8 +575,6 @@ struct AgentRuntimeAdapterTests {
         #expect(copilotPlan.sandboxReadablePaths.contains(
             (FileManager.default.homeDirectoryForCurrentUser.path as NSString).appendingPathComponent(".config/gh")
         ))
-        let keychainRoot = (FileManager.default.homeDirectoryForCurrentUser.path as NSString)
-            .appendingPathComponent("Library/Keychains")
         #expect(copilotPlan.sandboxReadablePaths.contains("\(keychainRoot)/login.keychain-db"))
         // metadata.keychain-db is intentionally NOT granted: it is unnecessary for
         // token retrieval and would leak the names of every stored credential.
@@ -750,9 +752,24 @@ struct AgentRuntimeAdapterTests {
             workspace: workspace,
             runtime: .copilotCLI
         )
+        let namedDeliverableTask = AgentTask(
+            title: "Report",
+            goal: """
+            Final deliverables:
+            - ./results.txt
+            """,
+            workspace: workspace,
+            runtime: .copilotCLI
+        )
 
         #expect(ProviderArtifactBootstrapPolicy.launchTools(
             task: artifactTask,
+            permissionPolicy: .restricted,
+            providerAllowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Write", "Edit", "Bash"]
+        ) == ["Write"])
+        #expect(ProviderArtifactBootstrapPolicy.launchTools(
+            task: namedDeliverableTask,
             permissionPolicy: .restricted,
             providerAllowedTools: ["Read", "Glob", "Grep"],
             askFirstTools: ["Write", "Edit", "Bash"]
@@ -817,12 +834,17 @@ struct AgentRuntimeAdapterTests {
 
         let allowedEntries = Set(Self.argumentValues(after: "--allow-tool", in: plan.arguments))
         let availableEntries = Set(Self.argumentValues(after: "--available-tools", in: plan.arguments))
+        let effortIndex = try #require(plan.arguments.firstIndex(of: "--effort"))
 
         #expect(plan.commandPlannedFields["allowed_tools_count"] == "1")
         #expect(plan.commandPlannedFields["provider_launch_allowed_tool_count"] == "2")
         #expect(plan.commandPlannedFields["artifact_bootstrap_profile"] == "true")
         #expect(plan.commandPlannedFields["artifact_bootstrap_tool_count"] == "1")
         #expect(plan.commandPlannedFields["artifact_bootstrap_tool_names"] == "Write")
+        #expect(plan.commandPlannedFields["surfaced_ask_first_tool_count"] == "4")
+        #expect(plan.commandPlannedFields["supports_reasoning_effort"] == "true")
+        #expect(plan.commandPlannedFields["uses_reasoning_effort"] == "true")
+        #expect(plan.arguments[plan.arguments.index(after: effortIndex)] == "none")
         #expect(allowedEntries.contains("view"))
         #expect(allowedEntries.contains("grep"))
         #expect(allowedEntries.contains("glob"))
@@ -882,6 +904,9 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.commandPlannedFields["provider_launch_allowed_tool_count"] == "1")
         #expect(plan.commandPlannedFields["artifact_bootstrap_profile"] == "false")
         #expect(plan.commandPlannedFields["artifact_bootstrap_tool_count"] == "0")
+        #expect(plan.commandPlannedFields["surfaced_ask_first_tool_count"] == "4")
+        #expect(plan.commandPlannedFields["uses_reasoning_effort"] == "false")
+        #expect(!plan.arguments.contains("--effort"))
         #expect(!allowedEntries.contains("write"))
         #expect(availableEntries.contains("create"))
         #expect(availableEntries.contains("edit"))
@@ -1476,7 +1501,7 @@ struct AgentRuntimeAdapterTests {
         #!/bin/sh
         if [ "$1" = "help" ]; then
           cat <<'HELP'
-        --allow-tool TOOL --available-tools=TOOLS --excluded-tools=TOOLS --output-format=FORMAT --stream=MODE --no-ask-user
+        --allow-tool TOOL --available-tools=TOOLS --excluded-tools=TOOLS --output-format=FORMAT --stream=MODE --no-ask-user --effort LEVEL
         HELP
           exit 0
         fi

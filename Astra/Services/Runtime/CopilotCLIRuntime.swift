@@ -17,6 +17,7 @@ struct CopilotCLICapabilities: Equatable {
     var supportsExcludedTools: Bool
     var supportsLogDir: Bool
     var supportsNoAutoUpdate: Bool
+    var supportsReasoningEffort: Bool
 
     static let conservative = CopilotCLICapabilities(
         supportsOutputFormatJSON: false,
@@ -33,7 +34,8 @@ struct CopilotCLICapabilities: Equatable {
         supportsAvailableTools: false,
         supportsExcludedTools: false,
         supportsLogDir: false,
-        supportsNoAutoUpdate: false
+        supportsNoAutoUpdate: false,
+        supportsReasoningEffort: false
     )
 
     init(helpText: String) {
@@ -53,6 +55,7 @@ struct CopilotCLICapabilities: Equatable {
         supportsExcludedTools = Self.hasOption("--excluded-tools", in: helpText)
         supportsLogDir = Self.hasOption("--log-dir", in: helpText)
         supportsNoAutoUpdate = Self.hasOption("--no-auto-update", in: helpText)
+        supportsReasoningEffort = Self.hasOption("--effort", in: helpText)
     }
 
     private init(
@@ -70,7 +73,8 @@ struct CopilotCLICapabilities: Equatable {
         supportsAvailableTools: Bool,
         supportsExcludedTools: Bool,
         supportsLogDir: Bool,
-        supportsNoAutoUpdate: Bool
+        supportsNoAutoUpdate: Bool,
+        supportsReasoningEffort: Bool
     ) {
         self.supportsOutputFormatJSON = supportsOutputFormatJSON
         self.supportsStreamingFlag = supportsStreamingFlag
@@ -87,6 +91,7 @@ struct CopilotCLICapabilities: Equatable {
         self.supportsExcludedTools = supportsExcludedTools
         self.supportsLogDir = supportsLogDir
         self.supportsNoAutoUpdate = supportsNoAutoUpdate
+        self.supportsReasoningEffort = supportsReasoningEffort
     }
 
     private static func hasOption(_ option: String, in helpText: String) -> Bool {
@@ -110,6 +115,21 @@ struct CopilotCLICommandPlan: Equatable {
 
 enum CopilotCLIRuntime {
     static let executableName = "copilot"
+    static let defaultModel = "claude-sonnet-4.6"
+    static let defaultModels = [
+        "claude-sonnet-4.6",
+        "claude-sonnet-4.5",
+        "claude-haiku-4.5",
+        "claude-opus-4.7",
+        "claude-opus-4.6",
+        "claude-opus-4.5",
+        "gpt-5.2-codex",
+        "gpt-5-codex",
+        "gpt-5.2",
+        "gpt-5-mini",
+        "gpt-5",
+        "gpt-4.1"
+    ]
 
     static func detectPath() -> String {
         RuntimePathResolver.detectCopilotPath()
@@ -178,9 +198,14 @@ enum CopilotCLIRuntime {
         localToolCommands: [String] = [],
         runtimeSupportTools: [String] = [],
         askFirstTools: [String] = [],
+        reasoningEffort: String? = nil,
         disableCustomInstructions: Bool = false
     ) -> CopilotCLICommandPlan {
         var args = ["--prompt", prompt, "--model", model, "--no-color", "--log-level", "error"]
+        if capabilities.supportsReasoningEffort,
+           let reasoningEffort = normalizedReasoningEffort(reasoningEffort) {
+            args += ["--effort", reasoningEffort]
+        }
         if capabilities.supportsNoAutoUpdate {
             args += ["--no-auto-update"]
         }
@@ -386,6 +411,15 @@ enum CopilotCLIRuntime {
             guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { return nil }
             return trimmed
         }
+    }
+
+    private static func normalizedReasoningEffort(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let lower = trimmed.lowercased()
+        let supported = ["none", "low", "medium", "high", "xhigh", "max"]
+        return supported.contains(lower) ? lower : nil
     }
 
     static func copilotPermissionArguments(

@@ -683,6 +683,71 @@ struct CopilotCLICommandPlanningTests {
         #expect(plan.environment["TOKEN"] == "secret")
     }
 
+    @Test("Reasoning effort is emitted only when the CLI supports it")
+    func reasoningEffortFlag() throws {
+        let supportedCapabilities = CopilotCLICapabilities(
+            helpText: "--output-format=FORMAT --stream=MODE --no-ask-user --effort LEVEL"
+        )
+        let supportedPlan = CopilotCLIRuntime.buildCommand(
+            executablePath: "/bin/copilot",
+            prompt: "Create index.html",
+            model: "claude-sonnet-4.6",
+            workspacePath: "/tmp/ws",
+            additionalPaths: [],
+            permissionPolicy: .restricted,
+            allowedTools: ["Read", "Write"],
+            timeoutSeconds: 60,
+            capabilities: supportedCapabilities,
+            taskEnvironment: [:],
+            copilotHome: "/tmp/copilot-home",
+            reasoningEffort: " NoNe "
+        )
+
+        let effortIndex = try #require(supportedPlan.arguments.firstIndex(of: "--effort"))
+        #expect(supportedPlan.arguments[supportedPlan.arguments.index(after: effortIndex)] == "none")
+
+        let alternateOnlyCapabilities = CopilotCLICapabilities(
+            helpText: "--output-format=FORMAT --stream=MODE --no-ask-user --reasoning-effort LEVEL"
+        )
+        let alternateOnlyPlan = CopilotCLIRuntime.buildCommand(
+            executablePath: "/bin/copilot",
+            prompt: "Create index.html",
+            model: "claude-sonnet-4.6",
+            workspacePath: "/tmp/ws",
+            additionalPaths: [],
+            permissionPolicy: .restricted,
+            allowedTools: ["Read", "Write"],
+            timeoutSeconds: 60,
+            capabilities: alternateOnlyCapabilities,
+            taskEnvironment: [:],
+            copilotHome: "/tmp/copilot-home",
+            reasoningEffort: "none"
+        )
+
+        #expect(!alternateOnlyCapabilities.supportsReasoningEffort)
+        #expect(!alternateOnlyPlan.arguments.contains("--effort"))
+
+        let unsupportedCapabilities = CopilotCLICapabilities(
+            helpText: "--output-format=FORMAT --stream=MODE --no-ask-user"
+        )
+        let unsupportedPlan = CopilotCLIRuntime.buildCommand(
+            executablePath: "/bin/copilot",
+            prompt: "Create index.html",
+            model: "claude-sonnet-4.6",
+            workspacePath: "/tmp/ws",
+            additionalPaths: [],
+            permissionPolicy: .restricted,
+            allowedTools: ["Read", "Write"],
+            timeoutSeconds: 60,
+            capabilities: unsupportedCapabilities,
+            taskEnvironment: [:],
+            copilotHome: "/tmp/copilot-home",
+            reasoningEffort: "none"
+        )
+
+        #expect(!unsupportedPlan.arguments.contains("--effort"))
+    }
+
     @Test("Provider home overrides task and provider HOME for Copilot startup caches")
     func providerHomeOverridesAmbientHomeForStartupCaches() {
         let capabilities = CopilotCLICapabilities(helpText: "--output-format=FORMAT")
