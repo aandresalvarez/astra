@@ -10,9 +10,14 @@ enum AgentRuntimeCapabilityLaunchAudit {
         contextText: String
     ) {
         let scope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
+        let buildInfo = AppBuildInfo.current
         AppLogger.audit(.capabilityResolved, category: "Worker", taskID: task.id, fields: [
             "runtime": runtime.rawValue,
             "phase": phase,
+            "app_build": buildInfo.build,
+            "app_version": buildInfo.version,
+            "app_git_commit": buildInfo.gitCommit,
+            "app_build_date": buildInfo.buildDate,
             "scope_pruned": String(scope.prunedForBrowserTask),
             "scope_excluded_skill_names": CapabilityAudit.compactNames(scope.excludedSkillNames),
             "workspace_id": task.workspace?.id.uuidString ?? "none",

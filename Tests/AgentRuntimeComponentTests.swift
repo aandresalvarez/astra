@@ -466,6 +466,84 @@ struct AgentRuntimeLaunchPreflightTests {
         #expect(run.stopReason.isEmpty)
         #expect(!task.events.contains { $0.type == "error" && $0.payload.contains("GitHub") })
     }
+
+    @Test("Remote workspace preflight records SSH diagnostic event")
+    func remoteWorkspacePreflightRecordsSSHDiagnosticEvent() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-remote-preflight-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        SSHConnectionManager.save([
+            SSHConnection(
+                name: "alvaro-pcornet-backup",
+                host: "alvaro-pcornet-backup-20250117-004956",
+                user: "alvaro1",
+                keyPath: "~/.ssh/google_compute_engine",
+                configAlias: "alvaro-pcornet-backup"
+            )
+        ], workspacePath: root.path)
+
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "PCORnet", primaryPath: root.path)
+        let task = AgentTask(title: "Start server", goal: "Start the remote server", workspace: workspace, runtime: .copilotCLI)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let result = AgentRuntimeLaunchPreflight.preflightRemoteWorkspaceBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "run",
+            runtime: .copilotCLI
+        )
+
+        #expect(result.didPass)
+        #expect(result.status == .remoteWorkspacePreflightPassed)
+        #expect(result.auditFields["result"] == "ssh_connections_detected")
+        #expect(result.auditFields["ssh_connection_count"] == "1")
+        #expect(result.auditFields["ssh_config_alias_count"] == "1")
+        #expect(result.auditFields["provider_path_access_expected"] == "true")
+
+        let events = try context.fetch(FetchDescriptor<TaskEvent>())
+        let infoEvent = try #require(events.first { $0.type == TaskEventTypes.System.info.rawValue })
+        #expect(infoEvent.payload.contains("Remote workspace preflight"))
+        #expect(infoEvent.payload.contains("alvaro-pcornet-backup"))
+        #expect(infoEvent.payload.contains("gcloud auth list"))
+        #expect(infoEvent.payload.contains("VM is running"))
+    }
+
+    @Test("Remote workspace preflight is silent for local-only workspaces")
+    func remoteWorkspacePreflightIsSilentForLocalOnlyWorkspaces() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-local-preflight-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Local", primaryPath: root.path)
+        let task = AgentTask(title: "Local task", goal: "Inspect local files", workspace: workspace, runtime: .copilotCLI)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let result = AgentRuntimeLaunchPreflight.preflightRemoteWorkspaceBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "run",
+            runtime: .copilotCLI
+        )
+
+        #expect(result.didPass)
+        #expect(result.status == .remoteWorkspacePreflightPassed)
+        #expect(result.auditFields["result"] == "no_ssh_connections")
+        #expect(try context.fetch(FetchDescriptor<TaskEvent>()).isEmpty)
+    }
 }
 
 @Suite("Agent Runtime Run Persistence")

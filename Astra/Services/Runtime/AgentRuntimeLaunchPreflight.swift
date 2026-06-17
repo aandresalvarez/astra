@@ -8,6 +8,7 @@ struct AgentRuntimeLaunchPreflightResult: Sendable, Equatable {
         case taskFolderCreateFailed
         case runtimeReadinessPassed
         case runtimeReadinessFailed
+        case remoteWorkspacePreflightPassed
         case capabilityRuntimeResourcesPassed
         case capabilityRuntimeResourcesMissing
         case connectorPreflightPassed
@@ -22,7 +23,7 @@ struct AgentRuntimeLaunchPreflightResult: Sendable, Equatable {
 
     var didPass: Bool {
         switch status {
-        case .taskFolderPrepared, .runtimeReadinessPassed, .capabilityRuntimeResourcesPassed, .connectorPreflightPassed:
+        case .taskFolderPrepared, .runtimeReadinessPassed, .remoteWorkspacePreflightPassed, .capabilityRuntimeResourcesPassed, .connectorPreflightPassed:
             return true
         case .taskFolderCreateFailed, .runtimeReadinessFailed, .capabilityRuntimeResourcesMissing, .connectorPreflightFailed:
             return false
@@ -221,6 +222,109 @@ enum AgentRuntimeLaunchPreflight {
             modelContext: modelContext,
             phase: phase,
             contextText: contextText
+        ).didPass
+    }
+
+    static func preflightRemoteWorkspaceBeforeLaunchResult(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String,
+        runtime: AgentRuntimeID
+    ) -> AgentRuntimeLaunchPreflightResult {
+        let buildInfo = AppBuildInfo.current
+        var fields: [String: String] = [
+            "source": "remote_workspace_preflight",
+            "phase": phase,
+            "runtime": runtime.rawValue,
+            "app_build": buildInfo.build,
+            "app_version": buildInfo.version,
+            "app_git_commit": buildInfo.gitCommit,
+            "app_build_date": buildInfo.buildDate,
+            "diagnostic_result": AgentRuntimeLaunchPreflightResult.Status.remoteWorkspacePreflightPassed.rawValue
+        ]
+
+        guard let workspace = task.workspace else {
+            fields["result"] = "no_workspace"
+            return AgentRuntimeLaunchPreflightResult(
+                status: .remoteWorkspacePreflightPassed,
+                phase: phase,
+                reason: nil,
+                detail: nil,
+                auditFields: fields
+            )
+        }
+
+        let hasStoredConnections = SSHConnectionManager.hasStoredConnections(workspacePath: workspace.primaryPath)
+        fields["workspace_id"] = workspace.id.uuidString
+        fields["has_stored_ssh_connections"] = String(hasStoredConnections)
+        guard hasStoredConnections else {
+            fields["result"] = "no_ssh_connections"
+            return AgentRuntimeLaunchPreflightResult(
+                status: .remoteWorkspacePreflightPassed,
+                phase: phase,
+                reason: nil,
+                detail: nil,
+                auditFields: fields
+            )
+        }
+
+        let connections = SSHConnectionManager.load(workspacePath: workspace.primaryPath)
+        let names = connections.map { displayName(for: $0) }
+        let aliasNames = connections
+            .map(\.configAlias)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        fields["result"] = "ssh_connections_detected"
+        fields["ssh_connection_count"] = String(connections.count)
+        fields["ssh_connection_names"] = CapabilityAudit.compactNames(names)
+        fields["ssh_config_alias_count"] = String(aliasNames.count)
+        fields["ssh_config_aliases"] = CapabilityAudit.compactNames(aliasNames)
+        fields["provider_path_access_expected"] = "true"
+
+        AppLogger.audit(
+            .remoteWorkspacePreflight,
+            category: "Worker",
+            taskID: task.id,
+            fields: fields,
+            level: .info,
+            fieldMaxLength: 240
+        )
+
+        modelContext.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.System.info,
+            payload: remoteWorkspacePreflightMessage(
+                connectionNames: names,
+                aliasNames: aliasNames,
+                runtime: runtime
+            ),
+            run: run
+        ))
+        try? modelContext.save()
+
+        return AgentRuntimeLaunchPreflightResult(
+            status: .remoteWorkspacePreflightPassed,
+            phase: phase,
+            reason: nil,
+            detail: names.joined(separator: ", "),
+            auditFields: fields
+        )
+    }
+
+    static func preflightRemoteWorkspaceBeforeLaunch(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String,
+        runtime: AgentRuntimeID
+    ) -> Bool {
+        preflightRemoteWorkspaceBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: phase,
+            runtime: runtime
         ).didPass
     }
 
@@ -480,6 +584,32 @@ enum AgentRuntimeLaunchPreflight {
         \(check.title) check failed before the agent ran:
 
         \(check.detail)\(remediation)
+        """
+    }
+
+    private static func displayName(for connection: SSHConnection) -> String {
+        let name = connection.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty { return name }
+        let alias = connection.configAlias.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !alias.isEmpty { return alias }
+        return connection.host.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func remoteWorkspacePreflightMessage(
+        connectionNames: [String],
+        aliasNames: [String],
+        runtime: AgentRuntimeID
+    ) -> String {
+        let connectionSummary = connectionNames.isEmpty
+            ? "an SSH connection"
+            : connectionNames.joined(separator: ", ")
+        let aliasSummary = aliasNames.isEmpty
+            ? "No SSH config alias is recorded."
+            : "SSH aliases: \(aliasNames.joined(separator: ", "))."
+        return """
+        Remote workspace preflight: \(connectionSummary) is configured for this workspace. \(aliasSummary)
+
+        ASTRA will launch \(runtime.rawValue) with SSH-aware filesystem access when the provider supports it so local SSH config, SSH keys, and gcloud/IAP ProxyCommand inputs remain reachable. If the remote still cannot connect, check that the VM is running and that `gcloud auth list` and `ssh <alias> "echo connected"` work in Terminal.
         """
     }
 

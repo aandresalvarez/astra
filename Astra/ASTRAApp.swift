@@ -240,7 +240,14 @@ public struct ASTRAApp: App {
         UserDefaults.standard.register(defaults: defaults)
         // Rotate logs if needed
         AppLogger.rotateIfNeeded()
-        AppLogger.audit(.appStarted, category: "App")
+        let appInfo = AppBuildInfo.current
+        AppLogger.audit(.appStarted, category: "App", fields: [
+            "channel": appInfo.channelRawValue,
+            "version": appInfo.version,
+            "build": appInfo.build,
+            "git_commit": appInfo.gitCommit,
+            "build_date": appInfo.buildDate
+        ], fieldMaxLength: 120)
         // AppKit/NSApplication setup (activation policy, dock icon, foreground
         // activation, App Shortcuts) is deferred to ASTRAAppDelegate's
         // applicationDidFinishLaunching. Touching NSApplication.shared *here*,

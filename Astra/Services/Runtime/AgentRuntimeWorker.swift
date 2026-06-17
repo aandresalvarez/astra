@@ -534,6 +534,14 @@ final class AgentRuntimeWorker {
             return
         }
 
+        _ = AgentRuntimeLaunchPreflight.preflightRemoteWorkspaceBeforeLaunch(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: auditPhase,
+            runtime: selectedRuntime
+        )
+
         let codeDir = TaskWorkspaceAccess(task: task).codeWorkingDirectory
         var isDir: ObjCBool = false
         let workspaceExists = FileManager.default.fileExists(atPath: codeDir, isDirectory: &isDir) && isDir.boolValue
