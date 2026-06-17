@@ -57,6 +57,7 @@ enum WorkspaceAppManifestValidator {
             issues: &issues
         )
         validatePermissions(manifest.permissions, issues: &issues)
+        validatePermissionCoverage(manifest, issues: &issues)
         validateSubmitBlock(manifest, issues: &issues)
         validateUsability(manifest, issues: &issues)
 
@@ -877,6 +878,68 @@ enum WorkspaceAppManifestValidator {
                 "/permissions/defaultMode",
                 "External writes are declared but the default mode prevents submitting them."
             ))
+        }
+    }
+
+    /// Cross-check the DECLARED permission surface against what the app's capability actions and
+    /// sources ACTUALLY touch, so the two can't drift apart: a capability-bound source's contract
+    /// should appear in `permissions.reads`, and a `capability.write` action's contract should
+    /// appear in `permissions.writes` — or in `permissions.externalWrites` for an external-write
+    /// operation, classified via the contract registry's per-operation effects.
+    ///
+    /// Emitted as WARNINGS, not blockers: the runtime enforces capability access by
+    /// `app.permissionMode` + the action's effect (see `WorkspaceAppActionExecutor.enforcePermission`),
+    /// NOT by these declarative lists, so a missing entry is a surface-mismatch the author/reviewer
+    /// should see — not a runtime hole. It keeps the up-front "what can this app reach" declaration
+    /// honest about the actual action surface.
+    private static func validatePermissionCoverage(
+        _ manifest: WorkspaceAppManifest,
+        issues: inout [WorkspaceAppManifestValidationReport.Issue]
+    ) {
+        let contractByRequirement = Dictionary(
+            manifest.requirements.map { ($0.id, $0.contract) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        guard !contractByRequirement.isEmpty else { return }
+
+        let reads = Set(manifest.permissions.reads)
+        let writes = Set(manifest.permissions.writes)
+        let externalWrites = Set(manifest.permissions.externalWrites)
+        let registry = WorkspaceAppContractRegistry()
+
+        // A capability-bound source reads its requirement's contract.
+        for (index, source) in manifest.sources.enumerated() {
+            guard let requirementRef = source.requirementRef,
+                  let contract = contractByRequirement[requirementRef] else { continue }
+            if !reads.contains(contract) {
+                issues.append(warning(
+                    "/sources/\(index)/requirementRef",
+                    "Source '\(source.id)' reads capability '\(contract)' but it is not declared in permissions.reads — declare it so the permission surface matches what the app reads."
+                ))
+            }
+        }
+
+        // A capability.write action writes its requirement's contract; the operation's effect
+        // (from the registry) decides whether it belongs in writes or externalWrites.
+        for (index, action) in manifest.actions.enumerated() where action.type == "capability.write" {
+            guard let requirementRef = action.requirementRef,
+                  let contract = contractByRequirement[requirementRef] else { continue }
+            let effect = action.operation.flatMap { operation in
+                registry.family(id: contract)?.operations.first { $0.name == operation }?.effect
+            }
+            if effect == .externalWrite {
+                if !externalWrites.contains(contract) {
+                    issues.append(warning(
+                        "/actions/\(index)/requirementRef",
+                        "Action '\(action.label ?? action.id)' performs an external write to '\(contract)' but it is not declared in permissions.externalWrites — declare it so governed external writes are visible before publishing."
+                    ))
+                }
+            } else if !writes.contains(contract) && !externalWrites.contains(contract) {
+                issues.append(warning(
+                    "/actions/\(index)/requirementRef",
+                    "Action '\(action.label ?? action.id)' writes capability '\(contract)' but it is not declared in permissions.writes — declare it so the permission surface matches what the app writes."
+                ))
+            }
         }
     }
 
