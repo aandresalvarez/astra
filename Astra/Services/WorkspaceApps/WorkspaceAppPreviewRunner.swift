@@ -207,7 +207,10 @@ final class WorkspaceAppPreviewRunner {
 
         case "appStorage.query":
             guard let table = input.table ?? action.table else { throw WorkspaceAppActionExecutionError.missingTable }
-            let rows = Array((tables[table] ?? []).prefix(max(0, input.limit)))
+            // Match storageService.records' clamp (max(1, min(limit, 10_000))) so preview row counts
+            // agree with the published app at the limit boundaries.
+            let safeLimit = max(1, min(input.limit, 10_000))
+            let rows = Array((tables[table] ?? []).prefix(safeLimit))
             return Outcome(rows: rows, summary: "Read \(rows.count) records from \(table).")
 
         case "gate.humanApproval":
@@ -381,18 +384,21 @@ final class WorkspaceAppPreviewRunner {
         input: WorkspaceAppActionInput,
         depth: Int
     ) throws -> Outcome {
-        // Mirror the executor's guard: a loop without steps / maxIterations / a stop field is
-        // rejected (missingLoopBounds) rather than silently "running" in preview.
+        // Mirror the executor's executeLoop guard EXACTLY (a weaker guard would pass a draft in
+        // preview that the live run rejects): steps + maxIterations>0 + timeoutSeconds>0 +
+        // delaySeconds>=0 + a VALID stop operator + a non-empty stop field, else missingLoopBounds.
         guard !action.steps.isEmpty,
-              let maxIterations = action.maxIterations,
+              let maxIterations = action.maxIterations, maxIterations > 0,
+              (action.timeoutSeconds.map { $0 > 0 } ?? false),
+              (action.delaySeconds.map { $0 >= 0 } ?? true),
+              let stopOperator = WorkspaceAppExpressionGateOperator(
+                rawValue: action.gateOperator?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+              ),
               let stopField = action.gateField?.trimmingCharacters(in: .whitespacesAndNewlines),
               !stopField.isEmpty else {
             throw WorkspaceAppActionExecutionError.missingLoopBounds(action.id)
         }
         let cap = min(maxIterations, Self.previewLoopIterationCap)
-        let stopOperator = WorkspaceAppExpressionGateOperator(
-            rawValue: action.gateOperator?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        )
         var iterations = 0
         var carried = input
         while iterations < cap {
@@ -402,8 +408,7 @@ final class WorkspaceAppPreviewRunner {
                 carried = carried.bindingForward(rows: result.rows)
             }
             iterations += 1
-            if let stopOperator,
-               Self.evaluate(stopOperator, actual: carried.record[stopField], expected: action.gateValue) {
+            if Self.evaluate(stopOperator, actual: carried.record[stopField], expected: action.gateValue) {
                 break
             }
         }

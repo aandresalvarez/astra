@@ -212,7 +212,8 @@ struct WorkspaceAppPreviewRunnerTests {
         let m = manifest(mode: .draftOnly, tables: [itemsTable()], actions: [
             action("noop", "appStorage.query", table: "items"),
             WorkspaceAppActionSpec(id: "loop", type: "loop.run", label: "Loop",
-                                   gateField: "done", gateOperator: "exists", steps: ["noop"], maxIterations: 1000)
+                                   gateField: "done", gateOperator: "exists", steps: ["noop"],
+                                   maxIterations: 1000, timeoutSeconds: 60)
         ])
         let runner = WorkspaceAppPreviewRunner(manifest: m, sampleRowsPerTable: 1)
         let loop = m.actions.first { $0.id == "loop" }!
