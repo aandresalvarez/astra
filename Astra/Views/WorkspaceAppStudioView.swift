@@ -13,6 +13,7 @@ struct WorkspaceAppStudioView: View {
     @State private var statusMessage = ""
     @State private var isGeneratingDraft = false
     @State private var generationTask: Task<Void, Never>?
+    @State private var isPreviewing = false
 
     init(
         workspace: Workspace,
@@ -45,7 +46,6 @@ struct WorkspaceAppStudioView: View {
                     ideasSection
                     proposalSection
                     validationSection
-                    WorkspaceAppStudioPreviewSection(manifest: draft.manifest)
                     manifestSection
                 }
                 .frame(maxWidth: 980, alignment: .leading)
@@ -55,6 +55,9 @@ struct WorkspaceAppStudioView: View {
         .background(Stanford.panelBackground)
         .accessibilityIdentifier("WorkspaceAppStudioView")
         .onDisappear { generationTask?.cancel() }
+        .sheet(isPresented: $isPreviewing) {
+            WorkspaceAppPreviewView(manifest: draft.manifest) { isPreviewing = false }
+        }
     }
 
     private var header: some View {
@@ -78,6 +81,12 @@ struct WorkspaceAppStudioView: View {
 
             Button("Cancel", action: onCancel)
                 .buttonStyle(.borderless)
+
+            Button(action: { isPreviewing = true }) {
+                Label("Preview", systemImage: "play.rectangle")
+            }
+            .buttonStyle(.bordered)
+            .help("Open the full app in a sandbox to test it before publishing — nothing is saved")
 
             Button(action: publishDraft) {
                 Label("Publish", systemImage: "square.and.arrow.down")

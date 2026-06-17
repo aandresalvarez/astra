@@ -13,13 +13,7 @@ struct WorkspaceAppDetailView: View {
     @Query(sort: \WorkspaceAppAutomationState.automationID) private var automationStates: [WorkspaceAppAutomationState]
     @Query(sort: \WorkspaceAppRun.startedAt, order: .reverse) private var appRuns: [WorkspaceAppRun]
     @State private var dataSnapshot = WorkspaceAppDetailDataSnapshot.empty
-    @State private var actionStatusMessage = ""
     @State private var packageStatusMessage = ""
-    @State private var activeRecordAction: WorkspaceAppDetailActionPresentation?
-    @State private var activeGateAction: WorkspaceAppDetailActionPresentation?
-    @State private var recordFormValues: [String: String] = [:]
-    @State private var recordFormError = ""
-    @State private var pendingDeleteRecordID: String?
     @Environment(\.modelContext) private var modelContext
     @State private var versionEntries: [WorkspaceAppVersionService.Index.Entry] = []
     @State private var versionStatusMessage = ""
@@ -40,11 +34,11 @@ struct WorkspaceAppDetailView: View {
                     attentionSection
                     dependencySection
                     automationSection
-                    nativeSurfaceSection
-                    formSection
-                    actionsSection
-                    runHistorySection
-                    storageSection
+                    WorkspaceAppSurfaceView(
+                        snapshot: dataSnapshot,
+                        onRunAction: onRunAction,
+                        onReload: loadDataSnapshot
+                    )
                     versionsSection
                     metadataRows
                 }
@@ -233,136 +227,6 @@ struct WorkspaceAppDetailView: View {
     }
 
     @ViewBuilder
-    private var nativeSurfaceSection: some View {
-        let surface = WorkspaceAppNativeSurfaceBuilder.presentation(
-            manifest: dataSnapshot.manifest,
-            storageTables: dataSnapshot.storageTables
-        )
-        if !surface.isEmpty {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("Overview")
-                        .font(Stanford.ui(15, weight: .semibold))
-                        .foregroundStyle(.primary)
-
-                    Text("\(surface.markdowns.count + surface.diagrams.count + surface.metrics.count + surface.charts.count) widgets")
-                        .font(Stanford.caption(11).weight(.medium))
-                        .foregroundStyle(.secondary)
-
-                    Spacer()
-                }
-
-                ForEach(surface.markdowns) { markdown in
-                    WorkspaceAppMarkdownCard(markdown: markdown)
-                }
-
-                ForEach(surface.diagrams) { diagram in
-                    WorkspaceAppDiagramCard(diagram: diagram)
-                }
-
-                if !surface.metrics.isEmpty {
-                    LazyVGrid(
-                        columns: [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 10, alignment: .top)],
-                        alignment: .leading,
-                        spacing: 10
-                    ) {
-                        ForEach(surface.metrics) { metric in
-                            WorkspaceAppMetricCard(metric: metric)
-                        }
-                    }
-                }
-
-                ForEach(surface.charts) { chart in
-                    WorkspaceAppChartCard(chart: chart)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var formSection: some View {
-        if let manifest = dataSnapshot.manifest {
-            let formViews = manifest.views.filter { $0.type == "form" && !$0.formFields.isEmpty }
-            ForEach(formViews, id: \.id) { view in
-                WorkspaceAppFormView(
-                    view: view,
-                    submitBlockedReasons: manifest.submitBlockedReasons ?? [],
-                    onSubmit: { values in submitForm(view: view, manifest: manifest, values: values) }
-                )
-            }
-        }
-    }
-
-    private func submitForm(view: WorkspaceAppViewSpec, manifest: WorkspaceAppManifest, values: [String: WorkspaceAppStorageValue]) {
-        // Route the draft through the declared write action (capability.write submitCreate) so it
-        // goes through the governed, approval-gated path — never a direct write.
-        guard let submit = manifest.actions.first(where: { $0.type == "capability.write" && ($0.table == nil || $0.table == view.table) }) else { return }
-        _ = try? onRunAction(
-            submit,
-            manifest,
-            WorkspaceAppActionInput(table: view.table, record: values, confirmedApproval: true)
-        )
-    }
-
-    @ViewBuilder
-    private var actionsSection: some View {
-        let actions = WorkspaceAppDetailActionsPresentation.actions(
-            manifest: dataSnapshot.manifest,
-            storageTables: dataSnapshot.storageTables
-        )
-        if !actions.isEmpty {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("Actions")
-                        .font(Stanford.ui(15, weight: .semibold))
-                        .foregroundStyle(.primary)
-
-                    Text("\(actions.count)")
-                        .font(Stanford.caption(11).weight(.medium))
-                        .foregroundStyle(.secondary)
-
-                    Spacer()
-                }
-
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 210, maximum: 320), spacing: 10, alignment: .top)],
-                    alignment: .leading,
-                    spacing: 10
-                ) {
-                    ForEach(actions) { action in
-                        WorkspaceAppActionButton(
-                            action: action,
-                            onRun: { handleAction(action) }
-                        )
-                    }
-                }
-
-                if let activeRecordAction,
-                   let table = storageTable(for: activeRecordAction) {
-                    WorkspaceAppStorageRecordForm(
-                        action: activeRecordAction,
-                        table: table,
-                        values: $recordFormValues,
-                        errorMessage: recordFormError,
-                        onCancel: clearRecordForm,
-                        onSubmit: { submitRecordAction(activeRecordAction, table: table) }
-                    )
-                }
-
-                if let activeGateAction, let spec = gateSpec(for: activeGateAction) {
-                    gateDecisionForm(action: activeGateAction, spec: spec)
-                }
-
-                if !actionStatusMessage.isEmpty {
-                    Text(actionStatusMessage)
-                        .font(Stanford.caption(12))
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
     private var attentionSection: some View {
         let attention = WorkspaceAppRunHistoryPresentationBuilder
             .presentation(runs: dataSnapshot.runs)
@@ -392,70 +256,6 @@ struct WorkspaceAppDetailView: View {
             .padding(12)
             .background(Stanford.lagunita.opacity(0.06))
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        }
-    }
-
-    @ViewBuilder
-    private var runHistorySection: some View {
-        let history = WorkspaceAppRunHistoryPresentationBuilder.presentation(runs: dataSnapshot.runs)
-        if !history.isEmpty {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("Run History")
-                        .font(Stanford.ui(15, weight: .semibold))
-                        .foregroundStyle(.primary)
-
-                    Text("\(history.rows.count)")
-                        .font(Stanford.caption(11).weight(.medium))
-                        .foregroundStyle(.secondary)
-
-                    Spacer()
-                }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(history.rows) { row in
-                        WorkspaceAppRunHistoryRow(row: row)
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var storageSection: some View {
-        if let errorMessage = dataSnapshot.errorMessage {
-            WorkspaceAppDetailNotice(
-                title: "Storage unavailable",
-                message: errorMessage,
-                systemImage: "exclamationmark.triangle"
-            )
-        } else if !dataSnapshot.storageTables.isEmpty {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("Storage")
-                        .font(Stanford.ui(15, weight: .semibold))
-                        .foregroundStyle(.primary)
-
-                    Text("\(dataSnapshot.storageTables.count) tables")
-                        .font(Stanford.caption(11).weight(.medium))
-                        .foregroundStyle(.secondary)
-
-                    Spacer()
-                }
-
-                ForEach(dataSnapshot.storageTables, id: \.name) { table in
-                    WorkspaceAppStorageTableView(
-                        table: table,
-                        rowActions: WorkspaceAppStorageRowActionPresentationBuilder.presentation(
-                            manifest: dataSnapshot.manifest,
-                            table: table
-                        ),
-                        pendingDeleteRecordID: pendingDeleteRecordID,
-                        onEdit: editRecord,
-                        onDelete: deleteRecord
-                    )
-                }
-            }
         }
     }
 
@@ -537,216 +337,6 @@ struct WorkspaceAppDetailView: View {
         }
     }
 
-    private func handleAction(_ action: WorkspaceAppDetailActionPresentation) {
-        switch action.type {
-        case "appStorage.insert":
-            showRecordForm(for: action)
-        case "gate.humanApproval", "gate.agentRecommendation":
-            showGateForm(for: action)
-        default:
-            runAction(action)
-        }
-    }
-
-    private func showGateForm(for action: WorkspaceAppDetailActionPresentation) {
-        clearRecordForm()
-        activeGateAction = action
-    }
-
-    private func clearGateForm() {
-        activeGateAction = nil
-    }
-
-    private func gateSpec(for action: WorkspaceAppDetailActionPresentation) -> WorkspaceAppActionSpec? {
-        dataSnapshot.manifest?.actions.first { $0.id == action.id }
-    }
-
-    private func runGate(
-        _ action: WorkspaceAppDetailActionPresentation,
-        spec: WorkspaceAppActionSpec,
-        decision: String
-    ) {
-        let input: WorkspaceAppActionInput
-        if spec.type == "gate.agentRecommendation" {
-            input = WorkspaceAppActionInput(
-                confirmedApproval: true,
-                agentRecommendationDecision: decision
-            )
-        } else {
-            input = WorkspaceAppActionInput(confirmedApproval: true)
-        }
-        clearGateForm()
-        runAction(
-            WorkspaceAppDetailActionPresentation(
-                id: action.id,
-                label: action.label,
-                type: action.type,
-                isEnabled: action.isEnabled,
-                disabledReason: action.disabledReason,
-                input: input
-            )
-        )
-    }
-
-    @ViewBuilder
-    private func gateDecisionForm(
-        action: WorkspaceAppDetailActionPresentation,
-        spec: WorkspaceAppActionSpec
-    ) -> some View {
-        let isAgentGate = spec.type == "gate.agentRecommendation"
-        let prompt = (isAgentGate ? spec.agentPrompt : spec.approvalPrompt) ?? ""
-        let decisions = isAgentGate ? spec.agentDecisions : spec.approvalDecisions
-        VStack(alignment: .leading, spacing: 8) {
-            Text(action.label)
-                .font(Stanford.body(13).weight(.semibold))
-                .foregroundStyle(Stanford.black)
-            if !prompt.isEmpty {
-                Text(prompt)
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(.secondary)
-            }
-            HStack(spacing: 8) {
-                ForEach(decisions, id: \.self) { decision in
-                    Button(decision) {
-                        runGate(action, spec: spec, decision: decision)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                }
-                Button("Cancel", action: clearGateForm)
-                    .buttonStyle(.plain)
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(12)
-        .background(Stanford.fog.opacity(0.6))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-
-    private func showRecordForm(for action: WorkspaceAppDetailActionPresentation) {
-        activeGateAction = nil
-        activeRecordAction = action
-        recordFormValues = [:]
-        recordFormError = ""
-        pendingDeleteRecordID = nil
-    }
-
-    private func editRecord(
-        action: WorkspaceAppDetailActionPresentation,
-        tableName: String,
-        row: [String: WorkspaceAppStorageValue]
-    ) {
-        guard let table = dataSnapshot.manifest?.storage?.tables.first(where: { $0.name == tableName }) else {
-            actionStatusMessage = "Storage schema is unavailable."
-            return
-        }
-        activeRecordAction = action
-        recordFormValues = WorkspaceAppStorageRowActionPresentationBuilder.formValues(for: row, table: table)
-        recordFormError = ""
-        pendingDeleteRecordID = nil
-    }
-
-    private func deleteRecord(
-        action: WorkspaceAppDetailActionPresentation,
-        primaryKey: String,
-        row: [String: WorkspaceAppStorageValue]
-    ) {
-        guard let record = WorkspaceAppStorageRowActionPresentationBuilder.primaryKeyRecord(
-            for: row,
-            primaryKey: primaryKey
-        ) else {
-            actionStatusMessage = "Delete needs a selected record primary key."
-            return
-        }
-
-        let recordID = deleteRecordID(table: action.input.table, primaryKey: primaryKey, row: row)
-        guard pendingDeleteRecordID == recordID else {
-            pendingDeleteRecordID = recordID
-            activeRecordAction = nil
-            recordFormError = ""
-            actionStatusMessage = "Confirm delete for this record."
-            return
-        }
-
-        pendingDeleteRecordID = nil
-        runAction(
-            WorkspaceAppDetailActionPresentation(
-                id: action.id,
-                label: action.label,
-                type: action.type,
-                isEnabled: action.isEnabled,
-                disabledReason: action.disabledReason,
-                input: WorkspaceAppActionInput(
-                    table: action.input.table,
-                    record: record,
-                    confirmedDestructive: true
-                )
-            )
-        )
-    }
-
-    private func clearRecordForm() {
-        activeRecordAction = nil
-        recordFormValues = [:]
-        recordFormError = ""
-    }
-
-    private func storageTable(for action: WorkspaceAppDetailActionPresentation) -> WorkspaceAppStorageTable? {
-        guard let tableName = action.input.table else { return nil }
-        return dataSnapshot.manifest?.storage?.tables.first { $0.name == tableName }
-    }
-
-    private func submitRecordAction(
-        _ action: WorkspaceAppDetailActionPresentation,
-        table: WorkspaceAppStorageTable
-    ) {
-        do {
-            let record = try WorkspaceAppStorageRecordDraftBuilder.record(
-                for: table,
-                values: recordFormValues
-            )
-            runAction(
-                WorkspaceAppDetailActionPresentation(
-                    id: action.id,
-                    label: action.label,
-                    type: action.type,
-                    isEnabled: action.isEnabled,
-                    disabledReason: action.disabledReason,
-                    input: WorkspaceAppActionInput(table: table.name, record: record)
-                )
-            )
-            clearRecordForm()
-        } catch {
-            recordFormError = error.localizedDescription
-        }
-    }
-
-    private func deleteRecordID(
-        table: String?,
-        primaryKey: String,
-        row: [String: WorkspaceAppStorageValue]
-    ) -> String {
-        let value = WorkspaceAppStorageRowActionPresentationBuilder.displayValue(row[primaryKey])
-        return "\(table ?? ""):\(primaryKey):\(value)"
-    }
-
-    private func runAction(_ action: WorkspaceAppDetailActionPresentation) {
-        guard let manifest = dataSnapshot.manifest,
-              let actionSpec = manifest.actions.first(where: { $0.id == action.id }) else {
-            actionStatusMessage = "Action is unavailable."
-            return
-        }
-
-        do {
-            let result = try onRunAction(actionSpec, manifest, action.input)
-            actionStatusMessage = result.outputSummary
-            loadDataSnapshot()
-        } catch {
-            actionStatusMessage = String(describing: error)
-        }
-    }
-
     private func exportPackage() {
         do {
             let url = try onExportPackage()
@@ -757,7 +347,7 @@ struct WorkspaceAppDetailView: View {
     }
 }
 
-private struct WorkspaceAppMarkdownCard: View {
+struct WorkspaceAppMarkdownCard: View {
     let markdown: WorkspaceAppMarkdownPresentation
 
     var body: some View {
@@ -791,7 +381,7 @@ private struct WorkspaceAppMarkdownCard: View {
     }
 }
 
-private struct WorkspaceAppDiagramCard: View {
+struct WorkspaceAppDiagramCard: View {
     let diagram: WorkspaceAppDiagramPresentation
 
     var body: some View {
@@ -838,7 +428,7 @@ private struct WorkspaceAppDiagramCard: View {
     }
 }
 
-private struct WorkspaceAppDiagramEdgeRow: View {
+struct WorkspaceAppDiagramEdgeRow: View {
     let edge: WorkspaceAppDiagramPresentation.Edge
 
     var body: some View {
@@ -867,7 +457,7 @@ private struct WorkspaceAppDiagramEdgeRow: View {
     }
 }
 
-private struct WorkspaceAppMetricCard: View {
+struct WorkspaceAppMetricCard: View {
     let metric: WorkspaceAppMetricPresentation
 
     var body: some View {
@@ -900,7 +490,7 @@ private struct WorkspaceAppMetricCard: View {
     }
 }
 
-private struct WorkspaceAppChartCard: View {
+struct WorkspaceAppChartCard: View {
     let chart: WorkspaceAppChartPresentation
 
     var body: some View {
@@ -932,7 +522,7 @@ private struct WorkspaceAppChartCard: View {
     }
 }
 
-private struct WorkspaceAppRunHistoryRow: View {
+struct WorkspaceAppRunHistoryRow: View {
     let row: WorkspaceAppRunHistoryRowPresentation
 
     var body: some View {
@@ -1003,7 +593,7 @@ private struct WorkspaceAppRunHistoryRow: View {
     }
 }
 
-private struct WorkspaceAppChartBarRow: View {
+struct WorkspaceAppChartBarRow: View {
     let bar: WorkspaceAppChartPresentation.Bar
 
     var body: some View {
@@ -1035,7 +625,7 @@ private struct WorkspaceAppChartBarRow: View {
     }
 }
 
-private struct WorkspaceAppStorageRecordForm: View {
+struct WorkspaceAppStorageRecordForm: View {
     let action: WorkspaceAppDetailActionPresentation
     let table: WorkspaceAppStorageTable
     @Binding var values: [String: String]
@@ -1128,7 +718,7 @@ private struct WorkspaceAppStorageRecordForm: View {
     }
 }
 
-private struct WorkspaceAppActionButton: View {
+struct WorkspaceAppActionButton: View {
     let action: WorkspaceAppDetailActionPresentation
     let onRun: () -> Void
 
@@ -1166,7 +756,7 @@ private struct WorkspaceAppActionButton: View {
     }
 }
 
-private struct WorkspaceAppMetadataRow: View {
+struct WorkspaceAppMetadataRow: View {
     let label: String
     let value: String
 
@@ -1184,7 +774,7 @@ private struct WorkspaceAppMetadataRow: View {
     }
 }
 
-private struct WorkspaceAppDependencyBindingCard: View {
+struct WorkspaceAppDependencyBindingCard: View {
     let binding: WorkspaceAppDependencyBindingSnapshot
 
     private var statusLabel: String {
@@ -1266,7 +856,7 @@ private struct WorkspaceAppDependencyBindingCard: View {
     }
 }
 
-private struct WorkspaceAppAutomationStateCard: View {
+struct WorkspaceAppAutomationStateCard: View {
     let automation: WorkspaceAppAutomationStateSnapshot
 
     private var statusLabel: String {
@@ -1352,7 +942,7 @@ private struct WorkspaceAppAutomationStateCard: View {
     }
 }
 
-private struct WorkspaceAppStorageTableView: View {
+struct WorkspaceAppStorageTableView: View {
     let table: WorkspaceAppStorageTableSnapshot
     let rowActions: WorkspaceAppStorageRowActionsPresentation
     let pendingDeleteRecordID: String?
@@ -1420,7 +1010,7 @@ private struct WorkspaceAppStorageTableView: View {
     }
 }
 
-private struct WorkspaceAppStorageHeaderRow: View {
+struct WorkspaceAppStorageHeaderRow: View {
     let columns: [String]
     let hasActions: Bool
 
@@ -1444,7 +1034,7 @@ private struct WorkspaceAppStorageHeaderRow: View {
     }
 }
 
-private struct WorkspaceAppStorageRecordRow: View {
+struct WorkspaceAppStorageRecordRow: View {
     let columns: [String]
     let row: [String: WorkspaceAppStorageValue]
     let rowActions: WorkspaceAppStorageRowActionsPresentation
