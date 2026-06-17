@@ -534,18 +534,38 @@ draft/published/last-known-good VERSIONING + revert. Live in-app verification of
 a real model round-trip is residual (the loop is fully unit-tested with an
 injected runner; only the real provider call needs the running app).
 
-### Slice 3: App Studio Preview And Versioning
+### Slice 3: App Studio Preview And Versioning — DONE (core; designed + adversarially reviewed)
 
 Goal:
 
 Make the Studio feel like a builder, not just a manifest inspector.
 
-Deliverables:
+Landed on `claude/loving-rhodes-87e735` (commits 34–37), as three focused commits
+(3a versioning, 3b preview, 3c publish wiring) + review hardening:
 
-- Preview panel using the same presentation models as published apps.
-- Draft/published/last-known-good version model.
-- Revert to previous published version.
-- Tests for publish, edit, failed edit, and revert.
+- **Versioning (schema-light):** three DEFAULTED fields on the existing `WorkspaceApp`
+  (`publishedManifestDigest` / `lastKnownGoodManifestDigest` / `latestVersionNumber`)
+  absorbed into ASTRASchemaV7 — NO new @Model, NO new schema version (the V7/V8 crash
+  was the design's hard constraint; a round-trip test proves absorption).
+- **`WorkspaceAppVersionService`:** snapshot-on-publish (`versions/v<n>.json` +
+  `index.json`, the source of truth), listVersions, markLastKnownGood, recordPublish,
+  revertToPreviousPublished. File-only methods nonisolated + FileManager-injected;
+  @Model mutators @MainActor. Revert is storage-preserving + digest-verified + does not
+  fork history; it steps back through published versions and throws at the floor.
+- **`WorkspaceAppDraftPreviewBuilder`:** turns a DRAFT manifest + deterministic sample
+  rows into the exact `WorkspaceAppDetailDataSnapshot` the published detail view consumes,
+  so the preview renders through the SAME presentation builders. Sample text cells marked.
+- **Publish fix:** publish now sets `.published` (was a latent draft-on-publish bug),
+  dedups the logicalID via `manifestForPublishing` (was never wired → duplicate-record
+  risk), and snapshots a version (logged, non-blocking).
+- Tests: 11 version-service + 7 preview (incl. revert-steps-back-and-floors,
+  last-known-good-preserved-across-revert, same-intent-dedup, item_count-reflects-sample-rows,
+  seed-varies-samples). WorkspaceApp suite 158 green.
+
+NOT done (residual / live-verify, like prior slices): the in-app Studio PREVIEW PANEL +
+Versions/Revert UI controls (the builder + service they call are unit-tested); a true
+`updateApp`/edit-in-place path (editing an existing app is not wired into the Studio yet —
+every publish creates a fresh, id-deduped app); the inline preview validation overlay.
 
 ### Slice 4: Local Database Reference App
 
