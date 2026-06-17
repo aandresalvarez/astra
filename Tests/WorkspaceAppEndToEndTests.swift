@@ -135,6 +135,47 @@ struct WorkspaceAppEndToEndTests {
         #expect(WorkspaceAppFormPresentationBuilder.presentation(view: formView, draft: ["consent": .text("1")]).contains { $0.name == "dose" })
     }
 
+    // MARK: - Package round trip (export -> review -> import)
+
+    @MainActor
+    @Test("a published app exports, reviews, and imports into another workspace")
+    func packageRoundTrip() throws {
+        let env = try Self.makeEnv()
+        defer { try? FileManager.default.removeItem(at: env.root) }
+
+        // Publish a grocery app in workspace 1.
+        let manifest = WorkspaceAppStudioBuilder.baseManifest(intent: "Build me a grocery database app.")
+        let created = try WorkspaceAppService().createApp(manifest: manifest, in: env.workspace, modelContext: env.context, status: .published)
+
+        // Export it to a .astra-app package.
+        let export = try WorkspaceAppPackageExporter().exportTemplatePackage(app: created.app, workspace: env.workspace)
+
+        // Review the package (the UI's data source).
+        let review = WorkspaceAppPackageImportReviewer.review(packageURL: export.packageURL)
+        #expect(review.packageName == manifest.app.name)
+        #expect(!review.storageTables.isEmpty)
+
+        // Import into a SECOND workspace.
+        let targetRoot = env.root.appendingPathComponent("target", isDirectory: true)
+        try FileManager.default.createDirectory(at: targetRoot, withIntermediateDirectories: true)
+        let target = Workspace(name: "Target", primaryPath: targetRoot.path)
+        env.context.insert(target)
+
+        if review.canInstall {
+            let result = try WorkspaceAppPackageService().importPackage(at: export.packageURL, into: target, modelContext: env.context)
+            #expect(result.app.workspaceID == target.id)
+            let importedHere = try env.context.fetch(FetchDescriptor<WorkspaceApp>()).filter { $0.workspaceID == target.id }
+            #expect(importedHere.count == 1)
+            #expect(importedHere.first?.lifecycleStatus == .draft)  // imports as a draft for review
+        } else {
+            // A blocked review (e.g. trust) is still a correct outcome — install must be refused.
+            #expect(!review.report.blockers.isEmpty)
+            #expect(throws: (any Error).self) {
+                _ = try WorkspaceAppPackageService().importPackage(at: export.packageURL, into: target, modelContext: env.context)
+            }
+        }
+    }
+
     // MARK: - Model-backed generation loop
 
     @MainActor

@@ -272,6 +272,7 @@ struct WorkspaceHomeContainerView: View {
 
     @Query private var tasks: [AgentTask]
     @Query private var workspaceApps: [WorkspaceApp]
+    @State private var isImportingApp = false
 
     init(
         workspace: Workspace,
@@ -331,8 +332,19 @@ struct WorkspaceHomeContainerView: View {
             onNewSchedule: onNewSchedule,
             onEditSchedule: onEditSchedule,
             onManageCapabilities: onManageCapabilities,
-            onOpenWorkspaceApp: onOpenWorkspaceApp
+            onOpenWorkspaceApp: onOpenWorkspaceApp,
+            onImportWorkspaceApp: { isImportingApp = true }
         )
+        .sheet(isPresented: $isImportingApp) {
+            WorkspaceAppImportReviewView(
+                workspace: workspace,
+                onInstalled: { app in
+                    isImportingApp = false
+                    onOpenWorkspaceApp?(app)
+                },
+                onCancel: { isImportingApp = false }
+            )
+        }
     }
 }
 
@@ -349,6 +361,7 @@ struct WorkspaceHomeView: View {
     var onEditSchedule: ((TaskSchedule) -> Void)?
     var onManageCapabilities: (() -> Void)?
     var onOpenWorkspaceApp: ((WorkspaceApp) -> Void)?
+    var onImportWorkspaceApp: (() -> Void)?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isEditingInstructions = false
@@ -492,7 +505,7 @@ struct WorkspaceHomeView: View {
 
             capabilitiesSummaryRow
 
-            if onOpenWorkspaceApp != nil, !workspaceApps.isEmpty {
+            if onImportWorkspaceApp != nil || (onOpenWorkspaceApp != nil && !workspaceApps.isEmpty) {
                 workspaceDivider
 
                 appsSummaryRow
@@ -513,6 +526,14 @@ struct WorkspaceHomeView: View {
                     .font(Stanford.caption(12).weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
+                if let onImportWorkspaceApp {
+                    Button(action: onImportWorkspaceApp) {
+                        Label("Import", systemImage: "square.and.arrow.down")
+                            .font(Stanford.caption(11))
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Import an ASTRA app package (.astra-app)")
+                }
             }
             ForEach(workspaceApps) { app in
                 Button {
