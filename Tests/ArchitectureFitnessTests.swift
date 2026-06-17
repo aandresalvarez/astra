@@ -307,6 +307,23 @@ struct ArchitectureFitnessTests {
         #expect(matches.isEmpty, "Deliverable verification reads should use HostFileAccessBroker: \(matches)")
     }
 
+    @Test("Deliverable verification reuses parsed required filenames")
+    func deliverableVerificationReusesParsedRequiredFilenames() throws {
+        let root = try repositoryRoot()
+        let relativePath = "Astra/Services/Validation/TaskDeliverableVerificationService.swift"
+        let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+        let evaluateStart = try #require(text.range(of: "static func evaluate("))
+        let evaluateTail = text[evaluateStart.lowerBound...]
+        let evaluateEnd = try #require(evaluateTail.range(of: "\n    private static func "))
+        let evaluate = String(evaluateTail[..<evaluateEnd.lowerBound])
+
+        #expect(evaluate.contains("let requiredFilenames = TaskDeliverableExpectation.requiredOutputFilenames(task)"))
+        #expect(
+            !evaluate.contains("TaskDeliverableExpectation.requiresDeliverableArtifact(task)"),
+            "Derive the verification requirement from requiredFilenames instead of parsing required output filenames twice."
+        )
+    }
+
     @Test("Task deliverable expectation scans go through the file access broker")
     func taskDeliverableExpectationScansGoThroughFileAccessBroker() throws {
         let root = try repositoryRoot()

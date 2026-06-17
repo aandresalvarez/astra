@@ -118,6 +118,40 @@ struct TaskCompletionPolicyTests {
         #expect(decision.userVisibleMessage?.contains("standalone file artifact") == true)
     }
 
+    @Test("manual completion policy names missing explicit deliverables")
+    func manualCompletionPolicyNamesMissingExplicitDeliverables() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("manual-completion-\(UUID().uuidString)", isDirectory: true)
+            .path
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Completion", primaryPath: root)
+        let task = AgentTask(
+            title: "Results",
+            goal: """
+            Final deliverables:
+            - ./results.txt
+            """,
+            workspace: workspace
+        )
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        try context.save()
+
+        let decision = TaskCompletionPolicy.decideManualCompletion(task: task, run: run)
+
+        #expect(decision.shouldBlockCompletion)
+        #expect(decision.gate == .manualArtifactRequirement)
+        #expect(decision.stopReason == "no_usable_result")
+        #expect(decision.userVisibleMessage?.contains("Missing explicitly requested deliverable file: results.txt.") == true)
+        #expect(decision.userVisibleMessage?.contains("standalone file artifact") == false)
+    }
+
     private func makeContainer() throws -> ModelContainer {
         let schema = ASTRASchema.current
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
