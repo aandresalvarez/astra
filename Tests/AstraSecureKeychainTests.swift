@@ -18,6 +18,7 @@ enum AstraSecureKeychainTestSupport {
 
     /// Remove a temp keychain file and its login-keychain bootstrap password.
     static func cleanup(keychainPath: String, bootstrapService: String, services: [String]) {
+        AstraSecureKeychain.clearTestBootstrapPassword(forBootstrapService: bootstrapService)
         // Only delete from the dedicated keychain if it actually exists — calling
         // through AstraSecureKeychain would otherwise create the keychain (and a
         // bootstrap item) just to delete from it, defeating the cleanup.
@@ -43,8 +44,27 @@ enum AstraSecureKeychainTestSupport {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
         ]
-        SecItemDelete(query as CFDictionary)
+        AstraSecureKeychain.perform(keychainUserInteractionDisabled: {
+            SecItemDelete(query as CFDictionary)
+        })
     }
+
+    /// Run keychain assertions with Security.framework UI disabled. This catches
+    /// regressions where ASTRA would otherwise surface the internal dedicated
+    /// keychain password prompt instead of reading through its unlocked handle.
+    static func withKeychainInteractionDisabled(_ body: () -> Void) {
+        AstraSecureKeychain.perform(keychainUserInteractionDisabled: body)
+    }
+
+    static func installTestBootstrapPassword(service: String) {
+        AstraSecureKeychain.setTestBootstrapPassword(
+            "test-bootstrap-\(UUID().uuidString)",
+            forBootstrapService: service
+        )
+    }
+
+    static let realKeychainTestsEnabled =
+        ProcessInfo.processInfo.environment["ASTRA_ENABLE_REAL_KEYCHAIN_TESTS"] == "1"
 
     /// Seed a legacy secret directly into the login keychain (simulating an item
     /// stored by an older ASTRA version). Returns whether the add succeeded.
@@ -56,14 +76,20 @@ enum AstraSecureKeychainTestSupport {
             kSecAttrAccount as String: account,
             kSecValueData as String: Data(value.utf8),
         ]
-        SecItemDelete(query as CFDictionary)
-        return SecItemAdd(query as CFDictionary, nil) == errSecSuccess
+        var status: OSStatus = errSecSuccess
+        AstraSecureKeychain.perform(keychainUserInteractionDisabled: {
+            SecItemDelete(query as CFDictionary)
+            status = SecItemAdd(query as CFDictionary, nil)
+        })
+        return status == errSecSuccess
     }
 
     static let isAvailable: Bool = {
+        guard realKeychainTestsEnabled else { return false }
         let path = tempKeychainPath()
         let service = "astra-availability-\(UUID().uuidString)"
         let bootstrap = "astra-availability-bootstrap-\(UUID().uuidString)"
+        installTestBootstrapPassword(service: bootstrap)
         let ok = AstraSecureKeychain.saveSecret(
             "probe",
             forAccount: "probe",
@@ -77,7 +103,7 @@ enum AstraSecureKeychainTestSupport {
     }()
 }
 
-@Suite("ASTRA dedicated secret keychain")
+@Suite("ASTRA dedicated secret keychain", .serialized)
 struct AstraSecureKeychainTests {
 
     // MARK: - Configuration (no keychain access — always runs)
@@ -100,6 +126,28 @@ struct AstraSecureKeychainTests {
         #expect(names.count == 3)
     }
 
+    @Test("Dedicated keychain reads disable UI and use file-keychain lookup")
+    func dedicatedReadsAreNonInteractiveFileKeychainLookups() throws {
+        let source = try astraSecureKeychainSource()
+        let secretBody = try methodBody(
+            startingWith: "+ (nullable NSString *)secretForAccount:",
+            endingBefore: "+ (BOOL)deleteSecretForAccount:",
+            in: source
+        )
+        let existsBody = try methodBody(
+            startingWith: "+ (BOOL)hasSecretForAccount:",
+            endingBefore: "#pragma mark - Migration & login-keychain probe",
+            in: source
+        )
+
+        for body in [secretBody, existsBody] {
+            #expect(body.contains("disableKeychainUserInteractionSavingPrevious"))
+            #expect(body.contains("restoreKeychainUserInteraction"))
+            #expect(body.contains("SecKeychainFindGenericPassword"))
+            #expect(!body.contains("SecItemCopyMatching"))
+        }
+    }
+
     // MARK: - CRUD against the dedicated keychain
 
     @Test("Save, load, and delete round-trip in the dedicated keychain",
@@ -108,6 +156,7 @@ struct AstraSecureKeychainTests {
         let path = AstraSecureKeychainTestSupport.tempKeychainPath()
         let bootstrap = "astra-test-bootstrap-\(UUID().uuidString)"
         let service = "astra-\(UUID().uuidString)"
+        AstraSecureKeychainTestSupport.installTestBootstrapPassword(service: bootstrap)
         defer {
             AstraSecureKeychainTestSupport.cleanup(
                 keychainPath: path, bootstrapService: bootstrap, services: [service]
@@ -119,14 +168,16 @@ struct AstraSecureKeychainTests {
             label: "Astra: Test", keychainPath: path, bootstrapService: bootstrap
         ))
         #expect(FileManager.default.fileExists(atPath: path))
-        #expect(AstraSecureKeychain.hasSecret(
-            forAccount: "JIRA_API_TOKEN", service: service,
-            keychainPath: path, bootstrapService: bootstrap
-        ))
-        #expect(AstraSecureKeychain.secret(
-            forAccount: "JIRA_API_TOKEN", service: service,
-            keychainPath: path, bootstrapService: bootstrap
-        ) == "s3cr3t-value")
+        AstraSecureKeychainTestSupport.withKeychainInteractionDisabled {
+            #expect(AstraSecureKeychain.hasSecret(
+                forAccount: "JIRA_API_TOKEN", service: service,
+                keychainPath: path, bootstrapService: bootstrap
+            ))
+            #expect(AstraSecureKeychain.secret(
+                forAccount: "JIRA_API_TOKEN", service: service,
+                keychainPath: path, bootstrapService: bootstrap
+            ) == "s3cr3t-value")
+        }
 
         // Update overwrites in place.
         #expect(AstraSecureKeychain.saveSecret(
@@ -157,6 +208,7 @@ struct AstraSecureKeychainTests {
         let bootstrap = "astra-test-bootstrap-\(UUID().uuidString)"
         let service = "astra-\(UUID().uuidString)"
         let account = "REDCAP_API_TOKEN"
+        AstraSecureKeychainTestSupport.installTestBootstrapPassword(service: bootstrap)
         defer {
             AstraSecureKeychainTestSupport.cleanup(
                 keychainPath: path, bootstrapService: bootstrap, services: [service]
@@ -190,6 +242,7 @@ struct AstraSecureKeychainTests {
         let tempBootstrap = "astra-test-bootstrap-\(UUID().uuidString)"
         let connectorID = UUID()
         let service = KeychainSecretStore.connectorEntityID(for: connectorID)
+        AstraSecureKeychainTestSupport.installTestBootstrapPassword(service: tempBootstrap)
         defer {
             AstraSecureKeychainTestSupport.cleanup(
                 keychainPath: tempPath, bootstrapService: tempBootstrap, services: [service]
@@ -216,6 +269,7 @@ struct AstraSecureKeychainTests {
         let path = AstraSecureKeychainTestSupport.tempKeychainPath()
         let bootstrap = "astra-test-bootstrap-\(UUID().uuidString)"
         let service = "astra-\(UUID().uuidString)"
+        AstraSecureKeychainTestSupport.installTestBootstrapPassword(service: bootstrap)
         defer {
             AstraSecureKeychainTestSupport.cleanup(
                 keychainPath: path, bootstrapService: bootstrap, services: [service]
@@ -278,6 +332,7 @@ struct AstraSecureKeychainTests {
         container.mainContext.insert(connector)
         try container.mainContext.save()
         let service = KeychainSecretStore.connectorEntityID(for: connector.id)
+        AstraSecureKeychainTestSupport.installTestBootstrapPassword(service: bootstrap)
         defer {
             AstraSecureKeychainTestSupport.cleanup(
                 keychainPath: path, bootstrapService: bootstrap, services: [service]
@@ -308,4 +363,18 @@ struct AstraSecureKeychainTests {
             }
         }
     }
+}
+
+private func astraSecureKeychainSource() throws -> String {
+    let testFile = URL(filePath: #filePath)
+    let repoRoot = testFile.deletingLastPathComponent().deletingLastPathComponent()
+    let sourceURL = repoRoot.appending(path: "AstraObjCSupport/AstraSecureKeychain.m")
+    return try String(contentsOf: sourceURL, encoding: .utf8)
+}
+
+private func methodBody(startingWith start: String, endingBefore end: String, in source: String) throws -> String {
+    let startRange = try #require(source.range(of: start))
+    let remaining = source[startRange.lowerBound...]
+    let endRange = try #require(remaining.range(of: end))
+    return String(remaining[..<endRange.lowerBound])
 }

@@ -1,5 +1,6 @@
 #import "AstraObjCSupport.h"
 #import <Security/Security.h>
+#import <string.h>
 
 // The whole point of this file is the legacy *file-based* keychain API
 // (SecKeychainCreate/Open/Unlock/Settings + kSecUseKeychain/kSecMatchSearchList),
@@ -17,6 +18,60 @@
 static NSString *const kAstraBootstrapAccount = @"keychain-bootstrap-password";
 
 @implementation AstraSecureKeychain
+
+#pragma mark - User interaction guard
+
++ (void)disableKeychainUserInteractionSavingPrevious:(Boolean *)previous {
+    Boolean allowed = true;
+    if (SecKeychainGetUserInteractionAllowed(&allowed) != errSecSuccess) {
+        allowed = true;
+    }
+    if (previous != NULL) { *previous = allowed; }
+    SecKeychainSetUserInteractionAllowed(false);
+}
+
++ (void)restoreKeychainUserInteraction:(Boolean)previous {
+    SecKeychainSetUserInteractionAllowed(previous);
+}
+
++ (void)performWithKeychainUserInteractionDisabled:(NS_NOESCAPE void (^)(void))block {
+    if (block == nil) { return; }
+    Boolean previousInteraction = true;
+    [self disableKeychainUserInteractionSavingPrevious:&previousInteraction];
+    @try {
+        block();
+    } @finally {
+        [self restoreKeychainUserInteraction:previousInteraction];
+    }
+}
+
++ (NSMutableDictionary<NSString *, NSData *> *)testBootstrapPasswordOverrides {
+    static NSMutableDictionary *overrides;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ overrides = [NSMutableDictionary dictionary]; });
+    return overrides;
+}
+
++ (BOOL)hasTestBootstrapPasswordOverrideForService:(NSString *)bootstrapService {
+    @synchronized (self) {
+        return [self testBootstrapPasswordOverrides][bootstrapService] != nil;
+    }
+}
+
++ (void)setTestBootstrapPassword:(NSString *)password
+             forBootstrapService:(NSString *)bootstrapService {
+    NSData *data = [password dataUsingEncoding:NSUTF8StringEncoding];
+    if (data == nil) { return; }
+    @synchronized (self) {
+        [self testBootstrapPasswordOverrides][bootstrapService] = data;
+    }
+}
+
++ (void)clearTestBootstrapPasswordForBootstrapService:(NSString *)bootstrapService {
+    @synchronized (self) {
+        [[self testBootstrapPasswordOverrides] removeObjectForKey:bootstrapService];
+    }
+}
 
 #pragma mark - Dedicated keychain handle (cached per path)
 
@@ -73,8 +128,12 @@ static NSString *const kAstraBootstrapAccount = @"keychain-bootstrap-password";
             // keychain OUT of it: it must only ever be reached via explicit
             // references, never an implicit default search, so a sibling
             // process can't enumerate it through securityd.
+            BOOL usesTestBootstrapOverride =
+                [self hasTestBootstrapPasswordOverrideForService:bootstrapService];
             CFArrayRef priorSearchList = NULL;
-            OSStatus copyStatus = SecKeychainCopySearchList(&priorSearchList);
+            OSStatus copyStatus = usesTestBootstrapOverride
+                ? errSecSuccess
+                : SecKeychainCopySearchList(&priorSearchList);
 
             OSStatus createStatus = SecKeychainCreate(cPath,
                                                       (UInt32)password.length,
@@ -92,10 +151,13 @@ static NSString *const kAstraBootstrapAccount = @"keychain-bootstrap-password";
             // If we cannot (couldn't snapshot it, or the restore failed), the
             // keychain may remain globally searchable, defeating the isolation —
             // so delete it and fail closed rather than ship a weaker boundary.
-            OSStatus restoreStatus =
-                (copyStatus == errSecSuccess && priorSearchList != NULL)
-                    ? SecKeychainSetSearchList(priorSearchList)
-                    : errSecParam;
+            OSStatus restoreStatus = errSecSuccess;
+            if (!usesTestBootstrapOverride) {
+                restoreStatus =
+                    (copyStatus == errSecSuccess && priorSearchList != NULL)
+                        ? SecKeychainSetSearchList(priorSearchList)
+                        : errSecParam;
+            }
             if (priorSearchList != NULL) { CFRelease(priorSearchList); }
             if (restoreStatus != errSecSuccess) {
                 SecKeychainDelete(keychain);
@@ -126,58 +188,91 @@ static NSString *const kAstraBootstrapAccount = @"keychain-bootstrap-password";
 /// YES. The password is useless to the sandboxed agent on its own: the agent
 /// cannot read the dedicated keychain *file* it unlocks.
 + (NSData *)bootstrapPasswordForService:(NSString *)service create:(BOOL)create {
-    SecKeychainRef login = NULL;
-    SecKeychainCopyDefault(&login); // login keychain; may be NULL in odd sessions
-
-    NSMutableDictionary *readQuery = [@{
-        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecAttrService: service,
-        (__bridge id)kSecAttrAccount: kAstraBootstrapAccount,
-        (__bridge id)kSecReturnData: @YES,
-        (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitOne,
-    } mutableCopy];
-    if (login != NULL) {
-        readQuery[(__bridge id)kSecMatchSearchList] = @[(__bridge id)login];
+    @synchronized (self) {
+        NSData *override = [self testBootstrapPasswordOverrides][service];
+        if (override != nil) { return override; }
     }
 
-    CFTypeRef result = NULL;
-    OSStatus readStatus = SecItemCopyMatching((__bridge CFDictionaryRef)readQuery, &result);
-    if (readStatus == errSecSuccess && result != NULL) {
-        NSData *data = (__bridge_transfer NSData *)result;
-        if (login != NULL) { CFRelease(login); }
+    SecKeychainRef login = NULL;
+    if (SecKeychainCopyDefault(&login) != errSecSuccess || login == NULL) {
+        return nil;
+    }
+
+    const char *serviceName = service.UTF8String;
+    const char *accountName = kAstraBootstrapAccount.UTF8String;
+    if (serviceName == NULL || accountName == NULL) {
+        CFRelease(login);
+        return nil;
+    }
+
+    UInt32 passwordLength = 0;
+    void *passwordBytes = NULL;
+    OSStatus readStatus = SecKeychainFindGenericPassword(
+        login,
+        (UInt32)strlen(serviceName), serviceName,
+        (UInt32)strlen(accountName), accountName,
+        &passwordLength,
+        &passwordBytes,
+        NULL
+    );
+    if (readStatus == errSecSuccess && passwordBytes != NULL) {
+        NSData *data = [NSData dataWithBytes:passwordBytes length:passwordLength];
+        SecKeychainItemFreeContent(NULL, passwordBytes);
+        CFRelease(login);
         return data;
     }
 
     if (!create) {
-        if (login != NULL) { CFRelease(login); }
+        if (passwordBytes != NULL) { SecKeychainItemFreeContent(NULL, passwordBytes); }
+        CFRelease(login);
         return nil;
+    }
+    if (passwordBytes != NULL) {
+        SecKeychainItemFreeContent(NULL, passwordBytes);
+        passwordBytes = NULL;
     }
 
     NSMutableData *randomBytes = [NSMutableData dataWithLength:32];
     if (SecRandomCopyBytes(kSecRandomDefault, randomBytes.length, randomBytes.mutableBytes) != errSecSuccess) {
-        if (login != NULL) { CFRelease(login); }
+        if (passwordBytes != NULL) { SecKeychainItemFreeContent(NULL, passwordBytes); }
+        CFRelease(login);
         return nil;
     }
     NSData *passwordData = [[randomBytes base64EncodedStringWithOptions:0]
                            dataUsingEncoding:NSUTF8StringEncoding];
 
-    NSMutableDictionary *addQuery = [@{
-        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecAttrService: service,
-        (__bridge id)kSecAttrAccount: kAstraBootstrapAccount,
-        (__bridge id)kSecValueData: passwordData,
-        (__bridge id)kSecAttrLabel: @"ASTRA secure keychain password",
-        (__bridge id)kSecAttrComment: @"Unlocks ASTRA's dedicated secret keychain. Do not delete.",
-    } mutableCopy];
-    if (login != NULL) {
-        addQuery[(__bridge id)kSecUseKeychain] = (__bridge id)login;
+    SecKeychainItemRef item = NULL;
+    OSStatus addStatus = SecKeychainAddGenericPassword(
+        login,
+        (UInt32)strlen(serviceName), serviceName,
+        (UInt32)strlen(accountName), accountName,
+        (UInt32)passwordData.length,
+        passwordData.bytes,
+        &item
+    );
+    if (addStatus == errSecSuccess && item != NULL) {
+        NSString *label = @"ASTRA secure keychain password";
+        NSString *comment = @"Unlocks ASTRA's dedicated secret keychain. Do not delete.";
+        NSData *labelData = [label dataUsingEncoding:NSUTF8StringEncoding];
+        NSData *commentData = [comment dataUsingEncoding:NSUTF8StringEncoding];
+        SecKeychainAttribute attributes[] = {
+            { kSecLabelItemAttr, (UInt32)labelData.length, (void *)labelData.bytes },
+            { kSecCommentItemAttr, (UInt32)commentData.length, (void *)commentData.bytes },
+        };
+        SecKeychainAttributeList attributeList = { 2, attributes };
+        OSStatus attributeStatus = SecKeychainItemModifyAttributesAndData(
+            item,
+            &attributeList,
+            (UInt32)passwordData.length,
+            passwordData.bytes
+        );
+        CFRelease(item);
+        CFRelease(login);
+        return attributeStatus == errSecSuccess ? passwordData : nil;
     }
-    OSStatus addStatus = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
-    if (login != NULL) { CFRelease(login); }
 
-    if (addStatus == errSecSuccess) {
-        return passwordData;
-    }
+    if (item != NULL) { CFRelease(item); }
+    CFRelease(login);
     if (addStatus == errSecDuplicateItem) {
         // Lost a race with another writer — re-read the persisted value.
         return [self bootstrapPasswordForService:service create:NO];
@@ -199,6 +294,10 @@ static NSString *const kAstraBootstrapAccount = @"keychain-bootstrap-password";
     NSData *data = [value dataUsingEncoding:NSUTF8StringEncoding];
     if (data == nil) { return NO; }
 
+    const char *serviceName = service.UTF8String;
+    const char *accountName = account.UTF8String;
+    if (serviceName == NULL || accountName == NULL) { return NO; }
+
     NSDictionary *matchQuery = @{
         (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
         (__bridge id)kSecAttrService: service,
@@ -214,47 +313,78 @@ static NSString *const kAstraBootstrapAccount = @"keychain-bootstrap-password";
     if (updateStatus == errSecSuccess) { return YES; }
     if (updateStatus != errSecItemNotFound) { return NO; }
 
-    NSMutableDictionary *addQuery = [@{
-        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecAttrService: service,
-        (__bridge id)kSecAttrAccount: account,
-        (__bridge id)kSecValueData: data,
-        (__bridge id)kSecAttrComment: label ?: @"Astra credential",
-        (__bridge id)kSecUseKeychain: (__bridge id)keychain,
-    } mutableCopy];
-    if (label != nil) {
-        addQuery[(__bridge id)kSecAttrLabel] = label;
+    NSString *comment = label ?: @"Astra credential";
+    NSData *labelData = [comment dataUsingEncoding:NSUTF8StringEncoding];
+    SecKeychainAttribute attributes[] = {
+        { kSecLabelItemAttr, (UInt32)labelData.length, (void *)labelData.bytes },
+        { kSecCommentItemAttr, (UInt32)labelData.length, (void *)labelData.bytes },
+    };
+    SecKeychainAttributeList attributeList = { 2, attributes };
+
+    SecKeychainItemRef addedItem = NULL;
+    OSStatus addStatus = SecKeychainAddGenericPassword(
+        keychain,
+        (UInt32)strlen(serviceName), serviceName,
+        (UInt32)strlen(accountName), accountName,
+        (UInt32)data.length,
+        data.bytes,
+        &addedItem
+    );
+    if (addStatus != errSecSuccess || addedItem == NULL) {
+        if (addedItem != NULL) { CFRelease(addedItem); }
+        return NO;
     }
-    return SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL) == errSecSuccess;
+    OSStatus attributeStatus = SecKeychainItemModifyAttributesAndData(
+        addedItem,
+        &attributeList,
+        (UInt32)data.length,
+        data.bytes
+    );
+    CFRelease(addedItem);
+    return attributeStatus == errSecSuccess;
 }
 
 + (nullable NSString *)secretForAccount:(NSString *)account
                                 service:(NSString *)service
                            keychainPath:(NSString *)keychainPath
                        bootstrapService:(NSString *)bootstrapService {
+    Boolean previousInteraction = true;
+    [self disableKeychainUserInteractionSavingPrevious:&previousInteraction];
+    @try {
     SecKeychainRef keychain = [self dedicatedKeychainForPath:keychainPath bootstrapService:bootstrapService];
     if (keychain == NULL) { return nil; }
 
-    NSDictionary *query = @{
-        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecAttrService: service,
-        (__bridge id)kSecAttrAccount: account,
-        (__bridge id)kSecMatchSearchList: @[(__bridge id)keychain],
-        (__bridge id)kSecReturnData: @YES,
-        (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitOne,
-    };
-    CFTypeRef result = NULL;
-    OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
-    if (status != errSecSuccess || result == NULL) { return nil; }
+    const char *serviceName = service.UTF8String;
+    const char *accountName = account.UTF8String;
+    if (serviceName == NULL || accountName == NULL) { return nil; }
 
-    NSData *data = (__bridge_transfer NSData *)result;
+    UInt32 passwordLength = 0;
+    void *passwordData = NULL;
+    OSStatus status = SecKeychainFindGenericPassword(
+        keychain,
+        (UInt32)strlen(serviceName), serviceName,
+        (UInt32)strlen(accountName), accountName,
+        &passwordLength,
+        &passwordData,
+        NULL
+    );
+    if (status != errSecSuccess || passwordData == NULL) { return nil; }
+
+    NSData *data = [NSData dataWithBytes:passwordData length:passwordLength];
+    SecKeychainItemFreeContent(NULL, passwordData);
     return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    } @finally {
+        [self restoreKeychainUserInteraction:previousInteraction];
+    }
 }
 
 + (BOOL)deleteSecretForAccount:(NSString *)account
                        service:(NSString *)service
                   keychainPath:(NSString *)keychainPath
               bootstrapService:(NSString *)bootstrapService {
+    Boolean previousInteraction = true;
+    [self disableKeychainUserInteractionSavingPrevious:&previousInteraction];
+    @try {
     SecKeychainRef keychain = [self dedicatedKeychainForPath:keychainPath bootstrapService:bootstrapService];
     if (keychain == NULL) { return NO; }
 
@@ -266,11 +396,17 @@ static NSString *const kAstraBootstrapAccount = @"keychain-bootstrap-password";
     };
     OSStatus status = SecItemDelete((__bridge CFDictionaryRef)query);
     return status == errSecSuccess || status == errSecItemNotFound;
+    } @finally {
+        [self restoreKeychainUserInteraction:previousInteraction];
+    }
 }
 
 + (BOOL)deleteAllSecretsForService:(NSString *)service
                       keychainPath:(NSString *)keychainPath
                   bootstrapService:(NSString *)bootstrapService {
+    Boolean previousInteraction = true;
+    [self disableKeychainUserInteractionSavingPrevious:&previousInteraction];
+    @try {
     SecKeychainRef keychain = [self dedicatedKeychainForPath:keychainPath bootstrapService:bootstrapService];
     if (keychain == NULL) { return NO; }
 
@@ -281,27 +417,37 @@ static NSString *const kAstraBootstrapAccount = @"keychain-bootstrap-password";
     };
     OSStatus status = SecItemDelete((__bridge CFDictionaryRef)query);
     return status == errSecSuccess || status == errSecItemNotFound;
+    } @finally {
+        [self restoreKeychainUserInteraction:previousInteraction];
+    }
 }
 
 + (BOOL)hasSecretForAccount:(NSString *)account
                     service:(NSString *)service
                keychainPath:(NSString *)keychainPath
            bootstrapService:(NSString *)bootstrapService {
+    Boolean previousInteraction = true;
+    [self disableKeychainUserInteractionSavingPrevious:&previousInteraction];
+    @try {
     SecKeychainRef keychain = [self dedicatedKeychainForPath:keychainPath bootstrapService:bootstrapService];
     if (keychain == NULL) { return NO; }
 
-    NSDictionary *query = @{
-        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecAttrService: service,
-        (__bridge id)kSecAttrAccount: account,
-        (__bridge id)kSecMatchSearchList: @[(__bridge id)keychain],
-        (__bridge id)kSecReturnAttributes: @YES,
-        (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitOne,
-    };
-    CFTypeRef result = NULL;
-    OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
-    if (result != NULL) { CFRelease(result); }
+    const char *serviceName = service.UTF8String;
+    const char *accountName = account.UTF8String;
+    if (serviceName == NULL || accountName == NULL) { return NO; }
+    SecKeychainItemRef item = NULL;
+    OSStatus status = SecKeychainFindGenericPassword(
+        keychain,
+        (UInt32)strlen(serviceName), serviceName,
+        (UInt32)strlen(accountName), accountName,
+        NULL, NULL,
+        &item
+    );
+    if (item != NULL) { CFRelease(item); }
     return status == errSecSuccess;
+    } @finally {
+        [self restoreKeychainUserInteraction:previousInteraction];
+    }
 }
 
 #pragma mark - Migration & login-keychain probe
@@ -384,6 +530,9 @@ static NSString *const kAstraBootstrapAccount = @"keychain-bootstrap-password";
 
 + (BOOL)loginKeychainContainsService:(NSString *)service
                              account:(nullable NSString *)account {
+    Boolean previousInteraction = true;
+    [self disableKeychainUserInteractionSavingPrevious:&previousInteraction];
+    @try {
     SecKeychainRef login = NULL;
     if (SecKeychainCopyDefault(&login) != errSecSuccess || login == NULL) {
         return NO;
@@ -403,6 +552,9 @@ static NSString *const kAstraBootstrapAccount = @"keychain-bootstrap-password";
     if (result != NULL) { CFRelease(result); }
     CFRelease(login);
     return status == errSecSuccess;
+    } @finally {
+        [self restoreKeychainUserInteraction:previousInteraction];
+    }
 }
 
 @end
