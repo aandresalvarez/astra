@@ -139,18 +139,28 @@ struct AstraSecureKeychainTests {
             endingBefore: "+ (BOOL)deleteSecretForAccount:",
             in: source
         )
+        let saveBody = try methodBody(
+            startingWith: "+ (BOOL)saveSecret:",
+            endingBefore: "+ (nullable NSString *)secretForAccount:",
+            in: source
+        )
         let existsBody = try methodBody(
             startingWith: "+ (BOOL)hasSecretForAccount:",
             endingBefore: "#pragma mark - Migration & login-keychain probe",
             in: source
         )
 
-        for body in [secretBody, existsBody] {
+        for body in [saveBody, secretBody, existsBody] {
             #expect(body.contains("disableKeychainUserInteractionSavingPrevious"))
             #expect(body.contains("restoreKeychainUserInteraction"))
-            #expect(body.contains("readSecretDataForAccount"))
             #expect(!body.contains("SecItemCopyMatching"))
         }
+        for body in [secretBody, existsBody] {
+            #expect(body.contains("readSecretDataForAccount"))
+        }
+        #expect(!secretBody.contains("temporarilyAllowKeychainUserInteraction"))
+        #expect(saveBody.contains("SecItemDelete"))
+        #expect(saveBody.contains("addSecretValue"))
         #expect(readSecretBody.contains("SecKeychainFindGenericPassword"))
         #expect(readSecretBody.contains("repairSecretAccessForItem"))
     }

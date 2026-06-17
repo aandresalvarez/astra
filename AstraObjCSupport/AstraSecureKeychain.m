@@ -498,6 +498,9 @@ static NSString *const kAstraSecretAccessLabel = @"ASTRA secure credential";
              label:(nullable NSString *)label
       keychainPath:(NSString *)keychainPath
   bootstrapService:(NSString *)bootstrapService {
+    Boolean previousInteraction = true;
+    [self disableKeychainUserInteractionSavingPrevious:&previousInteraction];
+    @try {
     SecKeychainRef keychain = [self dedicatedKeychainForPath:keychainPath bootstrapService:bootstrapService];
     if (keychain == NULL) { return NO; }
 
@@ -535,10 +538,31 @@ static NSString *const kAstraSecretAccessLabel = @"ASTRA secure credential";
             repaired = [self repairSecretAccessForItem:existingItem];
         }
         if (existingItem != NULL) { CFRelease(existingItem); }
-        return repaired;
+        if (repaired) { return YES; }
+
+        // The value was updated, but the old item ACL still cannot be repaired
+        // non-interactively. Replace the item wholesale so future reads do not
+        // ask the user for ASTRA's generated dedicated-keychain password.
+        OSStatus deleteStatus = SecItemDelete((__bridge CFDictionaryRef)matchQuery);
+        if (deleteStatus != errSecSuccess && deleteStatus != errSecItemNotFound) {
+            return NO;
+        }
+        OSStatus addStatus = [self addSecretValue:data
+                                       forAccount:account
+                                          service:service
+                                            label:label
+                                         keychain:keychain];
+        return addStatus == errSecSuccess;
     }
     if (existingItem != NULL) { CFRelease(existingItem); }
-    if (updateStatus != errSecItemNotFound) { return NO; }
+    if (updateStatus != errSecItemNotFound) {
+        // Existing pre-repair items can reject data updates without allowing a
+        // value read. Try replacing the item by metadata before giving up.
+        OSStatus deleteStatus = SecItemDelete((__bridge CFDictionaryRef)matchQuery);
+        if (deleteStatus != errSecSuccess && deleteStatus != errSecItemNotFound) {
+            return NO;
+        }
+    }
 
     OSStatus addStatus = [self addSecretValue:data
                                    forAccount:account
@@ -546,6 +570,9 @@ static NSString *const kAstraSecretAccessLabel = @"ASTRA secure credential";
                                         label:label
                                      keychain:keychain];
     return addStatus == errSecSuccess;
+    } @finally {
+        [self restoreKeychainUserInteraction:previousInteraction];
+    }
 }
 
 + (nullable NSString *)secretForAccount:(NSString *)account
@@ -563,18 +590,6 @@ static NSString *const kAstraSecretAccessLabel = @"ASTRA secure credential";
                                           service:service
                                          keychain:keychain
                                            status:&status];
-    if (data.length == 0 && [self isUserInteractionRecoveryStatus:status]) {
-        __block NSData *recovered = nil;
-        [self temporarilyAllowKeychainUserInteraction:^{
-            OSStatus interactiveStatus = errSecSuccess;
-            recovered = [self readSecretDataForAccount:account
-                                               service:service
-                                              keychain:keychain
-                                                status:&interactiveStatus];
-            return (BOOL)(recovered.length > 0);
-        }];
-        data = recovered;
-    }
     if (data.length == 0) { return nil; }
     return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
     } @finally {
