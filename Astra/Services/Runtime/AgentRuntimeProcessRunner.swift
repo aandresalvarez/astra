@@ -806,7 +806,7 @@ final class AgentRuntimeProcessRunner {
     @MainActor
     static func hasWorkspaceSSHConnections(for task: AgentTask) -> Bool {
         guard let workspace = task.workspace else { return false }
-        return !SSHConnectionManager.load(workspacePath: workspace.primaryPath).isEmpty
+        return SSHConnectionManager.hasStoredConnections(workspacePath: workspace.primaryPath)
     }
 
     /// Namespace invariant for the Shelf browser bridge: it may only

@@ -44,9 +44,26 @@ struct SSHConnection: Codable, Identifiable, Hashable {
 
 /// Manages SSH connections stored as a JSON file in the workspace folder.
 enum SSHConnectionManager {
+    private static let emptyConnectionsFileMaximumByteCount = 4
 
     static func connectionsFilePath(for workspacePath: String) -> String {
         WorkspaceFileLayout.sshConnectionsFile(for: workspacePath)
+    }
+
+    static func hasStoredConnections(workspacePath: String) -> Bool {
+        guard !workspacePath.isEmpty else { return false }
+        let broker = HostFileAccessBroker()
+        let workspaceRoot = URL(fileURLWithPath: workspacePath, isDirectory: true)
+        return connectionFilePaths(for: workspacePath).contains { path in
+            let url = URL(fileURLWithPath: path)
+            guard let fileSize = broker.fileSize(
+                at: url,
+                intent: .astraManagedStorage(root: workspaceRoot)
+            ) else {
+                return false
+            }
+            return fileSize > emptyConnectionsFileMaximumByteCount
+        }
     }
 
     static func load(workspacePath: String) -> [SSHConnection] {
@@ -58,6 +75,16 @@ enum SSHConnectionManager {
             intent: .astraManagedStorage(root: URL(fileURLWithPath: workspacePath, isDirectory: true))
         ) else { return [] }
         return (try? JSONDecoder().decode([SSHConnection].self, from: data)) ?? []
+    }
+
+    private static func connectionFilePaths(for workspacePath: String) -> [String] {
+        [
+            WorkspaceFileLayout.sshConnectionsFile(for: workspacePath),
+            WorkspaceFileLayout.legacySSHConnectionsFile(for: workspacePath)
+        ].reduce(into: []) { paths, path in
+            guard !path.isEmpty, !paths.contains(path) else { return }
+            paths.append(path)
+        }
     }
 
     static func save(_ connections: [SSHConnection], workspacePath: String) {

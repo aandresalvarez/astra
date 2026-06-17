@@ -108,6 +108,27 @@ struct AgentRuntimeAdapterTests {
         #expect(!source.contains("Task { await AgentRuntimeSharedStateGate.shared.release(sharedStateKey) }"))
     }
 
+    @Test("SSH launch presence helper avoids loading full connection payloads")
+    func sshLaunchPresenceHelperAvoidsLoadingFullConnectionPayloads() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let runnerURL = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Runtime")
+            .appendingPathComponent("AgentRuntimeProcessRunner.swift")
+        let source = try String(contentsOf: runnerURL, encoding: .utf8)
+        let signature = "static func hasWorkspaceSSHConnections(for task: AgentTask) -> Bool"
+        let marker = "    /// Namespace invariant"
+        let signatureRange = try #require(source.range(of: signature))
+        let markerRange = try #require(source[signatureRange.upperBound...].range(of: marker))
+        let helperSource = source[signatureRange.lowerBound..<markerRange.lowerBound]
+
+        #expect(helperSource.contains("SSHConnectionManager.hasStoredConnections"))
+        #expect(!helperSource.contains("SSHConnectionManager.load"))
+    }
+
     @Test("Adapters own model cache storage keys")
     func adaptersOwnModelCacheStorageKeys() {
         let claude = AgentRuntimeAdapterRegistry.adapter(for: .claudeCode)
