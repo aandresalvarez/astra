@@ -45,6 +45,7 @@ struct WorkspaceAppStudioView: View {
                     ideasSection
                     proposalSection
                     validationSection
+                    WorkspaceAppStudioPreviewSection(manifest: draft.manifest)
                     manifestSection
                 }
                 .frame(maxWidth: 980, alignment: .leading)
