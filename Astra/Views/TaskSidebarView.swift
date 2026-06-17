@@ -23,6 +23,7 @@ struct TaskSidebarContainerView: View {
     var onRenameWorkspace: ((Workspace) -> Void)?
     var onNewSchedule: (() -> Void)?
     var onEditSchedule: ((TaskSchedule) -> Void)?
+    var onNewApp: (() -> Void)?
 
     var body: some View {
         TaskSidebarView(
@@ -45,7 +46,8 @@ struct TaskSidebarContainerView: View {
             onDeleteWorkspace: onDeleteWorkspace,
             onRenameWorkspace: onRenameWorkspace,
             onNewSchedule: onNewSchedule,
-            onEditSchedule: onEditSchedule
+            onEditSchedule: onEditSchedule,
+            onNewApp: onNewApp
         )
     }
 }
@@ -293,6 +295,7 @@ struct TaskSidebarView: View {
     var onRenameWorkspace: ((Workspace) -> Void)?
     var onNewSchedule: (() -> Void)?
     var onEditSchedule: ((TaskSchedule) -> Void)?
+    var onNewApp: (() -> Void)?
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -391,6 +394,20 @@ struct TaskSidebarView: View {
                 .padding(.bottom, 10)
                 .popover(isPresented: newTaskNudgePresentation, arrowEdge: .leading) {
                     NewTaskNudgePopover(onDismiss: dismissNewTaskNudge)
+                }
+
+                if let onNewApp {
+                    Button(action: onNewApp) {
+                        Label("New App", systemImage: "square.grid.2x2")
+                            .font(Stanford.ui(13, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
+                    .help("Create a Workspace App in App Studio (⌘⇧A)")
                 }
             }
 

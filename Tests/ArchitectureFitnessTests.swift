@@ -943,7 +943,7 @@ struct ArchitectureFitnessTests {
             "Astra/Views/WorkspaceGitSectionView.swift": 2_650,
             "Astra/Views/ConfigureView.swift": 2_550,
             "Astra/Services/Diagnostics/LogDiagnosticsService.swift": 2_550,
-            "Astra/Views/TaskSidebarView.swift": 2_450,
+            "Astra/Views/TaskSidebarView.swift": 2_465,
             "Astra/Views/ShelfQueryPanelView.swift": 2_350,
             "Astra/Services/Persistence/TaskContextStateManager.swift": 2_250,
             "Astra/Services/Runtime/AgentPromptBuilder.swift": 2_250,

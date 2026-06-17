@@ -566,7 +566,8 @@ struct ContentView: View {
             onDeleteWorkspace: deleteWorkspace,
             onRenameWorkspace: beginRenamingWorkspace,
             onNewSchedule: showNewSchedule,
-            onEditSchedule: beginEditingSchedule
+            onEditSchedule: beginEditingSchedule,
+            onNewApp: { startWorkspaceAppStudio() }
         )
     }
 
