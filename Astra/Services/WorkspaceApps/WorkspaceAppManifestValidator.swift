@@ -1,8 +1,8 @@
 import Foundation
 
-struct WorkspaceAppManifestValidationReport: Equatable {
-    struct Issue: Equatable {
-        enum Severity: String, Equatable {
+struct WorkspaceAppManifestValidationReport: Sendable, Equatable {
+    struct Issue: Sendable, Equatable {
+        enum Severity: String, Sendable, Equatable {
             case blocker
             case warning
         }
