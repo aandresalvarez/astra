@@ -38,6 +38,11 @@ struct WorkspaceAppDraftPreviewBuilderTests {
         #expect(!surface.metrics.isEmpty)
         #expect(!surface.charts.isEmpty)
         #expect(actions.count == manifest.actions.count)
+
+        // The sample rows must actually flow into the aggregation: item_count counts the
+        // `items` table, which has exactly the 3 sample rows we requested.
+        let itemCount = surface.metrics.first { $0.id == "item_count" }
+        #expect(itemCount?.value == "3")
     }
 
     @Test("text sample cells are explicitly marked, typed cells match their column type")
@@ -68,6 +73,14 @@ struct WorkspaceAppDraftPreviewBuilderTests {
         let a = WorkspaceAppDraftPreviewBuilder.snapshot(manifest: manifest, sampleRowsPerTable: 3, seed: 7)
         let b = WorkspaceAppDraftPreviewBuilder.snapshot(manifest: manifest, sampleRowsPerTable: 3, seed: 7)
         #expect(a == b)
+    }
+
+    @Test("different seeds vary the numeric sample values")
+    func differentSeedsDiffer() {
+        let manifest = Self.groceryManifest
+        let a = WorkspaceAppDraftPreviewBuilder.snapshot(manifest: manifest, sampleRowsPerTable: 3, seed: 0)
+        let b = WorkspaceAppDraftPreviewBuilder.snapshot(manifest: manifest, sampleRowsPerTable: 3, seed: 5)
+        #expect(a != b)
     }
 
     @Test("zero sample rows degrades gracefully — builders still render, no crash")

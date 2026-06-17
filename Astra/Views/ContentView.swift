@@ -750,24 +750,36 @@ struct ContentView: View {
     }
 
     private func publishWorkspaceApp(_ draft: WorkspaceAppStudioDraft, workspace: Workspace) throws {
+        // Dedup the logical id against this workspace's apps so two apps generated from the
+        // same intent don't collide on appID — a collision would duplicate the @Model record
+        // and share one versions/ directory. (createApp itself does not dedup; it inserts.)
+        let existingIDs = Set(
+            ((try? modelContext.fetch(FetchDescriptor<WorkspaceApp>())) ?? [])
+                .filter { $0.workspaceID == workspace.id }
+                .map(\.logicalID)
+        )
+        let manifest = WorkspaceAppStudioBuilder.manifestForPublishing(draft.manifest, existingLogicalIDs: existingIDs)
         let result = try WorkspaceAppService().createApp(
-            manifest: draft.manifest,
+            manifest: manifest,
             in: workspace,
             modelContext: modelContext,
             status: .published
         )
-        try? modelContext.save()
-        // Slice 3: snapshot the published manifest as a version. createApp only succeeds
-        // on a valid manifest, so this publish is validated. Best-effort — a snapshot
-        // failure must not block the publish (versions/index.json is the source of truth).
-        let publishedData = try WorkspaceAppService.encodeManifest(draft.manifest)
-        try? WorkspaceAppVersionService().recordPublish(
-            app: result.app,
-            manifestData: publishedData,
-            validated: true,
-            workspacePath: workspace.primaryPath,
-            modelContext: modelContext
-        )
+        // createApp persists the app. Snapshot the published manifest as a version (validated —
+        // createApp only succeeds on a valid manifest). Best-effort: index.json is the source of
+        // truth and self-heals, so a snapshot failure is logged but must not block the publish.
+        do {
+            let publishedData = try WorkspaceAppService.encodeManifest(manifest)
+            try WorkspaceAppVersionService().recordPublish(
+                app: result.app,
+                manifestData: publishedData,
+                validated: true,
+                workspacePath: workspace.primaryPath,
+                modelContext: modelContext
+            )
+        } catch {
+            AppLogger.error("Workspace app published but version snapshot failed: \(error)", category: "WorkspaceApps")
+        }
         isComposingWorkspaceApp = false
         setSelectedWorkspaceApp(result.app)
     }

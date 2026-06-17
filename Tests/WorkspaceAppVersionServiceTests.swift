@@ -200,6 +200,78 @@ struct WorkspaceAppVersionServiceTests {
     }
 
     @MainActor
+    @Test("revert steps back through history and throws at the oldest version")
+    func revertStepsBackThroughHistory() throws {
+        let fixture = try Self.makeFixture()
+        defer { Self.cleanup(fixture) }
+
+        try fixture.publish(fixture.manifest, validated: true, at: 1000)
+        var v2 = fixture.manifest; v2.app.name = "v2"
+        try fixture.publish(v2, validated: true, at: 2000)
+        var v3 = fixture.manifest; v3.app.name = "v3"
+        try fixture.publish(v3, validated: true, at: 3000)
+
+        // v3 -> v2 -> v1, then nothing prior to v1.
+        #expect(try fixture.service.revertToPreviousPublished(
+            app: fixture.app, in: fixture.workspace, modelContext: fixture.context, now: Date(timeIntervalSince1970: 4000)
+        ) == 2)
+        #expect(try fixture.service.revertToPreviousPublished(
+            app: fixture.app, in: fixture.workspace, modelContext: fixture.context, now: Date(timeIntervalSince1970: 5000)
+        ) == 1)
+        #expect(throws: WorkspaceAppServiceError.self) {
+            try fixture.service.revertToPreviousPublished(
+                app: fixture.app, in: fixture.workspace, modelContext: fixture.context
+            )
+        }
+    }
+
+    @MainActor
+    @Test("revert does NOT downgrade last-known-good (a newer validated version still exists)")
+    func revertPreservesLastKnownGood() throws {
+        let fixture = try Self.makeFixture()
+        defer { Self.cleanup(fixture) }
+
+        try fixture.publish(fixture.manifest, validated: true, at: 1000)
+        var v2 = fixture.manifest; v2.app.name = "v2"
+        try fixture.publish(v2, validated: true, at: 2000)
+        let lkgBefore = fixture.app.lastKnownGoodManifestDigest  // == v2's digest
+
+        try fixture.service.revertToPreviousPublished(
+            app: fixture.app, in: fixture.workspace, modelContext: fixture.context, now: Date(timeIntervalSince1970: 3000)
+        )
+        // The model cache must keep mirroring the file-level source of truth, which revert
+        // leaves at v2 (revert moves only the `published` pointer).
+        #expect(fixture.app.lastKnownGoodManifestDigest == lkgBefore)
+        let index = fixture.service.loadIndexOrEmpty(
+            appID: fixture.app.logicalID, workspacePath: fixture.workspace.primaryPath
+        )
+        #expect(index.lastKnownGood == 2)
+        #expect(index.publishedVersion == 1)
+    }
+
+    @MainActor
+    @Test("logicalID dedup lets two apps from the same intent coexist without collision")
+    func sameIntentDoesNotCollide() throws {
+        let fixture = try Self.makeFixture()  // app #1, created from the grocery intent
+        defer { Self.cleanup(fixture) }
+
+        // Mirror publishWorkspaceApp: dedup the second app's id against the existing one.
+        let deduped = WorkspaceAppStudioBuilder.manifestForPublishing(
+            fixture.manifest, existingLogicalIDs: [fixture.app.logicalID]
+        )
+        #expect(deduped.app.id != fixture.manifest.app.id)
+
+        let second = try WorkspaceAppService().createApp(
+            manifest: deduped, in: fixture.workspace, modelContext: fixture.context, status: .published
+        )
+        #expect(second.app.logicalID != fixture.app.logicalID)
+
+        let appsHere = try fixture.context.fetch(FetchDescriptor<WorkspaceApp>())
+            .filter { $0.workspaceID == fixture.workspace.id }
+        #expect(appsHere.count == 2)  // two distinct records, no overwrite, no duplicate id
+    }
+
+    @MainActor
     @Test("revert with no prior published version throws")
     func revertWithoutPriorThrows() throws {
         let fixture = try Self.makeFixture()

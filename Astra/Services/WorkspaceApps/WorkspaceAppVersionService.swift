@@ -163,14 +163,18 @@ struct WorkspaceAppVersionService {
         let manifestPath = WorkspaceFileLayout.appManifestFile(workspacePath: workspacePath, appID: app.logicalID)
         try data.write(to: URL(fileURLWithPath: manifestPath), options: [.atomic])
 
-        app.manifestDigest = restoredDigest
-        app.publishedManifestDigest = restoredDigest
-        if entry.validated { app.lastKnownGoodManifestDigest = restoredDigest }
-        app.lifecycleStatus = .published
-        app.updatedAt = now
-
+        // Persist the moved pointer to the source of truth BEFORE mutating the @Model, so a
+        // failed index write never leaves the model ahead of disk.
         index.publishedVersion = target
         try writeIndex(index, appID: app.logicalID, workspacePath: workspacePath)
+
+        // Revert moves the `published` pointer back; it does NOT mint a new snapshot and does
+        // NOT touch last-known-good — a newer validated version still exists on disk, so the
+        // model's lastKnownGoodManifestDigest must keep mirroring index.lastKnownGood.
+        app.manifestDigest = restoredDigest
+        app.publishedManifestDigest = restoredDigest
+        app.lifecycleStatus = .published
+        app.updatedAt = now
         try modelContext.save()
         return target
     }
