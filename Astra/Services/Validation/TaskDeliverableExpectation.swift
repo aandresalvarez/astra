@@ -33,7 +33,14 @@ enum TaskDeliverableExpectation {
     }
 
     static func requiresDeliverableArtifact(_ task: AgentTask) -> Bool {
-        requiresStandaloneArtifact(task) || !requiredOutputFilenames(task).isEmpty
+        requiresDeliverableArtifact(task, requiredOutputFilenames: requiredOutputFilenames(task))
+    }
+
+    static func requiresDeliverableArtifact(
+        _ task: AgentTask,
+        requiredOutputFilenames: Set<String>
+    ) -> Bool {
+        requiresStandaloneArtifact(task) || !requiredOutputFilenames.isEmpty
     }
 
     static func requiredOutputFilenames(_ task: AgentTask) -> Set<String> {
@@ -128,7 +135,10 @@ enum TaskDeliverableExpectation {
     }
 
     static func missingDeliverableMessage(for task: AgentTask) -> String {
-        let requiredFilenames = requiredOutputFilenames(task)
+        missingDeliverableMessage(for: task, requiredFilenames: requiredOutputFilenames(task))
+    }
+
+    static func missingDeliverableMessage(for task: AgentTask, requiredFilenames: Set<String>) -> String {
         guard !requiredFilenames.isEmpty else {
             return missingArtifactMessage(for: task)
         }

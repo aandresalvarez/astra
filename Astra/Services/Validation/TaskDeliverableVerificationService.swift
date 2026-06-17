@@ -124,7 +124,10 @@ enum TaskDeliverableVerificationService {
         environment: TaskDeliverableVerificationEnvironment = .live
     ) async -> TaskDeliverableVerificationResult {
         let requiredFilenames = TaskDeliverableExpectation.requiredOutputFilenames(task)
-        let requiresDeliverableArtifact = TaskDeliverableExpectation.requiresDeliverableArtifact(task)
+        let requiresDeliverableArtifact = TaskDeliverableExpectation.requiresDeliverableArtifact(
+            task,
+            requiredOutputFilenames: requiredFilenames
+        )
         let discoveredFiles = TaskOutputDiscovery.files(for: task, run: run)
         let artifactReconciliation = TaskArtifactPersistenceService.reconcileTaskOutputArtifacts(
             discoveredFiles,
@@ -155,7 +158,10 @@ enum TaskDeliverableVerificationService {
                 status: "failed",
                 canComplete: false,
                 requiresHumanReview: false,
-                summary: TaskDeliverableExpectation.missingDeliverableMessage(for: task),
+                summary: TaskDeliverableExpectation.missingDeliverableMessage(
+                    for: task,
+                    requiredFilenames: requiredFilenames
+                ),
                 checks: [
                     TaskDeliverableCheck(
                         id: "artifact.discovery",
