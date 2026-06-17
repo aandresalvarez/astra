@@ -135,4 +135,71 @@ struct WorkspaceRightRailPerformanceTests {
         #expect(secondWorkspace.installedVersion(of: "plugin-a") == "2.0.0")
         #expect(firstSignature != secondSignature)
     }
+
+    @MainActor
+    @Test("Capability rail connector signature preserves fixed field order")
+    func capabilityRailConnectorSignaturePreservesFixedFieldOrder() {
+        let first = Connector(name: "API", serviceType: "jira", authMethod: "api_key")
+        first.id = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
+        first.updatedAt = Date(timeIntervalSince1970: 20)
+
+        let second = Connector(name: "API", serviceType: "api_key", authMethod: "jira")
+        second.id = first.id
+        second.updatedAt = first.updatedAt
+
+        #expect(CapabilityRailResourceSignature(connector: first) != CapabilityRailResourceSignature(connector: second))
+    }
+
+    @MainActor
+    @Test("Capability rail connector signature sorts unordered key lists without mixing categories")
+    func capabilityRailConnectorSignatureKeepsKeyCategories() {
+        let first = Connector(name: "API", serviceType: "rest_api", authMethod: "bearer")
+        first.id = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
+        first.updatedAt = Date(timeIntervalSince1970: 30)
+        first.credentialKeys = ["token", "secret"]
+        first.configKeys = ["base_url", "project"]
+
+        let sameDifferentOrder = Connector(name: "API", serviceType: "rest_api", authMethod: "bearer")
+        sameDifferentOrder.id = first.id
+        sameDifferentOrder.updatedAt = first.updatedAt
+        sameDifferentOrder.credentialKeys = ["secret", "token"]
+        sameDifferentOrder.configKeys = ["project", "base_url"]
+
+        let swappedCategory = Connector(name: "API", serviceType: "rest_api", authMethod: "bearer")
+        swappedCategory.id = first.id
+        swappedCategory.updatedAt = first.updatedAt
+        swappedCategory.credentialKeys = ["base_url", "project"]
+        swappedCategory.configKeys = ["secret", "token"]
+
+        #expect(CapabilityRailResourceSignature(connector: first) == CapabilityRailResourceSignature(connector: sameDifferentOrder))
+        #expect(CapabilityRailResourceSignature(connector: first) != CapabilityRailResourceSignature(connector: swappedCategory))
+    }
+
+    @MainActor
+    @Test("Capability rail tool signature preserves fixed field order")
+    func capabilityRailToolSignaturePreservesFixedFieldOrder() {
+        let first = LocalTool(name: "Runner", toolType: "cli", command: "run", arguments: "--json")
+        first.id = UUID(uuidString: "44444444-4444-4444-4444-444444444444")!
+        first.updatedAt = Date(timeIntervalSince1970: 40)
+
+        let second = LocalTool(name: "Runner", toolType: "run", command: "cli", arguments: "--json")
+        second.id = first.id
+        second.updatedAt = first.updatedAt
+
+        #expect(CapabilityRailResourceSignature(tool: first) != CapabilityRailResourceSignature(tool: second))
+    }
+
+    @MainActor
+    @Test("Capability rail skill signature keeps tool allowlist categories distinct")
+    func capabilityRailSkillSignatureKeepsToolCategoriesDistinct() {
+        let first = Skill(name: "Operator", allowedTools: ["Read"], disallowedTools: ["Write"])
+        first.id = UUID(uuidString: "55555555-5555-5555-5555-555555555555")!
+        first.updatedAt = Date(timeIntervalSince1970: 50)
+
+        let second = Skill(name: "Operator", allowedTools: ["Write"], disallowedTools: ["Read"])
+        second.id = first.id
+        second.updatedAt = first.updatedAt
+
+        #expect(CapabilityRailResourceSignature(skill: first) != CapabilityRailResourceSignature(skill: second))
+    }
 }

@@ -78,7 +78,11 @@ struct CapabilityRailResourceSignature: Hashable, Comparable {
         isGlobal = skill.isGlobal
         updatedAt = skill.updatedAt
         relatedIDs = (skill.connectors.map(\.id) + skill.localTools.map(\.id)).sorted { $0.uuidString < $1.uuidString }
-        keySignature = (skill.allowedTools + skill.disallowedTools + skill.customTools + skill.environmentKeys).sorted()
+        keySignature =
+            CapabilityRailSignatureParts.list("allowedTools", skill.allowedTools) +
+            CapabilityRailSignatureParts.list("disallowedTools", skill.disallowedTools) +
+            CapabilityRailSignatureParts.list("customTools", skill.customTools) +
+            CapabilityRailSignatureParts.list("environmentKeys", skill.environmentKeys)
         originPackageID = skill.originPackageID
         originPackageVersion = skill.originPackageVersion
         originComponentID = skill.originComponentID
@@ -91,7 +95,12 @@ struct CapabilityRailResourceSignature: Hashable, Comparable {
         isGlobal = connector.isGlobal
         updatedAt = connector.updatedAt
         relatedIDs = connector.skill.map { [$0.id] } ?? []
-        keySignature = ([connector.serviceType, connector.authMethod] + connector.credentialKeys + connector.configKeys).sorted()
+        keySignature = [
+            CapabilityRailSignatureParts.field("serviceType", connector.serviceType),
+            CapabilityRailSignatureParts.field("authMethod", connector.authMethod)
+        ] +
+            CapabilityRailSignatureParts.list("credentialKeys", connector.credentialKeys) +
+            CapabilityRailSignatureParts.list("configKeys", connector.configKeys)
         originPackageID = connector.originPackageID
         originPackageVersion = connector.originPackageVersion
         originComponentID = connector.originComponentID
@@ -104,7 +113,11 @@ struct CapabilityRailResourceSignature: Hashable, Comparable {
         isGlobal = tool.isGlobal
         updatedAt = tool.updatedAt
         relatedIDs = tool.skill.map { [$0.id] } ?? []
-        keySignature = [tool.toolType, tool.command, tool.arguments].sorted()
+        keySignature = [
+            CapabilityRailSignatureParts.field("toolType", tool.toolType),
+            CapabilityRailSignatureParts.field("command", tool.command),
+            CapabilityRailSignatureParts.field("arguments", tool.arguments)
+        ]
         originPackageID = tool.originPackageID
         originPackageVersion = tool.originPackageVersion
         originComponentID = tool.originComponentID
@@ -113,6 +126,16 @@ struct CapabilityRailResourceSignature: Hashable, Comparable {
     static func < (lhs: CapabilityRailResourceSignature, rhs: CapabilityRailResourceSignature) -> Bool {
         if lhs.kind != rhs.kind { return lhs.kind < rhs.kind }
         return lhs.id.uuidString < rhs.id.uuidString
+    }
+}
+
+private enum CapabilityRailSignatureParts {
+    static func field(_ name: String, _ value: String) -> String {
+        "\(name)=\(value)"
+    }
+
+    static func list(_ name: String, _ values: [String]) -> [String] {
+        values.sorted().map { "\(name)[]=\($0)" }
     }
 }
 
