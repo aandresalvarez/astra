@@ -38,7 +38,8 @@ enum CapabilityRuntimeIntegrityService {
         checkExecutables: Bool = true,
         prerequisiteStatuses: [String: HealthStatus] = [:],
         policyContext: CapabilityCatalogPolicyContext? = nil,
-        scope requestedScope: TaskCapabilityResolutionScope = .fullInventory
+        scope requestedScope: TaskCapabilityResolutionScope = .fullInventory,
+        secretStore: SecretStore = KeychainSecretStore()
     ) -> [CapabilityRuntimeIntegrityIssue] {
         guard let workspace = task.workspace else { return [] }
 
@@ -115,7 +116,8 @@ enum CapabilityRuntimeIntegrityService {
                 reachableTools: reachableTools,
                 enabledBrowserAdapters: enabledBrowserAdapters,
                 prerequisiteStatuses: prerequisiteStatuses,
-                checkExecutables: checkExecutables
+                checkExecutables: checkExecutables,
+                secretStore: secretStore
             )
         }
         return issues
@@ -153,7 +155,8 @@ enum CapabilityRuntimeIntegrityService {
         reachableTools: [LocalTool],
         enabledBrowserAdapters: Set<String>,
         prerequisiteStatuses: [String: HealthStatus],
-        checkExecutables: Bool
+        checkExecutables: Bool,
+        secretStore: SecretStore
     ) -> [CapabilityRuntimeIntegrityIssue] {
         var issues: [CapabilityRuntimeIntegrityIssue] = []
 
@@ -194,17 +197,26 @@ enum CapabilityRuntimeIntegrityService {
                 continue
             }
 
-            let hasUsableCredentialSet = matches.contains { connector in
-                connector.authMethod == "none" || connector.missingCredentialKeys().isEmpty
+            let credentialGaps = connectorCredentialGaps(
+                for: matches,
+                secretStore: secretStore
+            )
+            let hasUsableCredentialSet = matches.contains {
+                connectorHasUsableCredentials($0, secretStore: secretStore)
             }
             if !hasUsableCredentialSet {
-                let missing = Set(matches.flatMap { $0.missingCredentialKeys() }).sorted()
                 issues.append(issue(
                     package: package,
                     source: source,
                     kind: .credential,
-                    name: pluginConnector.name,
-                    message: "connector \(pluginConnector.name) is missing \(missing.joined(separator: ", "))"
+                    name: credentialIssueResourceName(
+                        pluginConnector: pluginConnector,
+                        gaps: credentialGaps
+                    ),
+                    message: credentialIssueMessage(
+                        pluginConnector: pluginConnector,
+                        gaps: credentialGaps
+                    )
                 ))
             }
         }
@@ -300,6 +312,94 @@ enum CapabilityRuntimeIntegrityService {
         }
 
         return issues
+    }
+
+    private struct ConnectorCredentialGap {
+        let connector: Connector
+        let missingKeys: [String]
+        let hasDeclaredKeys: Bool
+    }
+
+    private static func connectorHasUsableCredentials(
+        _ connector: Connector,
+        secretStore: SecretStore
+    ) -> Bool {
+        guard connector.authMethod != "none" else { return true }
+        let declaredKeys = normalizedCredentialKeys(for: connector)
+        guard !declaredKeys.isEmpty else { return false }
+        return connector.missingCredentialKeys(store: secretStore).isEmpty
+    }
+
+    private static func connectorCredentialGaps(
+        for connectors: [Connector],
+        secretStore: SecretStore
+    ) -> [ConnectorCredentialGap] {
+        connectors.compactMap { connector in
+            guard connector.authMethod != "none" else { return nil }
+            let declaredKeys = normalizedCredentialKeys(for: connector)
+            guard !declaredKeys.isEmpty else {
+                return ConnectorCredentialGap(
+                    connector: connector,
+                    missingKeys: [],
+                    hasDeclaredKeys: false
+                )
+            }
+            let missing = connector.missingCredentialKeys(store: secretStore)
+            guard !missing.isEmpty else { return nil }
+            return ConnectorCredentialGap(
+                connector: connector,
+                missingKeys: missing,
+                hasDeclaredKeys: true
+            )
+        }
+    }
+
+    private static func normalizedCredentialKeys(for connector: Connector) -> [String] {
+        connector.credentialKeys
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private static func credentialIssueResourceName(
+        pluginConnector: PluginConnector,
+        gaps: [ConnectorCredentialGap]
+    ) -> String {
+        guard gaps.count == 1 else { return pluginConnector.name }
+        return connectorDisplayName(gaps[0].connector, fallback: pluginConnector.name)
+    }
+
+    private static func credentialIssueMessage(
+        pluginConnector: PluginConnector,
+        gaps: [ConnectorCredentialGap]
+    ) -> String {
+        guard !gaps.isEmpty else {
+            return "connector \(pluginConnector.name) is missing credentials"
+        }
+        if gaps.count == 1 {
+            let gap = gaps[0]
+            let name = connectorDisplayName(gap.connector, fallback: pluginConnector.name)
+            guard gap.hasDeclaredKeys else {
+                return "connector \(name) has no credentials configured"
+            }
+            return "connector \(name) is missing Keychain value: \(gap.missingKeys.joined(separator: ", "))"
+        }
+
+        let names = CapabilityAudit.compactNames(
+            gaps.map { connectorDisplayName($0.connector, fallback: pluginConnector.name) }
+        )
+        let missing = Set(gaps.flatMap(\.missingKeys)).sorted()
+        if missing.isEmpty {
+            return "matching connectors \(names) have no credentials configured"
+        }
+        return "matching connectors \(names) are missing Keychain values: \(missing.joined(separator: ", "))"
+    }
+
+    private static func connectorDisplayName(
+        _ connector: Connector,
+        fallback: String
+    ) -> String {
+        let name = connector.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? fallback : name
     }
 
     private static func resourceKind(

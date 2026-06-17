@@ -73,6 +73,120 @@ struct CapabilityRuntimeIntegrityServiceTests {
         #expect(issues.contains { $0.source == .enabledPackage && $0.resourceKind == .skill })
     }
 
+    @Test("runtime integrity accepts enabled shared Jira when stale local Jira credentials are missing")
+    func runtimeIntegrityUsesUsableSharedConnectorOverStaleLocalMatch() throws {
+        let container = try makeRuntimeIntegrityContainer()
+        let context = container.mainContext
+        let jiraPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+
+        let workspace = Workspace(name: "JSL Jira", primaryPath: "/tmp/jsl-jira")
+        workspace.enabledCapabilityIDs = [jiraPackage.id]
+        context.insert(workspace)
+
+        let jiraSkill = Skill(
+            name: "Jira Agent",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use Jira REST API."
+        )
+        jiraSkill.isGlobal = true
+        context.insert(jiraSkill)
+
+        let staleLocal = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            connectorDescription: "Old local Jira row",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "basic"
+        )
+        staleLocal.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        staleLocal.workspace = workspace
+        context.insert(staleLocal)
+
+        let sharedJira = Connector(
+            name: "Jira-new",
+            serviceType: "jira",
+            connectorDescription: "Configured shared Jira",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "basic"
+        )
+        sharedJira.isGlobal = true
+        sharedJira.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        workspace.enabledGlobalConnectorIDs = [sharedJira.id.uuidString]
+        context.insert(sharedJira)
+
+        let task = AgentTask(
+            title: "Use Jira",
+            goal: "List Jira tickets",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let store = MockSecretStore()
+        let sharedEntityID = KeychainSecretStore.connectorEntityID(for: sharedJira.id)
+        store.save(key: "JIRA_EMAIL", value: "user@example.com", entityID: sharedEntityID, label: nil)
+        store.save(key: "JIRA_API_TOKEN", value: "token", entityID: sharedEntityID, label: nil)
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [jiraPackage],
+            checkExecutables: false,
+            secretStore: store
+        )
+
+        #expect(issues.isEmpty)
+    }
+
+    @Test("runtime integrity credential issue names the concrete connector row")
+    func runtimeIntegrityCredentialIssueNamesConcreteConnector() throws {
+        let container = try makeRuntimeIntegrityContainer()
+        let context = container.mainContext
+        let jiraPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+
+        let workspace = Workspace(name: "Unreadable Shared Jira", primaryPath: "/tmp/unreadable-shared-jira")
+        workspace.enabledCapabilityIDs = [jiraPackage.id]
+        context.insert(workspace)
+
+        let jiraSkill = Skill(
+            name: "Jira Agent",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use Jira REST API."
+        )
+        jiraSkill.isGlobal = true
+        context.insert(jiraSkill)
+
+        let sharedJira = Connector(
+            name: "Jira-new",
+            serviceType: "jira",
+            connectorDescription: "Configured shared Jira",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "basic"
+        )
+        sharedJira.isGlobal = true
+        sharedJira.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        workspace.enabledGlobalConnectorIDs = [sharedJira.id.uuidString]
+        context.insert(sharedJira)
+
+        let task = AgentTask(
+            title: "Use Jira",
+            goal: "List Jira tickets",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [jiraPackage],
+            checkExecutables: false,
+            secretStore: MockSecretStore()
+        )
+
+        let issue = try #require(issues.first { $0.resourceKind == .credential })
+        #expect(issue.resourceName == "Jira-new")
+        #expect(issue.message == "connector Jira-new is missing Keychain value: JIRA_EMAIL, JIRA_API_TOKEN")
+    }
+
     @Test("provider launch audit separates configured and scoped capabilities")
     func providerLaunchAuditSeparatesConfiguredAndScopedCapabilities() throws {
         let container = try makeRuntimeIntegrityContainer()
