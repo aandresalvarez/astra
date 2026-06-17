@@ -597,6 +597,20 @@ task+export, so the reference app could add items but never edit or delete them.
 Residual (live-verify / polish): the `form` view type rendering for a richer add/edit
 form; the live in-app CRUD walkthrough (the executor + presentation are unit-tested).
 
+### Slice 5: REDCap Form And Reconciliation Reference App — DONE (5a + 5b core; form-view UI residual)
+
+5b LANDED (commits 48–49): form-field manifest schema (`WorkspaceAppViewSpec.formFields` +
+`WorkspaceAppFormFieldSpec`/`WorkspaceAppFormChoice` + manifest `submitBlockedReasons`, all
+optional/nil so digests stay stable) + validator (allowed fieldTypes, choices required, name→column,
+`visibleWhen` must be 5a-safe, blocked-form-must-be-read-only). `WorkspaceAppREDCapFormBuilder`
+turns REDCap field metadata into a governed form manifest (record_id collected not minted, draft
+table, form + review views, approval-gated capability.write submit); conservative type taxonomy;
+branching via the 5a analyzer (safe→visibleWhen, unsupported→read-only + submitBlockedReasons →
+form demoted to read-only). 17 form tests. Residual: the SwiftUI form-view RENDERING (the
+presentation builder is unit-testable; the rendered control surface is live-verify).
+
+(original section retained below)
+
 ### Slice 5: REDCap Form And Reconciliation Reference App — PARTIAL (5a done; 5b blocked)
 
 Goal:
