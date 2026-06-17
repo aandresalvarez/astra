@@ -1636,20 +1636,7 @@ struct WorkspaceAppActionExecutor {
     }
 
     private func effect(for actionType: String) -> WorkspaceAppContractEffect {
-        switch actionType {
-        case "appStorage.query", "capability.read", "task.open", "artifact.open", "artifact.export", "url.open", "clipboard.copy", "pipeline.run", "loop.run", "gate.humanApproval", "gate.expression", "rows.reduce", "gate.branch":
-            .read
-        case "gate.agentRecommendation":
-            .read
-        case "appStorage.insert", "appStorage.update", "notification.show", "task.createDraft":
-            .localWrite
-        case "capability.write", "task.createAndRun", "task.fanOut":
-            .externalWrite
-        case "appStorage.delete":
-            .destructive
-        default:
-            .externalWrite
-        }
+        WorkspaceAppActionEffect.effect(for: actionType)
     }
 
     private func inputSummary(_ input: WorkspaceAppActionInput) -> String {

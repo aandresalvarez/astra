@@ -14,7 +14,8 @@ struct WorkspaceAppWebViewBridgeTests {
         var manifest = WorkspaceAppStudioBuilder.baseManifest(intent: "Build me a grocery database app.")
         manifest.actions = [
             WorkspaceAppActionSpec(id: "refresh_panel", type: "appStorage.query", label: "Refresh"),
-            WorkspaceAppActionSpec(id: "export_secret", type: "appStorage.query", label: "Export")
+            WorkspaceAppActionSpec(id: "export_secret", type: "appStorage.query", label: "Export"),
+            WorkspaceAppActionSpec(id: "add_item", type: "appStorage.insert", label: "Add", table: "items")
         ]
         manifest.views = [
             WorkspaceAppViewSpec(

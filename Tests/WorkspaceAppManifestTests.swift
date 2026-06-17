@@ -708,7 +708,8 @@ struct WorkspaceAppManifestTests {
                 )
             ],
             actions: [
-                WorkspaceAppActionSpec(id: "refresh", type: "pipeline", label: "Refresh")
+                WorkspaceAppActionSpec(id: "refresh", type: "pipeline", label: "Refresh"),
+                WorkspaceAppActionSpec(id: "add_review_item", type: "appStorage.insert", label: "Add Review Item", table: "review_items")
             ],
             permissions: WorkspaceAppPermissions(
                 reads: ["tabularQuery.read", "recordProject.read"],

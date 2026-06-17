@@ -789,6 +789,12 @@ enum WorkspaceAppStudioBuilder {
             ],
             actions: [
                 WorkspaceAppActionSpec(id: "list_review_items", type: "appStorage.query", label: "List Review Items"),
+                // A populating path: the Add action renders an inline record form so the app can
+                // fill its own storage. Without this the dashboard/table render over an empty table
+                // the user can never fill (the read-only-shell defect).
+                WorkspaceAppActionSpec(id: "add_review_item", type: "appStorage.insert", label: "Add Item", table: "review_items"),
+                WorkspaceAppActionSpec(id: "update_review_item", type: "appStorage.update", label: "Update Item", table: "review_items"),
+                WorkspaceAppActionSpec(id: "delete_review_item", type: "appStorage.delete", label: "Delete Item", table: "review_items"),
                 WorkspaceAppActionSpec(
                     id: "create_review_task",
                     type: "task.createDraft",

@@ -58,8 +58,60 @@ enum WorkspaceAppManifestValidator {
         )
         validatePermissions(manifest.permissions, issues: &issues)
         validateSubmitBlock(manifest, issues: &issues)
+        validateUsability(manifest, issues: &issues)
 
         return WorkspaceAppManifestValidationReport(issues: issues)
+    }
+
+    /// Usability invariants — the safety net that stops generation (model OR deterministic) from
+    /// shipping a "looks valid but can't be used" app, regardless of which path produced it.
+    ///
+    /// (a) Storage-populatable: if the app SHOWS a storage table (a non-form data view or a
+    ///     metric/chart widget reads it) it must also have a way to ADD rows — an
+    ///     `appStorage.insert` action, a form view, or a workflow/connector write. A dashboard over
+    ///     a table nothing can fill is the read-only-shell defect.
+    /// (b) Label/effect consistency: an action LABELED as a write (save/add/create/…) must not be a
+    ///     read-only action type (e.g. a "Save" button wired to `appStorage.query`).
+    private static func validateUsability(
+        _ manifest: WorkspaceAppManifest,
+        issues: inout [WorkspaceAppManifestValidationReport.Issue]
+    ) {
+        let tableNames = Set((manifest.storage?.tables ?? []).map(\.name))
+        if !tableNames.isEmpty {
+            var shown = Set<String>()
+            for view in manifest.views where view.type != "form" {
+                if let table = view.table, tableNames.contains(table) { shown.insert(table) }
+                for widget in view.widgets {
+                    if let table = widget.table, tableNames.contains(table) { shown.insert(table) }
+                }
+            }
+            let hasPopulatingPath = manifest.actions.contains { $0.type == "appStorage.insert" }
+                || manifest.views.contains { $0.type == "form" && !$0.formFields.isEmpty }
+                || manifest.actions.contains {
+                    ["pipeline.run", "loop.run", "task.fanOut", "capability.write"].contains($0.type)
+                }
+            if !shown.isEmpty && !hasPopulatingPath {
+                issues.append(blocker(
+                    "/storage",
+                    "App shows stored data (\(shown.sorted().joined(separator: ", "))) but has no way to add records — add an Add action (appStorage.insert), a form, or a workflow that populates it. A dashboard over a table nothing can fill is not usable."
+                ))
+            }
+        }
+
+        let writeVerbs: Set<String> = [
+            "save", "add", "create", "insert", "record", "submit", "new", "log", "register", "store"
+        ]
+        for (index, action) in manifest.actions.enumerated() {
+            guard let label = action.label?.lowercased(), !label.isEmpty else { continue }
+            let words = Set(label.split(whereSeparator: { !$0.isLetter }).map(String.init))
+            guard !words.isDisjoint(with: writeVerbs) else { continue }
+            if WorkspaceAppActionEffect.effect(for: action.type) == .read {
+                issues.append(blocker(
+                    "/actions/\(index)/type",
+                    "Action '\(action.label ?? action.id)' is labeled as a write but its type '\(action.type)' only reads — wire it to a write action (e.g. appStorage.insert) or rename it."
+                ))
+            }
+        }
     }
 
     /// Slice 5b: a form flagged with `submitBlockedReasons` (e.g. branching ASTRA can't honor)
