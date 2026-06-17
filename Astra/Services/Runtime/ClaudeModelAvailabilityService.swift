@@ -70,7 +70,7 @@ struct ClaudeModelAvailabilityService {
         let result = await availableModels(configuration: configuration)
         switch result {
         case .available(let models):
-            RuntimeModelAvailability.persistAvailableModelDetails(models, for: .claudeCode, defaults: defaults)
+            await RuntimeModelAvailability.persistObservedAvailableModelDetails(models, for: .claudeCode, defaults: defaults)
             AppLogger.audit(.runtimeModelAvailability, category: "Worker", fields: [
                 "runtime": AgentRuntimeID.claudeCode.rawValue,
                 "provider": configuration.provider.rawValue,

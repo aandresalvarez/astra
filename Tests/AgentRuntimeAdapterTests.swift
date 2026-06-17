@@ -108,6 +108,27 @@ struct AgentRuntimeAdapterTests {
         #expect(!source.contains("Task { await AgentRuntimeSharedStateGate.shared.release(sharedStateKey) }"))
     }
 
+    @Test("SSH launch presence helper avoids loading full connection payloads")
+    func sshLaunchPresenceHelperAvoidsLoadingFullConnectionPayloads() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let runnerURL = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Runtime")
+            .appendingPathComponent("AgentRuntimeProcessRunner.swift")
+        let source = try String(contentsOf: runnerURL, encoding: .utf8)
+        let signature = "static func hasWorkspaceSSHConnections(for task: AgentTask) -> Bool"
+        let marker = "    /// Namespace invariant"
+        let signatureRange = try #require(source.range(of: signature))
+        let markerRange = try #require(source[signatureRange.upperBound...].range(of: marker))
+        let helperSource = source[signatureRange.lowerBound..<markerRange.lowerBound]
+
+        #expect(helperSource.contains("SSHConnectionManager.hasStoredConnections"))
+        #expect(!helperSource.contains("SSHConnectionManager.load"))
+    }
+
     @Test("Adapters own model cache storage keys")
     func adaptersOwnModelCacheStorageKeys() {
         let claude = AgentRuntimeAdapterRegistry.adapter(for: .claudeCode)
@@ -658,6 +679,50 @@ struct AgentRuntimeAdapterTests {
         #expect(openCodePlan.directoriesToCreate == [])
         #expect(openCodePlan.providerDetectedFields["runtime"] == AgentRuntimeID.openCodeCLI.rawValue)
         #expect(openCodePlan.commandPlannedFields["permission_policy"] == PermissionPolicy.restricted.rawValue)
+    }
+
+    @Test("Codex launch allows external read-only SSH config access for SSH workspaces")
+    @MainActor
+    func codexLaunchAllowsExternalReadOnlySSHConfigAccess() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-codex-ssh-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "SSH", primaryPath: root.path)
+        SSHConnectionManager.save([
+            SSHConnection(
+                name: "deid-jsn-workbench",
+                host: "deid-as-service-jsn",
+                user: "alvaro1_stanford_edu",
+                keyPath: "~/.ssh/google_compute_engine",
+                configAlias: "deid-jsn-workbench"
+            )
+        ], workspacePath: root.path)
+        let task = AgentTask(
+            title: "SSH task",
+            goal: "Check the remote server",
+            workspace: workspace,
+            model: "gpt-5.5",
+            runtime: .codexCLI
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .codexCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "ssh deid-jsn-workbench 'echo OK'",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/codex-not-present",
+                providerHomeDirectory: "/tmp/astra-codex-home",
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30
+            ))
+
+        #expect(plan.arguments.contains("--config"))
+        #expect(plan.arguments.contains("sandbox_permissions=[\"disk-full-read-access\"]"))
     }
 
     @Test("Copilot launch audit separates task and runtime support tools")

@@ -252,6 +252,7 @@ struct WorkspaceRightRailView: View {
     @State private var pendingRailDeletion: PendingRailDeletion?
     @State private var approvedCapabilityPackages: [PluginPackage] = PluginCatalog.builtInPackages
     @State private var approvedCapabilityRecords: [CapabilityApprovalRecord] = []
+    @State private var capabilityRailSnapshotCache = CapabilityRailSnapshotCache()
     @State private var capabilityError: String?
     @State private var capabilityPrerequisiteStatuses: [String: HealthStatus] = [:]
     @State private var scrollMetrics = RightRailScrollMetrics()
@@ -438,7 +439,8 @@ struct WorkspaceRightRailView: View {
     // MARK: - Unified Configure Panel
 
     private var configurePanel: some View {
-        let snapshot = capabilityRailSnapshot
+        let signature = capabilityRailSnapshotSignature
+        let snapshot = capabilityRailSnapshotCache.snapshot(for: signature) ?? .empty
 
         // Once setup is complete the panel leads with the capabilities the
         // workspace actually uses; while setup is pending it stays directly under
@@ -478,8 +480,12 @@ struct WorkspaceRightRailView: View {
             loadSSHConnections()
             refreshApprovedCapabilities()
             refreshCapabilityPrerequisiteStatuses()
+            rebuildCapabilityRailSnapshot(for: capabilityRailSnapshotSignature)
             applyConfigureDefaults()
             checkGitRepositories()
+        }
+        .task(id: signature) {
+            rebuildCapabilityRailSnapshot(for: signature)
         }
         .onChange(of: workspace.primaryPath) {
             loadSSHConnections()
@@ -952,38 +958,91 @@ struct WorkspaceRightRailView: View {
         }
     }
 
-    private var capabilityRailSnapshot: CapabilityRailSnapshot {
-        PerformanceTelemetry.measure(
+    private var capabilityRailSnapshotSignature: CapabilityRailSnapshotSignature {
+        CapabilityRailSnapshotSignature(
+            workspace: workspace,
+            globalSkills: globalSkills,
+            globalConnectors: globalConnectors,
+            globalTools: globalTools,
+            packages: approvedCapabilityPackages,
+            approvalRecords: approvedCapabilityRecords,
+            prerequisiteStatuses: capabilityPrerequisiteStatuses
+        )
+    }
+
+    private var capabilityRailTelemetryFields: [String: String] {
+        [
+            "workspace_id": PerformanceTelemetryFields.abbreviatedID(workspace.id),
+            "package_count": PerformanceTelemetryFields.count(approvedCapabilityPackages.count)
+        ]
+    }
+
+    private func rebuildCapabilityRailSnapshot(for signature: CapabilityRailSnapshotSignature) {
+        guard signature == capabilityRailSnapshotSignature else { return }
+        guard !capabilityRailSnapshotCache.matches(signature) else { return }
+
+        let snapshot = PerformanceTelemetry.measure(
             "workspace_right_rail_capability_snapshot",
             thresholdMilliseconds: 20,
-            fields: [
-                "workspace_id": workspace.id.uuidString,
-                "package_count": String(approvedCapabilityPackages.count)
-            ]
+            fields: capabilityRailTelemetryFields.merging(["cache_state": "miss"], uniquingKeysWith: { _, new in new })
         ) {
-            let currentCapabilities = capabilities
-            var cachedStates: [String: CapabilityPackageState] = [:]
+            makeCapabilityRailSnapshot()
+        }
+        capabilityRailSnapshotCache.store(snapshot, for: signature)
+    }
 
-            func state(for package: PluginPackage) -> CapabilityPackageState {
-                if let cached = cachedStates[package.id] {
-                    return cached
-                }
-                let state = CapabilityPackageState(
-                    package: package,
-                    workspace: workspace,
-                    capabilities: currentCapabilities
-                )
-                cachedStates[package.id] = state
-                return state
+    private func makeCapabilityRailSnapshot() -> CapabilityRailSnapshot {
+        let telemetryFields = capabilityRailTelemetryFields
+        let currentCapabilities = capabilities
+        let resourceIndex = PerformanceTelemetry.measure(
+            "workspace_right_rail_capability_resource_index",
+            thresholdMilliseconds: 20,
+            fields: telemetryFields
+        ) {
+            CapabilityRailWorkspaceResourceIndex(
+                workspace: workspace,
+                capabilities: currentCapabilities
+            )
+        }
+        var cachedStates: [String: CapabilityRailPackageSnapshotState] = [:]
+
+        func state(for package: PluginPackage) -> CapabilityRailPackageSnapshotState {
+            if let cached = cachedStates[package.id] {
+                return cached
             }
+            let state = PerformanceTelemetry.measure(
+                "workspace_right_rail_capability_package_state",
+                thresholdMilliseconds: 20,
+                fields: telemetryFields.merging(["package_id": package.id], uniquingKeysWith: { _, new in new })
+            ) {
+                CapabilityRailPackageSnapshotState(
+                    package: package,
+                    index: resourceIndex
+                )
+            }
+            cachedStates[package.id] = state
+            return state
+        }
 
-            let catalogPackages = CapabilityCatalogInventory.packages(
+        let catalogPackages = PerformanceTelemetry.measure(
+            "workspace_right_rail_capability_catalog_inventory",
+            thresholdMilliseconds: 20,
+            fields: telemetryFields
+        ) {
+            CapabilityCatalogInventory.packages(
                 catalogPackages: approvedCapabilityPackages,
                 capabilities: currentCapabilities,
                 policyContext: catalogPolicyContext
             )
+        }
 
-            let items = catalogPackages
+        let items = PerformanceTelemetry.measure(
+            "workspace_right_rail_capability_items",
+            thresholdMilliseconds: 20,
+            fields: telemetryFields,
+            resultFields: { ["item_count": PerformanceTelemetryFields.count($0.count)] }
+        ) {
+            catalogPackages
                 .compactMap { package -> RailCapabilityItem? in
                     let packageState = state(for: package)
                     guard packageState.isEnabled else { return nil }
@@ -994,12 +1053,12 @@ struct WorkspaceRightRailView: View {
                     )
                 }
                 .sorted(by: sortRailCapabilityItems)
-
-            return CapabilityRailSnapshot(
-                items: items,
-                isDraft: isDraftCapability
-            )
         }
+
+        return CapabilityRailSnapshot(
+            items: items,
+            isDraft: isDraftCapability
+        )
     }
 
     private func sortRailCapabilityItems(_ lhs: RailCapabilityItem, _ rhs: RailCapabilityItem) -> Bool {
@@ -1036,7 +1095,7 @@ struct WorkspaceRightRailView: View {
 
     private func makePackageCapabilityItem(
         _ package: PluginPackage,
-        state: CapabilityPackageState,
+        state: CapabilityRailPackageSnapshotState,
         prerequisiteStatuses: [String: HealthStatus]
     ) -> RailCapabilityItem {
         let sharedResourceCount = state.linkedSkills.filter(\.isGlobal).count

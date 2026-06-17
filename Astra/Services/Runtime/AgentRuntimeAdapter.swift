@@ -1840,7 +1840,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             localToolCommands: localToolCommands,
             runtimeSupportTools: runtimeSupportTools,
             askFirstTools: surfacedAskFirstTools,
-            reasoningEffort: artifactBootstrapTools.isEmpty ? nil : "none"
+            reasoningEffort: artifactBootstrapTools.isEmpty ? nil : "none",
+            allowAllPathsForSSHConnections: AgentRuntimeProcessRunner.hasWorkspaceSSHConnections(for: context.task)
         )
 
         return AgentRuntimeProcessLaunchPlan(
@@ -2503,7 +2504,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         let executable = configuredPath.isEmpty ? AntigravityCLIRuntime.detectPath() : configuredPath
         let models = AntigravityCLIRuntime.modelNames(executablePath: executable)
             ?? AntigravityCLIRuntime.availableModelNames()
-        RuntimeModelAvailability.persistAvailableModels(models, for: id, authority: modelAvailabilityAuthority)
+        await RuntimeModelAvailability.persistObservedAvailableModels(models, for: id, authority: modelAvailabilityAuthority)
         return RuntimeReadinessCheck(
             id: "antigravity-models",
             title: "Antigravity models",

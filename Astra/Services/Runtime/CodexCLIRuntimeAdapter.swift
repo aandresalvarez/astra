@@ -203,7 +203,7 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
 
     func modelAvailabilityCheck(configuration _: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {
         let models = CodexCLIRuntime.availableModelNames()
-        RuntimeModelAvailability.persistAvailableModels(models, for: id, authority: modelAvailabilityAuthority)
+        await RuntimeModelAvailability.persistObservedAvailableModels(models, for: id, authority: modelAvailabilityAuthority)
         return RuntimeReadinessCheck(
             id: "codex-models",
             title: "Codex models",
@@ -246,6 +246,7 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
                 contextText: context.contextText
             )
                 || taskEnv["ASTRA_BROWSER_URL"] != nil,
+            allowExternalFileReadsForSSH: AgentRuntimeProcessRunner.hasWorkspaceSSHConnections(for: context.task),
             resumeSessionID: context.nativeContinuationSessionID
         )
         let directoriesToCreate = CodexCLIRuntime.directoriesToCreate(

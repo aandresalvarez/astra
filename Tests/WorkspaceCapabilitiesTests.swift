@@ -217,9 +217,9 @@ struct WorkspaceCapabilitiesTests {
         #expect(capabilities.activeTools.map(\.name) == ["Attached Tool", "Local Tool", "Shared Tool"])
     }
 
-    @Test("package state treats enabled linked elements as enabled capability")
+    @Test("package state treats enabled linked elements as ready without resolving credential values")
     @MainActor
-    func packageStateDetectsEnabledLinkedElements() {
+    func packageStateDetectsEnabledLinkedElementsWithoutCredentialLookup() {
         let workspace = Workspace(name: "Package State", primaryPath: "/tmp/package-state")
 
         let connector = Connector(name: "Jira", serviceType: "jira")
@@ -284,8 +284,8 @@ struct WorkspaceCapabilitiesTests {
         #expect(state.linkedConnectors.map(\.name) == ["Jira"])
         #expect(state.skillIDStrings == [skill.id.uuidString])
         #expect(state.connectorIDStrings == [connector.id.uuidString])
-        #expect(state.readiness.level == .needsAttention)
-        #expect(state.readiness.messages == ["Jira: missing JIRA_EMAIL, JIRA_API_TOKEN"])
+        #expect(state.readiness.level == .ready)
+        #expect(state.readiness.messages == ["Ready"])
     }
 
     @Test("package state prefers origin metadata over name matches")

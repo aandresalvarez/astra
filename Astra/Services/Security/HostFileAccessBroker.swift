@@ -57,6 +57,15 @@ struct HostFileAccessBroker {
         return data
     }
 
+    func fileSize(at url: URL, intent: HostFileAccessIntent) -> Int? {
+        guard !shouldSkip(url, intent: intent) else { return nil }
+        guard let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey]),
+              values.isDirectory != true else {
+            return nil
+        }
+        return values.fileSize
+    }
+
     func readString(
         at url: URL,
         encoding: String.Encoding = .utf8,
