@@ -711,7 +711,9 @@ enum WorkspaceAppStudioBuilder {
             ],
             actions: [
                 WorkspaceAppActionSpec(id: "list_items", type: "appStorage.query", label: "List Items"),
-                WorkspaceAppActionSpec(id: "add_item", type: "appStorage.insert", label: "Add Item"),
+                WorkspaceAppActionSpec(id: "add_item", type: "appStorage.insert", label: "Add Item", table: "items"),
+                WorkspaceAppActionSpec(id: "update_item", type: "appStorage.update", label: "Update Item", table: "items"),
+                WorkspaceAppActionSpec(id: "delete_item", type: "appStorage.delete", label: "Delete Item", table: "items"),
                 WorkspaceAppActionSpec(
                     id: "create_shopping_task",
                     type: "task.createDraft",
