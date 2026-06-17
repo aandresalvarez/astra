@@ -20,6 +20,9 @@ struct WorkspaceAppDetailView: View {
     @State private var recordFormValues: [String: String] = [:]
     @State private var recordFormError = ""
     @State private var pendingDeleteRecordID: String?
+    @Environment(\.modelContext) private var modelContext
+    @State private var versionEntries: [WorkspaceAppVersionService.Index.Entry] = []
+    @State private var versionStatusMessage = ""
 
     private var presentation: WorkspaceAppDetailPresentation {
         WorkspaceAppsPresentation.detail(for: app)
@@ -42,6 +45,7 @@ struct WorkspaceAppDetailView: View {
                     actionsSection
                     runHistorySection
                     storageSection
+                    versionsSection
                     metadataRows
                 }
                 .frame(maxWidth: 980, alignment: .leading)
@@ -463,6 +467,74 @@ struct WorkspaceAppDetailView: View {
             automationStates: automationStates,
             runs: appRuns
         )
+        // Load the published version history once per snapshot (avoids a per-body FS scan).
+        if let workspace {
+            versionEntries = WorkspaceAppVersionService().listVersions(appID: app.logicalID, workspacePath: workspace.primaryPath)
+        }
+    }
+
+    @ViewBuilder
+    private var versionsSection: some View {
+        if !versionEntries.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("Versions")
+                        .font(Stanford.ui(15, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    Text("\(versionEntries.count)")
+                        .font(Stanford.caption(11).weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if versionEntries.count >= 2, workspace != nil {
+                        Button(action: revertToPreviousVersion) {
+                            Label("Revert to previous", systemImage: "arrow.uturn.backward")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
+
+                if !versionStatusMessage.isEmpty {
+                    Text(versionStatusMessage)
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+                }
+
+                ForEach(versionEntries.sorted { $0.number > $1.number }, id: \.number) { entry in
+                    HStack(spacing: 8) {
+                        Text("v\(entry.number)")
+                            .font(Stanford.caption(12).weight(.medium))
+                            .foregroundStyle(.primary)
+                        if entry.number == app.latestVersionNumber {
+                            Text("current")
+                                .font(Stanford.caption(10).weight(.semibold))
+                                .foregroundStyle(Stanford.lagunita)
+                        }
+                        Spacer()
+                        Text(entry.validated ? "validated" : "unvalidated")
+                            .font(Stanford.caption(10))
+                            .foregroundStyle(.secondary)
+                        Text(String(entry.digest.prefix(8)))
+                            .font(Stanford.caption(10))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    private func revertToPreviousVersion() {
+        guard let workspace else { return }
+        do {
+            let restored = try WorkspaceAppVersionService().revertToPreviousPublished(
+                app: app, in: workspace, modelContext: modelContext
+            )
+            versionStatusMessage = "Reverted to version \(restored)."
+            loadDataSnapshot()
+            onRefresh()
+        } catch {
+            versionStatusMessage = "Revert failed: \(error.localizedDescription)"
+        }
     }
 
     private func handleAction(_ action: WorkspaceAppDetailActionPresentation) {
