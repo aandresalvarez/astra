@@ -262,6 +262,8 @@ struct AgentTaskPropertyTests {
     func threadMessageCountFallback() {
         let task = makeTask(goal: "Investigate the failing sync job")
         #expect(task.threadMessageCount == 1)
+        #expect(AgentTask.fallbackThreadMessageCount(forGoal: "Investigate the failing sync job") == 1)
+        #expect(AgentTask.fallbackThreadMessageCount(forGoal: " \n\t ") == 0)
     }
 
     @Test("threadMessageCount counts only conversation messages")
@@ -276,6 +278,14 @@ struct AgentTaskPropertyTests {
         task.events.append(tool)
 
         #expect(task.threadMessageCount == 2)
+    }
+
+    @Test("Kanban card message label uses named goal fallback instead of event relationship")
+    func kanbanCardMessageLabelUsesNamedGoalFallback() {
+        #expect(KanbanBoardPresentation.cardThreadMessageFallbackCount(goal: "Investigate crash") == 1)
+        #expect(KanbanBoardPresentation.cardThreadMessageFallbackCount(goal: " \n\t ") == 0)
+        #expect(KanbanTaskCardView.threadMessageLabel(for: 1) == "1 message")
+        #expect(KanbanTaskCardView.threadMessageLabel(for: 2) == "2 messages")
     }
 
     @Test("hasProviderSession requires a trimmed non-empty session id")
