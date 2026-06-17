@@ -496,21 +496,43 @@ Deliverables:
 - A compact builder prompt/contract object that can be tested deterministically.
 - Tests proving context redaction, capability inclusion, and stable ordering.
 
-### Slice 2: Model-backed Structured Generation Loop
+### Slice 2: Model-backed Structured Generation Loop — DONE (designed + adversarially reviewed)
 
 Goal:
 
 Replace deterministic-only generation with a structured manifest generation
 loop that still keeps Swift validation authoritative.
 
-Deliverables:
+Landed on `claude/loving-rhodes-87e735` (commits 31–32):
 
-- Model output parser for manifest and patch responses.
-- Validation feedback loop that rejects invalid manifests and preserves the
-  last valid version.
-- Builder result states: generated, rejected, needs user decision, publishable.
-- Tests for invalid structured output, validation retry, and last-valid
-  preservation.
+- `WorkspaceAppStudioGenerator.generate(...)` — async, value-typed, with an
+  INJECTABLE prompt runner (default = `AgentUtilityRuntimeRunner.runPrompt`,
+  `toolMode: .readOnly`) so the whole loop is unit-testable with canned outputs.
+- Calls the one-shot utility runtime (NOT a full AgentTask), parses via the
+  existing `WorkspaceAppStudioBuilder.applyStructuredOutput` seam (manifest AND
+  patch blocks), validator authoritative.
+- Validation-report-driven REPAIR loop (`maxRepairAttempts`) feeding blockers +
+  the model's prior attempt back, preserving last-valid (spec §17.3).
+- Graceful degradation: deterministic template (`baseManifest(intent:)`) is both
+  the fallback AND the valid few-shot example, so generation is never worse than
+  the previous deterministic behavior.
+- Studio "Generate Draft" is now async (spinner, origin-aware status, intent
+  editor disabled mid-run).
+- Review hardening: a generator-side contract vet rejects model manifests that
+  reference an unknown contract/operation (the validator only checks SYNTAX, not
+  existence) and repairs them; intent wrapped + sanitized against prompt injection;
+  editing-case fallback messaging; `Task { @MainActor in }`.
+- Builder result states present: model / modelRepaired / deterministicFallback
+  (+ `accepted`, `canPublish`).
+- 16 unit tests (valid-first, invalid-then-repaired, exhausted-fallback,
+  provider-error first+mid-repair, zero-repair-budget, no-block, both-blocks,
+  unknown-contract caught/repaired/exhausted, templates-are-safe, intent-sanitized).
+  WorkspaceApp suite 140 green; precommit fitness green.
+
+NOT yet done (Slice 3 territory): the builder "needs user decision" state and
+draft/published/last-known-good VERSIONING + revert. Live in-app verification of
+a real model round-trip is residual (the loop is fully unit-tested with an
+injected runner; only the real provider call needs the running app).
 
 ### Slice 3: App Studio Preview And Versioning
 
