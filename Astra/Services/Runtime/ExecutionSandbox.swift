@@ -58,6 +58,55 @@ enum ExecutionSandboxEnforcement: String, Codable, Sendable, CaseIterable, Ident
     }
 }
 
+/// How the Seatbelt profile treats filesystem reads. This is intentionally
+/// separate from `ExecutionSandboxEnforcement`: Best Effort can audit read-scope
+/// misses without breaking provider runs, while Strict always enforces them.
+enum ExecutionSandboxReadScope: String, Codable, Sendable, CaseIterable, Identifiable {
+    case open
+    case audit
+    case enforce
+
+    var id: String { rawValue }
+
+    static func normalized(_ rawValue: String?) -> ExecutionSandboxReadScope {
+        guard let rawValue else { return .audit }
+        let normalized = rawValue
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+        switch normalized {
+        case "open", "write_only", "writeonly", "off", "disabled":
+            return .open
+        case "audit", "report", "observe", "monitor":
+            return .audit
+        case "enforce", "enforced", "strict":
+            return .enforce
+        default:
+            return ExecutionSandboxReadScope(rawValue: normalized) ?? .audit
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .open: "Open"
+        case .audit: "Audit"
+        case .enforce: "Enforce"
+        }
+    }
+
+    var helpText: String {
+        switch self {
+        case .open:
+            "Sandboxed agents keep broad filesystem reads except privacy-sensitive media and app roots; writes remain workspace-scoped."
+        case .audit:
+            "Sandboxed agents keep broad reads and log strict-scope misses, while hard-blocking privacy-sensitive media and app roots unless explicitly granted."
+        case .enforce:
+            "Sandboxed agents can read only explicit workspace/input paths, provider state, ASTRA task folders, temporary paths, and system/toolchain roots."
+        }
+    }
+}
+
 /// Resolved configuration for a single sandbox decision. Pure value type so the
 /// decision logic is testable without touching `UserDefaults`.
 struct ExecutionSandboxSettings: Sendable, Equatable {
@@ -70,6 +119,9 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
     /// makes the model-API calls, so this stays `true` for normal runs; set
     /// `false` only for an explicit offline/locked mode.
     var allowNetwork: Bool
+    /// Whether runtime filesystem reads are open, audited against the strict
+    /// allowlist, or enforced by the Seatbelt profile.
+    var readScope: ExecutionSandboxReadScope
 
     /// Providers without a native OS sandbox today — wrapped by default.
     static let defaultWrappedRuntimes: Set<AgentRuntimeID> = [.claudeCode, .copilotCLI]
@@ -95,15 +147,18 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
     static let defaultEnforcement: ExecutionSandboxEnforcement = .bestEffort
     static let defaultAllowNetwork = true
     static let defaultLayerNativeProviders = false
+    static let defaultReadScope: ExecutionSandboxReadScope = .audit
 
     init(
         enforcement: ExecutionSandboxEnforcement,
         wrappedRuntimes: Set<AgentRuntimeID> = ExecutionSandboxSettings.defaultWrappedRuntimes,
-        allowNetwork: Bool = ExecutionSandboxSettings.defaultAllowNetwork
+        allowNetwork: Bool = ExecutionSandboxSettings.defaultAllowNetwork,
+        readScope: ExecutionSandboxReadScope? = nil
     ) {
         self.enforcement = enforcement
         self.wrappedRuntimes = wrappedRuntimes
         self.allowNetwork = allowNetwork
+        self.readScope = readScope ?? Self.defaultReadScope(for: enforcement)
     }
 
     func shouldWrap(runtime: AgentRuntimeID) -> Bool {
@@ -136,6 +191,14 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
         // CLI's model API; the offline control is a user-set Bool toggle.
         let allowNetwork = defaults.object(forKey: AppStorageKeys.sandboxAllowNetwork) as? Bool ?? defaultAllowNetwork
         let layerNative = defaults.object(forKey: AppStorageKeys.sandboxLayerNativeProviders) as? Bool ?? defaultLayerNativeProviders
+        var readScope = ExecutionSandboxReadScope.normalized(
+            defaults.string(forKey: AppStorageKeys.sandboxReadScope)
+        )
+        if enforcement == .strict {
+            readScope = .enforce
+        } else if enforcement == .off {
+            readScope = .open
+        }
 
         var wrappedRuntimes = defaultWrappedRuntimes
         if layerNative {
@@ -153,8 +216,20 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
         return ExecutionSandboxSettings(
             enforcement: enforcement,
             wrappedRuntimes: wrappedRuntimes,
-            allowNetwork: allowNetwork
+            allowNetwork: allowNetwork,
+            readScope: readScope
         )
+    }
+
+    private static func defaultReadScope(for enforcement: ExecutionSandboxEnforcement) -> ExecutionSandboxReadScope {
+        switch enforcement {
+        case .off:
+            return .open
+        case .bestEffort:
+            return defaultReadScope
+        case .strict:
+            return .enforce
+        }
     }
 }
 
@@ -177,9 +252,9 @@ enum ExecutionSandboxDecision: Equatable {
     case failClosed(reason: String)
 }
 
-/// Wraps provider CLI launches in a macOS Seatbelt profile that confines
-/// filesystem writes to an allowlist anchored on the task's execution
-/// directory, while leaving reads broad and (by default) network open.
+/// Wraps provider CLI launches in a macOS Seatbelt profile. Best Effort keeps
+/// the long-standing write boundary and can audit read-scope misses; Strict
+/// additionally denies filesystem reads outside ASTRA's readable allowlist.
 ///
 /// The single integration point is `decide(plan:providerHomeDirectory:settings:)`,
 /// called from `AgentRuntimeProcessRunner` between launch-plan creation and
@@ -193,27 +268,71 @@ enum ExecutionSandboxDecision: Equatable {
 ///   containing a quote/paren/space cannot break or escape the profile.
 /// - Paths are canonicalized (tilde expanded, symlinks/firmlinks resolved to the
 ///   `/private` form the kernel matches against) before being trusted as roots.
-/// - The profile is `(allow default)` + `(deny file-write*)` + scoped
-///   re-allows. Reads stay broad because agents must read the system toolchain;
-///   the security boundary is write-scoping, mirroring Codex's `workspace-write`.
+/// - The write boundary is `(allow default)` + `(deny file-write*)` + scoped
+///   re-allows. In Strict, the profile also denies `file-read*` and re-allows
+///   only explicit workspace/input paths, provider state, temporary paths, and
+///   system/toolchain roots. In Audit, a `debug deny file-read*` rule reports
+///   would-deny reads without disabling the write boundary.
+/// - Privacy-sensitive home/media/app roots are hard-denied even in Open/Audit
+///   read scope so provider probes cannot trigger macOS TCC prompts under
+///   ASTRA's name. A path inside those roots is re-allowed only when it is also
+///   an explicit workspace/input/task root for the run.
 enum ExecutionSandbox {
     static let sandboxExecPath = "/usr/bin/sandbox-exec"
 
     /// Directories under the provider HOME that CLIs need to write (config,
     /// session, and cache state). Without these the provider breaks on launch.
-    static let homeWritableRelativePaths: [String] = [
-        ".claude",
-        ".claude.json",
+    static let sharedHomeWritableRelativePaths: [String] = [
         ".config",
         ".cache",
-        ".codex",
-        ".cursor",
-        ".gemini",
-        ".antigravity",
         ".npm",
         ".local/share",
         ".local/state",
         "Library/Caches"
+    ]
+
+    static let claudeHomeWritableRelativePaths: [String] = [
+        ".claude",
+        ".claude.json",
+        "Library/Application Support/Claude"
+    ]
+
+    static let codexHomeWritableRelativePaths: [String] = [
+        ".codex"
+    ]
+
+    static let cursorHomeWritableRelativePaths: [String] = [
+        ".cursor"
+    ]
+
+    static let antigravityHomeWritableRelativePaths: [String] = [
+        ".antigravity",
+        ".gemini"
+    ]
+
+    /// System and toolchain roots providers commonly need to execute CLIs,
+    /// dynamic libraries, developer tools, Homebrew installs, and shell support
+    /// files. User data locations such as `/Applications`, `~/Pictures`, and
+    /// `~/Music` are deliberately not included.
+    static let defaultReadableSystemRoots: [String] = [
+        "/System",
+        "/bin",
+        "/sbin",
+        "/usr",
+        "/usr/local",
+        "/opt/homebrew",
+        "/opt/local",
+        "/Library/Developer",
+        "/Library/Apple",
+        "/private/etc",
+        // /var/run holds host runtime state — the mDNSResponder name-resolution
+        // socket, other system daemon sockets, lock/pid files — that network-
+        // capable provider CLIs reach (e.g. to resolve hostnames). Read-only
+        // system state, not user data. Could be narrowed to the specific socket
+        // paths (e.g. /var/run/mDNSResponder) once the exact need is pinned down.
+        "/private/var/run",
+        "/etc",
+        "/dev"
     ]
 
     // MARK: - Decision
@@ -264,10 +383,46 @@ enum ExecutionSandbox {
             return unavailable("no_writable_roots")
         }
 
-        let profile = makeProfile(writableRootCount: roots.count, allowNetwork: settings.allowNetwork)
+        let explicitReadRoots = explicitlyGrantedReadableRoots(
+            plan: plan,
+            additionalReadablePaths: additionalWritablePaths,
+            canonicalWorkspace: workspace
+        )
+        let readableRoots = settings.readScope == .open
+            ? []
+            : readableRoots(
+                plan: plan,
+                providerHomeDirectory: providerHomeDirectory,
+                additionalReadablePaths: additionalWritablePaths,
+                canonicalWorkspace: workspace
+            )
+        let readableMetadataRoots = settings.readScope == .open
+            ? []
+            : readableMetadataRoots(for: readableRoots)
+        let protectedReadRoots = protectedReadRoots()
+        let explicitProtectedReadAllowRoots = protectedReadAllowRoots(
+            explicitReadRoots: explicitReadRoots,
+            protectedReadRoots: protectedReadRoots
+        )
+        let protectedWriteDenyRoots = protectedWriteDenyRoots(plan: plan, writableRoots: roots)
+        let profile = makeProfile(
+            writableRootCount: roots.count,
+            readableRootCount: readableRoots.count,
+            readableMetadataRootCount: readableMetadataRoots.count,
+            protectedReadRootCount: protectedReadRoots.count,
+            explicitProtectedReadAllowRootCount: explicitProtectedReadAllowRoots.count,
+            protectedWriteDenyRootCount: protectedWriteDenyRoots.count,
+            allowNetwork: settings.allowNetwork,
+            readScope: settings.readScope
+        )
         let arguments = makeArguments(
             profile: profile,
             writableRoots: roots,
+            readableRoots: readableRoots,
+            readableMetadataRoots: readableMetadataRoots,
+            protectedReadRoots: protectedReadRoots,
+            explicitProtectedReadAllowRoots: explicitProtectedReadAllowRoots,
+            protectedWriteDenyRoots: protectedWriteDenyRoots,
             executablePath: plan.executablePath,
             arguments: plan.arguments
         )
@@ -310,6 +465,15 @@ enum ExecutionSandbox {
     /// Whether `canonicalRoot` is too broad to grant write access to.
     static func isForbiddenWritableRoot(_ canonicalRoot: String) -> Bool {
         forbiddenWritableRoots.contains(canonicalRoot)
+    }
+
+    /// Whether `canonicalRoot` is too broad to grant read access to under
+    /// Strict. System/toolchain roots and `/private/tmp` are allowed, but broad
+    /// user-data roots such as `/Users`, `/Applications`, and `/Library` are not.
+    static func isForbiddenReadableRoot(_ canonicalRoot: String) -> Bool {
+        if canonicalRoot == "/private/tmp" { return false }
+        if canonicalReadableSystemRoots.contains(canonicalRoot) { return false }
+        return overlyBroadRoots.contains(canonicalRoot)
     }
 
     /// Cheap, plan-free prediction of whether `decide(...)` would actually apply
@@ -358,7 +522,7 @@ enum ExecutionSandbox {
         // top-level paths like "/.claude".
         let home = effectiveHome(plan: plan, providerHomeDirectory: trimmedHome)
         if !home.isEmpty, let canonicalHome = canonicalize(home), !isOverlyBroadRoot(canonicalHome) {
-            for relative in homeWritableRelativePaths {
+            for relative in homeWritableRelativePaths(for: plan.runtime) {
                 raw.append((home as NSString).appendingPathComponent(relative))
             }
         }
@@ -373,10 +537,166 @@ enum ExecutionSandbox {
         // can never widen the allowlist to most of the filesystem. (`/private/tmp`
         // is deliberately retained; see `forbiddenWritableRoots`.)
         var seen: Set<String> = []
-        return raw.compactMap { canonicalize($0) }.filter { canonical in
-            guard !isForbiddenWritableRoot(canonical) else { return false }
-            return seen.insert(canonical).inserted
+        return raw
+            .compactMap { canonicalize($0) }
+            .flatMap(sandboxPathSpellings)
+            .filter { root in
+                guard !isForbiddenWritableRoot(root) else { return false }
+                return seen.insert(root).inserted
         }
+    }
+
+    static func readableRoots(
+        plan: AgentRuntimeProcessLaunchPlan,
+        providerHomeDirectory: String,
+        additionalReadablePaths: [String] = [],
+        canonicalWorkspace: String
+    ) -> [String] {
+        var raw: [String] = [canonicalWorkspace]
+        raw.append(contentsOf: plan.directoriesToCreate)
+        raw.append(contentsOf: plan.sandboxReadablePaths)
+        raw.append(contentsOf: additionalReadablePaths)
+        raw.append(contentsOf: providerStateRoots(plan: plan, providerHomeDirectory: providerHomeDirectory))
+
+        if let executable = canonicalize(plan.executablePath) {
+            raw.append((executable as NSString).deletingLastPathComponent)
+        }
+        if let shimDirectory = plan.browserShimDirectory?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !shimDirectory.isEmpty {
+            raw.append(shimDirectory)
+        }
+        if let tmp = plan.environment["TMPDIR"], !tmp.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            raw.append(tmp)
+        }
+        raw.append("/tmp")
+        raw.append(contentsOf: defaultReadableSystemRoots)
+
+        var seen: Set<String> = []
+        return raw
+            .compactMap { canonicalize($0) }
+            .flatMap(sandboxPathSpellings)
+            .filter { root in
+                guard !isForbiddenReadableRoot(root) else { return false }
+                return seen.insert(root).inserted
+        }
+    }
+
+    static func protectedReadRoots(
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> [String] {
+        var seen: Set<String> = []
+        return PrivacySensitivePathPolicy.protectedDirectoryPaths(homeDirectory: homeDirectory)
+            .compactMap { canonicalize($0) }
+            .flatMap(sandboxPathSpellings)
+            .filter { seen.insert($0).inserted }
+    }
+
+    static func explicitlyGrantedReadableRoots(
+        plan: AgentRuntimeProcessLaunchPlan,
+        additionalReadablePaths: [String] = [],
+        canonicalWorkspace: String
+    ) -> [String] {
+        var raw: [String] = [canonicalWorkspace]
+        raw.append(contentsOf: plan.directoriesToCreate)
+        raw.append(contentsOf: plan.sandboxReadablePaths)
+        raw.append(contentsOf: additionalReadablePaths)
+
+        var seen: Set<String> = []
+        return raw
+            .compactMap { canonicalize($0) }
+            .flatMap(sandboxPathSpellings)
+            .filter { root in
+                guard !isForbiddenReadableRoot(root) else { return false }
+                return seen.insert(root).inserted
+        }
+    }
+
+    static func protectedReadAllowRoots(
+        explicitReadRoots: [String],
+        protectedReadRoots: [String]
+    ) -> [String] {
+        var seen: Set<String> = []
+        return explicitReadRoots
+            .filter { explicitRoot in
+                protectedReadRoots.contains { protectedRoot in
+                    isSameOrDescendant(explicitRoot, of: protectedRoot)
+                }
+            }
+            .filter { seen.insert($0).inserted }
+    }
+
+    static func readableMetadataRoots(for readableRoots: [String]) -> [String] {
+        var seen: Set<String> = ["/"]
+        var result: [String] = []
+        for root in readableRoots {
+            var current = root
+            while current != "/" && !current.isEmpty {
+                for spelling in sandboxPathSpellings(current) where seen.insert(spelling).inserted {
+                    result.append(spelling)
+                }
+                let parent = (current as NSString).deletingLastPathComponent
+                guard parent != current else { break }
+                current = parent
+            }
+        }
+        return result
+    }
+
+    /// Specific files to keep read-only even though they sit inside a writable
+    /// root (e.g. injection-sensitive config under a shared provider home). Only
+    /// paths that actually fall under a granted writable root are emitted — a
+    /// deny for a path nothing can write would be a no-op. Returned as literal
+    /// spellings so only the exact files (not their parents) are denied.
+    static func protectedWriteDenyRoots(
+        plan: AgentRuntimeProcessLaunchPlan,
+        writableRoots: [String]
+    ) -> [String] {
+        guard !plan.sandboxProtectedWriteDenyPaths.isEmpty else { return [] }
+        var seen: Set<String> = []
+        return plan.sandboxProtectedWriteDenyPaths
+            .compactMap { canonicalize($0) }
+            .filter { path in writableRoots.contains { isSameOrDescendant(path, of: $0) } }
+            .flatMap(sandboxPathSpellings)
+            .filter { seen.insert($0).inserted }
+    }
+
+    private static func providerStateRoots(
+        plan: AgentRuntimeProcessLaunchPlan,
+        providerHomeDirectory: String
+    ) -> [String] {
+        let trimmedHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        let home = effectiveHome(plan: plan, providerHomeDirectory: trimmedHome)
+        guard !home.isEmpty,
+              let canonicalHome = canonicalize(home),
+              !isOverlyBroadRoot(canonicalHome) else {
+            return []
+        }
+        return homeWritableRelativePaths(for: plan.runtime).map { relative in
+            (home as NSString).appendingPathComponent(relative)
+        }
+    }
+
+    private static func homeWritableRelativePaths(for runtime: AgentRuntimeID) -> [String] {
+        switch runtime {
+        case .claudeCode:
+            return sharedHomeWritableRelativePaths + claudeHomeWritableRelativePaths
+        case .codexCLI:
+            return sharedHomeWritableRelativePaths + codexHomeWritableRelativePaths
+        case .cursorCLI:
+            return sharedHomeWritableRelativePaths + cursorHomeWritableRelativePaths
+        case .antigravityCLI:
+            return sharedHomeWritableRelativePaths + antigravityHomeWritableRelativePaths
+        default:
+            return sharedHomeWritableRelativePaths
+        }
+    }
+
+    private static var canonicalReadableSystemRoots: Set<String> {
+        Set(defaultReadableSystemRoots.compactMap(canonicalize))
+    }
+
+    private static func isSameOrDescendant(_ path: String, of root: String) -> Bool {
+        path == root || path.hasPrefix(root + "/")
     }
 
     /// The HOME the spawned CLI will actually see: an explicit provider home if
@@ -398,11 +718,40 @@ enum ExecutionSandbox {
     /// Generates the Seatbelt profile. Writable roots are referenced positionally
     /// as `(param "ROOT_<i>")` so the actual paths are supplied out-of-band via
     /// `sandbox-exec -D` and never interpolated into this text.
-    static func makeProfile(writableRootCount: Int, allowNetwork: Bool) -> String {
+    static func makeProfile(
+        writableRootCount: Int,
+        readableRootCount: Int = 0,
+        readableMetadataRootCount: Int = 0,
+        protectedReadRootCount: Int = 0,
+        explicitProtectedReadAllowRootCount: Int = 0,
+        protectedWriteDenyRootCount: Int = 0,
+        allowNetwork: Bool,
+        readScope: ExecutionSandboxReadScope = .open
+    ) -> String {
         var lines: [String] = [
             "(version 1)",
             "(allow default)"
         ]
+        switch readScope {
+        case .open:
+            break
+        case .audit:
+            lines.append("(debug deny file-read*)")
+            lines.append(contentsOf: readAllowBlock(
+                readableRootCount: readableRootCount,
+                readableMetadataRootCount: readableMetadataRootCount
+            ))
+        case .enforce:
+            lines.append("(deny file-read*)")
+            lines.append(contentsOf: readAllowBlock(
+                readableRootCount: readableRootCount,
+                readableMetadataRootCount: readableMetadataRootCount
+            ))
+        }
+        lines.append(contentsOf: protectedReadDenyBlock(protectedReadRootCount: protectedReadRootCount))
+        lines.append(contentsOf: explicitProtectedReadAllowBlock(
+            explicitProtectedReadAllowRootCount: explicitProtectedReadAllowRootCount
+        ))
         if !allowNetwork {
             lines.append("(deny network*)")
         }
@@ -418,19 +767,106 @@ enum ExecutionSandbox {
         // these and they are not user data.
         allow.append("    (subpath \"/dev\"))")
         lines.append(contentsOf: allow)
+        // Carve specific files back out of the writable allow above. Last match
+        // wins in SBPL, so this deny overrides the broad write-allow for exactly
+        // these literals (e.g. shared-home config the next session would load).
+        lines.append(contentsOf: protectedWriteDenyBlock(protectedWriteDenyRootCount: protectedWriteDenyRootCount))
 
         return lines.joined(separator: "\n") + "\n"
+    }
+
+    private static func protectedWriteDenyBlock(protectedWriteDenyRootCount: Int) -> [String] {
+        guard protectedWriteDenyRootCount > 0 else { return [] }
+        var deny: [String] = ["(deny file-write*"]
+        for index in 0..<protectedWriteDenyRootCount {
+            deny.append("    (literal (param \"\(protectedWriteDenyRootParameterName(index))\"))")
+        }
+        deny.append(")")
+        return deny
+    }
+
+    private static func readAllowBlock(
+        readableRootCount: Int,
+        readableMetadataRootCount: Int
+    ) -> [String] {
+        var lines: [String] = ["(allow file-read*"]
+        lines.append("    (literal \"/\")")
+        for index in 0..<readableRootCount {
+            lines.append("    (subpath (param \"\(readRootParameterName(index))\"))")
+        }
+        lines.append("    (subpath \"/dev\"))")
+        // Ancestor directories of readable roots get METADATA-ONLY access: the
+        // kernel can stat/resolve a path through them, but the sandboxed process
+        // cannot list their contents (readdir). This lets a deep auth root like
+        // ~/.copilot be reached without granting a readable listing of ~ or
+        // /Users. file-read* on the roots themselves (above) still allows the
+        // actual reads.
+        if readableMetadataRootCount > 0 {
+            lines.append("(allow file-read-metadata")
+            for index in 0..<readableMetadataRootCount {
+                lines.append("    (literal (param \"\(readMetadataRootParameterName(index))\"))")
+            }
+            lines.append(")")
+        }
+        return lines
+    }
+
+    private static func protectedReadDenyBlock(protectedReadRootCount: Int) -> [String] {
+        guard protectedReadRootCount > 0 else { return [] }
+        var deny: [String] = ["(deny file-read*"]
+        for index in 0..<protectedReadRootCount {
+            deny.append("    (subpath (param \"\(protectedReadRootParameterName(index))\"))")
+        }
+        deny.append(")")
+        return deny
+    }
+
+    private static func explicitProtectedReadAllowBlock(
+        explicitProtectedReadAllowRootCount: Int
+    ) -> [String] {
+        guard explicitProtectedReadAllowRootCount > 0 else { return [] }
+        var allow: [String] = ["(allow file-read*"]
+        for index in 0..<explicitProtectedReadAllowRootCount {
+            allow.append("    (subpath (param \"\(explicitProtectedReadAllowRootParameterName(index))\"))")
+        }
+        allow.append(")")
+        return allow
     }
 
     static func rootParameterName(_ index: Int) -> String {
         "ROOT_\(index)"
     }
 
+    static func readRootParameterName(_ index: Int) -> String {
+        "READ_ROOT_\(index)"
+    }
+
+    static func protectedReadRootParameterName(_ index: Int) -> String {
+        "PROTECTED_READ_ROOT_\(index)"
+    }
+
+    static func explicitProtectedReadAllowRootParameterName(_ index: Int) -> String {
+        "EXPLICIT_PROTECTED_READ_ALLOW_ROOT_\(index)"
+    }
+
+    static func readMetadataRootParameterName(_ index: Int) -> String {
+        "READ_LITERAL_ROOT_\(index)"
+    }
+
+    static func protectedWriteDenyRootParameterName(_ index: Int) -> String {
+        "PROTECTED_WRITE_DENY_ROOT_\(index)"
+    }
+
     /// Assembles the full `sandbox-exec` argument vector:
-    /// `-p <profile> -D ROOT_0=<path> ... <realExecutable> <realArgs...>`.
+    /// `-p <profile> -D ROOT_0=<path> -D READ_ROOT_0=<path> ... <realExecutable> <realArgs...>`.
     static func makeArguments(
         profile: String,
         writableRoots: [String],
+        readableRoots: [String] = [],
+        readableMetadataRoots: [String] = [],
+        protectedReadRoots: [String] = [],
+        explicitProtectedReadAllowRoots: [String] = [],
+        protectedWriteDenyRoots: [String] = [],
         executablePath: String,
         arguments: [String]
     ) -> [String] {
@@ -439,7 +875,27 @@ enum ExecutionSandbox {
             result.append("-D")
             result.append("\(rootParameterName(index))=\(root)")
         }
-        result.append(executablePath)
+        for (index, root) in readableRoots.enumerated() {
+            result.append("-D")
+            result.append("\(readRootParameterName(index))=\(root)")
+        }
+        for (index, root) in readableMetadataRoots.enumerated() {
+            result.append("-D")
+            result.append("\(readMetadataRootParameterName(index))=\(root)")
+        }
+        for (index, root) in protectedReadRoots.enumerated() {
+            result.append("-D")
+            result.append("\(protectedReadRootParameterName(index))=\(root)")
+        }
+        for (index, root) in explicitProtectedReadAllowRoots.enumerated() {
+            result.append("-D")
+            result.append("\(explicitProtectedReadAllowRootParameterName(index))=\(root)")
+        }
+        for (index, root) in protectedWriteDenyRoots.enumerated() {
+            result.append("-D")
+            result.append("\(protectedWriteDenyRootParameterName(index))=\(root)")
+        }
+        result.append(canonicalize(executablePath) ?? executablePath)
         result.append(contentsOf: arguments)
         return result
     }
@@ -473,6 +929,27 @@ enum ExecutionSandbox {
         return resolved
     }
 
+    /// Seatbelt usually matches the `/private/...` real path, but script exec and
+    /// a few system shims can report firmlink spellings such as `/var/...`.
+    /// Keep both forms for already-approved roots without widening to their
+    /// parent directories.
+    private static func sandboxPathSpellings(_ canonicalPath: String) -> [String] {
+        var result = [canonicalPath]
+        let aliases = [
+            (canonical: "/private/var", visible: "/var"),
+            (canonical: "/private/tmp", visible: "/tmp"),
+            (canonical: "/private/etc", visible: "/etc")
+        ]
+        for alias in aliases {
+            if canonicalPath == alias.canonical {
+                result.append(alias.visible)
+            } else if canonicalPath.hasPrefix(alias.canonical + "/") {
+                result.append(alias.visible + String(canonicalPath.dropFirst(alias.canonical.count)))
+            }
+        }
+        return result
+    }
+
     // MARK: - Plan rewriting
 
     private static func rewrite(
@@ -490,6 +967,8 @@ enum ExecutionSandbox {
             providerVersion: plan.providerVersion,
             parsesJSONLines: plan.parsesJSONLines,
             directoriesToCreate: plan.directoriesToCreate,
+            sandboxReadablePaths: plan.sandboxReadablePaths,
+            sandboxProtectedWriteDenyPaths: plan.sandboxProtectedWriteDenyPaths,
             providerDetectedFields: plan.providerDetectedFields,
             commandPlannedFields: plan.commandPlannedFields,
             interactiveAsk: plan.interactiveAsk

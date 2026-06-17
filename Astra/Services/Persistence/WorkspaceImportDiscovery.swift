@@ -17,13 +17,15 @@ enum WorkspaceImportDiscovery {
 
     static func candidates(
         for urls: [URL],
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        hostFileAccess: HostFileAccessBroker? = nil
     ) -> [WorkspaceImportCandidate] {
+        let hostFileAccess = hostFileAccess ?? HostFileAccessBroker(fileManager: fileManager)
         var seen = Set<String>()
         var results: [WorkspaceImportCandidate] = []
 
         for url in urls {
-            for candidate in candidates(for: url, fileManager: fileManager) {
+            for candidate in candidates(for: url, fileManager: fileManager, hostFileAccess: hostFileAccess) {
                 let path = normalizedPath(candidate.folderURL)
                 guard !seen.contains(path) else { continue }
                 seen.insert(path)
@@ -36,10 +38,13 @@ enum WorkspaceImportDiscovery {
 
     static func candidates(
         for url: URL,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        hostFileAccess: HostFileAccessBroker? = nil
     ) -> [WorkspaceImportCandidate] {
+        let hostFileAccess = hostFileAccess ?? HostFileAccessBroker(fileManager: fileManager)
+        let selectionIntent = HostFileAccessIntent.explicitUserSelection
         var isDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+        guard hostFileAccess.fileExists(at: url, isDirectory: &isDirectory, intent: selectionIntent) else {
             return []
         }
 
@@ -48,14 +53,28 @@ enum WorkspaceImportDiscovery {
             return [WorkspaceImportCandidate(folderURL: url.deletingLastPathComponent(), configURL: url)]
         }
 
-        if let direct = configuredWorkspaceCandidate(for: url, fileManager: fileManager) {
+        if let direct = configuredWorkspaceCandidate(
+            for: url,
+            hostFileAccess: hostFileAccess,
+            accessIntent: selectionIntent
+        ) {
             return [direct]
         }
 
-        let directChildren = childDirectories(in: url, fileManager: fileManager)
+        let childScanIntent = HostFileAccessIntent.implicitScan(root: url)
+        let directChildren = childDirectories(
+            in: url,
+            hostFileAccess: hostFileAccess,
+            accessIntent: childScanIntent
+        )
         let importsChildrenByConvention = url.lastPathComponent.localizedCaseInsensitiveCompare("Workspaces") == .orderedSame
         let children = directChildren.compactMap {
-            workspaceCandidate(for: $0, allowBareFolder: importsChildrenByConvention, fileManager: fileManager)
+            workspaceCandidate(
+                for: $0,
+                allowBareFolder: importsChildrenByConvention,
+                hostFileAccess: hostFileAccess,
+                accessIntent: childScanIntent
+            )
         }
 
         if importsChildrenByConvention {
@@ -70,12 +89,21 @@ enum WorkspaceImportDiscovery {
     private static func workspaceCandidate(
         for url: URL,
         allowBareFolder: Bool,
-        fileManager: FileManager
+        hostFileAccess: HostFileAccessBroker,
+        accessIntent: HostFileAccessIntent
     ) -> WorkspaceImportCandidate? {
-        if let configured = configuredWorkspaceCandidate(for: url, fileManager: fileManager) {
+        if let configured = configuredWorkspaceCandidate(
+            for: url,
+            hostFileAccess: hostFileAccess,
+            accessIntent: accessIntent
+        ) {
             return configured
         }
-        guard allowBareFolder || hasWorkspaceMarkers(at: url, fileManager: fileManager) else {
+        guard allowBareFolder || hasWorkspaceMarkers(
+            at: url,
+            hostFileAccess: hostFileAccess,
+            accessIntent: accessIntent
+        ) else {
             return nil
         }
         return WorkspaceImportCandidate(folderURL: url, configURL: nil)
@@ -83,18 +111,23 @@ enum WorkspaceImportDiscovery {
 
     private static func configuredWorkspaceCandidate(
         for url: URL,
-        fileManager: FileManager
+        hostFileAccess: HostFileAccessBroker,
+        accessIntent: HostFileAccessIntent
     ) -> WorkspaceImportCandidate? {
         for name in [WorkspaceFileLayout.workspaceConfigFileName, legacyAgentFlowConfigFileName] {
             let configURL = url.appendingPathComponent(name)
-            if fileManager.fileExists(atPath: configURL.path) {
+            if hostFileAccess.fileExists(at: configURL, intent: accessIntent) {
                 return WorkspaceImportCandidate(folderURL: url, configURL: configURL)
             }
         }
         return nil
     }
 
-    private static func hasWorkspaceMarkers(at url: URL, fileManager: FileManager) -> Bool {
+    private static func hasWorkspaceMarkers(
+        at url: URL,
+        hostFileAccess: HostFileAccessBroker,
+        accessIntent: HostFileAccessIntent
+    ) -> Bool {
         let markerNames = [
             WorkspaceFileLayout.supportDirectoryName,
             ".agentflow",
@@ -104,14 +137,19 @@ enum WorkspaceImportDiscovery {
             WorkspaceFileLayout.sshConnectionsFileName
         ]
         return markerNames.contains { name in
-            fileManager.fileExists(atPath: url.appendingPathComponent(name).path)
+            hostFileAccess.fileExists(at: url.appendingPathComponent(name), intent: accessIntent)
         }
     }
 
-    private static func childDirectories(in url: URL, fileManager: FileManager) -> [URL] {
-        let children = (try? fileManager.contentsOfDirectory(
+    private static func childDirectories(
+        in url: URL,
+        hostFileAccess: HostFileAccessBroker,
+        accessIntent: HostFileAccessIntent
+    ) -> [URL] {
+        let children = (try? hostFileAccess.contentsOfDirectory(
             at: url,
-            includingPropertiesForKeys: [.isDirectoryKey, .isHiddenKey, .isSymbolicLinkKey]
+            includingPropertiesForKeys: [.isDirectoryKey, .isHiddenKey, .isSymbolicLinkKey],
+            intent: accessIntent
         )) ?? []
 
         return children

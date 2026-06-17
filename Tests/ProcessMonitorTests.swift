@@ -142,6 +142,41 @@ struct ProcessMonitorTests {
         #expect(monitor.policyViolation == false)
     }
 
+    @Test("Provider missing Bash tool for astra-browser stops provider")
+    func providerMissingBashToolForAstraBrowserStopsProvider() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+        let process = MonitorMockProcess()
+
+        let shouldKill = monitor.processEvent(
+            .text(text: """
+            I need to run shell commands to use astra-browser, but I don't have a Bash execution tool available in my current tool set. The tools I have are: view, create, edit, grep, glob, report_intent, fetch_copilot_cli_documentation.
+            """),
+            process: process
+        )
+
+        #expect(shouldKill == true)
+        #expect(process.didTerminate == true)
+        #expect(monitor.runtimeStopped == true)
+        #expect(monitor.runtimeStopReason == "provider_missing_browser_shell_tool")
+        #expect(monitor.budgetExceeded == false)
+        #expect(monitor.policyViolation == false)
+    }
+
+    @Test("Informational astra-browser text does not stop provider")
+    func informationalAstraBrowserTextDoesNotStopProvider() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+        let process = MonitorMockProcess()
+
+        let shouldKill = monitor.processEvent(
+            .text(text: "Use astra-browser analyze before clicking a browser control."),
+            process: process
+        )
+
+        #expect(shouldKill == false)
+        #expect(process.didTerminate == false)
+        #expect(monitor.runtimeStopped == false)
+    }
+
     @Test("Browser action budget result stops provider")
     func browserActionBudgetResultStopsProvider() {
         let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
@@ -826,6 +861,57 @@ struct ProcessMonitorTests {
         #expect(monitor.runtimeStopMessage?.contains("provider-side liveness") == true)
     }
 
+    @Test("Provider liveness after progress stops as stalled semantic progress")
+    func providerLivenessAfterProgressStopsAsStalledSemanticProgress() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            noSemanticProgressTimeoutSeconds: 0
+        )
+        let process = MonitorMockProcess()
+
+        let visibleProgressStopped = monitor.processEvent(.text(text: "Working on it"), process: process)
+        let livenessStopped = monitor.processEvent(.thinking(text: "Still thinking"), process: process)
+        let watchdogStopped = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+
+        #expect(visibleProgressStopped == false)
+        #expect(livenessStopped == false)
+        #expect(watchdogStopped == true)
+        #expect(process.didTerminate == true)
+        #expect(monitor.runtimeStopReason == "provider_semantic_progress_stalled")
+        #expect(monitor.runtimeStopMessage?.contains("stopped advancing") == true)
+    }
+
+    @Test("Terminal progress exit grace terminates without runtime stop")
+    func terminalProgressExitGraceTerminatesWithoutRuntimeStop() {
+        let taskID = UUID()
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            noSemanticProgressTimeoutSeconds: 60,
+            terminalProgressExitGraceSeconds: 0,
+            taskID: taskID
+        )
+        let process = MonitorMockProcess()
+
+        let shouldKillEvent = monitor.processEvent(
+            .astraProtocol(.valid(.complete(summary: "Done", verifiedBy: nil))),
+            process: process
+        )
+        let watchdogStopped = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+
+        #expect(shouldKillEvent == false)
+        #expect(watchdogStopped == true)
+        #expect(process.didTerminate == true)
+        #expect(monitor.terminatedAfterTerminalProgress == true)
+        #expect(monitor.runtimeStopReason == nil)
+        #expect(monitor.timedOut == false)
+
+        AppLogger.flushForTesting()
+        let taskLogMessages = AppLogger.entries
+            .filter { $0.taskID == taskID }
+            .map(\.message)
+        #expect(!taskLogMessages.contains { $0.contains(AuditEvent.workerTimeout.rawValue) })
+    }
+
     @Test("Default liveness-only timeout gives real providers a bounded action window")
     func defaultLivenessOnlyTimeoutGivesRealProvidersBoundedActionWindow() {
         let shortRun = AgentRuntimeWorker.ProcessMonitor(
@@ -871,7 +957,7 @@ struct ProcessMonitorTests {
     func visibleProviderTextPreventsLivenessOnlyStop() {
         let monitor = AgentRuntimeWorker.ProcessMonitor(
             tokenBudget: Int.max,
-            noSemanticProgressTimeoutSeconds: 0
+            noSemanticProgressTimeoutSeconds: 60
         )
         let process = MonitorMockProcess()
 
@@ -912,6 +998,17 @@ struct ProcessMonitorTests {
         #expect(result.budgetExceeded == true)
         #expect(result.repetitionKilled == true)
         #expect(result.timedOut == false)
+    }
+
+    @Test("ProcessResult normalizes terminal-progress termination exit code")
+    func processResultNormalizesTerminalProgressTerminationExitCode() {
+        let result = AgentRuntimeWorker.ProcessResult(
+            exitCode: 143,
+            terminatedAfterTerminalProgress: true
+        )
+
+        #expect(result.exitCode == 0)
+        #expect(result.terminatedAfterTerminalProgress)
     }
 
     // MARK: - Resume Budget Calculation
@@ -1345,6 +1442,105 @@ struct RuntimePolicyGuardTests {
         #expect(monitor.policyApprovalMessage?.contains("What to check: Allow only if contacting that network destination is expected for this task.") == true)
         #expect(monitor.policyApprovalMessage?.contains("Runtime grant: Bash(curl *redcap.stanford.edu*)") == true)
         #expect(monitor.policyViolation == false)
+    }
+
+    @Test("Live approvals defer ask-first tools to the channel instead of post-hoc gating")
+    func liveApprovalsDeferAskFirstToolsToChannel() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Bash"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest),
+            liveApprovalsActive: true
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": "git -C /repo status"]),
+            process: nil
+        )
+
+        // The live channel gated this pre-execution; the post-hoc guard must not
+        // re-prompt or terminate.
+        #expect(shouldKill == false)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolation == false)
+        #expect(monitor.runtimeStopped == false)
+    }
+
+    @Test("Live approvals avoid permission_unresumable on unscopable ask-first shell")
+    func liveApprovalsAvoidUnresumableOnUnscopableShell() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Bash"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest),
+            liveApprovalsActive: true
+        )
+
+        // `2>&1` is exactly the redirect that produced empty approval grants and
+        // killed the original prod run with `permission_unresumable`.
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": "git -C /repo status 2>&1"]),
+            process: nil
+        )
+
+        #expect(shouldKill == false)
+        #expect(monitor.runtimeStopReason != "permission_unresumable")
+        #expect(monitor.runtimeStopped == false)
+    }
+
+    @Test("Live approvals still terminate on a denied command as a backstop")
+    func liveApprovalsStillTerminateOnDeniedCommand() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Bash"],
+            deniedShellPatterns: ["git push:*"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest),
+            liveApprovalsActive: true
+        )
+
+        // Deferring ask-first approvals must NOT defer hard denies: the post-hoc
+        // guard stays a defense-in-depth backstop for the deny-list.
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": "git push origin main"]),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyApprovalRequired == false)
+    }
+
+    @Test("Without live approvals ask-first shell still pauses post-hoc")
+    func withoutLiveApprovalsAskFirstShellStillPausesPostHoc() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Bash"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": "git -C /repo status"]),
+            process: nil
+        )
+
+        // Legacy (no live channel): the post-hoc guard remains the gate.
+        #expect(shouldKill == true)
+        #expect(monitor.policyApprovalRequired == true)
     }
 
     @Test("JSON-wrapped shell arguments produce usable approval grants")
@@ -1935,6 +2131,31 @@ struct RuntimePolicyGuardTests {
 
         #expect(shouldKill == false)
         #expect(monitor.policyViolation == false)
+    }
+
+    @Test("Allowed shell pattern can authorize ask-first Bash support command")
+    func allowedShellPatternCanAuthorizeAskFirstBashSupportCommand() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Bash"],
+            allowedShellPatterns: [#"echo "$ASTRA_CONNECTORS" | head -50"#],
+            deniedShellPatterns: ["rm:*"]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": #"echo "$ASTRA_CONNECTORS" | head -50"#]),
+            process: nil
+        )
+
+        #expect(shouldKill == false)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolation == false)
+        #expect(monitor.runtimeStopped == false)
     }
 
     @Test("Allowed shell patterns must cover every command segment")

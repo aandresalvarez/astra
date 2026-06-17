@@ -625,6 +625,30 @@ struct AgentPolicyTests {
         ])
     }
 
+    @Test("Broker scopes commands despite benign redirections but not file writes")
+    func brokerScopesCommandsDespiteBenignRedirectionsButNotFileWrites() {
+        // The exact prod failure: a read-only command with `2>&1` must still
+        // produce a scoped grant instead of an empty (run-killing) result.
+        let redirected = PermissionBroker.approvalGrants(for: .shell(
+            command: "git -C /repo status 2>&1",
+            toolName: "bash"
+        ))
+        let discarded = PermissionBroker.approvalGrants(for: .shell(
+            command: "git log --oneline >/dev/null 2>&1",
+            toolName: "bash"
+        ))
+        // A redirection to a named file is a write that must NOT be folded into
+        // a base-command grant — it stays unscopable (empty grants).
+        let fileWrite = PermissionBroker.approvalGrants(for: .shell(
+            command: "git log > out.log",
+            toolName: "bash"
+        ))
+
+        #expect(redirected == [.shellCommand(executable: "git", pattern: "status *")])
+        #expect(discarded == [.shellCommand(executable: "git", pattern: "log --oneline *")])
+        #expect(fileWrite.isEmpty)
+    }
+
     @Test("Shell command risk classifier covers common command families")
     func shellCommandRiskClassifierCoversCommonCommandFamilies() throws {
         let cases: [(String, ShellCommandRiskClassifier.Risk, Bool, PermissionGrant)] = [
@@ -656,6 +680,39 @@ struct AgentPolicyTests {
             #expect(assessment.risk == expectedRisk)
             #expect(assessment.allowsTaskScopedReuse == expectedReuse)
             #expect(ShellCommandRiskClassifier.approvalGrant(forShellSegment: command) == expectedGrant)
+        }
+    }
+
+    @Test("Shell command approvals touching privacy-sensitive machine paths are not task-reusable")
+    func shellCommandApprovalsTouchingPrivacySensitiveMachinePathsAreNotTaskReusable() throws {
+        let commands = [
+            "git -C ~/Pictures status --short",
+            "git -C /Applications status --short",
+            "defaults read ~/Library/Photos",
+            "git -C /tmp/Photos.photoslibrary status --short",
+            "git -C /tmp/Music.musiclibrary status --short",
+            "git -C /tmp/Preview.app status --short"
+        ]
+
+        for command in commands {
+            let assessment = try #require(ShellCommandRiskClassifier.assessment(forShellSegment: command))
+            #expect(assessment.risk == .read)
+            #expect(assessment.allowsTaskScopedReuse == false)
+        }
+    }
+
+    @Test("Shell command approvals only treat media roots as sensitive at path boundaries")
+    func shellCommandApprovalsOnlyTreatMediaRootsAsSensitiveAtPathBoundaries() throws {
+        let reusableCommands = [
+            "git -C /tmp/music-output status --short",
+            "git -C /tmp/project/picturesque status --short",
+            "git -C /tmp/src/music status --short"
+        ]
+
+        for command in reusableCommands {
+            let assessment = try #require(ShellCommandRiskClassifier.assessment(forShellSegment: command))
+            #expect(assessment.risk == .read)
+            #expect(assessment.allowsTaskScopedReuse)
         }
     }
 
@@ -943,6 +1000,51 @@ struct TaskPolicyStoreTests {
         #expect(manifest.providerRender.permissionMode == PermissionPolicy.restricted.rawValue)
         #expect(manifest.providerRender.allowedTools.contains("Write"))
         #expect(!manifest.providerRender.usesBroadProviderPermissions)
+    }
+
+    @Test("Copilot runtime approval stays scoped to one-run provider permissions")
+    func copilotRuntimeApprovalStaysScoped() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Policy", goal: "Fetch Jira issues", runtime: .copilotCLI)
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        let executionPolicy = PermissionBroker.executionPolicy(
+            forRuntime: .copilotCLI,
+            grants: [.shellCommand(executable: "curl", pattern: "*stanfordmed.atlassian.net*")]
+        )
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .copilotCLI,
+            model: "claude-sonnet-4.6",
+            workspacePath: "/tmp/policy-workspace",
+            phase: "resume",
+            permissionPolicy: .restricted,
+            executionPolicy: executionPolicy,
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            providerCapabilities: AgentRuntimePolicyCapabilities(
+                supportsOutputFormatJSON: true,
+                supportsStreamingFlag: true,
+                supportsNoAskUser: true,
+                supportsSilent: true,
+                supportsSecretEnvVars: true,
+                supportsAllowAll: true,
+                supportsAllowAllTools: true,
+                supportsAllowAllPaths: true,
+                supportsAllowAllURLs: true,
+                requiresAllowAllToolsForPrompt: false
+            ),
+            modelContext: context
+        )
+
+        #expect(manifest.policyLevel == .review)
+        #expect(manifest.policyScope == .oneRunEscalation)
+        #expect(manifest.providerRender.permissionMode == PermissionPolicy.restricted.rawValue)
+        #expect(!manifest.providerRender.usesBroadProviderPermissions)
+        #expect(manifest.approvalGrants == [.shellCommand(executable: "curl", pattern: "*stanfordmed.atlassian.net*")])
     }
 
     @Test("Custom workspace policy is resolved into the preflight manifest")
@@ -1282,8 +1384,52 @@ struct RunPermissionManifestTests {
         #expect(!manifest.providerRender.allowedTools.contains("report_intent"))
         #expect(manifest.approvalsGranted.isEmpty)
         #expect(manifest.approvalGrants.isEmpty)
+        #expect(!manifest.providerRender.allowedShellPatterns.contains(#"echo "$ASTRA_CONNECTORS" | head -50"#))
         #expect(manifestEvent?.payload.contains("\"runtimeSupportTools\"") == true)
         #expect(manifestEvent?.payload.contains("\"fetch_copilot_cli_documentation\"") == true)
+    }
+
+    @Test("Preflight manifest allows exact connector manifest shell probe when connectors are projected")
+    func preflightManifestAllowsExactConnectorManifestShellProbeWhenConnectorsAreProjected() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Jira Connector Probe", primaryPath: "/tmp/jira-connector-probe")
+        let connector = Connector(
+            name: "Jira-new",
+            serviceType: "jira",
+            connectorDescription: "Atlassian Jira REST API v3",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "basic"
+        )
+        connector.workspace = workspace
+        connector.configKeys = ["JIRA_BASE_URL", "JIRA_PROJECTS"]
+        connector.configValues = ["https://stanfordmed.atlassian.net", "SS"]
+        let task = AgentTask(title: "Review Jira issues", goal: "List open Jira issues", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(connector)
+        context.insert(task)
+        context.insert(run)
+        try context.save()
+
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .copilotCLI,
+            model: "gpt-5",
+            workspacePath: workspace.primaryPath,
+            phase: "test",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            modelContext: context
+        )
+
+        #expect(manifest.environmentKeyNames.contains("ASTRA_CONNECTORS"))
+        #expect(manifest.providerRender.allowedShellPatterns.contains(#"echo "$ASTRA_CONNECTORS" | head -50"#))
+        #expect(manifest.providerRender.allowedShellPatterns.contains(#"printf '%s\n' "$ASTRA_CONNECTORS" | head -50"#))
+        #expect(!manifest.providerRender.allowedShellPatterns.contains("head -*"))
+        #expect(!manifest.providerRender.allowedShellPatterns.contains("echo:*"))
     }
 
     @Test("Preflight manifest includes task folder as runtime path when workspace path is code root")
@@ -1376,6 +1522,60 @@ struct RunPermissionManifestTests {
 
         #expect(decoded.providerRender.runtimeSupportTools.isEmpty)
         #expect(decoded.providerRender.allowedTools == ["read"])
+    }
+
+    @MainActor
+    @Test("Post-run summary records provider sandbox write denials")
+    func postRunSummaryRecordsProviderSandboxWriteDenials() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Sandbox Summary", primaryPath: "/Users/alvaro/Documents/Code/monorepo")
+        let task = AgentTask(title: "Sandbox Summary", goal: "Write outside workspace", workspace: workspace)
+        task.runtimeID = AgentRuntimeID.cursorCLI.rawValue
+        let run = TaskRun(task: task)
+        run.status = .completed
+        run.stopReason = "completed"
+        run.completedAt = Date()
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        _ = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .cursorCLI,
+            model: "auto",
+            workspacePath: workspace.primaryPath,
+            phase: "resume",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            modelContext: context
+        )
+        context.insert(TaskEvent(
+            task: task,
+            type: "agent.thinking",
+            payload: "A file write was rejected, likely because the target path sits outside the workspace sandbox.",
+            run: run
+        ))
+        context.insert(TaskEvent(
+            task: task,
+            type: "agent.response",
+            payload: "I tried to create `/Users/alvaro/Documents/Code/flujo/flujo/test.sh`, but writes to that path were blocked from this session — it’s outside your open Cursor workspace roots.",
+            run: run
+        ))
+        try context.save()
+
+        AgentPolicyManifestService.recordPostRunSummary(task: task, run: run, modelContext: context)
+        try context.save()
+
+        let summaryEvent = try #require(task.events.last { $0.type == AgentPolicyManifestService.summaryEventType })
+        let object = try #require(JSONSerialization.jsonObject(with: Data(summaryEvent.payload.utf8)) as? [String: Any])
+        let deniedActions = try #require(object["deniedActions"] as? [String])
+
+        #expect(object["deniedCount"] as? Int == 1)
+        #expect(deniedActions.contains { $0.contains("provider_sandbox_blocked_write") })
+        #expect(deniedActions.contains { $0.contains("/Users/alvaro/Documents/Code/flujo/flujo/test.sh") })
     }
 
     @Test("Preflight manifest replays task-scoped broker grants through the active provider adapter")
@@ -1552,6 +1752,58 @@ struct RunPermissionManifestTests {
 
         #expect(manifest.policyLevel == .build)
         #expect(manifest.providerRender.allowedTools.contains("Bash(astra-browser *)"))
+    }
+
+    @Test("Preflight manifest uses provider launch context for scoped local tool grants")
+    func preflightManifestUsesProviderLaunchContextForScopedLocalToolGrants() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "github-workflow" })
+        let workspace = Workspace(name: "GitHub Follow-up Policy", primaryPath: "/tmp/github-followup-policy")
+        workspace.enabledCapabilityIDs = [package.id]
+        let skill = Skill(
+            name: "GitHub Agent",
+            skillDescription: "x",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "x"
+        )
+        skill.workspace = workspace
+        let tool = LocalTool(
+            name: "gh — GitHub CLI",
+            toolDescription: "x",
+            toolType: "cli",
+            command: "gh"
+        )
+        tool.workspace = workspace
+        let task = AgentTask(
+            title: "Bake a cake",
+            goal: "Bake a chocolate sponge cake and write the recipe",
+            workspace: workspace
+        )
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(skill)
+        context.insert(tool)
+        context.insert(task)
+        context.insert(run)
+        TaskPolicyStore.recordSelection(level: .build, task: task, modelContext: context, source: "test")
+        try context.save()
+
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .claudeCode,
+            model: "claude-sonnet-4-6",
+            workspacePath: workspace.primaryPath,
+            phase: "resume",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            contextText: "Use GitHub to list the open pull requests for this repository.",
+            modelContext: context
+        )
+
+        #expect(manifest.providerRender.allowedTools.contains("Bash(gh *)"))
     }
 
     @Test("Preflight manifest excludes pruned artifact task capabilities")

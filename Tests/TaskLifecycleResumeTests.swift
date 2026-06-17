@@ -65,7 +65,7 @@ struct TaskLifecycleResumeTests {
         env.context.insert(workspace)
         env.context.insert(task)
 
-        env.coordinator.resumeTask(task)
+        let continuation = env.coordinator.resumeTask(task)
 
         // resumeTask performs these mutations synchronously, before the
         // continuation Task is scheduled, so they are deterministic to assert.
@@ -74,10 +74,99 @@ struct TaskLifecycleResumeTests {
         #expect(resumeEvents.count == 1)
         #expect(resumeEvents.first?.payload.contains("Resuming previous session") == true)
 
-        // Let the scheduled continuation run; with a zero-size pool it returns
-        // without launching a provider. Keeps the container alive until drained.
-        await Task.yield()
+        // Drain the continuation; with a zero-size pool `continueSession` cannot
+        // admit a worker and returns false, so the optimistic `.running` must be
+        // rolled back to the prior status rather than stranding the task.
+        await continuation?.value
         _ = env.container
+    }
+
+    @Test("Resume reverts to the prior status when no worker can continue")
+    func resumeRevertsWhenNoWorkerCanContinue() async throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+
+        let workspace = Workspace(name: "Resume Revert", primaryPath: env.root)
+        let task = AgentTask(title: "Resume Revert", goal: "Complete the original goal", workspace: workspace)
+        task.status = .pendingUser
+        task.sessionId = "sess-resume-revert"
+        env.context.insert(workspace)
+        env.context.insert(task)
+
+        // Zero-size pool → `continueSession` finds no worker and returns false.
+        await env.coordinator.resumeTask(task)?.value
+
+        #expect(task.status == .pendingUser)
+        #expect(task.runs.filter { $0.status == .running }.isEmpty)
+        #expect(task.events.contains { $0.type == "error" })
+    }
+
+    @Test("Runtime permission approval reverts to pendingUser when no worker can continue")
+    func runtimePermissionApprovalRevertsWhenNoWorkerCanContinue() async throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+
+        let workspace = Workspace(name: "Approval Revert", primaryPath: env.root)
+        let task = AgentTask(title: "Approval Revert", goal: "Do the thing", workspace: workspace)
+        task.status = .pendingUser
+        task.sessionId = "sess-approval-revert"
+        env.context.insert(workspace)
+        env.context.insert(task)
+
+        let approvalRun = TaskRun(task: task)
+        approvalRun.status = .failed
+        approvalRun.stopReason = "permission_approval_required"
+        approvalRun.completedAt = Date()
+        env.context.insert(approvalRun)
+        // Legacy pause-and-relaunch ask (no requestID) → still an open request,
+        // so approveTask routes through approveRuntimePermissionAndContinue.
+        env.context.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.Tool.permissionApprovalRequested,
+            payload: "Permission requested for tool: shell(gh:repo view *).",
+            run: approvalRun
+        ))
+        try env.context.save()
+
+        // No live in-flight ask is registered, so approval takes the relaunch
+        // path; the zero-size pool then refuses admission and must roll back.
+        await env.coordinator.approveTask(task)?.value
+
+        #expect(task.status == .pendingUser)
+        #expect(task.runs.filter { $0.status == .running }.isEmpty)
+        #expect(task.events.contains { $0.type == "error" })
+    }
+
+    @Test("Resume preserves a queue-recorded .failed instead of reverting over it")
+    func resumePreservesQueueRecordedFailure() async throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+
+        // A regular file where the workspace root should be: ensureTaskFolder's
+        // createDirectory then throws, so TaskQueue.prepareTaskFolder sets
+        // `.failed`, records its own error, and returns false *after* mutating.
+        let blocker = (env.root as NSString).appendingPathComponent("blocker")
+        FileManager.default.createFile(atPath: blocker, contents: Data("x".utf8))
+        let wsPath = (blocker as NSString).appendingPathComponent("ws")
+
+        // A real worker (poolSize 1) so continueSession gets past the
+        // worker/lock guards and actually reaches prepareTaskFolder.
+        let queue = TaskQueue(poolSize: 1)
+        let coordinator = TaskLifecycleCoordinator(modelContext: env.context, taskQueue: queue)
+
+        let workspace = Workspace(name: "Folder Fail", primaryPath: wsPath)
+        let task = AgentTask(title: "Folder Fail", goal: "Complete the original goal", workspace: workspace)
+        task.status = .pendingUser
+        task.sessionId = "sess-folder-fail"
+        env.context.insert(workspace)
+        env.context.insert(task)
+
+        await coordinator.resumeTask(task)?.value
+
+        // The queue's `.failed` must survive — not be overwritten back to
+        // pendingUser — and only one error event should exist (the queue's).
+        #expect(task.status == .failed)
+        #expect(task.events.filter { $0.type == "error" }.count == 1)
     }
 
     @Test("Resume continuation uses the canonical continue message")

@@ -32,6 +32,58 @@ enum TaskDeliverableExpectation {
         ])
     }
 
+    static func requiresDeliverableArtifact(_ task: AgentTask) -> Bool {
+        requiresDeliverableArtifact(task, requiredOutputFilenames: requiredOutputFilenames(task))
+    }
+
+    static func requiresDeliverableArtifact(
+        _ task: AgentTask,
+        requiredOutputFilenames: Set<String>
+    ) -> Bool {
+        requiresStandaloneArtifact(task) || !requiredOutputFilenames.isEmpty
+    }
+
+    static func requiredOutputFilenames(_ task: AgentTask) -> Set<String> {
+        let text = [
+            deliverableRelevantText(from: task.title),
+            deliverableRelevantText(from: task.goal),
+            deliverableRelevantText(from: task.inputs.joined(separator: " ")),
+            deliverableRelevantText(from: task.acceptanceCriteria.joined(separator: " "))
+        ]
+            .joined(separator: "\n")
+
+        var filenames: Set<String> = []
+        var acceptsDeliverableListItems = false
+        for rawLine in text.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else {
+                acceptsDeliverableListItems = false
+                continue
+            }
+
+            if let listSegment = explicitDeliverableListSegment(from: line) {
+                if acceptsDeliverableListItems {
+                    filenames.formUnion(outputFilenames(in: listSegment))
+                }
+                if lineStatesNamedOutput(line) {
+                    filenames.formUnion(outputFilenames(in: proseOutputSegment(from: line)))
+                }
+                continue
+            }
+
+            if lineStartsDeliverableListContext(line) {
+                acceptsDeliverableListItems = true
+            } else if lineStartsNonDeliverableListContext(line) || lineLooksLikeSectionHeader(line) {
+                acceptsDeliverableListItems = false
+            }
+
+            if lineStatesNamedOutput(line) {
+                filenames.formUnion(outputFilenames(in: proseOutputSegment(from: line)))
+            }
+        }
+        return filenames
+    }
+
     static func hasArtifact(
         for task: AgentTask,
         run: TaskRun,
@@ -82,6 +134,30 @@ enum TaskDeliverableExpectation {
         """
     }
 
+    static func missingDeliverableMessage(for task: AgentTask) -> String {
+        missingDeliverableMessage(for: task, requiredFilenames: requiredOutputFilenames(task))
+    }
+
+    static func missingDeliverableMessage(for task: AgentTask, requiredFilenames: Set<String>) -> String {
+        guard !requiredFilenames.isEmpty else {
+            return missingArtifactMessage(for: task)
+        }
+
+        let access = TaskWorkspaceAccess(task: task)
+        let workspaceLocation = access.effectiveWorkspacePath.isEmpty ? "the workspace root" : access.effectiveWorkspacePath
+        let taskFolderLocation = access.taskFolder.isEmpty ? "the task output folder" : access.taskFolder
+        let filenames = requiredFilenames.sorted().joined(separator: ", ")
+        let fileNoun = requiredFilenames.count == 1 ? "file" : "files"
+        return """
+        Missing explicitly requested deliverable \(fileNoun): \(filenames).
+        ASTRA did not mark this task complete because this run did not create the requested \(fileNoun).
+        Expected deliverable search roots:
+        - Workspace root: \(workspaceLocation)
+        - Task output folder: \(taskFolderLocation)
+        Ask the agent to write the missing \(fileNoun) to the requested workspace path, retry with the needed file-write approval, or explicitly choose a workspace path.
+        """
+    }
+
     private static func containsAny(_ text: String, _ needles: [String]) -> Bool {
         needles.contains { text.contains($0) }
     }
@@ -99,6 +175,114 @@ enum TaskDeliverableExpectation {
         return tokens.contains { token in
             joinedArticleWords.contains(String(token))
         }
+    }
+
+    private static func explicitDeliverableListSegment(from line: String) -> String? {
+        guard let listText = removingListMarker(from: line) else { return nil }
+        let delimiters = [":", " - ", " -- "]
+        let delimiterIndex = delimiters.compactMap { delimiter in
+            listText.range(of: delimiter)?.lowerBound
+        }.min()
+
+        let segment: Substring
+        if let delimiterIndex {
+            segment = listText[..<delimiterIndex]
+        } else {
+            segment = Substring(listText)
+        }
+
+        let trimmed = segment.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func removingListMarker(from line: String) -> String? {
+        for prefix in ["- ", "* ", "+ "] where line.hasPrefix(prefix) {
+            return String(line.dropFirst(prefix.count))
+        }
+
+        guard let range = line.range(of: #"^\d+[\.)]\s+"#, options: .regularExpression) else {
+            return nil
+        }
+        return String(line[range.upperBound...])
+    }
+
+    private static func lineStartsDeliverableListContext(_ line: String) -> Bool {
+        let lower = line.lowercased()
+        if containsAnyWholeWord(lower, ["deliverable", "deliverables", "output", "outputs"]) {
+            return true
+        }
+
+        return matches(lower, pattern: #"\brequired\b.*\b(?:file|files|filename|filenames|artifact|artifacts)\b"#)
+            || matches(lower, pattern: #"\b(?:file|files|filename|filenames|artifact|artifacts)\b.*\brequired\b"#)
+    }
+
+    private static func lineStartsNonDeliverableListContext(_ line: String) -> Bool {
+        let lower = line.lowercased()
+        return containsAnyWholeWord(lower, [
+            "input", "inputs", "example", "examples", "reference", "references",
+            "source", "sources", "dependency", "dependencies", "context"
+        ])
+    }
+
+    private static func lineLooksLikeSectionHeader(_ line: String) -> Bool {
+        line.hasSuffix(":") && line.count <= 120
+    }
+
+    private static func lineStatesNamedOutput(_ line: String) -> Bool {
+        let lower = line.lowercased()
+        return outputActionRange(in: lower) != nil
+            || lineStartsDeliverableListContext(line)
+            || lower.contains("named ")
+            || lower.contains("file named")
+    }
+
+    private static func proseOutputSegment(from line: String) -> String {
+        let outputSegment: String
+        if let actionRange = outputActionRange(in: line) {
+            outputSegment = String(line[actionRange.lowerBound...])
+        } else {
+            outputSegment = line
+        }
+        return removingInputReferenceSuffix(from: outputSegment)
+    }
+
+    private static func outputActionRange(in line: String) -> Range<String.Index>? {
+        line.range(
+            of: #"(?i)\b(?:write|create|creat|cerate|crefate|build|buid|make|generate|save|produce)\b"#,
+            options: .regularExpression
+        )
+    }
+
+    private static func removingInputReferenceSuffix(from line: String) -> String {
+        guard let inputRange = line.range(
+            of: #"(?i)\b(?:from|using|based\s+on|derived\s+from|generated\s+from|sourced\s+from|by\s+reading|by\s+running|after\s+running|with\s+input|with\s+source)\b"#,
+            options: .regularExpression
+        ) else {
+            return line
+        }
+
+        let prefix = String(line[..<inputRange.lowerBound])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return outputFilenames(in: prefix).isEmpty ? line : prefix
+    }
+
+    private static func outputFilenames(in text: String) -> Set<String> {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"(?i)(?:\./)?([A-Za-z0-9][A-Za-z0-9._-]*\.(?:html|css|js|mjs|cjs|ts|tsx|jsx|py|rb|go|rs|swift|java|kt|json|md|txt|csv|tsv|yaml|yml|xml|pdf|docx|pptx|xlsx))\b"#
+        ) else { return [] }
+
+        let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
+        return Set(regex.matches(in: text, range: nsRange).compactMap { match in
+            guard match.numberOfRanges > 1,
+                  let range = Range(match.range(at: 1), in: text) else {
+                return nil
+            }
+            return String(text[range]).lowercased()
+        })
+    }
+
+    private static func matches(_ text: String, pattern: String) -> Bool {
+        text.range(of: pattern, options: .regularExpression) != nil
     }
 
     private static func deliverableRelevantText(from rawText: String) -> String {
@@ -221,24 +405,31 @@ enum TaskDeliverableExpectation {
         let root = URL(fileURLWithPath: folder)
             .resolvingSymlinksInPath()
             .standardizedFileURL
-        guard let enumerator = FileManager.default.enumerator(
+        let hostFileAccess = HostFileAccessBroker()
+        let accessIntent = HostFileAccessIntent.astraManagedStorage(root: root)
+        guard let enumerator = hostFileAccess.enumerator(
             at: root,
             includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .creationDateKey, .contentModificationDateKey],
-            options: [.skipsHiddenFiles]
+            options: [.skipsHiddenFiles],
+            intent: accessIntent
         ) else {
             return false
         }
 
         var scannedEntries = 0
         for case let fileURL as URL in enumerator {
+            guard !hostFileAccess.shouldSkip(fileURL, intent: accessIntent) else {
+                enumerator.skipDescendants()
+                continue
+            }
             scannedEntries += 1
             guard scannedEntries <= entryLimit else {
                 return false
             }
 
             guard let relative = relativePath(of: fileURL, taskFolder: root) else { continue }
-            guard !isRuntimeDiagnosticRelativePath(relative) else { continue }
-            let depth = relativeDepth(of: relative)
+            guard !TaskOutputArtifactPathPolicy.isRuntimeDiagnosticRelativePath(relative) else { continue }
+            let depth = TaskOutputArtifactPathPolicy.relativeDepth(of: relative)
             if depth > depthLimit {
                 enumerator.skipDescendants()
                 continue
@@ -281,7 +472,7 @@ enum TaskDeliverableExpectation {
         let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
         guard !taskFolder.isEmpty else { return true }
         let normalizedPath = path.replacingOccurrences(of: "\\", with: "/")
-        if !normalizedPath.hasPrefix("/"), isRuntimeDiagnosticRelativePath(normalizedPath) {
+        if !normalizedPath.hasPrefix("/"), TaskOutputArtifactPathPolicy.isRuntimeDiagnosticRelativePath(normalizedPath) {
             return false
         }
         let root = URL(fileURLWithPath: taskFolder)
@@ -291,7 +482,7 @@ enum TaskDeliverableExpectation {
             ? URL(fileURLWithPath: normalizedPath)
             : root.appendingPathComponent(normalizedPath)
         if let relative = relativePath(of: url, taskFolder: root) {
-            return !isRuntimeDiagnosticRelativePath(relative)
+            return !TaskOutputArtifactPathPolicy.isRuntimeDiagnosticRelativePath(relative)
         }
 
         let workspacePath = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
@@ -300,28 +491,11 @@ enum TaskDeliverableExpectation {
                 .resolvingSymlinksInPath()
                 .standardizedFileURL
             if let workspaceRelative = relativePath(of: url, taskFolder: workspaceRoot) {
-                return !isRuntimeDiagnosticRelativePath(workspaceRelative)
+                return !TaskOutputArtifactPathPolicy.isRuntimeDiagnosticRelativePath(workspaceRelative)
             }
         }
 
         return true
-    }
-
-    private static func isRuntimeDiagnosticRelativePath(_ relative: String) -> Bool {
-        let normalized = relative
-            .replacingOccurrences(of: "\\", with: "/")
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        return normalized == "diagnostics"
-            || normalized.hasPrefix("diagnostics/")
-            || normalized == "cache/projects.json"
-            || normalized.hasPrefix(".astra/")
-            || normalized.hasPrefix(".agentflow/")
-            || normalized.hasPrefix(".claude/")
-    }
-
-    private static func relativeDepth(of relative: String) -> Int {
-        guard !relative.isEmpty else { return 0 }
-        return relative.split(separator: "/", omittingEmptySubsequences: true).count - 1
     }
 
     private static func relativePath(of fileURL: URL, taskFolder: URL) -> String? {

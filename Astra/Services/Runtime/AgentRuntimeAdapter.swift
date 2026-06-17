@@ -699,6 +699,10 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
     let providerVersion: String?
     let parsesJSONLines: Bool
     let directoriesToCreate: [String]
+    let sandboxReadablePaths: [String]
+    /// Files carved back out of a writable root as read-only (write-deny over
+    /// write-allow). See `CopilotCLIRuntime.configWriteDenyPaths`.
+    let sandboxProtectedWriteDenyPaths: [String]
     let providerDetectedFields: [String: String]
     let commandPlannedFields: [String: String]
     var interactiveAsk: AgentRuntimeInteractiveAskPlan?
@@ -713,6 +717,8 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
         providerVersion: String?,
         parsesJSONLines: Bool,
         directoriesToCreate: [String] = [],
+        sandboxReadablePaths: [String] = [],
+        sandboxProtectedWriteDenyPaths: [String] = [],
         providerDetectedFields: [String: String] = [:],
         commandPlannedFields: [String: String] = [:],
         interactiveAsk: AgentRuntimeInteractiveAskPlan? = nil
@@ -726,6 +732,8 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
         self.providerVersion = providerVersion
         self.parsesJSONLines = parsesJSONLines
         self.directoriesToCreate = directoriesToCreate
+        self.sandboxReadablePaths = sandboxReadablePaths
+        self.sandboxProtectedWriteDenyPaths = sandboxProtectedWriteDenyPaths
         self.providerDetectedFields = providerDetectedFields
         self.commandPlannedFields = commandPlannedFields
         self.interactiveAsk = interactiveAsk
@@ -1183,21 +1191,13 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         // allowEmpty: strict mode must apply even with zero governed servers,
         // or a repository's own .mcp.json loads ungoverned on those runs.
         let mcpConfigURL = MCPRuntimeProjection.writeClaudeConfig(servers: mcpServers, taskID: context.task.id, allowEmpty: true)
+        let mcpConfigReadablePaths = mcpConfigURL.map { [$0.deletingLastPathComponent().path] } ?? []
+        let sandboxReadablePaths = mcpConfigReadablePaths + ClaudeCodeRuntime.authReadablePaths()
         let mcpAllowedTools = mcpConfigURL == nil ? [] : MCPRuntimeProjection.allowedToolPermissions(servers: mcpServers)
         let mcpDeniedTools = mcpConfigURL == nil ? [] : MCPRuntimeProjection.deniedToolPermissions(servers: mcpServers)
-        let nativeAllowedTools = Array(Set(
-            providerAllowed + askFirstToolPermissions + runtimeSupportTools + artifactBootstrapTools + mcpAllowedTools
-        )).sorted()
-        let usesArtifactBootstrapProfile = !artifactBootstrapTools.isEmpty
-        let visibleTools = Self.visibleProviderTools(
-            from: nativeAllowedTools,
-            task: context.task,
-            permissionPolicy: effectivePermissionPolicy
-        )
-        let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
-        // Live approvals use the stdio control protocol, which requires
-        // stream-json input — the prompt then travels over stdin instead of
-        // the positional argument.
+        // Live approvals use the stdio control protocol (stream-json input, so
+        // the prompt travels over stdin). Resolved before the allow-list so it
+        // can decide whether ask-first tools are gated at the provider prompt.
         let interactiveAsk: AgentRuntimeInteractiveAskPlan? = {
             guard context.liveApprovalsEnabled,
                   effectivePermissionPolicy != .autonomous,
@@ -1206,6 +1206,25 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             }
             return AgentRuntimeInteractiveAskPlan(initialStdinMessage: initialMessage)
         }()
+        // Withhold ask-first tools from the pre-allow set (launch --allowedTools
+        // and settings.local.json) when the live channel will gate them at the
+        // provider's permission prompt. Otherwise the provider never asks, the
+        // tool runs ungated, and only a post-hoc kill remains. They stay visible
+        // (re-added below) so the model can still invoke them and be prompted.
+        let nativeAllowedTools = Array(Set(
+            providerAllowed + runtimeSupportTools + artifactBootstrapTools + mcpAllowedTools
+                + (interactiveAsk == nil ? askFirstToolPermissions : [])
+        )).sorted()
+        let usesArtifactBootstrapProfile = !artifactBootstrapTools.isEmpty
+        let visibleToolSource = usesArtifactBootstrapProfile
+            ? Array(Set(providerAllowed + runtimeSupportTools + artifactBootstrapTools + askFirstToolPermissions + mcpAllowedTools)).sorted()
+            : Array(Set(nativeAllowedTools + askFirstToolPermissions)).sorted()
+        let visibleTools = Self.visibleProviderTools(
+            from: visibleToolSource,
+            task: context.task,
+            permissionPolicy: effectivePermissionPolicy
+        )
+        let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
         var args = interactiveAsk == nil ? ["-p", context.prompt] : ["-p"]
         if let sessionID = context.nativeContinuationSessionID,
            !sessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1249,7 +1268,6 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         if !mcpDeniedTools.isEmpty {
             args += ["--disallowedTools"] + mcpDeniedTools
         }
-
         return AgentRuntimeProcessLaunchPlan(
             runtime: id,
             executablePath: context.executablePath,
@@ -1265,6 +1283,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             providerVersion: nil,
             parsesJSONLines: true,
             directoriesToCreate: [],
+            sandboxReadablePaths: sandboxReadablePaths,
             providerDetectedFields: [
                 "runtime": id.rawValue,
                 "executable_configured": String(!context.executablePath.isEmpty),
@@ -1660,21 +1679,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         installHint: "Install via Homebrew: `brew install copilot-cli` or npm: `npm install -g @github/copilot`",
         authHint: "Run `copilot` and use `/login`, or set a GitHub token with Copilot access.",
         prerequisite: CommonCLIPrerequisites.copilot,
-        defaultModel: "claude-sonnet-4.6",
-        defaultModels: [
-            "claude-sonnet-4.6",
-            "claude-sonnet-4.5",
-            "claude-haiku-4.5",
-            "claude-opus-4.7",
-            "claude-opus-4.6",
-            "claude-opus-4.5",
-            "gpt-5.2-codex",
-            "gpt-5-codex",
-            "gpt-5.2",
-            "gpt-5-mini",
-            "gpt-5",
-            "gpt-4.1"
-        ],
+        defaultModel: CopilotCLIRuntime.defaultModel,
+        defaultModels: CopilotCLIRuntime.defaultModels,
         supportsAstraRunProtocol: true
     )
     let readinessCheckID = "copilot-cli"
@@ -1875,10 +1881,14 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let capabilities = CopilotCLIRuntime.capabilities(executablePath: executable)
         let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
         let additionalPaths = AgentRuntimeProcessRunner.copilotAdditionalPaths(for: context.task)
-        var localToolCommands = AgentRuntimeProcessRunner.copilotLocalToolCommands(for: context.task)
-        if taskEnv["ASTRA_BROWSER_URL"] != nil {
+        let browserBridgeMetadata = BrowserBridgeRuntimeLaunchGuard.planMetadata(runtime: id, environment: taskEnv)
+        let userHome = FileManager.default.homeDirectoryForCurrentUser.path
+        let copilotStateHome = CopilotCLIRuntime.defaultHome(userHome: userHome)
+        var localToolCommands = AgentRuntimeProcessRunner.copilotLocalToolCommands(for: context.task, contextText: context.contextText)
+        if browserBridgeMetadata.isAttached {
             localToolCommands.append("astra-browser")
         }
+        let surfacedAskFirstTools = askFirstTools
         let plan = CopilotCLIRuntime.buildCommand(
             executablePath: executable,
             prompt: context.prompt,
@@ -1891,11 +1901,15 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             capabilities: capabilities,
             taskEnvironment: taskEnv,
             copilotHome: context.providerHomeDirectory,
+            copilotStateHome: copilotStateHome,
+            userHome: userHome,
             pathPrefix: pathPrefix,
-            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task) || taskEnv["ASTRA_BROWSER_URL"] != nil,
+            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task, contextText: context.contextText)
+                || browserBridgeMetadata.isAttached,
             localToolCommands: localToolCommands,
             runtimeSupportTools: runtimeSupportTools,
-            askFirstTools: askFirstTools,
+            askFirstTools: surfacedAskFirstTools,
+            reasoningEffort: artifactBootstrapTools.isEmpty ? nil : "none",
             allowAllPathsForSSHConnections: AgentRuntimeProcessRunner.hasWorkspaceSSHConnections(for: context.task)
         )
 
@@ -1908,7 +1922,13 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             browserShimDirectory: browserShimDirectory,
             providerVersion: providerVersion,
             parsesJSONLines: plan.parsesJSONLines,
-            directoriesToCreate: [context.providerHomeDirectory],
+            directoriesToCreate: CopilotCLIRuntime.directoriesToCreate(
+                copilotHome: context.providerHomeDirectory,
+                copilotStateHome: copilotStateHome,
+                userHome: userHome
+            ),
+            sandboxReadablePaths: CopilotCLIRuntime.authReadablePaths(userHome: userHome),
+            sandboxProtectedWriteDenyPaths: CopilotCLIRuntime.configWriteDenyPaths(userHome: userHome),
             providerDetectedFields: [
                 "runtime": id.rawValue,
                 "provider_version": providerVersion ?? "unknown",
@@ -1933,6 +1953,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "supports_allow_all_urls": String(capabilities.supportsAllowAllURLs),
                 "supports_available_tools": String(capabilities.supportsAvailableTools),
                 "supports_excluded_tools": String(capabilities.supportsExcludedTools),
+                "supports_reasoning_effort": String(capabilities.supportsReasoningEffort),
                 "requires_allow_all_tools": String(capabilities.requiresAllowAllToolsForPrompt),
                 "permission_policy": effectivePermissionPolicy.rawValue,
                 "allowed_tools_count": String(providerAllowed.count),
@@ -1941,6 +1962,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "runtime_support_tool_names": runtimeSupportTools.joined(separator: ","),
                 "ask_first_tool_count": String(askFirstTools.count),
                 "ask_first_tool_names": askFirstTools.joined(separator: ","),
+                "surfaced_ask_first_tool_count": String(surfacedAskFirstTools.count),
+                "surfaced_ask_first_tool_names": surfacedAskFirstTools.joined(separator: ","),
                 "artifact_bootstrap_tool_count": String(artifactBootstrapTools.count),
                 "artifact_bootstrap_tool_names": artifactBootstrapTools.joined(separator: ","),
                 "artifact_bootstrap_profile": String(!artifactBootstrapTools.isEmpty),
@@ -1951,6 +1974,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "uses_output_format_json": String(plan.arguments.contains("--output-format=json")),
                 "uses_stream_flag": String(plan.arguments.contains("--stream=on")),
                 "uses_no_ask_user": String(plan.arguments.contains("--no-ask-user")),
+                "uses_reasoning_effort": String(plan.arguments.contains("--effort")),
                 "uses_secret_env_vars": String(plan.arguments.contains("--secret-env-vars")),
                 "uses_silent": String(plan.arguments.contains("--silent")),
                 "uses_allow_all": String(plan.arguments.contains("--allow-all")),
@@ -1960,16 +1984,9 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "uses_allow_tool": String(plan.arguments.contains("--allow-tool")),
                 "uses_available_tools": String(plan.arguments.contains("--available-tools")),
                 "uses_excluded_tools": String(plan.arguments.contains("--excluded-tools")),
-                "excludes_task_tool": String(Self.argumentList(plan.arguments, after: "--excluded-tools").contains("task"))
-            ]
+                "excludes_task_tool": String(AgentRuntimeArgumentInspector.argumentList(plan.arguments, after: "--excluded-tools").contains("task"))
+            ].merging(browserBridgeMetadata.commandPlannedFields) { current, _ in current }
         )
-    }
-
-    private static func argumentList(_ arguments: [String], after flag: String) -> [String] {
-        guard let index = arguments.firstIndex(of: flag) else { return [] }
-        let start = arguments.index(after: index)
-        guard start < arguments.endIndex else { return [] }
-        return Array(arguments[start...].prefix { !$0.hasPrefix("--") })
     }
 
     func parseProcessEvents(line: String, parsesJSONLines: Bool) -> [ParsedEvent] {
@@ -2041,6 +2058,10 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let copilotHome = configuration.homeDirectory(for: id).isEmpty
             ? CopilotCLIRuntime.channelHome()
             : configuration.homeDirectory(for: id)
+        // Share terminal auth (~/.copilot) like the main launch path so Copilot
+        // helper prompts stay authenticated after a plain `copilot` /login.
+        let userHome = FileManager.default.homeDirectoryForCurrentUser.path
+        let copilotStateHome = CopilotCLIRuntime.defaultHome(userHome: userHome)
         let capabilities = CopilotCLIRuntime.capabilities(executablePath: executable)
         let allowedTools = toolMode == .readOnly ? ["Read", "Glob", "Grep"] : []
         let plan = CopilotCLIRuntime.buildCommand(
@@ -2055,6 +2076,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             capabilities: capabilities,
             taskEnvironment: [:],
             copilotHome: copilotHome,
+            copilotStateHome: copilotStateHome,
+            userHome: userHome,
             disableCustomInstructions: true
         )
 
@@ -2192,14 +2215,23 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
 
     @MainActor
     func recordPostProcessEvents(context: AgentRuntimePostProcessContext) {
-        guard context.run.tokensUsed == 0,
-              let metrics = CopilotSessionMetricsReader.finalMetrics(
-                copilotHome: context.homeDirectory,
-                taskID: context.task.id,
-                runStartedAt: context.runStartedAt
-              ) else {
+        guard context.run.tokensUsed == 0 else {
             return
         }
+        let homes = [context.homeDirectory, CopilotCLIRuntime.defaultHome()]
+        var seenHomes: Set<String> = []
+        var metrics: CopilotSessionMetrics?
+        for home in homes {
+            let trimmed = home.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seenHomes.insert(trimmed).inserted else { continue }
+            metrics = CopilotSessionMetricsReader.finalMetrics(
+                copilotHome: trimmed,
+                taskID: context.task.id,
+                runStartedAt: context.runStartedAt
+            )
+            if metrics != nil { break }
+        }
+        guard let metrics else { return }
 
         AgentEventRecorder.recordCopilotEvent(
             metrics.event,
@@ -2609,7 +2641,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             taskEnvironment: taskEnv,
             providerHomeDirectory: context.providerHomeDirectory,
             pathPrefix: pathPrefix,
-            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task)
+            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task, contextText: context.contextText)
                 || taskEnv["ASTRA_BROWSER_URL"] != nil,
             diagnosticLogPath: diagnosticLogPath
         )

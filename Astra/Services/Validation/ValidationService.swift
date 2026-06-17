@@ -760,7 +760,7 @@ enum ValidationService {
             )
         }
 
-        guard let content = try? String(contentsOfFile: existingPath, encoding: .utf8) else {
+        guard let content = readScopedArtifactText(at: existingPath, task: task) else {
             return assertionPayload(
                 assertion: assertion,
                 planID: planID,
@@ -888,7 +888,7 @@ enum ValidationService {
             )
         }
 
-        let content = (try? String(contentsOfFile: existingPath, encoding: .utf8)) ?? ""
+        let content = readScopedArtifactText(at: existingPath, task: task) ?? ""
         let renderedSummary = renderedTextSummary(from: content)
         let expected = firstNonEmpty(assertion.evidenceQuery, assertion.description)
         let matched = expected.isEmpty || renderedSummary.localizedCaseInsensitiveContains(expected)
@@ -1346,6 +1346,27 @@ enum ValidationService {
             .path
         return validationArtifactScopeRoots(task: task).contains { root in
             resolvedCandidate == root || resolvedCandidate.hasPrefix(root.hasSuffix("/") ? root : root + "/")
+        }
+    }
+
+    private static func readScopedArtifactText(at path: String, task: AgentTask) -> String? {
+        guard let root = validationArtifactScopeRoot(containing: path, task: task) else {
+            return nil
+        }
+        return try? HostFileAccessBroker().readString(
+            at: URL(fileURLWithPath: path),
+            encoding: .utf8,
+            intent: .astraManagedStorage(root: URL(fileURLWithPath: root, isDirectory: true))
+        )
+    }
+
+    private static func validationArtifactScopeRoot(containing path: String, task: AgentTask) -> String? {
+        let resolvedPath = URL(fileURLWithPath: path)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+            .path
+        return validationArtifactScopeRoots(task: task).first { root in
+            resolvedPath == root || resolvedPath.hasPrefix(root.hasSuffix("/") ? root : root + "/")
         }
     }
 

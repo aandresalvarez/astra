@@ -406,8 +406,8 @@ struct RuntimeModelAvailabilityTests {
         #expect(RuntimeModelAvailability.modelDescription(for: "sonnet[1m]", runtime: .claudeCode, cache: cache) == nil)
     }
 
-    @Test("Values-only persistence and legacy snapshots fall back to raw IDs")
-    func valuesOnlyPersistenceFallsBackToRawIDs() {
+    @Test("Values-only persistence and legacy snapshots use readable display names")
+    func valuesOnlyPersistenceUsesReadableDisplayNames() {
         let (defaults, suiteName) = makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
@@ -421,7 +421,7 @@ struct RuntimeModelAvailabilityTests {
             cachedClaudeModelsJSON: defaults.string(forKey: AppStorageKeys.claudeAvailableModels) ?? "",
             cachedCopilotModelsJSON: ""
         )
-        #expect(RuntimeModelAvailability.displayName(for: "claude-sonnet-4-6", runtime: .claudeCode, cache: cache) == "claude-sonnet-4-6")
+        #expect(RuntimeModelAvailability.displayName(for: "claude-sonnet-4-6", runtime: .claudeCode, cache: cache) == "Claude Sonnet 4.6")
 
         // Snapshot JSON written before the `details` field existed.
         let legacy = """

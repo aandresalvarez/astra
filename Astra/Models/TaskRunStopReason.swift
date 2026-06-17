@@ -35,6 +35,7 @@ struct TaskRunStopReason: RawRepresentable, Codable, Sendable, Hashable, Express
     static let policyViolation: TaskRunStopReason = "policy_violation"
     static let providerNoActionableProgress: TaskRunStopReason = "provider_no_actionable_progress"
     static let providerNoSemanticProgress: TaskRunStopReason = "provider_no_semantic_progress"
+    static let providerSemanticProgressStalled: TaskRunStopReason = "provider_semantic_progress_stalled"
     static let providerPermissionDeniedAfterApproval: TaskRunStopReason = "provider_permission_denied_after_approval"
     static let providerPermissionDeniedBroadPermissions: TaskRunStopReason = "provider_permission_denied_broad_permissions"
     static let providerPermissionUnresumable: TaskRunStopReason = "provider_permission_unresumable"

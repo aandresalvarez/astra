@@ -32,8 +32,18 @@ struct CapabilityRailSnapshotSignature: Hashable {
         workspaceID = workspace.id
         workspaceName = workspace.name
         enabledCapabilityIDs = workspace.enabledCapabilityIDs.sorted()
-        installedPluginIDs = workspace.installedPluginIDs.sorted()
-        installedPluginVersions = workspace.installedPluginVersions.sorted()
+        var installedPlugins: [(id: String, version: String)] = []
+        for (index, id) in workspace.installedPluginIDs.enumerated() {
+            let version = index < workspace.installedPluginVersions.count
+                ? workspace.installedPluginVersions[index]
+                : ""
+            installedPlugins.append((id: id, version: version))
+        }
+        installedPlugins.sort { lhs, rhs in
+            lhs.id == rhs.id ? lhs.version < rhs.version : lhs.id < rhs.id
+        }
+        installedPluginIDs = installedPlugins.map { $0.id }
+        installedPluginVersions = installedPlugins.map { $0.version }
         enabledGlobalSkillIDs = workspace.enabledGlobalSkillIDs.sorted()
         enabledGlobalConnectorIDs = workspace.enabledGlobalConnectorIDs.sorted()
         enabledGlobalToolIDs = workspace.enabledGlobalToolIDs.sorted()

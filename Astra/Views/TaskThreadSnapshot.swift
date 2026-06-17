@@ -1035,7 +1035,7 @@ struct TaskThreadSnapshotTrigger: Equatable {
 struct TaskThreadSnapshotCacheKey: Hashable, Sendable {
     let taskID: UUID
     let status: TaskStatus
-    let goal: String
+    let goalHash: UInt64
     let createdAt: Date
     let completedAt: Date?
     let maxRuns: Int
@@ -1054,7 +1054,7 @@ struct TaskThreadSnapshotCacheKey: Hashable, Sendable {
         guard Self.isCacheable(trigger) else { return nil }
         taskID = task.id
         status = task.status
-        goal = task.goal
+        goalHash = Self.stableHash(task.goal)
         createdAt = task.createdAt
         completedAt = task.completedAt
         self.maxRuns = maxRuns
@@ -1064,6 +1064,15 @@ struct TaskThreadSnapshotCacheKey: Hashable, Sendable {
         latestRunStatus = trigger.latestRunStatus
         eventSignatures = task.events.map(TaskThreadEventCacheSignature.init(event:)).sorted()
         runSignatures = task.runs.map(TaskThreadRunCacheSignature.init(run:)).sorted()
+    }
+
+    private static func stableHash(_ value: String) -> UInt64 {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return hash
     }
 
     private static func isCacheable(_ trigger: TaskThreadSnapshotTrigger) -> Bool {

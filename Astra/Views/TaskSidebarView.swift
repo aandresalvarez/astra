@@ -377,15 +377,6 @@ struct TaskSidebarView: View {
                 }
             }
 
-            // Was `List { ... }.listStyle(.sidebar)`. Switched to a
-            // ScrollView + LazyVStack because List on macOS is backed by
-            // NSTableView, which manages its own row insertion/removal
-            // animations and ignores SwiftUI `.transition` modifiers on
-            // its rows. That made the workspace expand/collapse animation
-            // impossible to drive through SwiftUI — tasks snapped in even
-            // inside `withAnimation`. With a plain LazyVStack the tasks
-            // are regular SwiftUI views again, transitions fire, and the
-            // workspace row stays put while children animate.
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     pinnedSection(using: taskIndex)
@@ -397,6 +388,7 @@ struct TaskSidebarView: View {
             }
         }
         .onAppear {
+            loadSidebarDisclosure()
             rebuildTaskIndex()
             rebuildSchedules()
             updateNewTaskNudge()
@@ -506,6 +498,7 @@ struct TaskSidebarView: View {
                 withAnimation(disclosureAnimation) {
                     isPinnedExpanded.toggle()
                 }
+                persistSidebarDisclosure()
             } label: {
                 HStack(spacing: 5) {
                     Text("Pinned")
@@ -836,6 +829,7 @@ struct TaskSidebarView: View {
                     withAnimation(disclosureAnimation) {
                         isSchedulesExpanded.toggle()
                     }
+                    persistSidebarDisclosure()
                 } label: {
                     HStack(spacing: 5) {
                         Text("Routines")
@@ -934,6 +928,7 @@ struct TaskSidebarView: View {
                     withAnimation(disclosureAnimation) {
                         isWorkspacesExpanded.toggle()
                     }
+                    persistSidebarDisclosure()
                 } label: {
                     HStack(spacing: 5) {
                         Text("Workspaces")
@@ -1276,12 +1271,33 @@ struct TaskSidebarView: View {
     private func expandWorkspace(_ workspace: Workspace) {
         collapsedWorkspaceIDs.remove(workspace.id)
         expandedWorkspaceIDs.insert(workspace.id)
+        persistSidebarDisclosure()
     }
 
     private func collapseWorkspace(_ workspace: Workspace) {
         expandedWorkspaceIDs.remove(workspace.id)
         collapsedWorkspaceIDs.insert(workspace.id)
         expandedWorkspaceTaskLists.remove(workspace.id)
+        persistSidebarDisclosure()
+    }
+
+    private func loadSidebarDisclosure() {
+        let state = TaskSidebarDisclosureStore.load()
+        isPinnedExpanded = state.isPinnedExpanded
+        isWorkspacesExpanded = state.isWorkspacesExpanded
+        isSchedulesExpanded = state.isSchedulesExpanded
+        collapsedWorkspaceIDs = state.collapsedWorkspaceIDs
+        expandedWorkspaceIDs = state.expandedWorkspaceIDs
+    }
+
+    private func persistSidebarDisclosure() {
+        TaskSidebarDisclosureStore.save(TaskSidebarDisclosureState(
+            isPinnedExpanded: isPinnedExpanded,
+            isWorkspacesExpanded: isWorkspacesExpanded,
+            isSchedulesExpanded: isSchedulesExpanded,
+            collapsedWorkspaceIDs: collapsedWorkspaceIDs,
+            expandedWorkspaceIDs: expandedWorkspaceIDs
+        ))
     }
 
     private func sidebarShowMoreButton(title: String, action: @escaping () -> Void) -> some View {
@@ -1728,7 +1744,7 @@ private struct WorkspaceRowActions: View {
             if workspace.isStarred {
                 Image(systemName: "star.fill")
                     .font(Stanford.ui(10, weight: .semibold))
-                    .foregroundStyle(Stanford.lagunita)
+                    .foregroundStyle(.secondary)
                     .frame(width: 16, height: 22)
                     .accessibilityLabel("Starred")
             }

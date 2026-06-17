@@ -321,7 +321,10 @@ enum TaskContextStateManager {
 
     static func loadResult(taskFolder: String) -> TaskContextStateLoadResult {
         let url = URL(fileURLWithPath: taskFolder).appendingPathComponent(jsonFileName)
-        guard FileManager.default.fileExists(atPath: url.path) else {
+        let accessRoot = URL(fileURLWithPath: taskFolder, isDirectory: true)
+        let hostFileAccess = HostFileAccessBroker()
+        let intent = HostFileAccessIntent.astraManagedStorage(root: accessRoot)
+        guard hostFileAccess.fileExists(at: url, intent: intent) else {
             return TaskContextStateLoadResult(
                 status: .missingFile,
                 path: url.path,
@@ -333,7 +336,7 @@ enum TaskContextStateManager {
 
         let data: Data
         do {
-            data = try Data(contentsOf: url)
+            data = try hostFileAccess.readData(at: url, intent: intent)
         } catch {
             return TaskContextStateLoadResult(
                 status: .unreadableFile,
@@ -1712,19 +1715,6 @@ enum TaskContextStateManager {
         let latest = outputTurnFiles(in: outputDirectory.path)
             .last
         return latest.map { "outputs/\(($0 as NSString).lastPathComponent)" }
-    }
-
-    private static func outputTurnFiles(in outputDirectory: String) -> [String] {
-        guard !outputDirectory.isEmpty,
-              let urls = try? FileManager.default.contentsOfDirectory(
-                at: URL(fileURLWithPath: outputDirectory),
-                includingPropertiesForKeys: [.isRegularFileKey],
-                options: [.skipsHiddenFiles]
-              ) else { return [] }
-        return urls
-            .filter { $0.lastPathComponent.hasPrefix("turn_") && $0.lastPathComponent.hasSuffix(".md") }
-            .map(\.path)
-            .sorted()
     }
 
     private static func fileSize(_ path: String) -> Int {

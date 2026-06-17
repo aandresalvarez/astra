@@ -252,16 +252,22 @@ enum WorkspaceRecoveryService {
     static func recoverMissingWorkspaces(
         modelContext: ModelContext,
         extraRoots: [String] = [],
-        includeDefaultRoots: Bool = true
+        includeDefaultRoots: Bool = true,
+        privacyHomeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> Int {
-        let configs = discoverWorkspaceConfigFiles(extraRoots: extraRoots, includeDefaultRoots: includeDefaultRoots)
+        let configs = discoverWorkspaceConfigFiles(
+            extraRoots: extraRoots,
+            includeDefaultRoots: includeDefaultRoots,
+            privacyHomeDirectory: privacyHomeDirectory
+        )
         return recoverMissingWorkspaces(modelContext: modelContext, configFiles: configs)
     }
 
     static func recoverMissingWorkspacesAfterLaunch(
         modelContext: ModelContext,
         extraRoots: [String] = [],
-        includeDefaultRoots: Bool = true
+        includeDefaultRoots: Bool = true,
+        privacyHomeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) {
         Task { @MainActor in
             if extraRoots.isEmpty,
@@ -272,7 +278,11 @@ enum WorkspaceRecoveryService {
             let configs = await withTaskGroup(of: [URL].self, returning: [URL].self) { group in
                 group.addTask(priority: .utility) {
                     guard !Task.isCancelled else { return [] }
-                    return discoverWorkspaceConfigFiles(extraRoots: extraRoots, includeDefaultRoots: includeDefaultRoots)
+                    return discoverWorkspaceConfigFiles(
+                        extraRoots: extraRoots,
+                        includeDefaultRoots: includeDefaultRoots,
+                        privacyHomeDirectory: privacyHomeDirectory
+                    )
                 }
                 return await group.next() ?? []
             }
@@ -288,7 +298,10 @@ enum WorkspaceRecoveryService {
                 group.addTask(priority: .utility) {
                     guard !Task.isCancelled else { return nil }
                     do {
-                        var config = try WorkspaceConfigManager.loadConfig(from: configURL)
+                        var config = try WorkspaceConfigManager.loadConfig(
+                            from: configURL,
+                            accessIntent: .implicitScan(root: nil)
+                        )
                         config.primaryPath = configURL.deletingLastPathComponent().standardizedFileURL.path
                         return LoadedWorkspaceConfig(config: config)
                     } catch {
@@ -331,7 +344,10 @@ enum WorkspaceRecoveryService {
 
         for configURL in configs {
             do {
-                var config = try WorkspaceConfigManager.loadConfig(from: configURL)
+                var config = try WorkspaceConfigManager.loadConfig(
+                    from: configURL,
+                    accessIntent: .implicitScan(root: nil)
+                )
                 config.primaryPath = configURL.deletingLastPathComponent().standardizedFileURL.path
                 let configID = config.id
                 let configPath = normalizePath(config.primaryPath)
@@ -409,7 +425,8 @@ enum WorkspaceRecoveryService {
 
     static func discoverWorkspaceConfigFiles(
         extraRoots: [String] = [],
-        includeDefaultRoots: Bool = true
+        includeDefaultRoots: Bool = true,
+        privacyHomeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> [URL] {
         var roots: [String] = []
         if includeDefaultRoots {
@@ -425,7 +442,11 @@ enum WorkspaceRecoveryService {
         for root in roots {
             guard !Task.isCancelled else { break }
             let url = URL(fileURLWithPath: expandTilde(root))
-            for config in scanForWorkspaceConfigs(root: url, maxDepth: 4) {
+            for config in scanForWorkspaceConfigs(
+                root: url,
+                maxDepth: 4,
+                privacyHomeDirectory: privacyHomeDirectory
+            ) {
                 guard !Task.isCancelled else { break }
                 let path = normalizePath(config.path)
                 guard !seen.contains(path) else { continue }
@@ -534,38 +555,53 @@ enum WorkspaceRecoveryService {
         return (try? modelContext.fetch(descriptor)) ?? []
     }
 
-    private static func scanForWorkspaceConfigs(root: URL, maxDepth: Int) -> [URL] {
+    private static func scanForWorkspaceConfigs(
+        root: URL,
+        maxDepth: Int,
+        privacyHomeDirectory: URL
+    ) -> [URL] {
         var remainingBudget = maxRecoveryScanDirectories
-        return scanForWorkspaceConfigs(root: root, maxDepth: maxDepth, remainingBudget: &remainingBudget)
+        let hostFileAccess = HostFileAccessBroker(homeDirectory: privacyHomeDirectory)
+        return scanForWorkspaceConfigs(
+            root: root,
+            maxDepth: maxDepth,
+            remainingBudget: &remainingBudget,
+            hostFileAccess: hostFileAccess
+        )
     }
 
     private static func scanForWorkspaceConfigs(
         root: URL,
         maxDepth: Int,
-        remainingBudget: inout Int
+        remainingBudget: inout Int,
+        hostFileAccess: HostFileAccessBroker
     ) -> [URL] {
         guard !Task.isCancelled else { return [] }
         guard maxDepth >= 0 else { return [] }
         guard remainingBudget > 0 else { return [] }
+        let intent = HostFileAccessIntent.implicitScan(root: nil)
+        guard !hostFileAccess.shouldSkip(root, intent: intent) else {
+            return []
+        }
         remainingBudget -= 1
 
-        let fileManager = FileManager.default
         var isDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: root.path, isDirectory: &isDirectory),
+        guard hostFileAccess.fileExists(at: root, isDirectory: &isDirectory, intent: intent),
               isDirectory.boolValue else {
             return []
         }
 
         let directConfig = root.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
         var results: [URL] = []
-        if fileManager.fileExists(atPath: directConfig.path) {
+        if hostFileAccess.fileExists(at: directConfig, intent: intent) {
             results.append(directConfig)
         }
 
         guard maxDepth > 0,
-              let children = try? fileManager.contentsOfDirectory(
+              let children = try? hostFileAccess.contentsOfDirectory(
                 at: root,
-                includingPropertiesForKeys: [.isDirectoryKey, .isHiddenKey, .isPackageKey]
+                includingPropertiesForKeys: [.isDirectoryKey, .isHiddenKey, .isPackageKey],
+                intent: intent
               ) else {
             return results
         }
@@ -574,6 +610,9 @@ enum WorkspaceRecoveryService {
             guard !Task.isCancelled else { break }
             guard remainingBudget > 0 else { break }
             guard !skippedRecoveryDirectoryNames.contains(child.lastPathComponent) else { continue }
+            guard !hostFileAccess.shouldSkip(child, intent: intent) else {
+                continue
+            }
             let values = try? child.resourceValues(forKeys: [.isDirectoryKey, .isHiddenKey, .isPackageKey])
             guard values?.isDirectory == true,
                   values?.isHidden != true,
@@ -584,7 +623,8 @@ enum WorkspaceRecoveryService {
                 contentsOf: scanForWorkspaceConfigs(
                     root: child,
                     maxDepth: maxDepth - 1,
-                    remainingBudget: &remainingBudget
+                    remainingBudget: &remainingBudget,
+                    hostFileAccess: hostFileAccess
                 )
             )
         }

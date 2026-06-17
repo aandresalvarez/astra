@@ -6,8 +6,8 @@ import Testing
 @Suite("Browser Tool Shim")
 @MainActor
 struct BrowserToolShimTests {
-    @Test("Task-local astra-browser shim injects bridge endpoint and token")
-    func taskLocalShimInjectsEndpointAndToken() throws {
+    @Test("Task-local astra-browser shim injects bridge endpoint token and required engine")
+    func taskLocalShimInjectsEndpointTokenAndRequiredEngine() throws {
         let schema = ASTRASchema.current
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(
@@ -24,7 +24,7 @@ struct BrowserToolShimTests {
         let realTool = root.appendingPathComponent("real-astra-browser")
         try """
         #!/bin/sh
-        printf '%s|%s' "$ASTRA_BROWSER_URL" "$ASTRA_BROWSER_TOKEN"
+        printf '%s|%s|%s' "$ASTRA_BROWSER_URL" "$ASTRA_BROWSER_TOKEN" "$ASTRA_BROWSER_REQUIRED_ENGINE"
         """.write(to: realTool, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: realTool.path)
 
@@ -37,7 +37,11 @@ struct BrowserToolShimTests {
         let endpoint = "http://127.0.0.1:59638"
         let shimDirectory = try #require(AgentRuntimeProcessRunner.prepareBrowserToolShimIfNeeded(
             task: task,
-            taskEnv: ["ASTRA_BROWSER_URL": endpoint, "ASTRA_BROWSER_TOKEN": "ASTRA_TEST_BROWSER_TOKEN"],
+            taskEnv: [
+                "ASTRA_BROWSER_URL": endpoint,
+                "ASTRA_BROWSER_TOKEN": "ASTRA_TEST_BROWSER_TOKEN",
+                "ASTRA_BROWSER_REQUIRED_ENGINE": "controlled-cdp"
+            ],
             realToolPath: realTool.path
         ))
         let shimPath = (shimDirectory as NSString).appendingPathComponent("astra-browser")
@@ -57,6 +61,6 @@ struct BrowserToolShimTests {
         let data = output.fileHandleForReading.readDataToEndOfFile()
         let text = String(data: data, encoding: .utf8) ?? ""
         #expect(process.terminationStatus == 0)
-        #expect(text == "\(endpoint)|ASTRA_TEST_BROWSER_TOKEN")
+        #expect(text == "\(endpoint)|ASTRA_TEST_BROWSER_TOKEN|controlled-cdp")
     }
 }

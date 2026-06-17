@@ -22,26 +22,36 @@ enum SessionScanner {
 
     /// Scan ~/.claude/projects/ for sessions that match this workspace path.
     static func discoverSessions(workspacePath: String) -> [DiscoveredSession] {
-        let claudeDir = NSHomeDirectory() + "/.claude/projects"
-        guard FileManager.default.fileExists(atPath: claudeDir) else { return [] }
+        let claudeDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude", isDirectory: true)
+            .appendingPathComponent("projects", isDirectory: true)
+        let hostFileAccess = HostFileAccessBroker()
+        let accessIntent = HostFileAccessIntent.astraManagedStorage(root: claudeDir)
+        guard hostFileAccess.fileExists(at: claudeDir, intent: accessIntent) else { return [] }
 
         // Claude Code encodes paths by replacing / with -
         let encodedPath = workspacePath
             .replacingOccurrences(of: "/", with: "-")
-        let projectDir = claudeDir + "/" + encodedPath
+        let projectDir = claudeDir.appendingPathComponent(encodedPath, isDirectory: true)
 
-        guard FileManager.default.fileExists(atPath: projectDir) else { return [] }
+        guard hostFileAccess.fileExists(at: projectDir, intent: accessIntent) else { return [] }
 
-        let fm = FileManager.default
-        guard let files = try? fm.contentsOfDirectory(atPath: projectDir) else { return [] }
+        guard let files = try? hostFileAccess.contentsOfDirectory(
+            at: projectDir,
+            intent: accessIntent
+        ) else { return [] }
 
         var sessions: [DiscoveredSession] = []
 
-        for file in files where file.hasSuffix(".jsonl") {
-            let sessionId = String(file.dropLast(6)) // remove .jsonl
-            let fullPath = projectDir + "/" + file
+        for file in files where file.lastPathComponent.hasSuffix(".jsonl") {
+            let sessionId = String(file.lastPathComponent.dropLast(6)) // remove .jsonl
 
-            if let session = parseSession(at: fullPath, sessionId: sessionId) {
+            if let session = parseSession(
+                at: file,
+                sessionId: sessionId,
+                hostFileAccess: hostFileAccess,
+                accessIntent: accessIntent
+            ) {
                 // Filter out tiny sessions (< 500 tokens) — likely system/spec engine calls
                 if session.totalTokens >= 500 {
                     sessions.append(session)
@@ -158,8 +168,13 @@ enum SessionScanner {
 
     // MARK: - Private
 
-    private static func parseSession(at path: String, sessionId: String) -> DiscoveredSession? {
-        guard let data = FileManager.default.contents(atPath: path),
+    private static func parseSession(
+        at url: URL,
+        sessionId: String,
+        hostFileAccess: HostFileAccessBroker,
+        accessIntent: HostFileAccessIntent
+    ) -> DiscoveredSession? {
+        guard let data = try? hostFileAccess.readData(at: url, intent: accessIntent),
               let content = String(data: data, encoding: .utf8) else { return nil }
 
         var totalInput = 0

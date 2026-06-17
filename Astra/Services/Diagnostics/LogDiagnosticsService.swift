@@ -518,10 +518,12 @@ enum LogDiagnosticsService {
         interval: DateInterval?,
         fileManager: FileManager
     ) -> [URL] {
-        guard let files = try? fileManager.contentsOfDirectory(
+        let broker = HostFileAccessBroker(fileManager: fileManager)
+        guard let files = try? broker.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey, .isRegularFileKey],
-            options: [.skipsHiddenFiles]
+            options: [.skipsHiddenFiles],
+            intent: .astraManagedStorage(root: directory)
         ) else { return [] }
 
         return Array(files
@@ -695,6 +697,9 @@ enum LogDiagnosticsService {
                 continue
             }
             if classifyNotice(entry, index: index, entries: entries) != nil {
+                continue
+            }
+            if isValidationBehaviorFailureCoveredByAssertionOutcome(entry, index: index, entries: entries) {
                 continue
             }
             guard let classification = classifyConnectorCredentialRegression(
@@ -914,6 +919,80 @@ enum LogDiagnosticsService {
         }
     }
 
+    private static func isOptionalValidationBehaviorFailure(
+        _ entry: LogEntry,
+        index: Int,
+        entries: [LogEntry]
+    ) -> Bool {
+        guard entry.message.lowercased().contains(AuditEvent.validationBehaviorFailed.rawValue) else {
+            return false
+        }
+        return matchingValidationAssertionOutcome(
+            after: index,
+            entries: entries,
+            entry: entry,
+            event: AuditEvent.validationAssertionSkipped.rawValue,
+            required: "false",
+            result: "skipped"
+        )
+    }
+
+    private static func isValidationBehaviorFailureCoveredByAssertionOutcome(
+        _ entry: LogEntry,
+        index: Int,
+        entries: [LogEntry]
+    ) -> Bool {
+        guard entry.message.lowercased().contains(AuditEvent.validationBehaviorFailed.rawValue) else {
+            return false
+        }
+        return matchingValidationAssertionOutcome(
+            after: index,
+            entries: entries,
+            entry: entry,
+            event: AuditEvent.validationAssertionFailed.rawValue
+        ) || matchingValidationAssertionOutcome(
+            after: index,
+            entries: entries,
+            entry: entry,
+            event: AuditEvent.validationAssertionSkipped.rawValue,
+            required: "false",
+            result: "skipped"
+        )
+    }
+
+    private static func matchingValidationAssertionOutcome(
+        after index: Int,
+        entries: [LogEntry],
+        entry: LogEntry,
+        event: String,
+        required: String? = nil,
+        result: String? = nil
+    ) -> Bool {
+        guard index + 1 < entries.endIndex,
+              let assertionID = field("assertion_id", in: entry.message),
+              !assertionID.isEmpty else {
+            return false
+        }
+        let planID = field("plan_id", in: entry.message)
+        return entries[(index + 1)..<entries.endIndex].contains { candidate in
+            guard candidate.timestamp >= entry.timestamp,
+                  candidate.message.lowercased().contains(event),
+                  field("assertion_id", in: candidate.message) == assertionID else {
+                return false
+            }
+            if let planID, !planID.isEmpty, field("plan_id", in: candidate.message) != planID {
+                return false
+            }
+            if let required, field("required", in: candidate.message)?.lowercased() != required {
+                return false
+            }
+            if let result, field("result", in: candidate.message)?.lowercased() != result {
+                return false
+            }
+            return true
+        }
+    }
+
     private static func isResolvedConnectorTestFailure(
         _ entry: LogEntry,
         index: Int,
@@ -1130,6 +1209,16 @@ enum LogDiagnosticsService {
     )? {
         let message = entry.message
         let lower = message.lowercased()
+
+        if isOptionalValidationBehaviorFailure(entry, index: index, entries: entries) {
+            let assertionID = field("assertion_id", in: message) ?? "browser_behavior"
+            return (
+                key: "validation.browser_behavior.optional_skipped.\(assertionID)",
+                title: "Optional browser behavior validation was skipped",
+                signal: "validation.behavior.failed followed_by=validation.assertion.skipped required=false",
+                analysis: "A browser behavior evidence check did not match the optional assertion, then ASTRA marked that assertion skipped and allowed the required validation contract to continue."
+            )
+        }
 
         if isResolvedCapabilityValidationFailure(entry, index: index, entries: entries) {
             let package = field("package_name", in: message) ?? field("package_id", in: message) ?? "capability"
@@ -1522,6 +1611,27 @@ enum LogDiagnosticsService {
                 severity: .warning,
                 signal: "local_tool.tested result=\(result)",
                 analysis: "A local CLI tool required by the active capability did not pass preflight. For GitHub workflows, verify that `gh` is installed and authenticated with `gh auth status` before retrying."
+            )
+        }
+
+        if lower.contains(AuditEvent.validationAssertionFailed.rawValue),
+           field("assertion_method", in: message) == "browser_behavior" {
+            return (
+                key: "validation.browser_behavior.failed.\(field("assertion_id", in: message) ?? "unknown")",
+                title: "Browser behavior validation failed",
+                severity: .warning,
+                signal: "validation.assertion.failed assertion_method=browser_behavior",
+                analysis: "A required browser behavior validation assertion failed. Inspect the evidence path and failure_reason fields, then fix the artifact or the expected browser-visible behavior."
+            )
+        }
+
+        if lower.contains(AuditEvent.validationBehaviorFailed.rawValue) {
+            return (
+                key: "validation.browser_behavior.failed.\(field("assertion_id", in: message) ?? "unknown")",
+                title: "Browser behavior validation failed",
+                severity: .warning,
+                signal: AuditEvent.validationBehaviorFailed.rawValue,
+                analysis: "A browser behavior evidence check failed and no matching optional skipped assertion was found in the analyzed window. Inspect the related validation assertion and contract events."
             )
         }
 
@@ -2132,8 +2242,20 @@ enum LogDiagnosticsService {
             + intField("workspace_enabled_global_tools_count", in: message)
     }
 
+    private static func isIntentionalCapabilityPrune(_ message: String) -> Bool {
+        if field("scope_pruned", in: message)?.lowercased() == "true" {
+            return true
+        }
+
+        let excludedNames = field("scope_excluded_skill_names", in: message)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return excludedNames.map { !$0.isEmpty && $0 != "none" } ?? false
+    }
+
     private static func isCapabilityChatContextGap(_ message: String) -> Bool {
         guard enabledCapabilityResourceCount(in: message) > 0 else { return false }
+        guard !isIntentionalCapabilityPrune(message) else { return false }
         let source = field("source", in: message)?.lowercased() ?? ""
         guard source.contains("chat")
                 || source.contains("generation")
@@ -2154,6 +2276,7 @@ enum LogDiagnosticsService {
 
     private static func isCapabilityResolutionGap(_ message: String) -> Bool {
         guard enabledCapabilityResourceCount(in: message) > 0 else { return false }
+        guard !isIntentionalCapabilityPrune(message) else { return false }
         return intField("resolved_skill_count", in: message) == 0
             && intField("connector_count", in: message) == 0
             && intField("local_tool_count", in: message) == 0
@@ -2267,9 +2390,10 @@ enum LogDiagnosticsService {
     }
 
     private static func diagnosticLogFiles(in directory: URL) -> [URL] {
-        guard let files = try? FileManager.default.contentsOfDirectory(
+        guard let files = try? HostFileAccessBroker().contentsOfDirectory(
             at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey]
+            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+            intent: .astraManagedStorage(root: directory)
         ) else { return [] }
 
         let mainLogs = files
@@ -2293,7 +2417,11 @@ enum LogDiagnosticsService {
     }
 
     private static func tailLines(from url: URL, maxLines: Int) -> [String] {
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        guard let content = try? HostFileAccessBroker().readString(
+            at: url,
+            encoding: .utf8,
+            intent: .astraManagedStorage(root: url.deletingLastPathComponent())
+        ) else { return [] }
         let lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         guard lines.count > maxLines else { return lines }
         return Array(lines.suffix(maxLines))

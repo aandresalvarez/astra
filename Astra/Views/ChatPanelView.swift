@@ -400,11 +400,15 @@ struct ChatPanelView: View {
     @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
     @AppStorage(AppStorageKeys.runtimeModelCacheRevision) private var runtimeModelCacheRevision = 0
     @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultBudget = TaskExecutionDefaults.tokenBudget
-    @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
+    @AppStorage(AppStorageKeys.skipPermissions) private var globalSkipPermissions = false
     @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var defaultAgentPolicyLevelRaw = AgentPolicyLevel.review.rawValue
     @State private var chainedGoal = ""
     @State private var draftTask: AgentTask?
     @State private var composerPolicyLevelRaw = AgentPolicyLevel.review.rawValue
+    // Composer-scoped skip-permissions: seeded from the global default but never
+    // written back, so picking Auto for one draft does not flip the user's
+    // global default or the workspace Auto/Ask pill (mirrors TaskMainView).
+    @State private var composerSkipPermissions = false
     @State private var useAgentTeam = false
     @State private var teamSize = 3
     @State private var activeWizard: SlashWizard?
@@ -412,6 +416,11 @@ struct ChatPanelView: View {
     @State private var activeSlashContext: String?
     @State private var isPlanMode = false
     @State private var pendingPlan: TaskPlanPayload?
+    // In-flight planning chat round-trips. Cancelled in `.onDisappear` so a dismissed composer
+    // tears down the utility LLM subprocess instead of running it to completion for an assistant
+    // reply / pending plan that only lives in this view's @State and is discarded on recreate.
+    @State private var chatReplyTask: Task<Void, Never>?
+    @State private var planGenerationTask: Task<Void, Never>?
     @State private var isApprovedPlanHistoryExpanded = false
     @State private var excludedSkillIDs: Set<UUID> = []
     @State private var runtimeReadinessStates: [AgentRuntimeID: RuntimeReadinessState] = [:]
@@ -453,7 +462,7 @@ struct ChatPanelView: View {
     }
 
     private var currentAgentPolicyLevel: AgentPolicyLevel {
-        skipPermissions ? .autonomous : AgentPolicyLevel.normalized(composerPolicyLevelRaw)
+        composerSkipPermissions ? .autonomous : AgentPolicyLevel.normalized(composerPolicyLevelRaw)
     }
 
     private var planningUtilityRuntime: AgentUtilityRuntimeConfiguration {
@@ -482,6 +491,14 @@ struct ChatPanelView: View {
         )
     }
 
+    private var composerWorkerSelection: TaskRoleProfileSelection {
+        TaskComposerPolicySelection.applyingComposerPolicy(
+            currentAgentPolicyLevel,
+            to: workerRoleSelection,
+            source: "composer_policy"
+        )
+    }
+
     private func alignDefaultModelWithRuntime() {
         defaultModel = RuntimeModelAvailability.normalizedModel(
             defaultModel,
@@ -499,7 +516,7 @@ struct ChatPanelView: View {
             defaultRuntimeID: defaultRuntimeID,
             defaultModel: defaultModel,
             defaultBudget: defaultBudget,
-            skipPermissions: skipPermissions,
+            skipPermissions: composerSkipPermissions,
             defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
             cachedClaudeModelsJSON: claudeAvailableModels,
             cachedCopilotModelsJSON: copilotAvailableModels,
@@ -785,6 +802,8 @@ struct ChatPanelView: View {
         }
         .onDisappear {
             removePasteMonitor()
+            chatReplyTask?.cancel()
+            planGenerationTask?.cancel()
         }
         .onChange(of: sshReloadTrigger) { loadSSHConnections() }
         .onChange(of: defaultRuntimeID) { alignDefaultModelWithRuntime() }
@@ -1188,17 +1207,17 @@ struct ChatPanelView: View {
         // differ from the composer default) so the label matches the mode
         // that will actually execute.
         if let draftTask {
-            return PlanCheckpointPolicy.executionMode(for: draftTask, skipPermissions: skipPermissions)
+            return PlanCheckpointPolicy.executionMode(for: draftTask, skipPermissions: composerSkipPermissions)
         }
         return PlanCheckpointPolicy.executionMode(
             runtime: AgentRuntimeID(rawValue: defaultRuntimeID) ?? TaskExecutionDefaults.runtime,
-            skipPermissions: skipPermissions
+            skipPermissions: composerSkipPermissions
         )
     }
 
     private var actionBarPrimaryTitle: String {
         if approvedDraftPlan != nil {
-            if skipPermissions { return "Run Full Plan" }
+            if composerSkipPermissions { return "Run Full Plan" }
             return actionBarPlanMode == .fullPlan ? "Run Plan with Live Approvals" : "Approve Next Step"
         }
         if pendingPlan != nil {
@@ -1209,7 +1228,7 @@ struct ChatPanelView: View {
 
     private var actionBarPrimaryIcon: String {
         if approvedDraftPlan != nil {
-            if skipPermissions { return "play.fill" }
+            if composerSkipPermissions { return "play.fill" }
             return actionBarPlanMode == .fullPlan ? "play.circle.fill" : "checkmark.circle.fill"
         }
         if pendingPlan != nil {
@@ -1337,7 +1356,7 @@ struct ChatPanelView: View {
                         ])
                     },
                     onManageSkills: onManageSkills,
-                    skipPermissions: $skipPermissions,
+                    skipPermissions: $composerSkipPermissions,
                     policyLevelRaw: $composerPolicyLevelRaw,
                     useAgentTeam: $useAgentTeam,
                     teamSize: $teamSize,
@@ -1603,7 +1622,8 @@ struct ChatPanelView: View {
         ])
         logChatCapabilityContext(source: shouldUseGoalMode ? "new_task_plan_chat" : "new_task_chat", traceID: traceID)
 
-        Task {
+        chatReplyTask?.cancel()
+        chatReplyTask = Task {
             let result = await SpecEngine.chat(
                 messages: conversationHistory,
                 workspacePath: ws,
@@ -1611,6 +1631,7 @@ struct ChatPanelView: View {
                 utilityRuntime: planningUtilityRuntime
             )
             await MainActor.run {
+                guard !Task.isCancelled else { return }
                 isThinking = false
                 switch result {
                 case .success(let response):
@@ -1636,7 +1657,7 @@ struct ChatPanelView: View {
         let input = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty else { return }
         let traceID = AuditTrace.make("quick-run")
-        let workerSelection = workerRoleSelection
+        let workerSelection = composerWorkerSelection
         let runtime = workerSelection.profile.runtime
         let model = workerSelection.profile.model
         AppLogger.breadcrumb(action: "quick_run_clicked", category: "UI", traceID: traceID, fields: [
@@ -1666,7 +1687,7 @@ struct ChatPanelView: View {
 
         modelContext.insert(task)
         TaskRoleProfileStore.recordSelected(workerSelection, task: task, modelContext: modelContext)
-        recordPolicySelection(on: task, level: workerSelection.profile.policyLevel, source: "quick_run")
+        recordPolicySelection(on: task, level: currentAgentPolicyLevel, source: "quick_run")
         saveConversationAsEvents(on: task)
         promoteDraft(to: task)
         messageText = ""
@@ -1723,7 +1744,8 @@ struct ChatPanelView: View {
             TaskRoleProfileStore.recordSelected(selection, task: planningDraft, modelContext: modelContext)
         }
 
-        Task {
+        planGenerationTask?.cancel()
+        planGenerationTask = Task {
             let result = await SpecEngine.chat(
                 messages: conversationHistory,
                 workspacePath: ws,
@@ -1731,6 +1753,7 @@ struct ChatPanelView: View {
                 utilityRuntime: planningUtilityRuntime
             )
             await MainActor.run {
+                guard !Task.isCancelled else { return }
                 isThinking = false
                 switch result {
                 case .success(let response):
@@ -1799,8 +1822,11 @@ struct ChatPanelView: View {
         onTaskCreated?(task)
         showPlanCanvasIfNeeded(for: task)
 
+        // Intentionally NOT tied to this view's lifecycle: this runs the approved task the user just
+        // navigated to, so it must outlive the composer's dismissal. Cancelling it on `.onDisappear`
+        // would terminate the agent subprocess for the very task they approved.
         Task {
-            let mode = PlanCheckpointPolicy.executionMode(for: task, skipPermissions: skipPermissions)
+            let mode = PlanCheckpointPolicy.executionMode(for: task, skipPermissions: composerSkipPermissions)
             await taskQueue?.executeApprovedPlan(task: task, plan: plan, mode: mode, modelContext: modelContext) { _ in }
             await MainActor.run {
                 _ = WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
@@ -1817,7 +1843,7 @@ struct ChatPanelView: View {
     private func createTaskFromSpec() {
         guard let spec = extractedSpec else { return }
         let traceID = AuditTrace.make("conversation-spec")
-        let workerSelection = workerRoleSelection
+        let workerSelection = composerWorkerSelection
         let runtime = workerSelection.profile.runtime
         let model = workerSelection.profile.model
         AppLogger.breadcrumb(action: "create_task_from_spec_clicked", category: "UI", traceID: traceID, fields: [
@@ -1851,7 +1877,7 @@ struct ChatPanelView: View {
 
         modelContext.insert(task)
         TaskRoleProfileStore.recordSelected(workerSelection, task: task, modelContext: modelContext)
-        recordPolicySelection(on: task, level: workerSelection.profile.policyLevel, source: "conversation_spec")
+        recordPolicySelection(on: task, level: currentAgentPolicyLevel, source: "conversation_spec")
 
         // Persist conversation history as events so it survives draft→queued→draft transitions
         saveConversationAsEvents(on: task)
@@ -2592,7 +2618,7 @@ struct ChatPanelView: View {
               let json = String(data: data, encoding: .utf8) else { return draftTask }
 
         if let draft = draftTask {
-            let workerSelection = workerRoleSelection
+            let workerSelection = composerWorkerSelection
             let runtime = workerSelection.profile.runtime
             let model = workerSelection.profile.model
             // Update existing draft
@@ -2607,8 +2633,8 @@ struct ChatPanelView: View {
             TaskCapabilitySnapshotter.capture(for: draft)
             draft.useAgentTeam = useAgentTeam
             draft.teamSize = teamSize
-            if TaskPolicyStore.latestSelectedLevel(for: draft) != workerSelection.profile.policyLevel {
-                recordPolicySelection(on: draft, level: workerSelection.profile.policyLevel, source: "draft_updated")
+            if TaskPolicyStore.latestSelectedLevel(for: draft) != currentAgentPolicyLevel {
+                recordPolicySelection(on: draft, level: currentAgentPolicyLevel, source: "draft_updated")
             }
             TaskRoleProfileStore.recordSelected(workerSelection, task: draft, modelContext: modelContext)
             draft.updatedAt = Date()
@@ -2629,7 +2655,7 @@ struct ChatPanelView: View {
                     return nil
                 }
             }
-            let workerSelection = workerRoleSelection
+            let workerSelection = composerWorkerSelection
             let runtime = workerSelection.profile.runtime
             let model = workerSelection.profile.model
             // Create new draft
@@ -2651,7 +2677,7 @@ struct ChatPanelView: View {
             draft.teamSize = teamSize
             modelContext.insert(draft)
             TaskRoleProfileStore.recordSelected(workerSelection, task: draft, modelContext: modelContext)
-            recordPolicySelection(on: draft, level: workerSelection.profile.policyLevel, source: "draft_created")
+            recordPolicySelection(on: draft, level: currentAgentPolicyLevel, source: "draft_created")
             draftTask = draft
             return draft
         }
@@ -2661,15 +2687,13 @@ struct ChatPanelView: View {
         if let draftToLoad,
            let selected = TaskPolicyStore.latestSelectedLevel(for: draftToLoad) {
             composerPolicyLevelRaw = selected.rawValue
-            skipPermissions = selected == .autonomous
+            composerSkipPermissions = selected == .autonomous
             return
         }
-        let level = AgentPolicyDefaults.effectiveLevel(
-            workspace: workspace,
-            globalDefaultRaw: defaultAgentPolicyLevelRaw,
-            skipPermissions: skipPermissions
-        )
+        let roleLevel = workerRoleSelection.profile.policyLevel
+        let level = globalSkipPermissions ? .autonomous : roleLevel
         composerPolicyLevelRaw = level.rawValue
+        composerSkipPermissions = level == .autonomous
     }
 
     private func recordPolicySelection(on task: AgentTask, source: String) {

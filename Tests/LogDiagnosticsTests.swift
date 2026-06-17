@@ -523,6 +523,40 @@ struct LogDiagnosticsTests {
         #expect(report.markdown.contains("workspace_enabled_capabilities_count=1"))
     }
 
+    @Test("Pruned capability scopes are not reported as missing capability context")
+    func prunedCapabilityScopesAreNotReportedAsMissingCapabilityContext() {
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .debug,
+                category: "Worker",
+                message: "capability.chat_context source=connector_preflight_candidates capability_scope=provider_launch scope_pruned=true scope_excluded_skill_names=GitHub Agent workspace_enabled_capabilities_count=1 workspace_enabled_global_skills_count=1 workspace_enabled_global_connectors_count=0 workspace_enabled_global_tools_count=0 selected_skill_count=0 resolved_skill_count=0 task_skill_count=0 connector_count=0 local_tool_count=0"
+            ),
+            LogEntry(
+                level: .debug,
+                category: "Worker",
+                message: "capability.resolved capability_scope=provider_launch scope_pruned=true scope_excluded_skill_names=GitHub Agent workspace_enabled_capabilities_count=1 workspace_enabled_global_skills_count=1 workspace_enabled_global_connectors_count=0 workspace_enabled_global_tools_count=0 resolved_skill_count=0 connector_count=0 local_tool_count=0"
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 0))
+
+        #expect(!report.issues.contains { $0.title == "Chat had no active capability context" })
+        #expect(!report.issues.contains { $0.title == "Task resolved no capability resources" })
+        #expect(report.notices.contains { $0.title == "Chat capability context was captured" })
+        #expect(report.notices.contains { $0.title == "Task capability context was resolved" })
+    }
+
+    @Test("Unpruned capability resolution gap is reported")
+    func unprunedCapabilityResolutionGapIsReported() {
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .debug,
+                category: "Worker",
+                message: "capability.resolved capability_scope=provider_launch scope_pruned=false scope_excluded_skill_names=none workspace_enabled_capabilities_count=1 workspace_enabled_global_skills_count=1 workspace_enabled_global_connectors_count=0 workspace_enabled_global_tools_count=0 resolved_skill_count=0 connector_count=0 local_tool_count=0"
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 0))
+
+        #expect(report.issues.contains { $0.title == "Task resolved no capability resources" })
+    }
+
     @Test("Successful capability interactions are retained as notices")
     func successfulCapabilityInteractionsAreRetainedAsNotices() {
         let report = LogDiagnosticsService.makeReport(entries: [
@@ -589,6 +623,79 @@ struct LogDiagnosticsTests {
 
         #expect(report.issues.contains { $0.title == "Capability runtime resources are missing" })
         #expect(report.markdown.contains("capability.runtime_integrity result=missing_resources"))
+    }
+
+    @Test("Optional browser behavior validation failure is non-actionable when assertion is skipped")
+    func optionalBrowserBehaviorValidationFailureIsNonActionableWhenAssertionIsSkipped() {
+        let planID = "52E2B9EE-258F-43A2-88B4-D1A4447D2E1E"
+        let assertionID = "browser-3-index-html"
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .warning,
+                category: "Validation",
+                message: "validation.behavior.failed action_count=0 assertion_id=\(assertionID) evidence_path=/tmp/evidence.md failure_reason=expected_text_missing path=/tmp/index.html plan_id=\(planID) screenshot_path=none url=file:///tmp/index.html",
+                timestamp: Date(timeIntervalSince1970: 1_000)
+            ),
+            LogEntry(
+                level: .info,
+                category: "Validation",
+                message: "validation.assertion.skipped assertion_id=\(assertionID) assertion_method=browser_behavior assertion_scope=plan exit_code=none failure_reason=expected_text_missing path=/tmp/index.html plan_id=\(planID) required=false result=skipped run_id=RUN",
+                timestamp: Date(timeIntervalSince1970: 1_001)
+            ),
+            LogEntry(
+                level: .info,
+                category: "Validation",
+                message: "validation.contract.passed failed_required= plan_id=\(planID) required_passed=1 required_total=1 run_id=RUN",
+                timestamp: Date(timeIntervalSince1970: 1_002)
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 1_100))
+
+        #expect(report.issueCount == 0)
+        #expect(report.notices.contains { $0.title == "Optional browser behavior validation was skipped" })
+        #expect(!report.markdown.contains("Application warning"))
+    }
+
+    @Test("Required browser behavior validation failure is reported specifically")
+    func requiredBrowserBehaviorValidationFailureIsReportedSpecifically() {
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .warning,
+                category: "Validation",
+                message: "validation.behavior.failed action_count=0 assertion_id=browser-required evidence_path=/tmp/evidence.md failure_reason=expected_text_missing path=/tmp/index.html plan_id=PLAN screenshot_path=none url=file:///tmp/index.html",
+                timestamp: Date(timeIntervalSince1970: 1_000)
+            ),
+            LogEntry(
+                level: .warning,
+                category: "Validation",
+                message: "validation.assertion.failed assertion_id=browser-required assertion_method=browser_behavior assertion_scope=plan exit_code=none failure_reason=expected_text_missing path=/tmp/index.html plan_id=PLAN required=true result=failed run_id=RUN",
+                timestamp: Date(timeIntervalSince1970: 1_001)
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 1_100))
+
+        #expect(report.issues.contains { $0.title == "Browser behavior validation failed" })
+        #expect(!report.markdown.contains("Application warning"))
+    }
+
+    @Test("Browser behavior failure remains actionable when skip outcome is not optional")
+    func browserBehaviorFailureRemainsActionableWhenSkipOutcomeIsNotOptional() {
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .warning,
+                category: "Validation",
+                message: "validation.behavior.failed action_count=0 assertion_id=browser-required evidence_path=/tmp/evidence.md failure_reason=expected_text_missing path=/tmp/index.html plan_id=PLAN screenshot_path=none url=file:///tmp/index.html",
+                timestamp: Date(timeIntervalSince1970: 1_000)
+            ),
+            LogEntry(
+                level: .info,
+                category: "Validation",
+                message: "validation.assertion.skipped assertion_id=browser-required assertion_method=browser_behavior assertion_scope=plan exit_code=none failure_reason=expected_text_missing path=/tmp/index.html plan_id=PLAN required=true result=skipped run_id=RUN",
+                timestamp: Date(timeIntervalSince1970: 1_001)
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 1_100))
+
+        #expect(report.issues.contains { $0.title == "Browser behavior validation failed" })
+        #expect(!report.notices.contains { $0.title == "Optional browser behavior validation was skipped" })
+        #expect(!report.markdown.contains("Application warning"))
     }
 
     @Test("Trace IDs group capability and connector attempts")

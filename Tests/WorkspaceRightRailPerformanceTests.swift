@@ -98,4 +98,41 @@ struct WorkspaceRightRailPerformanceTests {
         #expect(oneEntryCache.snapshot(for: signature) == nil)
         #expect(oneEntryCache.snapshot(for: changedSignature) != nil)
     }
+
+    @MainActor
+    @Test("Capability rail signature preserves installed plugin ID version pairings")
+    func capabilityRailSignaturePreservesInstalledPluginVersionPairings() {
+        let firstWorkspace = makeWorkspace(name: "Installed Plugins")
+        firstWorkspace.id = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+        firstWorkspace.installedPluginIDs = ["plugin-b", "plugin-a"]
+        firstWorkspace.installedPluginVersions = ["2.0.0", "1.0.0"]
+
+        let secondWorkspace = makeWorkspace(name: "Installed Plugins")
+        secondWorkspace.id = firstWorkspace.id
+        secondWorkspace.installedPluginIDs = ["plugin-a", "plugin-b"]
+        secondWorkspace.installedPluginVersions = ["2.0.0", "1.0.0"]
+
+        let firstSignature = CapabilityRailSnapshotSignature(
+            workspace: firstWorkspace,
+            globalSkills: [],
+            globalConnectors: [],
+            globalTools: [],
+            packages: [],
+            approvalRecords: [],
+            prerequisiteStatuses: [:]
+        )
+        let secondSignature = CapabilityRailSnapshotSignature(
+            workspace: secondWorkspace,
+            globalSkills: [],
+            globalConnectors: [],
+            globalTools: [],
+            packages: [],
+            approvalRecords: [],
+            prerequisiteStatuses: [:]
+        )
+
+        #expect(firstWorkspace.installedVersion(of: "plugin-a") == "1.0.0")
+        #expect(secondWorkspace.installedVersion(of: "plugin-a") == "2.0.0")
+        #expect(firstSignature != secondSignature)
+    }
 }

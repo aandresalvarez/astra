@@ -626,6 +626,7 @@ extension HeadlessChatScenarioTests {
             timeoutSeconds: 10,
             validationModel: "claude-haiku-4-5-20251001"
         )
+        queue.workers.forEach { $0.liveApprovalsEnabled = false }
         let coordinator = TaskLifecycleCoordinator(modelContext: harness.context, taskQueue: queue)
         defer { queue.cancelAll() }
 
@@ -704,6 +705,7 @@ extension HeadlessChatScenarioTests {
             timeoutSeconds: 10,
             validationModel: "claude-haiku-4-5-20251001"
         )
+        queue.workers.forEach { $0.liveApprovalsEnabled = false }
         let coordinator = TaskLifecycleCoordinator(modelContext: harness.context, taskQueue: queue)
         defer { queue.cancelAll() }
 
@@ -833,6 +835,7 @@ extension HeadlessChatScenarioTests {
             timeoutSeconds: 10,
             validationModel: "claude-haiku-4-5-20251001"
         )
+        queue.workers.forEach { $0.liveApprovalsEnabled = false }
         let coordinator = TaskLifecycleCoordinator(modelContext: harness.context, taskQueue: queue)
         defer { queue.cancelAll() }
 

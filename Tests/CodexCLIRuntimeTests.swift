@@ -70,6 +70,55 @@ struct CodexCLIRuntimeTests {
         }
     }
 
+    @Test("Codex stream parser treats known lifecycle and item shapes as typed events")
+    func codexStreamParserTreatsKnownLifecycleAndItemShapesAsTypedEvents() {
+        let lines = [
+            #"{"type":"turn.started"}"#,
+            #"{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"astra-browser read-page --format markdown","aggregated_output":"","exit_code":null,"status":"in_progress"}}"#,
+            #"{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"astra-browser read-page --format markdown","aggregated_output":"ok\n","exit_code":0,"status":"completed"}}"#,
+            #"{"type":"item.completed","item":{"id":"item_2","type":"file_change","path":".astra/tasks/EBF58891/index.html","kind":"modified","summary":"Wrote the validation page"}}"#
+        ]
+        let capture = AgentRuntimeStreamDebugCapture()
+        let parsedEvents = lines.map { line in
+            let events = CodexCLIRuntime.parseAgentEvents(line: line, parsesJSONLines: true)
+            capture.recordLine(line, parsesJSONLines: true)
+            capture.recordParsed(events, rawLine: line)
+            return events
+        }
+
+        #expect(parsedEvents.allSatisfy { !$0.isEmpty })
+        #expect(parsedEvents.flatMap { $0 }.allSatisfy { event in
+            guard case .unknown = event else { return true }
+            return false
+        })
+
+        if case .toolUse(let name, let id, let summary) = parsedEvents[1].first {
+            #expect(name == "command_execution")
+            #expect(id == "item_1")
+            #expect(summary?.contains("astra-browser read-page") == true)
+        } else {
+            Issue.record("Expected command execution item start to map to tool use")
+        }
+
+        if case .toolResult(let id, let content) = parsedEvents[2].first {
+            #expect(id == "item_1")
+            #expect(content.contains("ok"))
+            #expect(content.contains("exit_code=0"))
+        } else {
+            Issue.record("Expected command execution item completion to map to tool result")
+        }
+
+        if case .fileChange(let path, let kind, let summary) = parsedEvents[3].first {
+            #expect(path == ".astra/tasks/EBF58891/index.html")
+            #expect(kind == "modified")
+            #expect(summary == "Wrote the validation page")
+        } else {
+            Issue.record("Expected file change item completion to map to file change")
+        }
+
+        #expect(capture.snapshot().unknownJSONShapes.isEmpty)
+    }
+
     @Test("Codex adapter requires visible result on successful run")
     func codexAdapterRequiresVisibleResultOnSuccessfulRun() {
         let adapter = CodexCLIRuntimeAdapter()
@@ -121,6 +170,59 @@ struct CodexCLIRuntimeTests {
         #expect(plan.parsesJSONLines)
     }
 
+    @Test("Codex sandbox roots follow provider home, inherited CODEX_HOME, and system requirements")
+    func codexSandboxRootsFollowCodexLaunchState() {
+        let providerRoots = CodexCLIRuntime.sandboxReadablePaths(
+            providerHomeDirectory: "/tmp/provider-codex",
+            environment: [
+                "CODEX_HOME": "/tmp/inherited-codex",
+                "HOME": "/tmp/user-home"
+            ],
+            processHomeDirectory: "/tmp/process-home"
+        )
+        #expect(providerRoots.contains("/tmp/provider-codex"))
+        #expect(!providerRoots.contains("/tmp/inherited-codex"))
+        #expect(!providerRoots.contains("/tmp/user-home/.codex"))
+        #expect(providerRoots.contains("/etc/codex"))
+        #if os(macOS)
+        #expect(providerRoots.contains("/Library/Managed Preferences"))
+        #expect(providerRoots.contains("/Library/Preferences"))
+        #endif
+        #expect(CodexCLIRuntime.directoriesToCreate(
+            providerHomeDirectory: "/tmp/provider-codex",
+            environment: ["CODEX_HOME": "/tmp/inherited-codex"]
+        ) == ["/tmp/provider-codex"])
+
+        let inheritedRoots = CodexCLIRuntime.sandboxReadablePaths(
+            providerHomeDirectory: "",
+            environment: [
+                "CODEX_HOME": "/tmp/inherited-codex",
+                "HOME": "/tmp/user-home"
+            ],
+            processHomeDirectory: "/tmp/process-home"
+        )
+        #expect(inheritedRoots.contains("/tmp/inherited-codex"))
+        #expect(!inheritedRoots.contains("/tmp/user-home/.codex"))
+        #expect(CodexCLIRuntime.directoriesToCreate(
+            providerHomeDirectory: "",
+            environment: ["CODEX_HOME": "/tmp/inherited-codex"]
+        ) == ["/tmp/inherited-codex"])
+
+        let homeRoots = CodexCLIRuntime.sandboxReadablePaths(
+            providerHomeDirectory: "",
+            environment: ["HOME": "/tmp/user-home"],
+            processHomeDirectory: "/tmp/process-home"
+        )
+        #expect(homeRoots.contains("/tmp/user-home/.codex"))
+
+        let processHomeRoots = CodexCLIRuntime.sandboxReadablePaths(
+            providerHomeDirectory: "",
+            environment: [:],
+            processHomeDirectory: "/tmp/process-home"
+        )
+        #expect(processHomeRoots.contains("/tmp/process-home/.codex"))
+    }
+
     @Test("Codex follow-up resumes the persisted session by thread id")
     func codexFollowUpResumesPersistedSession() throws {
         let plan = CodexCLIRuntime.buildCommand(
@@ -135,7 +237,16 @@ struct CodexCLIRuntimeTests {
             resumeSessionID: "thread-abc-123"
         )
 
-        #expect(plan.arguments.starts(with: ["exec", "resume", "thread-abc-123", "--json"]))
+        #expect(plan.arguments.starts(with: ["exec", "resume", "--json"]))
+        #expect(plan.arguments.contains("thread-abc-123"))
+        #expect(!plan.arguments.contains("--color"))
+        #expect(!plan.arguments.contains("--cd"))
+        #expect(!plan.arguments.contains("--add-dir"))
+        // `exec resume` rejects -s/--sandbox, so the restricted policy preserves
+        // its run-phase sandbox mode via the supported `-c sandbox_mode` override.
+        #expect(!plan.arguments.contains("--sandbox"))
+        #expect(plan.arguments.contains("-c"))
+        #expect(plan.arguments.contains(#"sandbox_mode="workspace-write""#))
         #expect(plan.arguments.contains("--ephemeral") == false)
         #expect(plan.arguments.last == "Continue the work")
 
@@ -153,6 +264,23 @@ struct CodexCLIRuntimeTests {
             phase: "run",
             result: AgentProcessResult(exitCode: 1, error: "session not found")
         ))
+    }
+
+    @Test("Codex resume preserves the sandbox policy via -c since --sandbox is invalid on resume")
+    func codexResumePreservesSandboxPolicyViaConfigOverride() {
+        // Parity with codexPermissionArguments: each non-autonomous policy maps to
+        // the matching `sandbox_mode`, and no bare --sandbox flag leaks onto resume.
+        let restricted = CodexCLIRuntime.codexResumePermissionArguments(policy: .restricted)
+        #expect(restricted == ["-c", "sandbox_mode=\"workspace-write\""])
+        #expect(!restricted.contains("--sandbox"))
+
+        let interactive = CodexCLIRuntime.codexResumePermissionArguments(policy: .interactive)
+        #expect(interactive == ["-c", "sandbox_mode=\"read-only\""])
+        #expect(!interactive.contains("--sandbox"))
+
+        // Autonomous stays externally sandboxed via the bypass flag (no -c needed).
+        let autonomous = CodexCLIRuntime.codexResumePermissionArguments(policy: .autonomous)
+        #expect(autonomous == ["--dangerously-bypass-approvals-and-sandbox"])
     }
 
     @Test("Codex autonomous policy grants full access without interactive approvals")

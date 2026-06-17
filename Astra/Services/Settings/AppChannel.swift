@@ -93,6 +93,33 @@ enum AppChannel: String {
         }
     }
 
+    /// Absolute path of ASTRA's dedicated secret keychain file — a *separate*
+    /// keychain from the user's `login.keychain-db`. ASTRA's own connector/skill
+    /// secrets live here so they are never inside the encrypted login-keychain
+    /// blob the sandboxed agent is granted read access to (which only needs the
+    /// gh/Copilot GitHub token). Conventionally placed in `~/Library/Keychains`
+    /// (visible/manageable in Keychain Access) but never granted to the agent's
+    /// Seatbelt read scope. See `AstraSecureKeychain` and `AstraSecureKeychainStore`.
+    var astraKeychainPath: String {
+        astraKeychainPath(fileManager: .default)
+    }
+
+    func astraKeychainPath(fileManager: FileManager) -> String {
+        fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Keychains", isDirectory: true)
+            .appendingPathComponent("\(keychainConnectorPrefix).keychain-db", isDirectory: false)
+            .path
+    }
+
+    /// Service name under which the dedicated keychain's random unlock password
+    /// is stored as a single item in the login keychain. This is the only ASTRA
+    /// item that remains in `login.keychain-db`; on its own it is useless to the
+    /// agent, which cannot read the dedicated keychain file it unlocks.
+    var astraKeychainBootstrapService: String {
+        "\(keychainConnectorPrefix)-keychain-bootstrap"
+    }
+
     var loggingSubsystem: String {
         switch self {
         case .production: "com.astra.mac"

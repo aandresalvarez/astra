@@ -545,6 +545,18 @@ struct AgentRuntimeAdapterTests {
         #expect(claudePlan.commandPlannedFields["uses_native_continuation"] == "false")
         #expect(claudePlan.parsesJSONLines)
         #expect(claudePlan.providerVersion == nil)
+        #expect(claudePlan.arguments.contains("--strict-mcp-config"))
+        if let configIndex = claudePlan.arguments.firstIndex(of: "--mcp-config"),
+           claudePlan.arguments.indices.contains(configIndex + 1) {
+            let configDirectory = (claudePlan.arguments[configIndex + 1] as NSString).deletingLastPathComponent
+            #expect(claudePlan.sandboxReadablePaths.contains(configDirectory))
+        } else {
+            Issue.record("Claude launch plan should include a governed MCP config file")
+        }
+        let keychainRoot = (FileManager.default.homeDirectoryForCurrentUser.path as NSString)
+            .appendingPathComponent("Library/Keychains")
+        #expect(claudePlan.sandboxReadablePaths.contains("\(keychainRoot)/login.keychain-db"))
+        #expect(!claudePlan.sandboxReadablePaths.contains("\(keychainRoot)/metadata.keychain-db"))
         #expect(claudeResumePlan.arguments.starts(with: ["-p", "hello", "--resume", "claude-session-1"]))
         #expect(claudeResumePlan.commandPlannedFields["phase"] == "resume")
         #expect(claudeResumePlan.commandPlannedFields["uses_native_continuation"] == "true")
@@ -553,7 +565,31 @@ struct AgentRuntimeAdapterTests {
         #expect(copilotPlan.runtime == .copilotCLI)
         #expect(copilotPlan.executablePath == "/bin/copilot-not-present")
         #expect(copilotPlan.arguments.starts(with: ["--prompt", "hello", "--model"]))
-        #expect(copilotPlan.directoriesToCreate == ["/tmp/astra-provider-home"])
+        #expect(copilotPlan.directoriesToCreate.contains("/tmp/astra-provider-home"))
+        #expect(copilotPlan.directoriesToCreate.contains("/tmp/astra-provider-home/logs"))
+        #expect(copilotPlan.directoriesToCreate.contains(CopilotCLIRuntime.defaultHome()))
+        #expect(copilotPlan.directoriesToCreate.contains(
+            (FileManager.default.homeDirectoryForCurrentUser.path as NSString).appendingPathComponent("Library/Caches/copilot")
+        ))
+        #expect(copilotPlan.sandboxReadablePaths.contains(CopilotCLIRuntime.defaultHome()))
+        #expect(copilotPlan.sandboxReadablePaths.contains(
+            (FileManager.default.homeDirectoryForCurrentUser.path as NSString).appendingPathComponent(".config/gh")
+        ))
+        #expect(copilotPlan.sandboxReadablePaths.contains("\(keychainRoot)/login.keychain-db"))
+        // metadata.keychain-db is intentionally NOT granted: it is unnecessary for
+        // token retrieval and would leak the names of every stored credential.
+        #expect(!copilotPlan.sandboxReadablePaths.contains("\(keychainRoot)/metadata.keychain-db"))
+        // The shared-home injection-sensitive config files are carved out as read-only.
+        #expect(copilotPlan.sandboxProtectedWriteDenyPaths.contains(
+            (CopilotCLIRuntime.defaultHome() as NSString).appendingPathComponent("config.json")
+        ))
+        #expect(copilotPlan.sandboxProtectedWriteDenyPaths.contains(
+            (CopilotCLIRuntime.defaultHome() as NSString).appendingPathComponent("mcp-config.json")
+        ))
+        #expect(copilotPlan.environment["COPILOT_HOME"] == CopilotCLIRuntime.defaultHome())
+        #expect(copilotPlan.environment["HOME"] == FileManager.default.homeDirectoryForCurrentUser.path)
+        #expect(copilotPlan.environment["XDG_CACHE_HOME"] == "/tmp/astra-provider-home/.cache")
+        #expect(copilotPlan.environment["XDG_CONFIG_HOME"] == "/tmp/astra-provider-home/.config")
         #expect(copilotPlan.providerDetectedFields["runtime"] == AgentRuntimeID.copilotCLI.rawValue)
 
         #expect(antigravityPlan.runtime == .antigravityCLI)
@@ -582,9 +618,15 @@ struct AgentRuntimeAdapterTests {
         #expect(codexPlan.parsesJSONLines)
         #expect(codexPlan.environment["CODEX_HOME"] == "/tmp/astra-codex-home")
         #expect(codexPlan.directoriesToCreate == ["/tmp/astra-codex-home"])
+        #expect(codexPlan.sandboxReadablePaths.contains("/tmp/astra-codex-home"))
+        #expect(codexPlan.sandboxReadablePaths.contains("/etc/codex"))
+        #if os(macOS)
+        #expect(codexPlan.sandboxReadablePaths.contains("/Library/Managed Preferences"))
+        #endif
         #expect(codexPlan.providerDetectedFields["runtime"] == AgentRuntimeID.codexCLI.rawValue)
         #expect(codexPlan.providerDetectedFields["provider_home_configured"] == "true")
         #expect(codexPlan.commandPlannedFields["permission_policy"] == PermissionPolicy.restricted.rawValue)
+        #expect(codexPlan.commandPlannedFields["sandbox_readable_path_count"] == String(codexPlan.sandboxReadablePaths.count))
 
         #expect(cursorPlan.runtime == .cursorCLI)
         #expect(cursorPlan.executablePath == "/bin/cursor-agent-not-present")
@@ -754,9 +796,24 @@ struct AgentRuntimeAdapterTests {
             workspace: workspace,
             runtime: .copilotCLI
         )
+        let namedDeliverableTask = AgentTask(
+            title: "Report",
+            goal: """
+            Final deliverables:
+            - ./results.txt
+            """,
+            workspace: workspace,
+            runtime: .copilotCLI
+        )
 
         #expect(ProviderArtifactBootstrapPolicy.launchTools(
             task: artifactTask,
+            permissionPolicy: .restricted,
+            providerAllowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Write", "Edit", "Bash"]
+        ) == ["Write"])
+        #expect(ProviderArtifactBootstrapPolicy.launchTools(
+            task: namedDeliverableTask,
             permissionPolicy: .restricted,
             providerAllowedTools: ["Read", "Glob", "Grep"],
             askFirstTools: ["Write", "Edit", "Bash"]
@@ -821,22 +878,29 @@ struct AgentRuntimeAdapterTests {
 
         let allowedEntries = Set(Self.argumentValues(after: "--allow-tool", in: plan.arguments))
         let availableEntries = Set(Self.argumentValues(after: "--available-tools", in: plan.arguments))
+        let effortIndex = try #require(plan.arguments.firstIndex(of: "--effort"))
 
         #expect(plan.commandPlannedFields["allowed_tools_count"] == "1")
         #expect(plan.commandPlannedFields["provider_launch_allowed_tool_count"] == "2")
         #expect(plan.commandPlannedFields["artifact_bootstrap_profile"] == "true")
         #expect(plan.commandPlannedFields["artifact_bootstrap_tool_count"] == "1")
         #expect(plan.commandPlannedFields["artifact_bootstrap_tool_names"] == "Write")
+        #expect(plan.commandPlannedFields["surfaced_ask_first_tool_count"] == "4")
+        #expect(plan.commandPlannedFields["supports_reasoning_effort"] == "true")
+        #expect(plan.commandPlannedFields["uses_reasoning_effort"] == "true")
+        #expect(plan.arguments[plan.arguments.index(after: effortIndex)] == "none")
         #expect(allowedEntries.contains("view"))
         #expect(allowedEntries.contains("grep"))
         #expect(allowedEntries.contains("glob"))
         #expect(allowedEntries.contains("write"))
         #expect(!allowedEntries.contains("create"))
         #expect(!allowedEntries.contains("edit"))
-        #expect(availableEntries.contains("apply_patch"))
         #expect(availableEntries.contains("create"))
         #expect(availableEntries.contains("edit"))
-        #expect(availableEntries.contains("rg"))
+        #expect(availableEntries.contains("bash"))
+        #expect(!availableEntries.contains("apply_patch"))
+        #expect(!availableEntries.contains("rg"))
+        #expect(!availableEntries.contains("shell"))
     }
 
     @Test("Copilot informational launch does not get artifact bootstrap write")
@@ -884,11 +948,16 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.commandPlannedFields["provider_launch_allowed_tool_count"] == "1")
         #expect(plan.commandPlannedFields["artifact_bootstrap_profile"] == "false")
         #expect(plan.commandPlannedFields["artifact_bootstrap_tool_count"] == "0")
+        #expect(plan.commandPlannedFields["surfaced_ask_first_tool_count"] == "4")
+        #expect(plan.commandPlannedFields["uses_reasoning_effort"] == "false")
+        #expect(!plan.arguments.contains("--effort"))
         #expect(!allowedEntries.contains("write"))
-        #expect(availableEntries.contains("apply_patch"))
         #expect(availableEntries.contains("create"))
         #expect(availableEntries.contains("edit"))
-        #expect(availableEntries.contains("rg"))
+        #expect(availableEntries.contains("bash"))
+        #expect(!availableEntries.contains("apply_patch"))
+        #expect(!availableEntries.contains("rg"))
+        #expect(!availableEntries.contains("shell"))
     }
 
     @Test("Claude launch surfaces ask-first tools without counting them as allowed task tools")
@@ -1091,6 +1160,107 @@ struct AgentRuntimeAdapterTests {
         #expect(!plan.arguments.contains("--effort"))
     }
 
+    @Test("Live approvals withhold ask-first tools from the Claude allow-list but keep them visible")
+    @MainActor
+    func liveApprovalsWithholdAskFirstToolsFromAllowListButKeepVisible() throws {
+        let workspaceURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-claude-live-approvals-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: workspaceURL) }
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Claude Live Approvals", primaryPath: workspaceURL.path)
+        let task = AgentTask(
+            title: "Status",
+            goal: "explain who you are",
+            workspace: workspace,
+            model: "claude-sonnet-4-6",
+            runtime: .claudeCode
+        )
+        let providerRender = ProviderPolicyRender(
+            providerID: .claudeCode,
+            adapterVersion: 1,
+            policyLevel: .review,
+            configOwnership: .generated,
+            permissionMode: PermissionPolicy.restricted.rawValue,
+            allowedTools: ["Read"],
+            runtimeSupportTools: [],
+            askFirstTools: ["Write", "Edit", "Bash"],
+            deniedTools: [],
+            allowedShellPatterns: [],
+            askFirstShellPatterns: [],
+            deniedShellPatterns: [],
+            allowedURLPatterns: [],
+            deniedURLPatterns: [],
+            cliArgumentsSummary: [],
+            settingsSummary: "test",
+            generatedConfigPreview: "",
+            enforcementTiers: [.providerNative, .astraBrokered],
+            diagnostics: [],
+            usesBroadProviderPermissions: false
+        )
+        let manifest = RunPermissionManifest(
+            taskID: task.id,
+            runID: UUID(),
+            phase: "test",
+            providerID: .claudeCode,
+            providerVersion: nil,
+            model: "claude-sonnet-4-6",
+            policyLevel: .review,
+            policyScope: .builtInDefault,
+            providerRender: providerRender,
+            workspacePath: workspace.primaryPath,
+            additionalPaths: [],
+            environmentKeyNames: [],
+            credentialLabels: [],
+            approvalsGranted: [],
+            approvalGrants: []
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .claudeCode)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/claude",
+                providerHomeDirectory: "",
+                permissionPolicy: .restricted,
+                executionPolicy: .approvedPlan(runtime: .claudeCode, currentPermissionPolicy: .restricted, allowedTools: ["Read"]),
+                permissionManifest: manifest,
+                timeoutSeconds: 30,
+                liveApprovalsEnabled: true
+            ))
+
+        // The provider is launched for live approvals…
+        #expect(plan.arguments.contains("--permission-prompt-tool"))
+        // …ask-first tools stay visible so the model can still invoke them…
+        let toolsFlagIndex = try #require(plan.arguments.firstIndex(of: "--tools"))
+        #expect(plan.arguments[toolsFlagIndex + 1] == "Bash,Edit,Read,Write")
+        // …but are NOT pre-allowed (separate --allowedTools args), so the
+        // provider must ask before running them. Read stays allowed.
+        #expect(plan.arguments.contains("--allowedTools"))
+        #expect(plan.arguments.contains("Read"))
+        #expect(!plan.arguments.contains("Bash"))
+        #expect(!plan.arguments.contains("Edit"))
+        #expect(!plan.arguments.contains("Write"))
+        #expect(plan.commandPlannedFields["provider_launch_allowed_tool_count"] == "1")
+        #expect(plan.commandPlannedFields["uses_live_approvals"] == "true")
+
+        // The generated settings.local.json must not pre-allow ask-first tools
+        // either — that was the floor hole that bypassed the live channel.
+        let settingsURL = workspaceURL
+            .appendingPathComponent(".claude", isDirectory: true)
+            .appendingPathComponent("settings.local.json")
+        let data = try Data(contentsOf: settingsURL)
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let permissions = try #require(json["permissions"] as? [String: Any])
+        let allow = try #require(permissions["allow"] as? [String])
+        #expect(allow.contains("Read(*)"))
+        #expect(!allow.contains("Bash(*)"))
+        #expect(!allow.contains("Write(*)"))
+        #expect(!allow.contains("Edit(*)"))
+    }
+
     @Test("Antigravity declares shared launch state and suggestion-only model availability")
     func antigravityDeclaresSharedLaunchStateAndSuggestionModelAvailability() {
         let adapter = AgentRuntimeAdapterRegistry.adapter(for: .antigravityCLI)
@@ -1202,6 +1372,126 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.browserShimDirectory?.hasSuffix(".runtime-bin") == true)
     }
 
+    @Test("Copilot browser bridge launch plan records missing shell execution support")
+    @MainActor
+    func copilotBrowserBridgeLaunchPlanRecordsMissingShellExecutionSupport() throws {
+        ShelfBrowserBridgeRegistry.shared.reset()
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-browser-shell-gap-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            ShelfBrowserBridgeRegistry.shared.reset()
+            try? FileManager.default.removeItem(at: root)
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Browser Shell Gap", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Use browser",
+            goal: "Use the browser shelf",
+            workspace: workspace,
+            model: "gpt-5",
+            runtime: .copilotCLI
+        )
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: nil,
+            currentTitle: nil,
+            taskID: task.id,
+            isPresented: false,
+            isEnabled: true
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .copilotCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "Use the browser shelf",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/copilot-not-present",
+                providerHomeDirectory: root.appendingPathComponent("copilot-home").path,
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30,
+                phase: "run",
+                contextText: "Use the browser shelf to inspect the current page."
+            ))
+
+        #expect(plan.environment["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+        #expect(plan.commandPlannedFields["browser_bridge_shell_tool_supported"] == "false")
+        #expect(plan.commandPlannedFields["browser_bridge_launch_block_reason"] == "provider_missing_browser_shell_tool")
+    }
+
+    @Test("CDP-only browser tasks inject required controlled engine into browser environment")
+    @MainActor
+    func cdpOnlyBrowserTasksInjectRequiredControlledEngineIntoBrowserEnvironment() throws {
+        ShelfBrowserBridgeRegistry.shared.reset()
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-controlled-browser-required-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            ShelfBrowserBridgeRegistry.shared.reset()
+            try? FileManager.default.removeItem(at: root)
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Controlled Browser Requirement", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Use controlled browser",
+            goal: "Use the ASTRA Controlled Browser / CDP browser automation engine. Do not use the embedded WebKit browser path.",
+            workspace: workspace,
+            model: "claude-sonnet-4-6",
+            runtime: .claudeCode
+        )
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "https://example.com",
+            currentTitle: "Example",
+            taskID: task.id,
+            isPresented: true,
+            isEnabled: true
+        )
+
+        let env = AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: task)
+
+        #expect(env["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+        #expect(env["ASTRA_BROWSER_REQUIRED_ENGINE"] == "controlled-cdp")
+    }
+
+    @Test("Generic browser tasks do not inject a required engine")
+    @MainActor
+    func genericBrowserTasksDoNotInjectRequiredEngine() throws {
+        ShelfBrowserBridgeRegistry.shared.reset()
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-generic-browser-required-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            ShelfBrowserBridgeRegistry.shared.reset()
+            try? FileManager.default.removeItem(at: root)
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Generic Browser", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Use browser",
+            goal: "Use the browser shelf to inspect the current page.",
+            workspace: workspace,
+            model: "claude-sonnet-4-6",
+            runtime: .claudeCode
+        )
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "https://example.com",
+            currentTitle: "Example",
+            taskID: task.id,
+            isPresented: true,
+            isEnabled: true
+        )
+
+        let env = AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: task)
+
+        #expect(env["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+        #expect(env["ASTRA_BROWSER_REQUIRED_ENGINE"] == nil)
+    }
+
     private static func copilotManifest(
         task: AgentTask,
         workspacePath: String,
@@ -1255,7 +1545,7 @@ struct AgentRuntimeAdapterTests {
         #!/bin/sh
         if [ "$1" = "help" ]; then
           cat <<'HELP'
-        --allow-tool TOOL --available-tools=TOOLS --excluded-tools=TOOLS --output-format=FORMAT --stream=MODE --no-ask-user
+        --allow-tool TOOL --available-tools=TOOLS --excluded-tools=TOOLS --output-format=FORMAT --stream=MODE --no-ask-user --effort LEVEL
         HELP
           exit 0
         fi

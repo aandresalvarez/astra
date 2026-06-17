@@ -94,4 +94,11 @@ struct PerformanceTelemetryTests {
         #expect(!joinedValues.contains("/private/path"))
         #expect(!joinedValues.contains("payload"))
     }
+
+    @Test("Store scale snapshot skips detailed fetches for large stores")
+    func storeScaleSnapshotSkipsDetailedFetchesForLargeStores() {
+        #expect(StoreScalePerformanceSnapshot.shouldBuildDetailedFields(eventCount: 9_999, runCount: 9_999))
+        #expect(!StoreScalePerformanceSnapshot.shouldBuildDetailedFields(eventCount: 10_000, runCount: 0))
+        #expect(!StoreScalePerformanceSnapshot.shouldBuildDetailedFields(eventCount: 0, runCount: 10_000))
+    }
 }

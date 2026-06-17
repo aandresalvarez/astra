@@ -185,6 +185,35 @@ struct TaskThreadViewModelTests {
 
         TaskThreadViewModel.resetSnapshotCacheForTesting()
     }
+
+    @MainActor
+    @Test("Terminal snapshot cache key stores a goal fingerprint instead of full goal text")
+    func terminalSnapshotCacheKeyStoresGoalFingerprintInsteadOfFullGoalText() throws {
+        let task = makeTask(
+            goal: String(repeating: "Long goal with expensive retained text. ", count: 300),
+            status: .completed
+        )
+        task.createdAt = Date(timeIntervalSince1970: 0)
+        task.completedAt = Date(timeIntervalSince1970: 100)
+        let trigger = TaskThreadSnapshotTrigger(task: task)
+        let key = try #require(TaskThreadSnapshotCacheKey(task: task, trigger: trigger, maxRuns: 50))
+
+        let fieldNames = Set(Mirror(reflecting: key).children.compactMap(\.label))
+        #expect(fieldNames.contains("goalHash"))
+        #expect(!fieldNames.contains("goal"))
+    }
+
+    @Test("Task thread view model reuses one cache key for terminal snapshot lookup and storage")
+    func taskThreadViewModelReusesOneCacheKeyForTerminalSnapshotLookupAndStorage() throws {
+        let sourceURL = URL(filePath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appending(path: "Astra/Views/TaskThreadViewModel.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let constructorCount = source.components(separatedBy: "TaskThreadSnapshotCacheKey(task:").count - 1
+
+        #expect(constructorCount == 1)
+    }
 }
 
 // MARK: - TaskCheckpointPresentation

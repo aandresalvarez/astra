@@ -25,6 +25,27 @@ struct AppBundlePackagingTests {
         #expect(try index(of: toolCopy, in: script) < index(of: signingCommand, in: script))
     }
 
+    @Test("Host app sandbox entitlement stays disabled while runtime Seatbelt wrapping is active")
+    func hostAppSandboxEntitlementStaysDisabledWhileRuntimeSeatbeltWrappingIsActive() throws {
+        let entitlementsURL = repoRoot.appendingPathComponent("script/ASTRA.entitlements")
+        let data = try Data(contentsOf: entitlementsURL)
+        let plist = try #require(PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any])
+
+        #expect(plist["com.apple.security.automation.apple-events"] as? Bool == true)
+        #expect(plist["com.apple.security.app-sandbox"] == nil)
+
+        let sandboxSource = try String(
+            contentsOf: repoRoot.appendingPathComponent("Astra/Services/Runtime/ExecutionSandbox.swift"),
+            encoding: .utf8
+        )
+        let securityPlan = try String(
+            contentsOf: repoRoot.appendingPathComponent("docs/security/host-app-sandbox-assessment.md"),
+            encoding: .utf8
+        )
+        #expect(sandboxSource.contains("sandboxExecPath = \"/usr/bin/sandbox-exec\""))
+        #expect(securityPlan.contains("Do not enable `com.apple.security.app-sandbox`"))
+    }
+
     @Test("Bundled agent tools are compiled Swift products, not resource scripts")
     func bundledAgentToolsAreCompiledSwiftProducts() throws {
         let package = try String(contentsOf: repoRoot.appendingPathComponent("Package.swift"), encoding: .utf8)

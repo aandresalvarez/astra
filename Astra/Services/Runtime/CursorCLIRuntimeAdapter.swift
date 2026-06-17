@@ -229,7 +229,10 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
             timeoutSeconds: context.timeoutSeconds,
             taskEnvironment: taskEnv,
             pathPrefix: pathPrefix,
-            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task)
+            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(
+                context.task,
+                contextText: context.contextText
+            )
                 || taskEnv["ASTRA_BROWSER_URL"] != nil
         )
 

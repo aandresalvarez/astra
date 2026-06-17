@@ -15,7 +15,16 @@ struct AgentRuntimeBudgetProfile: Sendable, Equatable {
 }
 
 final class AgentRuntimeProcessRunner {
+    typealias SandboxSettingsProvider = @MainActor (PermissionPolicy) -> ExecutionSandboxSettings
+
     private var currentProcess: AgentRuntimeProcessControl?
+    private let sandboxSettingsProvider: SandboxSettingsProvider
+
+    init(sandboxSettingsProvider: @escaping SandboxSettingsProvider = { permissionPolicy in
+        ExecutionSandboxSettings.current(permissionPolicy: permissionPolicy)
+    }) {
+        self.sandboxSettingsProvider = sandboxSettingsProvider
+    }
 
     func cancel() {
         currentProcess?.terminate()
@@ -68,12 +77,21 @@ final class AgentRuntimeProcessRunner {
         context: AgentRuntimeProcessLaunchContext
     ) -> SandboxedPlanOutcome {
         let plan = adapter.makeProcessLaunchPlan(context: context)
+        if let block = BrowserBridgeRuntimeLaunchGuard.launchBlock(for: plan) {
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.task.id, fields: [
+                "runtime": plan.runtime.rawValue,
+                "reason": block.runtimeStopReason ?? BrowserBridgeRuntimeLaunchGuard.missingShellToolReason,
+                "source": "runtime_launch_preflight",
+                "has_browser_bridge": "true"
+            ], level: .error)
+            return .blocked(block)
+        }
         // Use the run's effective permission policy (an execution-policy override
         // wins over the base policy) so best-effort correctly escalates to strict
         // for override-autonomous runs — matching how the preflight manifest
         // resolves the sandbox tier.
         let effectivePermissionPolicy = context.executionPolicy.permissionPolicyOverride ?? context.permissionPolicy
-        let settings = ExecutionSandboxSettings.current(permissionPolicy: effectivePermissionPolicy)
+        let settings = sandboxSettingsProvider(effectivePermissionPolicy)
         // Multi-path workspaces: the agent is granted the workspace's additional
         // paths + input dirs (same set passed to providers via `--add-dir` and
         // honored by the in-band policy guard), so include them in the sandbox's
@@ -90,6 +108,8 @@ final class AgentRuntimeProcessRunner {
             AppLogger.audit(.sandboxApplied, category: "Worker", taskID: taskID, fields: [
                 "runtime": plan.runtime.rawValue,
                 "enforcement": settings.enforcement.rawValue,
+                "read_scope": settings.readScope.rawValue,
+                "read_scope_audit": String(settings.readScope == .audit),
                 "writable_root_count": String(writableRoots.count),
                 "allow_network": String(settings.allowNetwork)
             ], level: .debug)
@@ -133,6 +153,7 @@ final class AgentRuntimeProcessRunner {
         nativeContinuationSessionID: String? = nil,
         runID: UUID? = nil,
         liveApprovalsEnabled: Bool = false,
+        noSemanticProgressTimeoutSeconds: TimeInterval? = nil,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
@@ -180,6 +201,7 @@ final class AgentRuntimeProcessRunner {
                 permissionManifest: permissionManifest,
                 budgetEnforcementMode: budgetEnforcementMode,
                 timeoutSeconds: timeoutSeconds,
+                noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
                 onInteractiveAsk: onInteractiveAsk,
                 onLine: onLine
             )
@@ -201,6 +223,7 @@ final class AgentRuntimeProcessRunner {
             permissionManifest: permissionManifest,
             budgetEnforcementMode: budgetEnforcementMode,
             timeoutSeconds: timeoutSeconds,
+            noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
             onInteractiveAsk: onInteractiveAsk,
             onLine: onLine
         )
@@ -214,6 +237,7 @@ final class AgentRuntimeProcessRunner {
         permissionManifest: RunPermissionManifest?,
         budgetEnforcementMode: BudgetEnforcementMode,
         timeoutSeconds: TimeInterval,
+        noSemanticProgressTimeoutSeconds: TimeInterval?,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
@@ -270,8 +294,10 @@ final class AgentRuntimeProcessRunner {
                 maxTurns: task.maxTurns,
                 maxRepetitions: 8,
                 idleTimeoutSeconds: timeoutSeconds,
+                noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
                 taskID: task.id,
-                policyGuard: permissionManifest.map(AgentRuntimePolicyGuard.init)
+                policyGuard: permissionManifest.map(AgentRuntimePolicyGuard.init),
+                liveApprovalsActive: plan.interactiveAsk != nil
             )
 
             let handleLine: (String) -> Void = { line in
@@ -360,6 +386,7 @@ final class AgentRuntimeProcessRunner {
                     budgetExceeded: monitor.budgetExceeded,
                     budgetWarning: monitor.budgetWarning,
                     finalReportedBudgetExceededAfterCompletion: monitor.finalReportedBudgetExceededAfterCompletion,
+                    terminatedAfterTerminalProgress: monitor.terminatedAfterTerminalProgress,
                     timedOut: monitor.timedOut,
                     repetitionKilled: monitor.repetitionKilled,
                     maxTurnsExceeded: monitor.maxTurnsExceeded
@@ -452,13 +479,13 @@ final class AgentRuntimeProcessRunner {
     }
 
     @MainActor
-    static func copilotLocalToolCommands(for task: AgentTask) -> [String] {
-        runtimeLocalToolCommands(for: task)
+    static func copilotLocalToolCommands(for task: AgentTask, contextText: String = "") -> [String] {
+        runtimeLocalToolCommands(for: task, contextText: contextText)
     }
 
     @MainActor
-    static func runtimeLocalToolCommands(for task: AgentTask) -> [String] {
-        let capabilityScope = TaskCapabilityResolver(task: task).promptScope()
+    static func runtimeLocalToolCommands(for task: AgentTask, contextText: String = "") -> [String] {
+        let capabilityScope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
         return Array(Set(capabilityScope.localTools.compactMap { tool in
             guard tool.toolType != "mcp" else { return nil }
             let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -581,6 +608,10 @@ final class AgentRuntimeProcessRunner {
         if browserToken?.rangeOfCharacter(from: .newlines) != nil {
             return nil
         }
+        let requiredEngine = taskEnv[BrowserAutomationEngineRequirement.environmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if requiredEngine?.rangeOfCharacter(from: .newlines) != nil {
+            return nil
+        }
 
         guard fileManager.isExecutableFile(atPath: realToolPath),
               realToolPath.rangeOfCharacter(from: .newlines) == nil,
@@ -593,16 +624,23 @@ final class AgentRuntimeProcessRunner {
         let tokenExport = browserToken?.isEmpty == false
             ? "\nexport ASTRA_BROWSER_TOKEN=\(shellSingleQuoted(browserToken!))"
             : ""
+        let requiredEngineExport = requiredEngine?.isEmpty == false
+            ? "\nexport \(BrowserAutomationEngineRequirement.environmentKey)=\(shellSingleQuoted(requiredEngine!))"
+            : ""
         let script = """
         #!/bin/sh
-        export ASTRA_BROWSER_URL=\(shellSingleQuoted(endpoint))\(tokenExport)
+        export ASTRA_BROWSER_URL=\(shellSingleQuoted(endpoint))\(tokenExport)\(requiredEngineExport)
         exec \(shellSingleQuoted(realToolPath)) "$@"
         """
 
         do {
             try fileManager.createDirectory(atPath: shimDirectory, withIntermediateDirectories: true)
             try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: shimDirectory)
-            let existing = try? String(contentsOfFile: shimPath, encoding: .utf8)
+            let existing = try? HostFileAccessBroker(fileManager: fileManager).readString(
+                at: URL(fileURLWithPath: shimPath),
+                encoding: .utf8,
+                intent: .astraManagedStorage(root: URL(fileURLWithPath: TaskWorkspaceAccess(task: task).taskFolder, isDirectory: true))
+            )
             if existing != script {
                 try script.write(toFile: shimPath, atomically: true, encoding: .utf8)
             }
@@ -611,7 +649,8 @@ final class AgentRuntimeProcessRunner {
                 "action": "browser_tool_shim",
                 "result": "ready",
                 "has_endpoint": "true",
-                "has_token": String(browserToken?.isEmpty == false)
+                "has_token": String(browserToken?.isEmpty == false),
+                "has_required_engine": String(requiredEngine?.isEmpty == false)
             ], level: .debug)
             return shimDirectory
         } catch {
@@ -757,6 +796,9 @@ final class AgentRuntimeProcessRunner {
                 }
                 taskEnv[key] = value
             }
+            if let requiredEngine = BrowserAutomationEngineRequirement.requiredEngine(for: task, contextText: contextText) {
+                taskEnv[BrowserAutomationEngineRequirement.environmentKey] = requiredEngine.rawValue
+            }
         }
         return taskEnv
     }
@@ -777,8 +819,8 @@ final class AgentRuntimeProcessRunner {
     }
 
     @MainActor
-    static func hasActiveCLITools(_ task: AgentTask) -> Bool {
-        TaskCapabilityResolver(task: task).promptScope().localTools.contains { tool in
+    static func hasActiveCLITools(_ task: AgentTask, contextText: String = "") -> Bool {
+        TaskCapabilityResolver(task: task).promptScope(contextText: contextText).localTools.contains { tool in
             tool.toolType != "mcp" && !tool.command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
     }

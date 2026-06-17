@@ -43,7 +43,8 @@ final class TaskThreadViewModel {
         ], uniquingKeysWith: { _, new in new })
 
         snapshotTask?.cancel()
-        if let cacheKey = TaskThreadSnapshotCacheKey(task: task, trigger: trigger, maxRuns: expansionRunCount),
+        let cacheKey = TaskThreadSnapshotCacheKey(task: task, trigger: trigger, maxRuns: expansionRunCount)
+        if let cacheKey,
            let cachedSnapshot = Self.terminalSnapshotCache.snapshot(for: cacheKey) {
             snapshot = cachedSnapshot
             lastSnapshotApplyAt = Date()
@@ -62,7 +63,6 @@ final class TaskThreadViewModel {
 
         let input = TaskThreadSnapshotInput(task: task, maxRuns: expansionRunCount)
         fields.merge(Self.inputFields(input), uniquingKeysWith: { _, new in new })
-        let cacheKey = TaskThreadSnapshotCacheKey(task: task, trigger: trigger, maxRuns: expansionRunCount)
 
         let isLive = trigger.status == .running
             || trigger.status == .queued
