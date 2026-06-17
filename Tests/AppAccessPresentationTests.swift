@@ -26,10 +26,10 @@ struct AppAccessPresentationTests {
         let source = try taskSidebarSource()
         let scrollViewRange = try #require(source.range(of: "ScrollView {"))
         let footerRange = try #require(source.range(of: "appAccessFooter", range: scrollViewRange.upperBound..<source.endIndex))
-        let bodyEndRange = try #require(source.range(of: "\n        }\n        .accessibilityIdentifier(\"TaskSidebar\")"))
+        let sidebarIdentifierRange = try #require(source.range(of: ".accessibilityIdentifier(\"TaskSidebar\")"))
 
         #expect(footerRange.lowerBound > scrollViewRange.upperBound)
-        #expect(footerRange.lowerBound < bodyEndRange.lowerBound)
+        #expect(footerRange.lowerBound < sidebarIdentifierRange.lowerBound)
         #expect(source.range(of: "appAccessFooter", range: scrollViewRange.upperBound..<footerRange.lowerBound) == nil)
         #expect(source.contains("private var appAccessFooter: some View"))
         #expect(!source.contains("appAccessFooterIsBottomAnchored"))

@@ -1,5 +1,4 @@
 import CoreGraphics
-import Foundation
 
 enum AppWindowIDs {
     static let logs = "astra-logs"
