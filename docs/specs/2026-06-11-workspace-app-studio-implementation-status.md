@@ -634,17 +634,27 @@ Deliverables:
 - Update flow UI.
 - Manual cross-workspace package round trip.
 
-### Slice 8: Advanced Rendering Guardrails
+### Slice 8: Advanced Rendering Guardrails — DONE (core)
 
 Goal:
 
 Add richer visuals without weakening the trusted runtime model.
 
-Deliverables:
+Landed on `claude/loving-rhodes-87e735` (commit 41). The guardrails already existed in
+the validator + bridge (renderer allowlist, per-widget `allowedActions`, portable-asset
++ diagram-kind checks, per-request manifest re-validation); the gap was a shared source
+of truth + the spec's "bridge policy tests".
 
-- ASTRA-known diagram/chart WebView renderers.
-- CSP and bridge policy tests.
-- No arbitrary imported custom JavaScript widgets in the first milestone.
+- Centralized the renderer allowlist as `WorkspaceAppWebViewBridge.allowedRenderers`
+  (mermaidDiagram / htmlReport / chartComposite — ASTRA-known, no arbitrary imported JS);
+  the validator now references it so publish-time and runtime guards can't drift.
+- `WorkspaceAppWebViewBridgeTests`: 8 adversarial cases over the request boundary —
+  allow-in-allowlist, CROSS-WIDGET ISOLATION, unknown widget, non-webView widget can't
+  masquerade as a bridge source, stale/phantom allowlisted action, invalid manifest
+  refused, renderer allowlist shared + closed. WorkspaceApp suite 169 green.
+
+Residual: dedicated CSP-header assertion on the rendered WebView HTML (needs the running
+WebView host); the diagram/chart renderer HTML generation itself is existing code.
 
 ### Slice 9: Agentic Workflow Apps
 
