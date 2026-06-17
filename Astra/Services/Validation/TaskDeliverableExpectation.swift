@@ -112,6 +112,27 @@ enum TaskDeliverableExpectation {
         """
     }
 
+    static func missingDeliverableMessage(for task: AgentTask) -> String {
+        let requiredFilenames = requiredOutputFilenames(task)
+        guard !requiredFilenames.isEmpty else {
+            return missingArtifactMessage(for: task)
+        }
+
+        let access = TaskWorkspaceAccess(task: task)
+        let workspaceLocation = access.effectiveWorkspacePath.isEmpty ? "the workspace root" : access.effectiveWorkspacePath
+        let taskFolderLocation = access.taskFolder.isEmpty ? "the task output folder" : access.taskFolder
+        let filenames = requiredFilenames.sorted().joined(separator: ", ")
+        let fileNoun = requiredFilenames.count == 1 ? "file" : "files"
+        return """
+        Missing explicitly requested deliverable \(fileNoun): \(filenames).
+        ASTRA did not mark this task complete because this run did not create the requested \(fileNoun).
+        Expected deliverable search roots:
+        - Workspace root: \(workspaceLocation)
+        - Task output folder: \(taskFolderLocation)
+        Ask the agent to write the missing \(fileNoun) to the requested workspace path, retry with the needed file-write approval, or explicitly choose a workspace path.
+        """
+    }
+
     private static func containsAny(_ text: String, _ needles: [String]) -> Bool {
         needles.contains { text.contains($0) }
     }

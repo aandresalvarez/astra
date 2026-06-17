@@ -143,6 +143,8 @@ struct TaskDeliverableVerificationServiceTests {
         #expect(!result.canComplete)
         #expect(result.status == "failed")
         #expect(result.level == .noArtifact)
+        #expect(result.summary.contains("Missing explicitly requested deliverable file: results.txt."))
+        #expect(!result.summary.contains("standalone file artifact"))
         #expect(result.checks.contains { check in
             check.id == "artifact.required_files"
                 && check.status == .failed

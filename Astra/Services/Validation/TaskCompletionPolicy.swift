@@ -135,7 +135,7 @@ enum TaskCompletionPolicy {
             return .block(
                 gate: .manualArtifactRequirement,
                 stopReason: .noUsableResult,
-                userVisibleMessage: TaskDeliverableExpectation.missingArtifactMessage(for: task),
+                userVisibleMessage: TaskDeliverableExpectation.missingDeliverableMessage(for: task),
                 auditFields: fields
             )
         }

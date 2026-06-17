@@ -155,7 +155,7 @@ enum TaskDeliverableVerificationService {
                 status: "failed",
                 canComplete: false,
                 requiresHumanReview: false,
-                summary: TaskDeliverableExpectation.missingArtifactMessage(for: task),
+                summary: TaskDeliverableExpectation.missingDeliverableMessage(for: task),
                 checks: [
                     TaskDeliverableCheck(
                         id: "artifact.discovery",
