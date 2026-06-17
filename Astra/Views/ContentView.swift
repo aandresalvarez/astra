@@ -753,9 +753,21 @@ struct ContentView: View {
         let result = try WorkspaceAppService().createApp(
             manifest: draft.manifest,
             in: workspace,
-            modelContext: modelContext
+            modelContext: modelContext,
+            status: .published
         )
         try? modelContext.save()
+        // Slice 3: snapshot the published manifest as a version. createApp only succeeds
+        // on a valid manifest, so this publish is validated. Best-effort — a snapshot
+        // failure must not block the publish (versions/index.json is the source of truth).
+        let publishedData = try WorkspaceAppService.encodeManifest(draft.manifest)
+        try? WorkspaceAppVersionService().recordPublish(
+            app: result.app,
+            manifestData: publishedData,
+            validated: true,
+            workspacePath: workspace.primaryPath,
+            modelContext: modelContext
+        )
         isComposingWorkspaceApp = false
         setSelectedWorkspaceApp(result.app)
     }
