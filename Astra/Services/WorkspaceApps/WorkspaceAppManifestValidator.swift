@@ -57,8 +57,26 @@ enum WorkspaceAppManifestValidator {
             issues: &issues
         )
         validatePermissions(manifest.permissions, issues: &issues)
+        validateSubmitBlock(manifest, issues: &issues)
 
         return WorkspaceAppManifestValidationReport(issues: issues)
+    }
+
+    /// Slice 5b: a form flagged with `submitBlockedReasons` (e.g. branching ASTRA can't honor)
+    /// must NOT be publishable with a live external submit — it stays read-only / draft-only until
+    /// the reasons are resolved, so a blocked form can never silently write to the system of record.
+    private static func validateSubmitBlock(
+        _ manifest: WorkspaceAppManifest,
+        issues: inout [WorkspaceAppManifestValidationReport.Issue]
+    ) {
+        guard let reasons = manifest.submitBlockedReasons, !reasons.isEmpty else { return }
+        let mode = manifest.permissions.defaultMode
+        if mode != .readOnly && mode != .draftOnly {
+            issues.append(blocker(
+                "/submitBlockedReasons",
+                "Submit is blocked pending review (\(reasons.count) issue(s)); the form must be read-only or draft-only until resolved: \(reasons.joined(separator: "; "))"
+            ))
+        }
     }
 
     private static func validateRequirements(

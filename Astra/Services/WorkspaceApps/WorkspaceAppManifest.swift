@@ -10,6 +10,10 @@ struct WorkspaceAppManifest: Codable, Sendable, Equatable {
     var actions: [WorkspaceAppActionSpec]
     var automations: [WorkspaceAppAutomationSpec]
     var permissions: WorkspaceAppPermissions
+    // Slice 5b: durable "submit blocked / needs review" reasons (e.g. a form field whose REDCap
+    // branching ASTRA cannot honor exactly). Optional + nil-default so the fully-synthesized
+    // Codable OMITS it for every existing manifest — digests stay byte-stable.
+    var submitBlockedReasons: [String]?
 
     init(
         schemaVersion: Int = 1,
@@ -20,7 +24,8 @@ struct WorkspaceAppManifest: Codable, Sendable, Equatable {
         views: [WorkspaceAppViewSpec] = [],
         actions: [WorkspaceAppActionSpec] = [],
         automations: [WorkspaceAppAutomationSpec] = [],
-        permissions: WorkspaceAppPermissions = WorkspaceAppPermissions()
+        permissions: WorkspaceAppPermissions = WorkspaceAppPermissions(),
+        submitBlockedReasons: [String]? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.app = app
@@ -31,6 +36,7 @@ struct WorkspaceAppManifest: Codable, Sendable, Equatable {
         self.actions = actions
         self.automations = automations
         self.permissions = permissions
+        self.submitBlockedReasons = submitBlockedReasons
     }
 }
 
@@ -229,9 +235,10 @@ struct WorkspaceAppFormFieldSpec: Codable, Sendable, Equatable {
     var choices: [WorkspaceAppFormChoice]?
     var visibleWhen: String?       // raw REDCap branching logic; must be 5a-safe when present
     var readOnly: Bool
+    var readOnlyReason: String?    // why a field was forced read-only (unsupported branching / type)
 
     enum CodingKeys: String, CodingKey {
-        case name, label, fieldType, required, choices, visibleWhen, readOnly
+        case name, label, fieldType, required, choices, visibleWhen, readOnly, readOnlyReason
     }
 
     init(
@@ -241,7 +248,8 @@ struct WorkspaceAppFormFieldSpec: Codable, Sendable, Equatable {
         required: Bool = false,
         choices: [WorkspaceAppFormChoice]? = nil,
         visibleWhen: String? = nil,
-        readOnly: Bool = false
+        readOnly: Bool = false,
+        readOnlyReason: String? = nil
     ) {
         self.name = name
         self.label = label
@@ -250,6 +258,7 @@ struct WorkspaceAppFormFieldSpec: Codable, Sendable, Equatable {
         self.choices = choices
         self.visibleWhen = visibleWhen
         self.readOnly = readOnly
+        self.readOnlyReason = readOnlyReason
     }
 
     // Lenient decode: only name/label/fieldType are required, so a model-generated field
@@ -263,6 +272,7 @@ struct WorkspaceAppFormFieldSpec: Codable, Sendable, Equatable {
         choices = try container.decodeIfPresent([WorkspaceAppFormChoice].self, forKey: .choices)
         visibleWhen = try container.decodeIfPresent(String.self, forKey: .visibleWhen)
         readOnly = try container.decodeIfPresent(Bool.self, forKey: .readOnly) ?? false
+        readOnlyReason = try container.decodeIfPresent(String.self, forKey: .readOnlyReason)
     }
 }
 
