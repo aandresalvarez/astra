@@ -48,20 +48,6 @@ static NSString *const kAstraSecretAccessLabel = @"ASTRA secure credential";
     }
 }
 
-+ (BOOL)temporarilyAllowKeychainUserInteraction:(NS_NOESCAPE BOOL (^)(void))block {
-    if (block == nil) { return NO; }
-    Boolean previousInteraction = true;
-    if (SecKeychainGetUserInteractionAllowed(&previousInteraction) != errSecSuccess) {
-        previousInteraction = true;
-    }
-    SecKeychainSetUserInteractionAllowed(true);
-    @try {
-        return block();
-    } @finally {
-        SecKeychainSetUserInteractionAllowed(previousInteraction);
-    }
-}
-
 + (NSMutableDictionary<NSString *, NSData *> *)testBootstrapPasswordOverrides {
     static NSMutableDictionary *overrides;
     static dispatch_once_t once;
@@ -198,6 +184,52 @@ static NSString *const kAstraSecretAccessLabel = @"ASTRA secure credential";
     }
 }
 
++ (BOOL)deleteBootstrapPasswordForService:(NSString *)service {
+    SecKeychainRef login = NULL;
+    if (SecKeychainCopyDefault(&login) != errSecSuccess || login == NULL) {
+        return NO;
+    }
+
+    NSDictionary *query = @{
+        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrService: service,
+        (__bridge id)kSecAttrAccount: kAstraBootstrapAccount,
+        (__bridge id)kSecMatchSearchList: @[(__bridge id)login],
+    };
+    OSStatus status = SecItemDelete((__bridge CFDictionaryRef)query);
+    CFRelease(login);
+    return status == errSecSuccess || status == errSecItemNotFound;
+}
+
++ (BOOL)moveUnreadableKeychainAsideAtPath:(NSString *)path {
+    if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        return YES;
+    }
+
+    NSString *directory = [path stringByDeletingLastPathComponent];
+    NSString *fileName = [path lastPathComponent];
+    NSString *backupName = [NSString stringWithFormat:@"%@.unreadable-%@",
+                            fileName,
+                            NSUUID.UUID.UUIDString];
+    NSString *backupPath = [directory stringByAppendingPathComponent:backupName];
+    NSError *error = nil;
+    BOOL moved = [[NSFileManager defaultManager] moveItemAtPath:path
+                                                         toPath:backupPath
+                                                          error:&error];
+    return moved;
+}
+
++ (BOOL)recoverUnreadableDedicatedKeychainAtPath:(NSString *)path
+                                bootstrapService:(NSString *)bootstrapService {
+    @synchronized (self) {
+        [[self keychainCache] removeObjectForKey:path];
+    }
+    if (![self deleteBootstrapPasswordForService:bootstrapService]) {
+        return NO;
+    }
+    return [self moveUnreadableKeychainAsideAtPath:path];
+}
+
 #pragma mark - Bootstrap password (stored in the login keychain)
 
 + (SecAccessRef)nonPromptingAccessWithLabel:(NSString *)label {
@@ -252,23 +284,6 @@ static NSString *const kAstraSecretAccessLabel = @"ASTRA secure credential";
     return [self nonPromptingAccessWithLabel:kAstraSecretAccessLabel];
 }
 
-+ (BOOL)repairAccessForItem:(SecKeychainItemRef)item label:(NSString *)label {
-    if (item == NULL) { return NO; }
-    SecAccessRef access = [self nonPromptingAccessWithLabel:label];
-    if (access == NULL) { return NO; }
-    OSStatus status = SecKeychainItemSetAccess(item, access);
-    CFRelease(access);
-    return status == errSecSuccess;
-}
-
-+ (BOOL)repairBootstrapAccessForItem:(SecKeychainItemRef)item {
-    return [self repairAccessForItem:item label:kAstraBootstrapLabel];
-}
-
-+ (BOOL)repairSecretAccessForItem:(SecKeychainItemRef)item {
-    return [self repairAccessForItem:item label:kAstraSecretAccessLabel];
-}
-
 + (NSData *)readBootstrapPasswordForService:(NSString *)service
                               loginKeychain:(SecKeychainRef)login
                                       status:(OSStatus *)outStatus {
@@ -281,28 +296,22 @@ static NSString *const kAstraSecretAccessLabel = @"ASTRA secure credential";
 
     UInt32 passwordLength = 0;
     void *passwordBytes = NULL;
-    SecKeychainItemRef item = NULL;
     OSStatus readStatus = SecKeychainFindGenericPassword(
         login,
         (UInt32)strlen(serviceName), serviceName,
         (UInt32)strlen(accountName), accountName,
         &passwordLength,
         &passwordBytes,
-        &item
+        NULL
     );
     if (outStatus != NULL) { *outStatus = readStatus; }
     if (readStatus != errSecSuccess || passwordBytes == NULL) {
         if (passwordBytes != NULL) { SecKeychainItemFreeContent(NULL, passwordBytes); }
-        if (item != NULL) { CFRelease(item); }
         return nil;
     }
 
     NSData *data = [NSData dataWithBytes:passwordBytes length:passwordLength];
     SecKeychainItemFreeContent(NULL, passwordBytes);
-    if (item != NULL) {
-        [self repairBootstrapAccessForItem:item];
-        CFRelease(item);
-    }
     return data;
 }
 
@@ -319,33 +328,23 @@ static NSString *const kAstraSecretAccessLabel = @"ASTRA secure credential";
 
     UInt32 passwordLength = 0;
     void *passwordData = NULL;
-    SecKeychainItemRef item = NULL;
     OSStatus status = SecKeychainFindGenericPassword(
         keychain,
         (UInt32)strlen(serviceName), serviceName,
         (UInt32)strlen(accountName), accountName,
         &passwordLength,
         &passwordData,
-        &item
+        NULL
     );
     if (outStatus != NULL) { *outStatus = status; }
     if (status != errSecSuccess || passwordData == NULL) {
         if (passwordData != NULL) { SecKeychainItemFreeContent(NULL, passwordData); }
-        if (item != NULL) { CFRelease(item); }
         return nil;
     }
 
     NSData *data = [NSData dataWithBytes:passwordData length:passwordLength];
     SecKeychainItemFreeContent(NULL, passwordData);
-    if (item != NULL) {
-        [self repairSecretAccessForItem:item];
-        CFRelease(item);
-    }
     return data;
-}
-
-+ (BOOL)isUserInteractionRecoveryStatus:(OSStatus)status {
-    return status == errSecAuthFailed || status == errSecInteractionNotAllowed;
 }
 
 + (OSStatus)addBootstrapPassword:(NSData *)passwordData
@@ -406,21 +405,6 @@ static NSString *const kAstraSecretAccessLabel = @"ASTRA secure credential";
     if (data.length > 0) {
         CFRelease(login);
         return data;
-    }
-
-    if ([self isUserInteractionRecoveryStatus:readStatus]) {
-        __block NSData *recovered = nil;
-        [self temporarilyAllowKeychainUserInteraction:^{
-            OSStatus interactiveStatus = errSecSuccess;
-            recovered = [self readBootstrapPasswordForService:service
-                                                loginKeychain:login
-                                                       status:&interactiveStatus];
-            return (BOOL)(recovered.length > 0);
-        }];
-        if (recovered.length > 0) {
-            CFRelease(login);
-            return recovered;
-        }
     }
 
     if (!create) {
@@ -502,7 +486,14 @@ static NSString *const kAstraSecretAccessLabel = @"ASTRA secure credential";
     [self disableKeychainUserInteractionSavingPrevious:&previousInteraction];
     @try {
     SecKeychainRef keychain = [self dedicatedKeychainForPath:keychainPath bootstrapService:bootstrapService];
-    if (keychain == NULL) { return NO; }
+    if (keychain == NULL) {
+        if (![self recoverUnreadableDedicatedKeychainAtPath:keychainPath
+                                           bootstrapService:bootstrapService]) {
+            return NO;
+        }
+        keychain = [self dedicatedKeychainForPath:keychainPath bootstrapService:bootstrapService];
+        if (keychain == NULL) { return NO; }
+    }
 
     NSData *data = [value dataUsingEncoding:NSUTF8StringEncoding];
     if (data == nil) { return NO; }
@@ -517,51 +508,13 @@ static NSString *const kAstraSecretAccessLabel = @"ASTRA secure credential";
         (__bridge id)kSecAttrAccount: account,
         (__bridge id)kSecMatchSearchList: @[(__bridge id)keychain],
     };
-    NSDictionary *updateAttributes = @{
-        (__bridge id)kSecValueData: data,
-        (__bridge id)kSecAttrComment: label ?: @"Astra credential",
-    };
-    SecKeychainItemRef existingItem = NULL;
-    OSStatus existingStatus = SecKeychainFindGenericPassword(
-        keychain,
-        (UInt32)strlen(serviceName), serviceName,
-        (UInt32)strlen(accountName), accountName,
-        NULL,
-        NULL,
-        &existingItem
-    );
-    OSStatus updateStatus = SecItemUpdate((__bridge CFDictionaryRef)matchQuery,
-                                          (__bridge CFDictionaryRef)updateAttributes);
-    if (updateStatus == errSecSuccess) {
-        BOOL repaired = YES;
-        if (existingStatus == errSecSuccess && existingItem != NULL) {
-            repaired = [self repairSecretAccessForItem:existingItem];
-        }
-        if (existingItem != NULL) { CFRelease(existingItem); }
-        if (repaired) { return YES; }
-
-        // The value was updated, but the old item ACL still cannot be repaired
-        // non-interactively. Replace the item wholesale so future reads do not
-        // ask the user for ASTRA's generated dedicated-keychain password.
-        OSStatus deleteStatus = SecItemDelete((__bridge CFDictionaryRef)matchQuery);
-        if (deleteStatus != errSecSuccess && deleteStatus != errSecItemNotFound) {
-            return NO;
-        }
-        OSStatus addStatus = [self addSecretValue:data
-                                       forAccount:account
-                                          service:service
-                                            label:label
-                                         keychain:keychain];
-        return addStatus == errSecSuccess;
-    }
-    if (existingItem != NULL) { CFRelease(existingItem); }
-    if (updateStatus != errSecItemNotFound) {
-        // Existing pre-repair items can reject data updates without allowing a
-        // value read. Try replacing the item by metadata before giving up.
-        OSStatus deleteStatus = SecItemDelete((__bridge CFDictionaryRef)matchQuery);
-        if (deleteStatus != errSecSuccess && deleteStatus != errSecItemNotFound) {
-            return NO;
-        }
+    // Always replace instead of updating in place. Existing items may have ACLs
+    // tied to an older ad-hoc ASTRA binary; mutating those ACLs with
+    // SecKeychainItemSetAccess can block in securityd. Deleting by metadata and
+    // recreating the item gives the new value the current rebuild-tolerant ACL.
+    OSStatus deleteStatus = SecItemDelete((__bridge CFDictionaryRef)matchQuery);
+    if (deleteStatus != errSecSuccess && deleteStatus != errSecItemNotFound) {
+        return NO;
     }
 
     OSStatus addStatus = [self addSecretValue:data

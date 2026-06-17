@@ -131,7 +131,7 @@ struct AstraSecureKeychainTests {
         let source = try astraSecureKeychainSource()
         let readSecretBody = try methodBody(
             startingWith: "+ (NSData *)readSecretDataForAccount:",
-            endingBefore: "+ (BOOL)isUserInteractionRecoveryStatus:",
+            endingBefore: "+ (OSStatus)addBootstrapPassword:",
             in: source
         )
         let secretBody = try methodBody(
@@ -161,12 +161,35 @@ struct AstraSecureKeychainTests {
         #expect(!secretBody.contains("temporarilyAllowKeychainUserInteraction"))
         #expect(saveBody.contains("SecItemDelete"))
         #expect(saveBody.contains("addSecretValue"))
+        #expect(saveBody.contains("recoverUnreadableDedicatedKeychainAtPath"))
         #expect(readSecretBody.contains("SecKeychainFindGenericPassword"))
-        #expect(readSecretBody.contains("repairSecretAccessForItem"))
+        #expect(!readSecretBody.contains("repairSecretAccessForItem"))
+        #expect(!readSecretBody.contains("SecKeychainItemSetAccess"))
     }
 
-    @Test("Keychain password and secret items are repairable for rebuilt ASTRA binaries")
-    func keychainItemAccessIsRepairableAcrossRebuilds() throws {
+    @Test("Saving a replacement can recover from an unreadable dedicated keychain")
+    func saveSecretRecoversUnreadableDedicatedKeychain() throws {
+        let source = try astraSecureKeychainSource()
+        let recoveryBody = try methodBody(
+            startingWith: "+ (BOOL)recoverUnreadableDedicatedKeychainAtPath:",
+            endingBefore: "#pragma mark - Bootstrap password",
+            in: source
+        )
+        let saveBody = try methodBody(
+            startingWith: "+ (BOOL)saveSecret:",
+            endingBefore: "+ (nullable NSString *)secretForAccount:",
+            in: source
+        )
+
+        #expect(recoveryBody.contains("deleteBootstrapPasswordForService"))
+        #expect(recoveryBody.contains("moveUnreadableKeychainAsideAtPath"))
+        #expect(recoveryBody.contains("removeObjectForKey"))
+        #expect(saveBody.contains("recoverUnreadableDedicatedKeychainAtPath"))
+        #expect(saveBody.contains("dedicatedKeychainForPath:keychainPath bootstrapService:bootstrapService"))
+    }
+
+    @Test("Keychain password and secret items are created for rebuilt ASTRA binaries")
+    func keychainItemsUseRebuildTolerantAccess() throws {
         let source = try astraSecureKeychainSource()
         let accessBody = try methodBody(
             startingWith: "+ (SecAccessRef)nonPromptingAccessWithLabel:",
@@ -188,14 +211,14 @@ struct AstraSecureKeychainTests {
         #expect(accessBody.contains("SecACLSetContents"))
         #expect(accessBody.contains("kSecACLAuthorizationDecrypt"))
         #expect(accessBody.contains("NULL"))
-        #expect(accessBody.contains("SecKeychainItemSetAccess"))
-        #expect(accessBody.contains("repairBootstrapAccessForItem"))
-        #expect(accessBody.contains("repairSecretAccessForItem"))
-        #expect(bootstrapBody.contains("temporarilyAllowKeychainUserInteraction"))
+        #expect(!accessBody.contains("SecKeychainItemSetAccess"))
+        #expect(!accessBody.contains("repairBootstrapAccessForItem"))
+        #expect(!bootstrapBody.contains("temporarilyAllowKeychainUserInteraction"))
         #expect(bootstrapBody.contains("readBootstrapPasswordForService"))
         #expect(bootstrapBody.contains("addBootstrapPassword"))
+        #expect(saveBody.contains("SecItemDelete"))
         #expect(saveBody.contains("addSecretValue"))
-        #expect(saveBody.contains("repairSecretAccessForItem"))
+        #expect(!saveBody.contains("repairSecretAccessForItem"))
     }
 
     // MARK: - CRUD against the dedicated keychain
@@ -229,7 +252,7 @@ struct AstraSecureKeychainTests {
             ) == "s3cr3t-value")
         }
 
-        // Update overwrites in place.
+        // Re-saving replaces the previous value without changing the API contract.
         #expect(AstraSecureKeychain.saveSecret(
             "rotated", forAccount: "JIRA_API_TOKEN", service: service,
             label: nil, keychainPath: path, bootstrapService: bootstrap
@@ -247,6 +270,43 @@ struct AstraSecureKeychainTests {
             forAccount: "JIRA_API_TOKEN", service: service,
             keychainPath: path, bootstrapService: bootstrap
         ) == nil)
+    }
+
+    @Test("Save recovers an unreadable existing dedicated keychain file",
+          .enabled(if: AstraSecureKeychainTestSupport.isAvailable))
+    func saveRecoversUnreadableExistingDedicatedKeychainFile() throws {
+        let path = AstraSecureKeychainTestSupport.tempKeychainPath()
+        let bootstrap = "astra-test-bootstrap-\(UUID().uuidString)"
+        let service = "astra-\(UUID().uuidString)"
+        defer {
+            AstraSecureKeychainTestSupport.cleanup(
+                keychainPath: path, bootstrapService: bootstrap, services: [service]
+            )
+            if let backups = try? FileManager.default.contentsOfDirectory(
+                atPath: NSString(string: path).deletingLastPathComponent
+            ) {
+                for backup in backups where backup.hasPrefix(NSString(string: path).lastPathComponent + ".unreadable-") {
+                    let backupPath = NSString(string: NSString(string: path).deletingLastPathComponent)
+                        .appendingPathComponent(backup)
+                    try? FileManager.default.removeItem(atPath: backupPath)
+                }
+            }
+        }
+
+        try Data("not-a-keychain".utf8).write(to: URL(fileURLWithPath: path))
+
+        #expect(AstraSecureKeychain.saveSecret(
+            "new-token", forAccount: "JIRA_API_TOKEN", service: service,
+            label: "Astra: Recovery", keychainPath: path, bootstrapService: bootstrap
+        ))
+        #expect(AstraSecureKeychain.secret(
+            forAccount: "JIRA_API_TOKEN", service: service,
+            keychainPath: path, bootstrapService: bootstrap
+        ) == "new-token")
+
+        let directory = NSString(string: path).deletingLastPathComponent
+        let backups = try FileManager.default.contentsOfDirectory(atPath: directory)
+        #expect(backups.contains { $0.hasPrefix(NSString(string: path).lastPathComponent + ".unreadable-") })
     }
 
     // MARK: - Isolation: secrets are NOT in the login keychain
