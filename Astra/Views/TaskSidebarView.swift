@@ -243,26 +243,6 @@ private struct SidebarTopToolbar: View {
     }
 }
 
-enum SidebarTaskIndexInvalidation {
-    static func signature(for tasks: [AgentTask], searchText: String = "") -> Int {
-        let includesSearchableText = !searchText.isEmpty
-        return tasks.reduce(into: 0) { acc, task in
-            acc ^= task.id.hashValue
-            acc ^= task.workspace?.id.hashValue ?? 0
-            if includesSearchableText {
-                acc ^= task.title.hashValue
-                acc ^= task.goal.hashValue
-            }
-            acc ^= task.status.rawValue.hashValue
-            acc ^= task.isPinned ? 1 : 0
-            acc ^= task.isDone ? 2 : 0
-            acc ^= task.shouldShowUnread ? 4 : 0
-            acc &+= Int(task.updatedAt.timeIntervalSince1970)
-            acc &+= Int(task.unreadAt?.timeIntervalSince1970 ?? 0)
-        }
-    }
-}
-
 enum SidebarWorkspaceTaskList {
     static let collapsedLimit = 6
 
@@ -901,17 +881,32 @@ struct TaskSidebarView: View {
     // MARK: - Workspace Section
 
     private func visibleWorkspaces(using taskIndex: SidebarTaskIndex) -> [Workspace] {
-        WorkspaceSidebarFilter.visibleWorkspaces(
-            workspaces,
-            showStarredOnly: showStarredWorkspacesOnly,
-            searchText: searchText,
-            workspaceMatchesSearch: workspaceMatchesSearch
-        ) { workspace in
-            taskIndex.reviewTasks(
-                for: workspace,
-                matchingSearch: true,
-                workspaceMatchesSearch: false
-            ).isEmpty == false
+        PerformanceTelemetry.measure(
+            "sidebar_visible_workspaces",
+            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            fields: [
+                "task_count": PerformanceTelemetryFields.count(tasks.count),
+                "workspace_count": PerformanceTelemetryFields.count(workspaces.count),
+                "search_active": PerformanceTelemetryFields.bool(!searchText.isEmpty)
+            ],
+            resultFields: { visibleWorkspaces in
+                [
+                    "visible_workspace_count": PerformanceTelemetryFields.count(visibleWorkspaces.count)
+                ]
+            }
+        ) {
+            WorkspaceSidebarFilter.visibleWorkspaces(
+                workspaces,
+                showStarredOnly: showStarredWorkspacesOnly,
+                searchText: searchText,
+                workspaceMatchesSearch: workspaceMatchesSearch
+            ) { workspace in
+                taskIndex.reviewTasks(
+                    for: workspace,
+                    matchingSearch: true,
+                    workspaceMatchesSearch: false
+                ).isEmpty == false
+            }
         }
     }
 
@@ -2186,31 +2181,75 @@ struct SearchPanelOverlay: View {
     }
 
     private var recentTasks: [AgentTask] {
-        Array(tasks.sorted { $0.updatedAt > $1.updatedAt }.prefix(9))
+        PerformanceTelemetry.measure(
+            "search_panel_recent_tasks",
+            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            fields: [
+                "task_count": PerformanceTelemetryFields.count(tasks.count),
+                "workspace_count": PerformanceTelemetryFields.count(workspaces.count)
+            ],
+            resultFields: { tasks in
+                [
+                    "result_count": PerformanceTelemetryFields.count(tasks.count)
+                ]
+            }
+        ) {
+            Array(tasks.sorted { $0.updatedAt > $1.updatedAt }.prefix(9))
+        }
     }
 
     private var filteredTasks: [AgentTask] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return recentTasks }
-        return tasks.filter {
-            $0.title.localizedCaseInsensitiveContains(query) ||
-            $0.goal.localizedCaseInsensitiveContains(query) ||
-            ($0.workspace?.name.localizedCaseInsensitiveContains(query) ?? false) ||
-            ($0.workspace?.primaryPath.localizedCaseInsensitiveContains(query) ?? false)
+        return PerformanceTelemetry.measure(
+            "search_panel_filter_tasks",
+            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            fields: [
+                "query_length": PerformanceTelemetryFields.count(query.count),
+                "task_count": PerformanceTelemetryFields.count(tasks.count),
+                "workspace_count": PerformanceTelemetryFields.count(workspaces.count)
+            ],
+            resultFields: { tasks in
+                [
+                    "result_count": PerformanceTelemetryFields.count(tasks.count)
+                ]
+            }
+        ) {
+            tasks.filter {
+                $0.title.localizedCaseInsensitiveContains(query) ||
+                    $0.goal.localizedCaseInsensitiveContains(query) ||
+                    ($0.workspace?.name.localizedCaseInsensitiveContains(query) ?? false) ||
+                    ($0.workspace?.primaryPath.localizedCaseInsensitiveContains(query) ?? false)
+            }
+            .sorted { $0.updatedAt > $1.updatedAt }
+            .prefix(12)
+            .map { $0 }
         }
-        .sorted { $0.updatedAt > $1.updatedAt }
-        .prefix(12)
-        .map { $0 }
     }
 
     private var filteredWorkspaces: [Workspace] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return [] }
-        return workspaces.filter {
-            $0.name.localizedCaseInsensitiveContains(query) ||
-            $0.primaryPath.localizedCaseInsensitiveContains(query)
+        return PerformanceTelemetry.measure(
+            "search_panel_filter_workspaces",
+            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            fields: [
+                "query_length": PerformanceTelemetryFields.count(query.count),
+                "task_count": PerformanceTelemetryFields.count(tasks.count),
+                "workspace_count": PerformanceTelemetryFields.count(workspaces.count)
+            ],
+            resultFields: { workspaces in
+                [
+                    "result_count": PerformanceTelemetryFields.count(workspaces.count)
+                ]
+            }
+        ) {
+            workspaces.filter {
+                $0.name.localizedCaseInsensitiveContains(query) ||
+                    $0.primaryPath.localizedCaseInsensitiveContains(query)
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         }
-        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     private func toggleStarred(for workspace: Workspace) {

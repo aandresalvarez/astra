@@ -150,6 +150,7 @@ struct TaskThreadSnapshotInput: Sendable {
     let omittedRunCount: Int
 
     init(task: AgentTask, maxRuns: Int = 50) {
+        let start = DispatchTime.now().uptimeNanoseconds
         let window = TaskThreadSnapshotWindow(events: task.events, runs: task.runs, maxRuns: maxRuns)
         self.init(
             goal: task.goal,
@@ -160,6 +161,21 @@ struct TaskThreadSnapshotInput: Sendable {
             omittedEventCount: window.omittedEventCount,
             totalRunCount: window.totalRunCount,
             omittedRunCount: window.omittedRunCount
+        )
+        PerformanceTelemetry.logIfNeeded(
+            "thread_snapshot_input",
+            start: start,
+            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            fields: [
+                "task_id": PerformanceTelemetryFields.abbreviatedID(task.id),
+                "event_count": PerformanceTelemetryFields.count(window.totalEventCount),
+                "run_count": PerformanceTelemetryFields.count(window.totalRunCount),
+                "snapshot_input_events": PerformanceTelemetryFields.count(events.count),
+                "snapshot_input_runs": PerformanceTelemetryFields.count(runs.count),
+                "omitted_events": PerformanceTelemetryFields.count(omittedEventCount),
+                "omitted_runs": PerformanceTelemetryFields.count(omittedRunCount),
+                "max_runs": PerformanceTelemetryFields.count(maxRuns)
+            ]
         )
     }
 
@@ -211,6 +227,7 @@ private struct TaskThreadSnapshotWindow {
     let omittedRunCount: Int
 
     init(events allEvents: [TaskEvent], runs allRuns: [TaskRun], maxRuns: Int = defaultMaxRuns) {
+        let start = DispatchTime.now().uptimeNanoseconds
         totalEventCount = allEvents.count
         totalRunCount = allRuns.count
 
@@ -228,6 +245,20 @@ private struct TaskThreadSnapshotWindow {
 
         omittedEventCount = max(0, totalEventCount - events.count)
         omittedRunCount = max(0, totalRunCount - runs.count)
+        PerformanceTelemetry.logIfNeeded(
+            "thread_snapshot_window",
+            start: start,
+            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            fields: [
+                "event_count": PerformanceTelemetryFields.count(totalEventCount),
+                "run_count": PerformanceTelemetryFields.count(totalRunCount),
+                "snapshot_input_events": PerformanceTelemetryFields.count(events.count),
+                "snapshot_input_runs": PerformanceTelemetryFields.count(runs.count),
+                "omitted_events": PerformanceTelemetryFields.count(omittedEventCount),
+                "omitted_runs": PerformanceTelemetryFields.count(omittedRunCount),
+                "max_runs": PerformanceTelemetryFields.count(maxRuns)
+            ]
+        )
     }
 
     private static func capToolResults(_ events: [TaskEvent]) -> [TaskEvent] {
@@ -527,7 +558,14 @@ struct TaskThreadSnapshot: Sendable {
             PerformanceTelemetry.measure(
                 "thread_snapshot_build",
                 thresholdMilliseconds: 8,
-                fields: fields
+                fields: fields,
+                resultFields: { snapshot in
+                    [
+                        "conversation_item_count": PerformanceTelemetryFields.count(snapshot.conversationItems.count),
+                        "snapshot_event_count": PerformanceTelemetryFields.count(snapshot.sortedEvents.count),
+                        "snapshot_run_count": PerformanceTelemetryFields.count(snapshot.sortedRuns.count)
+                    ]
+                }
             ) {
                 PerformanceSignposts.buildThreadSnapshot {
                     TaskThreadSnapshot(input: input)
@@ -945,19 +983,37 @@ struct TaskThreadSnapshotTrigger: Equatable {
     let latestRunOutputCount: Int
 
     init(task: AgentTask) {
+        let start = DispatchTime.now().uptimeNanoseconds
         let events = task.events
-        let latestRun = task.runs.max { $0.startedAt < $1.startedAt }
+        let runs = task.runs
+        let latestRun = runs.max { $0.startedAt < $1.startedAt }
         taskID = task.id
         eventCount = events.count
         visibleEventCount = events.reduce(0) { count, event in
             Self.highFrequencyEventTypes.contains(event.type) ? count : count + 1
         }
-        runCount = task.runs.count
+        runCount = runs.count
         status = task.status
         latestRunID = latestRun?.id
         latestRunStatus = latestRun?.status
         latestRunOutputCount = latestRun?.output.utf8.count ?? 0
         latestRunOutputBucket = Self.outputBucket(for: latestRunOutputCount)
+        PerformanceTelemetry.logIfNeeded(
+            "thread_snapshot_trigger",
+            start: start,
+            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            fields: [
+                "task_id": PerformanceTelemetryFields.abbreviatedID(task.id),
+                "event_count": PerformanceTelemetryFields.count(eventCount),
+                "visible_event_count": PerformanceTelemetryFields.count(visibleEventCount),
+                "run_count": PerformanceTelemetryFields.count(runCount),
+                "status": status.rawValue,
+                "latest_run_status": latestRunStatus?.rawValue ?? "none",
+                "latest_run_output_bucket": PerformanceTelemetryFields.count(latestRunOutputBucket),
+                "latest_run_output_chars": PerformanceTelemetryFields.count(latestRunOutputCount),
+                "latest_run_output_byte_bucket": PerformanceTelemetryFields.byteBucket(latestRunOutputCount)
+            ]
+        )
     }
 
     static func == (lhs: TaskThreadSnapshotTrigger, rhs: TaskThreadSnapshotTrigger) -> Bool {
