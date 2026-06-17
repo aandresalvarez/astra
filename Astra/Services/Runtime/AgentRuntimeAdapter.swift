@@ -1192,6 +1192,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         // or a repository's own .mcp.json loads ungoverned on those runs.
         let mcpConfigURL = MCPRuntimeProjection.writeClaudeConfig(servers: mcpServers, taskID: context.task.id, allowEmpty: true)
         let mcpConfigReadablePaths = mcpConfigURL.map { [$0.deletingLastPathComponent().path] } ?? []
+        let sandboxReadablePaths = mcpConfigReadablePaths + ClaudeCodeRuntime.authReadablePaths()
         let mcpAllowedTools = mcpConfigURL == nil ? [] : MCPRuntimeProjection.allowedToolPermissions(servers: mcpServers)
         let mcpDeniedTools = mcpConfigURL == nil ? [] : MCPRuntimeProjection.deniedToolPermissions(servers: mcpServers)
         // Live approvals use the stdio control protocol (stream-json input, so
@@ -1215,8 +1216,11 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
                 + (interactiveAsk == nil ? askFirstToolPermissions : [])
         )).sorted()
         let usesArtifactBootstrapProfile = !artifactBootstrapTools.isEmpty
+        let visibleToolSource = usesArtifactBootstrapProfile
+            ? Array(Set(providerAllowed + runtimeSupportTools + artifactBootstrapTools + askFirstToolPermissions + mcpAllowedTools)).sorted()
+            : Array(Set(nativeAllowedTools + askFirstToolPermissions)).sorted()
         let visibleTools = Self.visibleProviderTools(
-            from: Array(Set(nativeAllowedTools + askFirstToolPermissions)).sorted(),
+            from: visibleToolSource,
             task: context.task,
             permissionPolicy: effectivePermissionPolicy
         )
@@ -1279,7 +1283,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             providerVersion: nil,
             parsesJSONLines: true,
             directoriesToCreate: [],
-            sandboxReadablePaths: mcpConfigReadablePaths,
+            sandboxReadablePaths: sandboxReadablePaths,
             providerDetectedFields: [
                 "runtime": id.rawValue,
                 "executable_configured": String(!context.executablePath.isEmpty),
@@ -1675,21 +1679,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         installHint: "Install via Homebrew: `brew install copilot-cli` or npm: `npm install -g @github/copilot`",
         authHint: "Run `copilot` and use `/login`, or set a GitHub token with Copilot access.",
         prerequisite: CommonCLIPrerequisites.copilot,
-        defaultModel: "claude-sonnet-4.6",
-        defaultModels: [
-            "claude-sonnet-4.6",
-            "claude-sonnet-4.5",
-            "claude-haiku-4.5",
-            "claude-opus-4.7",
-            "claude-opus-4.6",
-            "claude-opus-4.5",
-            "gpt-5.2-codex",
-            "gpt-5-codex",
-            "gpt-5.2",
-            "gpt-5-mini",
-            "gpt-5",
-            "gpt-4.1"
-        ],
+        defaultModel: CopilotCLIRuntime.defaultModel,
+        defaultModels: CopilotCLIRuntime.defaultModels,
         supportsAstraRunProtocol: true
     )
     let readinessCheckID = "copilot-cli"
@@ -1897,6 +1888,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         if browserBridgeMetadata.isAttached {
             localToolCommands.append("astra-browser")
         }
+        let surfacedAskFirstTools = askFirstTools
         let plan = CopilotCLIRuntime.buildCommand(
             executablePath: executable,
             prompt: context.prompt,
@@ -1916,7 +1908,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
                 || browserBridgeMetadata.isAttached,
             localToolCommands: localToolCommands,
             runtimeSupportTools: runtimeSupportTools,
-            askFirstTools: askFirstTools
+            askFirstTools: surfacedAskFirstTools,
+            reasoningEffort: artifactBootstrapTools.isEmpty ? nil : "none"
         )
 
         return AgentRuntimeProcessLaunchPlan(
@@ -1959,6 +1952,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "supports_allow_all_urls": String(capabilities.supportsAllowAllURLs),
                 "supports_available_tools": String(capabilities.supportsAvailableTools),
                 "supports_excluded_tools": String(capabilities.supportsExcludedTools),
+                "supports_reasoning_effort": String(capabilities.supportsReasoningEffort),
                 "requires_allow_all_tools": String(capabilities.requiresAllowAllToolsForPrompt),
                 "permission_policy": effectivePermissionPolicy.rawValue,
                 "allowed_tools_count": String(providerAllowed.count),
@@ -1967,6 +1961,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "runtime_support_tool_names": runtimeSupportTools.joined(separator: ","),
                 "ask_first_tool_count": String(askFirstTools.count),
                 "ask_first_tool_names": askFirstTools.joined(separator: ","),
+                "surfaced_ask_first_tool_count": String(surfacedAskFirstTools.count),
+                "surfaced_ask_first_tool_names": surfacedAskFirstTools.joined(separator: ","),
                 "artifact_bootstrap_tool_count": String(artifactBootstrapTools.count),
                 "artifact_bootstrap_tool_names": artifactBootstrapTools.joined(separator: ","),
                 "artifact_bootstrap_profile": String(!artifactBootstrapTools.isEmpty),
@@ -1977,6 +1973,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "uses_output_format_json": String(plan.arguments.contains("--output-format=json")),
                 "uses_stream_flag": String(plan.arguments.contains("--stream=on")),
                 "uses_no_ask_user": String(plan.arguments.contains("--no-ask-user")),
+                "uses_reasoning_effort": String(plan.arguments.contains("--effort")),
                 "uses_secret_env_vars": String(plan.arguments.contains("--secret-env-vars")),
                 "uses_silent": String(plan.arguments.contains("--silent")),
                 "uses_allow_all": String(plan.arguments.contains("--allow-all")),

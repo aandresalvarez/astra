@@ -153,6 +153,7 @@ final class AgentRuntimeProcessRunner {
         nativeContinuationSessionID: String? = nil,
         runID: UUID? = nil,
         liveApprovalsEnabled: Bool = false,
+        noSemanticProgressTimeoutSeconds: TimeInterval? = nil,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
@@ -200,6 +201,7 @@ final class AgentRuntimeProcessRunner {
                 permissionManifest: permissionManifest,
                 budgetEnforcementMode: budgetEnforcementMode,
                 timeoutSeconds: timeoutSeconds,
+                noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
                 onInteractiveAsk: onInteractiveAsk,
                 onLine: onLine
             )
@@ -221,6 +223,7 @@ final class AgentRuntimeProcessRunner {
             permissionManifest: permissionManifest,
             budgetEnforcementMode: budgetEnforcementMode,
             timeoutSeconds: timeoutSeconds,
+            noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
             onInteractiveAsk: onInteractiveAsk,
             onLine: onLine
         )
@@ -234,6 +237,7 @@ final class AgentRuntimeProcessRunner {
         permissionManifest: RunPermissionManifest?,
         budgetEnforcementMode: BudgetEnforcementMode,
         timeoutSeconds: TimeInterval,
+        noSemanticProgressTimeoutSeconds: TimeInterval?,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
@@ -290,6 +294,7 @@ final class AgentRuntimeProcessRunner {
                 maxTurns: task.maxTurns,
                 maxRepetitions: 8,
                 idleTimeoutSeconds: timeoutSeconds,
+                noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
                 taskID: task.id,
                 policyGuard: permissionManifest.map(AgentRuntimePolicyGuard.init),
                 liveApprovalsActive: plan.interactiveAsk != nil
@@ -381,6 +386,7 @@ final class AgentRuntimeProcessRunner {
                     budgetExceeded: monitor.budgetExceeded,
                     budgetWarning: monitor.budgetWarning,
                     finalReportedBudgetExceededAfterCompletion: monitor.finalReportedBudgetExceededAfterCompletion,
+                    terminatedAfterTerminalProgress: monitor.terminatedAfterTerminalProgress,
                     timedOut: monitor.timedOut,
                     repetitionKilled: monitor.repetitionKilled,
                     maxTurnsExceeded: monitor.maxTurnsExceeded
