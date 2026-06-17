@@ -353,6 +353,9 @@ enum WorkspaceAppStudioBuilder {
         if idea.id == "agentic-workflow" {
             return agenticWorkflowManifest(for: idea)
         }
+        if idea.id == "parallel-agent-review" {
+            return parallelAgenticWorkflowManifest(for: idea)
+        }
         return operationalSurfaceManifest(intent: idea.name)
     }
 
@@ -1070,6 +1073,90 @@ enum WorkspaceAppStudioBuilder {
                     maxIterations: 5,
                     timeoutSeconds: 3600,
                     delaySeconds: 0
+                )
+            ],
+            permissions: WorkspaceAppPermissions(
+                reads: ["workspace.context", "appStorage.records"],
+                writes: ["appStorage.records", "task.drafts", "task.runs"],
+                defaultMode: idea.riskMode
+            )
+        )
+    }
+
+    /// A PARALLEL agentic workflow: fan one governed agent task out over every row of an
+    /// app-owned worklist, then reduce the fan-in into a single summary. Surfaces the Phase C
+    /// `task.fanOut` + `rows.reduce` primitives from the builder (the linear archetype only
+    /// chains sequential steps).
+    private static func parallelAgenticWorkflowManifest(for idea: WorkspaceAppStudioIdea) -> WorkspaceAppManifest {
+        WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(
+                id: idea.id,
+                name: idea.name,
+                icon: "person.3.sequence",
+                description: idea.problem,
+                tags: ["agentic", "workflow", "parallel"],
+                archetypes: ["Agentic Workflow", "Parallel Review"]
+            ),
+            storage: WorkspaceAppStorageSchema(tables: [
+                WorkspaceAppStorageTable(name: "review_items", columns: [
+                    WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true),
+                    WorkspaceAppStorageColumn(name: "title", type: "text", required: true),
+                    WorkspaceAppStorageColumn(name: "status", type: "text", required: true)
+                ]),
+                WorkspaceAppStorageTable(name: "review_summaries", columns: [
+                    WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true),
+                    WorkspaceAppStorageColumn(name: "reviewed_count", type: "text", required: true),
+                    WorkspaceAppStorageColumn(name: "summary", type: "text"),
+                    WorkspaceAppStorageColumn(name: "updated_at", type: "datetime")
+                ])
+            ]),
+            sources: [
+                WorkspaceAppSource(id: "workspace_process", mode: "read", sourceRef: "conversation")
+            ],
+            views: [
+                WorkspaceAppViewSpec(
+                    id: "review_overview",
+                    type: "pipelineRun",
+                    title: "Parallel Review",
+                    table: "review_summaries",
+                    widgets: [
+                        WorkspaceAppWidgetSpec(id: "summary_count", type: "metric", label: "Summaries", aggregation: "count")
+                    ]
+                ),
+                WorkspaceAppViewSpec(id: "worklist", type: "reviewQueue", title: "Worklist", table: "review_items")
+            ],
+            actions: [
+                WorkspaceAppActionSpec(id: "list_items", type: "appStorage.query", label: "List Items", table: "review_items"),
+                WorkspaceAppActionSpec(
+                    id: "review_one",
+                    type: "task.createAndRun",
+                    label: "Review one item",
+                    taskTitle: "Review a worklist item",
+                    taskGoal: "Review the bound worklist item and produce a verdict the summary step can fold."
+                ),
+                WorkspaceAppActionSpec(
+                    id: "fan_out_reviews",
+                    type: "task.fanOut",
+                    label: "Review all items in parallel",
+                    fanOutStep: "review_one"
+                ),
+                WorkspaceAppActionSpec(
+                    id: "summarize_reviews",
+                    type: "rows.reduce",
+                    label: "Summarize reviews",
+                    reduceStrategy: "count"
+                ),
+                WorkspaceAppActionSpec(
+                    id: "record_summary",
+                    type: "appStorage.insert",
+                    label: "Record summary",
+                    table: "review_summaries"
+                ),
+                WorkspaceAppActionSpec(
+                    id: "run_parallel_review",
+                    type: "pipeline.run",
+                    label: "Run parallel review",
+                    steps: ["list_items", "fan_out_reviews", "summarize_reviews", "record_summary"]
                 )
             ],
             permissions: WorkspaceAppPermissions(

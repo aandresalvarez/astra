@@ -57,4 +57,40 @@ struct WorkspaceAppAgenticWorkflowTests {
         #expect(loop.gateField?.isEmpty == false)
         #expect(!loop.steps.isEmpty)
     }
+
+    @Test("an agentic request also proposes the PARALLEL archetype")
+    func ideatorProposesParallelArchetype() {
+        let ideas = WorkspaceAppStudioIdeator.proposals(
+            for: WorkspaceAppStudioIdeationContext(userRequest: "run a workflow of agents over many items")
+        )
+        #expect(ideas.contains { $0.id == "parallel-agent-review" })
+    }
+
+    @MainActor
+    @Test("the parallel archetype generates a valid fan-out -> reduce manifest (Phase C in the builder)")
+    func parallelArchetypeComposesFanOutAndReduce() throws {
+        let idea = try #require(
+            WorkspaceAppStudioIdeator.proposals(
+                for: WorkspaceAppStudioIdeationContext(userRequest: "review all items in parallel with agents")
+            ).first { $0.id == "parallel-agent-review" }
+        )
+        let workspace = Workspace(name: "Parallel", primaryPath: "/tmp/parallel-agentic-test")
+        let manifest = WorkspaceAppStudioBuilder.draft(from: idea, workspace: workspace).manifest
+
+        #expect(WorkspaceAppManifestValidator.validate(manifest).isValid)
+        #expect(manifest.app.archetypes.contains("Parallel Review"))
+
+        // The fan-out launches one task per bound row; its child is a task.createAndRun.
+        let fanOut = try #require(manifest.actions.first { $0.type == "task.fanOut" })
+        let child = try #require(manifest.actions.first { $0.id == fanOut.fanOutStep })
+        #expect(child.type == "task.createAndRun")
+
+        // A reduce folds the fan-in, and the pipeline composes list -> fan-out -> reduce -> record.
+        #expect(manifest.actions.contains { $0.type == "rows.reduce" })
+        let pipeline = try #require(manifest.actions.first { $0.type == "pipeline.run" })
+        #expect(pipeline.steps.contains("fan_out_reviews"))
+        #expect(pipeline.steps.contains("summarize_reviews"))
+        // The fan-out is a direct pipeline step (the validator forbids it inside a loop).
+        #expect(!manifest.actions.contains { $0.type == "loop.run" })
+    }
 }

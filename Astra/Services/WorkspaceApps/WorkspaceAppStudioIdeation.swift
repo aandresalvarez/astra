@@ -65,6 +65,18 @@ enum WorkspaceAppStudioIdeator {
                 automation: ["Manual run; bounded loop until done"],
                 riskMode: .approvalRequired,
                 accelerationRationale: "Turns a repeated multi-step process into a reusable app that orchestrates ASTRA agents with explicit agent and human approval gates instead of ad hoc task chains."
+            ),
+            WorkspaceAppStudioIdea(
+                id: "parallel-agent-review",
+                name: "Parallel Agent Review",
+                problem: "Fan a governed agent task out over every item in a worklist at once, then reduce the parallel results into a single summary — for triage, bulk review, or multi-record checks.",
+                requiredSources: ["App storage worklist"],
+                appStorage: ["review_items", "review_summaries"],
+                mainViews: ["Parallel Review", "Worklist"],
+                actions: ["Run parallel review", "Review one item (agent task)", "Fan out over worklist", "Summarize reviews"],
+                automation: ["Manual run; fan-out barrier resumes when all reviews complete"],
+                riskMode: .approvalRequired,
+                accelerationRationale: "Surfaces ASTRA's parallel fan-out + reduce primitives as a reusable app: one agent per worklist row running concurrently behind a barrier, instead of a slow sequential loop."
             )
         ]
     }
