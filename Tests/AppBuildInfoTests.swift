@@ -12,16 +12,20 @@ struct AppBuildInfoTests {
             "ASTRAChannel": "prod",
             "ASTRAGitCommit": "83768b3a1234",
             "ASTRABuildDate": "2026-06-17T18:22:17Z"
-        ])
+        ], bundlePath: "/tmp/Current/dist/ASTRA.app", executablePath: "/tmp/Current/dist/ASTRA.app/Contents/MacOS/ASTRA")
 
         #expect(info.displayName == "ASTRA")
         #expect(info.version == "0.1.1")
         #expect(info.build == "12")
         #expect(info.gitCommit == "83768b3a1234")
         #expect(info.buildDate == "2026-06-17T18:22:17Z")
+        #expect(info.bundlePath == "/tmp/Current/dist/ASTRA.app")
+        #expect(info.executablePath == "/tmp/Current/dist/ASTRA.app/Contents/MacOS/ASTRA")
         #expect(info.channelDisplayName == "ASTRA")
         #expect(info.installedBuildSummary == "ASTRA 0.1.1 (12)")
-        #expect(info.provenanceSummary == "ASTRA 0.1.1 (12), commit 83768b3a1234, built 2026-06-17T18:22:17Z")
+        #expect(info.provenanceSummary == "ASTRA 0.1.1 (12), commit 83768b3a1234, built 2026-06-17T18:22:17Z, bundle /tmp/Current/dist/ASTRA.app")
+        #expect(info.auditFields["app_bundle_path"] == "/tmp/Current/dist/ASTRA.app")
+        #expect(info.auditFields["app_executable_path"] == "/tmp/Current/dist/ASTRA.app/Contents/MacOS/ASTRA")
     }
 
     @Test("falls back when bundle values are missing or blank")
@@ -37,6 +41,8 @@ struct AppBuildInfoTests {
         #expect(info.build == "0")
         #expect(info.gitCommit == "unknown")
         #expect(info.buildDate == "unknown")
+        #expect(info.bundlePath == "unknown")
+        #expect(info.executablePath == "unknown")
     }
 
     @Test("maps development channel to display name")

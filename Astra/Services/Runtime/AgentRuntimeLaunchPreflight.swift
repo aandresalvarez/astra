@@ -233,16 +233,13 @@ enum AgentRuntimeLaunchPreflight {
         runtime: AgentRuntimeID
     ) -> AgentRuntimeLaunchPreflightResult {
         let buildInfo = AppBuildInfo.current
-        var fields: [String: String] = [
+        var fields = buildInfo.auditFields
+        fields.merge([
             "source": "remote_workspace_preflight",
             "phase": phase,
             "runtime": runtime.rawValue,
-            "app_build": buildInfo.build,
-            "app_version": buildInfo.version,
-            "app_git_commit": buildInfo.gitCommit,
-            "app_build_date": buildInfo.buildDate,
             "diagnostic_result": AgentRuntimeLaunchPreflightResult.Status.remoteWorkspacePreflightPassed.rawValue
-        ]
+        ]) { _, new in new }
 
         guard let workspace = task.workspace else {
             fields["result"] = "no_workspace"
@@ -419,6 +416,7 @@ enum AgentRuntimeLaunchPreflight {
             task: task,
             scope: .providerLaunch(contextText: contextText)
         )
+        fields.merge(AppBuildInfo.current.auditFields) { _, new in new }
         fields["phase"] = phase
         fields["result"] = issues.isEmpty ? "passed" : "missing_resources"
         for (key, value) in CapabilityRuntimeIntegrityService.summaryFields(for: issues) {

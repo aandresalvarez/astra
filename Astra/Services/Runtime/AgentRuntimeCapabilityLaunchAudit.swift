@@ -11,32 +11,28 @@ enum AgentRuntimeCapabilityLaunchAudit {
     ) {
         let scope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
         let buildInfo = AppBuildInfo.current
-        AppLogger.audit(.capabilityResolved, category: "Worker", taskID: task.id, fields: [
-            "runtime": runtime.rawValue,
-            "phase": phase,
-            "app_build": buildInfo.build,
-            "app_version": buildInfo.version,
-            "app_git_commit": buildInfo.gitCommit,
-            "app_build_date": buildInfo.buildDate,
-            "scope_pruned": String(scope.prunedForBrowserTask),
-            "scope_excluded_skill_names": CapabilityAudit.compactNames(scope.excludedSkillNames),
-            "workspace_id": task.workspace?.id.uuidString ?? "none",
-            "workspace_enabled_capabilities_count": String(task.workspace?.enabledCapabilityIDs.count ?? 0),
-            "workspace_enabled_capability_ids": CapabilityAudit.compactNames(task.workspace?.enabledCapabilityIDs ?? []),
-            "workspace_enabled_global_skills_count": String(task.workspace?.enabledGlobalSkillIDs.count ?? 0),
-            "workspace_enabled_global_connectors_count": String(task.workspace?.enabledGlobalConnectorIDs.count ?? 0),
-            "workspace_enabled_global_tools_count": String(task.workspace?.enabledGlobalToolIDs.count ?? 0),
-            "task_skill_count": String(task.skills.count),
-            "task_skill_snapshot_count": String(task.skillSnapshots.count),
-            "resolved_skill_count": String(scope.behaviorSkills.count),
-            "connector_count": String(scope.connectors.count),
-            "local_tool_count": String(scope.localTools.count),
-            "skill_names": CapabilityAudit.compactNames(task.skills.map(\.name)),
-            "resolved_skill_names": CapabilityAudit.compactNames(scope.behaviorSkills.map(\.name)),
-            "connector_names": CapabilityAudit.compactNames(scope.connectors.map(\.name)),
-            "connector_service_types": CapabilityAudit.compactNames(scope.connectors.map(\.serviceType)),
-            "local_tool_names": CapabilityAudit.compactNames(scope.localTools.map(\.name))
-        ], level: .debug, fieldMaxLength: 240)
+        var fields = buildInfo.auditFields
+        fields["runtime"] = runtime.rawValue
+        fields["phase"] = phase
+        fields["scope_pruned"] = String(scope.prunedForBrowserTask)
+        fields["scope_excluded_skill_names"] = CapabilityAudit.compactNames(scope.excludedSkillNames)
+        fields["workspace_id"] = task.workspace?.id.uuidString ?? "none"
+        fields["workspace_enabled_capabilities_count"] = String(task.workspace?.enabledCapabilityIDs.count ?? 0)
+        fields["workspace_enabled_capability_ids"] = CapabilityAudit.compactNames(task.workspace?.enabledCapabilityIDs ?? [])
+        fields["workspace_enabled_global_skills_count"] = String(task.workspace?.enabledGlobalSkillIDs.count ?? 0)
+        fields["workspace_enabled_global_connectors_count"] = String(task.workspace?.enabledGlobalConnectorIDs.count ?? 0)
+        fields["workspace_enabled_global_tools_count"] = String(task.workspace?.enabledGlobalToolIDs.count ?? 0)
+        fields["task_skill_count"] = String(task.skills.count)
+        fields["task_skill_snapshot_count"] = String(task.skillSnapshots.count)
+        fields["resolved_skill_count"] = String(scope.behaviorSkills.count)
+        fields["connector_count"] = String(scope.connectors.count)
+        fields["local_tool_count"] = String(scope.localTools.count)
+        fields["skill_names"] = CapabilityAudit.compactNames(task.skills.map(\.name))
+        fields["resolved_skill_names"] = CapabilityAudit.compactNames(scope.behaviorSkills.map(\.name))
+        fields["connector_names"] = CapabilityAudit.compactNames(scope.connectors.map(\.name))
+        fields["connector_service_types"] = CapabilityAudit.compactNames(scope.connectors.map(\.serviceType))
+        fields["local_tool_names"] = CapabilityAudit.compactNames(scope.localTools.map(\.name))
+        AppLogger.audit(.capabilityResolved, category: "Worker", taskID: task.id, fields: fields, level: .debug, fieldMaxLength: 240)
     }
 
     @MainActor

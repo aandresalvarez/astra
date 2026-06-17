@@ -246,7 +246,9 @@ public struct ASTRAApp: App {
             "version": appInfo.version,
             "build": appInfo.build,
             "git_commit": appInfo.gitCommit,
-            "build_date": appInfo.buildDate
+            "build_date": appInfo.buildDate,
+            "bundle_path": appInfo.bundlePath,
+            "executable_path": appInfo.executablePath
         ], fieldMaxLength: 120)
         // AppKit/NSApplication setup (activation policy, dock icon, foreground
         // activation, App Shortcuts) is deferred to ASTRAAppDelegate's

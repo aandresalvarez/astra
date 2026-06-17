@@ -392,6 +392,8 @@ struct AgentRuntimeLaunchPreflightTests {
         #expect(!result.didPass)
         #expect(result.reason == "capability_runtime_resources_missing")
         #expect(result.auditFields["diagnostic_result"] == "capabilityRuntimeResourcesMissing")
+        #expect(result.auditFields["app_bundle_path"]?.isEmpty == false)
+        #expect(result.auditFields["app_executable_path"]?.isEmpty == false)
         #expect(task.status == .failed)
         #expect(run.stopReason == "capability_runtime_resources_missing")
         #expect(task.events.contains { $0.type == "error" && $0.payload.contains("Jira") && $0.payload.contains("connector") })
