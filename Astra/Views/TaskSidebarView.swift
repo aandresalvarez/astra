@@ -2210,75 +2210,19 @@ struct SearchPanelOverlay: View {
     }
 
     private var recentTasks: [AgentTask] {
-        PerformanceTelemetry.measure(
-            "search_panel_recent_tasks",
-            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
-            fields: [
-                "task_count": PerformanceTelemetryFields.count(tasks.count),
-                "workspace_count": PerformanceTelemetryFields.count(workspaces.count)
-            ],
-            resultFields: { tasks in
-                [
-                    "result_count": PerformanceTelemetryFields.count(tasks.count)
-                ]
-            }
-        ) {
-            Array(tasks.sorted { $0.updatedAt > $1.updatedAt }.prefix(9))
-        }
+        SearchPanelOverlayResults.recentTasks(tasks, workspaces: workspaces)
     }
 
     private var filteredTasks: [AgentTask] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return recentTasks }
-        return PerformanceTelemetry.measure(
-            "search_panel_filter_tasks",
-            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
-            fields: [
-                "query_length": PerformanceTelemetryFields.count(query.count),
-                "task_count": PerformanceTelemetryFields.count(tasks.count),
-                "workspace_count": PerformanceTelemetryFields.count(workspaces.count)
-            ],
-            resultFields: { tasks in
-                [
-                    "result_count": PerformanceTelemetryFields.count(tasks.count)
-                ]
-            }
-        ) {
-            tasks.filter {
-                $0.title.localizedCaseInsensitiveContains(query) ||
-                    $0.goal.localizedCaseInsensitiveContains(query) ||
-                    ($0.workspace?.name.localizedCaseInsensitiveContains(query) ?? false) ||
-                    ($0.workspace?.primaryPath.localizedCaseInsensitiveContains(query) ?? false)
-            }
-            .sorted { $0.updatedAt > $1.updatedAt }
-            .prefix(12)
-            .map { $0 }
-        }
+        SearchPanelOverlayResults.filteredTasks(searchText: searchText, tasks: tasks, workspaces: workspaces)
     }
 
     private var filteredWorkspaces: [Workspace] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return [] }
-        return PerformanceTelemetry.measure(
-            "search_panel_filter_workspaces",
-            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
-            fields: [
-                "query_length": PerformanceTelemetryFields.count(query.count),
-                "task_count": PerformanceTelemetryFields.count(tasks.count),
-                "workspace_count": PerformanceTelemetryFields.count(workspaces.count)
-            ],
-            resultFields: { workspaces in
-                [
-                    "result_count": PerformanceTelemetryFields.count(workspaces.count)
-                ]
-            }
-        ) {
-            workspaces.filter {
-                $0.name.localizedCaseInsensitiveContains(query) ||
-                    $0.primaryPath.localizedCaseInsensitiveContains(query)
-            }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        }
+        SearchPanelOverlayResults.filteredWorkspaces(
+            searchText: searchText,
+            workspaces: workspaces,
+            taskCount: tasks.count
+        )
     }
 
     private func toggleStarred(for workspace: Workspace) {
