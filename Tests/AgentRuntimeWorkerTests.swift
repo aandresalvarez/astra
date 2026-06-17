@@ -288,6 +288,41 @@ struct TaskDeliverableExpectationTests {
         #expect(TaskDeliverableExpectation.requiresDeliverableArtifact(task))
     }
 
+    @Test("Input and example lists do not require output artifacts")
+    func inputAndExampleListsDoNotRequireOutputArtifacts() {
+        let task = AgentTask(
+            title: "Analyze inputs",
+            goal: """
+            Use these files as inputs:
+            - ./data.csv
+            - ./examples.json
+
+            Reference examples:
+            1. ./sample.txt
+            2. ./notes.md
+
+            Summarize the answer in chat.
+            """
+        )
+
+        #expect(TaskDeliverableExpectation.requiredOutputFilenames(task).isEmpty)
+        #expect(!TaskDeliverableExpectation.requiresDeliverableArtifact(task))
+    }
+
+    @Test("Required input prose does not require output artifacts")
+    func requiredInputProseDoesNotRequireOutputArtifacts() {
+        let task = AgentTask(
+            title: "Analyze input",
+            goal: """
+            Required input: ./data.csv
+            Summarize the answer in chat.
+            """
+        )
+
+        #expect(TaskDeliverableExpectation.requiredOutputFilenames(task).isEmpty)
+        #expect(!TaskDeliverableExpectation.requiresDeliverableArtifact(task))
+    }
+
     @Test("Artifact detector ignores ASTRA scaffold around informational file context")
     func artifactDetectorIgnoresAstraScaffoldAroundInformationalFileContext() {
         let task = AgentTask(

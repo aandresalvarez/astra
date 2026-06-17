@@ -46,13 +46,28 @@ enum TaskDeliverableExpectation {
             .joined(separator: "\n")
 
         var filenames: Set<String> = []
+        var acceptsDeliverableListItems = false
         for rawLine in text.components(separatedBy: .newlines) {
             let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !line.isEmpty else { continue }
+            guard !line.isEmpty else {
+                acceptsDeliverableListItems = false
+                continue
+            }
 
             if let listSegment = explicitDeliverableListSegment(from: line) {
-                filenames.formUnion(outputFilenames(in: listSegment))
+                if acceptsDeliverableListItems {
+                    filenames.formUnion(outputFilenames(in: listSegment))
+                }
+                if lineStatesNamedOutput(line) {
+                    filenames.formUnion(outputFilenames(in: proseOutputSegment(from: line)))
+                }
                 continue
+            }
+
+            if lineStartsDeliverableListContext(line) {
+                acceptsDeliverableListItems = true
+            } else if lineStartsNonDeliverableListContext(line) || lineLooksLikeSectionHeader(line) {
+                acceptsDeliverableListItems = false
             }
 
             if lineStatesNamedOutput(line) {
@@ -181,10 +196,32 @@ enum TaskDeliverableExpectation {
         return String(line[range.upperBound...])
     }
 
+    private static func lineStartsDeliverableListContext(_ line: String) -> Bool {
+        let lower = line.lowercased()
+        if containsAnyWholeWord(lower, ["deliverable", "deliverables", "output", "outputs"]) {
+            return true
+        }
+
+        return matches(lower, pattern: #"\brequired\b.*\b(?:file|files|filename|filenames|artifact|artifacts)\b"#)
+            || matches(lower, pattern: #"\b(?:file|files|filename|filenames|artifact|artifacts)\b.*\brequired\b"#)
+    }
+
+    private static func lineStartsNonDeliverableListContext(_ line: String) -> Bool {
+        let lower = line.lowercased()
+        return containsAnyWholeWord(lower, [
+            "input", "inputs", "example", "examples", "reference", "references",
+            "source", "sources", "dependency", "dependencies", "context"
+        ])
+    }
+
+    private static func lineLooksLikeSectionHeader(_ line: String) -> Bool {
+        line.hasSuffix(":") && line.count <= 120
+    }
+
     private static func lineStatesNamedOutput(_ line: String) -> Bool {
         let lower = line.lowercased()
         return outputActionRange(in: lower) != nil
-            || containsAnyWholeWord(lower, ["required", "deliverable", "deliverables"])
+            || lineStartsDeliverableListContext(line)
             || lower.contains("named ")
             || lower.contains("file named")
     }
@@ -232,6 +269,10 @@ enum TaskDeliverableExpectation {
             }
             return String(text[range]).lowercased()
         })
+    }
+
+    private static func matches(_ text: String, pattern: String) -> Bool {
+        text.range(of: pattern, options: .regularExpression) != nil
     }
 
     private static func deliverableRelevantText(from rawText: String) -> String {
