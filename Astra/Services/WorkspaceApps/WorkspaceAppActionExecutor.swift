@@ -562,7 +562,10 @@ struct WorkspaceAppActionExecutor {
         ))
         switch action.type {
         case "appStorage.insert":
-            guard let table = input.table else { throw WorkspaceAppActionExecutionError.missingTable }
+            // Fall back to the action's declared table (matching update/delete/query) so an insert
+            // used as a pipeline step — where bindingForward leaves input.table nil — resolves its
+            // target instead of throwing missingTable.
+            guard let table = input.table ?? action.table else { throw WorkspaceAppActionExecutionError.missingTable }
             let insertRecord = input.effectiveRecord
             guard !insertRecord.isEmpty else { throw WorkspaceAppActionExecutionError.missingRecord }
             do {

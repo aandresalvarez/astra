@@ -712,7 +712,7 @@ enum WorkspaceAppStudioBuilder {
                 )
             ],
             actions: [
-                WorkspaceAppActionSpec(id: "list_items", type: "appStorage.query", label: "List Items"),
+                WorkspaceAppActionSpec(id: "list_items", type: "appStorage.query", label: "List Items", table: "items"),
                 WorkspaceAppActionSpec(id: "add_item", type: "appStorage.insert", label: "Add Item", table: "items"),
                 WorkspaceAppActionSpec(id: "update_item", type: "appStorage.update", label: "Update Item", table: "items"),
                 WorkspaceAppActionSpec(id: "delete_item", type: "appStorage.delete", label: "Delete Item", table: "items"),
@@ -787,7 +787,7 @@ enum WorkspaceAppStudioBuilder {
                 WorkspaceAppViewSpec(id: "review_queue", type: "table", title: "Review Queue", table: "review_items")
             ],
             actions: [
-                WorkspaceAppActionSpec(id: "list_review_items", type: "appStorage.query", label: "List Review Items"),
+                WorkspaceAppActionSpec(id: "list_review_items", type: "appStorage.query", label: "List Review Items", table: "review_items"),
                 // A populating path: the Add action renders an inline record form so the app can
                 // fill its own storage. Without this the dashboard/table render over an empty table
                 // the user can never fill (the read-only-shell defect).

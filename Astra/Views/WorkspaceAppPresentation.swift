@@ -833,7 +833,7 @@ enum WorkspaceAppDetailActionsPresentation {
         let label = action.label?.trimmingCharacters(in: .whitespacesAndNewlines)
         switch action.type {
         case "appStorage.query":
-            guard let table = storageTables.first?.name else {
+            guard let table = action.table ?? storageTables.first?.name else {
                 return WorkspaceAppDetailActionPresentation(
                     id: action.id,
                     label: label?.isEmpty == false ? label! : action.id,
@@ -853,7 +853,7 @@ enum WorkspaceAppDetailActionsPresentation {
             )
 
         case "appStorage.insert":
-            guard let table = storageTables.first?.name else {
+            guard let table = action.table ?? storageTables.first?.name else {
                 return WorkspaceAppDetailActionPresentation(
                     id: action.id,
                     label: label?.isEmpty == false ? label! : action.id,
