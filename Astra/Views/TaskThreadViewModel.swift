@@ -13,6 +13,7 @@ final class TaskThreadViewModel {
     private var snapshotRevision: Int = 0
 
     private static let liveSnapshotMinimumInterval: TimeInterval = 0.120
+    private static var terminalSnapshotCache = TaskThreadSnapshotCache()
 
     func reset(for task: AgentTask) {
         PerformanceTelemetry.measure(
@@ -34,16 +35,35 @@ final class TaskThreadViewModel {
         let trigger = TaskThreadSnapshotTrigger(task: task)
         guard snapshotTrigger != trigger else { return }
         snapshotTrigger = trigger
-        let input = TaskThreadSnapshotInput(task: task, maxRuns: expansionRunCount)
         var fields = Self.taskFields(task)
         fields.merge(Self.triggerFields(trigger), uniquingKeysWith: { _, new in new })
-        fields.merge(Self.inputFields(input), uniquingKeysWith: { _, new in new })
         fields.merge([
             "status": trigger.status.rawValue,
             "latest_run_status": trigger.latestRunStatus?.rawValue ?? "none"
         ], uniquingKeysWith: { _, new in new })
 
         snapshotTask?.cancel()
+        if let cacheKey = TaskThreadSnapshotCacheKey(task: task, trigger: trigger, maxRuns: expansionRunCount),
+           let cachedSnapshot = Self.terminalSnapshotCache.snapshot(for: cacheKey) {
+            snapshot = cachedSnapshot
+            lastSnapshotApplyAt = Date()
+            fields.merge(Self.snapshotFields(cachedSnapshot), uniquingKeysWith: { _, new in new })
+            PerformanceTelemetry.log("thread_snapshot_cache", level: .debug, fields: fields.merging([
+                "cache_state": "hit"
+            ], uniquingKeysWith: { _, new in new }))
+            Self.logSnapshotState(
+                snapshot: cachedSnapshot,
+                trigger: trigger,
+                taskID: task.id,
+                workspaceID: task.workspace?.id
+            )
+            return
+        }
+
+        let input = TaskThreadSnapshotInput(task: task, maxRuns: expansionRunCount)
+        fields.merge(Self.inputFields(input), uniquingKeysWith: { _, new in new })
+        let cacheKey = TaskThreadSnapshotCacheKey(task: task, trigger: trigger, maxRuns: expansionRunCount)
+
         let isLive = trigger.status == .running
             || trigger.status == .queued
             || trigger.latestRunStatus == .running
@@ -64,6 +84,9 @@ final class TaskThreadViewModel {
             await MainActor.run {
                 guard !Task.isCancelled, revision == self.snapshotRevision else { return }
                 self.snapshot = builtSnapshot
+                if let cacheKey {
+                    Self.terminalSnapshotCache.store(builtSnapshot, for: cacheKey)
+                }
                 self.lastSnapshotApplyAt = Date()
                 Self.logSnapshotState(
                     snapshot: builtSnapshot,
@@ -73,6 +96,14 @@ final class TaskThreadViewModel {
                 )
             }
         }
+    }
+
+    static func resetSnapshotCacheForTesting() {
+        terminalSnapshotCache.removeAll()
+    }
+
+    static var snapshotCacheStatsForTesting: TaskThreadSnapshotCache.Stats {
+        terminalSnapshotCache.stats
     }
 
     private static func taskFields(_ task: AgentTask) -> [String: String] {
@@ -100,6 +131,16 @@ final class TaskThreadViewModel {
             "snapshot_input_runs": PerformanceTelemetryFields.count(input.runs.count),
             "omitted_events": PerformanceTelemetryFields.count(input.omittedEventCount),
             "omitted_runs": PerformanceTelemetryFields.count(input.omittedRunCount)
+        ]
+    }
+
+    private static func snapshotFields(_ snapshot: TaskThreadSnapshot) -> [String: String] {
+        [
+            "snapshot_input_events": PerformanceTelemetryFields.count(snapshot.sortedEvents.count),
+            "snapshot_input_runs": PerformanceTelemetryFields.count(snapshot.sortedRuns.count),
+            "omitted_events": PerformanceTelemetryFields.count(snapshot.omittedEventCount),
+            "omitted_runs": PerformanceTelemetryFields.count(snapshot.omittedRunCount),
+            "conversation_item_count": PerformanceTelemetryFields.count(snapshot.conversationItems.count)
         ]
     }
 

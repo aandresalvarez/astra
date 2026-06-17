@@ -1032,6 +1032,148 @@ struct TaskThreadSnapshotTrigger: Equatable {
     }
 }
 
+struct TaskThreadSnapshotCacheKey: Hashable, Sendable {
+    let taskID: UUID
+    let status: TaskStatus
+    let goal: String
+    let createdAt: Date
+    let completedAt: Date?
+    let maxRuns: Int
+    let eventCount: Int
+    let runCount: Int
+    let latestRunID: UUID?
+    let latestRunStatus: RunStatus?
+    let eventSignatures: [TaskThreadEventCacheSignature]
+    let runSignatures: [TaskThreadRunCacheSignature]
+
+    init?(
+        task: AgentTask,
+        trigger: TaskThreadSnapshotTrigger,
+        maxRuns: Int
+    ) {
+        guard Self.isCacheable(trigger) else { return nil }
+        taskID = task.id
+        status = task.status
+        goal = task.goal
+        createdAt = task.createdAt
+        completedAt = task.completedAt
+        self.maxRuns = maxRuns
+        eventCount = task.events.count
+        runCount = task.runs.count
+        latestRunID = trigger.latestRunID
+        latestRunStatus = trigger.latestRunStatus
+        eventSignatures = task.events.map(TaskThreadEventCacheSignature.init(event:)).sorted()
+        runSignatures = task.runs.map(TaskThreadRunCacheSignature.init(run:)).sorted()
+    }
+
+    private static func isCacheable(_ trigger: TaskThreadSnapshotTrigger) -> Bool {
+        switch trigger.status {
+        case .running, .queued:
+            return false
+        default:
+            return trigger.latestRunStatus != .running
+        }
+    }
+}
+
+struct TaskThreadEventCacheSignature: Hashable, Comparable, Sendable {
+    let id: UUID
+    let runID: UUID?
+    let type: String
+    let payloadByteCount: Int
+    let timestamp: Date
+
+    init(event: TaskEvent) {
+        id = event.id
+        runID = event.run?.id
+        type = event.type
+        payloadByteCount = event.payload.utf8.count
+        timestamp = event.timestamp
+    }
+
+    static func < (lhs: TaskThreadEventCacheSignature, rhs: TaskThreadEventCacheSignature) -> Bool {
+        if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
+        return lhs.id.uuidString < rhs.id.uuidString
+    }
+}
+
+struct TaskThreadRunCacheSignature: Hashable, Comparable, Sendable {
+    let id: UUID
+    let status: RunStatus
+    let startedAt: Date
+    let completedAt: Date?
+    let outputByteCount: Int
+    let fileChangesByteCount: Int
+    let stopReason: String
+
+    init(run: TaskRun) {
+        id = run.id
+        status = run.status
+        startedAt = run.startedAt
+        completedAt = run.completedAt
+        outputByteCount = run.output.utf8.count
+        fileChangesByteCount = run.fileChangesJSON.utf8.count
+        stopReason = run.stopReason
+    }
+
+    static func < (lhs: TaskThreadRunCacheSignature, rhs: TaskThreadRunCacheSignature) -> Bool {
+        if lhs.startedAt != rhs.startedAt { return lhs.startedAt < rhs.startedAt }
+        return lhs.id.uuidString < rhs.id.uuidString
+    }
+}
+
+struct TaskThreadSnapshotCache {
+    struct Stats: Equatable {
+        var hitCount = 0
+        var missCount = 0
+        var entryCount = 0
+    }
+
+    private let maxEntries: Int
+    private var entries: [TaskThreadSnapshotCacheKey: TaskThreadSnapshot] = [:]
+    private var recentKeys: [TaskThreadSnapshotCacheKey] = []
+    private(set) var stats = Stats()
+
+    init(maxEntries: Int = 12) {
+        self.maxEntries = max(1, maxEntries)
+    }
+
+    mutating func snapshot(for key: TaskThreadSnapshotCacheKey) -> TaskThreadSnapshot? {
+        guard let snapshot = entries[key] else {
+            stats.missCount += 1
+            return nil
+        }
+        stats.hitCount += 1
+        markRecentlyUsed(key)
+        return snapshot
+    }
+
+    mutating func store(_ snapshot: TaskThreadSnapshot, for key: TaskThreadSnapshotCacheKey) {
+        entries[key] = snapshot
+        markRecentlyUsed(key)
+        trimIfNeeded()
+        stats.entryCount = entries.count
+    }
+
+    mutating func removeAll() {
+        entries.removeAll()
+        recentKeys.removeAll()
+        stats = Stats()
+    }
+
+    private mutating func markRecentlyUsed(_ key: TaskThreadSnapshotCacheKey) {
+        recentKeys.removeAll { $0 == key }
+        recentKeys.append(key)
+    }
+
+    private mutating func trimIfNeeded() {
+        while recentKeys.count > maxEntries {
+            let evicted = recentKeys.removeFirst()
+            entries.removeValue(forKey: evicted)
+        }
+    }
+}
+
 struct TaskGeneratedFilesTrigger: Equatable {
     let taskID: UUID
     let taskFolder: String

@@ -149,6 +149,9 @@ struct WorkspaceRightRailView: View {
     @State private var isMemoryComposerVisible = false
     @State private var expandedWorkspaceSetupItems: Set<WorkspaceSetupItem> = []
     @State private var approvedCapabilityPackages: [PluginPackage] = PluginCatalog.builtInPackages
+    @State private var approvedCapabilityPackagesLoaded = false
+    @State private var capabilityApprovalRecords: [CapabilityApprovalRecord] = []
+    @State private var capabilityRailSnapshotCache = CapabilityRailSnapshotCache()
     @State private var capabilityError: String?
     @State private var capabilityPrerequisiteStatuses: [String: HealthStatus] = [:]
     @State private var scrollMetrics = RightRailScrollMetrics()
@@ -175,7 +178,7 @@ struct WorkspaceRightRailView: View {
     private var catalogPolicyContext: CapabilityCatalogPolicyContext {
         CapabilityCatalogPolicyContext.currentUser(
             workspace: workspace,
-            approvalRecords: CapabilityApprovalStore().records()
+            approvalRecords: capabilityApprovalRecords
         )
     }
 
@@ -341,7 +344,8 @@ struct WorkspaceRightRailView: View {
     // MARK: - Unified Configure Panel
 
     private var configurePanel: some View {
-        let snapshot = capabilityRailSnapshot
+        let signature = capabilityRailSnapshotSignature
+        let snapshot = capabilityRailSnapshotCache.snapshot(for: signature) ?? .empty
 
         return VStack(alignment: .leading, spacing: panelSpacing) {
             if hasGitRepositories {
@@ -365,11 +369,16 @@ struct WorkspaceRightRailView: View {
         }
         .tint(Stanford.lagunita)
         .onAppear {
+            reloadCapabilityApprovalRecords()
             loadSSHConnections()
             refreshApprovedCapabilities()
             refreshCapabilityPrerequisiteStatuses()
+            rebuildCapabilityRailSnapshot(for: capabilityRailSnapshotSignature)
             applyConfigureDefaults()
             checkGitRepositories()
+        }
+        .task(id: signature) {
+            rebuildCapabilityRailSnapshot(for: signature)
         }
         .onChange(of: workspace.primaryPath) {
             loadSSHConnections()
@@ -929,38 +938,91 @@ struct WorkspaceRightRailView: View {
         }
     }
 
-    private var capabilityRailSnapshot: CapabilityRailSnapshot {
-        PerformanceTelemetry.measure(
+    private var capabilityRailSnapshotSignature: CapabilityRailSnapshotSignature {
+        CapabilityRailSnapshotSignature(
+            workspace: workspace,
+            globalSkills: globalSkills,
+            globalConnectors: globalConnectors,
+            globalTools: globalTools,
+            packages: approvedCapabilityPackages,
+            approvalRecords: capabilityApprovalRecords,
+            prerequisiteStatuses: capabilityPrerequisiteStatuses
+        )
+    }
+
+    private var capabilityRailTelemetryFields: [String: String] {
+        [
+            "workspace_id": PerformanceTelemetryFields.abbreviatedID(workspace.id),
+            "package_count": PerformanceTelemetryFields.count(approvedCapabilityPackages.count)
+        ]
+    }
+
+    private func rebuildCapabilityRailSnapshot(for signature: CapabilityRailSnapshotSignature) {
+        guard signature == capabilityRailSnapshotSignature else { return }
+        guard !capabilityRailSnapshotCache.matches(signature) else { return }
+
+        let snapshot = PerformanceTelemetry.measure(
             "workspace_right_rail_capability_snapshot",
             thresholdMilliseconds: 20,
-            fields: [
-                "workspace_id": workspace.id.uuidString,
-                "package_count": String(approvedCapabilityPackages.count)
-            ]
+            fields: capabilityRailTelemetryFields.merging(["cache_state": "miss"], uniquingKeysWith: { _, new in new })
         ) {
-            let currentCapabilities = capabilities
-            var cachedStates: [String: CapabilityPackageState] = [:]
+            makeCapabilityRailSnapshot()
+        }
+        capabilityRailSnapshotCache.store(snapshot, for: signature)
+    }
 
-            func state(for package: PluginPackage) -> CapabilityPackageState {
-                if let cached = cachedStates[package.id] {
-                    return cached
-                }
-                let state = CapabilityPackageState(
-                    package: package,
-                    workspace: workspace,
-                    capabilities: currentCapabilities
-                )
-                cachedStates[package.id] = state
-                return state
+    private func makeCapabilityRailSnapshot() -> CapabilityRailSnapshot {
+        let telemetryFields = capabilityRailTelemetryFields
+        let currentCapabilities = capabilities
+        let resourceIndex = PerformanceTelemetry.measure(
+            "workspace_right_rail_capability_resource_index",
+            thresholdMilliseconds: 20,
+            fields: telemetryFields
+        ) {
+            CapabilityRailWorkspaceResourceIndex(
+                workspace: workspace,
+                capabilities: currentCapabilities
+            )
+        }
+        var cachedStates: [String: CapabilityRailPackageSnapshotState] = [:]
+
+        func state(for package: PluginPackage) -> CapabilityRailPackageSnapshotState {
+            if let cached = cachedStates[package.id] {
+                return cached
             }
+            let state = PerformanceTelemetry.measure(
+                "workspace_right_rail_capability_package_state",
+                thresholdMilliseconds: 20,
+                fields: telemetryFields.merging(["package_id": package.id], uniquingKeysWith: { _, new in new })
+            ) {
+                CapabilityRailPackageSnapshotState(
+                    package: package,
+                    index: resourceIndex
+                )
+            }
+            cachedStates[package.id] = state
+            return state
+        }
 
-            let catalogPackages = CapabilityCatalogInventory.packages(
+        let catalogPackages = PerformanceTelemetry.measure(
+            "workspace_right_rail_capability_catalog_inventory",
+            thresholdMilliseconds: 20,
+            fields: telemetryFields
+        ) {
+            CapabilityCatalogInventory.packages(
                 catalogPackages: approvedCapabilityPackages,
                 capabilities: currentCapabilities,
                 policyContext: catalogPolicyContext
             )
+        }
 
-            let items = catalogPackages
+        let items = PerformanceTelemetry.measure(
+            "workspace_right_rail_capability_items",
+            thresholdMilliseconds: 20,
+            fields: telemetryFields,
+            resultFields: { ["item_count": PerformanceTelemetryFields.count($0.count)] }
+        ) {
+            catalogPackages
                 .compactMap { package -> RailCapabilityItem? in
                     let packageState = state(for: package)
                     guard packageState.isEnabled else { return nil }
@@ -971,12 +1033,12 @@ struct WorkspaceRightRailView: View {
                     )
                 }
                 .sorted(by: sortRailCapabilityItems)
-
-            return CapabilityRailSnapshot(
-                items: items,
-                isDraft: isDraftCapability
-            )
         }
+
+        return CapabilityRailSnapshot(
+            items: items,
+            isDraft: isDraftCapability
+        )
     }
 
     private var enabledSharedResourceCount: Int {
@@ -1001,7 +1063,7 @@ struct WorkspaceRightRailView: View {
     }
 
     private var railCapabilityItems: [RailCapabilityItem] {
-        capabilityRailSnapshot.items
+        capabilityRailSnapshotCache.snapshot(for: capabilityRailSnapshotSignature)?.items ?? []
     }
 
     private func sortRailCapabilityItems(_ lhs: RailCapabilityItem, _ rhs: RailCapabilityItem) -> Bool {
@@ -1038,7 +1100,7 @@ struct WorkspaceRightRailView: View {
 
     private func makePackageCapabilityItem(
         _ package: PluginPackage,
-        state: CapabilityPackageState,
+        state: CapabilityRailPackageSnapshotState,
         prerequisiteStatuses: [String: HealthStatus]
     ) -> RailCapabilityItem {
         let sharedResourceCount = state.linkedSkills.filter(\.isGlobal).count
@@ -1124,9 +1186,15 @@ struct WorkspaceRightRailView: View {
         let messages = connectors.flatMap { connector -> [String] in
             guard connector.authMethod != "none" else { return [] }
             let name = connector.name.isEmpty ? "Connector" : connector.name
-            let missing = connector.missingCredentialKeys()
-            if !missing.isEmpty {
-                return ["\(name): missing \(missing.joined(separator: ", "))"]
+            if connector.isStanfordOutlookMail {
+                var messages: [String] = []
+                if connector.outlookClientID.isEmpty {
+                    messages.append("\(name): missing Microsoft client ID")
+                }
+                if !connector.hasConfiguredOutlookTenantDomain {
+                    messages.append("\(name): missing tenant domain")
+                }
+                return messages
             }
             if connector.credentialKeys.isEmpty {
                 return ["\(name): no credentials configured"]
@@ -1169,45 +1237,6 @@ struct WorkspaceRightRailView: View {
             + tools.filter { !$0.isGlobal }.count
     }
 
-    private func linkedConnectors(for package: PluginPackage, linkedSkills: [Skill]) -> [Connector] {
-        let packageNames = Set(package.connectors.map(\.name))
-        let active = capabilities.activeConnectors.filter { packageNames.contains($0.name) }
-        return uniqueConnectors(active + linkedSkills.flatMap(\.connectors))
-    }
-
-    private func linkedTools(for package: PluginPackage, linkedSkills: [Skill]) -> [LocalTool] {
-        let packageNames = Set(package.localTools.map(\.name))
-        let active = capabilities.activeTools.filter { packageNames.contains($0.name) }
-        return uniqueTools(active + linkedSkills.flatMap(\.localTools))
-    }
-
-    private func hasEnabledElements(
-        package: PluginPackage,
-        linkedSkills: [Skill],
-        linkedConnectors: [Connector],
-        linkedTools: [LocalTool]
-    ) -> Bool {
-        if linkedSkills.contains(where: { skill in
-            skill.isGlobal ? workspace.enabledGlobalSkillIDs.contains(skill.id.uuidString) : workspace.skills.contains { $0.id == skill.id }
-        }) {
-            return true
-        }
-
-        if linkedConnectors.contains(where: { connector in
-            connector.isGlobal ? workspace.enabledGlobalConnectorIDs.contains(connector.id.uuidString) : workspace.connectors.contains { $0.id == connector.id }
-        }) {
-            return true
-        }
-
-        if linkedTools.contains(where: { tool in
-            tool.isGlobal ? workspace.enabledGlobalToolIDs.contains(tool.id.uuidString) : workspace.localTools.contains { $0.id == tool.id }
-        }) {
-            return true
-        }
-
-        return false
-    }
-
     private func setCapability(_ item: RailCapabilityItem, enabled: Bool) {
         switch item.source {
         case .package(let package):
@@ -1240,7 +1269,7 @@ struct WorkspaceRightRailView: View {
                         policyContext: catalogPolicyContext,
                         traceID: traceID
                     )
-                    refreshApprovedCapabilities()
+                    refreshApprovedCapabilities(force: true)
                     refreshCapabilityPrerequisiteStatuses()
                 } catch {
                     capabilityError = error.localizedDescription
@@ -1352,7 +1381,11 @@ struct WorkspaceRightRailView: View {
         }
     }
 
-    private func refreshApprovedCapabilities() {
+    private func refreshApprovedCapabilities(force: Bool = false) {
+        guard force || !approvedCapabilityPackagesLoaded else {
+            reloadCapabilityApprovalRecords()
+            return
+        }
         let packages = PerformanceTelemetry.measure(
             "workspace_right_rail_capability_load",
             thresholdMilliseconds: 20
@@ -1360,6 +1393,12 @@ struct WorkspaceRightRailView: View {
             CapabilityLibrary().installedPackages()
         }
         approvedCapabilityPackages = packages.isEmpty ? PluginCatalog.builtInPackages : packages
+        approvedCapabilityPackagesLoaded = true
+        reloadCapabilityApprovalRecords()
+    }
+
+    private func reloadCapabilityApprovalRecords() {
+        capabilityApprovalRecords = CapabilityApprovalStore().records()
     }
 
     private func refreshCapabilityPrerequisiteStatuses() {
@@ -3064,12 +3103,14 @@ private struct CapabilityResourceScopeRow: View {
     }
 }
 
-private struct CapabilityRailSnapshot {
+struct CapabilityRailSnapshot {
     let items: [RailCapabilityItem]
     let attentionItems: [RailCapabilityItem]
     let readyItems: [RailCapabilityItem]
     let draftItems: [RailCapabilityItem]
     let needsSetupCount: Int
+
+    static let empty = CapabilityRailSnapshot(items: [], isDraft: { _ in false })
 
     init(
         items: [RailCapabilityItem],
@@ -3083,7 +3124,7 @@ private struct CapabilityRailSnapshot {
     }
 }
 
-private struct RailCapabilityItem: Identifiable {
+struct RailCapabilityItem: Identifiable {
     enum Source {
         case package(PluginPackage)
         case skill(Skill)

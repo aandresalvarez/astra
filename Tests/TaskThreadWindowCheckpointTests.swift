@@ -142,6 +142,49 @@ struct TaskThreadViewModelTests {
         #expect(vm.snapshot?.sortedRuns.count == 50)
         #expect(vm.snapshot?.omittedRunCount == 70)
     }
+
+    @MainActor
+    @Test("Completed large task reset reuses terminal snapshot cache")
+    func completedLargeTaskResetReusesTerminalSnapshotCache() async {
+        TaskThreadViewModel.resetSnapshotCacheForTesting()
+
+        let vm = TaskThreadViewModel()
+        let task = makeTask(goal: "Summarize a large completed task", status: .completed)
+        task.createdAt = Date(timeIntervalSince1970: 0)
+        task.completedAt = Date(timeIntervalSince1970: 30_000)
+
+        for i in 0..<220 {
+            let run = TaskRun(task: task)
+            run.status = .completed
+            run.startedAt = Date(timeIntervalSince1970: Double(i * 100))
+            run.completedAt = Date(timeIntervalSince1970: Double(i * 100 + 90))
+            run.output = "completed run \(i)"
+            task.runs.append(run)
+
+            let event = TaskEvent(task: task, type: "agent.response", payload: "response \(i)", run: run)
+            event.timestamp = Date(timeIntervalSince1970: Double(i * 100 + 95))
+            task.events.append(event)
+        }
+
+        vm.reset(for: task)
+        _ = await awaitSnapshot(vm, where: { $0.sortedRuns.count == 50 })
+
+        let firstStats = TaskThreadViewModel.snapshotCacheStatsForTesting
+        #expect(firstStats.entryCount == 1)
+        #expect(firstStats.missCount == 1)
+        #expect(firstStats.hitCount == 0)
+
+        vm.reset(for: task)
+
+        let secondStats = TaskThreadViewModel.snapshotCacheStatsForTesting
+        #expect(vm.snapshot?.sortedRuns.count == 50)
+        #expect(vm.snapshot?.omittedRunCount == 170)
+        #expect(secondStats.entryCount == 1)
+        #expect(secondStats.hitCount == 1)
+        #expect(secondStats.missCount == 1)
+
+        TaskThreadViewModel.resetSnapshotCacheForTesting()
+    }
 }
 
 // MARK: - TaskCheckpointPresentation
@@ -285,4 +328,3 @@ struct TaskCheckpointPresentationTests {
         TaskRunSnapshot(input: TaskRunSnapshotInput(run: run))
     }
 }
-
