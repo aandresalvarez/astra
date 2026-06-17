@@ -567,20 +567,28 @@ Versions/Revert UI controls (the builder + service they call are unit-tested); a
 `updateApp`/edit-in-place path (editing an existing app is not wired into the Studio yet —
 every publish creates a fresh, id-deduped app); the inline preview validation overlay.
 
-### Slice 4: Local Database Reference App
+### Slice 4: Local Database Reference App — DONE (core)
 
 Goal:
 
 Make the grocery/local database use case complete enough to judge the product.
 
-Deliverables:
+Landed on `claude/loving-rhodes-87e735` (commit 39). Most of the machinery already
+existed from the runtime re-land (the executor implements appStorage insert/update/
+delete/query; the detail view renders edit/delete row controls + metrics/charts; NL→
+manifest is Slice 2). The gap was the grocery TEMPLATE: it declared only query+insert+
+task+export, so the reference app could add items but never edit or delete them.
 
-- Natural-language prompt to app manifest flow.
-- Table and form views.
-- Add/edit/delete records.
-- Metrics/chart widgets for app-owned data.
-- Export action.
-- View and action tests.
+- Wired `appStorage.update` + `appStorage.delete` actions (bound to `items`) into the
+  grocery template; the items table now surfaces edit + delete end to end.
+- `WorkspaceAppGroceryReferenceTests` prove the reference app itself: template validates +
+  declares full CRUD, the items row-action presentation exposes update + delete with the
+  right primary key, and the template's OWN actions drive a real add→list→update→list→
+  delete(refused-without-confirm)→delete(confirmed)→empty cycle on SQLite, with item_count
+  reflecting live data. WorkspaceApp suite 161 green.
+
+Residual (live-verify / polish): the `form` view type rendering for a richer add/edit
+form; the live in-app CRUD walkthrough (the executor + presentation are unit-tested).
 
 ### Slice 5: REDCap Form And Reconciliation Reference App
 
