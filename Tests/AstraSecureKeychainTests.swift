@@ -148,6 +148,35 @@ struct AstraSecureKeychainTests {
         }
     }
 
+    @Test("Bootstrap password item is repairable for rebuilt ASTRA binaries")
+    func bootstrapPasswordAccessIsRepairableAcrossRebuilds() throws {
+        let source = try astraSecureKeychainSource()
+        let accessBody = try methodBody(
+            startingWith: "+ (SecAccessRef)nonPromptingBootstrapAccess",
+            endingBefore: "+ (BOOL)repairBootstrapAccessForItem:",
+            in: source
+        )
+        let repairBody = try methodBody(
+            startingWith: "+ (BOOL)repairBootstrapAccessForItem:",
+            endingBefore: "+ (NSData *)readBootstrapPasswordForService:",
+            in: source
+        )
+        let bootstrapBody = try methodBody(
+            startingWith: "+ (NSData *)bootstrapPasswordForService:",
+            endingBefore: "#pragma mark - CRUD",
+            in: source
+        )
+
+        #expect(accessBody.contains("SecAccessCreate"))
+        #expect(accessBody.contains("SecACLSetContents"))
+        #expect(accessBody.contains("kSecACLAuthorizationDecrypt"))
+        #expect(accessBody.contains("NULL"))
+        #expect(repairBody.contains("SecKeychainItemSetAccess"))
+        #expect(bootstrapBody.contains("temporarilyAllowKeychainUserInteraction"))
+        #expect(bootstrapBody.contains("readBootstrapPasswordForService"))
+        #expect(bootstrapBody.contains("addBootstrapPassword"))
+    }
+
     // MARK: - CRUD against the dedicated keychain
 
     @Test("Save, load, and delete round-trip in the dedicated keychain",

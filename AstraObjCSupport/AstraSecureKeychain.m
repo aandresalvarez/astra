@@ -16,6 +16,8 @@
 /// Fixed account under which the dedicated keychain's unlock password is stored
 /// in the login keychain (namespaced per channel via `bootstrapService`).
 static NSString *const kAstraBootstrapAccount = @"keychain-bootstrap-password";
+static NSString *const kAstraBootstrapLabel = @"ASTRA secure keychain password";
+static NSString *const kAstraBootstrapComment = @"Unlocks ASTRA's dedicated secret keychain. Do not delete.";
 
 @implementation AstraSecureKeychain
 
@@ -42,6 +44,20 @@ static NSString *const kAstraBootstrapAccount = @"keychain-bootstrap-password";
         block();
     } @finally {
         [self restoreKeychainUserInteraction:previousInteraction];
+    }
+}
+
++ (BOOL)temporarilyAllowKeychainUserInteraction:(NS_NOESCAPE BOOL (^)(void))block {
+    if (block == nil) { return NO; }
+    Boolean previousInteraction = true;
+    if (SecKeychainGetUserInteractionAllowed(&previousInteraction) != errSecSuccess) {
+        previousInteraction = true;
+    }
+    SecKeychainSetUserInteractionAllowed(true);
+    @try {
+        return block();
+    } @finally {
+        SecKeychainSetUserInteractionAllowed(previousInteraction);
     }
 }
 
@@ -183,6 +199,135 @@ static NSString *const kAstraBootstrapAccount = @"keychain-bootstrap-password";
 
 #pragma mark - Bootstrap password (stored in the login keychain)
 
++ (SecAccessRef)nonPromptingBootstrapAccess {
+    SecAccessRef access = NULL;
+    OSStatus status = SecAccessCreate((__bridge CFStringRef)kAstraBootstrapLabel, NULL, &access);
+    if (status != errSecSuccess || access == NULL) {
+        if (access != NULL) { CFRelease(access); }
+        return NULL;
+    }
+
+    // SecAccessCreate(NULL trusted list) defaults to trusting only the creating
+    // binary. Local debug/release ASTRA builds are ad-hoc signed and their cdhash
+    // changes every rebuild, so that default makes the bootstrap item visible but
+    // unreadable to the next ASTRA.app. Set the decrypt ACL to applications:null
+    // (the same shape Keychain Access calls "allow all applications") so the
+    // bootstrap password can be read non-interactively across rebuilt ASTRA
+    // binaries. This item is only useful together with the dedicated keychain
+    // file, which ASTRA does not grant to sandboxed agents.
+    CFArrayRef decryptACLs = SecAccessCopyMatchingACLList(access, kSecACLAuthorizationDecrypt);
+    if (decryptACLs == NULL || CFArrayGetCount(decryptACLs) == 0) {
+        if (decryptACLs != NULL) { CFRelease(decryptACLs); }
+        CFRelease(access);
+        return NULL;
+    }
+
+    BOOL updated = NO;
+    CFIndex count = CFArrayGetCount(decryptACLs);
+    for (CFIndex idx = 0; idx < count; idx += 1) {
+        SecACLRef acl = (SecACLRef)CFArrayGetValueAtIndex(decryptACLs, idx);
+        OSStatus aclStatus = SecACLSetContents(
+            acl,
+            NULL,
+            (__bridge CFStringRef)kAstraBootstrapLabel,
+            0
+        );
+        updated = updated || aclStatus == errSecSuccess;
+    }
+    CFRelease(decryptACLs);
+
+    if (!updated) {
+        CFRelease(access);
+        return NULL;
+    }
+    return access;
+}
+
++ (BOOL)repairBootstrapAccessForItem:(SecKeychainItemRef)item {
+    if (item == NULL) { return NO; }
+    SecAccessRef access = [self nonPromptingBootstrapAccess];
+    if (access == NULL) { return NO; }
+    OSStatus status = SecKeychainItemSetAccess(item, access);
+    CFRelease(access);
+    return status == errSecSuccess;
+}
+
++ (NSData *)readBootstrapPasswordForService:(NSString *)service
+                              loginKeychain:(SecKeychainRef)login
+                                      status:(OSStatus *)outStatus {
+    const char *serviceName = service.UTF8String;
+    const char *accountName = kAstraBootstrapAccount.UTF8String;
+    if (serviceName == NULL || accountName == NULL) {
+        if (outStatus != NULL) { *outStatus = errSecParam; }
+        return nil;
+    }
+
+    UInt32 passwordLength = 0;
+    void *passwordBytes = NULL;
+    SecKeychainItemRef item = NULL;
+    OSStatus readStatus = SecKeychainFindGenericPassword(
+        login,
+        (UInt32)strlen(serviceName), serviceName,
+        (UInt32)strlen(accountName), accountName,
+        &passwordLength,
+        &passwordBytes,
+        &item
+    );
+    if (outStatus != NULL) { *outStatus = readStatus; }
+    if (readStatus != errSecSuccess || passwordBytes == NULL) {
+        if (passwordBytes != NULL) { SecKeychainItemFreeContent(NULL, passwordBytes); }
+        if (item != NULL) { CFRelease(item); }
+        return nil;
+    }
+
+    NSData *data = [NSData dataWithBytes:passwordBytes length:passwordLength];
+    SecKeychainItemFreeContent(NULL, passwordBytes);
+    if (item != NULL) {
+        [self repairBootstrapAccessForItem:item];
+        CFRelease(item);
+    }
+    return data;
+}
+
++ (BOOL)isUserInteractionRecoveryStatus:(OSStatus)status {
+    return status == errSecAuthFailed || status == errSecInteractionNotAllowed;
+}
+
++ (OSStatus)addBootstrapPassword:(NSData *)passwordData
+                       forService:(NSString *)service
+                     loginKeychain:(SecKeychainRef)login {
+    const char *serviceName = service.UTF8String;
+    const char *accountName = kAstraBootstrapAccount.UTF8String;
+    if (serviceName == NULL || accountName == NULL || passwordData.length == 0) {
+        return errSecParam;
+    }
+
+    NSData *labelData = [kAstraBootstrapLabel dataUsingEncoding:NSUTF8StringEncoding];
+    NSData *commentData = [kAstraBootstrapComment dataUsingEncoding:NSUTF8StringEncoding];
+    SecKeychainAttribute attributes[] = {
+        { kSecServiceItemAttr, (UInt32)strlen(serviceName), (void *)serviceName },
+        { kSecAccountItemAttr, (UInt32)strlen(accountName), (void *)accountName },
+        { kSecLabelItemAttr, (UInt32)labelData.length, (void *)labelData.bytes },
+        { kSecCommentItemAttr, (UInt32)commentData.length, (void *)commentData.bytes },
+    };
+    SecKeychainAttributeList attributeList = { 4, attributes };
+
+    SecAccessRef access = [self nonPromptingBootstrapAccess];
+    SecKeychainItemRef item = NULL;
+    OSStatus addStatus = SecKeychainItemCreateFromContent(
+        kSecGenericPasswordItemClass,
+        &attributeList,
+        (UInt32)passwordData.length,
+        passwordData.bytes,
+        login,
+        access,
+        &item
+    );
+    if (access != NULL) { CFRelease(access); }
+    if (item != NULL) { CFRelease(item); }
+    return addStatus;
+}
+
 /// Fetches the dedicated keychain's unlock password from the login keychain,
 /// generating and persisting a fresh random one on first use when `create` is
 /// YES. The password is useless to the sandboxed agent on its own: the agent
@@ -198,80 +343,51 @@ static NSString *const kAstraBootstrapAccount = @"keychain-bootstrap-password";
         return nil;
     }
 
-    const char *serviceName = service.UTF8String;
-    const char *accountName = kAstraBootstrapAccount.UTF8String;
-    if (serviceName == NULL || accountName == NULL) {
-        CFRelease(login);
-        return nil;
-    }
-
-    UInt32 passwordLength = 0;
-    void *passwordBytes = NULL;
-    OSStatus readStatus = SecKeychainFindGenericPassword(
-        login,
-        (UInt32)strlen(serviceName), serviceName,
-        (UInt32)strlen(accountName), accountName,
-        &passwordLength,
-        &passwordBytes,
-        NULL
-    );
-    if (readStatus == errSecSuccess && passwordBytes != NULL) {
-        NSData *data = [NSData dataWithBytes:passwordBytes length:passwordLength];
-        SecKeychainItemFreeContent(NULL, passwordBytes);
+    OSStatus readStatus = errSecSuccess;
+    NSData *data = [self readBootstrapPasswordForService:service
+                                           loginKeychain:login
+                                                  status:&readStatus];
+    if (data.length > 0) {
         CFRelease(login);
         return data;
     }
 
+    if ([self isUserInteractionRecoveryStatus:readStatus]) {
+        __block NSData *recovered = nil;
+        [self temporarilyAllowKeychainUserInteraction:^{
+            OSStatus interactiveStatus = errSecSuccess;
+            recovered = [self readBootstrapPasswordForService:service
+                                                loginKeychain:login
+                                                       status:&interactiveStatus];
+            return (BOOL)(recovered.length > 0);
+        }];
+        if (recovered.length > 0) {
+            CFRelease(login);
+            return recovered;
+        }
+    }
+
     if (!create) {
-        if (passwordBytes != NULL) { SecKeychainItemFreeContent(NULL, passwordBytes); }
         CFRelease(login);
         return nil;
-    }
-    if (passwordBytes != NULL) {
-        SecKeychainItemFreeContent(NULL, passwordBytes);
-        passwordBytes = NULL;
     }
 
     NSMutableData *randomBytes = [NSMutableData dataWithLength:32];
     if (SecRandomCopyBytes(kSecRandomDefault, randomBytes.length, randomBytes.mutableBytes) != errSecSuccess) {
-        if (passwordBytes != NULL) { SecKeychainItemFreeContent(NULL, passwordBytes); }
         CFRelease(login);
         return nil;
     }
     NSData *passwordData = [[randomBytes base64EncodedStringWithOptions:0]
                            dataUsingEncoding:NSUTF8StringEncoding];
 
-    SecKeychainItemRef item = NULL;
-    OSStatus addStatus = SecKeychainAddGenericPassword(
-        login,
-        (UInt32)strlen(serviceName), serviceName,
-        (UInt32)strlen(accountName), accountName,
-        (UInt32)passwordData.length,
-        passwordData.bytes,
-        &item
-    );
-    if (addStatus == errSecSuccess && item != NULL) {
-        NSString *label = @"ASTRA secure keychain password";
-        NSString *comment = @"Unlocks ASTRA's dedicated secret keychain. Do not delete.";
-        NSData *labelData = [label dataUsingEncoding:NSUTF8StringEncoding];
-        NSData *commentData = [comment dataUsingEncoding:NSUTF8StringEncoding];
-        SecKeychainAttribute attributes[] = {
-            { kSecLabelItemAttr, (UInt32)labelData.length, (void *)labelData.bytes },
-            { kSecCommentItemAttr, (UInt32)commentData.length, (void *)commentData.bytes },
-        };
-        SecKeychainAttributeList attributeList = { 2, attributes };
-        OSStatus attributeStatus = SecKeychainItemModifyAttributesAndData(
-            item,
-            &attributeList,
-            (UInt32)passwordData.length,
-            passwordData.bytes
-        );
-        CFRelease(item);
+    OSStatus addStatus = [self addBootstrapPassword:passwordData
+                                        forService:service
+                                      loginKeychain:login];
+    if (addStatus == errSecSuccess) {
         CFRelease(login);
-        return attributeStatus == errSecSuccess ? passwordData : nil;
+        return passwordData;
     }
 
-    if (item != NULL) { CFRelease(item); }
     CFRelease(login);
     if (addStatus == errSecDuplicateItem) {
         // Lost a race with another writer — re-read the persisted value.
