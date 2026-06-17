@@ -481,20 +481,27 @@ F1–F6 + Slice 9 Phase A are committed on `claude/loving-rhodes-87e735`.
 
 Keep the work reviewable. Each slice should include focused regression tests.
 
-### Slice 1: App Studio Context Assembly And Builder Contract
+### Slice 1: App Studio Context Assembly And Builder Contract — DONE (1a core; 1b UI residual)
 
 Goal:
 
 Make App Studio gather the real context it needs before generation.
 
-Deliverables:
+Landed on `claude/loving-rhodes-87e735` (commit 46) by re-landing the context-builder
+cluster from PR #58 (`codex/workspace-app-context-builder`) — the work the runtime re-land
+never carried over. Ported with ZERO code changes (compiled + tested as-is against this branch).
 
-- `WorkspaceAppStudioContextBuilder` service.
-- Inputs for prompt, selected workspace, existing app, available contracts,
-  dependency bindings, recent task/conversation excerpts, and relevant
-  artifacts.
-- A compact builder prompt/contract object that can be tested deterministically.
-- Tests proving context redaction, capability inclusion, and stable ordering.
+- [DONE — 1a] `WorkspaceAppStudioContext(+Request)`, `WorkspaceAppStudioContextBuilder`
+  (pure `build()` — gathers/bounds/orders prompt + workspace + capabilities + recent tasks +
+  event excerpts + artifacts + existing manifest), `WorkspaceAppStudioContextRedactor` (scrubs
+  secrets before any excerpt reaches a prompt), `…BuilderContractFactory` / `…BuildTaskBuilder`
+  / `…GenerationTaskBuilder`, `WorkspaceAppStudioDraftSupport` + `ChatPanelDraftPresentation`
+  (pure draft-presentation model). 12 tests (redaction, capability inclusion, stable ordering,
+  draft support). WorkspaceApp+Studio suites 195 green.
+- [1b — residual, live-verify] the chat-panel slash WIZARD (`ChatPanelSlashWizard`,
+  `ChatPanelEmptyStateView`, `ChatMessage`) + the `ChatPanelView` / `ContentView` /
+  `WorkspaceHomeView` wiring that lets a user generate an app from chat. Needs the running app;
+  also touches ContentView (near its line budget).
 
 ### Slice 2: Model-backed Structured Generation Loop — DONE (designed + adversarially reviewed)
 
