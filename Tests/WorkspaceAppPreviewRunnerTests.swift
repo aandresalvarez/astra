@@ -207,13 +207,87 @@ struct WorkspaceAppPreviewRunnerTests {
 
     @Test("loop.run honors the preview iteration cap")
     func loopIsCapped() throws {
+        // A valid loop needs steps + maxIterations + a stop field; the stop never fires here
+        // ("done" is absent), so it runs the full preview cap.
         let m = manifest(mode: .draftOnly, tables: [itemsTable()], actions: [
             action("noop", "appStorage.query", table: "items"),
-            WorkspaceAppActionSpec(id: "loop", type: "loop.run", label: "Loop", steps: ["noop"], maxIterations: 1000)
+            WorkspaceAppActionSpec(id: "loop", type: "loop.run", label: "Loop",
+                                   gateField: "done", gateOperator: "exists", steps: ["noop"], maxIterations: 1000)
         ])
         let runner = WorkspaceAppPreviewRunner(manifest: m, sampleRowsPerTable: 1)
         let loop = m.actions.first { $0.id == "loop" }!
         let result = try runner.run(loop, manifest: m, input: WorkspaceAppActionInput())
         #expect(result.outputSummary.contains("\(WorkspaceAppPreviewRunner.previewLoopIterationCap)"))
+    }
+
+    // MARK: - Fidelity fixes (from the max-effort review): composites mirror the executor
+
+    @Test("a draftOnly pipeline with a capability.write step is BLOCKED in preview, not simulated")
+    func pipelineEnforcesPerStepPermission() throws {
+        // The whole point of preview: surface the draftOnly block that the live executor would hit
+        // on the nested external write, instead of the workflow appearing to succeed.
+        let m = manifest(mode: .draftOnly, tables: [itemsTable()], actions: [
+            action("list", "appStorage.query", table: "items"),
+            WorkspaceAppActionSpec(id: "sync", type: "capability.write", label: "Sync", requirementRef: "redcap"),
+            WorkspaceAppActionSpec(id: "pipe", type: "pipeline.run", label: "Run", steps: ["list", "sync"])
+        ])
+        let runner = WorkspaceAppPreviewRunner(manifest: m, sampleRowsPerTable: 1)
+        let pipe = m.actions.first { $0.id == "pipe" }!
+        #expect(throws: WorkspaceAppActionExecutionError.self) {
+            _ = try runner.run(pipe, manifest: m, input: WorkspaceAppActionInput())
+        }
+    }
+
+    @Test("loop.run with no stop field is rejected (missingLoopBounds), matching the executor")
+    func loopMissingBoundsThrows() throws {
+        let m = manifest(mode: .draftOnly, tables: [itemsTable()], actions: [
+            action("noop", "appStorage.query", table: "items"),
+            WorkspaceAppActionSpec(id: "loop", type: "loop.run", label: "Loop", steps: ["noop"], maxIterations: 3)
+        ])
+        let runner = WorkspaceAppPreviewRunner(manifest: m, sampleRowsPerTable: 1)
+        let loop = m.actions.first { $0.id == "loop" }!
+        #expect(throws: WorkspaceAppActionExecutionError.self) {
+            _ = try runner.run(loop, manifest: m, input: WorkspaceAppActionInput())
+        }
+    }
+
+    @Test("gate.agentRecommendation requires approval under an approvalRequired policy")
+    func agentGateRequiresApproval() throws {
+        let gate = WorkspaceAppActionSpec(
+            id: "g", type: "gate.agentRecommendation", label: "Recommend",
+            agentPrompt: "Pick one", agentDecisions: ["approve", "reject"], agentPolicyMode: "approvalRequired"
+        )
+        let runner = WorkspaceAppPreviewRunner(manifest: manifest(mode: .preApproved, actions: [gate]))
+        #expect(throws: WorkspaceAppActionExecutionError.self) {
+            _ = try runner.run(gate, manifest: runner.manifest,
+                               input: WorkspaceAppActionInput(confirmedApproval: false, agentRecommendationDecision: "approve"))
+        }
+        let ok = try runner.run(gate, manifest: runner.manifest,
+                                input: WorkspaceAppActionInput(confirmedApproval: true, agentRecommendationDecision: "approve"))
+        #expect(ok.outputSummary.contains("preview"))
+    }
+
+    @Test("appStorage.update with only the primary key is rejected (missingRecordValues)")
+    func updateWithOnlyPrimaryKeyThrows() throws {
+        let m = manifest(mode: .draftOnly, tables: [itemsTable()],
+                         actions: [action("upd", "appStorage.update", table: "items")])
+        let runner = WorkspaceAppPreviewRunner(manifest: m, seededTables: ["items": [["id": .text("i1"), "name": .text("A")]]])
+        #expect(throws: WorkspaceAppActionExecutionError.self) {
+            _ = try runner.run(m.actions[0], manifest: m, input: WorkspaceAppActionInput(table: "items", record: ["id": .text("i1")]))
+        }
+    }
+
+    @Test("gate.branch with no operator is blocked, matching the executor")
+    func branchWithoutOperatorBlocks() throws {
+        let m = manifest(mode: .draftOnly, actions: [
+            action("noop", "rows.reduce"),
+            WorkspaceAppActionSpec(id: "br", type: "gate.branch", label: "Branch",
+                                   gateField: "status", steps: ["noop"], thenStep: "noop", elseStep: "noop")
+        ])
+        let runner = WorkspaceAppPreviewRunner(manifest: m)
+        let br = m.actions.first { $0.id == "br" }!
+        #expect(throws: WorkspaceAppActionExecutionError.self) {
+            _ = try runner.run(br, manifest: m, input: WorkspaceAppActionInput(record: ["status": .text("ok")]))
+        }
     }
 }

@@ -179,6 +179,13 @@ final class WorkspaceAppPreviewRunner {
             let record = input.effectiveRecord
             guard !record.isEmpty else { throw WorkspaceAppActionExecutionError.missingRecord }
             let primaryKey = try primaryKeyColumn(in: table, manifest: manifest)
+            // storageService.updateRecord rejects a record that carries only the primary key (no
+            // columns to SET) — mirror that so preview reports the same failure, not a silent no-op.
+            guard record.keys.contains(where: { $0 != primaryKey }) else {
+                throw WorkspaceAppActionExecutionError.storageFailed(
+                    String(describing: WorkspaceAppStorageError.missingRecordValues)
+                )
+            }
             guard let keyValue = record[primaryKey],
                   let index = tables[table]?.firstIndex(where: { $0[primaryKey] == keyValue }) else {
                 throw WorkspaceAppActionExecutionError.storageFailed("No record matched the primary key in \(table).")
@@ -213,12 +220,21 @@ final class WorkspaceAppPreviewRunner {
             return try runExpressionGate(action: action, input: input)
 
         case "gate.agentRecommendation":
+            let prompt = action.agentPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let policyMode = action.agentPolicyMode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let decisions = Set(action.agentDecisions)
+            guard !prompt.isEmpty, !decisions.isEmpty, !policyMode.isEmpty else {
+                throw WorkspaceAppActionExecutionError.gateBlocked(action.id)
+            }
             let decision = input.agentRecommendationDecision?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard !decision.isEmpty else {
                 throw WorkspaceAppActionExecutionError.agentRecommendationRequired(action.id)
             }
-            guard action.agentDecisions.contains(decision) else {
+            guard decisions.contains(decision) else {
                 throw WorkspaceAppActionExecutionError.gateBlocked(action.id)
+            }
+            if (action.agentRequiresApproval || policyMode == "approvalRequired"), !input.confirmedApproval {
+                throw WorkspaceAppActionExecutionError.approvalRequired(action.id)
             }
             return Outcome(rows: [], summary: "(preview — recommendation '\(decision)' accepted; live agent reasoning is not run)")
 
@@ -274,7 +290,9 @@ final class WorkspaceAppPreviewRunner {
               ) else {
             throw WorkspaceAppActionExecutionError.gateBlocked(action.id)
         }
-        let actual = (input.record[field]) ?? (input.boundRows.first?[field])
+        // Read from `record` only — the real executeExpressionGate does NOT consult boundRows, and
+        // bindingForward keeps `record` as the original top-level input across pipeline steps.
+        let actual = input.record[field]
         guard Self.evaluate(gateOperator, actual: actual, expected: action.gateValue) else {
             throw WorkspaceAppActionExecutionError.gateBlocked(action.id)
         }
@@ -323,12 +341,15 @@ final class WorkspaceAppPreviewRunner {
         depth: Int
     ) throws -> Outcome {
         let field = action.gateField?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let gateOperator = WorkspaceAppExpressionGateOperator(
+        // The executor REQUIRES a valid operator (else gateBlocked) and reads the field per-element
+        // (boundRows.first?[field] ?? record[field]) rather than committing to one source dict.
+        guard let gateOperator = WorkspaceAppExpressionGateOperator(
             rawValue: action.gateOperator?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        )
-        let source = input.boundRows.first ?? input.record
-        let actual = field.isEmpty ? nil : source[field]
-        let passed = gateOperator.map { Self.evaluate($0, actual: actual, expected: action.gateValue) } ?? false
+        ) else {
+            throw WorkspaceAppActionExecutionError.gateBlocked(action.id)
+        }
+        let actual = field.isEmpty ? nil : (input.boundRows.first?[field] ?? input.record[field])
+        let passed = Self.evaluate(gateOperator, actual: actual, expected: action.gateValue)
         let targetID = passed ? action.thenStep : action.elseStep
         guard let targetID, let target = manifest.actions.first(where: { $0.id == targetID }) else {
             return Outcome(rows: [], summary: "Branch '\(action.id)' → \(passed ? "then" : "else") (no step).")
@@ -360,8 +381,15 @@ final class WorkspaceAppPreviewRunner {
         input: WorkspaceAppActionInput,
         depth: Int
     ) throws -> Outcome {
-        let cap = min(action.maxIterations ?? Self.previewLoopIterationCap, Self.previewLoopIterationCap)
-        let stopField = action.gateField?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        // Mirror the executor's guard: a loop without steps / maxIterations / a stop field is
+        // rejected (missingLoopBounds) rather than silently "running" in preview.
+        guard !action.steps.isEmpty,
+              let maxIterations = action.maxIterations,
+              let stopField = action.gateField?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !stopField.isEmpty else {
+            throw WorkspaceAppActionExecutionError.missingLoopBounds(action.id)
+        }
+        let cap = min(maxIterations, Self.previewLoopIterationCap)
         let stopOperator = WorkspaceAppExpressionGateOperator(
             rawValue: action.gateOperator?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         )
@@ -374,7 +402,7 @@ final class WorkspaceAppPreviewRunner {
                 carried = carried.bindingForward(rows: result.rows)
             }
             iterations += 1
-            if !stopField.isEmpty, let stopOperator,
+            if let stopOperator,
                Self.evaluate(stopOperator, actual: carried.record[stopField], expected: action.gateValue) {
                 break
             }
@@ -383,13 +411,17 @@ final class WorkspaceAppPreviewRunner {
     }
 
     /// Inside a composite, a `task.*` step is short-circuited to simulation so the flow completes
-    /// rather than suspending; everything else is dispatched normally.
+    /// rather than suspending; everything else is dispatched normally. The per-step permission gate
+    /// is enforced FIRST — exactly as the real executor does for every pipeline/loop/branch sub-step
+    /// — so a draftOnly/approvalRequired/readOnly block on a nested action shows up in Preview
+    /// instead of the workflow appearing to succeed and then failing at real run time.
     private func dispatchOrSimulateStep(
         _ step: WorkspaceAppActionSpec,
         manifest: WorkspaceAppManifest,
         input: WorkspaceAppActionInput,
         depth: Int
     ) throws -> Outcome {
+        try enforcePermission(action: step, mode: manifest.permissions.defaultMode, input: input)
         if step.type.hasPrefix("task.") {
             return Outcome(rows: [], summary: "(preview — step '\(step.id)' simulated: would run task)")
         }
