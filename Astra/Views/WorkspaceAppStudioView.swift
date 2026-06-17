@@ -12,6 +12,7 @@ struct WorkspaceAppStudioView: View {
     @State private var ideas: [WorkspaceAppStudioIdea] = []
     @State private var statusMessage = ""
     @State private var isGeneratingDraft = false
+    @State private var generationTask: Task<Void, Never>?
 
     init(
         workspace: Workspace,
@@ -52,6 +53,7 @@ struct WorkspaceAppStudioView: View {
         }
         .background(Stanford.panelBackground)
         .accessibilityIdentifier("WorkspaceAppStudioView")
+        .onDisappear { generationTask?.cancel() }
     }
 
     private var header: some View {
@@ -387,13 +389,17 @@ struct WorkspaceAppStudioView: View {
         let existing = existingManifest
         isGeneratingDraft = true
         statusMessage = "Generating draft…"
-        Task { @MainActor in
+        generationTask = Task { @MainActor in
             let result = await WorkspaceAppStudioGenerator.generate(
                 intent: currentIntent,
                 workspaceName: workspaceName,
                 workspacePath: workspacePath,
                 existingManifest: existing
             )
+            // Dismissed mid-generation: onDisappear cancelled us and the runtime
+            // subprocess is already torn down, so drop the result instead of
+            // mutating @State on a view that has left the tree.
+            guard !Task.isCancelled else { return }
             // Wrap the (always-valid) model/fallback manifest into a draft so the
             // proposal + validation panels rebuild from it; the validator is the
             // authoritative publish gate.

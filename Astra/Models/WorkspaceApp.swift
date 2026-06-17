@@ -36,6 +36,13 @@ final class WorkspaceApp: Identifiable {
     var manifestRelativePath: String
     var appDirectoryRelativePath: String
     var manifestDigest: String
+    // Slice 3 versioning. Defaulted so they are absorbed into ASTRASchemaV7's fresh
+    // table (same pattern as WorkspaceAppRun.pendingStepIndex / awaitedTaskIDsJSON);
+    // NO new @Model, NO new schema version. The on-disk versions/index.json is the
+    // source of truth; these mirror it for cheap reads without a directory scan.
+    var publishedManifestDigest: String = ""      // digest of the last manifest that PUBLISHED; "" = never published
+    var lastKnownGoodManifestDigest: String = ""  // digest of the last manifest that published AND validated; "" = none
+    var latestVersionNumber: Int = 0              // highest snapshot number written to versions/; 0 = none
     var sourcePackageID: String?
     var sourcePackageVersion: String?
     var sourcePackageDigest: String?
@@ -58,6 +65,9 @@ final class WorkspaceApp: Identifiable {
         manifestRelativePath: String,
         appDirectoryRelativePath: String,
         manifestDigest: String,
+        publishedManifestDigest: String = "",
+        lastKnownGoodManifestDigest: String = "",
+        latestVersionNumber: Int = 0,
         sourcePackageID: String? = nil,
         sourcePackageVersion: String? = nil,
         sourcePackageDigest: String? = nil,
@@ -76,6 +86,9 @@ final class WorkspaceApp: Identifiable {
         self.manifestRelativePath = manifestRelativePath
         self.appDirectoryRelativePath = appDirectoryRelativePath
         self.manifestDigest = manifestDigest
+        self.publishedManifestDigest = publishedManifestDigest
+        self.lastKnownGoodManifestDigest = lastKnownGoodManifestDigest
+        self.latestVersionNumber = latestVersionNumber
         self.sourcePackageID = sourcePackageID
         self.sourcePackageVersion = sourcePackageVersion
         self.sourcePackageDigest = sourcePackageDigest

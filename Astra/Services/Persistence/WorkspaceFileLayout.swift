@@ -82,6 +82,31 @@ enum WorkspaceFileLayout {
         "\(relativeAppDirectory(appID: appID))/manifest.json"
     }
 
+    // Slice 3 versioning: published-manifest snapshots live under the app directory,
+    // so they are removed with the app (deleteApp's recursive remove) — purely local
+    // history that travels with nothing.
+    static func appVersionsDirectory(workspacePath: String, appID: String) -> String {
+        let directory = appDirectory(workspacePath: workspacePath, appID: appID)
+        guard !directory.isEmpty else { return "" }
+        return (directory as NSString).appendingPathComponent("versions")
+    }
+
+    static func appVersionFile(workspacePath: String, appID: String, versionNumber: Int) -> String {
+        let directory = appVersionsDirectory(workspacePath: workspacePath, appID: appID)
+        guard !directory.isEmpty else { return "" }
+        return (directory as NSString).appendingPathComponent("v\(versionNumber).json")
+    }
+
+    static func appVersionsIndexFile(workspacePath: String, appID: String) -> String {
+        let directory = appVersionsDirectory(workspacePath: workspacePath, appID: appID)
+        guard !directory.isEmpty else { return "" }
+        return (directory as NSString).appendingPathComponent("index.json")
+    }
+
+    static func relativeAppVersionsDirectory(appID: String) -> String {
+        "\(relativeAppDirectory(appID: appID))/versions"
+    }
+
     static func legacyTaskRoot(for workspacePath: String) -> String {
         guard !workspacePath.isEmpty else { return "" }
         return (workspacePath as NSString).appendingPathComponent("tasks")
