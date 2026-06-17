@@ -192,7 +192,7 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
         let executable = configuredPath.isEmpty ? CursorCLIRuntime.detectPath() : configuredPath
         let models = CursorCLIRuntime.modelDetails(executablePath: executable)
             ?? CursorCLIRuntime.availableModelNames().map { RuntimeModelDetail(value: $0) }
-        RuntimeModelAvailability.persistAvailableModelDetails(models, for: id, authority: modelAvailabilityAuthority)
+        await RuntimeModelAvailability.persistObservedAvailableModelDetails(models, for: id, authority: modelAvailabilityAuthority)
         return RuntimeReadinessCheck(
             id: "cursor-models",
             title: "Cursor models",

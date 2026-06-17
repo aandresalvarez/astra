@@ -52,7 +52,7 @@ struct CopilotModelAvailabilityService {
         let result = await availableModels()
         switch result {
         case .available(let models):
-            RuntimeModelAvailability.persistAvailableModels(models, for: .copilotCLI, defaults: defaults)
+            await RuntimeModelAvailability.persistObservedAvailableModels(models, for: .copilotCLI, defaults: defaults)
             AppLogger.audit(.runtimeModelAvailability, category: "Worker", fields: [
                 "runtime": AgentRuntimeID.copilotCLI.rawValue,
                 "result": "available",

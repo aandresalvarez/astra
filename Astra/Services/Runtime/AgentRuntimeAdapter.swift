@@ -2559,7 +2559,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         let executable = configuredPath.isEmpty ? AntigravityCLIRuntime.detectPath() : configuredPath
         let models = AntigravityCLIRuntime.modelNames(executablePath: executable)
             ?? AntigravityCLIRuntime.availableModelNames()
-        RuntimeModelAvailability.persistAvailableModels(models, for: id, authority: modelAvailabilityAuthority)
+        await RuntimeModelAvailability.persistObservedAvailableModels(models, for: id, authority: modelAvailabilityAuthority)
         return RuntimeReadinessCheck(
             id: "antigravity-models",
             title: "Antigravity models",
