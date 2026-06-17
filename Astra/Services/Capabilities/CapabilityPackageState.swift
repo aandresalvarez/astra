@@ -172,15 +172,7 @@ struct CapabilityPackageState {
             if !connector.hasConfiguredOutlookTenantDomain {
                 messages.append("\(name): missing tenant domain")
             }
-            if !connector.hasOutlookRefreshToken {
-                messages.append("\(name): not signed in")
-            }
             return messages
-        }
-
-        let missing = connector.missingCredentialKeys()
-        if !missing.isEmpty {
-            return ["\(name): missing \(missing.joined(separator: ", "))"]
         }
 
         if connector.credentialKeys.isEmpty {

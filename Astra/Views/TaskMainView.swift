@@ -271,10 +271,7 @@ struct TaskMainView: View {
     }
 
     private var currentThreadSnapshot: TaskThreadSnapshot {
-        threadViewModel.snapshot ?? TaskThreadSnapshot.placeholder(
-            goal: task.goal,
-            createdAt: task.createdAt
-        )
+        threadViewModel.snapshot ?? TaskThreadSnapshot.placeholder(goal: task.goal, createdAt: task.createdAt)
     }
 
     private var planStateCacheRefreshTrigger: TaskPlanStateCacheSignature {
@@ -483,6 +480,7 @@ struct TaskMainView: View {
             await refreshVerificationPresentation(for: verificationLoadRequest)
         }
         .onChange(of: task.id) {
+            PerformanceTelemetry.log("chat_open_selected_task", level: .info, fields: TaskMainViewPerformanceTelemetry.chatOpenFields(task: task, source: "task_change"))
             isChatAtBottom = true
             hasUnseenChatActivity = false
             shouldScrollAfterUserMessage = true
@@ -502,6 +500,7 @@ struct TaskMainView: View {
             refreshPlanStateCache()
         }
         .onAppear {
+            PerformanceTelemetry.log("chat_open_selected_task", level: .info, fields: TaskMainViewPerformanceTelemetry.chatOpenFields(task: task, source: "appear"))
             alignTaskModelWithRuntime()
             initializeTaskPolicySelection()
             runtimeHealthNow = Date()
@@ -590,9 +589,7 @@ struct TaskMainView: View {
     }
 
     private func refreshPlanStateCache() {
-        guard let snapshot = TaskPlanStateSnapshot.refreshed(for: task, cached: cachedPlanStateSnapshot) else {
-            return
-        }
+        guard let snapshot = TaskMainViewPerformanceTelemetry.refreshedPlanStateSnapshot(task: task, cached: cachedPlanStateSnapshot) else { return }
         cachedPlanStateSnapshot = snapshot
     }
 

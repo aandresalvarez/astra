@@ -796,6 +796,41 @@ struct WorkspacePersistenceTests {
         #expect(!FileManager.default.fileExists(atPath: legacySSH.path))
     }
 
+    @Test("SSH connection presence uses a lightweight persisted file predicate")
+    func sshConnectionPresenceUsesLightweightPredicate() throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_ssh_presence_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        #expect(SSHConnectionManager.hasStoredConnections(workspacePath: root.path) == false)
+
+        SSHConnectionManager.save([], workspacePath: root.path)
+        #expect(SSHConnectionManager.hasStoredConnections(workspacePath: root.path) == false)
+
+        SSHConnectionManager.save([
+            SSHConnection(name: "dev", host: "example.test", user: "agent")
+        ], workspacePath: root.path)
+        #expect(SSHConnectionManager.hasStoredConnections(workspacePath: root.path) == true)
+    }
+
+    @Test("SSH connection presence recognizes legacy files without migrating them")
+    func sshConnectionPresenceRecognizesLegacyFilesWithoutMigratingThem() throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_ssh_presence_legacy_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let legacySSH = root.appendingPathComponent(WorkspaceFileLayout.sshConnectionsFileName)
+        let canonicalSSH = URL(fileURLWithPath: WorkspaceFileLayout.sshConnectionsFile(for: root.path))
+        let data = try JSONEncoder().encode([
+            SSHConnection(name: "legacy", host: "example.test", user: "agent")
+        ])
+        try data.write(to: legacySSH)
+
+        #expect(SSHConnectionManager.hasStoredConnections(workspacePath: root.path) == true)
+        #expect(FileManager.default.fileExists(atPath: legacySSH.path))
+        #expect(!FileManager.default.fileExists(atPath: canonicalSSH.path))
+    }
+
     @Test("same-thread schedule results merge back into the source task")
     @MainActor
     func sameThreadScheduleResultsMergeIntoSourceTask() throws {

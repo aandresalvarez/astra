@@ -13,37 +13,57 @@ final class TaskThreadViewModel {
     private var snapshotRevision: Int = 0
 
     private static let liveSnapshotMinimumInterval: TimeInterval = 0.120
+    private static var terminalSnapshotCache = TaskThreadSnapshotCache()
 
     func reset(for task: AgentTask) {
-        expansionRunCount = 50
-        snapshotTrigger = nil
-        snapshotTask?.cancel()
-        lastSnapshotApplyAt = .distantPast
-        snapshot = TaskThreadSnapshot.placeholder(goal: task.goal, createdAt: task.createdAt)
-        refreshSnapshot(for: task)
-        refreshGeneratedFiles(folder: TaskWorkspaceAccess(task: task).taskFolder)
+        PerformanceTelemetry.measure(
+            "chat_thread_reset",
+            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            fields: Self.taskFields(task)
+        ) {
+            expansionRunCount = 50
+            snapshotTrigger = nil
+            snapshotTask?.cancel()
+            lastSnapshotApplyAt = .distantPast
+            snapshot = TaskThreadSnapshot.placeholder(goal: task.goal, createdAt: task.createdAt)
+            refreshSnapshot(for: task)
+            refreshGeneratedFiles(folder: TaskWorkspaceAccess(task: task).taskFolder)
+        }
     }
 
     func refreshSnapshot(for task: AgentTask) {
         let trigger = TaskThreadSnapshotTrigger(task: task)
         guard snapshotTrigger != trigger else { return }
         snapshotTrigger = trigger
-        let input = TaskThreadSnapshotInput(task: task, maxRuns: expansionRunCount)
-        let fields = [
-            "task_id": String(task.id.uuidString.prefix(8)),
-            "event_count": String(trigger.eventCount),
-            "visible_event_count": String(trigger.visibleEventCount),
-            "run_count": String(trigger.runCount),
+        var fields = Self.taskFields(task)
+        fields.merge(Self.triggerFields(trigger), uniquingKeysWith: { _, new in new })
+        fields.merge([
             "status": trigger.status.rawValue,
-            "latest_run_output_bucket": String(trigger.latestRunOutputBucket),
-            "latest_run_output_chars": String(trigger.latestRunOutputCount),
-            "snapshot_input_events": String(input.events.count),
-            "snapshot_input_runs": String(input.runs.count),
-            "omitted_events": String(input.omittedEventCount),
-            "omitted_runs": String(input.omittedRunCount)
-        ]
+            "latest_run_status": trigger.latestRunStatus?.rawValue ?? "none"
+        ], uniquingKeysWith: { _, new in new })
 
         snapshotTask?.cancel()
+        let cacheKey = TaskThreadSnapshotCacheKey(task: task, trigger: trigger, maxRuns: expansionRunCount)
+        if let cacheKey,
+           let cachedSnapshot = Self.terminalSnapshotCache.snapshot(for: cacheKey) {
+            snapshot = cachedSnapshot
+            lastSnapshotApplyAt = Date()
+            fields.merge(Self.snapshotFields(cachedSnapshot), uniquingKeysWith: { _, new in new })
+            PerformanceTelemetry.log("thread_snapshot_cache", level: .debug, fields: fields.merging([
+                "cache_state": "hit"
+            ], uniquingKeysWith: { _, new in new }))
+            Self.logSnapshotState(
+                snapshot: cachedSnapshot,
+                trigger: trigger,
+                taskID: task.id,
+                workspaceID: task.workspace?.id
+            )
+            return
+        }
+
+        let input = TaskThreadSnapshotInput(task: task, maxRuns: expansionRunCount)
+        fields.merge(Self.inputFields(input), uniquingKeysWith: { _, new in new })
+
         let isLive = trigger.status == .running
             || trigger.status == .queued
             || trigger.latestRunStatus == .running
@@ -64,6 +84,9 @@ final class TaskThreadViewModel {
             await MainActor.run {
                 guard !Task.isCancelled, revision == self.snapshotRevision else { return }
                 self.snapshot = builtSnapshot
+                if let cacheKey {
+                    Self.terminalSnapshotCache.store(builtSnapshot, for: cacheKey)
+                }
                 self.lastSnapshotApplyAt = Date()
                 Self.logSnapshotState(
                     snapshot: builtSnapshot,
@@ -73,6 +96,52 @@ final class TaskThreadViewModel {
                 )
             }
         }
+    }
+
+    static func resetSnapshotCacheForTesting() {
+        terminalSnapshotCache.removeAll()
+    }
+
+    static var snapshotCacheStatsForTesting: TaskThreadSnapshotCache.Stats {
+        terminalSnapshotCache.stats
+    }
+
+    private static func taskFields(_ task: AgentTask) -> [String: String] {
+        [
+            "task_id": PerformanceTelemetryFields.abbreviatedID(task.id),
+            "workspace_id": PerformanceTelemetryFields.abbreviatedID(task.workspace?.id),
+            "status": task.status.rawValue
+        ]
+    }
+
+    private static func triggerFields(_ trigger: TaskThreadSnapshotTrigger) -> [String: String] {
+        [
+            "event_count": PerformanceTelemetryFields.count(trigger.eventCount),
+            "visible_event_count": PerformanceTelemetryFields.count(trigger.visibleEventCount),
+            "run_count": PerformanceTelemetryFields.count(trigger.runCount),
+            "latest_run_output_bucket": PerformanceTelemetryFields.count(trigger.latestRunOutputBucket),
+            "latest_run_output_chars": PerformanceTelemetryFields.count(trigger.latestRunOutputCount),
+            "latest_run_output_byte_bucket": PerformanceTelemetryFields.byteBucket(trigger.latestRunOutputCount)
+        ]
+    }
+
+    private static func inputFields(_ input: TaskThreadSnapshotInput) -> [String: String] {
+        [
+            "snapshot_input_events": PerformanceTelemetryFields.count(input.events.count),
+            "snapshot_input_runs": PerformanceTelemetryFields.count(input.runs.count),
+            "omitted_events": PerformanceTelemetryFields.count(input.omittedEventCount),
+            "omitted_runs": PerformanceTelemetryFields.count(input.omittedRunCount)
+        ]
+    }
+
+    private static func snapshotFields(_ snapshot: TaskThreadSnapshot) -> [String: String] {
+        [
+            "snapshot_input_events": PerformanceTelemetryFields.count(snapshot.sortedEvents.count),
+            "snapshot_input_runs": PerformanceTelemetryFields.count(snapshot.sortedRuns.count),
+            "omitted_events": PerformanceTelemetryFields.count(snapshot.omittedEventCount),
+            "omitted_runs": PerformanceTelemetryFields.count(snapshot.omittedRunCount),
+            "conversation_item_count": PerformanceTelemetryFields.count(snapshot.conversationItems.count)
+        ]
     }
 
     func expandWindow(for task: AgentTask) {
@@ -126,7 +195,7 @@ final class TaskThreadViewModel {
             : .warning
         AppLogger.audit(.threadSnapshotBuilt, category: "UI", taskID: taskID, fields: [
             "status": trigger.status.rawValue,
-            "workspace_id": workspaceID?.uuidString ?? "none",
+            "workspace_id": PerformanceTelemetryFields.abbreviatedID(workspaceID),
             "event_count": String(trigger.eventCount),
             "visible_event_count": String(trigger.visibleEventCount),
             "run_count": String(trigger.runCount),

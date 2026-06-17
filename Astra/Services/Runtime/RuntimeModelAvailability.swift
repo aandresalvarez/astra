@@ -372,6 +372,23 @@ enum RuntimeModelAvailability {
         )
     }
 
+    @MainActor
+    static func persistObservedAvailableModels(
+        _ models: [String],
+        for runtime: AgentRuntimeID,
+        defaults: UserDefaults = .standard,
+        checkedAt: Date = Date(),
+        authority: RuntimeModelAvailabilityAuthority = .authoritative
+    ) {
+        persistAvailableModels(
+            models,
+            for: runtime,
+            defaults: defaults,
+            checkedAt: checkedAt,
+            authority: authority
+        )
+    }
+
     static func persistAvailableModelDetails(
         _ details: [RuntimeModelDetail],
         for runtime: AgentRuntimeID,
@@ -396,6 +413,23 @@ enum RuntimeModelAvailability {
         defaults.set(raw, forKey: availableModelsKey(for: runtime))
         defaults.set(checkedAt.timeIntervalSince1970, forKey: checkedAtKey(for: runtime))
         bumpCacheRevision(defaults: defaults)
+    }
+
+    @MainActor
+    static func persistObservedAvailableModelDetails(
+        _ details: [RuntimeModelDetail],
+        for runtime: AgentRuntimeID,
+        defaults: UserDefaults = .standard,
+        checkedAt: Date = Date(),
+        authority: RuntimeModelAvailabilityAuthority = .authoritative
+    ) {
+        persistAvailableModelDetails(
+            details,
+            for: runtime,
+            defaults: defaults,
+            checkedAt: checkedAt,
+            authority: authority
+        )
     }
 
     static func clearAvailableModels(for runtime: AgentRuntimeID, defaults: UserDefaults = .standard) {

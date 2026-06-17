@@ -38,6 +38,38 @@ struct RuntimeModelAvailabilityTests {
         #expect(RuntimeModelAvailability.normalizedModel("claude-sonnet-4", for: .copilotCLI, defaults: defaults) == "gpt-5")
     }
 
+    @Test("Observed model cache persistence serializes background probe writes on the main actor")
+    func observedModelCachePersistenceSerializesBackgroundProbeWritesOnMainActor() async {
+        let suiteName = "astra-runtime-model-observed-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                let taskDefaults = UserDefaults(suiteName: suiteName)!
+                await RuntimeModelAvailability.persistObservedAvailableModels(
+                    ["gpt-5", "future-model"],
+                    for: .copilotCLI,
+                    defaults: taskDefaults,
+                    checkedAt: Date(timeIntervalSince1970: 21)
+                )
+            }
+            group.addTask {
+                let taskDefaults = UserDefaults(suiteName: suiteName)!
+                await RuntimeModelAvailability.persistObservedAvailableModelDetails(
+                    [RuntimeModelDetail(value: "default", displayName: "Default")],
+                    for: .claudeCode,
+                    defaults: taskDefaults,
+                    checkedAt: Date(timeIntervalSince1970: 22)
+                )
+            }
+        }
+
+        #expect(RuntimeModelAvailability.models(for: .copilotCLI, defaults: defaults) == ["gpt-5", "future-model"])
+        #expect(RuntimeModelAvailability.models(for: .claudeCode, defaults: defaults) == ["default"])
+        #expect(defaults.integer(forKey: AppStorageKeys.runtimeModelCacheRevision) == 2)
+    }
+
     @Test("Suggestion-only provider cache preserves custom models")
     func suggestionOnlyProviderCachePreservesCustomModels() {
         let (defaults, suiteName) = makeDefaults()
