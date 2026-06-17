@@ -416,6 +416,11 @@ struct ChatPanelView: View {
     @State private var activeSlashContext: String?
     @State private var isPlanMode = false
     @State private var pendingPlan: TaskPlanPayload?
+    // In-flight planning chat round-trips. Cancelled in `.onDisappear` so a dismissed composer
+    // tears down the utility LLM subprocess instead of running it to completion for an assistant
+    // reply / pending plan that only lives in this view's @State and is discarded on recreate.
+    @State private var chatReplyTask: Task<Void, Never>?
+    @State private var planGenerationTask: Task<Void, Never>?
     @State private var isApprovedPlanHistoryExpanded = false
     @State private var excludedSkillIDs: Set<UUID> = []
     @State private var runtimeReadinessStates: [AgentRuntimeID: RuntimeReadinessState] = [:]
@@ -797,6 +802,8 @@ struct ChatPanelView: View {
         }
         .onDisappear {
             removePasteMonitor()
+            chatReplyTask?.cancel()
+            planGenerationTask?.cancel()
         }
         .onChange(of: sshReloadTrigger) { loadSSHConnections() }
         .onChange(of: defaultRuntimeID) { alignDefaultModelWithRuntime() }
@@ -1615,7 +1622,8 @@ struct ChatPanelView: View {
         ])
         logChatCapabilityContext(source: shouldUseGoalMode ? "new_task_plan_chat" : "new_task_chat", traceID: traceID)
 
-        Task {
+        chatReplyTask?.cancel()
+        chatReplyTask = Task {
             let result = await SpecEngine.chat(
                 messages: conversationHistory,
                 workspacePath: ws,
@@ -1623,6 +1631,7 @@ struct ChatPanelView: View {
                 utilityRuntime: planningUtilityRuntime
             )
             await MainActor.run {
+                guard !Task.isCancelled else { return }
                 isThinking = false
                 switch result {
                 case .success(let response):
@@ -1735,7 +1744,8 @@ struct ChatPanelView: View {
             TaskRoleProfileStore.recordSelected(selection, task: planningDraft, modelContext: modelContext)
         }
 
-        Task {
+        planGenerationTask?.cancel()
+        planGenerationTask = Task {
             let result = await SpecEngine.chat(
                 messages: conversationHistory,
                 workspacePath: ws,
@@ -1743,6 +1753,7 @@ struct ChatPanelView: View {
                 utilityRuntime: planningUtilityRuntime
             )
             await MainActor.run {
+                guard !Task.isCancelled else { return }
                 isThinking = false
                 switch result {
                 case .success(let response):
@@ -1811,6 +1822,9 @@ struct ChatPanelView: View {
         onTaskCreated?(task)
         showPlanCanvasIfNeeded(for: task)
 
+        // Intentionally NOT tied to this view's lifecycle: this runs the approved task the user just
+        // navigated to, so it must outlive the composer's dismissal. Cancelling it on `.onDisappear`
+        // would terminate the agent subprocess for the very task they approved.
         Task {
             let mode = PlanCheckpointPolicy.executionMode(for: task, skipPermissions: composerSkipPermissions)
             await taskQueue?.executeApprovedPlan(task: task, plan: plan, mode: mode, modelContext: modelContext) { _ in }
