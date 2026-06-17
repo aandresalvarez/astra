@@ -329,6 +329,17 @@ enum WorkspaceAppStudioBuilder {
         return operationalSurfaceManifest(intent: intent)
     }
 
+    /// The deterministic template manifest for a free-text intent.
+    ///
+    /// `WorkspaceAppStudioGenerator` uses this both as the graceful fallback when
+    /// the model is unavailable or never produces a valid manifest, and as the
+    /// valid few-shot example embedded in the generation prompt. It is the only
+    /// manifest-only entry point — `draft(intent:workspace:)` additionally needs a
+    /// `Workspace` to build a draft, which the value-typed generator must not require.
+    static func baseManifest(intent: String) -> WorkspaceAppManifest {
+        manifest(for: normalizedIntent(intent))
+    }
+
     private static func manifest(for idea: WorkspaceAppStudioIdea) -> WorkspaceAppManifest {
         if idea.id == "bq-redcap-reconciliation" {
             return reconciliationManifest(for: idea)
