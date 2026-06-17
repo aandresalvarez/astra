@@ -675,20 +675,6 @@ struct ContentView: View {
 
     // MARK: - F7 Workspace App surfaces
 
-    private enum WorkspaceAppUIError: LocalizedError {
-        case noWorkspace
-        case exportUnavailableFromDetail
-
-        var errorDescription: String? {
-            switch self {
-            case .noWorkspace:
-                return "Select a workspace before running this app action."
-            case .exportUnavailableFromDetail:
-                return "Export this app from the App Studio sharing flow."
-            }
-        }
-    }
-
     private func workspaceAppDetailArea(app: WorkspaceApp) -> some View {
         WorkspaceAppDetailView(
             app: app,
