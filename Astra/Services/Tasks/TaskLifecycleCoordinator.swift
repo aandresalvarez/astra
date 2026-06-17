@@ -894,16 +894,16 @@ final class TaskLifecycleCoordinator {
 
     // MARK: - Migration
 
-    func migrateConnectorCredentials(workspaces: [Workspace]) {
-        for ws in workspaces {
-            for connector in ws.connectors {
-                connector.migrateToKeychain()
-                // Move any secrets older versions stored in the login keychain
-                // into ASTRA's dedicated keychain. Idempotent; runs once at launch
-                // (not on every Connector instantiation), enumerating by service
-                // so it covers every credential/OAuth key without naming them.
-                KeychainService.migrateConnectorFromLoginKeychain(connectorID: connector.id)
-            }
+    func migrateConnectorCredentials(workspaces: [Workspace], globalConnectors: [Connector] = []) {
+        var seen = Set<UUID>()
+        let connectors = workspaces.flatMap(\.connectors) + globalConnectors
+        for connector in connectors where seen.insert(connector.id).inserted {
+            connector.migrateToKeychain()
+            // Move any secrets older versions stored in the login keychain
+            // into ASTRA's dedicated keychain. Idempotent; runs once at launch
+            // (not on every Connector instantiation), enumerating by service
+            // so it covers every credential/OAuth key without naming them.
+            KeychainService.migrateConnectorFromLoginKeychain(connectorID: connector.id)
         }
     }
 

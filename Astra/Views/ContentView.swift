@@ -2080,7 +2080,19 @@ struct ContentView: View {
     // MARK: - Migration
 
     private func migrateConnectorCredentials() {
-        coordinator.migrateConnectorCredentials(workspaces: workspaces)
+        let descriptor = FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal == true })
+        let globalConnectors: [Connector]
+        do {
+            globalConnectors = try modelContext.fetch(descriptor)
+        } catch {
+            globalConnectors = []
+            AppLogger.audit(.keychainSecretsMigrated, category: "Keychain", fields: [
+                "scope": "global_connector",
+                "result": "fetch_failed",
+                "reason": error.localizedDescription
+            ], level: .warning)
+        }
+        coordinator.migrateConnectorCredentials(workspaces: workspaces, globalConnectors: globalConnectors)
     }
 
     private func migrateSkillSecrets() {

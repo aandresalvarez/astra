@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import Security
+import SwiftData
 import AstraObjCSupport
 @testable import ASTRA
 
@@ -252,5 +253,61 @@ struct AstraSecureKeychainTests {
             fromLoginKeychain: service, keychainPath: path, bootstrapService: bootstrap
         )
         #expect(again == 0)
+    }
+
+    @MainActor
+    @Test("Startup migration includes shared global connector secrets",
+          .enabled(if: AstraSecureKeychainTestSupport.isAvailable))
+    func startupMigrationIncludesSharedGlobalConnectorSecrets() throws {
+        let path = AstraSecureKeychainTestSupport.tempKeychainPath()
+        let bootstrap = "astra-test-bootstrap-\(UUID().uuidString)"
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let connector = Connector(
+            name: "Jira-new",
+            serviceType: "jira",
+            connectorDescription: "Shared Jira",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "basic"
+        )
+        connector.isGlobal = true
+        connector.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        let service = KeychainSecretStore.connectorEntityID(for: connector.id)
+        defer {
+            AstraSecureKeychainTestSupport.cleanup(
+                keychainPath: path, bootstrapService: bootstrap, services: [service]
+            )
+            AstraSecureKeychainTestSupport.deleteLoginItems(service: service)
+        }
+
+        try #require(AstraSecureKeychainTestSupport.seedLoginItem(
+            service: service,
+            account: "JIRA_EMAIL",
+            value: "user@example.com"
+        ))
+        try #require(AstraSecureKeychainTestSupport.seedLoginItem(
+            service: service,
+            account: "JIRA_API_TOKEN",
+            value: "token"
+        ))
+
+        AstraSecureKeychainStore.$keychainPathOverride.withValue(path) {
+            AstraSecureKeychainStore.$bootstrapServiceOverride.withValue(bootstrap) {
+                let coordinator = TaskLifecycleCoordinator(
+                    modelContext: container.mainContext,
+                    taskQueue: TaskQueue()
+                )
+                coordinator.migrateConnectorCredentials(workspaces: [], globalConnectors: [connector])
+
+                let store = KeychainSecretStore()
+                #expect(store.load(key: "JIRA_EMAIL", entityID: service) == "user@example.com")
+                #expect(store.load(key: "JIRA_API_TOKEN", entityID: service) == "token")
+                #expect(!AstraSecureKeychainStore.loginKeychainContains(service: service, account: "JIRA_EMAIL"))
+                #expect(!AstraSecureKeychainStore.loginKeychainContains(service: service, account: "JIRA_API_TOKEN"))
+            }
+        }
     }
 }
