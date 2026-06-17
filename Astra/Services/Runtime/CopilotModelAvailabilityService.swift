@@ -52,7 +52,7 @@ struct CopilotModelAvailabilityService {
         let result = await availableModels()
         switch result {
         case .available(let models):
-            RuntimeModelAvailability.persistAvailableModels(models, for: .copilotCLI, defaults: defaults)
+            await RuntimeModelAvailability.persistObservedAvailableModels(models, for: .copilotCLI, defaults: defaults)
             AppLogger.audit(.runtimeModelAvailability, category: "Worker", fields: [
                 "runtime": AgentRuntimeID.copilotCLI.rawValue,
                 "result": "available",
@@ -182,7 +182,10 @@ struct CopilotModelAvailabilityService {
 
     private func plaintextCopilotToken() -> String? {
         let url = Self.copilotConfigURL(environment: environment())
-        guard let data = try? Data(contentsOf: url),
+        guard let data = try? HostFileAccessBroker().readData(
+            at: url,
+            intent: .astraManagedStorage(root: url.deletingLastPathComponent())
+        ),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let tokens = object["copilot_tokens"] as? [String: String] else {
             return nil

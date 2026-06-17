@@ -15,7 +15,10 @@ struct ExecutionSandboxTests {
         arguments: [String] = ["--print", "do work"],
         currentDirectory: String = "/tmp/astra-workspace",
         environment: [String: String] = ["HOME": "/tmp/astra-home"],
-        directoriesToCreate: [String] = []
+        directoriesToCreate: [String] = [],
+        sandboxReadablePaths: [String] = [],
+        sandboxProtectedWriteDenyPaths: [String] = [],
+        commandPlannedFields: [String: String] = [:]
     ) -> AgentRuntimeProcessLaunchPlan {
         AgentRuntimeProcessLaunchPlan(
             runtime: runtime,
@@ -27,8 +30,10 @@ struct ExecutionSandboxTests {
             providerVersion: nil,
             parsesJSONLines: true,
             directoriesToCreate: directoriesToCreate,
+            sandboxReadablePaths: sandboxReadablePaths,
+            sandboxProtectedWriteDenyPaths: sandboxProtectedWriteDenyPaths,
             providerDetectedFields: [:],
-            commandPlannedFields: [:]
+            commandPlannedFields: commandPlannedFields
         )
     }
 
@@ -42,6 +47,16 @@ struct ExecutionSandboxTests {
         #expect(ExecutionSandboxEnforcement.normalized("strict") == .strict)
         #expect(ExecutionSandboxEnforcement.normalized("best-effort") == .bestEffort)
         #expect(ExecutionSandboxEnforcement.normalized("nonsense") == .bestEffort)
+    }
+
+    @Test("Read scope parsing defaults unknown values to audit")
+    func readScopeParsing() {
+        #expect(ExecutionSandboxReadScope.normalized(nil) == .audit)
+        #expect(ExecutionSandboxReadScope.normalized("open") == .open)
+        #expect(ExecutionSandboxReadScope.normalized("write-only") == .open)
+        #expect(ExecutionSandboxReadScope.normalized("audit") == .audit)
+        #expect(ExecutionSandboxReadScope.normalized("enforce") == .enforce)
+        #expect(ExecutionSandboxReadScope.normalized("nonsense") == .audit)
     }
 
     // MARK: - Profile generation
@@ -58,6 +73,72 @@ struct ExecutionSandboxTests {
         #expect(profile.contains("(subpath \"/dev\")"))
         // Network allowed by default -> no network deny line.
         #expect(!profile.contains("(deny network*)"))
+    }
+
+    @Test("Strict read-scope profile denies reads then re-allows readable roots")
+    func profileStrictReadScopeShape() {
+        let profile = ExecutionSandbox.makeProfile(
+            writableRootCount: 1,
+            readableRootCount: 2,
+            allowNetwork: true,
+            readScope: .enforce
+        )
+
+        #expect(profile.contains("(deny file-read*)"))
+        #expect(profile.contains("(allow file-read*"))
+        #expect(profile.contains("(subpath (param \"READ_ROOT_0\"))"))
+        #expect(profile.contains("(subpath (param \"READ_ROOT_1\"))"))
+        #expect(!profile.contains("READ_ROOT_2"))
+        #expect(!profile.contains("(debug deny file-read*)"))
+    }
+
+    @Test("Strict read-scope profile allows readable root metadata literals")
+    func profileStrictReadScopeAllowsReadableMetadataLiterals() {
+        let profile = ExecutionSandbox.makeProfile(
+            writableRootCount: 1,
+            readableRootCount: 1,
+            readableMetadataRootCount: 1,
+            allowNetwork: true,
+            readScope: .enforce
+        )
+        let args = ExecutionSandbox.makeArguments(
+            profile: profile,
+            writableRoots: ["/tmp/astra-workspace"],
+            readableRoots: ["/opt/homebrew"],
+            readableMetadataRoots: ["/opt"],
+            executablePath: "/bin/echo",
+            arguments: ["hello"]
+        )
+
+        #expect(profile.contains("(literal (param \"READ_LITERAL_ROOT_0\"))"))
+        #expect(args.contains("READ_LITERAL_ROOT_0=/opt"))
+        // Metadata roots are granted metadata-only (stat/traverse), NOT full
+        // file-read* — so the process can resolve paths through ancestor dirs
+        // like /Users without being able to list their contents.
+        let metadataBlock = profile.range(of: "(allow file-read-metadata")
+        #expect(metadataBlock != nil)
+        if let metadataBlock {
+            let literalRange = profile.range(of: "(literal (param \"READ_LITERAL_ROOT_0\"))")
+            #expect(literalRange != nil)
+            if let literalRange {
+                #expect(literalRange.lowerBound > metadataBlock.lowerBound)
+            }
+        }
+    }
+
+    @Test("Audit read-scope profile reports would-deny reads without disabling write denies")
+    func profileAuditReadScopeShape() {
+        let profile = ExecutionSandbox.makeProfile(
+            writableRootCount: 1,
+            readableRootCount: 1,
+            allowNetwork: true,
+            readScope: .audit
+        )
+
+        #expect(profile.contains("(debug deny file-read*)"))
+        #expect(profile.contains("(allow file-read*"))
+        #expect(profile.contains("(subpath (param \"READ_ROOT_0\"))"))
+        #expect(profile.contains("(deny file-write*)"))
     }
 
     @Test("Offline profile denies network")
@@ -77,6 +158,7 @@ struct ExecutionSandboxTests {
         let args = ExecutionSandbox.makeArguments(
             profile: profile,
             writableRoots: [nastyRoot],
+            readableRoots: ["/tmp/readable"],
             executablePath: "/bin/echo",
             arguments: ["hello", "world"]
         )
@@ -85,6 +167,7 @@ struct ExecutionSandboxTests {
         #expect(args[1] == profile)
         #expect(args.contains("-D"))
         #expect(args.contains("ROOT_0=\(nastyRoot)"))
+        #expect(args.contains("READ_ROOT_0=/tmp/readable"))
 
         // The raw path must not appear inside the profile string itself.
         #expect(!profile.contains(nastyRoot))
@@ -135,6 +218,379 @@ struct ExecutionSandboxTests {
         #expect(roots.count == Set(roots).count)
     }
 
+    @Test("Provider state roots include Claude application support")
+    func providerStateRootsIncludeClaudeApplicationSupport() {
+        let plan = makePlan(
+            runtime: .claudeCode,
+            currentDirectory: "/tmp/astra-workspace",
+            environment: ["HOME": "/tmp/astra-home", "TMPDIR": "/tmp"]
+        )
+        let workspace = ExecutionSandbox.canonicalize(plan.currentDirectory)!
+        let readableRoots = ExecutionSandbox.readableRoots(
+            plan: plan,
+            providerHomeDirectory: "",
+            canonicalWorkspace: workspace
+        )
+        let writableRoots = ExecutionSandbox.writableRoots(
+            plan: plan,
+            providerHomeDirectory: "",
+            canonicalWorkspace: workspace
+        )
+
+        #expect(readableRoots.contains("/private/tmp/astra-home/Library/Application Support/Claude"))
+        #expect(writableRoots.contains("/private/tmp/astra-home/Library/Application Support/Claude"))
+    }
+
+    @Test("Copilot provider state roots omit Claude application support")
+    func copilotProviderStateRootsOmitClaudeApplicationSupport() {
+        let plan = makePlan(
+            runtime: .copilotCLI,
+            executablePath: "/usr/local/bin/copilot",
+            currentDirectory: "/tmp/astra-workspace",
+            environment: ["HOME": "/tmp/astra-home", "TMPDIR": "/tmp"]
+        )
+        let workspace = ExecutionSandbox.canonicalize(plan.currentDirectory)!
+        let readableRoots = ExecutionSandbox.readableRoots(
+            plan: plan,
+            providerHomeDirectory: "",
+            canonicalWorkspace: workspace
+        )
+        let writableRoots = ExecutionSandbox.writableRoots(
+            plan: plan,
+            providerHomeDirectory: "",
+            canonicalWorkspace: workspace
+        )
+
+        #expect(!readableRoots.contains("/private/tmp/astra-home/Library/Application Support/Claude"))
+        #expect(!writableRoots.contains("/private/tmp/astra-home/Library/Application Support/Claude"))
+    }
+
+    @Test("Claude auth readable roots grant login keychain without metadata")
+    func claudeAuthReadableRootsGrantLoginKeychainWithoutMetadata() {
+        let userHome = "/tmp/astra-claude-user-\(UUID().uuidString)"
+        let plan = makePlan(
+            runtime: .claudeCode,
+            currentDirectory: "/tmp/astra-workspace",
+            environment: ["HOME": userHome, "TMPDIR": "/tmp"],
+            sandboxReadablePaths: ClaudeCodeRuntime.authReadablePaths(userHome: userHome)
+        )
+        let workspace = ExecutionSandbox.canonicalize(plan.currentDirectory)!
+        let readableRoots = ExecutionSandbox.readableRoots(
+            plan: plan,
+            providerHomeDirectory: "",
+            canonicalWorkspace: workspace
+        )
+        let keychains = (userHome as NSString).appendingPathComponent("Library/Keychains")
+        let loginKeychain = (keychains as NSString).appendingPathComponent("login.keychain-db")
+        let metadataKeychain = (keychains as NSString).appendingPathComponent("metadata.keychain-db")
+
+        #expect(readableRoots.contains(loginKeychain))
+        #expect(!readableRoots.contains(metadataKeychain))
+        #expect(!readableRoots.contains(keychains))
+    }
+
+    @Test("Readable roots include explicit roots, provider state, and system toolchain roots")
+    func readableRoots() {
+        let plan = makePlan(
+            executablePath: "/tmp/provider/bin/claude",
+            currentDirectory: "/tmp/astra-workspace",
+            environment: ["HOME": "/tmp/astra-home", "TMPDIR": "/tmp"],
+            directoriesToCreate: ["/tmp/astra-workspace/.astra/tasks/ab"],
+            sandboxReadablePaths: ["/tmp/astra-mcp-configs"]
+        )
+        let workspace = ExecutionSandbox.canonicalize(plan.currentDirectory)!
+        let roots = ExecutionSandbox.readableRoots(
+            plan: plan,
+            providerHomeDirectory: "",
+            additionalReadablePaths: ["/tmp/extra-input"],
+            canonicalWorkspace: workspace
+        )
+
+        #expect(roots.contains(workspace))
+        #expect(roots.contains("/private/tmp/extra-input"))
+        #expect(roots.contains("/private/tmp/astra-mcp-configs"))
+        #expect(roots.contains("/private/tmp/astra-home/.claude"))
+        #expect(roots.contains("/private/tmp/provider/bin"))
+        #expect(roots.contains("/System"))
+        #expect(roots.contains("/usr"))
+        #expect(roots.contains("/opt/homebrew"))
+        #expect(!roots.contains("/Applications"))
+        #expect(roots.count == Set(roots).count)
+    }
+
+    @Test("Readable metadata roots include parent chain for Homebrew executables")
+    func readableMetadataRootsIncludeParentChainForHomebrewExecutables() {
+        let roots = ExecutionSandbox.readableMetadataRoots(for: [
+            "/opt/homebrew",
+            "/opt/homebrew/bin"
+        ])
+
+        #expect(roots.contains("/opt"))
+        #expect(roots.contains("/opt/homebrew"))
+        #expect(roots.contains("/opt/homebrew/bin"))
+        #expect(!roots.contains("/"))
+        #expect(roots.count == Set(roots).count)
+    }
+
+    @Test("Strict read-scope starts the Homebrew Copilot CLI under sandbox")
+    func strictReadScopeStartsHomebrewCopilotCLI() throws {
+        let fm = FileManager.default
+        guard fm.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
+
+        let copilotPath = "/opt/homebrew/bin/copilot"
+        guard fm.isExecutableFile(atPath: copilotPath) else { return }
+
+        let base = fm.temporaryDirectory.appendingPathComponent("astra-copilot-sandbox-\(UUID().uuidString)")
+        let workspace = base.appendingPathComponent("workspace")
+        let providerHome = base.appendingPathComponent("copilot-home")
+        try fm.createDirectory(at: workspace, withIntermediateDirectories: true)
+        try fm.createDirectory(at: providerHome, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: base) }
+
+        let environment = RuntimeProcessEnvironment.enriched(extraVariables: [
+            "COPILOT_HOME": providerHome.path,
+            "HOME": providerHome.path,
+            "TMPDIR": fm.temporaryDirectory.path
+        ])
+        let plan = makePlan(
+            runtime: .copilotCLI,
+            executablePath: copilotPath,
+            arguments: ["--version"],
+            currentDirectory: workspace.path,
+            environment: environment,
+            directoriesToCreate: [providerHome.path]
+        )
+
+        let decision = ExecutionSandbox.decide(
+            plan: plan,
+            providerHomeDirectory: providerHome.path,
+            settings: ExecutionSandboxSettings(enforcement: .strict, allowNetwork: true, readScope: .enforce)
+        )
+        guard case .applied(let wrapped, _) = decision else {
+            Issue.record("Expected strict sandbox to apply, got \(decision)")
+            return
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: wrapped.executablePath)
+        process.arguments = wrapped.arguments
+        process.environment = wrapped.environment
+        process.currentDirectoryURL = workspace
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        do {
+            try process.run()
+        } catch {
+            Issue.record("Failed to launch sandboxed Copilot CLI: \(error)")
+            return
+        }
+        let stdoutData = stdout.fileHandleForReading.readDataToEndOfFile()
+        let stderrData = stderr.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        let output = String(data: stdoutData + stderrData, encoding: .utf8) ?? ""
+        if process.terminationStatus != 0 {
+            Issue.record("Sandboxed Copilot CLI exited \(process.terminationStatus): \(output)")
+        }
+        #expect(process.terminationStatus == 0)
+        #expect(output.contains("GitHub Copilot CLI"))
+    }
+
+    @Test("Copilot startup cache roots are scoped to provider home")
+    func copilotStartupCacheRootsAreScopedToProviderHome() {
+        let providerHome = "/tmp/astra-copilot-home-\(UUID().uuidString)"
+        let userHome = "/tmp/astra-copilot-user-\(UUID().uuidString)"
+        let copilotStateHome = "\(userHome)/.copilot"
+        let command = CopilotCLIRuntime.buildCommand(
+            executablePath: "/opt/homebrew/bin/copilot",
+            prompt: "Review issues",
+            model: "claude-sonnet-4.6",
+            workspacePath: "/tmp/astra-workspace",
+            additionalPaths: [],
+            permissionPolicy: .autonomous,
+            allowedTools: [],
+            timeoutSeconds: 60,
+            capabilities: CopilotCLICapabilities(helpText: "--output-format=FORMAT --stream=MODE --no-ask-user --allow-all"),
+            taskEnvironment: ["HOME": "/tmp/task-home", "XDG_CACHE_HOME": "/tmp/task-cache"],
+            copilotHome: providerHome,
+            copilotStateHome: copilotStateHome,
+            userHome: userHome,
+            providerEnvironment: ["HOME": "/tmp/provider-home"]
+        )
+        let plan = makePlan(
+            runtime: .copilotCLI,
+            executablePath: command.executablePath,
+            arguments: command.arguments,
+            currentDirectory: "/tmp/astra-workspace",
+            environment: command.environment,
+            directoriesToCreate: CopilotCLIRuntime.directoriesToCreate(
+                copilotHome: providerHome,
+                copilotStateHome: copilotStateHome,
+                userHome: userHome
+            ),
+            sandboxReadablePaths: CopilotCLIRuntime.authReadablePaths(userHome: userHome),
+            sandboxProtectedWriteDenyPaths: CopilotCLIRuntime.configWriteDenyPaths(userHome: userHome)
+        )
+
+        let writableRoots = ExecutionSandbox.writableRoots(
+            plan: plan,
+            providerHomeDirectory: providerHome,
+            canonicalWorkspace: "/tmp/astra-workspace"
+        )
+        let readableRoots = ExecutionSandbox.readableRoots(
+            plan: plan,
+            providerHomeDirectory: providerHome,
+            canonicalWorkspace: "/tmp/astra-workspace"
+        )
+        let writeDenyRoots = ExecutionSandbox.protectedWriteDenyRoots(plan: plan, writableRoots: writableRoots)
+        let userCaches = (userHome as NSString).appendingPathComponent("Library/Caches")
+        let copilotUserCaches = (userHome as NSString).appendingPathComponent("Library/Caches/copilot")
+        let keychains = (userHome as NSString).appendingPathComponent("Library/Keychains")
+        let loginKeychain = (keychains as NSString).appendingPathComponent("login.keychain-db")
+        let metadataKeychain = (keychains as NSString).appendingPathComponent("metadata.keychain-db")
+        let copilotConfig = (copilotStateHome as NSString).appendingPathComponent("config.json")
+        let copilotMcpConfig = (copilotStateHome as NSString).appendingPathComponent("mcp-config.json")
+        let copilotSessionDB = (copilotStateHome as NSString).appendingPathComponent("session-store.db")
+
+        #expect(command.environment["COPILOT_HOME"] == copilotStateHome)
+        #expect(command.environment["HOME"] == userHome)
+        #expect(command.environment["XDG_CACHE_HOME"] == "\(providerHome)/.cache")
+        #expect(writableRoots.contains(providerHome))
+        #expect(writableRoots.contains(copilotStateHome))
+        #expect(writableRoots.contains("\(providerHome)/.cache"))
+        #expect(writableRoots.contains("\(providerHome)/Library/Caches"))
+        #expect(writableRoots.contains(copilotUserCaches))
+        #expect(readableRoots.contains(copilotStateHome))
+        #expect(readableRoots.contains("\(providerHome)/.cache"))
+        #expect(readableRoots.contains("\(providerHome)/Library/Caches"))
+        #expect(readableRoots.contains(copilotUserCaches))
+        #expect(readableRoots.contains(loginKeychain))
+        // metadata.keychain-db is intentionally not granted (credential-name leak).
+        #expect(!readableRoots.contains(metadataKeychain))
+        #expect(!readableRoots.contains(keychains))
+        #expect(!writableRoots.contains(userCaches))
+        #expect(!readableRoots.contains(userCaches))
+        // Injection-sensitive shared-home config is carved back out as read-only
+        // (write-deny over the writable home) while transient session state stays
+        // writable, so a task cannot tamper with the next terminal session.
+        #expect(writeDenyRoots.contains(copilotConfig))
+        #expect(writeDenyRoots.contains(copilotMcpConfig))
+        #expect(!writeDenyRoots.contains(copilotSessionDB))
+    }
+
+    @Test("Strict profile denies writes to carved-out config under a writable home")
+    func strictProfileDeniesWritesToCarvedOutConfig() {
+        let profile = ExecutionSandbox.makeProfile(
+            writableRootCount: 1,
+            protectedWriteDenyRootCount: 2,
+            allowNetwork: true,
+            readScope: .enforce
+        )
+        let args = ExecutionSandbox.makeArguments(
+            profile: profile,
+            writableRoots: ["/tmp/copilot-home"],
+            protectedWriteDenyRoots: ["/tmp/copilot-home/config.json", "/tmp/copilot-home/mcp-config.json"],
+            executablePath: "/bin/echo",
+            arguments: ["hi"]
+        )
+
+        // The deny block must appear AFTER the write-allow so last-match-wins
+        // makes deny win for the literal config files.
+        let denyRange = profile.range(of: "(deny file-write*\n    (literal (param \"PROTECTED_WRITE_DENY_ROOT_0\"))")
+        let allowRange = profile.range(of: "(allow file-write*")
+        #expect(denyRange != nil)
+        #expect(allowRange != nil)
+        if let denyRange, let allowRange {
+            #expect(allowRange.lowerBound < denyRange.lowerBound)
+        }
+        #expect(args.contains("PROTECTED_WRITE_DENY_ROOT_0=/tmp/copilot-home/config.json"))
+        #expect(args.contains("PROTECTED_WRITE_DENY_ROOT_1=/tmp/copilot-home/mcp-config.json"))
+    }
+
+    @Test("Codex launch roots enter strict readable and writable allowlists")
+    func codexLaunchRootsEnterStrictAllowlists() {
+        let sandboxReadablePaths = CodexCLIRuntime.sandboxReadablePaths(
+            providerHomeDirectory: "",
+            environment: [
+                "CODEX_HOME": "/tmp/astra-codex-env-home",
+                "HOME": "/tmp/astra-home"
+            ],
+            processHomeDirectory: "/tmp/process-home"
+        )
+        let directoriesToCreate = CodexCLIRuntime.directoriesToCreate(
+            providerHomeDirectory: "",
+            environment: ["CODEX_HOME": "/tmp/astra-codex-env-home"]
+        )
+        let plan = makePlan(
+            runtime: .codexCLI,
+            executablePath: "/tmp/provider/bin/codex",
+            currentDirectory: "/tmp/astra-workspace",
+            environment: [
+                "CODEX_HOME": "/tmp/astra-codex-env-home",
+                "HOME": "/tmp/astra-home"
+            ],
+            directoriesToCreate: directoriesToCreate,
+            sandboxReadablePaths: sandboxReadablePaths
+        )
+        let workspace = ExecutionSandbox.canonicalize(plan.currentDirectory)!
+        let readable = ExecutionSandbox.readableRoots(
+            plan: plan,
+            providerHomeDirectory: "",
+            canonicalWorkspace: workspace
+        )
+        let writable = ExecutionSandbox.writableRoots(
+            plan: plan,
+            providerHomeDirectory: "",
+            canonicalWorkspace: workspace
+        )
+
+        #expect(readable.contains("/private/tmp/astra-codex-env-home"))
+        #expect(writable.contains("/private/tmp/astra-codex-env-home"))
+        #expect(readable.contains("/private/etc/codex"))
+        #expect(readable.contains("/etc/codex"))
+        #if os(macOS)
+        #expect(readable.contains("/Library/Managed Preferences"))
+        #expect(readable.contains("/Library/Preferences"))
+        #endif
+    }
+
+    @Test("Applied sandbox plan preserves protected write-deny paths through rewrite")
+    func appliedPlanPreservesProtectedWriteDenyPaths() throws {
+        let fm = FileManager.default
+        guard fm.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
+
+        let base = fm.temporaryDirectory.appendingPathComponent("astra-rewrite-\(UUID().uuidString)")
+        let workspace = base.appendingPathComponent("workspace")
+        try fm.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: base) }
+
+        let denyPaths = ["\(workspace.path)/.copilot/config.json"]
+        let plan = makePlan(
+            runtime: .copilotCLI,
+            executablePath: "/bin/echo",
+            arguments: ["hi"],
+            currentDirectory: workspace.path,
+            environment: ["HOME": workspace.path],
+            sandboxProtectedWriteDenyPaths: denyPaths
+        )
+
+        let decision = ExecutionSandbox.decide(
+            plan: plan,
+            providerHomeDirectory: workspace.path,
+            settings: ExecutionSandboxSettings(enforcement: .strict, allowNetwork: true, readScope: .enforce)
+        )
+        guard case .applied(let wrapped, _) = decision else {
+            Issue.record("Expected strict sandbox to apply, got \(decision)")
+            return
+        }
+        // The rewritten/applied plan must carry the protected write-deny paths
+        // forward (regression guard: rewrite() once dropped this field).
+        #expect(wrapped.sandboxProtectedWriteDenyPaths == denyPaths)
+    }
+
     // MARK: - Decision logic
 
     @Test("Disabled enforcement skips wrapping")
@@ -165,6 +621,24 @@ struct ExecutionSandboxTests {
             settings: ExecutionSandboxSettings(enforcement: .strict)
         )
         #expect(decision == .failClosed(reason: "no_execution_path"))
+    }
+
+    @Test("Browser bridge launch block fails closed when provider lacks shell tool")
+    func browserBridgeLaunchBlockFailsClosedWhenProviderLacksShellTool() throws {
+        let plan = makePlan(
+            runtime: .copilotCLI,
+            environment: ["ASTRA_BROWSER_URL": "http://127.0.0.1:49152"],
+            commandPlannedFields: [
+                "browser_bridge_shell_tool_supported": "false",
+                "browser_bridge_launch_block_reason": "provider_missing_browser_shell_tool"
+            ]
+        )
+
+        let result = try #require(BrowserBridgeRuntimeLaunchGuard.launchBlock(for: plan))
+
+        #expect(result.exitCode == -1)
+        #expect(result.runtimeStopReason == "provider_missing_browser_shell_tool")
+        #expect(result.runtimeStopMessage?.contains("cannot execute the astra-browser command") == true)
     }
 
     @Test("Best-effort enforcement falls back when there is no execution path")
@@ -202,6 +676,66 @@ struct ExecutionSandboxTests {
         #expect(!roots.isEmpty)
     }
 
+    @Test("Strict decision emits an enforced read-scope profile")
+    func decisionStrictEmitsReadScopeProfile() {
+        guard FileManager.default.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
+        let decision = ExecutionSandbox.decide(
+            plan: makePlan(arguments: ["--print", "do work"]),
+            providerHomeDirectory: "",
+            settings: ExecutionSandboxSettings(enforcement: .strict)
+        )
+        guard case .applied(let wrapped, _) = decision else {
+            Issue.record("Expected .applied, got \(decision)")
+            return
+        }
+        let profile = wrapped.arguments[1]
+        #expect(profile.contains("(deny file-read*)"))
+        #expect(profile.contains("READ_ROOT_0"))
+        #expect(!profile.contains("(debug deny file-read*)"))
+        #expect(wrapped.arguments.contains { $0.hasPrefix("READ_ROOT_0=") })
+    }
+
+    @Test("Audit decision emits a non-enforcing read-scope profile")
+    func decisionAuditEmitsDebugReadScopeProfile() {
+        guard FileManager.default.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
+        let decision = ExecutionSandbox.decide(
+            plan: makePlan(arguments: ["--print", "do work"]),
+            providerHomeDirectory: "",
+            settings: ExecutionSandboxSettings(enforcement: .bestEffort, readScope: .audit)
+        )
+        guard case .applied(let wrapped, _) = decision else {
+            Issue.record("Expected .applied, got \(decision)")
+            return
+        }
+        let profile = wrapped.arguments[1]
+        #expect(profile.contains("(debug deny file-read*)"))
+        #expect(profile.contains("(deny file-write*)"))
+        #expect(wrapped.arguments.contains { $0.hasPrefix("READ_ROOT_0=") })
+    }
+
+    @Test("Best-effort audit wraps providers with hard denies for privacy-sensitive reads")
+    func decisionBestEffortIncludesProtectedReadDenyRoots() {
+        guard FileManager.default.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
+        let decision = ExecutionSandbox.decide(
+            plan: makePlan(arguments: ["--print", "do work"]),
+            providerHomeDirectory: "",
+            settings: ExecutionSandboxSettings(enforcement: .bestEffort, readScope: .audit)
+        )
+        guard case .applied(let wrapped, _) = decision else {
+            Issue.record("Expected .applied, got \(decision)")
+            return
+        }
+
+        let profile = wrapped.arguments[1]
+        #expect(profile.contains("(debug deny file-read*)"))
+        #expect(profile.contains("(deny file-read*"))
+        #expect(profile.contains("(subpath (param \"PROTECTED_READ_ROOT_0\"))"))
+        #expect(wrapped.arguments.contains { $0.hasPrefix("PROTECTED_READ_ROOT_") && $0.contains("/Music") })
+        #expect(wrapped.arguments.contains { $0.hasPrefix("PROTECTED_READ_ROOT_") && $0.contains("/Pictures") })
+        #expect(wrapped.arguments.contains { $0.hasPrefix("PROTECTED_READ_ROOT_") && $0.contains("/Volumes") })
+        #expect(wrapped.arguments.contains { $0.hasPrefix("PROTECTED_READ_ROOT_") && $0.contains("/Network") })
+    }
+
     // MARK: - Persisted settings resolution
 
     @Test("current() honors enforcement, network, and layering defaults")
@@ -214,6 +748,7 @@ struct ExecutionSandboxTests {
         let base = ExecutionSandboxSettings.current(permissionPolicy: .restricted, defaults: defaults)
         #expect(base.enforcement == .bestEffort)
         #expect(base.allowNetwork == true)
+        #expect(base.readScope == .audit)
         #expect(base.shouldWrap(runtime: .claudeCode))
         #expect(base.shouldWrap(runtime: .copilotCLI))
         #expect(!base.shouldWrap(runtime: .codexCLI))
@@ -223,6 +758,7 @@ struct ExecutionSandboxTests {
         // without a kernel boundary even with native layering off.
         let auto = ExecutionSandboxSettings.current(permissionPolicy: .autonomous, defaults: defaults)
         #expect(auto.enforcement == .strict)
+        #expect(auto.readScope == .enforce)
         #expect(auto.shouldWrap(runtime: .codexCLI))
         #expect(auto.shouldWrap(runtime: .cursorCLI))
         #expect(auto.shouldWrap(runtime: .antigravityCLI))
@@ -237,6 +773,7 @@ struct ExecutionSandboxTests {
         let custom = ExecutionSandboxSettings.current(permissionPolicy: .restricted, defaults: defaults)
         #expect(custom.enforcement == .strict)
         #expect(custom.allowNetwork == false)
+        #expect(custom.readScope == .enforce)
         #expect(custom.shouldWrap(runtime: .claudeCode))
         #expect(custom.shouldWrap(runtime: .codexCLI))
         #expect(custom.shouldWrap(runtime: .cursorCLI))
@@ -246,6 +783,7 @@ struct ExecutionSandboxTests {
         defaults.set(ExecutionSandboxEnforcement.off.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
         let off = ExecutionSandboxSettings.current(permissionPolicy: .autonomous, defaults: defaults)
         #expect(off.enforcement == .off)
+        #expect(off.readScope == .open)
         #expect(!off.shouldWrap(runtime: .claudeCode))
         #expect(!off.shouldWrap(runtime: .codexCLI))
     }
@@ -311,7 +849,7 @@ struct ExecutionSandboxTests {
             return process.terminationStatus
         }
 
-        // Reads outside the workspace stay allowed (broad read).
+        // This profile uses the open read scope, so outside reads stay allowed.
         #expect(runConfinedShell("cat /etc/hosts > /dev/null") == 0)
 
         // Write inside the workspace succeeds.
@@ -623,8 +1161,8 @@ struct ExecutionSandboxTests {
         #expect(runConfined(profile: profile, writableRoots: [root], script: "printf x > /dev/null") == 0)
     }
 
-    @Test("Reads outside the workspace stay allowed by design (write-scoping, not read-scoping)")
-    func seatbeltBroadReadIsByDesign() throws {
+    @Test("Open read scope leaves outside reads allowed while writes stay confined")
+    func openReadScopeLeavesOutsideReadsAllowed() throws {
         let fm = FileManager.default
         guard fm.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
         let base = fm.temporaryDirectory.appendingPathComponent("astra-sbx-\(UUID().uuidString)")
@@ -632,20 +1170,225 @@ struct ExecutionSandboxTests {
         try fm.createDirectory(at: workspace, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: base) }
 
-        // A "secret" outside every writable root. The boundary is write-only, so
-        // reading it MUST still succeed — this pins the documented threat model
-        // (no read-confinement; exfil-via-read is out of scope by design).
+        // Open read scope preserves the original write-only sandbox behavior:
+        // reads stay broad, while writes remain confined by the writable roots.
         let secret = base.appendingPathComponent("secret.txt")
         try "topsecret".write(to: secret, atomically: true, encoding: .utf8)
 
         let root = ExecutionSandbox.canonicalize(workspace.path)!
-        let profile = ExecutionSandbox.makeProfile(writableRootCount: 1, allowNetwork: true)
-        // Capture stdout and assert the secret's CONTENT came through — proving the
-        // read genuinely succeeded, not just that `cat` exited 0 for some other
-        // reason. (The profile only denies writes, so reads are open by design.)
+        let profile = ExecutionSandbox.makeProfile(
+            writableRootCount: 1,
+            allowNetwork: true,
+            readScope: .open
+        )
+        // Capture stdout and assert the secret's content came through, proving the
+        // open profile is still the compatibility escape hatch.
         let result = runConfinedCapturingStdout(profile: profile, writableRoots: [root], script: "cat '\(secret.path)'")
         #expect(result.status == 0)
         #expect(result.stdout == "topsecret")
+    }
+
+    @Test("Open read scope still blocks protected media-like roots unless explicitly granted")
+    func openReadScopeBlocksProtectedReadRoots() throws {
+        let fm = FileManager.default
+        guard fm.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
+        let base = fm.temporaryDirectory.appendingPathComponent("astra-sbx-\(UUID().uuidString)")
+        let workspace = base.appendingPathComponent("workspace")
+        let protectedRoot = base.appendingPathComponent("Music")
+        try fm.createDirectory(at: workspace, withIntermediateDirectories: true)
+        try fm.createDirectory(at: protectedRoot, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: base) }
+
+        let secret = protectedRoot.appendingPathComponent("library.txt")
+        try "media".write(to: secret, atomically: true, encoding: .utf8)
+
+        let workspaceRoot = ExecutionSandbox.canonicalize(workspace.path)!
+        let protectedReadRoot = ExecutionSandbox.canonicalize(protectedRoot.path)!
+        let secretPath = ExecutionSandbox.canonicalize(secret.path) ?? secret.path
+        let profile = ExecutionSandbox.makeProfile(
+            writableRootCount: 1,
+            protectedReadRootCount: 1,
+            allowNetwork: true,
+            readScope: .open
+        )
+
+        let denied = runConfinedCapturingStdout(
+            profile: profile,
+            writableRoots: [workspaceRoot],
+            protectedReadRoots: [protectedReadRoot],
+            executablePath: "/bin/cat",
+            arguments: [secretPath]
+        )
+        #expect(denied.status != 0)
+        #expect(denied.stdout.isEmpty)
+    }
+
+    @Test("Protected read roots can be read when the protected subpath is explicit")
+    func protectedReadRootsAllowExplicitSubpath() throws {
+        let fm = FileManager.default
+        guard fm.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
+        let base = fm.temporaryDirectory.appendingPathComponent("astra-sbx-\(UUID().uuidString)")
+        let workspace = base.appendingPathComponent("workspace")
+        let protectedRoot = base.appendingPathComponent("Pictures")
+        let explicitInput = protectedRoot.appendingPathComponent("Selected")
+        try fm.createDirectory(at: workspace, withIntermediateDirectories: true)
+        try fm.createDirectory(at: explicitInput, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: base) }
+
+        let selected = explicitInput.appendingPathComponent("photo.txt")
+        try "photo".write(to: selected, atomically: true, encoding: .utf8)
+
+        let workspaceRoot = ExecutionSandbox.canonicalize(workspace.path)!
+        let protectedReadRoot = ExecutionSandbox.canonicalize(protectedRoot.path)!
+        let explicitRoot = ExecutionSandbox.canonicalize(explicitInput.path)!
+        let selectedPath = ExecutionSandbox.canonicalize(selected.path) ?? selected.path
+        let profile = ExecutionSandbox.makeProfile(
+            writableRootCount: 1,
+            protectedReadRootCount: 1,
+            explicitProtectedReadAllowRootCount: 1,
+            allowNetwork: true,
+            readScope: .open
+        )
+
+        let allowed = runConfinedCapturingStdout(
+            profile: profile,
+            writableRoots: [workspaceRoot],
+            protectedReadRoots: [protectedReadRoot],
+            explicitProtectedReadAllowRoots: [explicitRoot],
+            executablePath: "/bin/cat",
+            arguments: [selectedPath]
+        )
+        #expect(allowed.status == 0)
+        #expect(allowed.stdout == "photo")
+    }
+
+    @Test("Strict read scope blocks reads outside readable roots and allows workspace reads")
+    func strictReadScopeBlocksOutsideReads() throws {
+        let fm = FileManager.default
+        guard fm.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
+        let base = fm.temporaryDirectory.appendingPathComponent("astra-sbx-\(UUID().uuidString)")
+        let workspace = base.appendingPathComponent("workspace")
+        try fm.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: base) }
+
+        let inside = workspace.appendingPathComponent("inside.txt")
+        let outside = base.appendingPathComponent("outside.txt")
+        try "inside".write(to: inside, atomically: true, encoding: .utf8)
+        try "outside".write(to: outside, atomically: true, encoding: .utf8)
+
+        let root = ExecutionSandbox.canonicalize(workspace.path)!
+        let readableRoots = ([root] + ExecutionSandbox.defaultReadableSystemRoots)
+            .compactMap(ExecutionSandbox.canonicalize)
+        let profile = ExecutionSandbox.makeProfile(
+            writableRootCount: 1,
+            readableRootCount: readableRoots.count,
+            allowNetwork: true,
+            readScope: .enforce
+        )
+
+        let insideResult = runConfinedCapturingStdout(
+            profile: profile,
+            writableRoots: [root],
+            readableRoots: readableRoots,
+            currentDirectory: workspace,
+            executablePath: "/bin/cat",
+            arguments: [ExecutionSandbox.canonicalize(inside.path) ?? inside.path]
+        )
+        #expect(insideResult.status == 0)
+        #expect(insideResult.stdout == "inside")
+
+        let outsideResult = runConfinedCapturingStdout(
+            profile: profile,
+            writableRoots: [root],
+            readableRoots: readableRoots,
+            currentDirectory: workspace,
+            executablePath: "/bin/cat",
+            arguments: [ExecutionSandbox.canonicalize(outside.path) ?? outside.path]
+        )
+        #expect(outsideResult.status != 0)
+        #expect(outsideResult.stdout.isEmpty)
+    }
+
+    @Test("Strict read scope can execute an explicitly allowed temp script through firmlink spelling")
+    func strictReadScopeAllowsFirmlinkedTempExecutable() throws {
+        let fm = FileManager.default
+        guard fm.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
+        let base = fm.temporaryDirectory.appendingPathComponent("astra-sbx-\(UUID().uuidString)")
+        let workspace = base.appendingPathComponent("workspace")
+        try fm.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: base) }
+
+        let script = base.appendingPathComponent("fake-provider")
+        let marker = workspace.appendingPathComponent("ran.txt")
+        let markerPath = ExecutionSandbox.canonicalize(marker.path) ?? marker.path
+        try """
+        #!/bin/sh
+        printf ran > '\(markerPath)'
+        exit 0
+        """.write(to: script, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+
+        let plan = makePlan(
+            runtime: .claudeCode,
+            executablePath: script.path,
+            currentDirectory: workspace.path,
+            environment: [
+                "HOME": base.appendingPathComponent("home").path,
+                "TMPDIR": base.appendingPathComponent("tmp").path
+            ]
+        )
+        let decision = ExecutionSandbox.decide(
+            plan: plan,
+            providerHomeDirectory: base.appendingPathComponent("home").path,
+            settings: ExecutionSandboxSettings(enforcement: .strict)
+        )
+        guard case .applied(let wrapped, _) = decision else {
+            Issue.record("Expected strict sandbox to apply, got \(decision)")
+            return
+        }
+
+        #expect(runWrappedPlan(wrapped) == 0)
+        #expect((try? String(contentsOf: marker, encoding: .utf8)) == "ran")
+    }
+
+    @Test("Audit read scope permits would-deny reads while still blocking writes")
+    func auditReadScopeAllowsWouldDenyReadsButBlocksWrites() throws {
+        let fm = FileManager.default
+        guard fm.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
+        let base = fm.temporaryDirectory.appendingPathComponent("astra-sbx-\(UUID().uuidString)")
+        let workspace = base.appendingPathComponent("workspace")
+        try fm.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: base) }
+
+        let outside = base.appendingPathComponent("outside.txt")
+        let outsideWrite = base.appendingPathComponent("outside-write.txt")
+        try "outside".write(to: outside, atomically: true, encoding: .utf8)
+
+        let root = ExecutionSandbox.canonicalize(workspace.path)!
+        let profile = ExecutionSandbox.makeProfile(
+            writableRootCount: 1,
+            readableRootCount: 1,
+            allowNetwork: true,
+            readScope: .audit
+        )
+
+        let readResult = runConfinedCapturingStdout(
+            profile: profile,
+            writableRoots: [root],
+            readableRoots: [root],
+            script: "cat '\(outside.path)'"
+        )
+        #expect(readResult.status == 0)
+        #expect(readResult.stdout == "outside")
+
+        let writeStatus = runConfined(
+            profile: profile,
+            writableRoots: [root],
+            readableRoots: [root],
+            script: "printf escape > '\(outsideWrite.path)'"
+        )
+        #expect(writeStatus != 0)
+        #expect(!fm.fileExists(atPath: outsideWrite.path))
     }
 
     @Test("A workspace reached via a symlink still confines writes correctly")
@@ -896,12 +1639,18 @@ struct ExecutionSandboxTests {
     private func runConfined(
         profile: String,
         writableRoots: [String],
+        readableRoots: [String] = [],
+        protectedReadRoots: [String] = [],
+        explicitProtectedReadAllowRoots: [String] = [],
         executablePath: String = "/bin/sh",
         script: String
     ) -> Int32 {
         let args = ExecutionSandbox.makeArguments(
             profile: profile,
             writableRoots: writableRoots,
+            readableRoots: readableRoots,
+            protectedReadRoots: protectedReadRoots,
+            explicitProtectedReadAllowRoots: explicitProtectedReadAllowRoots,
             executablePath: executablePath,
             arguments: ["-c", script]
         )
@@ -925,17 +1674,27 @@ struct ExecutionSandboxTests {
     private func runConfinedCapturingStdout(
         profile: String,
         writableRoots: [String],
-        script: String
+        readableRoots: [String] = [],
+        protectedReadRoots: [String] = [],
+        explicitProtectedReadAllowRoots: [String] = [],
+        currentDirectory: URL? = nil,
+        executablePath: String = "/bin/sh",
+        arguments: [String]? = nil,
+        script: String = ""
     ) -> (status: Int32, stdout: String) {
         let args = ExecutionSandbox.makeArguments(
             profile: profile,
             writableRoots: writableRoots,
-            executablePath: "/bin/sh",
-            arguments: ["-c", script]
+            readableRoots: readableRoots,
+            protectedReadRoots: protectedReadRoots,
+            explicitProtectedReadAllowRoots: explicitProtectedReadAllowRoots,
+            executablePath: executablePath,
+            arguments: arguments ?? ["-c", script]
         )
         let process = Process()
         process.executableURL = URL(fileURLWithPath: ExecutionSandbox.sandboxExecPath)
         process.arguments = args
+        process.currentDirectoryURL = currentDirectory
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice

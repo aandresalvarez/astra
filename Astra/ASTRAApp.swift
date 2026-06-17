@@ -4,8 +4,6 @@ import AppKit
 import AppIntents
 
 private let aboutAstraWindowID = "about-astra"
-private let logsWindowID = "astra-logs"
-private let usageWindowID = "astra-usage"
 
 enum AppWindowLayout {
     static let mainMinimumWidth: CGFloat = 900
@@ -200,8 +198,38 @@ private struct AboutHighlightLabelStyle: LabelStyle {
     }
 }
 
+/// Runs the app's AppKit/NSApplication setup at the correct lifecycle point.
+/// These calls must NOT run in `ASTRAApp.init()`: accessing
+/// `NSApplication.shared` from the SwiftUI App initializer forces AppKit to
+/// bootstrap before the normal launch sequence, and that premature subsystem
+/// init (menu bar → NSWorkspace → WindowServer) probes TCC services — which
+/// surfaced spurious Photos / Music / Input-Monitoring prompts at launch. By
+/// the time `applicationDidFinishLaunching` fires, SwiftUI has already
+/// bootstrapped NSApplication through the normal path, so these are
+/// side-effect-free.
+final class ASTRAAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Foreground the app (matters when launched from a terminal via
+        // `swift run`; a no-op for a normally-activated .app bundle).
+        NSApp.setActivationPolicy(.regular)
+        let resourceBundle = AstraResourceBundle.current
+        let iconResourceName = AppChannel.current == .development ? "AppIconDev" : "AppIcon"
+        if let iconURL = resourceBundle.url(forResource: iconResourceName, withExtension: "icns")
+            ?? resourceBundle.url(forResource: "AppIcon", withExtension: "icns")
+            ?? Bundle.main.url(forResource: iconResourceName, withExtension: "icns")
+            ?? Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+           let icon = NSImage(contentsOf: iconURL) {
+            NSApp.applicationIconImage = icon
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        AppLogger.audit(.appActivated, category: "App")
+        AstraAppShortcuts.updateAppShortcutParameters()
+    }
+}
+
 public struct ASTRAApp: App {
     public let modelContainer: ModelContainer
+    @NSApplicationDelegateAdaptor(ASTRAAppDelegate.self) private var appDelegate
     @StateObject private var appUpdateController = AppUpdateController()
     @StateObject private var appSettings = AppSettingsSnapshotStore()
     @State private var runtime = AppRuntimeController()
@@ -213,21 +241,16 @@ public struct ASTRAApp: App {
         // Rotate logs if needed
         AppLogger.rotateIfNeeded()
         AppLogger.audit(.appStarted, category: "App")
-        // Bring app to foreground when launched from terminal via `swift run`
-        NSApplication.shared.setActivationPolicy(.regular)
+        // AppKit/NSApplication setup (activation policy, dock icon, foreground
+        // activation, App Shortcuts) is deferred to ASTRAAppDelegate's
+        // applicationDidFinishLaunching. Touching NSApplication.shared *here*,
+        // inside the SwiftUI App initializer, forces AppKit to bootstrap
+        // prematurely — before the normal launch sequence — and that early
+        // subsystem init (menu bar → NSWorkspace → WindowServer) probes TCC
+        // services, which surfaced spurious Photos / Music / Input-Monitoring
+        // permission prompts at launch. Fonts are CoreText-only, so they stay.
         let resourceBundle = AstraResourceBundle.current
         StanfordFontRegistrar.registerBundledFonts(bundle: resourceBundle)
-        let iconResourceName = AppChannel.current == .development ? "AppIconDev" : "AppIcon"
-        if let iconURL = resourceBundle.url(forResource: iconResourceName, withExtension: "icns")
-            ?? resourceBundle.url(forResource: "AppIcon", withExtension: "icns")
-            ?? Bundle.main.url(forResource: iconResourceName, withExtension: "icns")
-            ?? Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
-           let icon = NSImage(contentsOf: iconURL) {
-            NSApplication.shared.applicationIconImage = icon
-        }
-        NSApplication.shared.activate(ignoringOtherApps: true)
-        AppLogger.audit(.appActivated, category: "App")
-        AstraAppShortcuts.updateAppShortcutParameters()
 
         let schema = ASTRASchema.current
         BundledToolInstaller.installBundledTools(bundle: resourceBundle)
@@ -553,7 +576,7 @@ public struct ASTRAApp: App {
         .defaultSize(width: 620, height: 560)
         .windowResizability(.contentSize)
 
-        Window("Logs", id: logsWindowID) {
+        Window("Logs", id: AppWindowIDs.logs) {
             LogViewerView()
                 .frame(minWidth: 760, minHeight: 460)
                 .tint(Stanford.interactive)
@@ -562,7 +585,7 @@ public struct ASTRAApp: App {
         .defaultSize(width: 980, height: 620)
         .keyboardShortcut("l", modifiers: [.command, .option])
 
-        Window("Usage", id: usageWindowID) {
+        Window("Usage", id: AppWindowIDs.usage) {
             UsageDashboardView()
                 .frame(minWidth: 600, minHeight: 500)
                 .tint(Stanford.interactive)

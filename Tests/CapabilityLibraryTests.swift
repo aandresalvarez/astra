@@ -284,6 +284,58 @@ struct CapabilityLibraryTests {
         #expect(secondIDs.contains(second.id))
     }
 
+    @Test("in-memory enabledPackages filters to enabled ids, merges built-ins, and de-dupes")
+    func enabledPackagesInMemoryOverloadResolvesWithoutFilesystem() throws {
+        let builtInID = try #require(PluginCatalog.builtInPackages.first?.id)
+
+        let enabledLocal = makeTestPackage(id: "local.test/enabled", name: "Enabled Local")
+        let disabledLocal = makeTestPackage(id: "local.test/disabled", name: "Disabled Local")
+
+        let workspace = Workspace(name: "Matcher", primaryPath: "/tmp/matcher")
+        workspace.enabledCapabilityIDs = [enabledLocal.id, builtInID]
+
+        // The list intentionally repeats `enabledLocal` to exercise de-dupe and
+        // omits the built-in entirely so it can only appear via the merge.
+        let definitions = [enabledLocal, enabledLocal, disabledLocal]
+        let ids = CapabilityRuntimeResourceMatcher
+            .enabledPackages(for: workspace, in: definitions)
+            .map(\.id)
+
+        // enabled-id filtering: only enabled ids, never the disabled one.
+        #expect(Set(ids) == [enabledLocal.id, builtInID])
+        #expect(!ids.contains(disabledLocal.id))
+        // de-dupe: the duplicated injected package resolves exactly once.
+        #expect(ids.filter { $0 == enabledLocal.id }.count == 1)
+        // built-in merge: an enabled built-in resolves even when not injected.
+        #expect(ids.contains(builtInID))
+    }
+
+    @Test("in-memory enabledPackages returns empty when nothing is enabled or workspace is nil")
+    func enabledPackagesInMemoryOverloadHandlesEmptyCases() {
+        let workspace = Workspace(name: "Empty", primaryPath: "/tmp/empty")
+        let definitions = [makeTestPackage(id: "local.test/unused", name: "Unused")]
+
+        #expect(CapabilityRuntimeResourceMatcher.enabledPackages(for: workspace, in: definitions).isEmpty)
+        #expect(CapabilityRuntimeResourceMatcher.enabledPackages(for: nil, in: PluginCatalog.builtInPackages).isEmpty)
+    }
+
+    private func makeTestPackage(id: String, name: String) -> PluginPackage {
+        PluginPackage(
+            id: id,
+            name: name,
+            icon: "folder",
+            description: "",
+            author: "Test",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: []
+        )
+    }
+
     @Test("package URLs stay inside library for malicious IDs")
     func packageURLStaysInsideLibraryForMaliciousIDs() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())

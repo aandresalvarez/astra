@@ -1,17 +1,96 @@
-import Foundation
 import SwiftUI
 
 enum WorkspaceRightRailPresentation {
+    /// Order while a workspace still has setup to do: setup stays directly under
+    /// the repository so onboarding is not buried beneath the inventory.
     static let primarySectionOrder = [
         "Repository",
         WorkspaceSetupChecklistPresentation.sectionTitle,
         CapabilityRailSectionPresentation.sectionTitle
     ]
 
+    /// Order once setup is complete: the capabilities the workspace actually uses
+    /// rise above the now-compact configured-setup summary, so the panel leads
+    /// with where the user has invested rather than with finished chores.
+    static let steadyStateSectionOrder = [
+        "Repository",
+        CapabilityRailSectionPresentation.sectionTitle,
+        WorkspaceSetupChecklistPresentation.sectionTitle
+    ]
+
+    /// The section order to render for a workspace, chosen by whether any setup
+    /// item is still outstanding.
+    static func sectionOrder(hasPendingSetup: Bool) -> [String] {
+        hasPendingSetup ? primarySectionOrder : steadyStateSectionOrder
+    }
+
     static let headerIconFontSize: CGFloat = 15
     static let headerIconFrame: CGFloat = 22
     static let headerTitleFontSize: CGFloat = 16
     static let headerSubtitleFontSize: CGFloat = 12
+
+    /// Collapse verb for the rail's own expandable groups (setup, capabilities).
+    /// Kept here rather than borrowing the git panel's constant so the rail and
+    /// git presentation layers stay independent.
+    static let hideActionTitle = "Hide"
+}
+
+enum WorkspaceInstructionEditorPresentation {
+    static let saveActionTitle = "Save"
+    static let clearActionTitle = "Clear"
+    static let savedStatusTitle = "Saved"
+    static let unsavedStatusTitle = "Unsaved changes"
+    static let includedInPromptHint = "Included in every new task prompt."
+
+    static func persistedInstructions(fromDraft draft: String) -> String {
+        draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func hasUnsavedChanges(draft: String, persisted: String) -> Bool {
+        persistedInstructions(fromDraft: draft) != persistedInstructions(fromDraft: persisted)
+    }
+
+    static func effectiveDraft(localDraft: String, persisted: String, isSynced: Bool) -> String {
+        isSynced ? localDraft : persisted
+    }
+
+    static func hasUnsavedChanges(localDraft: String, persisted: String, isSynced: Bool) -> Bool {
+        hasUnsavedChanges(
+            draft: effectiveDraft(localDraft: localDraft, persisted: persisted, isSynced: isSynced),
+            persisted: persisted
+        )
+    }
+
+    static func shouldShowClearAction(localDraft: String, persisted: String, isSynced: Bool) -> Bool {
+        !persistedInstructions(
+            fromDraft: effectiveDraft(localDraft: localDraft, persisted: persisted, isSynced: isSynced)
+        ).isEmpty
+    }
+
+    static func statusTitle(draft: String, persisted: String, didRecentlySave: Bool) -> String? {
+        if hasUnsavedChanges(draft: draft, persisted: persisted) {
+            return unsavedStatusTitle
+        }
+
+        if didRecentlySave || !persistedInstructions(fromDraft: persisted).isEmpty {
+            return savedStatusTitle
+        }
+
+        return nil
+    }
+
+    static func statusTitle(
+        localDraft: String,
+        persisted: String,
+        isSynced: Bool,
+        didRecentlySave: Bool
+    ) -> String? {
+        statusTitle(
+            draft: effectiveDraft(localDraft: localDraft, persisted: persisted, isSynced: isSynced),
+            persisted: persisted,
+            didRecentlySave: didRecentlySave
+        )
+    }
 }
 
 enum CapabilityRailLayout {
@@ -85,6 +164,22 @@ enum CapabilityRailSectionPresentation {
 
     static func draftSummaryTitle(count: Int) -> String {
         "\(count) draft \(count == 1 ? "capability" : "capabilities")"
+    }
+
+    /// Status + count metadata shown beneath the noun-first capability summary
+    /// title (the title carries the capability names).
+    static func readySummarySubtitle(count: Int) -> String {
+        "Ready · \(count)"
+    }
+
+    static func draftSummarySubtitle(count: Int) -> String {
+        "Draft · \(count)"
+    }
+
+    /// Disclosure verb that names how many rows it reveals. Only rendered for
+    /// count >= 2 — a lone capability renders expanded instead.
+    static func showAllActionTitle(count: Int) -> String {
+        "Show all (\(count))"
     }
 
     static func previewList(_ names: [String], limit: Int = 3) -> String {

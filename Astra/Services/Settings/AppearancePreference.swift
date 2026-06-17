@@ -44,6 +44,9 @@ enum AppStorageKeys {
     // When true, ASTRA also wraps providers that ship their own OS sandbox
     // (Codex, Cursor, Antigravity) for defense-in-depth.
     static let sandboxLayerNativeProviders = "astra.runtime.sandboxLayerNativeProviders.v1"
+    // Runtime read-scope mode: open | audit | enforce. Strict enforcement always
+    // resolves to enforce even if this preference is broader.
+    static let sandboxReadScope = "astra.runtime.sandboxReadScope.v1"
     static let logRetentionDays = "astra.logging.retentionDays.v1"
     static let browserAutoPromoteGoogleWorkspace = "astra.browser.autoPromoteGoogleWorkspace.v1"
     static let defaultTokenBudget = "defaultTokenBudget"

@@ -6,6 +6,10 @@ struct MissionControlPanelView: View {
     var onDismissCorrection: ((String) -> Void)?
     var onCreateCorrectionTask: ((String) -> Void)?
 
+    @State private var showAllAssertions = false
+
+    private let assertionCollapsedLimit = 4
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
@@ -76,13 +80,13 @@ struct MissionControlPanelView: View {
     private var metrics: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 10) {
-                metric("Validation", presentation.validationSummary)
+                metric("Assertions", "\(presentation.assertionRows.count)")
                 metric("Files", "\(presentation.changedFileCount) changed")
                 metric("Artifacts", "\(presentation.artifactCount)")
                 metric("Budget", presentation.budgetSummary)
             }
             VStack(alignment: .leading, spacing: 6) {
-                metric("Validation", presentation.validationSummary)
+                metric("Assertions", "\(presentation.assertionRows.count)")
                 HStack(spacing: 10) {
                     metric("Files", "\(presentation.changedFileCount) changed")
                     metric("Artifacts", "\(presentation.artifactCount)")
@@ -105,18 +109,26 @@ struct MissionControlPanelView: View {
         .frame(minWidth: 80, alignment: .leading)
     }
 
+    private var visibleAssertionRows: [MissionControlAssertionRow] {
+        if showAllAssertions {
+            return presentation.assertionRows
+        }
+        return Array(presentation.assertionRows.prefix(assertionCollapsedLimit))
+    }
+
     private var assertionTable: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("Assertions")
                 .font(Stanford.caption(11).weight(.semibold))
                 .foregroundStyle(.secondary)
                 .padding(.bottom, 4)
-            ForEach(presentation.assertionRows.prefix(4)) { assertion in
+            ForEach(visibleAssertionRows) { assertion in
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: assertionIcon(assertion.status))
                         .font(Stanford.ui(11, weight: .semibold))
                         .foregroundStyle(assertionColor(assertion.status))
                         .frame(width: 14)
+                        .help(assertion.status)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(assertion.description)
                             .font(Stanford.caption(12).weight(.medium))
@@ -128,14 +140,27 @@ struct MissionControlPanelView: View {
                             .lineLimit(1)
                     }
                     Spacer(minLength: 8)
-                    Text(assertion.status)
-                        .font(Stanford.caption(10).weight(.semibold))
-                        .foregroundStyle(assertionColor(assertion.status))
                 }
                 .padding(.vertical, 5)
-                if assertion.id != presentation.assertionRows.prefix(4).last?.id {
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("\(assertion.description), \(assertion.status)")
+                if assertion.id != visibleAssertionRows.last?.id {
                     Divider().overlay(Color.primary.opacity(0.05))
                 }
+            }
+            if presentation.assertionRows.count > assertionCollapsedLimit {
+                Divider().overlay(Color.primary.opacity(0.05))
+                Button {
+                    showAllAssertions.toggle()
+                } label: {
+                    Text(showAllAssertions
+                        ? "Show fewer"
+                        : "Show all (\(presentation.assertionRows.count))")
+                        .font(Stanford.caption(11).weight(.medium))
+                        .foregroundStyle(Stanford.lagunita)
+                }
+                .buttonStyle(.plain)
+                .padding(.vertical, 5)
             }
         }
     }
@@ -182,6 +207,7 @@ struct MissionControlPanelView: View {
                     .font(Stanford.caption(12))
                     .foregroundStyle(Stanford.black.opacity(0.78))
                     .lineLimit(2)
+                    .help(detail)
             }
         }
     }
@@ -191,7 +217,7 @@ struct MissionControlPanelView: View {
         case .verified: Stanford.paloAltoGreen
         case .attention: Stanford.poppy
         case .failed: Stanford.cardinalRed
-        case .running: Stanford.lagunita
+        case .running: Stanford.statusInfo
         case .neutral: Stanford.coolGrey
         }
     }
@@ -219,7 +245,7 @@ struct MissionControlPanelView: View {
         switch status.lowercased() {
         case "passed": Stanford.paloAltoGreen
         case "failed": Stanford.cardinalRed
-        case "started", "running": Stanford.lagunita
+        case "started", "running": Stanford.statusInfo
         default: Stanford.coolGrey
         }
     }

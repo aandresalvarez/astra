@@ -227,6 +227,34 @@ struct TaskContextStateTests {
         #expect(state.turns.map(\.outputFile) == ["outputs/turn_001.md", "outputs/turn_002.md"])
     }
 
+    @Test("runtime browser shell failure is not reported as manual completion")
+    func runtimeBrowserShellFailureIsNotReportedAsManualCompletion() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Browser Runtime", primaryPath: root)
+        let task = AgentTask(title: "Use browser", goal: "Inspect the browser", workspace: workspace)
+        task.status = .pendingUser
+        context.insert(workspace)
+        context.insert(task)
+
+        let run = TaskRun(task: task)
+        run.status = .failed
+        run.stopReason = "provider_missing_browser_shell_tool"
+        run.output = "ASTRA blocked this browser task before launch because Copilot CLI cannot execute astra-browser."
+        run.completedAt = Date()
+        context.insert(run)
+        TaskContextStateManager.recordTurn(task: task, run: run, message: "Inspect the browser")
+
+        let state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        #expect(state.mode == .blocked)
+        #expect(state.verification.status == "failed")
+        #expect(state.verification.summary == "provider_missing_browser_shell_tool")
+        #expect(state.verification.completionVerified == false)
+        #expect(state.verification.status != "manual_completion")
+    }
+
     @Test("completed run clears prior permission blocker from current state")
     func completedRunClearsPriorPermissionBlockerFromCurrentState() throws {
         let root = try temporaryRoot()

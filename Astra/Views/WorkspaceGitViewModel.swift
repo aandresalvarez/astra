@@ -186,8 +186,22 @@ final class WorkspaceGitViewModel: ObservableObject {
         } else if !repos.contains(where: { $0.path == self.selectedRepository?.path }) {
             self.selectedRepository = repos.first
         }
+        persistScannedRepositorySelectionIfNeeded()
         scheduleRefresh()
         await waitForPendingRefresh()
+    }
+
+    private func persistScannedRepositorySelectionIfNeeded() {
+        // A scan is read-only with respect to task pinning: only adopt the
+        // scanned selection as the workspace code default when no task is
+        // selected. A selected task (including a draft) must be pinned only by an
+        // explicit user selection in `selectRepository`, never as a side effect
+        // of a background scan. `setActiveWorkingPath` skips no-op writes, so this
+        // never churns `workspace.updatedAt` when the default already matches.
+        guard selectedTask == nil,
+              let selectedRepository
+        else { return }
+        _ = setActiveWorkingPath(selectedRepository.path)
     }
 
     /// Schedules a status refresh that runs after any in-flight refresh
@@ -283,7 +297,18 @@ final class WorkspaceGitViewModel: ObservableObject {
 
     var activeSelectionScopeLabel: String {
         guard let task = selectedTask else { return "Workspace default" }
-        return task.status == .draft ? "Draft task" : "Pinned task"
+        if task.status == .draft { return "Draft task" }
+        // Only claim a durable pin when the pinned path still exists on disk:
+        // `TaskWorkspaceAccess` falls back to the workspace default when the
+        // pinned directory is missing, so a stale path is effectively unpinned.
+        // This mirrors the file-existence checks in `initialActiveCodePath` /
+        // `workingPath`.
+        if let pinned = task.executionRootPath,
+           !pinned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           FileManager.default.fileExists(atPath: pinned) {
+            return "Pinned task"
+        }
+        return "Workspace default"
     }
 
     var canChangeActiveCodePath: Bool {
@@ -689,9 +714,13 @@ final class WorkspaceGitViewModel: ObservableObject {
             : normalized
 
         if let selectedTask {
+            // Skip no-op writes so reselecting the same repo (or a scan) never
+            // bumps updatedAt or marks the model dirty.
+            guard selectedTask.executionRootPath != persistedOverride else { return true }
             selectedTask.executionRootPath = persistedOverride
             selectedTask.updatedAt = Date()
         } else {
+            guard workspace.activeWorkingPath != persistedOverride else { return true }
             workspace.activeWorkingPath = persistedOverride
             workspace.updatedAt = Date()
         }

@@ -280,6 +280,7 @@ struct ContentView: View {
     /// the ~3s deferral scheduled exactly once. (The controller also guards the
     /// actual probe via hasProbedForUpdates, so this is belt-and-suspenders.)
     @State private var didScheduleUpdateProbe = false
+    @State private var didLogStoreScaleSnapshot = false
     @State private var generatedHTMLDiscoveryTask: Task<Void, Never>?
     @State private var markdownAvailabilityTask: Task<Void, Never>?
     @State private var queryAvailabilityTask: Task<Void, Never>?
@@ -1938,7 +1939,15 @@ struct ContentView: View {
     private func setSelectedTask(_ task: AgentTask?) {
         let previousTaskID = selectedTask?.id
         if previousTaskID != task?.id {
-            setActiveWorkspaceCanvasItem(nil, remember: false)
+            let nextCanvasItem = WorkspaceCanvasItemSelectionTransition.itemAfterTaskSelectionChange(
+                currentItem: activeWorkspaceCanvasItem,
+                previousTaskID: previousTaskID,
+                nextTaskID: task?.id,
+                isComposingTask: isComposingTask
+            )
+            if nextCanvasItem != activeWorkspaceCanvasItem {
+                setActiveWorkspaceCanvasItem(nextCanvasItem, remember: false)
+            }
         }
         if let taskWorkspace = task?.workspace,
            selectedWorkspace?.id != taskWorkspace.id {
@@ -2134,6 +2143,7 @@ struct ContentView: View {
         // BEFORE restoring selection, so it can never delete the task that
         // `restoreWorkspaceSelection` is about to point `selectedTask` at.
         runStoreMaintenanceIfNeeded()
+        logStoreScaleSnapshotIfNeeded()
         restoreWorkspaceSelection()
         refreshMarkdownShelfAvailabilityForSelectedTask()
         refreshQueryShelfAvailabilityForSelectedTask()
@@ -2165,6 +2175,15 @@ struct ContentView: View {
         Task { @MainActor in
             ASTRAApp.runDeferredStartupWork(modelContext: modelContext)
             refreshRunningTaskCount()
+        }
+    }
+
+    private func logStoreScaleSnapshotIfNeeded() {
+        guard !didLogStoreScaleSnapshot else { return }
+        didLogStoreScaleSnapshot = true
+        Task { @MainActor in
+            await Task.yield()
+            StoreScalePerformanceSnapshot.log(modelContext: modelContext)
         }
     }
 

@@ -67,17 +67,18 @@ struct ToolsManagerView: View {
     private func toolRow(_ tool: LocalTool) -> some View {
         HStack(spacing: 8) {
             Image(systemName: LocalTool.iconForType(tool.toolType))
-                .foregroundStyle(Stanford.lagunita)
+                .foregroundStyle(.secondary)
                 .frame(width: 20)
             VStack(alignment: .leading, spacing: 2) {
                 Text(tool.name.isEmpty ? "Untitled" : tool.name)
-                    .font(Stanford.body(15))
+                    .font(Stanford.ui(14, weight: .semibold))
                 Text(tool.displayCommand)
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
         }
+        .help(tool.displayCommand)
     }
 
     private func createTool() {
@@ -107,6 +108,7 @@ struct LocalToolEditorView: View {
     var onDuplicate: ((LocalTool) -> Void)? = nil
     @Environment(\.modelContext) private var modelContext
     @FocusState private var isNameFocused: Bool
+    @State private var pendingToolDeletion: PendingToolDeletion?
 
     private let typeOptions = [
         ("cli", "CLI Command", "terminal"),
@@ -204,9 +206,7 @@ struct LocalToolEditorView: View {
                                 .foregroundStyle(Stanford.black)
                             Spacer()
                         }
-                        .padding(8)
-                        .background(Stanford.fog)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .padding(.vertical, 4)
                     }
                 }
 
@@ -240,14 +240,19 @@ struct LocalToolEditorView: View {
                                 }
                                 .disabled(workspace == nil)
 
-                                Button {
-                                    duplicateForWorkspace()
-                                } label: {
-                                    Label("Duplicate for this workspace", systemImage: "doc.on.doc")
-                                        .font(Stanford.body(13))
+                                Divider()
+
+                                HStack {
+                                    Spacer()
+                                    Button {
+                                        duplicateForWorkspace()
+                                    } label: {
+                                        Label("Duplicate for this workspace", systemImage: "doc.on.doc")
+                                            .font(Stanford.body(13))
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .disabled(workspace == nil)
                                 }
-                                .buttonStyle(.bordered)
-                                .disabled(workspace == nil)
                             }
                         } else {
                             Toggle(isOn: Binding(
@@ -275,13 +280,33 @@ struct LocalToolEditorView: View {
                 HStack {
                     Spacer()
                     Button(role: .destructive) {
-                        onDelete()
+                        let name = tool.name.isEmpty ? "Untitled" : tool.name
+                        pendingToolDeletion = PendingToolDeletion(name: name, perform: onDelete)
                     } label: {
                         Label("Delete Tool", systemImage: "trash")
                     }
                 }
             }
             .padding()
+        }
+        .confirmationDialog(
+            "Delete Tool",
+            isPresented: Binding(
+                get: { pendingToolDeletion != nil },
+                set: { presented in if !presented { pendingToolDeletion = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: pendingToolDeletion
+        ) { deletion in
+            Button("Delete", role: .destructive) {
+                deletion.perform()
+                pendingToolDeletion = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingToolDeletion = nil
+            }
+        } message: { deletion in
+            Text("Delete \u{201C}\(deletion.name)\u{201D}? This can't be undone.")
         }
         .onAppear { if tool.name == "New Tool" { isNameFocused = true } }
         .onDisappear {
@@ -338,4 +363,10 @@ struct LocalToolEditorView: View {
             "is_global": String(tool.isGlobal)
         ])
     }
+}
+
+private struct PendingToolDeletion: Identifiable {
+    let id = UUID()
+    let name: String
+    let perform: () -> Void
 }

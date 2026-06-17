@@ -849,7 +849,7 @@ extension HeadlessChatScenarioTests {
               printf '%s\\n' '1.0.3'
               exit 0
             fi
-            printf '%s\\n' "$@" > '\(argsURL.path)'
+            printf '%s\\n' "$@" > \(Self.shQuoteSandboxPath(argsURL.path))
             printf '%s\\n' 'ASTRA_EVENT {"v":1,"type":"plan.step.started","stepID":"step-1"}'
             printf '%s\\n' 'Autonomous plan done'
             printf '%s\\n' 'ASTRA_EVENT {"v":1,"type":"plan.step.completed","stepID":"step-1","summary":"Built"}'

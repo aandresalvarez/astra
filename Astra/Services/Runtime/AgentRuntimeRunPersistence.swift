@@ -32,6 +32,7 @@ enum AgentRuntimeRunPersistence {
         phase: String,
         handoffDiscoveredFiles: [TaskOutputDiscoveredFile]? = nil
     ) {
+        let start = DispatchTime.now().uptimeNanoseconds
         // Bound the inline output blob now that the run is finalized. Session
         // history already captured the full output via recordSessionTurn before
         // this call, so nothing the user can re-open is lost. Assign only when it
@@ -62,16 +63,27 @@ enum AgentRuntimeRunPersistence {
         }
         task.markUnreadForCurrentStatus(at: finishedAt)
 
+        let auditFields = fields(
+            task: task,
+            run: run,
+            phase: phase,
+            persistedArtifactCount: artifactReconciliation.createdArtifacts.count
+        )
         WorkspacePersistenceCoordinator.saveAndAutoExport(
             workspace: task.workspace,
             modelContext: modelContext,
             taskID: task.id,
-            auditFields: fields(
-                task: task,
-                run: run,
-                phase: phase,
-                persistedArtifactCount: artifactReconciliation.createdArtifacts.count
-            )
+            auditFields: auditFields
+        )
+
+        var telemetryFields = auditFields
+        telemetryFields["task_id"] = PerformanceTelemetryFields.abbreviatedID(task.id)
+        telemetryFields["run_id"] = PerformanceTelemetryFields.abbreviatedID(run.id)
+        PerformanceTelemetry.logIfNeeded(
+            "run_finalize_persist",
+            start: start,
+            thresholdMilliseconds: PerformanceTelemetry.backgroundThresholdMilliseconds,
+            fields: telemetryFields
         )
     }
 
@@ -81,27 +93,50 @@ enum AgentRuntimeRunPersistence {
         phase: String,
         persistedArtifactCount: Int = 0
     ) -> [String: String] {
+        let start = DispatchTime.now().uptimeNanoseconds
         let runEvents = task.events.filter { $0.run?.id == run.id }
-        return [
+        let responseEventCount = runEvents.filter { $0.type == "agent.response" }.count
+        let thinkingEventCount = runEvents.filter { $0.type == "agent.thinking" }.count
+        let toolUseEventCount = runEvents.filter { $0.type == "tool.use" }.count
+        let toolResultEventCount = runEvents.filter { $0.type == "tool.result" }.count
+        let errorEventCount = runEvents.filter { $0.type == "error" }.count
+        let artifactCount = task.artifacts.count
+        var fields: [String: String] = [
             "phase": phase,
             "runtime": run.runtimeID ?? task.resolvedRuntimeID.rawValue,
             "task_status": task.status.rawValue,
             "run_status": run.status.rawValue,
             "run_stop_reason": run.stopReason,
             "exit_code": run.exitCode.map(String.init) ?? "none",
-            "run_output_chars": String(run.output.count),
-            "response_event_count": String(runEvents.filter { $0.type == "agent.response" }.count),
-            "thinking_event_count": String(runEvents.filter { $0.type == "agent.thinking" }.count),
-            "tool_use_event_count": String(runEvents.filter { $0.type == "tool.use" }.count),
-            "tool_result_event_count": String(runEvents.filter { $0.type == "tool.result" }.count),
-            "error_event_count": String(runEvents.filter { $0.type == "error" }.count),
-            "run_event_count": String(runEvents.count),
-            "file_changes": String(run.fileChanges.count),
-            "task_artifacts": String(task.artifacts.count),
-            "persisted_task_output_artifacts": String(persistedArtifactCount),
-            "tokens_input": String(run.inputTokens),
-            "tokens_output": String(run.outputTokens),
             "provider_version": run.providerVersion ?? "unknown"
         ]
+        fields["run_output_chars"] = String(run.output.count)
+        fields["run_output_bucket"] = PerformanceTelemetryFields.byteBucket(run.output.utf8.count)
+        fields["event_count"] = String(task.events.count)
+        fields["response_event_count"] = String(responseEventCount)
+        fields["thinking_event_count"] = String(thinkingEventCount)
+        fields["tool_use_event_count"] = String(toolUseEventCount)
+        fields["tool_result_event_count"] = String(toolResultEventCount)
+        fields["error_event_count"] = String(errorEventCount)
+        fields["run_event_count"] = String(runEvents.count)
+        fields["file_changes"] = String(run.fileChanges.count)
+        fields["artifact_count"] = String(artifactCount)
+        fields["task_artifacts"] = String(artifactCount)
+        fields["persisted_task_output_artifacts"] = String(persistedArtifactCount)
+        fields["tokens_input"] = String(run.inputTokens)
+        fields["tokens_output"] = String(run.outputTokens)
+        PerformanceTelemetry.logIfNeeded(
+            "run_persistence_fields",
+            start: start,
+            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            fields: [
+                "task_id": PerformanceTelemetryFields.abbreviatedID(task.id),
+                "run_id": PerformanceTelemetryFields.abbreviatedID(run.id),
+                "event_count": PerformanceTelemetryFields.count(task.events.count),
+                "run_event_count": PerformanceTelemetryFields.count(runEvents.count),
+                "artifact_count": PerformanceTelemetryFields.count(task.artifacts.count)
+            ]
+        )
+        return fields
     }
 }

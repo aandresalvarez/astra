@@ -170,7 +170,7 @@ enum AgentPromptBuilder {
     }
 
     private static func initialArtifactActionContract(for task: AgentTask) -> String {
-        guard TaskDeliverableExpectation.requiresStandaloneArtifact(task) else { return "" }
+        guard TaskDeliverableExpectation.requiresDeliverableArtifact(task) else { return "" }
 
         let taskDir = TaskWorkspaceAccess(task: task).taskFolder
         let relativePath = relativeTaskFolderPath(for: task, taskDir: taskDir) ?? taskDir
@@ -179,6 +179,7 @@ enum AgentPromptBuilder {
 
         Artifact first-action requirement:
         The user asked for a generated artifact. Your first provider-visible action should be to create or update a useful baseline deliverable in \(relativePath), preferably \(suggestedFile) when that fits the request.
+        A text reply such as "I'll create it" does not satisfy this requirement. The first meaningful action must be a file write/create/update for the deliverable itself.
         Do not spend an extended period on hidden planning before creating the baseline artifact. Create the baseline first, then improve it.
         If file-write permission is required, request that permission immediately instead of continuing hidden planning.
         """
@@ -229,6 +230,8 @@ enum AgentPromptBuilder {
             sshBlock += "\n- Name: \(conn.displayLabel)"
             sshBlock += "\n- Connect with: ssh \(alias)"
             sshBlock += "\n- Remote path: \(conn.remotePath)"
+            if !conn.configAlias.isEmpty { sshBlock += "\n- SSH config: this alias requires ~/.ssh/config and may include ProxyCommand/IAP settings; prefer the alias over the raw hostname." }
+            if !conn.keyPath.isEmpty { sshBlock += "\n- Identity file: \(conn.keyPath)" }
             sshBlock += "\nWhen the user says \"the server\", \"the remote\", \"this connection\", or \"it\" in the context of SSH, they mean this server."
             sshBlock += "\nTo run commands: ssh \(alias) '<command>'"
             sshBlock += "\nTo run commands in a specific directory: ssh \(alias) 'cd \(conn.remotePath) && <command>'"
@@ -243,9 +246,8 @@ enum AgentPromptBuilder {
             for conn in connections {
                 let alias = conn.configAlias.isEmpty ? conn.sshTarget : conn.configAlias
                 sshBlock += "\n- \(conn.displayLabel): ssh \(alias) (remote path: \(conn.remotePath))"
-                if !conn.configAlias.isEmpty {
-                    sshBlock += " [uses ~/.ssh/config alias]"
-                }
+                if !conn.configAlias.isEmpty { sshBlock += " [uses ~/.ssh/config alias; may include ProxyCommand/IAP]" }
+                if !conn.keyPath.isEmpty { sshBlock += " [identity: \(conn.keyPath)]" }
             }
             sshBlock += "\nTo run commands on a remote server, use: ssh <alias> '<command>'"
             appendSection(
@@ -333,13 +335,14 @@ enum AgentPromptBuilder {
         relativePath: String?,
         taskDir: String
     ) -> String {
-        guard TaskDeliverableExpectation.requiresStandaloneArtifact(task) else { return "" }
+        guard TaskDeliverableExpectation.requiresDeliverableArtifact(task) else { return "" }
 
         let location = relativePath ?? taskDir
         let suggestedFile = suggestedStandaloneArtifactFilename(for: task)
         return """
         Artifact delivery contract:
         The user asked for a generated artifact. Create the first useful deliverable promptly in \(location), preferably as \(suggestedFile) when that fits the request.
+        Do not send a visible text reply such as "I'll create it" before the file exists; text promises do not count as delivery. The first meaningful action must be a file write/create/update for the deliverable itself.
         Do not spend an extended period perfecting design, puzzle mechanics, algorithms, or research before writing the initial artifact. Write a working baseline first, then improve it.
         If a tool permission is needed to create the artifact, request that tool permission instead of continuing hidden planning.
         """
@@ -384,24 +387,7 @@ enum AgentPromptBuilder {
 
     private static func appendInputs(for task: AgentTask, to sections: inout [PromptContextSection]) {
         guard !task.inputs.isEmpty else { return }
-        var contextParts: [String] = []
-        for input in task.inputs {
-            if input.hasPrefix("/") || input.hasPrefix("~") {
-                let path = (input as NSString).expandingTildeInPath
-                var isDirectory: ObjCBool = false
-                if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
-                   isDirectory.boolValue {
-                    contextParts.append("Folder: \(path)\nUse this folder as routine context when needed.")
-                } else if let content = try? String(contentsOfFile: path, encoding: .utf8) {
-                    let truncated = content.count > 5000 ? String(content.prefix(5000)) + "\n... (truncated)" : content
-                    contextParts.append("File: \(input)\n```\n\(truncated)\n```")
-                } else {
-                    contextParts.append("Context: \(input)")
-                }
-            } else {
-                contextParts.append("Context: \(input)")
-            }
-        }
+        let contextParts = PromptInputContextReader.contextParts(for: task.inputs)
         appendSection(
             "Context/Inputs:\n" + contextParts.joined(separator: "\n\n"),
             kind: .supportingContext,
@@ -894,7 +880,7 @@ enum AgentPromptBuilder {
         ) {
             let task = context.task
             guard task.useAgentTeam else { return }
-            var teamBlock = "Create an agent team with \(task.teamSize) teammates to accomplish the goal below. Coordinate them to work in parallel and synthesize their results."
+            var teamBlock = "Create an agent team with \(task.teamSize) teammates to accomplish the goal below. Coordinate them to work in parallel and synthesize their results. Do not produce the final answer or final artifact until teammate results have been collected and incorporated."
             if !task.teamInstructions.isEmpty {
                 teamBlock += "\n\(task.teamInstructions)"
             }
@@ -1238,6 +1224,9 @@ enum AgentPromptBuilder {
             to sections: inout [PromptContextSection]
         ) {
             if context.mode == .initialRun {
+                if let roster = CapabilityRosterBuilder.roster(for: context.task.workspace) {
+                    appendSection(roster, kind: .tools, to: &sections, sourcePointers: [sourcePointer(label: "enabled capabilities", target: "workspace")])
+                }
                 appendSkillInstructions(from: context.capabilityScope, to: &sections)
             }
             appendConnectorContext(from: context.capabilityScope, to: &sections)
@@ -1610,19 +1599,25 @@ enum AgentPromptBuilder {
     }
 
     private static func listTaskFolderFiles(_ folder: String) -> [String] {
-        let fm = FileManager.default
         let rootURL = URL(fileURLWithPath: folder)
             .resolvingSymlinksInPath()
             .standardizedFileURL
         let rootPath = rootURL.path.hasSuffix("/") ? rootURL.path : rootURL.path + "/"
-        guard let enumerator = fm.enumerator(
+        let hostFileAccess = HostFileAccessBroker()
+        let accessIntent = HostFileAccessIntent.astraManagedStorage(root: rootURL)
+        guard let enumerator = hostFileAccess.enumerator(
             at: rootURL,
             includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
+            options: [.skipsHiddenFiles],
+            intent: accessIntent
         ) else { return [] }
 
         var files: [String] = []
         while let url = enumerator.nextObject() as? URL {
+            guard !hostFileAccess.shouldSkip(url, intent: accessIntent) else {
+                enumerator.skipDescendants()
+                continue
+            }
             guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
             let itemURL = url
                 .resolvingSymlinksInPath()
@@ -1660,6 +1655,12 @@ enum AgentPromptBuilder {
     }
 
     private static func appendAstraRunProtocolInstructions(to sections: inout [PromptContextSection]) {
+        appendSection("""
+        Runtime permission language:
+        If a file read or write is blocked by policy or sandboxing, say it was blocked and name the path when known.
+        Do not describe sandbox retries as full access, elevated access, or broad access unless ASTRA explicitly granted that permission for this run.
+        """, kind: .tools, to: &sections, sourcePointers: [sourcePointer(label: "runtime permissions", target: "sandbox reporting contract")])
+
         appendSection("""
         Astra Run Protocol v1:
         Emit structured progress markers only when useful, each on its own line and outside code fences.

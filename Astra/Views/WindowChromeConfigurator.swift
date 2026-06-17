@@ -108,7 +108,7 @@ struct WindowChromeConfigurator: NSViewRepresentable {
     /// a new window if the view is reparented (window tabbing/untabbing).
     @MainActor
     final class Coordinator {
-        private var hostingView: NSHostingView<AstraLeadingCommandBar>?
+        private var hostingView: FullScreenSafeHostingView<AstraLeadingCommandBar>?
         private var accessory: NSTitlebarAccessoryViewController?
         private weak var hostedWindow: NSWindow?
         private var makeBar: ((CGFloat?) -> AstraLeadingCommandBar)?
@@ -211,7 +211,7 @@ struct WindowChromeConfigurator: NSViewRepresentable {
             host.rootView = makeBar(state.titleBarHeight)
             // Force the layout pass before reading fittingSize, so the size
             // reflects the just-assigned root view rather than a cached one.
-            host.layoutSubtreeIfNeeded()
+            host.performSafeLayoutSubtreeIfNeeded()
             // Sub-point size changes aren't visible but do trigger a full
             // toolbar relayout, which can ping-pong with the measurement above.
             let fitting = host.fittingSize

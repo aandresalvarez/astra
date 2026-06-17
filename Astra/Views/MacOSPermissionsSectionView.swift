@@ -265,7 +265,7 @@ struct MacOSPermissionsSectionView: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(context == .onboarding ? "Grant macOS Access" : "macOS Permissions")
-                    .font(Stanford.heading(18))
+                    .font(Stanford.ui(16, weight: .semibold))
                     .foregroundStyle(Stanford.black)
                 Text(headerSubtitle)
                     .font(Stanford.caption(12))
@@ -326,8 +326,6 @@ struct MacOSPermissionsSectionView: View {
 
                 Spacer(minLength: 10)
 
-                statusPill(for: check.state)
-
                 if let issue = check.state.issue {
                     Button {
                         model.openSettings(for: issue)
@@ -340,24 +338,35 @@ struct MacOSPermissionsSectionView: View {
 
             switch check.state {
             case .ready:
-                rowMessage(check.readyMessage, tint: check.state.tint, icon: "checkmark.circle.fill")
+                rowMessage(check.readyMessage)
             case .deferred(let message):
-                rowMessage(message, tint: check.state.tint, icon: "clock")
+                rowMessage(message)
             case .needsAction(let issue):
-                rowMessage(issue.message, tint: check.state.tint, icon: "exclamationmark.triangle.fill")
+                rowMessage(issue.message)
                 setupSteps(issue.setupSteps, tint: check.state.tint)
             case .unavailable(let detail):
-                rowMessage(detail, tint: check.state.tint, icon: "xmark.octagon.fill")
+                rowMessage(detail)
                 setupSteps(fallbackSteps(for: check.id), tint: check.state.tint)
             case .checking:
-                rowMessage("Checking this access path...", tint: check.state.tint, icon: "arrow.triangle.2.circlepath")
+                rowMessage("Checking this access path...")
             case .notChecked:
-                rowMessage("Starting automatically...", tint: check.state.tint, icon: "clock")
+                rowMessage("Starting automatically...")
             }
         }
         .padding(12)
-        .background(check.state.tint.opacity(0.07))
+        .background(rowBackground(for: check.state))
         .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    @ViewBuilder
+    private func rowBackground(for state: MacOSPermissionCheckState) -> some View {
+        // P1/COL: keep the panel neutral inside the single card boundary.
+        // Tint only exceptional rows that need extra emphasis.
+        if state.needsAttention {
+            state.tint.opacity(0.07)
+        } else {
+            Color.clear
+        }
     }
 
     @ViewBuilder
@@ -374,30 +383,16 @@ struct MacOSPermissionsSectionView: View {
         }
     }
 
-    private func statusPill(for state: MacOSPermissionCheckState) -> some View {
-        Text(state.statusText)
-            .font(Stanford.caption(10).weight(.semibold))
-            .foregroundStyle(state.tint)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(state.tint.opacity(0.10))
-            .clipShape(Capsule())
-            .lineLimit(1)
-    }
-
-    private func rowMessage(_ message: String, tint: Color, icon: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: icon)
-                .font(Stanford.ui(11, weight: .semibold))
-                .foregroundStyle(tint)
-                .frame(width: 14)
-                .padding(.top, 2)
-            Text(message)
-                .font(Stanford.caption(11))
-                .foregroundStyle(Stanford.black)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-        }
+    private func rowMessage(_ message: String) -> some View {
+        // ICO: the leading status icon already conveys the glyph; the message
+        // line is plain text aligned under the title column.
+        Text(message)
+            .font(Stanford.caption(11))
+            .foregroundStyle(Stanford.black)
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, 34)
     }
 
     private func setupSteps(_ steps: [String], tint: Color) -> some View {

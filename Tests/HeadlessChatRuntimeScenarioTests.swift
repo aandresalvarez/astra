@@ -328,7 +328,8 @@ extension HeadlessChatScenarioTests {
             script: Self.copilotScript(
                 body: """
                 allowed_write=0
-                visible_apply_patch=0
+                visible_create=0
+                visible_edit=0
                 mode=""
                 for arg in "$@"; do
                   if [ "$arg" = "--allow-tool" ]; then
@@ -345,11 +346,14 @@ extension HeadlessChatScenarioTests {
                   if [ "$mode" = "allow" ] && [ "$arg" = "write" ]; then
                     allowed_write=1
                   fi
-                  if [ "$mode" = "available" ] && [ "$arg" = "apply_patch" ]; then
-                    visible_apply_patch=1
+                  if [ "$mode" = "available" ] && [ "$arg" = "create" ]; then
+                    visible_create=1
+                  fi
+                  if [ "$mode" = "available" ] && [ "$arg" = "edit" ]; then
+                    visible_edit=1
                   fi
                 done
-                if [ "$allowed_write" = "1" ] && [ "$visible_apply_patch" = "1" ]; then
+                if [ "$allowed_write" = "1" ] && [ "$visible_create" = "1" ] && [ "$visible_edit" = "1" ]; then
                   mkdir -p \(Self.shQuote(taskFolder))
                   printf '%s\\n' '<!doctype html><html><body><h1>Masterball solver</h1><script>console.log("solver")</script></body></html>' > \(Self.shQuote(artifactURL.path))
                   printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Created the Masterball solver page at .astra/tasks/bootstrap/index.html"}}'
@@ -379,9 +383,9 @@ extension HeadlessChatScenarioTests {
         let run = try #require(task.runs.first)
 
         #expect(allowedEntries.contains("write"))
-        #expect(availableEntries.contains("apply_patch"))
         #expect(availableEntries.contains("create"))
         #expect(availableEntries.contains("edit"))
+        #expect(!availableEntries.contains("apply_patch"))
         #expect(FileManager.default.fileExists(atPath: artifactURL.path))
         #expect(task.status == .completed)
         #expect(run.status == .completed)

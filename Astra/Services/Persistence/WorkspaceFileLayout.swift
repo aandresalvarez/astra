@@ -98,8 +98,12 @@ enum WorkspaceFileLayout {
 
     private static func removeLegacyTaskRootIfEmpty(workspacePath: String) {
         let root = legacyTaskRoot(for: workspacePath)
+        let hostFileAccess = HostFileAccessBroker()
         guard !root.isEmpty,
-              let contents = try? FileManager.default.contentsOfDirectory(atPath: root),
+              let contents = try? hostFileAccess.contentsOfDirectory(
+                at: URL(fileURLWithPath: root, isDirectory: true),
+                intent: .astraManagedStorage(root: URL(fileURLWithPath: workspacePath, isDirectory: true))
+              ),
               contents.isEmpty else {
             return
         }

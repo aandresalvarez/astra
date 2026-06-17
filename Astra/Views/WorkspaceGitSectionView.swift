@@ -14,7 +14,7 @@ enum WorkspaceGitPanelPresentation {
     static let expandedDetailRowCount = 6
     static let repositorySelectorRowMinHeight: CGFloat = 50
     static let detailRowMinHeight: CGFloat = 44
-    static let showDetailsActionTitle = "Show all"
+    static let showDetailsActionTitle = "Show controls"
     static let hideDetailsActionTitle = "Hide"
 
     static func transientStateAfterRepositoryContextChange(
@@ -95,9 +95,22 @@ struct WorkspaceGitSectionView: View {
         .onAppear {
             viewModel.setup(for: workspace, selectedTask: selectedTask)
             clearTransientRepositoryPresentation()
+            // Restore whether this workspace's repository card was left expanded.
+            repositoryDetailsMode = RailDisclosureStore.bool(
+                workspace.id.uuidString,
+                .repositoryShowsDetails,
+                default: !WorkspaceGitPanelPresentation.startsCollapsed
+            ) ? .details : .summary
         }
         .onDisappear {
             viewModel.pauseRefresh()
+        }
+        .onChange(of: repositoryDetailsMode) { _, mode in
+            RailDisclosureStore.setBool(
+                mode == .details,
+                workspace.id.uuidString,
+                .repositoryShowsDetails
+            )
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
@@ -298,6 +311,7 @@ struct WorkspaceGitSectionView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                        .help(repositorySummarySubtitle)
                 }
                 .layoutPriority(1)
 
@@ -335,15 +349,15 @@ struct WorkspaceGitSectionView: View {
                 changesDrawer
             }
 
-            rowDivider
-            commitOrPushRow
+            // Once a PR exists it is a status object, not an action — it stays a
+            // row, with the commit/push buttons below for pushing further work.
+            if let pr = viewModel.openPullRequest {
+                rowDivider
+                pullRequestLinkRow(pr)
+            }
 
             rowDivider
-            if let pr = viewModel.openPullRequest {
-                pullRequestLinkRow(pr)
-            } else {
-                createPullRequestRow
-            }
+            repositoryActionFooter
         }
     }
 
@@ -381,6 +395,15 @@ struct WorkspaceGitSectionView: View {
         }
         parts.append(workingLocationLabel)
         parts.append(changesSummaryCompactText)
+
+        // Show both arrows when diverged so the summary never hides that a pull
+        // is needed before a push will succeed.
+        if viewModel.pushableCommitCount > 0 {
+            parts.append("↑\(viewModel.pushableCommitCount)")
+        }
+        if viewModel.behind > 0 {
+            parts.append("↓\(viewModel.behind)")
+        }
 
         if let pr = viewModel.openPullRequest {
             parts.append("PR #\(pr.number)")
@@ -523,46 +546,149 @@ struct WorkspaceGitSectionView: View {
             ?? URL(fileURLWithPath: viewModel.activeWorkingPath ?? "").lastPathComponent
     }
 
-    // MARK: - Commit or push row
+    // MARK: - Action footer (commit / push / create PR)
+    //
+    // State (branch, checkout, changes) reads as rows above; the things the user
+    // *does* are buttons here, so verbs and state never wear the same chrome. The
+    // ahead/behind counts that used to ride the commit row become an explicit
+    // sync-status line, and PR readiness shows as a caption rather than a cramped
+    // trailing badge.
 
-    private var commitOrPushRow: some View {
+    private var repositoryActionFooter: some View {
+        let prExists = viewModel.openPullRequest != nil
+
+        return VStack(alignment: .leading, spacing: 7) {
+            if let sync = repositorySyncStatusText {
+                HStack(spacing: 6) {
+                    Image(systemName: repositorySyncStatusIcon)
+                        .font(Stanford.ui(11, weight: .semibold))
+                    Text(sync)
+                        .font(Stanford.caption(11).weight(.medium))
+                }
+                .foregroundStyle(repositorySyncStatusColor)
+            }
+
+            HStack(spacing: 8) {
+                commitActionButton
+                if !prExists {
+                    createPullRequestButton
+                }
+            }
+
+            if !prExists, let caption = pullRequestReadinessCaption {
+                Text(caption)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .help(pullRequestReadinessHelp ?? caption)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.leading, Self.rowIconFrame)
+        .padding(.top, 6)
+    }
+
+    private var commitActionButton: some View {
         Button {
             showCommitSheet = true
         } label: {
-            HStack(spacing: Self.rowIconSpacing) {
-                rowIcon("arrow.up.circle")
-                rowTitle("Commit or push")
-
-                Spacer(minLength: 8)
-
-                commitOrPushBadge
-            }
-            .frame(minHeight: Self.rowMinHeight)
-            .contentShape(Rectangle())
+            Label(commitActionLabel, systemImage: "arrow.up.circle")
+                .font(Stanford.caption(12).weight(.semibold))
+                .frame(maxWidth: .infinity)
         }
-        .buttonStyle(RowButtonStyle())
+        .buttonStyle(.borderedProminent)
+        .controlSize(.small)
+        .tint(Stanford.lagunita)
         .disabled(!viewModel.canOpenCommitSheet || viewModel.isSyncing)
+        .help(commitActionLabel)
     }
 
-    @ViewBuilder
-    private var commitOrPushBadge: some View {
-        let hasStaged = viewModel.statusFiles.contains(where: { $0.isStaged })
-        let hasMessage = !viewModel.commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        if hasStaged && hasMessage {
-            Text("Ready")
-                .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize).weight(.medium))
-                .foregroundStyle(Stanford.statusHealthy)
-        } else if viewModel.pushableCommitCount > 0 {
-            Label("\(viewModel.pushableCommitCount)", systemImage: viewModel.hasUpstream ? "arrow.up" : "arrow.up.to.line")
-                .labelStyle(.titleAndIcon)
-                .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize).weight(.semibold))
-                .foregroundStyle(Stanford.lagunita)
-        } else if viewModel.behind > 0 {
-            Label("\(viewModel.behind)", systemImage: "arrow.down")
-                .labelStyle(.titleAndIcon)
-                .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize).weight(.semibold))
-                .foregroundStyle(Stanford.statusInfo)
+    private var createPullRequestButton: some View {
+        Button {
+            Task { await viewModel.suggestPullRequest() }
+        } label: {
+            HStack(spacing: 5) {
+                if viewModel.isSuggestingPR {
+                    ProgressView()
+                        .controlSize(.mini)
+                } else {
+                    Image(systemName: "sparkles")
+                }
+                Text("Create PR")
+            }
+            .font(Stanford.caption(12).weight(.medium))
+            .lineLimit(1)
+            .frame(maxWidth: .infinity)
         }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(viewModel.isSuggestingPR)
+        .help(viewModel.pullRequestReadinessIssue ?? "Draft and create a pull request")
+        .contextMenu {
+            Button("Open GitHub without draft") {
+                viewModel.openPullRequestURL(with: nil)
+            }
+        }
+    }
+
+    private var commitActionLabel: String {
+        if !viewModel.statusFiles.isEmpty { return "Commit & push" }
+        if viewModel.pushableCommitCount > 0 { return "Push" }
+        return "Commit & push"
+    }
+
+    private var repositorySyncStatusText: String? {
+        let ahead = viewModel.pushableCommitCount
+        let behind = viewModel.behind
+        // Diverged: a push would be rejected, so lead with the blocker and show
+        // both counts rather than only the ahead message.
+        if ahead > 0, behind > 0 {
+            return "\(ahead) ahead, \(behind) behind — pull first"
+        }
+        if ahead > 0 {
+            let verb = viewModel.hasUpstream ? "to push" : "to publish"
+            return "\(ahead) commit\(ahead == 1 ? "" : "s") \(verb)"
+        }
+        if behind > 0 {
+            return "\(behind) behind — pull first"
+        }
+        return nil
+    }
+
+    private var repositorySyncStatusIcon: String {
+        if viewModel.pushableCommitCount > 0, viewModel.behind > 0 { return "arrow.up.arrow.down" }
+        if viewModel.behind > 0 { return "arrow.down" }
+        return viewModel.hasUpstream ? "arrow.up" : "arrow.up.to.line"
+    }
+
+    private var repositorySyncStatusColor: Color {
+        // Behind/diverged needs a pull before a push, so it wears the info tint —
+        // not the "ready" accent. Ahead-only is quiet metadata; the interactive
+        // accent is reserved for tappable text, so it stays secondary here.
+        viewModel.behind > 0 ? Stanford.statusInfo : Color.secondary
+    }
+
+    /// Readiness shown as a caption beneath the Create-pull-request button. Prefers
+    /// the concrete readiness blocker; falls back to a soft warning when an existing
+    /// PR could not be looked up.
+    private var pullRequestReadinessCaption: String? {
+        if let issue = viewModel.pullRequestReadinessIssue {
+            return "Pull request — \(shortPullRequestIssue(issue).lowercased())"
+        }
+        if viewModel.pullRequestLookupIssue != nil {
+            return "Could not check for an existing pull request"
+        }
+        return nil
+    }
+
+    /// Full-text tooltip for the readiness caption. The lookup failure keeps its
+    /// explanatory prefix so the raw error never appears without context.
+    private var pullRequestReadinessHelp: String? {
+        if let issue = viewModel.pullRequestReadinessIssue { return issue }
+        if let issue = viewModel.pullRequestLookupIssue {
+            return "Could not check for an existing pull request: \(issue)"
+        }
+        return nil
     }
 
     // MARK: - Changes row + drawer
@@ -721,54 +847,6 @@ struct WorkspaceGitSectionView: View {
         }
     }
 
-    // MARK: - Create pull request row
-
-    private var createPullRequestRow: some View {
-        Button {
-            Task { await viewModel.suggestPullRequest() }
-        } label: {
-            HStack(spacing: Self.rowIconSpacing) {
-                if viewModel.isSuggestingPR {
-                    ProgressView()
-                        .controlSize(.small)
-                        .frame(width: Self.rowIconFrame)
-                } else {
-                    rowIcon("arrow.triangle.pull")
-                }
-
-                rowTitle("Create pull request")
-
-                Spacer(minLength: 8)
-
-                if let issue = viewModel.pullRequestReadinessIssue {
-                    Text(shortPullRequestIssue(issue))
-                        .font(Stanford.caption(12).weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                } else if let issue = viewModel.pullRequestLookupIssue {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(Stanford.ui(12))
-                        .foregroundStyle(Stanford.statusWarn)
-                        .help("Could not check for an existing pull request: \(issue)")
-                } else {
-                    Image(systemName: "sparkles")
-                        .font(Stanford.ui(CapabilityRailLayout.rowSubtitleFontSize))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(minHeight: Self.rowMinHeight)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(RowButtonStyle())
-        .disabled(viewModel.isSuggestingPR)
-        .help(viewModel.pullRequestReadinessIssue ?? "Draft and create a pull request")
-        .contextMenu {
-            Button("Open GitHub without draft") {
-                viewModel.openPullRequestURL(with: nil)
-            }
-        }
-    }
-
     private func shortPullRequestIssue(_ issue: String) -> String {
         if issue.localizedCaseInsensitiveContains("publish") { return "Publish first" }
         if issue.localizedCaseInsensitiveContains("push") { return "Push first" }
@@ -790,7 +868,13 @@ struct WorkspaceGitSectionView: View {
                 viewModel.openExistingPullRequest()
             } label: {
                 HStack(spacing: Self.rowIconSpacing) {
-                    rowIcon("arrow.triangle.pull")
+                    CapabilityLeadingIcon(
+                        systemImage: "arrow.triangle.pull",
+                        brand: .github,
+                        pointSize: Self.rowIconGlyphSize
+                    )
+                    .foregroundStyle(Stanford.lagunita)
+                    .frame(width: Self.rowIconFrame)
                     rowTitle("Pull request")
 
                     Spacer(minLength: 8)
@@ -1244,439 +1328,6 @@ struct WorkspaceGitSectionView: View {
 
 // MARK: - Changed file diff sheet
 
-private struct ChangedFileDiffSheet: View {
-    let diff: GitFileDiff
-    let isLoading: Bool
-    let onOpenFile: () -> Void
-    let onCopyDiff: () -> Void
-    let onApplyHunk: (String) -> Void
-    let onStageToggle: () -> Void
-    let onDismiss: () -> Void
-
-    @State private var isExpanded = false
-
-    private var stageLabel: String {
-        diff.file.isStaged ? "Unstage file" : "Stage file"
-    }
-
-    private var canOpenFile: Bool {
-        !diff.file.isDeleted && diff.kind != .unavailable
-    }
-
-    private var canCopyDiff: Bool {
-        diff.hasDiff
-    }
-
-    private var hunkActionLabel: String {
-        diff.kind == .staged ? "Unstage hunk" : "Stage hunk"
-    }
-
-    private var canApplyHunks: Bool {
-        diff.hasDiff
-            && !diff.file.isConflict
-            && diff.kind != .untracked
-            && diff.kind != .unavailable
-    }
-
-    private var hunks: [RepositoryDiffPresentation.Hunk] {
-        guard canApplyHunks else { return [] }
-        return RepositoryDiffPresentation.hunks(from: diff.diff)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-            Divider()
-            content
-            Divider()
-            footer
-        }
-        .frame(
-            minWidth: isExpanded ? 900 : 660,
-            idealWidth: isExpanded ? 1120 : 820,
-            maxWidth: isExpanded ? 1400 : 980,
-            minHeight: isExpanded ? 640 : 440,
-            idealHeight: isExpanded ? 820 : 560,
-            maxHeight: isExpanded ? 1000 : 720
-        )
-        .background(Stanford.cardBackground)
-    }
-
-    private var header: some View {
-        HStack(alignment: .center, spacing: 10) {
-            statusBadge
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(diff.file.displayPath)
-                    .font(Stanford.ui(14, design: .monospaced).weight(.semibold))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-
-                Text(subtitle)
-                    .font(Stanford.caption(11))
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer(minLength: 10)
-
-            if isLoading {
-                ProgressView()
-                    .controlSize(.small)
-            }
-
-            Button {
-                withAnimation(.spring(response: 0.22, dampingFraction: 0.88)) {
-                    isExpanded.toggle()
-                }
-            } label: {
-                Image(systemName: isExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-                    .font(Stanford.ui(11, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help(isExpanded ? "Use compact diff view" : "Expand diff view")
-
-            Button(action: onDismiss) {
-                Image(systemName: "xmark")
-                    .font(Stanford.ui(11, weight: .bold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Close")
-        }
-        .padding(14)
-    }
-
-    @ViewBuilder
-    private var content: some View {
-        if isLoading && !diff.hasDiff {
-            VStack(spacing: 10) {
-                ProgressView()
-                    .controlSize(.small)
-                Text("Loading diff...")
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if diff.hasDiff {
-            GeometryReader { proxy in
-                ScrollView([.vertical, .horizontal]) {
-                    diffScrollContent(availableWidth: proxy.size.width)
-                        .frame(minWidth: max(0, proxy.size.width), alignment: .topLeading)
-                }
-                .background(Stanford.panelBackground.opacity(0.72))
-            }
-        } else {
-            VStack(alignment: .leading, spacing: 8) {
-                Image(systemName: messageIcon)
-                    .font(Stanford.ui(22, weight: .medium))
-                    .foregroundStyle(messageColor)
-                Text(diff.message ?? "No textual diff is available for this file.")
-                    .font(Stanford.body(13))
-                    .foregroundStyle(.primary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(18)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        }
-    }
-
-    @ViewBuilder
-    private func diffScrollContent(availableWidth: CGFloat) -> some View {
-        if hunks.isEmpty {
-            DiffLinesView(
-                lines: RepositoryDiffPresentation.lines(from: diff.diff),
-                minimumWidth: max(0, availableWidth - 24)
-            )
-            .padding(12)
-        } else {
-            VStack(alignment: .leading, spacing: 12) {
-                ForEach(hunks) { hunk in
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("Hunk")
-                                .font(Stanford.caption(11).weight(.semibold))
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button(hunkActionLabel) {
-                                onApplyHunk(hunk.patch)
-                            }
-                            .font(Stanford.caption(11).weight(.semibold))
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                        }
-                        .frame(minWidth: max(0, availableWidth - 44), alignment: .leading)
-
-                        DiffLinesView(lines: hunk.lines, minimumWidth: max(0, availableWidth - 44))
-                    }
-                    .padding(10)
-                    .frame(minWidth: max(0, availableWidth - 24), alignment: .leading)
-                    .background(Stanford.panelBackground.opacity(0.78))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 7)
-                            .stroke(Color.primary.opacity(0.07), lineWidth: 1)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                }
-            }
-            .padding(12)
-        }
-    }
-
-    private var footer: some View {
-        HStack(spacing: 10) {
-            if diff.isTruncated {
-                Label("Diff truncated", systemImage: "scissors")
-                    .font(Stanford.caption(11).weight(.medium))
-                    .foregroundStyle(Stanford.statusWarn)
-            } else if diff.file.isDeleted {
-                Label("File deleted", systemImage: "trash")
-                    .font(Stanford.caption(11).weight(.medium))
-                    .foregroundStyle(Stanford.statusError)
-            } else if diff.file.isConflict {
-                Label("Conflict", systemImage: "exclamationmark.triangle.fill")
-                    .font(Stanford.caption(11).weight(.medium))
-                    .foregroundStyle(Stanford.statusError)
-            }
-
-            Spacer(minLength: 10)
-
-            Button(action: onCopyDiff) {
-                Label("Copy diff", systemImage: "doc.on.doc")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .disabled(!canCopyDiff)
-
-            Button(action: onOpenFile) {
-                Label("Open file", systemImage: "doc.text")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .disabled(!canOpenFile)
-
-            Button(action: onStageToggle) {
-                Label(stageLabel, systemImage: diff.file.isStaged ? "minus.circle" : "plus.circle")
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-            .disabled(diff.file.isConflict)
-        }
-        .font(Stanford.caption(12).weight(.medium))
-        .padding(12)
-    }
-
-    private var statusBadge: some View {
-        Text(diff.file.status)
-            .font(Stanford.caption(10).weight(.bold))
-            .foregroundStyle(statusColor)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(statusColor.opacity(0.12))
-            .clipShape(RoundedRectangle(cornerRadius: 4))
-    }
-
-    private var subtitle: String {
-        switch diff.kind {
-        case .staged: "Staged diff"
-        case .unstaged: "Working tree diff"
-        case .untracked: "Untracked file preview"
-        case .unavailable: "Diff unavailable"
-        }
-    }
-
-    private var statusColor: Color {
-        if diff.file.isConflict { return Stanford.statusError }
-        switch diff.file.status {
-        case "A", "?": return Stanford.statusHealthy
-        case "M": return Stanford.statusWarn
-        case "D": return Stanford.statusError
-        default: return Stanford.statusInfo
-        }
-    }
-
-    private var messageIcon: String {
-        diff.kind == .unavailable ? "exclamationmark.triangle" : "doc.text.magnifyingglass"
-    }
-
-    private var messageColor: Color {
-        diff.kind == .unavailable ? Stanford.statusWarn : .secondary
-    }
-}
-
-struct RepositoryDiffPresentation {
-    struct Line: Identifiable, Equatable {
-        enum Kind: Equatable {
-            case addition
-            case deletion
-            case hunkHeader
-            case fileHeader
-            case context
-        }
-
-        let id: Int
-        let text: String
-        let kind: Kind
-    }
-
-    struct Hunk: Identifiable, Equatable {
-        let id: Int
-        let patch: String
-        let lines: [Line]
-    }
-
-    static func lines(from text: String) -> [Line] {
-        text
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map(String.init)
-            .enumerated()
-            .map { offset, line in
-                Line(id: offset, text: line, kind: kind(for: line))
-            }
-    }
-
-    static func hunks(from diff: String) -> [Hunk] {
-        let diffLines = diff
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map(String.init)
-        var header: [String] = []
-        var current: [String] = []
-        var result: [Hunk] = []
-
-        func finishCurrent() {
-            guard !current.isEmpty else { return }
-            let patch = (header + current).joined(separator: "\n") + "\n"
-            result.append(Hunk(id: result.count, patch: patch, lines: lines(from: current.joined(separator: "\n"))))
-            current = []
-        }
-
-        for line in diffLines {
-            if line.hasPrefix("diff --git ") {
-                finishCurrent()
-                header = [line]
-            } else if line.hasPrefix("@@ ") {
-                finishCurrent()
-                current = [line]
-            } else if current.isEmpty {
-                header.append(line)
-            } else {
-                current.append(line)
-            }
-        }
-        finishCurrent()
-        return result
-    }
-
-    static func kind(for line: String) -> Line.Kind {
-        if line.hasPrefix("@@ ") {
-            return .hunkHeader
-        }
-        if line.hasPrefix("diff --git ")
-            || line.hasPrefix("index ")
-            || line.hasPrefix("--- ")
-            || line.hasPrefix("+++ ")
-            || line.hasPrefix("new file mode ")
-            || line.hasPrefix("deleted file mode ") {
-            return .fileHeader
-        }
-        if line.hasPrefix("+") {
-            return .addition
-        }
-        if line.hasPrefix("-") {
-            return .deletion
-        }
-        return .context
-    }
-}
-
-private struct DiffLinesView: View {
-    let lines: [RepositoryDiffPresentation.Line]
-    let minimumWidth: CGFloat
-
-    var body: some View {
-        LazyVStack(alignment: .leading, spacing: 1) {
-            ForEach(lines) { line in
-                DiffLineRow(line: line, minimumWidth: minimumWidth)
-            }
-        }
-        .textSelection(.enabled)
-        .frame(minWidth: minimumWidth, alignment: .leading)
-    }
-}
-
-private struct DiffLineRow: View {
-    let line: RepositoryDiffPresentation.Line
-    let minimumWidth: CGFloat
-
-    var body: some View {
-        // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
-        // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
-        HStack(alignment: .top, spacing: 8) {
-            Text(prefix)
-                .font(Stanford.ui(11, design: .monospaced))
-                .foregroundStyle(prefixColor)
-                .frame(width: 18, alignment: .trailing)
-
-            Text(displayText)
-                .font(Stanford.ui(11, design: .monospaced))
-                .foregroundStyle(textColor)
-                .fixedSize(horizontal: true, vertical: false)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 2)
-        .frame(minWidth: minimumWidth, alignment: .leading)
-        .background(backgroundColor)
-        .clipShape(RoundedRectangle(cornerRadius: 4))
-    }
-
-    private var displayText: String {
-        line.text.isEmpty ? " " : line.text
-    }
-
-    private var prefix: String {
-        switch line.kind {
-        case .addition: "+"
-        case .deletion: "-"
-        case .hunkHeader: "@@"
-        case .fileHeader: ">"
-        case .context: " "
-        }
-    }
-
-    private var textColor: Color {
-        switch line.kind {
-        case .addition: Stanford.diffAdded
-        case .deletion: Stanford.diffRemoved
-        case .hunkHeader: Stanford.lagunita
-        case .fileHeader: .secondary
-        case .context: .primary.opacity(0.92)
-        }
-    }
-
-    private var prefixColor: Color {
-        switch line.kind {
-        case .addition: Stanford.diffAdded
-        case .deletion: Stanford.diffRemoved
-        case .hunkHeader: Stanford.lagunita
-        case .fileHeader: Stanford.statusInfo
-        case .context: .secondary.opacity(0.55)
-        }
-    }
-
-    private var backgroundColor: Color {
-        switch line.kind {
-        case .addition: Stanford.diffAdded.opacity(0.13)
-        case .deletion: Stanford.diffRemoved.opacity(0.13)
-        case .hunkHeader: Stanford.lagunita.opacity(0.15)
-        case .fileHeader: Color.primary.opacity(0.045)
-        case .context: Color.clear
-        }
-    }
-}
 
 // MARK: - Row button style
 
@@ -2076,445 +1727,5 @@ struct WorktreeLocationPopoverView: View {
         }
         .buttonStyle(.plain)
         .disabled(!viewModel.canChangeActiveCodePath)
-    }
-}
-
-// MARK: - Commit sheet
-
-struct CommitSheet: View {
-    @ObservedObject var viewModel: WorkspaceGitViewModel
-    let onDismiss: () -> Void
-
-    @State private var message = ""
-    @State private var includeUnstaged = true
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 8) {
-                Image(systemName: "arrow.triangle.branch")
-                    .font(Stanford.ui(15, weight: .semibold))
-                    .foregroundStyle(Stanford.lagunita)
-                Text(viewModel.currentBranch)
-                    .font(Stanford.ui(15, weight: .semibold))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: 8)
-                HStack(spacing: 6) {
-                    if viewModel.additions > 0 {
-                        Text("+\(viewModel.additions)")
-                            .font(Stanford.caption(12).weight(.semibold))
-                            .foregroundStyle(Stanford.statusHealthy)
-                    }
-                    if viewModel.deletions > 0 {
-                        Text("-\(viewModel.deletions)")
-                            .font(Stanford.caption(12).weight(.semibold))
-                            .foregroundStyle(Stanford.statusError)
-                    }
-                }
-            }
-
-            ZStack(alignment: .topLeading) {
-                TextEditor(text: $message)
-                    .font(Stanford.body(13))
-                    .scrollContentBackground(.hidden)
-                    .padding(6)
-
-                if message.isEmpty {
-                    Text("Commit message (leave blank to generate)…")
-                        .font(Stanford.body(13))
-                        .foregroundStyle(.tertiary)
-                        .padding(.horizontal, 11)
-                        .padding(.vertical, 14)
-                        .allowsHitTesting(false)
-                }
-            }
-            .frame(minHeight: 100)
-            .background(Color.primary.opacity(0.04))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-
-            Toggle("Include unstaged changes", isOn: $includeUnstaged)
-                .font(Stanford.body(12))
-                .toggleStyle(.checkbox)
-
-            Divider()
-
-            actionColumn
-        }
-        .padding(16)
-        .frame(width: 380, height: 392)
-    }
-
-    // MARK: - Action column
-
-    /// A single full-width column of actions so every label reads in full.
-    /// Only the actions that are meaningful for the current state are shown,
-    /// with one clear primary action emphasized.
-    @ViewBuilder
-    private var actionColumn: some View {
-        VStack(spacing: 8) {
-            if viewModel.hasChanges {
-                commitButton(label: "Commit and push", icon: "arrow.up.circle.fill", andPush: true, prominent: true)
-                    .keyboardShortcut(.return, modifiers: [.command, .shift])
-
-                commitButton(label: "Commit", icon: "checkmark.circle", andPush: false, prominent: false)
-                    .keyboardShortcut(.return, modifiers: .command)
-
-                if viewModel.canPush {
-                    pushButton(prominent: false)
-                }
-            } else if viewModel.canPush {
-                pushButton(prominent: true)
-                    .keyboardShortcut(.return, modifiers: .command)
-            }
-
-            Button(action: onDismiss) {
-                Text("Cancel").frame(maxWidth: .infinity)
-            }
-            .controlSize(.large)
-            .keyboardShortcut(.cancelAction)
-        }
-    }
-
-    @ViewBuilder
-    private func commitButton(label: String, icon: String, andPush: Bool, prominent: Bool) -> some View {
-        let button = Button {
-            viewModel.commitFromSheet(message: message, includeUnstaged: includeUnstaged, andPush: andPush)
-            onDismiss()
-        } label: {
-            actionLabel(label, icon: icon, busy: andPush)
-        }
-        .controlSize(.large)
-        .disabled(!viewModel.hasChanges || viewModel.isSyncing || viewModel.isSuggestingCommit)
-
-        if prominent {
-            button.buttonStyle(.borderedProminent).tint(Stanford.lagunita)
-        } else {
-            button.buttonStyle(.bordered)
-        }
-    }
-
-    @ViewBuilder
-    private func pushButton(prominent: Bool) -> some View {
-        let title = viewModel.hasUpstream ? "Push" : "Publish branch"
-        let icon = viewModel.hasUpstream ? "arrow.up" : "arrow.up.to.line"
-        let button = Button {
-            viewModel.pushOnly()
-            onDismiss()
-        } label: {
-            actionLabel(title, icon: icon, busy: false)
-        }
-        .controlSize(.large)
-        .disabled(!viewModel.canPush || viewModel.isSyncing)
-
-        if prominent {
-            button.buttonStyle(.borderedProminent).tint(Stanford.lagunita)
-        } else {
-            button.buttonStyle(.bordered)
-        }
-    }
-
-    /// Full-width label that swaps in inline progress while a long-running
-    /// commit/suggestion is in flight.
-    @ViewBuilder
-    private func actionLabel(_ title: String, icon: String, busy: Bool) -> some View {
-        Group {
-            if busy && (viewModel.isSyncing || viewModel.isSuggestingCommit) {
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text(viewModel.isSuggestingCommit ? "Generating message…" : "Working…")
-                }
-            } else {
-                Label(title, systemImage: icon)
-            }
-        }
-        .frame(maxWidth: .infinity)
-    }
-}
-
-// MARK: - PR draft sheet
-
-struct PRDraftSheet: View {
-    let draft: PRSuggestion
-    let onCreate: (PRSuggestion) -> Void
-    let onOpenInBrowser: (PRSuggestion) -> Void
-    let onCancel: () -> Void
-
-    @State private var title: String
-    @State private var bodyText: String
-
-    init(
-        draft: PRSuggestion,
-        onCreate: @escaping (PRSuggestion) -> Void,
-        onOpenInBrowser: @escaping (PRSuggestion) -> Void,
-        onCancel: @escaping () -> Void
-    ) {
-        self.draft = draft
-        self.onCreate = onCreate
-        self.onOpenInBrowser = onOpenInBrowser
-        self.onCancel = onCancel
-        self._title = State(initialValue: draft.title)
-        self._bodyText = State(initialValue: draft.body)
-    }
-
-    private var trimmedTitle: String {
-        title.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var currentDraft: PRSuggestion {
-        PRSuggestion(title: title, body: bodyText)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: "arrow.triangle.pull")
-                    .font(Stanford.ui(15, weight: .semibold))
-                    .foregroundStyle(Stanford.lagunita)
-                Text("Open Pull Request")
-                    .font(Stanford.ui(15, weight: .bold))
-                Spacer()
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Title")
-                    .font(Stanford.caption(10).weight(.bold))
-                    .foregroundStyle(.secondary)
-                TextField("Title", text: $title)
-                    .textFieldStyle(.roundedBorder)
-                    .font(Stanford.body(13))
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Body")
-                    .font(Stanford.caption(10).weight(.bold))
-                    .foregroundStyle(.secondary)
-                TextEditor(text: $bodyText)
-                    .font(Stanford.body(12))
-                    .scrollContentBackground(.hidden)
-                    .frame(minHeight: 200)
-                    .padding(6)
-                    .background(Color.primary.opacity(0.04))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-            }
-
-            HStack(spacing: 8) {
-                Button("Cancel", action: onCancel)
-                    .keyboardShortcut(.cancelAction)
-
-                Spacer()
-
-                Button {
-                    onOpenInBrowser(currentDraft)
-                } label: {
-                    Label("Open in GitHub", systemImage: "arrow.up.right.square")
-                }
-                .disabled(trimmedTitle.isEmpty)
-
-                Button {
-                    onCreate(currentDraft)
-                } label: {
-                    Label("Create Pull Request", systemImage: "arrow.triangle.pull")
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(Stanford.lagunita)
-                .keyboardShortcut(.defaultAction)
-                .disabled(trimmedTitle.isEmpty)
-            }
-        }
-        .padding(16)
-        .frame(width: 520, height: 460)
-    }
-}
-
-// MARK: - Worktree management sheet
-
-/// Create, switch, and remove git worktrees. Switching here only steers where
-/// *new* chats run — existing threads stay pinned to the worktree they were
-/// created in, which is what makes parallel agent work safe.
-struct WorktreeSheet: View {
-    @ObservedObject var viewModel: WorkspaceGitViewModel
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            header
-
-            createSection
-
-            Divider()
-
-            Text("Worktrees")
-                .font(Stanford.caption(10).weight(.bold))
-                .foregroundStyle(.secondary)
-
-            worktreeList
-
-            if let error = viewModel.errorMessage {
-                Text(error)
-                    .font(Stanford.caption(11))
-                    .foregroundStyle(Stanford.errorRed)
-                    .lineLimit(3)
-            }
-
-            Spacer(minLength: 0)
-
-            HStack {
-                Text("New chats start in the active location.")
-                    .font(Stanford.caption(10))
-                    .foregroundStyle(.tertiary)
-                Spacer()
-                Button("Done") { dismiss() }
-                    .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(16)
-        .frame(width: 480, height: 460)
-        .alert(
-            "Discard uncommitted changes?",
-            isPresented: Binding(
-                get: { viewModel.worktreePendingForceRemoval != nil },
-                set: { if !$0 { viewModel.worktreePendingForceRemoval = nil } }
-            ),
-            presenting: viewModel.worktreePendingForceRemoval
-        ) { worktree in
-            Button("Remove anyway", role: .destructive) {
-                viewModel.removeWorktree(worktree, force: true)
-            }
-            Button("Cancel", role: .cancel) { viewModel.worktreePendingForceRemoval = nil }
-        } message: { worktree in
-            Text("\(worktree.displayName) has uncommitted changes. Removing it deletes the checkout on disk. The branch and its commits are kept.")
-        }
-    }
-
-    private var header: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "square.split.2x1")
-                .font(Stanford.ui(15, weight: .semibold))
-                .foregroundStyle(Stanford.lagunita)
-            Text("Worktrees")
-                .font(Stanford.ui(15, weight: .bold))
-            Spacer()
-            if viewModel.isSyncing {
-                ProgressView().controlSize(.small)
-            }
-        }
-    }
-
-    private var createSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("New worktree")
-                .font(Stanford.caption(10).weight(.bold))
-                .foregroundStyle(.secondary)
-            HStack(spacing: 8) {
-                TextField("branch-name", text: $viewModel.newWorktreeBranch)
-                    .textFieldStyle(.roundedBorder)
-                    .font(Stanford.body(12))
-                    .controlSize(.small)
-                    .onSubmit(create)
-
-                Button(action: create) {
-                    Label("Create", systemImage: "plus")
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(Stanford.lagunita)
-                .controlSize(.small)
-                .disabled(trimmedBranch.isEmpty || viewModel.isSyncing)
-            }
-            Text("Creates a new branch off \(viewModel.currentBranch.isEmpty ? "HEAD" : viewModel.currentBranch) and focuses new chats on it.")
-                .font(Stanford.caption(10))
-                .foregroundStyle(.tertiary)
-        }
-    }
-
-    private var worktreeList: some View {
-        ScrollView {
-            VStack(spacing: 1) {
-                ForEach(viewModel.worktrees) { worktree in
-                    worktreeRow(worktree)
-                }
-            }
-        }
-        .frame(maxHeight: 220)
-        .background(Color.primary.opacity(0.015))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-
-    @ViewBuilder
-    private func worktreeRow(_ worktree: GitWorktreeInfo) -> some View {
-        let isActive = worktree.isPrimary
-            ? !viewModel.isUsingWorktree
-            : viewModel.activeWorkingPath == worktree.path
-        HStack(spacing: 10) {
-            Image(systemName: worktree.isPrimary ? "house" : "arrow.triangle.branch")
-                .font(Stanford.ui(12, weight: .medium))
-                .foregroundStyle(isActive ? Stanford.lagunita : .secondary)
-                .frame(width: 16)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(worktree.isPrimary ? "Root" : worktree.displayName)
-                    .font(Stanford.body(12.5))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                Text(worktree.path)
-                    .font(Stanford.ui(10, design: .monospaced))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-
-            Spacer(minLength: 6)
-
-            if isActive {
-                Text("Active")
-                    .font(Stanford.caption(10).weight(.semibold))
-                    .foregroundStyle(Stanford.lagunita)
-            } else {
-                Button("Switch") {
-                    if worktree.isPrimary {
-                        viewModel.switchToRoot()
-                    } else {
-                        viewModel.switchWorkingLocation(to: worktree)
-                    }
-                }
-                .buttonStyle(.plain)
-                .font(Stanford.caption(11).weight(.medium))
-                .foregroundStyle(Stanford.lagunita)
-            }
-
-            if !worktree.isPrimary {
-                Button {
-                    attemptRemoval(worktree)
-                } label: {
-                    Image(systemName: "trash")
-                        .font(Stanford.ui(11))
-                        .foregroundStyle(viewModel.hasActiveTaskPinned(to: worktree) ? Color.secondary : Stanford.errorRed)
-                }
-                .buttonStyle(.plain)
-                .disabled(viewModel.hasActiveTaskPinned(to: worktree))
-                .help(viewModel.hasActiveTaskPinned(to: worktree)
-                      ? "A running task is using this worktree"
-                      : "Remove worktree")
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .contentShape(Rectangle())
-    }
-
-    private var trimmedBranch: String {
-        viewModel.newWorktreeBranch.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func create() {
-        guard !trimmedBranch.isEmpty else { return }
-        viewModel.createWorktree(branch: trimmedBranch)
-    }
-
-    /// Removing a clean worktree succeeds immediately; a dirty one routes through
-    /// the view model's confirmation state before forcing, so we never silently
-    /// discard work.
-    private func attemptRemoval(_ worktree: GitWorktreeInfo) {
-        viewModel.errorMessage = nil
-        viewModel.removeWorktree(worktree, force: false)
     }
 }

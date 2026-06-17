@@ -1,9 +1,27 @@
 import Foundation
 import Testing
+import WebKit
 @testable import ASTRA
 
 @Suite("Browser Bridge Security")
 struct BrowserBridgeSecurityTests {
+    @Test("Embedded preview blocks WebKit file and media pickers")
+    func embeddedPreviewBlocksWebKitFileAndMediaPickers() {
+        #expect(ShelfBrowserPrivacyBoundary.blocksEmbeddedPreviewFilePickers)
+        #expect(ShelfBrowserPrivacyBoundary.blocksEmbeddedPreviewMediaCapture)
+    }
+
+    @Test("Embedded preview uses an ephemeral WebKit data store")
+    @MainActor
+    func embeddedPreviewUsesEphemeralWebKitDataStore() {
+        let configuration = ShelfBrowserWebViewConfigurationFactory.makeEmbeddedConfiguration(
+            pageReadMessageHandler: NoopScriptMessageHandler()
+        )
+
+        #expect(ShelfBrowserPrivacyBoundary.usesEphemeralEmbeddedPreviewDataStore)
+        #expect(!configuration.websiteDataStore.isPersistent)
+    }
+
     @Test("Bridge requires per-session access token")
     func bridgeRequiresAccessToken() async throws {
         let endpoint = LockedEndpoint()
@@ -184,6 +202,7 @@ struct BrowserBridgeSecurityTests {
     func bridgeActionsResponsePreservesMetadataContract() throws {
         let response = ShelfBrowserBridgeCommandRouter.actionsResponse(
             backend: "controlled Chromium profile",
+            automationEngine: BrowserAutomationEngineDescriptor(kind: .controlledCDP),
             capabilities: ["actions", "google.drive.open"],
             canUseGoogleDriveOpen: true,
             googleDriveOpenDefaultTimeoutSeconds: 24
@@ -191,6 +210,10 @@ struct BrowserBridgeSecurityTests {
 
         #expect(response["ok"] as? Bool == true)
         #expect(response["backend"] as? String == "controlled Chromium profile")
+        let engine = try #require(response["automationEngine"] as? [String: Any])
+        #expect(engine["kind"] as? String == "controlled-cdp")
+        #expect(engine["providerToolName"] as? String == "astra-browser")
+        #expect(engine["exposesRawDebugEndpoint"] as? Bool == false)
         #expect(response["actionMetadataVersion"] as? Int == 1)
         #expect(response["capabilities"] as? [String] == ["actions", "google.drive.open"])
 
@@ -217,6 +240,10 @@ struct BrowserBridgeSecurityTests {
         let statusCode = try #require((response as? HTTPURLResponse)?.statusCode)
         return (statusCode, String(data: data, encoding: .utf8) ?? "")
     }
+}
+
+private final class NoopScriptMessageHandler: NSObject, WKScriptMessageHandler {
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {}
 }
 
 private actor LockedEndpoint {

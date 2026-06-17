@@ -48,6 +48,35 @@ enum ShelfBrowserEngine: String, CaseIterable, Identifiable {
     }
 }
 
+enum ShelfBrowserPrivacyBoundary {
+    static let blocksEmbeddedPreviewFilePickers = true
+    static let blocksEmbeddedPreviewMediaCapture = true
+    static let usesEphemeralEmbeddedPreviewDataStore = true
+}
+
+enum ShelfBrowserWebViewConfigurationFactory {
+    @MainActor
+    static func makeEmbeddedConfiguration(pageReadMessageHandler: WKScriptMessageHandler) -> WKWebViewConfiguration {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
+        configuration.mediaTypesRequiringUserActionForPlayback = .all
+        // Keep the lightweight reporter installed in the preview WebView even when
+        // Controlled mode is active, so switching back to Embedded does not require
+        // rebuilding WebKit configuration or reloading the page.
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: BrowserAutomationScripts.embeddedPageReadReporterScript(),
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: false
+        ))
+        configuration.userContentController.add(
+            pageReadMessageHandler,
+            name: BrowserAutomationScripts.pageReadMessageHandlerName
+        )
+        return configuration
+    }
+}
+
 @MainActor
 final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     @Published var engine: ShelfBrowserEngine = .embedded {
@@ -56,7 +85,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             guard !suppressEngineTransitionHandler else { return }
             browserAnalysisCache.invalidate()
             let controlledHandoffAddress = oldValue == .embedded && engine == .controlled
-                ? Self.controlledBrowserHandoffAddress(currentURL: currentURL, webViewURL: webView.url)
+                ? Self.controlledBrowserHandoffAddress(currentURL: currentURL, webViewURL: _webView?.url)
                 : nil
             let embeddedHandoffAddress = oldValue == .controlled && engine == .embedded
                 ? Self.embeddedBrowserHandoffAddress(currentURL: currentURL, controlledURL: controlledBrowser.currentURL)
@@ -99,7 +128,27 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     }
     @Published private(set) var agentControlPermissionIssue: MacOSPermissionIssue?
 
-    let webView: WKWebView
+    private var _webView: WKWebView?
+
+    /// The embedded WebKit view, created lazily on first real use — rendering
+    /// the browser panel or driving navigation. Deferring it keeps WebKit, and
+    /// the Photos/Music media frameworks it transitively loads, off the launch
+    /// path: simply holding a (usually off-screen) browser session no longer
+    /// spins up WebKit and triggers media-library TCC prompts at app startup.
+    /// Lifecycle code (teardown, state sync, engine handoff) reads `_webView`
+    /// directly so it never forces creation of a view that was never shown.
+    var webView: WKWebView {
+        if let _webView { return _webView }
+        let created = makeWebView()
+        _webView = created
+        return created
+    }
+
+    /// Whether the embedded WebKit view has actually been instantiated. False
+    /// for a session that exists but was never shown — the state that keeps
+    /// app launch off the Photos/Music media frameworks. Lets callers (and
+    /// tests) observe lazy creation without forcing it.
+    var isWebViewLoaded: Bool { _webView != nil }
     let controlledBrowser = ControlledBrowserController()
 
     private var observations: [NSKeyValueObservation] = []
@@ -225,6 +274,9 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 "google.drive.open"
             ])
         }
+        if engine.automationDescriptor.kind == .controlledCDP {
+            capabilities.append("action.settlement.cdp")
+        }
         if isGoogleDriveAdapterEnabled {
             capabilities.append("browser.adapter.googleDrive")
         }
@@ -232,29 +284,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     }
 
     override init() {
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .default()
-        configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
-        let pageReadHandler = WeakPageReadMessageHandler()
-        // Keep the lightweight reporter installed in the preview WebView even when
-        // Controlled mode is active, so switching back to Embedded does not require
-        // rebuilding WebKit configuration or reloading the page.
-        configuration.userContentController.addUserScript(WKUserScript(
-            source: BrowserAutomationScripts.embeddedPageReadReporterScript(),
-            injectionTime: .atDocumentEnd,
-            forMainFrameOnly: false
-        ))
-        configuration.userContentController.add(pageReadHandler, name: BrowserAutomationScripts.pageReadMessageHandlerName)
-
-        webView = WKWebView(frame: .zero, configuration: configuration)
-        pageReadMessageHandler = pageReadHandler
-        webView.allowsBackForwardNavigationGestures = true
-
         super.init()
-        pageReadHandler.session = self
-
-        webView.navigationDelegate = self
-        webView.uiDelegate = self
         controlledBrowserCancellable = controlledBrowser.objectWillChange.sink { [weak self] _ in
             Task { @MainActor in
                 guard let self, self.isUsingControlledBrowser else { return }
@@ -263,8 +293,27 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 self.objectWillChange.send()
             }
         }
-        installObservers()
         startBridge()
+    }
+
+    /// Builds the embedded WebKit view and wires its delegates and KVO
+    /// observers. Invoked once, lazily, the first time `webView` is accessed —
+    /// never during session construction — so WebKit (and the media frameworks
+    /// it pulls in) stay off the launch path. The freshly built view is passed
+    /// to `installObservers` so observer setup can't re-enter the lazy getter.
+    private func makeWebView() -> WKWebView {
+        let pageReadHandler = WeakPageReadMessageHandler()
+        pageReadHandler.session = self
+        pageReadMessageHandler = pageReadHandler
+        let configuration = ShelfBrowserWebViewConfigurationFactory.makeEmbeddedConfiguration(
+            pageReadMessageHandler: pageReadHandler
+        )
+        let created = WKWebView(frame: .zero, configuration: configuration)
+        created.allowsBackForwardNavigationGestures = true
+        created.navigationDelegate = self
+        created.uiDelegate = self
+        installObservers(on: created)
+        return created
     }
 
     deinit {
@@ -292,9 +341,9 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     /// bridge listener, KVO observers) before the store drops it. Only call on
     /// an `isEvictable` session.
     func teardown() {
-        webView.stopLoading()
-        webView.navigationDelegate = nil
-        webView.uiDelegate = nil
+        _webView?.stopLoading()
+        _webView?.navigationDelegate = nil
+        _webView?.uiDelegate = nil
         observations.forEach { $0.invalidate() }
         observations.removeAll()
         controlledBrowserCancellable?.cancel()
@@ -303,8 +352,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         bridgeServer?.stop()
         bridgeServer = nil
         ShelfBrowserBridgeRegistry.shared.resetIfActive(taskID: boundTaskID)
-        // Drop the page so WebKit can reclaim the DOM/JS heap.
-        webView.loadHTMLString("", baseURL: nil)
+        // Release the WebContent process and message handler outright. Keeping a
+        // strong `_webView` ref would hold WebKit (and its helper process) alive
+        // for a session that's being evicted but not yet deallocated. A later
+        // access — rare for an evicted session — lazily recreates a fresh view.
+        pageReadMessageHandler = nil
+        _webView = nil
     }
 
     func setPresented(_ isPresented: Bool) {
@@ -718,6 +771,28 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     func webView(
         _ webView: WKWebView,
+        runOpenPanelWith parameters: WKOpenPanelParameters,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping ([URL]?) -> Void
+    ) {
+        logEmbeddedPrivacyRequestBlocked(action: "open_panel", sourceURL: frame.request.url)
+        completionHandler(nil)
+    }
+
+    @available(macOS 12.0, *)
+    func webView(
+        _ webView: WKWebView,
+        requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+        initiatedByFrame frame: WKFrameInfo,
+        type: WKMediaCaptureType,
+        decisionHandler: @escaping (WKPermissionDecision) -> Void
+    ) {
+        logEmbeddedPrivacyRequestBlocked(action: "media_capture", sourceURL: frame.request.url)
+        decisionHandler(.deny)
+    }
+
+    func webView(
+        _ webView: WKWebView,
         didReceive challenge: URLAuthenticationChallenge,
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
@@ -729,7 +804,27 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         completionHandler(.performDefaultHandling, nil)
     }
 
-    private func installObservers() {
+    private func logEmbeddedPrivacyRequestBlocked(action: String, sourceURL: URL?) {
+        var fields: [String: String] = [
+            "action": action,
+            "result": "blocked",
+            "reason": "embedded_preview_privacy_boundary",
+            "engine": engine.rawValue,
+            "is_presented": String(isPresented)
+        ]
+        if let sourceURL {
+            fields.merge(ShelfBrowserURLLogFields.fields(for: sourceURL, prefix: "source"), uniquingKeysWith: { current, _ in current })
+        }
+        AppLogger.audit(
+            .shelfBrowserAction,
+            category: "Browser",
+            taskID: boundTaskID,
+            fields: fields,
+            level: .warning
+        )
+    }
+
+    private func installObservers(on webView: WKWebView) {
         observations = [
             webView.observe(\.url, options: [.initial, .new]) { [weak self] webView, _ in
                 Task { @MainActor [weak self] in
@@ -862,12 +957,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             canGoBack = false
             canGoForward = false
         } else {
-            currentURL = webView.url?.absoluteString ?? ""
-            pageTitle = webView.title ?? ""
-            isLoading = webView.isLoading
-            estimatedProgress = webView.estimatedProgress
-            canGoBack = webView.canGoBack
-            canGoForward = webView.canGoForward
+            currentURL = _webView?.url?.absoluteString ?? ""
+            pageTitle = _webView?.title ?? ""
+            isLoading = _webView?.isLoading ?? false
+            estimatedProgress = _webView?.estimatedProgress ?? 0
+            canGoBack = _webView?.canGoBack ?? false
+            canGoForward = _webView?.canGoForward ?? false
         }
     }
 
@@ -930,17 +1025,30 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     private func handleBridgeRequestCore(_ request: BrowserBridgeRequest) async -> BrowserBridgeResponse {
         let route = ShelfBrowserBridgeCommandRouter.route(method: request.method, path: request.path)
 
+        if let response = browserEngineRequirementResponse(for: request) {
+            return .json(response, statusCode: 409)
+        }
+
         if route == .health {
+            let automationEngine = engine.automationDescriptor
             let flightSnapshot = browserDiagnostics.flightSnapshot
             var health: [String: Any] = [
                 "ok": true,
                 "url": currentURL,
                 "title": pageTitle,
                 "backend": engine.bridgeBackendLabel,
+                "automationEngine": automationEngine.jsonObject,
                 "controlledBrowserRunning": controlledBrowser.isRunning,
                 "controlledBrowserState": controlledBrowser.runState.rawValue,
                 "controlledBrowserStatus": controlledBrowser.statusMessage,
-                "controlledBrowserProfilePath": controlledBrowser.profilePath,
+                "controlledBrowserRuntime": BrowserAutomationEnginePublicState.controlledBrowser(
+                    isRunning: controlledBrowser.isRunning,
+                    runState: controlledBrowser.runState.rawValue,
+                    statusMessage: controlledBrowser.statusMessage,
+                    hasDebugPort: controlledBrowser.debugPort != nil,
+                    hasProcessID: controlledBrowser.processID != nil,
+                    lastErrorMessage: controlledBrowser.lastErrorMessage
+                ),
                 "bridgeEnabled": isAgentBridgeEnabled,
                 "lastPageRead": [
                     "coverage": lastPageReadCoverage ?? "",
@@ -974,12 +1082,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             if let lastDebugCapture = browserDiagnostics.lastDebugCapture {
                 health["lastBrowserDebugCapture"] = lastDebugCapture
             }
-            if let debugPort = controlledBrowser.debugPort {
-                health["controlledBrowserDebugPort"] = Int(debugPort)
-            }
-            if let processID = controlledBrowser.processID {
-                health["controlledBrowserProcessID"] = Int(processID)
-            }
             if let error = controlledBrowser.lastErrorMessage {
                 health["controlledBrowserLastError"] = error
             }
@@ -992,6 +1094,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         if route == .actions {
             return .json(ShelfBrowserBridgeCommandRouter.actionsResponse(
                 backend: engine.bridgeBackendLabel,
+                automationEngine: engine.automationDescriptor,
                 capabilities: bridgeCapabilities,
                 canUseGoogleDriveOpen: canUseGoogleDriveOpen,
                 googleDriveOpenDefaultTimeoutSeconds: GoogleWorkspaceBrowserService.googleDriveOpenDefaultTimeoutSeconds
@@ -1041,7 +1144,10 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 let command = try request.decodeJSON(BrowserPreflightCommand.self)
                 return .json(try await preflightResponse(command))
             case .trace:
-                return .json(browserDiagnostics.traceResponse(lastBrowserTrace: lastBrowserTrace))
+                return .json(browserDiagnostics.traceResponse(
+                    lastBrowserTrace: lastBrowserTrace,
+                    full: Self.boolQueryValue(request.queryValue("full")) ?? false
+                ))
             case .benchmark:
                 return .json(BrowserBenchmarkRunner.response(
                     suiteID: request.queryValue("suite"),
@@ -1438,6 +1544,17 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             BrowserBridgeRecoveryHints.attach(to: &response, error: "browser_bridge_error")
             return .json(response, statusCode: 400)
         }
+    }
+
+    private func browserEngineRequirementResponse(for request: BrowserBridgeRequest) -> [String: Any]? {
+        BrowserAutomationEngineRequirementBridgePolicy.mismatchResponse(
+            for: request,
+            actual: engine.automationDescriptor,
+            backend: engine.bridgeBackendLabel,
+            controlledBrowserRunning: controlledBrowser.isRunning,
+            controlledBrowserState: controlledBrowser.runState.rawValue,
+            controlledBrowserStatus: controlledBrowser.statusMessage
+        )
     }
 
     private func browserRunGuardResponse(for request: BrowserBridgeRequest) -> [String: Any]? {
@@ -2639,6 +2756,11 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             "resultOK": Self.boolValue(result["ok"]),
             "resultError": result["error"] as? String ?? ""
         ]
+        if let settlement = BrowserAutomationTraceEvidence.settlementEvidence(from: result) {
+            trace["cdpSettlement"] = settlement
+            trace["cdpSettled"] = settlement["settled"] as? Bool ?? false
+            trace["cdpSettlementErrors"] = settlement["errors"] as? [String] ?? []
+        }
         if let control {
             trace["controlID"] = control.controlID
             trace["controlRef"] = BrowserControlRef(control: control, accessibilityNode: nil).jsonObject(debug: false)

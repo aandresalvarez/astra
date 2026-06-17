@@ -192,7 +192,7 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
         let executable = configuredPath.isEmpty ? CursorCLIRuntime.detectPath() : configuredPath
         let models = CursorCLIRuntime.modelDetails(executablePath: executable)
             ?? CursorCLIRuntime.availableModelNames().map { RuntimeModelDetail(value: $0) }
-        RuntimeModelAvailability.persistAvailableModelDetails(models, for: id, authority: modelAvailabilityAuthority)
+        await RuntimeModelAvailability.persistObservedAvailableModelDetails(models, for: id, authority: modelAvailabilityAuthority)
         return RuntimeReadinessCheck(
             id: "cursor-models",
             title: "Cursor models",
@@ -229,7 +229,10 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
             timeoutSeconds: context.timeoutSeconds,
             taskEnvironment: taskEnv,
             pathPrefix: pathPrefix,
-            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task)
+            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(
+                context.task,
+                contextText: context.contextText
+            )
                 || taskEnv["ASTRA_BROWSER_URL"] != nil
         )
 

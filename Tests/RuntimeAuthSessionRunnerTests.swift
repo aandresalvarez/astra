@@ -163,7 +163,7 @@ struct RuntimeAuthSessionRunnerTests {
         }
         let calls = await probe.recordedCalls()
         #expect(calls.isEmpty)
-        #expect(launcher.launchedCommands.first?.hasPrefix("COPILOT_HOME=") == true)
+        #expect(launcher.launchedCommands.first == "copilot")
     }
 
     @Test("Manual-recheck providers finish right after launch")

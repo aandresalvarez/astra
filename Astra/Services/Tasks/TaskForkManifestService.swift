@@ -58,6 +58,7 @@ enum TaskForkManifestService {
             sourceTaskFolder: sourceFolder,
             sourceSessionHistoryPath: sourceSessionHistory,
             checkpointSessionHistoryPath: checkpointSessionHistorySnapshot(
+                sourceFolder: sourceFolder,
                 sourceSessionHistoryPath: sourceSessionHistory,
                 copiedRunCount: copiedRunCount,
                 forkFolder: forkFolder,
@@ -88,8 +89,13 @@ enum TaskForkManifestService {
 
     static func load(taskFolder: String, fileManager: FileManager = .default) -> TaskForkManifest? {
         let path = manifestPath(taskFolder: taskFolder)
+        let hostFileAccess = HostFileAccessBroker(fileManager: fileManager)
+        let accessIntent = HostFileAccessIntent.astraManagedStorage(root: URL(fileURLWithPath: taskFolder, isDirectory: true))
         guard !path.isEmpty,
-              let data = fileManager.contents(atPath: path) else {
+              let data = try? hostFileAccess.readData(
+                at: URL(fileURLWithPath: path),
+                intent: accessIntent
+              ) else {
             return nil
         }
         return try? JSONDecoder().decode(TaskForkManifest.self, from: data)
@@ -226,7 +232,13 @@ enum TaskForkManifestService {
     ) -> [TaskForkManifest.FileReference] {
         guard copiedRunCount > 0 else { return [] }
         let outputFolder = (sourceFolder as NSString).appendingPathComponent("outputs")
-        guard let names = try? fileManager.contentsOfDirectory(atPath: outputFolder) else { return [] }
+        let sourceRoot = URL(fileURLWithPath: sourceFolder, isDirectory: true)
+        let hostFileAccess = HostFileAccessBroker(fileManager: fileManager)
+        let accessIntent = HostFileAccessIntent.astraManagedStorage(root: sourceRoot)
+        guard let names = try? hostFileAccess.contentsOfDirectory(
+            at: URL(fileURLWithPath: outputFolder, isDirectory: true),
+            intent: accessIntent
+        ).map(\.lastPathComponent) else { return [] }
         return names
             .filter { $0.hasPrefix("turn_") && $0.hasSuffix(".md") }
             .sorted()
@@ -241,14 +253,22 @@ enum TaskForkManifestService {
     }
 
     private static func checkpointSessionHistorySnapshot(
+        sourceFolder: String,
         sourceSessionHistoryPath: String?,
         copiedRunCount: Int,
         forkFolder: String,
         fileManager: FileManager
     ) -> String? {
+        let sourceRoot = URL(fileURLWithPath: sourceFolder, isDirectory: true)
+        let hostFileAccess = HostFileAccessBroker(fileManager: fileManager)
+        let accessIntent = HostFileAccessIntent.astraManagedStorage(root: sourceRoot)
         guard copiedRunCount > 0,
               let sourceSessionHistoryPath,
-              let history = try? String(contentsOfFile: sourceSessionHistoryPath, encoding: .utf8) else {
+              let history = try? hostFileAccess.readString(
+                at: URL(fileURLWithPath: sourceSessionHistoryPath),
+                encoding: .utf8,
+                intent: accessIntent
+              ) else {
             return nil
         }
         let marker = "\n## Turn "

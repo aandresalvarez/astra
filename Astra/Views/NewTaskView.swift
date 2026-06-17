@@ -232,12 +232,14 @@ struct NewTaskView: View {
                     Button {
                         model = candidate
                     } label: {
-                        HStack {
-                            Text(candidate)
-                            if model == candidate {
-                                Image(systemName: "checkmark")
-                            }
-                        }
+                        ModelMenuItemLabel(
+                            presentation: RuntimeModelMenuOptionPresentation(
+                                model: candidate,
+                                runtime: AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID),
+                                cache: runtimeModelCache
+                            ),
+                            isSelected: model == candidate
+                        )
                     }
                 }
             } label: {

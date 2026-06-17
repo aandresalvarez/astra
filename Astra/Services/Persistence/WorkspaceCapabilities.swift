@@ -6,17 +6,26 @@ struct WorkspaceCapabilities {
     let globalSkills: [Skill]
     let globalConnectors: [Connector]
     let globalTools: [LocalTool]
+    /// Preloaded catalog package definitions. When non-nil, package-derived
+    /// resource resolution reads this in-memory list instead of scanning the
+    /// Capabilities directory — this is what keeps SwiftUI `body` callers (the
+    /// right rail) off the synchronous filesystem path on every re-evaluation.
+    /// `nil` falls back to the filesystem-backed matcher cache for callers
+    /// (runtime launch, tests) that have no preloaded list.
+    let packageDefinitions: [PluginPackage]?
 
     init(
         workspace: Workspace,
         globalSkills: [Skill] = [],
         globalConnectors: [Connector] = [],
-        globalTools: [LocalTool] = []
+        globalTools: [LocalTool] = [],
+        packageDefinitions: [PluginPackage]? = nil
     ) {
         self.workspace = workspace
         self.globalSkills = globalSkills
         self.globalConnectors = globalConnectors
         self.globalTools = globalTools
+        self.packageDefinitions = packageDefinitions
     }
 
     var workspaceSkills: [Skill] {
@@ -95,7 +104,13 @@ struct WorkspaceCapabilities {
     }
 
     private var enabledPackages: [PluginPackage] {
-        CapabilityRuntimeResourceMatcher.enabledPackages(for: workspace)
+        if let packageDefinitions {
+            return CapabilityRuntimeResourceMatcher.enabledPackages(
+                for: workspace,
+                in: packageDefinitions
+            )
+        }
+        return CapabilityRuntimeResourceMatcher.enabledPackages(for: workspace)
     }
 
     private var enabledPackageSkillSpecs: [PluginSkill] {

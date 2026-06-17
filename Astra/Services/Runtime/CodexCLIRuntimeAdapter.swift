@@ -203,7 +203,7 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
 
     func modelAvailabilityCheck(configuration _: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {
         let models = CodexCLIRuntime.availableModelNames()
-        RuntimeModelAvailability.persistAvailableModels(models, for: id, authority: modelAvailabilityAuthority)
+        await RuntimeModelAvailability.persistObservedAvailableModels(models, for: id, authority: modelAvailabilityAuthority)
         return RuntimeReadinessCheck(
             id: "codex-models",
             title: "Codex models",
@@ -230,10 +230,6 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
         let providerModel = CodexCLIRuntime.resolvedModelName(model)
         let additionalPaths = AgentRuntimeProcessRunner.runtimeAdditionalPaths(for: context.task)
-        let directoriesToCreate = CodexCLIRuntime.directoriesToCreate(
-            providerHomeDirectory: context.providerHomeDirectory
-        )
-
         let plan = CodexCLIRuntime.buildCommand(
             executablePath: executable,
             prompt: context.prompt,
@@ -245,9 +241,21 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
             taskEnvironment: taskEnv,
             providerHomeDirectory: context.providerHomeDirectory,
             pathPrefix: pathPrefix,
-            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task)
+            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(
+                context.task,
+                contextText: context.contextText
+            )
                 || taskEnv["ASTRA_BROWSER_URL"] != nil,
+            allowExternalFileReadsForSSH: AgentRuntimeProcessRunner.hasWorkspaceSSHConnections(for: context.task),
             resumeSessionID: context.nativeContinuationSessionID
+        )
+        let directoriesToCreate = CodexCLIRuntime.directoriesToCreate(
+            providerHomeDirectory: context.providerHomeDirectory,
+            environment: plan.environment
+        )
+        let sandboxReadablePaths = CodexCLIRuntime.sandboxReadablePaths(
+            providerHomeDirectory: context.providerHomeDirectory,
+            environment: plan.environment
         )
 
         return AgentRuntimeProcessLaunchPlan(
@@ -260,6 +268,7 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
             providerVersion: providerVersion,
             parsesJSONLines: plan.parsesJSONLines,
             directoriesToCreate: directoriesToCreate,
+            sandboxReadablePaths: sandboxReadablePaths,
             providerDetectedFields: [
                 "runtime": id.rawValue,
                 "provider_version": providerVersion ?? "unknown",
@@ -281,7 +290,8 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "uses_json": String(plan.arguments.contains("--json")),
                 "uses_cd": String(plan.arguments.contains("--cd")),
                 "uses_skip_git_repo_check": String(plan.arguments.contains("--skip-git-repo-check")),
-                "uses_native_continuation": String(context.nativeContinuationSessionID != nil)
+                "uses_native_continuation": String(context.nativeContinuationSessionID != nil),
+                "sandbox_readable_path_count": String(sandboxReadablePaths.count)
             ]
         )
     }
@@ -365,7 +375,10 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
             providerHomeDirectory: configuration.homeDirectory(for: id)
         )
 
-        for directory in CodexCLIRuntime.directoriesToCreate(providerHomeDirectory: configuration.homeDirectory(for: id)) {
+        for directory in CodexCLIRuntime.directoriesToCreate(
+            providerHomeDirectory: configuration.homeDirectory(for: id),
+            environment: plan.environment
+        ) {
             try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
         }
 

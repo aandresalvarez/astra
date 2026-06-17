@@ -267,8 +267,24 @@ struct PluginCatalogPresentationTests {
         let presentation = CapabilityIconPresentation.make(for: package)
 
         #expect(presentation.fallbackSystemName == package.icon)
-        #expect(!presentation.monochromePreferred)
+        #expect(presentation.monochromePreferred)
         assertIconPresentation(presentation, resolvesTo: .github, assetName: "github.svg")
+    }
+
+    @Test("bundled Simple Icons assets use adaptive monochrome tint")
+    func bundledSimpleIconsAssetsUseAdaptiveMonochromeTint() throws {
+        let ids = [
+            "gcloud-workflow",
+            "github-workflow",
+            "google-drive-browser",
+            "jira-workflow"
+        ]
+
+        for id in ids {
+            let package = try #require(PluginCatalog.builtInPackages.first { $0.id == id })
+
+            #expect(CapabilityIconPresentation.make(for: package).monochromePreferred)
+        }
     }
 
     @Test("capability icon presentation resolves curated brand marks")
