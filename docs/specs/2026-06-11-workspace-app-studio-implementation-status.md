@@ -590,7 +590,7 @@ task+export, so the reference app could add items but never edit or delete them.
 Residual (live-verify / polish): the `form` view type rendering for a richer add/edit
 form; the live in-app CRUD walkthrough (the executor + presentation are unit-tested).
 
-### Slice 5: REDCap Form And Reconciliation Reference App
+### Slice 5: REDCap Form And Reconciliation Reference App — PARTIAL (5a done; 5b blocked)
 
 Goal:
 
@@ -598,12 +598,22 @@ Prove the regulated connector-backed workflow.
 
 Deliverables:
 
-- REDCap metadata-backed form manifest generation.
-- Field type, required field, choice list, and validation handling.
-- Safe branching logic subset.
-- Unsupported branching warnings and submit blocking/review behavior.
-- Reconciliation dashboard with BigQuery/REDCap mocked sources.
-- Tests for safe and unsupported REDCap metadata.
+- REDCap metadata-backed form manifest generation. — **5b, BLOCKED** (see below).
+- Field type, required field, choice list, and validation handling. — **5b, BLOCKED**.
+- [DONE — 5a] Safe branching logic subset + unsupported warnings: `WorkspaceAppREDCapBranchingAnalyzer`
+  classifies a field's branching-logic expression as `.safe(normalized condition)` or
+  `.unsupported(reason)`. Conservative subset ([field] <op> value, single combinator); functions/
+  arithmetic/parens/negation/smart-vars/mixed-and-or are unsupported so the form can block submit /
+  route to review. 12 tests (safe + unsupported). Commit 43.
+- Reconciliation dashboard with BigQuery/REDCap mocked sources. — partly present
+  (`reconciliationManifest` template + REDCap contracts/transport exist).
+
+**5b is BLOCKED on a manifest schema extension + a product decision.** `WorkspaceAppViewSpec` is
+minimal (id/type/title/table/widgets) and CANNOT express form fields with choice lists or per-field
+branching today. A faithful "native form screens from REDCap fields" builder needs (a) a Codable
+extension to the manifest (a form-field concept carrying type/required/choices/visibility) across
+all of WorkspaceAppManifest's Codable sites, and (b) product calls on the REDCap field-type taxonomy
+to support. Those decisions warrant owner input rather than a unilateral schema change.
 
 ### Slice 6: Pipeline App Builder And Run Visualization
 
