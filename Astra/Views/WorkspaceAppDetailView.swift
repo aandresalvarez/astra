@@ -38,6 +38,7 @@ struct WorkspaceAppDetailView: View {
                     dependencySection
                     automationSection
                     nativeSurfaceSection
+                    formSection
                     actionsSection
                     runHistorySection
                     storageSection
@@ -272,6 +273,31 @@ struct WorkspaceAppDetailView: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private var formSection: some View {
+        if let manifest = dataSnapshot.manifest {
+            let formViews = manifest.views.filter { $0.type == "form" && !$0.formFields.isEmpty }
+            ForEach(formViews, id: \.id) { view in
+                WorkspaceAppFormView(
+                    view: view,
+                    submitBlockedReasons: manifest.submitBlockedReasons ?? [],
+                    onSubmit: { values in submitForm(view: view, manifest: manifest, values: values) }
+                )
+            }
+        }
+    }
+
+    private func submitForm(view: WorkspaceAppViewSpec, manifest: WorkspaceAppManifest, values: [String: WorkspaceAppStorageValue]) {
+        // Route the draft through the declared write action (capability.write submitCreate) so it
+        // goes through the governed, approval-gated path — never a direct write.
+        guard let submit = manifest.actions.first(where: { $0.type == "capability.write" && ($0.table == nil || $0.table == view.table) }) else { return }
+        _ = try? onRunAction(
+            submit,
+            manifest,
+            WorkspaceAppActionInput(table: view.table, record: values, confirmedApproval: true)
+        )
     }
 
     @ViewBuilder
