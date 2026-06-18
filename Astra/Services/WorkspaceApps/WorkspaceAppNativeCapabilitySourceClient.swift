@@ -185,6 +185,58 @@ struct WorkspaceAppREDCapReadClient: WorkspaceAppAsyncCapabilitySourceClient {
     }
 }
 
+/// Async capability-write client — the path `WorkspaceAppActionExecutor.executeAsync` uses for the
+/// one action type that needs real network I/O (capability.write submit). REDCap prepare/validate
+/// stay synthetic (no network); submitCreate/submitUpdate perform the REAL REDCap import via a
+/// transport resolved for the binding. A nil transport (no connector configured) throws
+/// capabilityWriteUnavailable — same refusal as the sync stub, never a silent fake.
+protocol WorkspaceAppAsyncCapabilityWriteClient {
+    func write(
+        action: WorkspaceAppActionSpec,
+        requirement: WorkspaceAppRequirement,
+        binding: WorkspaceAppDependencyBinding,
+        input: WorkspaceAppActionInput
+    ) async throws -> WorkspaceAppCapabilityWriteResult
+}
+
+struct WorkspaceAppNativeAsyncCapabilityWriteClient: WorkspaceAppAsyncCapabilityWriteClient {
+    /// Resolves a configured REDCap HTTP transport (endpoint + token) for a binding. Default returns
+    /// nil — until a connector is configured, submits cleanly refuse rather than pretend.
+    var redcapTransport: (WorkspaceAppDependencyBinding) -> WorkspaceAppREDCapHTTPTransport? = { _ in nil }
+
+    func write(
+        action: WorkspaceAppActionSpec,
+        requirement: WorkspaceAppRequirement,
+        binding: WorkspaceAppDependencyBinding,
+        input: WorkspaceAppActionInput
+    ) async throws -> WorkspaceAppCapabilityWriteResult {
+        guard requirement.contract == "recordProject.write",
+              binding.provider == "redcap" || requirement.providerHint == "redcap" else {
+            throw WorkspaceAppActionExecutionError.capabilityWriteUnavailable(action.id)
+        }
+        let operation = action.operation ?? requirement.operations.first ?? ""
+        switch operation {
+        case "prepareCreate", "prepareUpdate":
+            return WorkspaceAppCapabilityWriteResult(
+                outputSummary: "Prepared REDCap \(operation == "prepareCreate" ? "create" : "update") draft with \(input.record.count) fields.",
+                rows: [input.record]
+            )
+        case "validateWrite":
+            return WorkspaceAppCapabilityWriteResult(
+                outputSummary: "Validated REDCap write draft with \(input.record.count) fields.",
+                rows: [["status": .text("valid"), "fieldCount": .integer(Int64(input.record.count))]]
+            )
+        case "submitCreate", "submitUpdate":
+            guard let transport = redcapTransport(binding) else {
+                throw WorkspaceAppActionExecutionError.capabilityWriteUnavailable(action.id)
+            }
+            return try await transport.submit(record: input.record)
+        default:
+            throw WorkspaceAppActionExecutionError.capabilityWriteUnavailable(action.id)
+        }
+    }
+}
+
 struct WorkspaceAppNativeCapabilityWriteClient: WorkspaceAppCapabilityWriteClient {
     var redcapWriter: any WorkspaceAppREDCapWriting = WorkspaceAppUnavailableREDCapTransport()
 

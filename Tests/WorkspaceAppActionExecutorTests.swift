@@ -520,6 +520,63 @@ struct WorkspaceAppActionExecutorTests {
         })
     }
 
+    @MainActor
+    @Test("executeAsync performs a real REDCap submit through the async client + HTTP transport")
+    func executeAsyncPerformsRealSubmit() async throws {
+        let fixture = try Self.makePublishedApp(permissionMode: .approvalRequired)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        var manifest = fixture.manifest
+        let actionIndex = try #require(manifest.actions.firstIndex { $0.id == "submitRedcapRecord" })
+        manifest.actions[actionIndex].sourceRef = "enrollment"
+        let binding = WorkspaceAppDependencyBinding(
+            workspaceID: fixture.workspace.id, appID: fixture.app.id, appLogicalID: fixture.app.logicalID,
+            requirementID: "redcapWrite", contract: "recordProject.write", operations: ["submitCreate"],
+            optional: false, status: .mapped, implementationID: "redcap-write-native", provider: "redcap", transport: .native
+        )
+        let http = MockConnectorHTTPTransport(body: Data(#"{"count":1}"#.utf8), status: 200)
+        let asyncClient = WorkspaceAppNativeAsyncCapabilityWriteClient(redcapTransport: { _ in
+            WorkspaceAppREDCapHTTPTransport(endpoint: URL(string: "https://redcap.example.org/api/")!, token: "TKN", transport: http)
+        })
+        let executor = WorkspaceAppActionExecutor(asyncCapabilityWriteClient: asyncClient)
+
+        let result = try await executor.executeAsync(
+            actionID: "submitRedcapRecord", app: fixture.app, workspace: fixture.workspace, manifest: manifest,
+            dependencyBindings: [binding],
+            input: WorkspaceAppActionInput(record: ["participant_id": .text("P-001")], confirmedApproval: true),
+            modelContext: fixture.context
+        )
+        #expect(result.run.status == .completed)
+        #expect(result.outputSummary.contains("Imported 1 record"))
+        // The real REDCap import request was actually built + sent through the transport.
+        #expect(http.lastRequest?.httpMethod == "POST")
+        let body = http.lastRequest?.httpBody.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        #expect(body.contains("content=record"))
+    }
+
+    @MainActor
+    @Test("executeAsync refuses a submit when no connector transport is configured (no silent fake)")
+    func executeAsyncRefusesUnconfigured() async throws {
+        let fixture = try Self.makePublishedApp(permissionMode: .approvalRequired)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        var manifest = fixture.manifest
+        let actionIndex = try #require(manifest.actions.firstIndex { $0.id == "submitRedcapRecord" })
+        manifest.actions[actionIndex].sourceRef = "enrollment"
+        let binding = WorkspaceAppDependencyBinding(
+            workspaceID: fixture.workspace.id, appID: fixture.app.id, appLogicalID: fixture.app.logicalID,
+            requirementID: "redcapWrite", contract: "recordProject.write", operations: ["submitCreate"],
+            optional: false, status: .mapped, implementationID: "redcap-write-native", provider: "redcap", transport: .native
+        )
+        // Default executor → async client's redcapTransport returns nil → cleanly unavailable.
+        await #expect(throws: (any Error).self) {
+            try await WorkspaceAppActionExecutor().executeAsync(
+                actionID: "submitRedcapRecord", app: fixture.app, workspace: fixture.workspace, manifest: manifest,
+                dependencyBindings: [binding],
+                input: WorkspaceAppActionInput(record: ["participant_id": .text("P-001")], confirmedApproval: true),
+                modelContext: fixture.context
+            )
+        }
+    }
+
     @Test("native REDCap write client validates drafts locally")
     func nativeREDCapWriteClientValidatesDraftsLocally() throws {
         let action = WorkspaceAppActionSpec(
@@ -1797,5 +1854,22 @@ private final class MockWorkspaceAppREDCapWriter: WorkspaceAppREDCapWriting {
     func write(_ request: WorkspaceAppREDCapRequest) throws -> WorkspaceAppCapabilityWriteResult {
         requests.append(request)
         return result
+    }
+}
+
+private final class MockConnectorHTTPTransport: ConnectorHTTPTransport, @unchecked Sendable {
+    var lastRequest: URLRequest?
+    let body: Data
+    let status: Int
+    init(body: Data, status: Int) {
+        self.body = body
+        self.status = status
+    }
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        lastRequest = request
+        let response = HTTPURLResponse(
+            url: request.url ?? URL(string: "https://x/")!, statusCode: status, httpVersion: nil, headerFields: nil
+        )!
+        return (body, response)
     }
 }

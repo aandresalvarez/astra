@@ -292,6 +292,7 @@ struct WorkspaceAppActionExecutor {
     var storageService = WorkspaceAppStorageService()
     var sourceResolver = WorkspaceAppSourceResolver()
     var capabilityWriteClient: any WorkspaceAppCapabilityWriteClient = WorkspaceAppNativeCapabilityWriteClient()
+    var asyncCapabilityWriteClient: any WorkspaceAppAsyncCapabilityWriteClient = WorkspaceAppNativeAsyncCapabilityWriteClient()
     var utilityActionClient: any WorkspaceAppUtilityActionClient = WorkspaceAppDefaultUtilityActionClient()
     var recorder = WorkspaceAppRunRecorder()
 
@@ -684,6 +685,75 @@ struct WorkspaceAppActionExecutor {
                     "Destructive action '\(action.id)' requires explicit confirmation before execution."
                 )
             }
+        }
+    }
+
+    /// Async execution path for `capability.write` — the one action type that needs real network I/O
+    /// (the executor's synchronous path can't `await` an HTTP transport without blocking the UI).
+    /// Every other action type delegates to the proven synchronous `execute`, so the keystone is
+    /// untouched. The write goes through `asyncCapabilityWriteClient`, whose default native client
+    /// performs the real REDCap import when a transport is configured for the binding (unconfigured →
+    /// capabilityWriteUnavailable). The UI calls this from a Task for capability.write buttons.
+    @MainActor
+    @discardableResult
+    func executeAsync(
+        actionID: String,
+        app: WorkspaceApp,
+        workspace: Workspace,
+        manifest: WorkspaceAppManifest,
+        dependencyBindings: [WorkspaceAppDependencyBinding] = [],
+        input: WorkspaceAppActionInput = WorkspaceAppActionInput(),
+        trigger: WorkspaceAppRunTrigger = .user,
+        modelContext: ModelContext
+    ) async throws -> WorkspaceAppActionExecutionResult {
+        let action = try actionSpec(actionID: actionID, manifest: manifest)
+        guard action.type == "capability.write" else {
+            return try execute(
+                actionID: actionID, app: app, workspace: workspace, manifest: manifest,
+                dependencyBindings: dependencyBindings, input: input, trigger: trigger, modelContext: modelContext
+            )
+        }
+
+        let run = recorder.startRun(
+            app: app, actionID: actionID, trigger: trigger, inputSummary: inputSummary(input), modelContext: modelContext
+        )
+        do {
+            try enforcePermission(for: action, app: app, input: input)
+            guard !input.record.isEmpty else { throw WorkspaceAppActionExecutionError.missingRecord }
+            let requirementID = normalized(action.requirementRef, fallback: "")
+            guard !requirementID.isEmpty else { throw WorkspaceAppActionExecutionError.missingRequirement("") }
+            guard let requirement = manifest.requirements.first(where: { $0.id == requirementID }) else {
+                throw WorkspaceAppActionExecutionError.missingRequirement(requirementID)
+            }
+            guard let binding = dependencyBindings.first(where: {
+                $0.appID == app.id && $0.requirementID == requirementID && $0.status == .mapped
+            }) else {
+                throw WorkspaceAppActionExecutionError.missingMappedBinding(requirementID)
+            }
+            let result = try await asyncCapabilityWriteClient.write(
+                action: action, requirement: requirement, binding: binding, input: input
+            )
+            recorder.recordEvent(
+                run: run,
+                type: "workspaceApp.capability.write",
+                payload: [
+                    "actionID": .text(action.id),
+                    "requirementID": .text(requirementID),
+                    "contract": .text(binding.contract),
+                    "operation": .text(action.operation ?? ""),
+                    "async": .bool(true)
+                ],
+                modelContext: modelContext
+            )
+            recorder.completeRun(run, outputSummary: result.outputSummary, modelContext: modelContext)
+            app.lastRunAt = Date()
+            app.updatedAt = Date()
+            try? modelContext.save()
+            return WorkspaceAppActionExecutionResult(run: run, rows: result.rows, outputSummary: result.outputSummary)
+        } catch {
+            recorder.failRun(run, error: error, blocked: isPermissionError(error), modelContext: modelContext)
+            try? modelContext.save()
+            throw error
         }
     }
 
