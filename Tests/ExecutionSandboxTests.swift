@@ -666,7 +666,14 @@ struct ExecutionSandboxTests {
         }
         #expect(wrapped.executablePath == ExecutionSandbox.sandboxExecPath)
         #expect(wrapped.currentDirectory == plan.currentDirectory)
-        #expect(wrapped.environment == plan.environment)
+        // The wrapped environment is the plan's, plus a pinned DEVELOPER_DIR so the
+        // sandboxed toolchain shims resolve deterministically. The plan set no
+        // DEVELOPER_DIR, so the only addition (if any) is the resolved toolchain dir.
+        let expectedEnvironment = plan.environment.merging(
+            ExecutionSandbox.developerDirectoryEnvironment(plan: plan)
+        ) { current, _ in current }
+        #expect(wrapped.environment == expectedEnvironment)
+        #expect(wrapped.environment["HOME"] == plan.environment["HOME"])
         #expect(wrapped.runtime == plan.runtime)
         // Original executable + args preserved at the tail.
         #expect(wrapped.arguments.contains(plan.executablePath))
