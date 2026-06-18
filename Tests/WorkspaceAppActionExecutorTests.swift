@@ -1074,8 +1074,8 @@ struct WorkspaceAppActionExecutorTests {
     }
 
     @MainActor
-    @Test("pipeline human approval gates block until confirmed")
-    func pipelineHumanApprovalGatesBlockUntilConfirmed() throws {
+    @Test("pipeline human approval gates suspend to .waiting until approved")
+    func pipelineHumanApprovalGatesSuspendUntilApproved() throws {
         let fixture = try Self.makePublishedApp(permissionMode: .draftOnly)
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         _ = try WorkspaceAppActionExecutor().execute(
@@ -1094,47 +1094,46 @@ struct WorkspaceAppActionExecutorTests {
             modelContext: fixture.context
         )
 
-        #expect(throws: WorkspaceAppActionExecutionError.approvalRequired("approvalGate")) {
-            try WorkspaceAppActionExecutor().execute(
-                actionID: "approvalPipeline",
-                app: fixture.app,
-                workspace: fixture.workspace,
-                manifest: fixture.manifest,
-                modelContext: fixture.context
-            )
-        }
-
-        let blockedRun = try #require(try fixture.context.fetch(FetchDescriptor<WorkspaceAppRun>())
-            .first { $0.actionID == "approvalPipeline" })
-        #expect(blockedRun.status == .blocked)
-        #expect(blockedRun.linkedArtifactPath == nil)
-
-        var blockedEvents = try fixture.context.fetch(FetchDescriptor<WorkspaceAppRunEvent>())
-            .filter { $0.runID == blockedRun.id }
-        #expect(blockedEvents.contains {
-            $0.type == "workspaceApp.approval.requested" && $0.payload.contains("Approve exporting grocery data?")
-        })
-        #expect(!blockedEvents.contains { $0.type == "workspaceApp.pipeline.step.completed" && $0.payload.contains("exportItems") })
-
-        let approvedResult = try WorkspaceAppActionExecutor().execute(
+        // Human gates in a pipeline now SUSPEND to .waiting (the actionable approval queue) rather
+        // than blocking — the run pauses pending a human decision and is resumed via resumeWithApproval.
+        let waitingResult = try WorkspaceAppActionExecutor().execute(
             actionID: "approvalPipeline",
             app: fixture.app,
             workspace: fixture.workspace,
             manifest: fixture.manifest,
-            input: WorkspaceAppActionInput(confirmedApproval: true),
             modelContext: fixture.context
         )
+        #expect(waitingResult.run.status == .waiting)
+        #expect(waitingResult.run.pendingApprovalActionID == "approvalGate")
 
+        let waitingRun = try #require(try fixture.context.fetch(FetchDescriptor<WorkspaceAppRun>())
+            .first { $0.actionID == "approvalPipeline" })
+        #expect(waitingRun.status == .waiting)
+        #expect(waitingRun.linkedArtifactPath == nil)
+
+        var approvalEvents = try fixture.context.fetch(FetchDescriptor<WorkspaceAppRunEvent>())
+            .filter { $0.runID == waitingRun.id }
+        #expect(approvalEvents.contains { $0.type == "workspaceApp.run.awaitingApproval" })
+        #expect(!approvalEvents.contains { $0.type == "workspaceApp.pipeline.step.completed" && $0.payload.contains("exportItems") })
+
+        // Approving resumes the run from the gate to completion.
+        let approvedResult = try WorkspaceAppActionExecutor().resumeWithApproval(
+            run: waitingRun,
+            approved: true,
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: fixture.manifest,
+            modelContext: fixture.context
+        )
         #expect(approvedResult.run.status == .completed)
-        #expect(approvedResult.outputSummary.contains("approvalGate: Approval gate 'approvalGate' confirmed."))
+        #expect(approvedResult.run.pendingApprovalActionID == nil)
         #expect(approvedResult.outputSummary.contains("exportItems: Exported items.csv."))
         #expect(approvedResult.run.linkedArtifactPath?.contains("items.csv") == true)
 
-        blockedEvents = try fixture.context.fetch(FetchDescriptor<WorkspaceAppRunEvent>())
-            .filter { $0.runID == approvedResult.run.id }
-        #expect(blockedEvents.contains { $0.type == "workspaceApp.approval.confirmed" })
-        #expect(blockedEvents.contains { $0.type == "workspaceApp.pipeline.step.completed" && $0.payload.contains("approvalGate") })
-        #expect(blockedEvents.contains { $0.type == "workspaceApp.pipeline.step.completed" && $0.payload.contains("exportItems") })
+        approvalEvents = try fixture.context.fetch(FetchDescriptor<WorkspaceAppRunEvent>())
+            .filter { $0.runID == waitingRun.id }
+        #expect(approvalEvents.contains { $0.type == "workspaceApp.approval.confirmed" })
+        #expect(approvalEvents.contains { $0.type == "workspaceApp.pipeline.step.completed" && $0.payload.contains("exportItems") })
     }
 
     @MainActor

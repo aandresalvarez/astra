@@ -243,9 +243,29 @@ struct WorkspaceAppDetailView: View {
                     Spacer()
                 }
 
-                Text("Workflow runs paused on an agent task or held for review.")
+                Text("Workflow runs paused on an agent task or awaiting your approval.")
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
+
+                ForEach(approvalWaitingRuns, id: \.id) { run in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(approvalPrompt(for: run))
+                            .font(Stanford.caption(12))
+                            .foregroundStyle(.primary)
+                        HStack(spacing: 8) {
+                            Button("Approve") { resolveApproval(run, approved: true) }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                            Button("Reject") { resolveApproval(run, approved: false) }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                        }
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Stanford.cardBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
 
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(attention) { row in
@@ -257,6 +277,27 @@ struct WorkspaceAppDetailView: View {
             .background(Stanford.lagunita.opacity(0.06))
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
+    }
+
+    private var approvalWaitingRuns: [WorkspaceAppRun] {
+        appRuns.filter { $0.appID == app.id && $0.status == .waiting && $0.pendingApprovalActionID != nil }
+    }
+
+    private func approvalPrompt(for run: WorkspaceAppRun) -> String {
+        guard let gateID = run.pendingApprovalActionID,
+              let action = dataSnapshot.manifest?.actions.first(where: { $0.id == gateID }) else {
+            return "Approval required to continue this workflow."
+        }
+        return action.approvalPrompt ?? "Approve to continue '\(action.label ?? gateID)'?"
+    }
+
+    private func resolveApproval(_ run: WorkspaceAppRun, approved: Bool) {
+        guard let workspace, let manifest = dataSnapshot.manifest else { return }
+        _ = try? WorkspaceAppActionExecutor().resumeWithApproval(
+            run: run, approved: approved, app: app, workspace: workspace,
+            manifest: manifest, dependencyBindings: dependencyBindings, modelContext: modelContext
+        )
+        loadDataSnapshot()
     }
 
     private func loadDataSnapshot() {
@@ -404,11 +445,7 @@ struct WorkspaceAppDiagramCard: View {
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
             } else {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(diagram.edges) { edge in
-                        WorkspaceAppDiagramEdgeRow(edge: edge)
-                    }
-                }
+                WorkspaceAppDiagramGraph(edges: diagram.edges)
             }
 
             Text(diagram.rawContent)
@@ -425,35 +462,6 @@ struct WorkspaceAppDiagramCard: View {
             RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous)
                 .stroke(Color.primary.opacity(0.06), lineWidth: 1)
         )
-    }
-}
-
-struct WorkspaceAppDiagramEdgeRow: View {
-    let edge: WorkspaceAppDiagramPresentation.Edge
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Text(edge.from)
-                .font(Stanford.caption(12).weight(.medium))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-
-            Image(systemName: "arrow.right")
-                .font(Stanford.caption(11).weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 18)
-
-            Text(edge.to)
-                .font(Stanford.caption(12).weight(.medium))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-
-            Spacer(minLength: 0)
-        }
-        .padding(.vertical, 6)
-        .padding(.horizontal, 8)
-        .background(Color.primary.opacity(0.035))
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 }
 

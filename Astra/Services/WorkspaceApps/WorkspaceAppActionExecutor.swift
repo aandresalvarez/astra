@@ -279,6 +279,15 @@ private struct WorkspaceAppPipelineSuspension: Error {
     let nextStepIndex: Int
 }
 
+/// Human-in-the-loop: thrown when a pipeline reaches an un-approved `gate.humanApproval` step, so the
+/// run suspends to `.waiting` pending a HUMAN decision (resumed via `resumeWithApproval`) instead of
+/// failing — the executor analogue of the task suspension above.
+private struct WorkspaceAppApprovalSuspension: Error {
+    let pipelineActionID: String
+    let gateStepIndex: Int
+    let gateActionID: String
+}
+
 struct WorkspaceAppActionExecutor {
     var storageService = WorkspaceAppStorageService()
     var sourceResolver = WorkspaceAppSourceResolver()
@@ -351,6 +360,13 @@ struct WorkspaceAppActionExecutor {
                 run: run,
                 rows: [],
                 outputSummary: "Workflow '\(suspension.pipelineActionID)' is waiting on \(suspension.taskIDs.count) task(s)."
+            )
+        } catch let approval as WorkspaceAppApprovalSuspension {
+            markWaitingForApproval(run: run, suspension: approval, modelContext: modelContext)
+            return WorkspaceAppActionExecutionResult(
+                run: run,
+                rows: [],
+                outputSummary: "Workflow '\(approval.pipelineActionID)' is waiting for approval of '\(approval.gateActionID)'."
             )
         } catch {
             recorder.failRun(
@@ -467,6 +483,13 @@ struct WorkspaceAppActionExecutor {
                 rows: [],
                 outputSummary: "Workflow '\(suspension.pipelineActionID)' is waiting on \(suspension.taskIDs.count) task(s)."
             )
+        } catch let approval as WorkspaceAppApprovalSuspension {
+            markWaitingForApproval(run: run, suspension: approval, modelContext: modelContext)
+            return WorkspaceAppActionExecutionResult(
+                run: run,
+                rows: [],
+                outputSummary: "Workflow '\(approval.pipelineActionID)' is waiting for approval of '\(approval.gateActionID)'."
+            )
         } catch {
             recorder.failRun(run, error: error, blocked: isPermissionError(error), modelContext: modelContext)
             try? modelContext.save()
@@ -496,6 +519,117 @@ struct WorkspaceAppActionExecutor {
             modelContext: modelContext
         )
         try? modelContext.save()
+    }
+
+    private func markWaitingForApproval(
+        run: WorkspaceAppRun,
+        suspension: WorkspaceAppApprovalSuspension,
+        modelContext: ModelContext
+    ) {
+        run.status = .waiting
+        run.pendingActionID = suspension.pipelineActionID
+        run.pendingStepIndex = suspension.gateStepIndex
+        run.pendingApprovalActionID = suspension.gateActionID
+        recorder.recordEvent(
+            run: run,
+            type: "workspaceApp.run.awaitingApproval",
+            payload: [
+                "pipelineID": .text(suspension.pipelineActionID),
+                "gateID": .text(suspension.gateActionID),
+                "stepIndex": .integer(Int64(suspension.gateStepIndex))
+            ],
+            modelContext: modelContext
+        )
+        try? modelContext.save()
+    }
+
+    /// Resume a run suspended on a human-approval gate: on approve, re-run the pipeline from the
+    /// gate step with the approval granted (later gates re-prompt); on reject, fail the run. This is
+    /// what the attention queue's Approve/Reject buttons call.
+    @MainActor
+    @discardableResult
+    func resumeWithApproval(
+        run: WorkspaceAppRun,
+        approved: Bool,
+        app: WorkspaceApp,
+        workspace: Workspace,
+        manifest: WorkspaceAppManifest,
+        dependencyBindings: [WorkspaceAppDependencyBinding] = [],
+        modelContext: ModelContext
+    ) throws -> WorkspaceAppActionExecutionResult {
+        guard run.status == .waiting,
+              let gateID = run.pendingApprovalActionID,
+              let pipelineID = run.pendingActionID else {
+            throw WorkspaceAppActionExecutionError.unsupportedActionType(
+                "resumeWithApproval requires a run waiting on a human-approval gate"
+            )
+        }
+        run.pendingApprovalActionID = nil
+
+        guard approved else {
+            recorder.recordEvent(
+                run: run,
+                type: "workspaceApp.approval.rejected",
+                payload: ["pipelineID": .text(pipelineID), "gateID": .text(gateID)],
+                modelContext: modelContext
+            )
+            run.status = .failed
+            run.completedAt = Date()
+            run.errorMessage = "Approval rejected for '\(gateID)'."
+            run.pendingActionID = nil
+            try? modelContext.save()
+            return WorkspaceAppActionExecutionResult(
+                run: run, rows: [],
+                outputSummary: "Workflow '\(pipelineID)' rejected at approval gate '\(gateID)'."
+            )
+        }
+
+        recorder.recordEvent(
+            run: run,
+            type: "workspaceApp.approval.confirmed",
+            payload: ["pipelineID": .text(pipelineID), "gateID": .text(gateID)],
+            modelContext: modelContext
+        )
+        let action = try actionSpec(actionID: pipelineID, manifest: manifest)
+        let startIndex = run.pendingStepIndex
+        run.status = .running
+        do {
+            let result = try executePipeline(
+                action: action,
+                app: app,
+                workspace: workspace,
+                manifest: manifest,
+                dependencyBindings: dependencyBindings,
+                input: WorkspaceAppActionInput(confirmedApproval: true),
+                run: run,
+                modelContext: modelContext,
+                startIndex: startIndex,
+                initialBoundRows: []
+            )
+            run.linkedArtifactPath = result.linkedArtifactPath ?? run.linkedArtifactPath
+            run.pendingActionID = nil
+            recorder.completeRun(run, outputSummary: result.outputSummary, modelContext: modelContext)
+            app.lastRunAt = Date()
+            app.updatedAt = Date()
+            try modelContext.save()
+            return WorkspaceAppActionExecutionResult(run: run, rows: result.rows, outputSummary: result.outputSummary)
+        } catch let suspension as WorkspaceAppPipelineSuspension {
+            markWaiting(run: run, suspension: suspension, modelContext: modelContext)
+            return WorkspaceAppActionExecutionResult(
+                run: run, rows: [],
+                outputSummary: "Workflow '\(suspension.pipelineActionID)' is waiting on \(suspension.taskIDs.count) task(s)."
+            )
+        } catch let approval as WorkspaceAppApprovalSuspension {
+            markWaitingForApproval(run: run, suspension: approval, modelContext: modelContext)
+            return WorkspaceAppActionExecutionResult(
+                run: run, rows: [],
+                outputSummary: "Workflow '\(approval.pipelineActionID)' is waiting for approval of '\(approval.gateActionID)'."
+            )
+        } catch {
+            recorder.failRun(run, error: error, blocked: isPermissionError(error), modelContext: modelContext)
+            try? modelContext.save()
+            throw error
+        }
     }
 
     private func actionSpec(actionID: String, manifest: WorkspaceAppManifest) throws -> WorkspaceAppActionSpec {
@@ -1263,10 +1397,29 @@ struct WorkspaceAppActionExecutor {
             guard index >= startIndex else { continue }
             let step = try actionSpec(actionID: stepID, manifest: manifest)
             // B1 output binding: each step sees the previous step's rows.
-            let stepInput = input.bindingForward(rows: rows)
+            var stepInput = input.bindingForward(rows: rows)
+            // Human approval applies ONLY to the gate being resumed (at startIndex); a later
+            // gate.humanApproval step must re-prompt rather than inherit the prior approval.
+            if index > startIndex { stepInput.confirmedApproval = false }
             // Enforce the step's permission BEFORE any side effect (incl. launching
             // an async agent task), so an unapproved workflow can't queue work.
             try enforcePermission(for: step, app: app, input: stepInput)
+            // Human-in-the-loop: a gate.humanApproval step that isn't pre-approved suspends the run
+            // to `.waiting` pending a human decision (resumed via resumeWithApproval), rather than
+            // failing the run — this is what makes the attention queue actionable.
+            if step.type == "gate.humanApproval", !stepInput.confirmedApproval {
+                recorder.recordEvent(
+                    run: run,
+                    type: "workspaceApp.pipeline.step.awaitingApproval",
+                    payload: ["pipelineID": .text(action.id), "stepID": .text(stepID)],
+                    modelContext: modelContext
+                )
+                throw WorkspaceAppApprovalSuspension(
+                    pipelineActionID: action.id,
+                    gateStepIndex: index,
+                    gateActionID: stepID
+                )
+            }
             // B2: await an async agent step — launch the task and suspend the run
             // until it completes (resumed via WorkspaceAppActionExecutor.resume).
             if step.type == "task.createAndRun" {

@@ -49,6 +49,11 @@ final class WorkspaceAppRun: Identifiable {
     // absorbed into V7). The single-task B2 case is the degenerate one-element
     // barrier; linkedTaskID is retained for the single-await fast path + back-compat.
     var awaitedTaskIDsJSON: String = "[]"
+    // Human-in-the-loop approval: when a pipeline suspends on an un-approved gate.humanApproval
+    // step, this holds that gate action's id (pendingStepIndex points at the gate step). The run is
+    // `.waiting` pending a HUMAN decision — distinct from awaiting an agent task, where this is nil.
+    // Defaulted/optional → lightweight, absorbed into V7 like the B2/C1 fields above.
+    var pendingApprovalActionID: String?
 
     init(
         id: UUID = UUID(),
