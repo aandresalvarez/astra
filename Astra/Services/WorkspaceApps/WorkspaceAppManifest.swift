@@ -306,6 +306,7 @@ struct WorkspaceAppWidgetSpec: Codable, Sendable, Equatable {
     var field: String?
     var groupBy: String?
     var aggregation: String?
+    var chartKind: String?         // chart widget: bar (default) | line | pie
     var markdownContent: String?
     var diagramContent: String?
     var diagramKind: String?
@@ -321,6 +322,7 @@ struct WorkspaceAppWidgetSpec: Codable, Sendable, Equatable {
         case field
         case groupBy
         case aggregation
+        case chartKind
         case markdownContent
         case diagramContent
         case diagramKind
@@ -337,6 +339,7 @@ struct WorkspaceAppWidgetSpec: Codable, Sendable, Equatable {
         field: String? = nil,
         groupBy: String? = nil,
         aggregation: String? = nil,
+        chartKind: String? = nil,
         markdownContent: String? = nil,
         diagramContent: String? = nil,
         diagramKind: String? = nil,
@@ -351,6 +354,7 @@ struct WorkspaceAppWidgetSpec: Codable, Sendable, Equatable {
         self.field = field
         self.groupBy = groupBy
         self.aggregation = aggregation
+        self.chartKind = chartKind
         self.markdownContent = markdownContent
         self.diagramContent = diagramContent
         self.diagramKind = diagramKind
@@ -368,6 +372,7 @@ struct WorkspaceAppWidgetSpec: Codable, Sendable, Equatable {
         field = try container.decodeIfPresent(String.self, forKey: .field)
         groupBy = try container.decodeIfPresent(String.self, forKey: .groupBy)
         aggregation = try container.decodeIfPresent(String.self, forKey: .aggregation)
+        chartKind = try container.decodeIfPresent(String.self, forKey: .chartKind)
         markdownContent = try container.decodeIfPresent(String.self, forKey: .markdownContent)
         diagramContent = try container.decodeIfPresent(String.self, forKey: .diagramContent)
         diagramKind = try container.decodeIfPresent(String.self, forKey: .diagramKind)

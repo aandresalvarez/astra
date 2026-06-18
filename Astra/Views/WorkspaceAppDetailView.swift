@@ -505,9 +505,16 @@ struct WorkspaceAppChartCard: View {
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
             } else {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(chart.bars) { bar in
-                        WorkspaceAppChartBarRow(bar: bar)
+                switch chart.kind {
+                case "line":
+                    WorkspaceAppLineChart(chart: chart)
+                case "pie":
+                    WorkspaceAppPieChart(chart: chart)
+                default:
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(chart.bars) { bar in
+                            WorkspaceAppChartBarRow(bar: bar)
+                        }
                     }
                 }
             }
@@ -563,10 +570,23 @@ struct WorkspaceAppRunHistoryRow: View {
                     .lineLimit(2)
 
                 if let linkedLabel = row.linkedLabel {
-                    Label(linkedLabel, systemImage: "link")
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    if let path = row.linkedArtifactPath, !path.isEmpty {
+                        Button {
+                            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+                        } label: {
+                            Label(linkedLabel, systemImage: "arrow.up.forward.app")
+                                .font(Stanford.caption(11))
+                                .foregroundStyle(Stanford.lagunita)
+                                .lineLimit(1)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Reveal in Finder")
+                    } else {
+                        Label(linkedLabel, systemImage: "link")
+                            .font(Stanford.caption(11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
             }
         }
@@ -949,6 +969,9 @@ struct WorkspaceAppStorageTableView: View {
     let onEdit: (WorkspaceAppDetailActionPresentation, String, [String: WorkspaceAppStorageValue]) -> Void
     let onDelete: (WorkspaceAppDetailActionPresentation, String, [String: WorkspaceAppStorageValue]) -> Void
 
+    @State private var expanded = false
+    private let collapsedRowLimit = 5
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -977,7 +1000,8 @@ struct WorkspaceAppStorageTableView: View {
             } else {
                 VStack(alignment: .leading, spacing: 6) {
                     WorkspaceAppStorageHeaderRow(columns: table.columns, hasActions: rowActions.hasActions)
-                    ForEach(Array(table.rows.prefix(5).enumerated()), id: \.offset) { _, row in
+                    let visibleRows = expanded ? table.rows : Array(table.rows.prefix(collapsedRowLimit))
+                    ForEach(Array(visibleRows.enumerated()), id: \.offset) { _, row in
                         WorkspaceAppStorageRecordRow(
                             columns: table.columns,
                             row: row,
@@ -990,6 +1014,15 @@ struct WorkspaceAppStorageTableView: View {
                                 onDelete(action, primaryKey, row)
                             }
                         )
+                    }
+                    if table.rows.count > collapsedRowLimit {
+                        Button(expanded ? "Show fewer" : "Show all \(table.rows.count) rows") {
+                            expanded.toggle()
+                        }
+                        .buttonStyle(.plain)
+                        .font(Stanford.caption(11).weight(.medium))
+                        .foregroundStyle(Stanford.lagunita)
+                        .padding(.top, 2)
                     }
                 }
             }

@@ -333,6 +333,10 @@ enum WorkspaceAppManifestValidator {
             if let groupBy = widget.groupBy {
                 validateStorageFieldReference(groupBy, table: table, path: "\(path)/groupBy", storageTables: storageTables, issues: &issues)
             }
+            if widget.type == "chart", let chartKind = widget.chartKind,
+               !["bar", "line", "pie"].contains(chartKind) {
+                issues.append(blocker("\(path)/chartKind", "Chart kind '\(chartKind)' is not supported (use bar, line, or pie)."))
+            }
         case "markdown":
             if widget.markdownContent?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
                 issues.append(blocker("\(path)/markdownContent", "Markdown widget content is required."))

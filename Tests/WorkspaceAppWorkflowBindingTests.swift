@@ -223,4 +223,86 @@ struct WorkspaceAppWorkflowBindingTests {
             return false
         } == true)
     }
+
+    // MARK: - Phase 3: {{field}} goal interpolation (named variables)
+
+    @Test("interpolatePlaceholders substitutes prior fields, record over boundRows")
+    func interpolationSubstitutes() {
+        let input = WorkspaceAppActionInput(record: ["name": .text("Bread")], boundRows: [["name": .text("Apples"), "qty": .integer(3)]])
+        #expect(WorkspaceAppActionExecutor.interpolatePlaceholders("Buy {{name}} x{{qty}}", input: input) == "Buy Bread x3")
+        #expect(WorkspaceAppActionExecutor.interpolatePlaceholders("no placeholders", input: input) == "no placeholders")
+    }
+
+    @MainActor
+    @Test("a task goal interpolates {{field}} from the prior step's captured output")
+    func goalInterpolationEndToEnd() throws {
+        let env = try Self.makeEnv()
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        let manifest = WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(id: "impl", name: "Implementer"),
+            actions: [
+                WorkspaceAppActionSpec(id: "do_it", type: "task.createDraft", label: "Do it",
+                                       taskGoal: "Implement {{summary}}.")
+            ],
+            permissions: WorkspaceAppPermissions(defaultMode: .draftOnly)
+        )
+        let created = try WorkspaceAppService().createApp(manifest: manifest, in: env.workspace, modelContext: env.context, status: .published)
+        _ = try WorkspaceAppActionExecutor().execute(
+            actionID: "do_it", app: created.app, workspace: env.workspace, manifest: manifest,
+            input: WorkspaceAppActionInput(boundRows: [["summary": .text("the approved plan")]]), modelContext: env.context
+        )
+        let task = try #require(try env.context.fetch(FetchDescriptor<AgentTask>()).first)
+        #expect(task.goal.contains("Implement the approved plan."))
+    }
+
+    // MARK: - Chart kinds (bar / line / pie)
+
+    private func chartSurface(kind: String?) -> WorkspaceAppNativeSurfacePresentation {
+        let manifest = WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(id: "charts", name: "Charts"),
+            storage: WorkspaceAppStorageSchema(tables: [
+                WorkspaceAppStorageTable(name: "t", columns: [
+                    WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true),
+                    WorkspaceAppStorageColumn(name: "status", type: "text")
+                ])
+            ]),
+            views: [
+                WorkspaceAppViewSpec(id: "dash", type: "dashboard", title: "D", table: "t", widgets: [
+                    WorkspaceAppWidgetSpec(id: "ch", type: "chart", label: "By status", groupBy: "status", aggregation: "count", chartKind: kind)
+                ])
+            ],
+            permissions: WorkspaceAppPermissions(defaultMode: .draftOnly)
+        )
+        let snapshot = WorkspaceAppStorageTableSnapshot(name: "t", columns: ["id", "status"], rows: [["id": .text("1"), "status": .text("a")]], errorMessage: nil)
+        return WorkspaceAppNativeSurfaceBuilder.presentation(manifest: manifest, storageTables: [snapshot])
+    }
+
+    @Test("a chart widget's chartKind flows into the presentation; unknown defaults to bar")
+    func chartKindFlowsThrough() {
+        #expect(chartSurface(kind: "pie").charts.first?.kind == "pie")
+        #expect(chartSurface(kind: "line").charts.first?.kind == "line")
+        #expect(chartSurface(kind: "wat").charts.first?.kind == "bar")
+        #expect(chartSurface(kind: nil).charts.first?.kind == "bar")
+    }
+
+    @Test("an unsupported chartKind is a validation blocker")
+    func unsupportedChartKindBlocks() {
+        let manifest = WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(id: "charts", name: "Charts"),
+            storage: WorkspaceAppStorageSchema(tables: [
+                WorkspaceAppStorageTable(name: "t", columns: [
+                    WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true),
+                    WorkspaceAppStorageColumn(name: "status", type: "text")
+                ])
+            ]),
+            views: [
+                WorkspaceAppViewSpec(id: "dash", type: "dashboard", title: "D", table: "t", widgets: [
+                    WorkspaceAppWidgetSpec(id: "ch", type: "chart", label: "By status", groupBy: "status", aggregation: "count", chartKind: "donut")
+                ])
+            ],
+            actions: [WorkspaceAppActionSpec(id: "add", type: "appStorage.insert", label: "Add", table: "t")],
+            permissions: WorkspaceAppPermissions(defaultMode: .draftOnly)
+        )
+        #expect(WorkspaceAppManifestValidator.validate(manifest).blockers.contains { $0.path.hasSuffix("/chartKind") })
+    }
 }

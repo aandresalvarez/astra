@@ -1644,6 +1644,10 @@ struct WorkspaceAppActionExecutor {
         guard !goal.isEmpty else {
             throw WorkspaceAppActionExecutionError.missingTaskGoal
         }
+        // Slice 10 Phase 3 named variables: interpolate {{field}} placeholders in the goal from the
+        // prior step's captured fields (boundRows / record), so a goal can reference an earlier
+        // step's output by name (e.g. "Implement {{summary}}").
+        goal = Self.interpolatePlaceholders(goal, input: input)
         // Slice 10 input binding: inject the app's own data (the prior step's rows, or a local
         // storage table) into the goal so the AI step can see what it's working on — closing the
         // "AI steps remember the workspace, not the app's data" gap.
@@ -1687,6 +1691,29 @@ struct WorkspaceAppActionExecutor {
         let label = binding.label?.trimmingCharacters(in: .whitespacesAndNewlines)
         let header = (label?.isEmpty == false) ? label! : "Input data"
         return "\n\n\(header) (\(rows.count) record\(rows.count == 1 ? "" : "s")):\n\(Self.jsonStringify(rows))"
+    }
+
+    /// Slice 10 Phase 3: substitute `{{field}}` placeholders from the prior step's captured fields
+    /// (record takes precedence over boundRows.first), so a goal can name an earlier step's output.
+    static func interpolatePlaceholders(_ text: String, input: WorkspaceAppActionInput) -> String {
+        guard text.contains("{{") else { return text }
+        let variables = (input.boundRows.first ?? [:]).merging(input.record) { _, new in new }
+        var result = text
+        for (key, value) in variables {
+            result = result.replacingOccurrences(of: "{{\(key)}}", with: displayString(value))
+        }
+        return result
+    }
+
+    /// Plain-text rendering of a storage value (for goal interpolation).
+    static func displayString(_ value: WorkspaceAppStorageValue) -> String {
+        switch value {
+        case .null: return ""
+        case .text(let string): return string
+        case .integer(let int): return String(int)
+        case .real(let double): return String(double)
+        case .bool(let bool): return bool ? "true" : "false"
+        }
     }
 
     /// Deterministic JSON for a row set (sorted keys). WorkspaceAppStorageValue encodes as a scalar

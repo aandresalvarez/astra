@@ -102,6 +102,7 @@ struct WorkspaceAppRunHistoryRowPresentation: Identifiable, Equatable {
     var timeLabel: String
     var summary: String
     var linkedLabel: String?
+    var linkedArtifactPath: String?
     var needsAttention: Bool = false
 }
 
@@ -144,6 +145,7 @@ struct WorkspaceAppChartPresentation: Identifiable, Equatable {
 
     var id: String
     var label: String
+    var kind: String = "bar"   // bar | line | pie
     var bars: [Bar]
     var emptyMessage: String
 }
@@ -502,6 +504,7 @@ enum WorkspaceAppRunHistoryPresentationBuilder {
                     timeLabel: relativeTime(from: run.startedAt, now: now),
                     summary: summary(for: run),
                     linkedLabel: linkedLabel(for: run),
+                    linkedArtifactPath: run.linkedArtifactPath,
                     needsAttention: run.status == .waiting || run.status == .blocked
                 )
             }
@@ -772,9 +775,11 @@ enum WorkspaceAppNativeSurfaceBuilder {
                 )
             }
 
+        let kind = ["bar", "line", "pie"].contains(widget.chartKind) ? (widget.chartKind ?? "bar") : "bar"
         return WorkspaceAppChartPresentation(
             id: widget.id,
             label: widget.label,
+            kind: kind,
             bars: bars,
             emptyMessage: "No chart data yet."
         )

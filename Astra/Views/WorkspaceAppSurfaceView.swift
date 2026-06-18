@@ -65,6 +65,7 @@ struct WorkspaceAppSurfaceView: View {
             nativeSurfaceSection
             formSection
             actionsSection
+            workflowSection
             runHistorySection
             storageSection
         }
@@ -189,6 +190,27 @@ struct WorkspaceAppSurfaceView: View {
                     Text(actionStatusMessage)
                         .font(Stanford.caption(12))
                         .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var workflowSection: some View {
+        let workflows = (snapshot.manifest?.actions ?? []).filter { $0.type == "pipeline.run" || $0.type == "loop.run" }
+        if !workflows.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("Workflows")
+                        .font(Stanford.ui(15, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    Text("\(workflows.count)")
+                        .font(Stanford.caption(11).weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                ForEach(workflows, id: \.id) { workflow in
+                    WorkspaceAppWorkflowCard(workflow: workflow, manifest: snapshot.manifest)
                 }
             }
         }

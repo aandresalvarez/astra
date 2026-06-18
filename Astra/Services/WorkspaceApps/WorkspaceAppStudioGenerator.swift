@@ -277,6 +277,13 @@ enum WorkspaceAppStudioGenerator {
         table nothing can fill is rejected.
         - An action's label MUST match its effect: a button labeled Save/Add/Create/Submit/Record \
         must be a write action (e.g. `appStorage.insert`), never `appStorage.query`.
+        - AGENTIC WORKFLOWS: an AI step (`task.createAndRun`) does NOT see the app's data unless you \
+        bind it. To feed the prior step's rows (or a local table) into the agent, set the step's \
+        `inputBinding` ({ source: "boundRows" | "table", table?, label? }). To keep the agent's \
+        answer, set its `outputBinding` ({ field, capture?: "text" | "json", table? }) — the answer \
+        is captured under `field`, threaded to later steps, and persisted to `table` when given. \
+        Goals may also interpolate prior captured fields with `{{field}}` placeholders. Use these so \
+        a multi-step agent workflow actually passes data forward instead of dropping it.
 
         Here is a VALID baseline manifest. Adapt it to the intent — keep its overall \
         structure, change ids/names/fields as needed:
