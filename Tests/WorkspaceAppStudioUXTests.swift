@@ -65,6 +65,20 @@ struct WorkspaceAppStudioUXTests {
         #expect(identity.purpose == WorkspaceAppArchetype.reviewQueue.tagline)
     }
 
+    @Test("identity uses the archetype tagline instead of the recipe's boilerplate description")
+    func identityPrefersTaglineOverBoilerplate() {
+        var manifest = base()
+        manifest.app.description = "Draft operational app surface generated from the requested workflow."
+        let identity = WorkspaceAppStudioIdentityBuilder.identity(for: manifest, report: WorkspaceAppManifestValidator.validate(manifest))
+        #expect(identity.purpose == WorkspaceAppArchetype.reviewQueue.tagline)
+    }
+
+    @Test("a generated name drops a trailing connector instead of ending mid-phrase")
+    func nameTrimsTrailingConnector() {
+        let manifest = WorkspaceAppStudioBuilder.baseManifest(intent: "triage incoming issues by status")
+        #expect(manifest.app.name == "Triage Incoming Issues")
+    }
+
     // MARK: - Phase 2: catalog
 
     @Test("every archetype has display name, icon, tagline, and an example intent")

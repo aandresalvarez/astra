@@ -38,7 +38,11 @@ enum WorkspaceAppStudioIdentityBuilder {
 
     static func purpose(manifest: WorkspaceAppManifest, archetype: WorkspaceAppArchetype?) -> String {
         let described = manifest.app.description.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !described.isEmpty { return described }
+        // The deterministic recipes share a boilerplate description; prefer the archetype's
+        // plain tagline over it so the hero line is meaningful even on the offline path.
+        let isBoilerplate = described.isEmpty
+            || described.lowercased().contains("operational app surface generated")
+        if !isBoilerplate { return described }
         return archetype?.tagline ?? "A custom workspace app."
     }
 

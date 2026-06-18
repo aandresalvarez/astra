@@ -1333,13 +1333,22 @@ enum WorkspaceAppStudioBuilder {
     }
 
     private static func title(from intent: String) -> String {
-        let words = intent
-            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
-            .prefix(4)
-            .map { word in
-                word.prefix(1).uppercased() + word.dropFirst().lowercased()
-            }
-        let title = words.joined(separator: " ")
+        // Stop the name at the first connector once we have a couple of content words, so
+        // "triage incoming issues by status" reads as "Triage Incoming Issues", not "...Issues By".
+        let connectors: Set<String> = ["by", "with", "and", "to", "of", "for", "the", "a", "an", "in", "on", "from", "that"]
+        let raw = intent.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
+        var kept: [String] = []
+        for word in raw {
+            if kept.count >= 2 && connectors.contains(word.lowercased()) { break }
+            kept.append(word)
+            if kept.count >= 4 { break }
+        }
+        while let last = kept.last, kept.count > 1, connectors.contains(last.lowercased()) {
+            kept.removeLast()
+        }
+        let title = kept
+            .map { $0.prefix(1).uppercased() + $0.dropFirst().lowercased() }
+            .joined(separator: " ")
         return title.isEmpty ? "Workspace App" : title
     }
 
