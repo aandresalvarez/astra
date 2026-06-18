@@ -10,7 +10,12 @@ enum WorkspaceAppStudioRecipes {
     static func manifest(for archetype: WorkspaceAppArchetype, intent: String) -> WorkspaceAppManifest {
         switch archetype {
         case .localDatabase:
-            return WorkspaceAppStudioBuilder.localDatabaseManifest(intent: intent)
+            // The fixed grocery template only for genuinely grocery intents; any other
+            // "track X / database / inventory" intent gets a generic records database named from
+            // the intent (so "track lab samples" is a samples app, not groceries).
+            return WorkspaceAppStudioBuilder.isGroceryIntent(intent)
+                ? WorkspaceAppStudioBuilder.localDatabaseManifest(intent: intent)
+                : WorkspaceAppStudioBuilder.genericDatabaseManifest(intent: intent)
         case .pipeline:
             return pipelineManifest(intent: intent)
         case .reportGenerator:

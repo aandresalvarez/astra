@@ -739,6 +739,84 @@ enum WorkspaceAppStudioBuilder {
         )
     }
 
+    /// True only for genuinely grocery intents — gates the fixed grocery template so other
+    /// "track X / database" intents don't all collapse to a grocery app.
+    static func isGroceryIntent(_ intent: String) -> Bool {
+        let text = intent.lowercased()
+        return ["grocer", "shopping", "pantry", "food"].contains { text.contains($0) }
+    }
+
+    /// Best-effort subject extraction for the deterministic generator: strips leading filler verbs
+    /// and articles ("track a database to store my …") and titlecases the remaining subject words.
+    static func subjectTitle(from intent: String) -> String {
+        let stop: Set<String> = [
+            "build", "create", "make", "a", "an", "the", "me", "my", "app", "application",
+            "database", "db", "for", "to", "track", "tracker", "tracking", "store", "manage",
+            "of", "with", "that", "please", "tool", "simple", "i", "want", "need"
+        ]
+        let words = intent.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+        let subject = words.drop(while: { stop.contains($0) }).prefix(while: { !stop.contains($0) })
+        return subject.prefix(4).map { $0.capitalized }.joined(separator: " ")
+    }
+
+    /// A generic single-table records database named from the intent — the non-grocery localDatabase
+    /// shape: full CRUD + a count/status dashboard + CSV export over an app-owned `records` table.
+    static func genericDatabaseManifest(intent: String) -> WorkspaceAppManifest {
+        let subject = subjectTitle(from: intent)
+        let name = subject.isEmpty ? "Records Tracker" : "\(subject) Tracker"
+        let table = "records"
+        return WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(
+                id: slug(from: name),
+                name: name,
+                icon: "tablecells",
+                description: "Track \(subject.isEmpty ? "records" : subject.lowercased()) in a local app database.",
+                tags: ["local-storage", "database"],
+                archetypes: ["Local Database App", "Action Panel"]
+            ),
+            storage: WorkspaceAppStorageSchema(tables: [
+                WorkspaceAppStorageTable(name: table, columns: [
+                    WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true),
+                    WorkspaceAppStorageColumn(name: "name", type: "text", required: true),
+                    WorkspaceAppStorageColumn(name: "category", type: "text"),
+                    WorkspaceAppStorageColumn(name: "status", type: "text"),
+                    WorkspaceAppStorageColumn(name: "notes", type: "text"),
+                    WorkspaceAppStorageColumn(name: "created_at", type: "date")
+                ])
+            ]),
+            sources: [
+                WorkspaceAppSource(id: "local_records", mode: "read", sourceRef: "appStorage")
+            ],
+            views: [
+                WorkspaceAppViewSpec(id: "records_table", type: "table", title: subject.isEmpty ? "Records" : subject, table: table),
+                WorkspaceAppViewSpec(
+                    id: "overview",
+                    type: "dashboard",
+                    title: "Overview",
+                    table: table,
+                    widgets: [
+                        WorkspaceAppWidgetSpec(id: "record_count", type: "metric", label: "Total records", aggregation: "count"),
+                        WorkspaceAppWidgetSpec(id: "by_status", type: "chart", label: "By status", groupBy: "status", aggregation: "count")
+                    ]
+                )
+            ],
+            actions: [
+                WorkspaceAppActionSpec(id: "list_records", type: "appStorage.query", label: "List Records", table: table),
+                WorkspaceAppActionSpec(id: "add_record", type: "appStorage.insert", label: "Add Record", table: table),
+                WorkspaceAppActionSpec(id: "update_record", type: "appStorage.update", label: "Update Record", table: table),
+                WorkspaceAppActionSpec(id: "delete_record", type: "appStorage.delete", label: "Delete Record", table: table),
+                WorkspaceAppActionSpec(id: "export_records", type: "artifact.export", label: "Export CSV", table: table, exportFormat: "csv")
+            ],
+            permissions: WorkspaceAppPermissions(
+                reads: ["appStorage.records"],
+                writes: ["appStorage.records"],
+                defaultMode: .draftOnly
+            )
+        )
+    }
+
     static func operationalSurfaceManifest(intent: String) -> WorkspaceAppManifest {
         let name = title(from: intent)
         let id = slug(from: name)
