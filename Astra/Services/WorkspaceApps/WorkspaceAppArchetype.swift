@@ -32,6 +32,75 @@ enum WorkspaceAppArchetype: String, CaseIterable, Sendable {
         }
     }
 
+    /// Sentence-case, user-facing name for the type picker (vs. `label`, the manifest metadata value).
+    var displayName: String {
+        switch self {
+        case .localDatabase: return "Local database"
+        case .dataEntry: return "Data entry app"
+        case .reviewQueue: return "Review queue"
+        case .dashboard: return "Dashboard"
+        case .pipeline: return "Pipeline"
+        case .reportGenerator: return "Report generator"
+        case .monitor: return "Monitor"
+        }
+    }
+
+    /// SF Symbol shown on the identity card + type picker.
+    var iconSystemName: String {
+        switch self {
+        case .localDatabase: return "tablecells"
+        case .dataEntry: return "square.and.pencil"
+        case .reviewQueue: return "checklist"
+        case .dashboard: return "chart.bar"
+        case .pipeline: return "arrow.triangle.branch"
+        case .reportGenerator: return "doc.text"
+        case .monitor: return "gauge"
+        }
+    }
+
+    /// One-line, plain-language "what it does" for the type picker.
+    var tagline: String {
+        switch self {
+        case .localDatabase: return "Store and manage records in tables"
+        case .dataEntry: return "Capture records and see metrics"
+        case .reviewQueue: return "Triage items through statuses"
+        case .dashboard: return "Metrics and charts over your data"
+        case .pipeline: return "Run a multi-step process with gates"
+        case .reportGenerator: return "Collect records and export a report"
+        case .monitor: return "Watch data and flag thresholds"
+        }
+    }
+
+    /// A concrete example intent that pre-fills the box when the type is picked.
+    var exampleIntent: String {
+        switch self {
+        case .localDatabase: return "Track lab equipment by location and status"
+        case .dataEntry: return "Log site visits with date, owner, and notes"
+        case .reviewQueue: return "Triage incoming issues by status"
+        case .dashboard: return "A dashboard of enrollment counts by site"
+        case .pipeline: return "A multi-step intake approval pipeline"
+        case .reportGenerator: return "A weekly enrollment summary report"
+        case .monitor: return "Alert when a sample is older than 30 days"
+        }
+    }
+
+    /// Map a manifest's stored archetype label (including curated labels like "Reconciliation App"
+    /// or "Agentic Workflow") back to an archetype, for choosing an icon. Returns nil when no case
+    /// fits — the caller falls back to a generic icon while still showing the real label.
+    static func from(label: String) -> WorkspaceAppArchetype? {
+        let normalized = label.lowercased()
+        if let exact = allCases.first(where: { $0.label.lowercased() == normalized || $0.displayName.lowercased() == normalized }) {
+            return exact
+        }
+        if normalized.contains("review") || normalized.contains("queue") || normalized.contains("reconcil") { return .reviewQueue }
+        if normalized.contains("agentic") || normalized.contains("workflow") || normalized.contains("pipeline") { return .pipeline }
+        if normalized.contains("report") { return .reportGenerator }
+        if normalized.contains("dashboard") { return .dashboard }
+        if normalized.contains("monitor") { return .monitor }
+        if normalized.contains("database") || normalized.contains("action panel") { return .localDatabase }
+        return nil
+    }
+
     /// Classify a free-text intent into the best-fitting archetype. Specific archetypes win over
     /// general ones; an unrecognized intent falls to `.dataEntry` (a usable records app) rather
     /// than a read-only dashboard shell.

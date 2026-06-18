@@ -196,4 +196,43 @@ struct WorkspaceAppEndToEndTests {
         let created = try WorkspaceAppService().createApp(manifest: result.manifest, in: env.workspace, modelContext: env.context, status: .published)
         #expect(created.app.lifecycleStatus == .published)
     }
+
+    // MARK: - Studio UX redesign: identity -> refine -> publish
+
+    @MainActor
+    @Test("Studio UX flow: a human identity, a chip refinement, then publish carrying the refinement")
+    func studioUXRefinementFlow() throws {
+        let env = try Self.makeEnv()
+        defer { try? FileManager.default.removeItem(at: env.root) }
+
+        // Generate a deterministic draft (offline path) for a review-queue intent.
+        var manifest = WorkspaceAppStudioBuilder.baseManifest(intent: "triage incoming issues by status")
+
+        // Phase 1: the identity reads as a human-facing app, not a manifest dump.
+        let identity = WorkspaceAppStudioIdentityBuilder.identity(
+            for: manifest, report: WorkspaceAppManifestValidator.validate(manifest)
+        )
+        #expect(!identity.archetypeLabel.isEmpty)
+        #expect(!identity.capabilities.isEmpty)
+        #expect(!identity.permissionSummary.isEmpty)
+        #expect(identity.isReadyToPublish)
+
+        // Phase 4: refine by chip (connect REDCap) — adds an external write, steps the mode up,
+        // and stays valid.
+        #expect(WorkspaceAppStudioRefinement.connectREDCap.isAvailable(for: manifest))
+        manifest = WorkspaceAppStudioRefinement.connectREDCap.apply(to: manifest)
+        #expect(WorkspaceAppManifestValidator.validate(manifest).isValid)
+
+        // Publish the refined manifest through the real service.
+        let created = try WorkspaceAppService().createApp(manifest: manifest, in: env.workspace, modelContext: env.context, status: .published)
+        #expect(created.app.lifecycleStatus == .published)
+
+        // The refinement persisted on disk end to end — the published manifest carries the REDCap write.
+        let manifestURL = URL(fileURLWithPath: WorkspaceFileLayout.appManifestFile(
+            workspacePath: env.workspace.primaryPath, appID: created.app.logicalID
+        ))
+        let persisted = try JSONDecoder().decode(WorkspaceAppManifest.self, from: Data(contentsOf: manifestURL))
+        #expect(persisted.actions.contains { $0.type == "capability.write" })
+        #expect(persisted.requirements.contains { $0.contract == "recordProject.write" })
+    }
 }

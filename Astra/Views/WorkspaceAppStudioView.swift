@@ -46,6 +46,7 @@ struct WorkspaceAppStudioView: View {
                     intentSection
                     ideasSection
                     proposalSection
+                    inlinePreviewSection
                     validationSection
                     manifestSection
                 }
@@ -123,6 +124,8 @@ struct WorkspaceAppStudioView: View {
         VStack(alignment: .leading, spacing: 10) {
             sectionHeader("Intent", count: nil)
 
+            typePickerRow
+
             TextEditor(text: $intent)
                 .font(Stanford.ui(14))
                 .frame(minHeight: 92)
@@ -182,32 +185,121 @@ struct WorkspaceAppStudioView: View {
     }
 
     private var proposalSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            sectionHeader("Proposal", count: nil)
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text(draft.proposal.name)
-                    .font(Stanford.ui(17, weight: .semibold))
-                    .foregroundStyle(.primary)
-
-                Text(draft.proposal.problem)
-                    .font(Stanford.caption(13))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 210, maximum: 300), spacing: 10, alignment: .top)],
-                alignment: .leading,
-                spacing: 10
-            ) {
-                proposalCard(title: "Storage", values: draft.proposal.storage, icon: "externaldrive")
-                proposalCard(title: "Views", values: draft.proposal.views, icon: "rectangle.grid.2x2")
-                proposalCard(title: "Actions", values: draft.proposal.actions, icon: "play.circle")
-                proposalCard(title: "Automation", values: draft.proposal.automation, icon: "clock.arrow.circlepath")
-                proposalCard(title: "Permission Mode", values: [draft.proposal.riskMode.rawValue], icon: "lock.shield")
+        let identity = WorkspaceAppStudioIdentityBuilder.identity(for: draft.manifest, report: draft.validationReport)
+        let refinements = WorkspaceAppStudioRefinement.allCases.filter { $0.isAvailable(for: draft.manifest) }
+        return VStack(alignment: .leading, spacing: 12) {
+            sectionHeader("Your app", count: nil)
+            identityCard(identity)
+            if !refinements.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Refine it")
+                        .font(Stanford.caption(12).weight(.medium))
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        ForEach(refinements) { refinement in
+                            Button(action: { applyRefinement(refinement) }) {
+                                Label(refinement.label, systemImage: refinement.iconSystemName)
+                                    .font(Stanford.caption(12))
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .disabled(isGeneratingDraft)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                }
             }
         }
+    }
+
+    private func identityCard(_ identity: WorkspaceAppStudioIdentityPresentation) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: identity.iconSystemName)
+                    .font(Stanford.ui(22, weight: .semibold))
+                    .foregroundStyle(Stanford.lagunita)
+                    .frame(width: 44, height: 44)
+                    .background(Stanford.lagunita.opacity(0.10))
+                    .clipShape(RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(identity.archetypeLabel)
+                        .font(Stanford.caption(12).weight(.semibold))
+                        .foregroundStyle(Stanford.lagunita)
+                    Text(identity.name)
+                        .font(Stanford.ui(17, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    Text(identity.purpose)
+                        .font(Stanford.caption(13))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Label(identity.permissionSummary, systemImage: identity.permissionIcon)
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 4)
+                }
+                Spacer(minLength: 0)
+            }
+            Divider()
+            VStack(alignment: .leading, spacing: 6) {
+                Text("What you'll be able to do")
+                    .font(Stanford.caption(12).weight(.medium))
+                    .foregroundStyle(.secondary)
+                ForEach(identity.capabilities, id: \.self) { capability in
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark.circle")
+                            .font(Stanford.caption(12))
+                            .foregroundStyle(Stanford.lagunita)
+                        Text(capability)
+                            .font(Stanford.caption(13))
+                            .foregroundStyle(.primary)
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Stanford.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+        )
+    }
+
+    private var inlinePreviewSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionHeader("Preview", count: nil)
+            WorkspaceAppStudioInlinePreview(manifest: draft.manifest)
+        }
+    }
+
+    private var typePickerRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(WorkspaceAppArchetype.allCases, id: \.self) { archetype in
+                    Button(action: { selectArchetype(archetype) }) {
+                        Label(archetype.displayName, systemImage: archetype.iconSystemName)
+                            .font(Stanford.caption(12))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(isGeneratingDraft)
+                    .help(archetype.tagline)
+                }
+            }
+            .padding(.vertical, 1)
+        }
+    }
+
+    private func selectArchetype(_ archetype: WorkspaceAppArchetype) {
+        intent = archetype.exampleIntent
+        regenerateDraft()
+    }
+
+    private func applyRefinement(_ refinement: WorkspaceAppStudioRefinement) {
+        let updated = refinement.apply(to: draft.manifest)
+        draft = WorkspaceAppStudioBuilder.draft(intent: draft.intent, workspace: workspace, existingManifest: updated)
+        statusMessage = "Applied: \(refinement.label)"
     }
 
     private var validationSection: some View {
@@ -241,15 +333,20 @@ struct WorkspaceAppStudioView: View {
             manifest: draft.manifest,
             validationReport: draft.validationReport
         )
-        VStack(alignment: .leading, spacing: 10) {
-            sectionHeader("Inspector", count: nil)
-
-            inspectorGroup("Identity", rows: inspector.identity)
-            inspectorGroup("Sources", rows: inspector.sources)
-            inspectorGroup("Storage", rows: inspector.storage)
-            inspectorGroup("Actions", rows: inspector.actions)
-            inspectorGroup("Automations", rows: inspector.automations)
-            inspectorGroup("Permissions", rows: inspector.permissions)
+        return DisclosureGroup {
+            VStack(alignment: .leading, spacing: 10) {
+                inspectorGroup("Identity", rows: inspector.identity)
+                inspectorGroup("Sources", rows: inspector.sources)
+                inspectorGroup("Storage", rows: inspector.storage)
+                inspectorGroup("Actions", rows: inspector.actions)
+                inspectorGroup("Automations", rows: inspector.automations)
+                inspectorGroup("Permissions", rows: inspector.permissions)
+            }
+            .padding(.top, 8)
+        } label: {
+            Text("Advanced — storage, actions, permissions, raw manifest")
+                .font(Stanford.caption(13).weight(.semibold))
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -309,43 +406,6 @@ struct WorkspaceAppStudioView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, minHeight: 152, alignment: .topLeading)
-        .background(Color.primary.opacity(0.025))
-        .clipShape(RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-        )
-    }
-
-    private func proposalCard(title: String, values: [String], icon: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: icon)
-                    .font(Stanford.ui(14, weight: .semibold))
-                    .foregroundStyle(Stanford.lagunita)
-                    .frame(width: 18)
-
-                Text(title)
-                    .font(Stanford.caption(12).weight(.semibold))
-                    .foregroundStyle(.primary)
-            }
-
-            if values.isEmpty {
-                Text("None")
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(values, id: \.self) { value in
-                    Text(value)
-                        .font(Stanford.caption(12))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, minHeight: 96, alignment: .topLeading)
         .background(Color.primary.opacity(0.025))
         .clipShape(RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous))
         .overlay(
