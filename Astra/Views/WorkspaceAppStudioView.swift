@@ -14,6 +14,7 @@ struct WorkspaceAppStudioView: View {
     @State private var isGeneratingDraft = false
     @State private var generationTask: Task<Void, Never>?
     @State private var isPreviewing = false
+    @State private var isTesting = false
 
     init(
         workspace: Workspace,
@@ -58,6 +59,13 @@ struct WorkspaceAppStudioView: View {
         .sheet(isPresented: $isPreviewing) {
             WorkspaceAppPreviewView(manifest: draft.manifest) { isPreviewing = false }
         }
+        .sheet(isPresented: $isTesting) {
+            WorkspaceAppTestPanelView(
+                manifest: draft.manifest,
+                workspacePath: workspace.primaryPath,
+                onSaveChecks: { draft.manifest.checks = $0.isEmpty ? nil : $0 }
+            ) { isTesting = false }
+        }
     }
 
     private var header: some View {
@@ -87,6 +95,12 @@ struct WorkspaceAppStudioView: View {
             }
             .buttonStyle(.bordered)
             .help("Open the full app in a sandbox to test it before publishing — nothing is saved")
+
+            Button(action: { isTesting = true }) {
+                Label("Test", systemImage: "checkmark.seal")
+            }
+            .buttonStyle(.bordered)
+            .help("Check the app works as expected: self-check every action, or describe a test in plain English")
 
             Button(action: publishDraft) {
                 Label("Publish", systemImage: "square.and.arrow.down")
