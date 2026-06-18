@@ -239,40 +239,10 @@ static NSString *const kAstraSecretAccessLabel = @"ASTRA secure credential";
         if (access != NULL) { CFRelease(access); }
         return NULL;
     }
-
-    // SecAccessCreate(NULL trusted list) defaults to trusting only the creating
-    // binary. Local debug/release ASTRA builds are ad-hoc signed and their cdhash
-    // changes every rebuild, so that default makes existing items visible but
-    // unreadable to the next ASTRA.app. Set the decrypt ACL to applications:null
-    // (the same shape Keychain Access calls "allow all applications") so ASTRA's
-    // own dedicated-keychain items can be read non-interactively across rebuilt
-    // ASTRA binaries. These items are only useful together with the dedicated
-    // keychain file, which ASTRA does not grant to sandboxed agents.
-    CFArrayRef decryptACLs = SecAccessCopyMatchingACLList(access, kSecACLAuthorizationDecrypt);
-    if (decryptACLs == NULL || CFArrayGetCount(decryptACLs) == 0) {
-        if (decryptACLs != NULL) { CFRelease(decryptACLs); }
-        CFRelease(access);
-        return NULL;
-    }
-
-    BOOL updated = NO;
-    CFIndex count = CFArrayGetCount(decryptACLs);
-    for (CFIndex idx = 0; idx < count; idx += 1) {
-        SecACLRef acl = (SecACLRef)CFArrayGetValueAtIndex(decryptACLs, idx);
-        OSStatus aclStatus = SecACLSetContents(
-            acl,
-            NULL,
-            (__bridge CFStringRef)label,
-            0
-        );
-        updated = updated || aclStatus == errSecSuccess;
-    }
-    CFRelease(decryptACLs);
-
-    if (!updated) {
-        CFRelease(access);
-        return NULL;
-    }
+    // Keep the default access control from SecAccessCreate: only the creating
+    // ASTRA binary is trusted. Rebuilt ad-hoc binaries that can no longer read
+    // older items are handled by the unreadable-keychain recovery path instead
+    // of widening the decrypt ACL to every local process.
     return access;
 }
 

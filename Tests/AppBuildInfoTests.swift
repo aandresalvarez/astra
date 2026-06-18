@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import ASTRA
 
@@ -43,6 +44,29 @@ struct AppBuildInfoTests {
         #expect(info.buildDate == "unknown")
         #expect(info.bundlePath == "unknown")
         #expect(info.executablePath == "unknown")
+    }
+
+    @Test("redacts home directory paths in diagnostics fields")
+    func redactsHomeDirectoryPathsInDiagnosticsFields() {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let bundlePath = "\(home)/Applications/ASTRA Dev.app"
+        let executablePath = "\(bundlePath)/Contents/MacOS/ASTRA Dev"
+        let info = AppBuildInfo(infoDictionary: [
+            "CFBundleDisplayName": "ASTRA Dev",
+            "CFBundleShortVersionString": "0.1.1",
+            "CFBundleVersion": "13",
+            "ASTRAChannel": "dev",
+            "ASTRAGitCommit": "83768b3a1234",
+            "ASTRABuildDate": "2026-06-17T18:22:17Z"
+        ], bundlePath: bundlePath, executablePath: executablePath)
+
+        #expect(info.bundlePath == "$HOME/Applications/ASTRA Dev.app")
+        #expect(info.executablePath == "$HOME/Applications/ASTRA Dev.app/Contents/MacOS/ASTRA Dev")
+        #expect(info.provenanceSummary.contains("bundle $HOME/Applications/ASTRA Dev.app"))
+        #expect(info.auditFields["app_bundle_path"] == "$HOME/Applications/ASTRA Dev.app")
+        #expect(info.auditFields["app_executable_path"] == "$HOME/Applications/ASTRA Dev.app/Contents/MacOS/ASTRA Dev")
+        #expect(!info.provenanceSummary.contains(home))
+        #expect(!info.auditFields.values.contains { $0.contains(home) })
     }
 
     @Test("maps development channel to display name")

@@ -188,8 +188,8 @@ struct AstraSecureKeychainTests {
         #expect(saveBody.contains("dedicatedKeychainForPath:keychainPath bootstrapService:bootstrapService"))
     }
 
-    @Test("Keychain password and secret items are created for rebuilt ASTRA binaries")
-    func keychainItemsUseRebuildTolerantAccess() throws {
+    @Test("Keychain password and secret items keep app-scoped access")
+    func keychainItemsUseAppScopedAccess() throws {
         let source = try astraSecureKeychainSource()
         let accessBody = try methodBody(
             startingWith: "+ (SecAccessRef)nonPromptingAccessWithLabel:",
@@ -208,9 +208,10 @@ struct AstraSecureKeychainTests {
         )
 
         #expect(accessBody.contains("SecAccessCreate"))
-        #expect(accessBody.contains("SecACLSetContents"))
-        #expect(accessBody.contains("kSecACLAuthorizationDecrypt"))
-        #expect(accessBody.contains("NULL"))
+        #expect(accessBody.contains("SecAccessCreate((__bridge CFStringRef)label, NULL, &access)"))
+        #expect(!accessBody.contains("SecACLSetContents"))
+        #expect(!accessBody.contains("kSecACLAuthorizationDecrypt"))
+        #expect(!accessBody.contains("allow all applications"))
         #expect(!accessBody.contains("SecKeychainItemSetAccess"))
         #expect(!accessBody.contains("repairBootstrapAccessForItem"))
         #expect(!bootstrapBody.contains("temporarilyAllowKeychainUserInteraction"))

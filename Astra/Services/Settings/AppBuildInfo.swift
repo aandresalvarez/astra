@@ -69,6 +69,8 @@ struct AppBuildInfo: Equatable, Sendable {
 
     private static func normalizedPath(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "unknown" : trimmed
+        guard !trimmed.isEmpty else { return "unknown" }
+        guard trimmed.hasPrefix("/") else { return trimmed }
+        return CrashDiagnosticsService.userFacingPath(URL(fileURLWithPath: trimmed))
     }
 }
