@@ -568,7 +568,9 @@ struct ContentView: View {
             onRenameWorkspace: beginRenamingWorkspace,
             onNewSchedule: showNewSchedule,
             onEditSchedule: beginEditingSchedule,
-            onNewApp: { startWorkspaceAppStudio() }
+            onNewApp: { startWorkspaceAppStudio() },
+            onOpenWorkspaceApp: setSelectedWorkspaceApp,
+            selectedWorkspaceApp: selectedWorkspaceApp
         )
     }
 

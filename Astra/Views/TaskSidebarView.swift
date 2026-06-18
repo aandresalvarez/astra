@@ -3,6 +3,7 @@ import SwiftData
 
 struct TaskSidebarContainerView: View {
     @Query(sort: \AgentTask.queuePosition) private var tasks: [AgentTask]
+    @Query(sort: \WorkspaceApp.name) private var workspaceApps: [WorkspaceApp]
 
     @Binding var selectedTask: AgentTask?
     let taskQueue: TaskQueue
@@ -24,6 +25,8 @@ struct TaskSidebarContainerView: View {
     var onNewSchedule: (() -> Void)?
     var onEditSchedule: ((TaskSchedule) -> Void)?
     var onNewApp: (() -> Void)?
+    var onOpenWorkspaceApp: ((WorkspaceApp) -> Void)?
+    var selectedWorkspaceApp: WorkspaceApp?
 
     var body: some View {
         TaskSidebarView(
@@ -47,7 +50,10 @@ struct TaskSidebarContainerView: View {
             onRenameWorkspace: onRenameWorkspace,
             onNewSchedule: onNewSchedule,
             onEditSchedule: onEditSchedule,
-            onNewApp: onNewApp
+            onNewApp: onNewApp,
+            workspaceApps: workspaceApps,
+            onOpenWorkspaceApp: onOpenWorkspaceApp,
+            selectedWorkspaceApp: selectedWorkspaceApp
         )
     }
 }
@@ -279,6 +285,11 @@ struct TaskSidebarView: View {
     var onNewSchedule: (() -> Void)?
     var onEditSchedule: ((TaskSchedule) -> Void)?
     var onNewApp: (() -> Void)?
+    /// The workspace's published apps, surfaced inline under each workspace alongside
+    /// its chats. Empty (and the rows are suppressed) when no open handler is wired.
+    var workspaceApps: [WorkspaceApp] = []
+    var onOpenWorkspaceApp: ((WorkspaceApp) -> Void)?
+    var selectedWorkspaceApp: WorkspaceApp?
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1062,13 +1073,25 @@ struct TaskSidebarView: View {
             totalTasks: workspaceTasks.count,
             visibleTasks: visibleTasks.count
         )
+        let workspaceAppRows = appsForWorkspace(workspace)
 
         VStack(spacing: 0) {
             workspaceRow(for: workspace, using: taskIndex)
 
             if isExpanded {
                 VStack(alignment: .leading, spacing: 2) {
-                    if !hasTasks && !hasAny {
+                    // Apps sit at the top of the drawer, above the (churning, collapsible)
+                    // chat list, so these durable surfaces stay visible and never hide
+                    // behind "Show more".
+                    ForEach(workspaceAppRows) { app in
+                        SidebarWorkspaceAppRow(
+                            app: app,
+                            isSelected: selectedWorkspaceApp?.id == app.id,
+                            contentLeadingPadding: SidebarLeanPresentation.childTaskContentLeadingPadding,
+                            onOpen: { onOpenWorkspaceApp?(app) }
+                        )
+                    }
+                    if !hasTasks && !hasAny && workspaceAppRows.isEmpty {
                         emptyWorkspaceRow(for: workspace)
                     } else if hasTasks {
                         ForEach(visibleTasks) { task in
@@ -1506,6 +1529,16 @@ struct TaskSidebarView: View {
 
     private func hasAnyTask(in workspace: Workspace, using taskIndex: SidebarTaskIndex) -> Bool {
         taskIndex.hasAnyTask(in: workspace)
+    }
+
+    /// The apps belonging to a workspace, name-sorted (matching the workspace home Apps
+    /// section). Empty when no open handler is wired, so the rows never appear inert.
+    private func appsForWorkspace(_ workspace: Workspace) -> [WorkspaceApp] {
+        guard onOpenWorkspaceApp != nil else { return [] }
+        let id = workspace.id
+        return workspaceApps
+            .filter { $0.workspaceID == id }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     private func workspaceMatchesSearch(_ workspace: Workspace) -> Bool {
