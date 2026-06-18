@@ -940,7 +940,7 @@ struct TaskSidebarView: View {
                     for: workspace,
                     matchingSearch: true,
                     workspaceMatchesSearch: false
-                ).isEmpty == false
+                ).isEmpty == false || workspaceHasMatchingApp(workspace)
             }
         }
     }
@@ -1504,7 +1504,8 @@ struct TaskSidebarView: View {
 
         return selectedWorkspace?.id == workspace.id ||
             expandedWorkspaceIDs.contains(workspace.id) ||
-            (!searchText.isEmpty && !tasksForWorkspace(workspace, matchingSearch: true, using: taskIndex).isEmpty)
+            (!searchText.isEmpty && !tasksForWorkspace(workspace, matchingSearch: true, using: taskIndex).isEmpty) ||
+            workspaceHasMatchingApp(workspace)
     }
 
     private func toggleWorkspaceExpansion(_ workspace: Workspace, using taskIndex: SidebarTaskIndex) {
@@ -1531,14 +1532,20 @@ struct TaskSidebarView: View {
         taskIndex.hasAnyTask(in: workspace)
     }
 
-    /// The apps belonging to a workspace, name-sorted (matching the workspace home Apps
-    /// section). Empty when no open handler is wired, so the rows never appear inert.
+    /// The apps belonging to a workspace, name-sorted and search-filtered like chat rows.
+    /// Empty when no open handler is wired, so the rows never appear inert.
     private func appsForWorkspace(_ workspace: Workspace) -> [WorkspaceApp] {
         guard onOpenWorkspaceApp != nil else { return [] }
-        let id = workspace.id
-        return workspaceApps
-            .filter { $0.workspaceID == id }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        return SidebarWorkspaceAppFilter.apps(
+            workspaceApps,
+            in: workspace,
+            searchText: searchText,
+            workspaceMatchesSearch: workspaceMatchesSearch(workspace)
+        )
+    }
+
+    private func workspaceHasMatchingApp(_ workspace: Workspace) -> Bool {
+        onOpenWorkspaceApp != nil && SidebarWorkspaceAppFilter.hasMatch(workspaceApps, in: workspace, searchText: searchText)
     }
 
     private func workspaceMatchesSearch(_ workspace: Workspace) -> Bool {

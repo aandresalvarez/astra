@@ -1,5 +1,33 @@
 import SwiftUI
 
+/// Search-aware filtering for the sidebar's inline app rows. Mirrors how chat rows behave
+/// during search (see `SidebarTaskIndex.reviewTasks`): with no query — or when the workspace
+/// name itself matches — every app shows; otherwise only apps whose name matches the query.
+/// Pure + value-typed so it's unit-tested independently of the SwiftUI row.
+enum SidebarWorkspaceAppFilter {
+    static func apps(
+        _ apps: [WorkspaceApp],
+        in workspace: Workspace,
+        searchText: String,
+        workspaceMatchesSearch: Bool
+    ) -> [WorkspaceApp] {
+        let id = workspace.id
+        let owned = apps.filter { $0.workspaceID == id }
+        let scoped = (searchText.isEmpty || workspaceMatchesSearch)
+            ? owned
+            : owned.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+        return scoped.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// Whether a workspace owns an app matching the active query — used to keep that workspace
+    /// visible (and auto-expanded) so the matching app stays reachable during search.
+    static func hasMatch(_ apps: [WorkspaceApp], in workspace: Workspace, searchText: String) -> Bool {
+        guard !searchText.isEmpty else { return false }
+        let id = workspace.id
+        return apps.contains { $0.workspaceID == id && $0.name.localizedCaseInsensitiveContains(searchText) }
+    }
+}
+
 /// A workspace app rendered inline in the sidebar, directly under its workspace and
 /// alongside that workspace's chats. It deliberately reuses the chat row's chrome
 /// (`SidebarThreadRowLayout` metrics, selection/hover fill, row height) but swaps the

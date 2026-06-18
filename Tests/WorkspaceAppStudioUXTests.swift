@@ -79,6 +79,12 @@ struct WorkspaceAppStudioUXTests {
         #expect(manifest.app.name == "Triage Incoming Issues")
     }
 
+    @Test("a generated name keeps acronyms uppercased and mid-name connectors lowercased")
+    func nameAcronymAndConnectorCasing() {
+        let manifest = WorkspaceAppStudioBuilder.baseManifest(intent: "Orchestrate an AI agent to review and act on records")
+        #expect(manifest.app.name == "Orchestrate an AI Agent")
+    }
+
     // MARK: - Phase 2: catalog
 
     @Test("every archetype has display name, icon, tagline, and an example intent")

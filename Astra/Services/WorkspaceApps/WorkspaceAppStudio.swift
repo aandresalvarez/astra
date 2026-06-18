@@ -758,7 +758,9 @@ enum WorkspaceAppStudioBuilder {
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { !$0.isEmpty }
         let subject = words.drop(while: { stop.contains($0) }).prefix(while: { !stop.contains($0) })
-        return subject.prefix(4).map { $0.capitalized }.joined(separator: " ")
+        return subject.prefix(4)
+            .map { nameAcronyms.contains($0) ? $0.uppercased() : $0.capitalized }
+            .joined(separator: " ")
     }
 
     /// A generic single-table records database named from the intent — the non-grocery localDatabase
@@ -1346,11 +1348,23 @@ enum WorkspaceAppStudioBuilder {
         while let last = kept.last, kept.count > 1, connectors.contains(last.lowercased()) {
             kept.removeLast()
         }
-        let title = kept
-            .map { $0.prefix(1).uppercased() + $0.dropFirst().lowercased() }
+        let title = kept.enumerated()
+            .map { index, word -> String in
+                // Preserve known acronyms ("AI", not "Ai"); keep mid-name connectors lowercase
+                // ("Orchestrate an AI Agent", not "Orchestrate An Ai Agent"); always cap the first word.
+                if nameAcronyms.contains(word.lowercased()) { return word.uppercased() }
+                if index > 0 && connectors.contains(word.lowercased()) { return word.lowercased() }
+                return word.prefix(1).uppercased() + word.dropFirst().lowercased()
+            }
             .joined(separator: " ")
         return title.isEmpty ? "Workspace App" : title
     }
+
+    /// Acronyms the deterministic name generator keeps fully uppercased instead of title-casing
+    /// to "Ai"/"Api". Lowercased for matching.
+    private static let nameAcronyms: Set<String> = [
+        "ai", "api", "id", "ui", "ux", "url", "csv", "pdf", "sql", "kpi", "crm", "faq", "qa", "ocr", "llm"
+    ]
 
     private static func slug(from title: String) -> String {
         let parts = title
