@@ -97,7 +97,7 @@ struct WorkspaceAppStudioUXTests {
     func catalogFromLabel() {
         #expect(WorkspaceAppArchetype.from(label: "Review Queue") == .reviewQueue)
         #expect(WorkspaceAppArchetype.from(label: "Local Database App") == .localDatabase)
-        #expect(WorkspaceAppArchetype.from(label: "Agentic Workflow") == .pipeline)
+        #expect(WorkspaceAppArchetype.from(label: "Agentic Workflow") == .agenticWorkflow)
         #expect(WorkspaceAppArchetype.from(label: "Reconciliation App") == .reviewQueue)
         #expect(WorkspaceAppArchetype.from(label: "Completely Unknown") == nil)
     }

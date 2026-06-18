@@ -16,6 +16,8 @@ struct WorkspaceAppArchetypeTests {
         #expect(WorkspaceAppArchetype.classify("a review queue for incoming tickets") == .reviewQueue)
         #expect(WorkspaceAppArchetype.classify("a dashboard of project metrics") == .dashboard)
         #expect(WorkspaceAppArchetype.classify("flashcards for spanish vocab") == .dataEntry)
+        #expect(WorkspaceAppArchetype.classify("orchestrate an AI agent to triage records") == .agenticWorkflow)
+        #expect(WorkspaceAppArchetype.classify("an agentic workflow that reviews and acts") == .agenticWorkflow)
     }
 
     @Test("every archetype recipe produces a publishable, usable manifest")
@@ -49,6 +51,21 @@ struct WorkspaceAppArchetypeTests {
     func reportHasExport() {
         let manifest = WorkspaceAppStudioRecipes.manifest(for: .reportGenerator, intent: "weekly status report")
         #expect(manifest.actions.contains { $0.type == "artifact.export" })
+        #expect(WorkspaceAppManifestValidator.validate(manifest).isValid)
+    }
+
+    @Test("agentic-workflow recipe chains an AI task pipeline behind governed gates")
+    func agenticWorkflowHasGovernedAIPipeline() {
+        let manifest = WorkspaceAppStudioRecipes.manifest(for: .agenticWorkflow, intent: "review and act on incoming records")
+        #expect(manifest.actions.contains { $0.type == "task.createAndRun" })
+        #expect(manifest.actions.contains { $0.type == "pipeline.run" })
+        #expect(manifest.actions.contains { $0.type == "gate.agentRecommendation" })
+        #expect(manifest.actions.contains { $0.type == "gate.humanApproval" })
+        // The analysis answer is captured and fed into the implementation step (app⇄agent memory).
+        #expect(manifest.actions.contains { $0.outputBinding != nil })
+        #expect(manifest.actions.contains { $0.inputBinding != nil })
+        // An AI workflow that runs tasks must be governed, not draft-only.
+        #expect(manifest.permissions.defaultMode == .approvalRequired)
         #expect(WorkspaceAppManifestValidator.validate(manifest).isValid)
     }
 }

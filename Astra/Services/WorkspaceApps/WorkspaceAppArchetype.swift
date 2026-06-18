@@ -19,6 +19,9 @@ enum WorkspaceAppArchetype: String, CaseIterable, Sendable {
     case reportGenerator
     /// Watch data and surface threshold/attention conditions.
     case monitor
+    /// A multi-step AI workflow: agent task steps + agent/human gates + run history, with the
+    /// app's data fed into the agent and its answer captured back (the agentic recipe).
+    case agenticWorkflow
 
     var label: String {
         switch self {
@@ -29,6 +32,7 @@ enum WorkspaceAppArchetype: String, CaseIterable, Sendable {
         case .pipeline: return "Pipeline"
         case .reportGenerator: return "Report Generator"
         case .monitor: return "Monitor"
+        case .agenticWorkflow: return "Agentic Workflow"
         }
     }
 
@@ -42,6 +46,7 @@ enum WorkspaceAppArchetype: String, CaseIterable, Sendable {
         case .pipeline: return "Pipeline"
         case .reportGenerator: return "Report generator"
         case .monitor: return "Monitor"
+        case .agenticWorkflow: return "AI workflow"
         }
     }
 
@@ -55,6 +60,7 @@ enum WorkspaceAppArchetype: String, CaseIterable, Sendable {
         case .pipeline: return "arrow.triangle.branch"
         case .reportGenerator: return "doc.text"
         case .monitor: return "gauge"
+        case .agenticWorkflow: return "cpu"
         }
     }
 
@@ -68,6 +74,7 @@ enum WorkspaceAppArchetype: String, CaseIterable, Sendable {
         case .pipeline: return "Run a multi-step process with gates"
         case .reportGenerator: return "Collect records and export a report"
         case .monitor: return "Watch data and flag thresholds"
+        case .agenticWorkflow: return "Orchestrate AI steps with approvals"
         }
     }
 
@@ -81,6 +88,7 @@ enum WorkspaceAppArchetype: String, CaseIterable, Sendable {
         case .pipeline: return "A multi-step intake approval pipeline"
         case .reportGenerator: return "A weekly enrollment summary report"
         case .monitor: return "Alert when a sample is older than 30 days"
+        case .agenticWorkflow: return "Orchestrate an AI agent to review and act on records"
         }
     }
 
@@ -92,8 +100,9 @@ enum WorkspaceAppArchetype: String, CaseIterable, Sendable {
         if let exact = allCases.first(where: { $0.label.lowercased() == normalized || $0.displayName.lowercased() == normalized }) {
             return exact
         }
+        if normalized.contains("agentic") || normalized.contains("agent") { return .agenticWorkflow }
         if normalized.contains("review") || normalized.contains("queue") || normalized.contains("reconcil") { return .reviewQueue }
-        if normalized.contains("agentic") || normalized.contains("workflow") || normalized.contains("pipeline") { return .pipeline }
+        if normalized.contains("workflow") || normalized.contains("pipeline") { return .pipeline }
         if normalized.contains("report") { return .reportGenerator }
         if normalized.contains("dashboard") { return .dashboard }
         if normalized.contains("monitor") { return .monitor }
@@ -108,7 +117,10 @@ enum WorkspaceAppArchetype: String, CaseIterable, Sendable {
         let text = intent.lowercased()
         func has(_ words: [String]) -> Bool { words.contains { text.contains($0) } }
 
-        if has(["pipeline", "workflow", "automate", "automation", "multi-step", "multistep", "orchestrate", "approval chain", "process steps"]) {
+        if has(["agentic", "ai workflow", "ai agent", "agent workflow", "multi-agent", "orchestrate", "agent to", "ai to"]) {
+            return .agenticWorkflow
+        }
+        if has(["pipeline", "workflow", "automate", "automation", "multi-step", "multistep", "approval chain", "process steps"]) {
             return .pipeline
         }
         if has(["report", "summarize", "summary", "digest", "weekly report", "generate a report"]) {
@@ -141,6 +153,7 @@ enum WorkspaceAppArchetype: String, CaseIterable, Sendable {
         - pipeline: a records table + a pipeline.run action chaining steps + gates + run history.
         - reportGenerator: a records table + a task action that drafts the report + an artifact.export action.
         - monitor: a records table + threshold metrics + an Add action (schedules stay disabled until enabled).
+        - agenticWorkflow: a records table + a pipeline.run that chains task.createAndRun steps (the AI does the work) with gate.agentRecommendation/gate.humanApproval between them, plus run history. Use when the app should hand work to an AI agent and act on its answer.
         """
     }
 }
