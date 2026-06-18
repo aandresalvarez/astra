@@ -50,8 +50,20 @@ enum AgentEventCompactor {
 
     @MainActor
     static func compactEvents(for task: AgentTask, modelContext: ModelContext) {
+        let start = DispatchTime.now().uptimeNanoseconds
         let events = task.events.sorted { $0.timestamp < $1.timestamp }
-        guard events.count > threshold else { return }
+        guard events.count > threshold else {
+            logCompactionIfNeeded(
+                start: start,
+                taskID: task.id,
+                eventCount: events.count,
+                compactedCount: 0,
+                keptCount: events.count,
+                reconstructionCriticalCount: 0,
+                summaryEventInserted: false
+            )
+            return
+        }
 
         let cutoff = events.count - keepCount
         let compactionCandidates = events
@@ -63,7 +75,18 @@ enum AgentEventCompactor {
         // number of distinct keys, so high-volume plan.step.* streams still compact.
         let reconstructionCriticalIDs = latestReconstructedEventIDs(in: compactionCandidates)
         let toCompact = compactionCandidates.filter { !reconstructionCriticalIDs.contains($0.id) }
-        guard !toCompact.isEmpty else { return }
+        guard !toCompact.isEmpty else {
+            logCompactionIfNeeded(
+                start: start,
+                taskID: task.id,
+                eventCount: events.count,
+                compactedCount: 0,
+                keptCount: events.count,
+                reconstructionCriticalCount: reconstructionCriticalIDs.count,
+                summaryEventInserted: false
+            )
+            return
+        }
 
         var typeCounts: [String: Int] = [:]
         for event in toCompact {
@@ -99,6 +122,39 @@ enum AgentEventCompactor {
             "compacted_count": String(toCompact.count),
             "kept_count": String(keepCount)
         ])
+        logCompactionIfNeeded(
+            start: start,
+            taskID: task.id,
+            eventCount: events.count,
+            compactedCount: toCompact.count,
+            keptCount: events.count - toCompact.count,
+            reconstructionCriticalCount: reconstructionCriticalIDs.count,
+            summaryEventInserted: true
+        )
+    }
+
+    private static func logCompactionIfNeeded(
+        start: UInt64,
+        taskID: UUID,
+        eventCount: Int,
+        compactedCount: Int,
+        keptCount: Int,
+        reconstructionCriticalCount: Int,
+        summaryEventInserted: Bool
+    ) {
+        PerformanceTelemetry.logIfNeeded(
+            "event_compaction",
+            start: start,
+            thresholdMilliseconds: PerformanceTelemetry.backgroundThresholdMilliseconds,
+            fields: [
+                "task_id": PerformanceTelemetryFields.abbreviatedID(taskID),
+                "event_count": PerformanceTelemetryFields.count(eventCount),
+                "compacted_count": PerformanceTelemetryFields.count(compactedCount),
+                "kept_count": PerformanceTelemetryFields.count(keptCount),
+                "reconstruction_critical_count": PerformanceTelemetryFields.count(reconstructionCriticalCount),
+                "summary_event_inserted": PerformanceTelemetryFields.bool(summaryEventInserted)
+            ]
+        )
     }
 
     /// IDs of the most recent reconstructed-lifecycle event for each grouping key

@@ -230,7 +230,7 @@ struct LogViewerView: View {
                 HStack(spacing: 12) {
                     HStack(spacing: 7) {
                         Circle()
-                            .fill(autoScroll ? Stanford.paloAltoGreen : Color.secondary.opacity(0.45))
+                            .fill(autoScroll ? Color.secondary : Color.secondary.opacity(0.45))
                             .frame(width: 7, height: 7)
                         Toggle("Auto-scroll", isOn: $autoScroll)
                             .toggleStyle(.switch)
@@ -262,7 +262,7 @@ struct LogViewerView: View {
                     Button {
                         generateDiagnosticsReport(delivery: .archive)
                     } label: {
-                        Label("Download", systemImage: "arrow.down.doc")
+                        Label("Download bundle", systemImage: "arrow.down.doc")
                     }
                     .buttonStyle(.borderless)
                     .help("Create a diagnostics zip for the selected time window")
@@ -275,7 +275,7 @@ struct LogViewerView: View {
                             ProgressView()
                                 .controlSize(.small)
                         } else {
-                            Label("Diagnostics", systemImage: "stethoscope")
+                            Label("Save report", systemImage: "stethoscope")
                         }
                     }
                     .buttonStyle(.borderless)

@@ -37,6 +37,12 @@
     "visibility" : "everyone"
   },
   "icon" : "chevron.left.forwardslash.chevron.right",
+  "iconDescriptor" : {
+    "fallbackSystemName" : "chevron.left.forwardslash.chevron.right",
+    "kind" : "asset",
+    "monochromePreferred" : true,
+    "value" : "assets/github.svg"
+  },
   "id" : "github-workflow",
   "isTrusted" : false,
   "localTools" : [

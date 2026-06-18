@@ -51,6 +51,192 @@ struct CapabilityLibraryTests {
         #expect(library.installedPackage(id: package.id)?.sourceMetadata == .localLibrary())
     }
 
+    @Test("install writes package folder manifest and copies declared icon asset")
+    func installWritesPackageFolderManifestAndCopiesDeclaredIconAsset() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-asset-library-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceRoot = root.appendingPathComponent("source", isDirectory: true)
+        let sourceAssets = sourceRoot.appendingPathComponent("assets", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceAssets, withIntermediateDirectories: true)
+        let sourceIcon = sourceAssets.appendingPathComponent("icon.svg")
+        try Data("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"><path d=\"M0 0h1v1H0z\"/></svg>".utf8)
+            .write(to: sourceIcon)
+
+        let library = CapabilityLibrary(directory: root.appendingPathComponent("library", isDirectory: true))
+        var package = PluginPackage(
+            id: "local.asset-package",
+            name: "Asset Package",
+            icon: "puzzlepiece.extension",
+            iconDescriptor: .asset("assets/icon.svg", fallbackSystemName: "puzzlepiece.extension"),
+            description: "Package with a local asset icon",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            governance: .localDraft()
+        )
+        package.sourceMetadata = .localLibrary()
+
+        try library.install(CapabilityPackageSource(package: package, manifestURL: nil, assetRootURL: sourceRoot))
+
+        let manifestURL = library.packageManifestURL(for: package.id)
+        let copiedIconURL = manifestURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("assets/icon.svg")
+        let installed = try #require(library.installedPackage(id: package.id))
+
+        #expect(manifestURL.lastPathComponent == "capability.json")
+        #expect(manifestURL.deletingLastPathComponent().lastPathComponent == "local-asset-package")
+        #expect(FileManager.default.fileExists(atPath: manifestURL.path))
+        #expect(FileManager.default.fileExists(atPath: copiedIconURL.path))
+        #expect(library.packageStorageURL(for: package.id) == manifestURL)
+        #expect(installed.iconDescriptor == .asset("assets/icon.svg", fallbackSystemName: "puzzlepiece.extension"))
+        #expect(installed.sourceMetadata?.url?.resolvingSymlinksInPath() == manifestURL.resolvingSymlinksInPath())
+    }
+
+    @Test("installing plain package over asset package removes stale package folder")
+    func installingPlainPackageOverAssetPackageRemovesStalePackageFolder() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-asset-to-json-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceRoot = root.appendingPathComponent("source", isDirectory: true)
+        let sourceAssets = sourceRoot.appendingPathComponent("assets", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceAssets, withIntermediateDirectories: true)
+        try Data("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"><path d=\"M0 0h1v1H0z\"/></svg>".utf8)
+            .write(to: sourceAssets.appendingPathComponent("icon.svg"))
+
+        let library = CapabilityLibrary(directory: root.appendingPathComponent("library", isDirectory: true))
+        let assetPackage = PluginPackage(
+            id: "local.storage-switch",
+            name: "Storage Switch",
+            icon: "puzzlepiece.extension",
+            iconDescriptor: .asset("assets/icon.svg", fallbackSystemName: "puzzlepiece.extension"),
+            description: "Asset package",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            governance: .localDraft()
+        )
+        var plainPackage = assetPackage
+        plainPackage.version = "2.0.0"
+        plainPackage.icon = "star"
+        plainPackage.iconDescriptor = .systemSymbol("star")
+
+        try library.install(CapabilityPackageSource(package: assetPackage, manifestURL: nil, assetRootURL: sourceRoot))
+        let manifestURL = library.packageManifestURL(for: assetPackage.id)
+        #expect(FileManager.default.fileExists(atPath: manifestURL.path))
+
+        try library.install(plainPackage)
+
+        let jsonURL = library.packageURL(for: plainPackage.id)
+        let installed = try #require(library.installedPackage(id: plainPackage.id))
+        #expect(FileManager.default.fileExists(atPath: jsonURL.path))
+        #expect(!FileManager.default.fileExists(atPath: manifestURL.deletingLastPathComponent().path))
+        #expect(library.packageStorageURL(for: plainPackage.id) == jsonURL)
+        #expect(installed.version == "2.0.0")
+        #expect(installed.iconDescriptor == .systemSymbol("star"))
+    }
+
+    @Test("installing asset package over plain package removes stale JSON file")
+    func installingAssetPackageOverPlainPackageRemovesStaleJSONFile() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-json-to-asset-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceRoot = root.appendingPathComponent("source", isDirectory: true)
+        let sourceAssets = sourceRoot.appendingPathComponent("assets", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceAssets, withIntermediateDirectories: true)
+        try Data("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"><path d=\"M0 0h1v1H0z\"/></svg>".utf8)
+            .write(to: sourceAssets.appendingPathComponent("icon.svg"))
+
+        let library = CapabilityLibrary(directory: root.appendingPathComponent("library", isDirectory: true))
+        let plainPackage = PluginPackage(
+            id: "local.storage-switch",
+            name: "Storage Switch",
+            icon: "star",
+            description: "Plain package",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            governance: .localDraft()
+        )
+        var assetPackage = plainPackage
+        assetPackage.version = "2.0.0"
+        assetPackage.icon = "puzzlepiece.extension"
+        assetPackage.iconDescriptor = .asset("assets/icon.svg", fallbackSystemName: "puzzlepiece.extension")
+
+        try library.install(plainPackage)
+        let jsonURL = library.packageURL(for: plainPackage.id)
+        #expect(FileManager.default.fileExists(atPath: jsonURL.path))
+
+        try library.install(CapabilityPackageSource(package: assetPackage, manifestURL: nil, assetRootURL: sourceRoot))
+
+        let manifestURL = library.packageManifestURL(for: assetPackage.id)
+        let installed = try #require(library.installedPackage(id: assetPackage.id))
+        #expect(FileManager.default.fileExists(atPath: manifestURL.path))
+        #expect(!FileManager.default.fileExists(atPath: jsonURL.path))
+        #expect(library.packageStorageURL(for: assetPackage.id) == manifestURL)
+        #expect(installed.version == "2.0.0")
+
+        try library.removePackage(id: assetPackage.id, trustedBuiltInIDs: [])
+        #expect(library.installedPackage(id: assetPackage.id, trustedBuiltInIDs: []) == nil)
+        #expect(!FileManager.default.fileExists(atPath: jsonURL.path))
+    }
+
+    @Test("storage snapshot removes fresh package folder after rollback")
+    func storageSnapshotRemovesFreshPackageFolderAfterRollback() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-asset-rollback-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceRoot = root.appendingPathComponent("source", isDirectory: true)
+        let sourceAssets = sourceRoot.appendingPathComponent("assets", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceAssets, withIntermediateDirectories: true)
+        try Data("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"><path d=\"M0 0h1v1H0z\"/></svg>".utf8)
+            .write(to: sourceAssets.appendingPathComponent("icon.svg"))
+
+        let library = CapabilityLibrary(directory: root.appendingPathComponent("library", isDirectory: true))
+        let package = PluginPackage(
+            id: "local.asset-rollback",
+            name: "Asset Rollback",
+            icon: "puzzlepiece.extension",
+            iconDescriptor: .asset("assets/icon.svg", fallbackSystemName: "puzzlepiece.extension"),
+            description: "Package with a local asset icon",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            governance: .localDraft()
+        )
+        let snapshot = library.makePackageStorageSnapshot(for: package.id)
+
+        try library.install(CapabilityPackageSource(package: package, manifestURL: nil, assetRootURL: sourceRoot))
+        let manifestURL = library.packageManifestURL(for: package.id)
+        #expect(FileManager.default.fileExists(atPath: manifestURL.path))
+
+        library.restorePackageStorage(snapshot)
+
+        #expect(!FileManager.default.fileExists(atPath: manifestURL.path))
+        #expect(!FileManager.default.fileExists(atPath: manifestURL.deletingLastPathComponent().path))
+    }
+
     @Test("runtime package definitions refresh when installed package directory changes")
     func runtimePackageDefinitionsRefreshWhenLibraryChanges() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -96,6 +282,58 @@ struct CapabilityLibraryTests {
         let secondIDs = Set(CapabilityRuntimeResourceMatcher.packageDefinitions(library: library).map(\.id))
         #expect(secondIDs.contains(first.id))
         #expect(secondIDs.contains(second.id))
+    }
+
+    @Test("in-memory enabledPackages filters to enabled ids, merges built-ins, and de-dupes")
+    func enabledPackagesInMemoryOverloadResolvesWithoutFilesystem() throws {
+        let builtInID = try #require(PluginCatalog.builtInPackages.first?.id)
+
+        let enabledLocal = makeTestPackage(id: "local.test/enabled", name: "Enabled Local")
+        let disabledLocal = makeTestPackage(id: "local.test/disabled", name: "Disabled Local")
+
+        let workspace = Workspace(name: "Matcher", primaryPath: "/tmp/matcher")
+        workspace.enabledCapabilityIDs = [enabledLocal.id, builtInID]
+
+        // The list intentionally repeats `enabledLocal` to exercise de-dupe and
+        // omits the built-in entirely so it can only appear via the merge.
+        let definitions = [enabledLocal, enabledLocal, disabledLocal]
+        let ids = CapabilityRuntimeResourceMatcher
+            .enabledPackages(for: workspace, in: definitions)
+            .map(\.id)
+
+        // enabled-id filtering: only enabled ids, never the disabled one.
+        #expect(Set(ids) == [enabledLocal.id, builtInID])
+        #expect(!ids.contains(disabledLocal.id))
+        // de-dupe: the duplicated injected package resolves exactly once.
+        #expect(ids.filter { $0 == enabledLocal.id }.count == 1)
+        // built-in merge: an enabled built-in resolves even when not injected.
+        #expect(ids.contains(builtInID))
+    }
+
+    @Test("in-memory enabledPackages returns empty when nothing is enabled or workspace is nil")
+    func enabledPackagesInMemoryOverloadHandlesEmptyCases() {
+        let workspace = Workspace(name: "Empty", primaryPath: "/tmp/empty")
+        let definitions = [makeTestPackage(id: "local.test/unused", name: "Unused")]
+
+        #expect(CapabilityRuntimeResourceMatcher.enabledPackages(for: workspace, in: definitions).isEmpty)
+        #expect(CapabilityRuntimeResourceMatcher.enabledPackages(for: nil, in: PluginCatalog.builtInPackages).isEmpty)
+    }
+
+    private func makeTestPackage(id: String, name: String) -> PluginPackage {
+        PluginPackage(
+            id: id,
+            name: name,
+            icon: "folder",
+            description: "",
+            author: "Test",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: []
+        )
     }
 
     @Test("package URLs stay inside library for malicious IDs")
@@ -183,13 +421,13 @@ struct CapabilityLibraryTests {
         try library.install(package, sourceMetadata: .builtIn())
 
         do {
-            _ = try library.removePackage(id: package.id)
+            _ = try library.removePackage(id: package.id, trustedBuiltInIDs: [package.id])
             Issue.record("Built-in package removal should fail")
         } catch let error as CapabilityLibrary.RemovalError {
             #expect(error == .builtInPackage(package.name))
         }
 
-        #expect(library.installedPackage(id: package.id) != nil)
+        #expect(library.installedPackage(id: package.id, trustedBuiltInIDs: [package.id]) != nil)
     }
 
     @Test("catalog refresh does not restore removed local package")
@@ -294,7 +532,10 @@ struct CapabilityLibraryTests {
         try library.seedApprovedPackages([approved])
 
         #expect(library.installedPackages().map(\.id) == ["stanford.approved"])
-        #expect(library.installedPackage(id: approved.id)?.sourceMetadata == .builtIn())
+        #expect(library.installedPackage(id: approved.id, trustedBuiltInIDs: [approved.id])?.sourceMetadata == .builtIn())
+        // Without an entry in the trusted built-in set, self-declared
+        // built-in source metadata is clamped back to local on load.
+        #expect(library.installedPackage(id: approved.id)?.sourceMetadata == .localLibrary())
 
         approved.version = "0.9.0"
         try library.seedApprovedPackages([approved])
@@ -331,7 +572,7 @@ struct CapabilityLibraryTests {
         try library.install(stale, sourceMetadata: .builtIn())
         try library.seedApprovedPackages([approved])
 
-        let installed = try #require(library.installedPackage(id: approved.id))
+        let installed = try #require(library.installedPackage(id: approved.id, trustedBuiltInIDs: [approved.id]))
         #expect(installed.name == "Approved Drift")
         #expect(installed.description == "Canonical approved capability")
         #expect(installed.browserAdapters == [BrowserSiteAdapterID.github])
@@ -367,7 +608,7 @@ struct CapabilityLibraryTests {
         try library.install(localShadow, sourceMetadata: .localLibrary())
         try library.seedApprovedPackages([approved])
 
-        let installed = try #require(library.installedPackage(id: approved.id))
+        let installed = try #require(library.installedPackage(id: approved.id, trustedBuiltInIDs: [approved.id]))
         #expect(installed.name == "Approved Shadow")
         #expect(installed.version == "1.0.0")
         #expect(installed.sourceMetadata == .builtIn())
@@ -449,7 +690,17 @@ struct CapabilityLibraryTests {
 
         #expect(ApprovedCapabilityBundle.bundledDirectory()?.lastPathComponent == "Capabilities")
         #expect(Set(packages.map(\.id)) == expectedIDs)
-        #expect(packages.allSatisfy { $0.sourceMetadata == .builtIn() })
+        #expect(packages.allSatisfy { $0.sourceMetadata?.kind == "built-in" })
+        for id in ["gcloud-workflow", "github-workflow", "google-drive-browser", "jira-workflow"] {
+            let package = try #require(packages.first { $0.id == id })
+            #expect(package.iconDescriptor.kind == .asset)
+            #expect(package.sourceMetadata?.url?.lastPathComponent.hasSuffix(".json") == true)
+            if case .asset(let url) = CapabilityIconPresentation.make(for: package).kind {
+                #expect(FileManager.default.fileExists(atPath: url.path))
+            } else {
+                Issue.record("\(id) should resolve its bundled icon asset.")
+            }
+        }
         #expect(packages.first { $0.id == "gcloud-workflow" }?.connectors.map(\.name) == ["Google Cloud"])
         #expect(packages.first { $0.id == "github-workflow" }?.connectors.isEmpty == true)
         #expect(packages.first { $0.id == "github-workflow" }?.browserAdapters == [BrowserSiteAdapterID.github])
@@ -466,6 +717,48 @@ struct CapabilityLibraryTests {
         #expect(packages.first { $0.id == "stanford-apple-mail" }?.localTools.map(\.command) == ["stanford-apple-mail"])
         #expect(packages.first { $0.id == "stanford-healthcare-graph-mail" }?.connectors.isEmpty == true)
         #expect(packages.first { $0.id == "stanford-healthcare-graph-mail" }?.localTools.map(\.command) == ["stanford-graph-mail"])
+    }
+
+    @Test("seed approved packages copies bundled icon assets")
+    func seedApprovedPackagesCopiesBundledIconAssets() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-seed-assets-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = CapabilityLibrary(directory: root)
+        let package = try #require(ApprovedCapabilityBundle.packages().first { $0.id == "github-workflow" })
+
+        try library.syncApprovedPackages([package])
+
+        let manifest = library.packageManifestURL(for: package.id)
+        let icon = manifest.deletingLastPathComponent().appendingPathComponent("assets/github.svg")
+        let installed = try #require(library.installedPackage(id: package.id, trustedBuiltInIDs: [package.id]))
+        #expect(FileManager.default.fileExists(atPath: manifest.path))
+        #expect(FileManager.default.fileExists(atPath: icon.path))
+        #expect(installed.iconDescriptor.kind == .asset)
+        #expect(installed.iconDescriptor.value == "assets/github.svg")
+        #expect(installed.iconDescriptor.fallbackSystemName == package.icon)
+        #expect(installed.sourceMetadata?.kind == "built-in")
+        #expect(installed.sourceMetadata?.url?.resolvingSymlinksInPath() == manifest.resolvingSymlinksInPath())
+    }
+
+    @Test("sync approved packages removes stale built-in package folders")
+    func syncApprovedPackagesRemovesStaleBuiltInPackageFolders() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-stale-asset-folder-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = CapabilityLibrary(directory: root)
+        let current = try #require(ApprovedCapabilityBundle.packages().first { $0.id == "github-workflow" })
+        var stale = current
+        stale.id = "removed-built-in-asset"
+        stale.name = "Removed Built-in Asset"
+
+        try library.install(stale, sourceMetadata: .builtIn())
+        let staleManifest = library.packageManifestURL(for: stale.id)
+        #expect(FileManager.default.fileExists(atPath: staleManifest.path))
+
+        try library.syncApprovedPackages([current])
+
+        #expect(!FileManager.default.fileExists(atPath: staleManifest.deletingLastPathComponent().path))
     }
 
     @Test("resource bundle resolver exposes app icon")

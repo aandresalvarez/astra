@@ -107,7 +107,7 @@ struct Phase2FunctionalTest {
         #expect(task.teamSize == (runtimeCase.expectsTeamEvents ? 2 : 1), "Team size should match runtime support")
 
         // 4. Run through AgentRuntimeWorker
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         try E2ETestSupport.configureUnattended(worker, for: runtimeCase, temporaryRootPath: testDir)
         var receivedEvents: [ParsedEvent] = []
 
@@ -116,12 +116,15 @@ struct Phase2FunctionalTest {
                 receivedEvents.append(event)
             }
         }
+        LiveProviderDiagnostics.printSummary(
+            label: "Phase 2 \(runtimeCase.runtimeID.displayName)",
+            task: task,
+            workspacePath: testDir,
+            receivedEvents: receivedEvents
+        )
 
         // 5. Verify task lifecycle
-        // Agent teams can exceed budget due to batched token reporting — budgetExceeded is acceptable
-        let isTerminal = task.isTerminal || task.status == .pendingUser || task.status == .budgetExceeded
-        #expect(isTerminal, "Task should reach terminal status, got: \(task.status.rawValue)")
-        #expect(task.status != .failed, "Task should not have failed, status: \(task.status.rawValue)")
+        #expect(task.status == .completed, "Team artifact E2E should complete, got: \(task.status.rawValue)")
         if runtimeCase.expectsUsageStats {
             #expect(task.tokensUsed > 0, "Tokens used: \(task.tokensUsed)")
         }

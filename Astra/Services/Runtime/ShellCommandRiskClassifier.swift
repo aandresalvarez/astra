@@ -23,6 +23,13 @@ enum ShellCommandRiskClassifier {
     }
 
     static func assessment(forShellSegment segment: String) -> Assessment? {
+        // Benign redirections (fd duplications like `2>&1`, discards to
+        // /dev/null) must not make an otherwise-scopable command
+        // unclassifiable — that is what turned a read-only `git status 2>&1`
+        // into an un-grantable, run-killing request. Redirections to a named
+        // file are left intact and still rejected as unsupported syntax below.
+        let segment = strippingBenignRedirections(segment)
+        guard !containsUnsupportedShellSyntax(segment) else { return nil }
         let tokens = shellTokens(segment)
         guard let rawExecutable = tokens.first,
               let executable = shellApprovalRoot(rawExecutable) else {
@@ -32,18 +39,71 @@ enum ShellCommandRiskClassifier {
         let normalizedExecutable = executable.lowercased()
         let risk = riskForCommand(executable: normalizedExecutable, args: args)
         let pattern = shellApprovalPattern(executable: normalizedExecutable, args: args, risk: risk)
+        let containsSensitiveArgument = args.contains(where: containsSensitivePathToken)
         guard !pattern.isEmpty else { return nil }
         return Assessment(
             executable: executable,
             pattern: pattern,
             risk: risk,
-            allowsTaskScopedReuse: allowsTaskScopedReuse(risk: risk, executable: normalizedExecutable, pattern: pattern)
+            allowsTaskScopedReuse: allowsTaskScopedReuse(
+                risk: risk,
+                pattern: pattern,
+                containsSensitiveArgument: containsSensitiveArgument
+            )
         )
     }
 
     static func approvalGrant(forShellSegment segment: String) -> PermissionGrant? {
         guard let assessment = assessment(forShellSegment: segment) else { return nil }
         return .shellCommand(executable: assessment.executable, pattern: assessment.pattern)
+    }
+
+    /// Removes provably-benign I/O redirections from a single (already
+    /// operator-split) shell segment so the underlying command stays
+    /// classifiable for grant synthesis. Only file-descriptor duplications
+    /// (`2>&1`, `>&2`, `2>&-`) and discards to `/dev/null` are removed — both
+    /// add no new resource. A redirection to any named file is left in place,
+    /// so the segment still trips `containsUnsupportedShellSyntax` and is
+    /// conservatively rejected: a real write must never be folded silently into
+    /// a base-command grant.
+    private static func strippingBenignRedirections(_ segment: String) -> String {
+        // Backslashes carry escape semantics (line continuations, escaped
+        // whitespace/metacharacters) that whitespace re-tokenization would
+        // silently reshape. Leave such segments untouched so the syntax check
+        // still rejects them rather than mis-parsing a continuation as benign.
+        guard !segment.contains("\\") else { return segment }
+        let tokens = segment.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        var kept: [String] = []
+        var index = 0
+        while index < tokens.count {
+            let token = tokens[index]
+            if isFileDescriptorDupToken(token) || isDiscardRedirectToken(token) {
+                index += 1
+                continue
+            }
+            // Two-token discard: `2>` `/dev/null`, `>` `/dev/null`.
+            if isBareRedirectOperatorToken(token),
+               index + 1 < tokens.count,
+               tokens[index + 1] == "/dev/null" {
+                index += 2
+                continue
+            }
+            kept.append(token)
+            index += 1
+        }
+        return kept.joined(separator: " ")
+    }
+
+    private static func isFileDescriptorDupToken(_ token: String) -> Bool {
+        token.range(of: #"^[0-9]*>&([0-9]+|-)$"#, options: .regularExpression) != nil
+    }
+
+    private static func isDiscardRedirectToken(_ token: String) -> Bool {
+        token.range(of: #"^(&|[0-9]*)>>?/dev/null$"#, options: .regularExpression) != nil
+    }
+
+    private static func isBareRedirectOperatorToken(_ token: String) -> Bool {
+        token.range(of: #"^(&|[0-9]*)>>?$"#, options: .regularExpression) != nil
     }
 
     static func allowsTaskScopedReuse(_ grant: PermissionGrant) -> Bool {
@@ -62,7 +122,12 @@ enum ShellCommandRiskClassifier {
         return broadGrantDeniedRoots.contains(executable)
     }
 
-    private static func allowsTaskScopedReuse(risk: Risk, executable: String, pattern: String) -> Bool {
+    private static func allowsTaskScopedReuse(
+        risk: Risk,
+        pattern: String,
+        containsSensitiveArgument: Bool
+    ) -> Bool {
+        guard !containsSensitiveArgument else { return false }
         switch risk {
         case .read, .networkRead:
             return !containsSensitivePathToken(pattern)
@@ -311,6 +376,63 @@ enum ShellCommandRiskClassifier {
             .filter { !$0.isEmpty }
     }
 
+    private static func containsUnsupportedShellSyntax(_ segment: String) -> Bool {
+        var inSingleQuote = false
+        var inDoubleQuote = false
+        var escaped = false
+        let characters = Array(segment)
+
+        for index in characters.indices {
+            let character = characters[index]
+            let next = characters.index(after: index) < characters.endIndex
+                ? characters[characters.index(after: index)]
+                : nil
+
+            if escaped {
+                if character == "\n" || character == "\r" {
+                    return true
+                }
+                escaped = false
+                continue
+            }
+
+            if character == "\\" && !inSingleQuote {
+                escaped = true
+                continue
+            }
+
+            if character == "'" && !inDoubleQuote {
+                inSingleQuote.toggle()
+                continue
+            }
+
+            if character == "\"" && !inSingleQuote {
+                inDoubleQuote.toggle()
+                continue
+            }
+
+            guard !inSingleQuote else { continue }
+
+            if character == "\n" || character == "\r" || character == "`" {
+                return true
+            }
+
+            if !inDoubleQuote, character == ";" || character == "|" || character == "&" {
+                return true
+            }
+
+            if character == "$", next == "(" || next == "'" || next == "\"" {
+                return true
+            }
+
+            if !inDoubleQuote, (character == "<" || character == ">") {
+                return true
+            }
+        }
+
+        return inSingleQuote || inDoubleQuote || escaped
+    }
+
     private static func shellApprovalRoot(_ root: String) -> String? {
         let normalizedRoot = normalizedExecutable(root)
         guard !normalizedRoot.isEmpty,
@@ -430,6 +552,27 @@ enum ShellCommandRiskClassifier {
             || lower.contains("token")
             || lower.contains("secret")
             || lower.contains("credential")
+            || privacySensitivePathFragments.contains { matchesSensitivePathFragment(lower, fragment: $0) }
+    }
+
+    private static func matchesSensitivePathFragment(_ token: String, fragment: String) -> Bool {
+        let normalizedToken = token.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        if fragment.hasPrefix(".") {
+            return normalizedToken.hasSuffix(fragment) || normalizedToken.contains(fragment + "/")
+        }
+        if fragment.hasPrefix("~/") {
+            return normalizedToken == fragment || normalizedToken.hasPrefix(fragment + "/")
+        }
+        if normalizedToken == fragment || normalizedToken.hasPrefix(fragment + "/") {
+            return true
+        }
+
+        guard fragment.hasPrefix("/") else { return false }
+        let components = normalizedToken.split(separator: "/").map(String.init)
+        guard components.count >= 3, components[0] == "users" else { return false }
+        let homeRelativePath = components.dropFirst(2).joined(separator: "/")
+        let fragmentPath = String(fragment.dropFirst())
+        return homeRelativePath == fragmentPath || homeRelativePath.hasPrefix(fragmentPath + "/")
     }
 
     private static var grantMetacharacters: CharacterSet {
@@ -458,6 +601,30 @@ enum ShellCommandRiskClassifier {
     private static let fileReadRoots: Set<String> = fileContentReadRoots.union([
         "ls", "find", "stat", "file", "du", "wc"
     ])
+
+    private static let privacySensitivePathFragments: [String] = [
+        "~/pictures",
+        "/pictures",
+        "~/music",
+        "/music",
+        "~/movies",
+        "/movies",
+        "~/library/photos",
+        "/library/photos",
+        "~/library/mail",
+        "/library/mail",
+        "~/library/messages",
+        "/library/messages",
+        "~/library/calendars",
+        "/library/calendars",
+        "~/library/application support/addressbook",
+        "/library/application support/addressbook",
+        "/applications",
+        ".photoslibrary",
+        ".musiclibrary",
+        ".medialibrary",
+        ".app"
+    ]
 
     private static let credentialRoots: Set<String> = [
         "security", "op", "pass", "vault", "keychain", "ssh-add"

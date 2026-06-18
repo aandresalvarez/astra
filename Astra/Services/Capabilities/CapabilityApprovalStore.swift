@@ -2,6 +2,14 @@ import CryptoKit
 import Foundation
 import ASTRACore
 
+extension Notification.Name {
+    /// Posted after the approval store persists a record, so live UI that caches
+    /// approval state (the workspace right rail reads records once into `@State`
+    /// to stay off the per-body filesystem path) can refresh instead of going
+    /// stale until it is recreated.
+    static let capabilityApprovalsChanged = Notification.Name("astra.capabilityApprovalsChanged")
+}
+
 struct CapabilityApprovalRecord: Codable, Equatable, Identifiable, Sendable {
     var packageID: String
     var packageVersion: String
@@ -18,13 +26,52 @@ struct CapabilityApprovalRecord: Codable, Equatable, Identifiable, Sendable {
 
 enum CapabilityApprovalDigest {
     static func digest(for package: PluginPackage) throws -> String {
-        var canonical = package
-        canonical.sourceMetadata?.lastRefreshedAt = nil
+        try digest(for: CapabilityPackageSource(
+            package: package,
+            manifestURL: package.sourceMetadata?.url,
+            assetRootURL: assetRootURL(for: package)
+        ))
+    }
+
+    static func digest(for source: CapabilityPackageSource) throws -> String {
+        var canonicalSource = source
+        canonicalSource.package.sourceMetadata?.lastRefreshedAt = nil
+        canonicalSource.package.sourceMetadata?.url = nil
+        let canonical = canonicalSource.package
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(canonical)
-        let digest = SHA256.hash(data: data)
+        var hasher = SHA256()
+        hasher.update(data: data)
+        if let assetDigestData = try iconAssetDigestData(for: source) {
+            hasher.update(data: Data("\nicon-asset\n".utf8))
+            hasher.update(data: assetDigestData)
+        }
+        let digest = hasher.finalize()
         return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func assetRootURL(for package: PluginPackage) -> URL? {
+        guard package.iconDescriptor.kind == .asset else { return nil }
+        guard let url = package.sourceMetadata?.url else { return nil }
+        let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        if isDirectory {
+            return url
+        }
+        return url.deletingLastPathComponent()
+    }
+
+    private static func iconAssetDigestData(for source: CapabilityPackageSource) throws -> Data? {
+        guard let relativePath = source.declaredIconAssetPath,
+              let rootURL = source.assetRootURL else {
+            return nil
+        }
+        let assetURL = try CapabilityIconAssetPolicy.validatedAssetURL(
+            relativePath: relativePath,
+            rootURL: rootURL
+        )
+        let digest = try CapabilityIconAssetPolicy.sha256Hex(for: assetURL)
+        return Data("\(relativePath):\(digest)".utf8)
     }
 }
 
@@ -46,9 +93,12 @@ struct CapabilityApprovalStore {
     }
 
     func records() -> [CapabilityApprovalRecord] {
-        guard let files = try? fileManager.contentsOfDirectory(
+        let hostFileAccess = HostFileAccessBroker(fileManager: fileManager)
+        let accessIntent = HostFileAccessIntent.astraManagedStorage(root: directory)
+        guard let files = try? hostFileAccess.contentsOfDirectory(
             at: directory,
-            includingPropertiesForKeys: nil
+            includingPropertiesForKeys: nil,
+            intent: accessIntent
         ) else {
             return []
         }
@@ -57,7 +107,7 @@ struct CapabilityApprovalStore {
         return files
             .filter { $0.pathExtension == "json" }
             .compactMap { url in
-                guard let data = try? Data(contentsOf: url) else { return nil }
+                guard let data = try? hostFileAccess.readData(at: url, intent: accessIntent) else { return nil }
                 return try? decoder.decode(CapabilityApprovalRecord.self, from: data)
             }
             .sorted {
@@ -99,6 +149,7 @@ struct CapabilityApprovalStore {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(record)
         try data.write(to: recordURL(for: record), options: [.atomic])
+        NotificationCenter.default.post(name: .capabilityApprovalsChanged, object: nil)
         return record
     }
 

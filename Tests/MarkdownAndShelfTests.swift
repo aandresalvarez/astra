@@ -632,3 +632,28 @@ struct ShelfMarkdownSessionTests {
         #expect(session.isSelectedDocumentDirty == false)
     }
 }
+
+// MARK: - ShelfBrowserSession lazy WebKit
+
+@Suite("ShelfBrowserSession lazy WebKit")
+@MainActor
+struct ShelfBrowserSessionLazyWebKitTests {
+    @Test("A freshly created session has not instantiated WebKit")
+    func freshSessionDoesNotLoadWebKit() {
+        let session = ShelfBrowserSession()
+        defer { session.teardown() }
+        // The fix: constructing a session (which happens at app launch for the
+        // off-screen browser shelf) must NOT spin up WebKit — doing so pulls in
+        // the Photos/Music frameworks and triggers media-library TCC prompts at
+        // startup. WebKit must wait until the browser is actually shown.
+        #expect(session.isWebViewLoaded == false)
+    }
+
+    @Test("Accessing webView creates it on demand")
+    func accessingWebViewCreatesItOnDemand() {
+        let session = ShelfBrowserSession()
+        defer { session.teardown() }
+        _ = session.webView
+        #expect(session.isWebViewLoaded == true)
+    }
+}

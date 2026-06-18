@@ -219,7 +219,7 @@ struct Phase1FunctionalTest {
         context.insert(task)
         try context.save()
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         await worker.execute(task: task, modelContext: context) { _ in }
 
         #expect(task.status == .failed, "Task without workspace should fail, got: \(task.status.rawValue)")
@@ -247,7 +247,7 @@ struct Phase1FunctionalTest {
         context.insert(task)
         try context.save()
 
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         await worker.execute(task: task, modelContext: context) { _ in }
 
         #expect(task.status == .failed, "Task with bad workspace should fail, got: \(task.status.rawValue)")
@@ -1569,7 +1569,9 @@ struct Phase1FunctionalTest {
             - ./word_counter.py: a Python script that takes one text file argument and prints the top 5 most frequent words.
             - ./sample.txt: three short paragraphs of dummy text.
             - ./results.txt: the captured output from running `python3 word_counter.py sample.txt`.
-            Verify all three files exist before your final response.
+            results.txt is required. If python3 is unavailable, compute the expected top-word output another way
+            or capture the command failure text, but create results.txt before completing.
+            Do not complete until word_counter.py, sample.txt, and results.txt all exist.
             """,
             workspace: workspace,
             tokenBudget: 250000,
@@ -1586,7 +1588,7 @@ struct Phase1FunctionalTest {
         #expect(workspace.tasks.contains(task), "Workspace should contain the task")
 
         // 4. Run through AgentRuntimeWorker (same code path as the app)
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         try E2ETestSupport.configureUnattended(worker, for: runtimeCase, temporaryRootPath: testDir)
         var receivedEvents: [ParsedEvent] = []
 
@@ -1595,11 +1597,15 @@ struct Phase1FunctionalTest {
                 receivedEvents.append(event)
             }
         }
+        LiveProviderDiagnostics.printSummary(
+            label: "Phase 1 \(runtimeCase.runtimeID.displayName)",
+            task: task,
+            workspacePath: testDir,
+            receivedEvents: receivedEvents
+        )
 
         // 5. Verify task lifecycle
-        let isTerminal = task.isTerminal || task.status == .pendingUser
-        #expect(isTerminal, "Task should reach terminal status, got: \(task.status.rawValue)")
-        #expect(task.status != .failed, "Task should not have failed, status: \(task.status.rawValue)")
+        #expect(task.status == .completed, "Artifact E2E should complete, got: \(task.status.rawValue)")
         if runtimeCase.expectsUsageStats {
             #expect(task.tokensUsed > 0, "Tokens used: \(task.tokensUsed)")
         }
@@ -1617,7 +1623,8 @@ struct Phase1FunctionalTest {
         if runtimeCase.expectsUsageStats {
             #expect(run.tokensUsed > 0)
         }
-        #expect(run.completedAt != nil)
+        let completedAt = try #require(run.completedAt)
+        #expect(run.startedAt <= completedAt, "Run should have a durable lifecycle start before completion")
         #expect(run.exitCode == 0, "Exit code should be 0, got: \(run.exitCode)")
 
         // 7. Verify TaskEvents in SwiftData (these are what the Activity tab renders)

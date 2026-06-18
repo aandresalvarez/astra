@@ -1,6 +1,5 @@
 import AppKit
 import Foundation
-import Security
 
 enum MacOSPermissionKind: String {
     case appManagement = "app_management"
@@ -124,48 +123,35 @@ enum MacOSPermissionDiagnostics {
     }
 
     static func checkKeychainAccess(appDisplayName: String) -> MacOSPermissionIssue? {
-        let service = "\(Bundle.main.bundleIdentifier ?? "com.coral.ASTRA").permission-check"
+        // Validate ASTRA's *dedicated* keychain — where connector/skill secrets
+        // actually live — rather than login.keychain-db. A clean round-trip
+        // proves the app can create, unlock, write, read, and delete in its own
+        // keychain. The probe item is namespaced and removed immediately.
+        let service = "\(AppChannel.current.keychainConnectorPrefix)-permission-check"
         let account = "macos-permission-check"
         let value = "ok-\(UUID().uuidString)"
-        guard let data = value.data(using: .utf8) else {
-            return keychainIssue(appDisplayName: appDisplayName, detail: "The test value could not be encoded.")
+
+        guard AstraSecureKeychainStore.save(
+            service: service,
+            account: account,
+            value: value,
+            label: "ASTRA permission check"
+        ) else {
+            return keychainIssue(
+                appDisplayName: appDisplayName,
+                detail: "ASTRA could not write to its dedicated keychain."
+            )
         }
 
-        let baseQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-        SecItemDelete(baseQuery as CFDictionary)
+        let readBack = AstraSecureKeychainStore.load(service: service, account: account)
+        AstraSecureKeychainStore.delete(service: service, account: account)
 
-        var addQuery = baseQuery
-        addQuery[kSecValueData as String] = data
-        addQuery[kSecAttrLabel as String] = "ASTRA permission check"
-        addQuery[kSecAttrComment as String] = "Temporary ASTRA Keychain readiness check"
-        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
-
-        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
-        guard addStatus == errSecSuccess else {
-            return keychainIssue(appDisplayName: appDisplayName, detail: securityStatusDescription(addStatus))
+        guard readBack == value else {
+            return keychainIssue(
+                appDisplayName: appDisplayName,
+                detail: "ASTRA's dedicated keychain did not return the test value."
+            )
         }
-
-        var readQuery = baseQuery
-        readQuery[kSecReturnData as String] = true
-        readQuery[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: AnyObject?
-        let readStatus = SecItemCopyMatching(readQuery as CFDictionary, &result)
-        guard readStatus == errSecSuccess,
-              let readData = result as? Data,
-              String(data: readData, encoding: .utf8) == value else {
-            SecItemDelete(baseQuery as CFDictionary)
-            return keychainIssue(appDisplayName: appDisplayName, detail: securityStatusDescription(readStatus))
-        }
-
-        let deleteStatus = SecItemDelete(baseQuery as CFDictionary)
-        guard deleteStatus == errSecSuccess || deleteStatus == errSecItemNotFound else {
-            return keychainIssue(appDisplayName: appDisplayName, detail: securityStatusDescription(deleteStatus))
-        }
-
         return nil
     }
 
@@ -248,10 +234,4 @@ enum MacOSPermissionDiagnostics {
         return false
     }
 
-    private static func securityStatusDescription(_ status: OSStatus) -> String {
-        if let message = SecCopyErrorMessageString(status, nil) as String? {
-            return message
-        }
-        return "Keychain returned status \(status)."
-    }
 }

@@ -188,7 +188,7 @@ struct TaskMainView: View {
     @State private var showDiffsSheet = false
     @State private var showContextPreview = false
     @State private var showCheckpointBrowser = false
-    @State private var expandedRunActivity: Set<UUID> = []
+    @State private var runActivityDisclosureState = RunActivityDisclosureState()
     @State private var expandedRunNetworkDetails: Set<UUID> = []
     @State private var expandedRunPolicyManifests: Set<UUID> = []
     @State private var expandedRunNotices: Set<UUID> = []
@@ -236,9 +236,10 @@ struct TaskMainView: View {
     @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
     @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
     @AppStorage(AppStorageKeys.runtimeModelCacheRevision) private var runtimeModelCacheRevision = 0
-    @AppStorage(AppStorageKeys.skipPermissions) private var skipPermissions = false
+    @AppStorage(AppStorageKeys.skipPermissions) private var globalSkipPermissions = false
     @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var defaultAgentPolicyLevelRaw = AgentPolicyLevel.review.rawValue
     @State private var taskPolicyLevelRaw = AgentPolicyLevel.review.rawValue
+    @State private var taskSkipPermissions = false
     @State private var runtimeReadinessStates: [AgentRuntimeID: RuntimeReadinessState] = [:]
     var onMoveToDraft: ((AgentTask) -> Void)?
     var onManageSkills: (() -> Void)?
@@ -270,10 +271,7 @@ struct TaskMainView: View {
     }
 
     private var currentThreadSnapshot: TaskThreadSnapshot {
-        threadViewModel.snapshot ?? TaskThreadSnapshot.placeholder(
-            goal: task.goal,
-            createdAt: task.createdAt
-        )
+        threadViewModel.snapshot ?? TaskThreadSnapshot.placeholder(goal: task.goal, createdAt: task.createdAt)
     }
 
     private var planStateCacheRefreshTrigger: TaskPlanStateCacheSignature {
@@ -482,6 +480,7 @@ struct TaskMainView: View {
             await refreshVerificationPresentation(for: verificationLoadRequest)
         }
         .onChange(of: task.id) {
+            PerformanceTelemetry.log("chat_open_selected_task", level: .info, fields: TaskMainViewPerformanceTelemetry.chatOpenFields(task: task, source: "task_change"))
             isChatAtBottom = true
             hasUnseenChatActivity = false
             shouldScrollAfterUserMessage = true
@@ -501,6 +500,7 @@ struct TaskMainView: View {
             refreshPlanStateCache()
         }
         .onAppear {
+            PerformanceTelemetry.log("chat_open_selected_task", level: .info, fields: TaskMainViewPerformanceTelemetry.chatOpenFields(task: task, source: "appear"))
             alignTaskModelWithRuntime()
             initializeTaskPolicySelection()
             runtimeHealthNow = Date()
@@ -589,9 +589,7 @@ struct TaskMainView: View {
     }
 
     private func refreshPlanStateCache() {
-        guard let snapshot = TaskPlanStateSnapshot.refreshed(for: task, cached: cachedPlanStateSnapshot) else {
-            return
-        }
+        guard let snapshot = TaskMainViewPerformanceTelemetry.refreshedPlanStateSnapshot(task: task, cached: cachedPlanStateSnapshot) else { return }
         cachedPlanStateSnapshot = snapshot
     }
 
@@ -2240,7 +2238,7 @@ struct TaskMainView: View {
         presentation: RunActivityPresentation,
         notices: [TaskRunNotice]
     ) -> some View {
-        let isExpanded = expandedRunActivity.contains(run.id)
+        let isExpanded = runActivityDisclosureState.isExpanded(runID: run.id, presentation: presentation)
         let accent = runActivitySummaryColor(run: run, notices: notices)
         let title = runActivityDisclosureTitle(run: run, notices: notices)
         // Static snapshot for the accessibility label only; the visible
@@ -2257,11 +2255,7 @@ struct TaskMainView: View {
         return VStack(alignment: .leading, spacing: 6) {
             Button {
                 withAnimation(chatStatusDisclosureAnimation) {
-                    if isExpanded {
-                        expandedRunActivity.remove(run.id)
-                    } else {
-                        expandedRunActivity.insert(run.id)
-                    }
+                    runActivityDisclosureState.toggle(runID: run.id, presentation: presentation)
                 }
             } label: {
                 HStack(spacing: 7) {
@@ -3530,7 +3524,7 @@ struct TaskMainView: View {
             pendingReviewState: pendingTaskReviewState,
             runtimePermission: runtimePermissionState,
             executableApprovedPlan: executableApprovedPlan,
-            skipPermissions: skipPermissions,
+            skipPermissions: taskSkipPermissions,
             planExecutionMode: planCheckpointExecutionMode,
             canOpenPlan: onOpenPlan != nil,
             isPlanCanvasVisible: isPlanCanvasVisible,
@@ -4042,18 +4036,20 @@ struct TaskMainView: View {
         }
     }
 
-    private var planCheckpointExecutionMode: TaskPlanExecutionMode { PlanCheckpointPolicy.executionMode(for: task, skipPermissions: skipPermissions) }
+    private var planCheckpointExecutionMode: TaskPlanExecutionMode {
+        PlanCheckpointPolicy.executionMode(for: task, skipPermissions: taskSkipPermissions)
+    }
 
     private func planDecisionDock(_ plan: TaskPlanPayload) -> some View {
         let nextStep = TaskPlanService.nextExecutableStep(in: plan)
         let mode = planCheckpointExecutionMode
-        let title = PlanCheckpointPolicy.approveActionTitle(mode: mode, skipPermissions: skipPermissions)
+        let title = PlanCheckpointPolicy.approveActionTitle(mode: mode, skipPermissions: taskSkipPermissions)
         let detail = nextStep.map { "Next: \($0.title)" } ?? plan.title
-        let modeLabel = PlanCheckpointPolicy.modeLabel(mode: mode, skipPermissions: skipPermissions)
-        let tint = skipPermissions ? Stanford.poppy : Stanford.paloAltoGreen
+        let modeLabel = PlanCheckpointPolicy.modeLabel(mode: mode, skipPermissions: taskSkipPermissions)
+        let tint = taskSkipPermissions ? Stanford.poppy : Stanford.paloAltoGreen
 
         return taskDecisionSurface(
-            icon: skipPermissions ? "play.circle.fill" : "checkmark.circle.fill",
+            icon: taskSkipPermissions ? "play.circle.fill" : "checkmark.circle.fill",
             color: tint,
             title: title,
             detail: detail,
@@ -4079,13 +4075,13 @@ struct TaskMainView: View {
                 Button {
                     runApprovedPlan(plan, mode: mode)
                 } label: {
-                    Label(title, systemImage: skipPermissions ? "play.fill" : "checkmark")
+                    Label(title, systemImage: taskSkipPermissions ? "play.fill" : "checkmark")
                         .labelStyle(.titleAndIcon)
                 }
                 .buttonStyle(StanfordButtonStyle(isPrimary: true, color: tint))
                 .controlSize(.small)
                 .disabled(taskQueue == nil)
-                .accessibilityIdentifier(skipPermissions ? "RunRemainingPlanButton" : "ApproveNextPlanStepButton")
+                .accessibilityIdentifier(taskSkipPermissions ? "RunRemainingPlanButton" : "ApproveNextPlanStepButton")
 
                 taskDecisionOverflowMenu(doneLabelOverride: TaskPresentationState.closeWithoutRunningPlanActionTitle)
             }
@@ -4612,7 +4608,7 @@ struct TaskMainView: View {
                         ])
                     },
                     onManageSkills: onManageSkills,
-                    skipPermissions: $skipPermissions,
+                    skipPermissions: $taskSkipPermissions,
                     policyLevelRaw: $taskPolicyLevelRaw,
                     useAgentTeam: .constant(false),
                     teamSize: .constant(3),
@@ -5288,14 +5284,14 @@ struct TaskMainView: View {
             ?? AgentPolicyDefaults.effectiveLevel(
                 workspace: task.workspace,
                 globalDefaultRaw: defaultAgentPolicyLevelRaw,
-                skipPermissions: skipPermissions
+                skipPermissions: globalSkipPermissions
             )
         taskPolicyLevelRaw = level.rawValue
-        skipPermissions = level == .autonomous
+        taskSkipPermissions = level == .autonomous
     }
 
     private func recordCurrentTaskPolicyIfNeeded(source: String) {
-        let level = skipPermissions ? AgentPolicyLevel.autonomous : AgentPolicyLevel.normalized(taskPolicyLevelRaw)
+        let level = taskSkipPermissions ? AgentPolicyLevel.autonomous : AgentPolicyLevel.normalized(taskPolicyLevelRaw)
         guard TaskPolicyStore.latestSelectedLevel(for: task) != level else { return }
         TaskPolicyStore.recordSelection(
             level: level,

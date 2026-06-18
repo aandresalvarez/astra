@@ -1,334 +1,17 @@
 import Foundation
-import SwiftData
 import ASTRACore
 
+/// Read-side catalog of capability packages. All mutations (enable, disable,
+/// remove, import, create) go through `CapabilityCatalogActionService` →
+/// `CapabilityInstaller`/`CapabilityUninstaller`; this type only loads the
+/// approved/built-in package set and exposes the curated definitions.
 @Observable @MainActor
 final class PluginCatalog {
     var packages: [PluginPackage] = []
 
-    static let pluginsDirectory: String = {
-        NSHomeDirectory() + "/.astra/plugins"
-    }()
-
-    var catalogDirectory: String = PluginCatalog.pluginsDirectory
-
-    // MARK: - Load
-
-    func loadCatalog() {
-        let dir = catalogDirectory
-        guard FileManager.default.fileExists(atPath: dir) else {
-            packages = []
-            return
-        }
-
-        let decoder = JSONDecoder()
-        var loaded: [PluginPackage] = []
-
-        guard let files = try? FileManager.default.contentsOfDirectory(atPath: dir) else {
-            packages = []
-            return
-        }
-
-        for file in files where file.hasSuffix(".json") {
-            let path = (dir as NSString).appendingPathComponent(file)
-            guard let data = FileManager.default.contents(atPath: path),
-                  let package = try? decoder.decode(PluginPackage.self, from: data) else {
-                continue
-            }
-            loaded.append(package)
-        }
-
-        packages = loaded.sorted { $0.category < $1.category || ($0.category == $1.category && $0.name < $1.name) }
-    }
-
     func loadApprovedCapabilities(library: CapabilityLibrary = CapabilityLibrary()) {
         try? library.syncApprovedPackages(Self.builtInPackages)
         packages = library.installedPackages()
-    }
-
-    var categories: [String] {
-        let cats = packages.map(\.category)
-        return Array(NSOrderedSet(array: cats)) as? [String] ?? Array(Set(cats)).sorted()
-    }
-
-    // MARK: - Install
-
-    func isInstalled(_ packageID: String, in workspace: Workspace) -> Bool {
-        if workspace.enabledCapabilityIDs.contains(packageID) || workspace.installedPluginIDSet.contains(packageID) {
-            return true
-        }
-        guard let pkg = packages.first(where: { $0.id == packageID }) else { return false }
-        let skillNames = Set(pkg.skills.map(\.name))
-        let connectorNames = Set(pkg.connectors.map(\.name))
-        let hasSkill = workspace.skills.contains { skillNames.contains($0.name) }
-        let hasConnector = workspace.connectors.contains { connectorNames.contains($0.name) }
-        let hasNoInstallablePayload = skillNames.isEmpty
-            && connectorNames.isEmpty
-            && pkg.localTools.isEmpty
-            && pkg.templates.isEmpty
-            && pkg.browserAdapters.isEmpty
-        return hasSkill || hasConnector || hasNoInstallablePayload
-    }
-
-    @MainActor
-    func install(
-        _ package: PluginPackage,
-        into workspace: Workspace,
-        modelContext: ModelContext,
-        credentialInputs: [String: String] = [:],
-        configInputs: [String: String] = [:],
-        baseURLOverrides: [String: String] = [:],
-        policyContext: CapabilityCatalogPolicyContext? = nil
-    ) throws {
-        let effectivePolicyContext = policyContext ?? CapabilityCatalogPolicyContext.workspaceUser(
-            workspace: workspace,
-            approvalRecords: CapabilityApprovalStore().records()
-        )
-        let policyDecision = CapabilityCatalogPolicy.decision(for: package, context: effectivePolicyContext)
-        guard policyDecision.canEnable else {
-            throw CapabilityInstaller.InstallationError.blocked(policyDecision.blockerMessages)
-        }
-
-        var createdSkills: [String: Skill] = [:]
-
-        // Create skills
-        for ps in package.skills {
-            guard !workspace.skills.contains(where: { $0.name == ps.name }) else { continue }
-            let skill = Skill(
-                name: ps.name,
-                icon: ps.icon,
-                skillDescription: ps.description,
-                allowedTools: ps.allowedTools,
-                disallowedTools: ps.disallowedTools,
-                customTools: ps.customTools,
-                behaviorInstructions: ps.behaviorInstructions
-            )
-            skill.environmentKeys = ps.environmentKeys
-            skill.environmentValues = ps.environmentValues
-            CapabilityResourceOrigin.stamp(
-                skill,
-                package: package,
-                componentID: CapabilityResourceOrigin.componentID(for: ps)
-            )
-            skill.migrateSecretsToKeychain()
-            skill.workspace = workspace
-            modelContext.insert(skill)
-            createdSkills[ps.name] = skill
-        }
-
-        // Create connectors
-        for pc in package.connectors {
-            guard !workspace.connectors.contains(where: { $0.name == pc.name }) else { continue }
-            let connector = Connector(
-                name: pc.name,
-                serviceType: pc.serviceType,
-                icon: pc.icon,
-                connectorDescription: pc.description,
-                baseURL: baseURLOverrides[pc.name] ?? pc.baseURL,
-                authMethod: pc.authMethod
-            )
-            connector.notes = pc.notes
-            connector.workspace = workspace
-            CapabilityResourceOrigin.stamp(
-                connector,
-                package: package,
-                componentID: CapabilityResourceOrigin.componentID(for: pc)
-            )
-
-            // Credential keys — save provided values to Keychain
-            connector.credentialKeys = pc.credentialHints.map(\.key)
-            connector.credentialValues = Array(repeating: "", count: pc.credentialHints.count)
-            for hint in pc.credentialHints {
-                if let value = credentialInputs[hint.key], !value.isEmpty {
-                    connector.saveCredential(key: hint.key, value: value)
-                }
-            }
-
-            // Config keys — use provided values
-            connector.configKeys = pc.configHints.map(\.key)
-            connector.configValues = pc.configHints.map { configInputs[$0.key] ?? "" }
-
-            // Link to first created skill
-            if let firstSkill = createdSkills.values.first {
-                connector.skill = firstSkill
-            }
-
-            modelContext.insert(connector)
-        }
-
-        // Create local tools
-        for pt in package.localTools {
-            guard !workspace.localTools.contains(where: { $0.name == pt.name }) else { continue }
-            let tool = LocalTool(
-                name: pt.name,
-                toolDescription: pt.description,
-                icon: pt.icon,
-                toolType: pt.toolType,
-                command: pt.command,
-                arguments: pt.arguments
-            )
-            tool.workspace = workspace
-            CapabilityResourceOrigin.stamp(
-                tool,
-                package: package,
-                componentID: CapabilityResourceOrigin.componentID(for: pt)
-            )
-            if let firstSkill = createdSkills.values.first {
-                tool.skill = firstSkill
-            }
-            modelContext.insert(tool)
-        }
-
-        // Create templates
-        for pt in package.templates {
-            guard !workspace.templates.contains(where: { $0.name == pt.name }) else { continue }
-            let template = TaskTemplate(
-                name: pt.name,
-                mainGoal: pt.mainGoal,
-                workspace: workspace,
-                icon: pt.icon,
-                templateDescription: pt.description
-            )
-            template.beforeGoal = pt.beforeGoal
-            template.afterGoal = pt.afterGoal
-            template.mainBudget = pt.mainBudget
-            template.beforeBudget = pt.beforeBudget
-            template.afterBudget = pt.afterBudget
-            template.variablesJSON = pt.variablesJSON
-            template.passContextToMain = pt.passContextToMain
-            template.passContextToAfter = pt.passContextToAfter
-            CapabilityResourceOrigin.stamp(
-                template,
-                package: package,
-                componentID: CapabilityResourceOrigin.componentID(for: pt)
-            )
-            modelContext.insert(template)
-        }
-
-        workspace.recordInstalledPlugin(id: package.id, version: package.version)
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
-        var auditFields = [
-            "package_id": package.id,
-            "package_version": package.version,
-            "workspace_id": workspace.id.uuidString,
-            "skills_count": String(package.skills.count),
-            "connectors_count": String(package.connectors.count)
-        ]
-        auditFields.merge(CapabilityAudit.governanceFields(package.governance), uniquingKeysWith: { _, new in new })
-        AppLogger.audit(.pluginInstalled, category: "PluginCatalog", fields: auditFields)
-    }
-
-    // MARK: - Version Checking
-
-    func hasUpdate(for packageID: String, in workspace: Workspace) -> Bool {
-        guard let pkg = packages.first(where: { $0.id == packageID }),
-              let installedStr = workspace.installedVersion(of: packageID),
-              let installed = SemanticVersion(string: installedStr),
-              let catalog = SemanticVersion(string: pkg.version) else { return false }
-        return catalog > installed
-    }
-
-    func availableUpdates(for workspace: Workspace) -> [PluginPackage] {
-        packages.filter { hasUpdate(for: $0.id, in: workspace) }
-    }
-
-    @MainActor
-    func update(
-        _ package: PluginPackage,
-        in workspace: Workspace,
-        modelContext: ModelContext
-    ) {
-        for ps in package.skills {
-            if let existing = workspace.skills.first(where: { $0.name == ps.name }) {
-                existing.allowedTools = ps.allowedTools
-                existing.disallowedTools = ps.disallowedTools
-                existing.customTools = ps.customTools
-                existing.behaviorInstructions = ps.behaviorInstructions
-                existing.icon = ps.icon
-                existing.skillDescription = ps.description
-                CapabilityResourceOrigin.stamp(
-                    existing,
-                    package: package,
-                    componentID: CapabilityResourceOrigin.componentID(for: ps)
-                )
-                existing.updatedAt = Date()
-            } else {
-                let skill = Skill(
-                    name: ps.name,
-                    icon: ps.icon,
-                    skillDescription: ps.description,
-                    allowedTools: ps.allowedTools,
-                    disallowedTools: ps.disallowedTools,
-                    customTools: ps.customTools,
-                    behaviorInstructions: ps.behaviorInstructions
-                )
-                skill.environmentKeys = ps.environmentKeys
-                skill.environmentValues = ps.environmentValues
-                CapabilityResourceOrigin.stamp(
-                    skill,
-                    package: package,
-                    componentID: CapabilityResourceOrigin.componentID(for: ps)
-                )
-                skill.workspace = workspace
-                modelContext.insert(skill)
-            }
-        }
-
-        for pt in package.templates {
-            if let existing = workspace.templates.first(where: { $0.name == pt.name }) {
-                existing.mainGoal = pt.mainGoal
-                existing.beforeGoal = pt.beforeGoal
-                existing.afterGoal = pt.afterGoal
-                existing.mainBudget = pt.mainBudget
-                existing.beforeBudget = pt.beforeBudget
-                existing.afterBudget = pt.afterBudget
-                existing.variablesJSON = pt.variablesJSON
-                existing.passContextToMain = pt.passContextToMain
-                existing.passContextToAfter = pt.passContextToAfter
-                CapabilityResourceOrigin.stamp(
-                    existing,
-                    package: package,
-                    componentID: CapabilityResourceOrigin.componentID(for: pt)
-                )
-                existing.updatedAt = Date()
-            }
-        }
-
-        workspace.recordInstalledPlugin(id: package.id, version: package.version)
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
-        AppLogger.audit(.pluginInstalled, category: "PluginCatalog", fields: [
-            "package_id": package.id,
-            "package_version": package.version,
-            "workspace_id": workspace.id.uuidString,
-            "action": "update"
-        ])
-    }
-
-    // MARK: - Seed Built-in Plug-ins
-
-    func seedBuiltInPlugins() {
-        let dir = catalogDirectory
-        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-
-        // Remove deprecated seeds. These packages either duplicated skills
-        // auto-seeded into every workspace or are no longer approved for the
-        // built-in catalog.
-        let deprecated = [
-            "safe-executor", "refactorer", "data-analyst", "research-assistant",
-            "devops", "documentation-writer", "database-connector", "rest-api-connector",
-            "slack-connector", "confluence-connector",
-            "test-runner", "read-only-explorer",
-            "code-reviewer", "docker-manager",
-            "starr-dbt-usage", "starr-dbt", "star-dbt-usage", "star-dbt",
-            "stanford-outlook-mail", "stanford-graph-mail"
-        ]
-        for oldID in deprecated {
-            let path = (dir as NSString).appendingPathComponent("\(oldID).json")
-            try? FileManager.default.removeItem(atPath: path)
-        }
-
-        let library = CapabilityLibrary(directory: URL(fileURLWithPath: dir, isDirectory: true))
-        try? library.syncApprovedPackages(Self.builtInPackages)
     }
 
     // MARK: - Built-in Package Definitions (Curated)
@@ -345,8 +28,8 @@ final class PluginCatalog {
         // already gets for free from `TaskLifecycleCoordinator.seedSkills`
         // ("Test Runner" and "Read-Only"), so installing them just made two
         // copies of the same skill appear in the sidebar. They're removed
-        // from the catalog and explicitly de-seeded on upgrade — see
-        // `deprecated` in `seedBuiltInPlugins`.
+        // from the catalog; `CapabilityLibrary.syncApprovedPackages` drops
+        // stale built-in package files on launch.
 
         // ────────────────────────────────────────────
         // 1. Security Auditor — zero config
@@ -436,6 +119,7 @@ final class PluginCatalog {
             id: "jira-workflow",
             name: "Jira Workflow",
             icon: "list.bullet.clipboard",
+            iconDescriptor: .brand("jira", fallbackSystemName: "list.bullet.clipboard"),
             description: "Query, create, and update Jira tickets",
             author: "ASTRA",
             category: "Integrations",
@@ -637,6 +321,7 @@ final class PluginCatalog {
             id: "github-workflow",
             name: "GitHub Workflow",
             icon: "chevron.left.forwardslash.chevron.right",
+            iconDescriptor: .brand("github", fallbackSystemName: "chevron.left.forwardslash.chevron.right"),
             description: "Manage issues, PRs, and CI from your workspace",
             author: "ASTRA",
             category: "Integrations",
@@ -734,6 +419,7 @@ final class PluginCatalog {
             id: "gcloud-workflow",
             name: "Google Cloud",
             icon: "cloud",
+            iconDescriptor: .brand("googlecloud", fallbackSystemName: "cloud"),
             description: "Manage GCP resources, BigQuery, and deployments",
             author: "ASTRA",
             category: "Integrations",
@@ -853,6 +539,7 @@ final class PluginCatalog {
             id: "google-drive-browser",
             name: "Google Drive Browser",
             icon: "folder.badge.gearshape",
+            iconDescriptor: .brand("googledrive", fallbackSystemName: "folder.badge.gearshape"),
             description: "Adds Google Drive-specific browser open semantics to the Shelf browser",
             author: "ASTRA",
             category: "Browser",

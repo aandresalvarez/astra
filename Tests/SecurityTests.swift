@@ -1,8 +1,287 @@
 import Testing
 import Foundation
+import Security
 @testable import ASTRA
 import ASTRACore
-import CryptoKit
+
+@Suite("Privacy-sensitive path policy")
+struct PrivacySensitivePathPolicyTests {
+    @Test("Implicit scans skip protected home media roots")
+    func implicitScansSkipProtectedHomeMediaRoots() {
+        let home = URL(fileURLWithPath: "/tmp/astra-fake-home", isDirectory: true)
+
+        #expect(PrivacySensitivePathPolicy.shouldSkipImplicitScan(
+            of: home.appendingPathComponent("Pictures", isDirectory: true),
+            homeDirectory: home
+        ))
+        #expect(PrivacySensitivePathPolicy.shouldSkipImplicitScan(
+            of: home.appendingPathComponent("Music/Music Library.musiclibrary", isDirectory: true),
+            homeDirectory: home
+        ))
+        #expect(PrivacySensitivePathPolicy.shouldSkipImplicitScan(
+            of: URL(fileURLWithPath: "/tmp/workspace/Pictures", isDirectory: true),
+            homeDirectory: home
+        ) == false)
+        #expect(PrivacySensitivePathPolicy.shouldSkipImplicitScan(
+            of: URL(fileURLWithPath: "/Volumes/SharedDrive", isDirectory: true),
+            homeDirectory: home
+        ))
+        #expect(PrivacySensitivePathPolicy.shouldSkipImplicitScan(
+            of: URL(fileURLWithPath: "/Network/Servers/SharedDrive", isDirectory: true),
+            homeDirectory: home
+        ))
+    }
+
+    @Test("Implicit scans allow descendants inside the selected scan root")
+    func implicitScansAllowDescendantsInsideSelectedScanRoot() {
+        let home = URL(fileURLWithPath: "/tmp/astra-fake-home", isDirectory: true)
+        let scanRoot = home.appendingPathComponent("Pictures/project", isDirectory: true)
+        let descendant = scanRoot.appendingPathComponent("notes.md")
+
+        #expect(PrivacySensitivePathPolicy.shouldSkipImplicitScan(
+            of: descendant,
+            scanRoot: scanRoot,
+            homeDirectory: home
+        ) == false)
+    }
+}
+
+@Suite("Host File Access Broker")
+struct HostFileAccessBrokerTests {
+    @Test("Implicit directory scans filter privacy-sensitive children")
+    func implicitDirectoryScansFilterPrivacySensitiveChildren() throws {
+        let home = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("astra-host-file-broker-\(UUID().uuidString)", isDirectory: true)
+        let pictures = home.appendingPathComponent("Pictures", isDirectory: true)
+        let music = home.appendingPathComponent("Music", isDirectory: true)
+        let project = home.appendingPathComponent("Projects/App", isDirectory: true)
+
+        try FileManager.default.createDirectory(at: pictures, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: music, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let broker = HostFileAccessBroker(homeDirectory: home)
+        let children = try broker.contentsOfDirectory(
+            at: home,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            intent: .implicitScan(root: home)
+        )
+
+        let names = Set(children.map(\.lastPathComponent))
+        #expect(names == ["Projects"])
+    }
+
+    @Test("Implicit directory scans avoid resource-key prefetch before filtering")
+    func implicitDirectoryScansAvoidResourceKeyPrefetchBeforeFiltering() throws {
+        let home = URL(fileURLWithPath: "/tmp/astra-host-prefetch-home", isDirectory: true)
+        let pictures = home.appendingPathComponent("Pictures", isDirectory: true)
+        let project = home.appendingPathComponent("Projects", isDirectory: true)
+        let fileManager = SpyDirectoryFileManager(childrenByPath: [
+            home.path: [pictures, project]
+        ])
+        let broker = HostFileAccessBroker(fileManager: fileManager, homeDirectory: home)
+
+        let children = try broker.contentsOfDirectory(
+            at: home,
+            includingPropertiesForKeys: [.isDirectoryKey, .isPackageKey],
+            intent: .implicitScan(root: home)
+        )
+
+        #expect(children == [project])
+        #expect(fileManager.directoryRequests.map(\.keys) == [nil])
+    }
+
+    @Test("Implicit enumerators do not yield privacy-sensitive descendants")
+    func implicitEnumeratorsDoNotYieldPrivacySensitiveDescendants() throws {
+        let home = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("astra-host-file-broker-enumerator-\(UUID().uuidString)", isDirectory: true)
+        let pictures = home.appendingPathComponent("Pictures", isDirectory: true)
+        let music = home.appendingPathComponent("Music", isDirectory: true)
+        let project = home.appendingPathComponent("Projects/App", isDirectory: true)
+
+        try FileManager.default.createDirectory(at: pictures, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: music, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        try "photo".write(to: pictures.appendingPathComponent("library.txt"), atomically: true, encoding: .utf8)
+        try "music".write(to: music.appendingPathComponent("library.txt"), atomically: true, encoding: .utf8)
+        try "swift".write(to: project.appendingPathComponent("App.swift"), atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let broker = HostFileAccessBroker(homeDirectory: home)
+        let resolvedHome = home
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let resolvedHomePrefix = resolvedHome.path.hasSuffix("/") ? resolvedHome.path : resolvedHome.path + "/"
+        let enumerator = try #require(broker.enumerator(
+            at: home,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            intent: .implicitScan(root: home)
+        ))
+
+        var relativePaths: Set<String> = []
+        while let url = enumerator.nextObject() as? URL {
+            let itemURL = url
+                .resolvingSymlinksInPath()
+                .standardizedFileURL
+            let relativePath = String(itemURL.path.dropFirst(resolvedHomePrefix.count))
+            relativePaths.insert(relativePath)
+        }
+
+        #expect(relativePaths.contains("Projects"))
+        #expect(relativePaths.contains("Projects/App"))
+        #expect(relativePaths.contains("Projects/App/App.swift"))
+        #expect(!relativePaths.contains("Pictures"))
+        #expect(!relativePaths.contains("Pictures/library.txt"))
+        #expect(!relativePaths.contains("Music"))
+        #expect(!relativePaths.contains("Music/library.txt"))
+    }
+
+    @Test("Explicit user selected roots can include privacy-sensitive folders")
+    func explicitUserSelectedRootsCanIncludePrivacySensitiveFolders() throws {
+        let home = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("astra-host-file-broker-explicit-\(UUID().uuidString)", isDirectory: true)
+        let pictures = home.appendingPathComponent("Pictures", isDirectory: true)
+        let selectedFile = pictures.appendingPathComponent("selected.txt")
+
+        try FileManager.default.createDirectory(at: pictures, withIntermediateDirectories: true)
+        try "ok".write(to: selectedFile, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let broker = HostFileAccessBroker(homeDirectory: home)
+        let children = try broker.contentsOfDirectory(
+            at: pictures,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            intent: .explicitUserSelection
+        )
+
+        #expect(children.map(\.lastPathComponent) == ["selected.txt"])
+        #expect(!broker.shouldSkip(
+            pictures,
+            intent: .explicitUserSelection
+        ))
+        #expect(broker.shouldSkip(
+            pictures,
+            intent: .implicitScan(root: home)
+        ))
+    }
+
+    @Test("Broker reads explicit user-selected protected files")
+    func brokerReadsExplicitUserSelectedProtectedFiles() throws {
+        let home = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("astra-host-file-broker-read-\(UUID().uuidString)", isDirectory: true)
+        let pictures = home.appendingPathComponent("Pictures", isDirectory: true)
+        let selectedFile = pictures.appendingPathComponent("notes.txt")
+
+        try FileManager.default.createDirectory(at: pictures, withIntermediateDirectories: true)
+        try "selected context".write(to: selectedFile, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let broker = HostFileAccessBroker(homeDirectory: home)
+        let text = try broker.readString(
+            at: selectedFile,
+            encoding: .utf8,
+            intent: .explicitUserSelection
+        )
+
+        #expect(text == "selected context")
+    }
+
+    @Test("Broker reads use injected file manager")
+    func brokerReadsUseInjectedFileManager() throws {
+        let fileManager = StubContentFileManager(contents: Data("injected content".utf8))
+        let broker = HostFileAccessBroker(fileManager: fileManager)
+        let url = URL(fileURLWithPath: "/tmp/astra-injected-file-manager.txt")
+
+        let text = try broker.readString(
+            at: url,
+            encoding: .utf8,
+            intent: .explicitUserSelection
+        )
+
+        #expect(text == "injected content")
+        #expect(fileManager.requestedPaths == [url.path])
+    }
+
+    @Test("Broker read data reports missing injected file manager content")
+    func brokerReadDataReportsMissingInjectedFileManagerContent() throws {
+        let broker = HostFileAccessBroker(fileManager: StubContentFileManager(contents: nil))
+
+        #expect(throws: CocoaError.self) {
+            try broker.readData(
+                at: URL(fileURLWithPath: "/tmp/astra-missing-injected-content.txt"),
+                intent: .explicitUserSelection
+            )
+        }
+    }
+
+    @Test("ASTRA-managed storage reads stay inside the declared root")
+    func astraManagedStorageReadsStayInsideDeclaredRoot() throws {
+        let base = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("astra-host-file-broker-internal-\(UUID().uuidString)", isDirectory: true)
+        let taskFolder = base.appendingPathComponent("task", isDirectory: true)
+        let inside = taskFolder.appendingPathComponent("current_state.json")
+        let outside = base.appendingPathComponent("outside.json")
+
+        try FileManager.default.createDirectory(at: taskFolder, withIntermediateDirectories: true)
+        try "{}".write(to: inside, atomically: true, encoding: .utf8)
+        try "leak".write(to: outside, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        let broker = HostFileAccessBroker()
+        #expect(try broker.readString(
+            at: inside,
+            encoding: .utf8,
+            intent: .astraManagedStorage(root: taskFolder)
+        ) == "{}")
+        #expect(throws: HostFileAccessError.self) {
+            try broker.readString(
+                at: outside,
+                encoding: .utf8,
+                intent: .astraManagedStorage(root: taskFolder)
+            )
+        }
+    }
+}
+
+private final class StubContentFileManager: FileManager {
+    let contents: Data?
+    private(set) var requestedPaths: [String] = []
+
+    init(contents: Data?) {
+        self.contents = contents
+        super.init()
+    }
+
+    override func contents(atPath path: String) -> Data? {
+        requestedPaths.append(path)
+        return contents
+    }
+}
+
+private final class SpyDirectoryFileManager: FileManager {
+    struct DirectoryRequest: Equatable {
+        let path: String
+        let keys: Set<URLResourceKey>?
+    }
+
+    let childrenByPath: [String: [URL]]
+    private(set) var directoryRequests: [DirectoryRequest] = []
+
+    init(childrenByPath: [String: [URL]]) {
+        self.childrenByPath = childrenByPath
+        super.init()
+    }
+
+    override func contentsOfDirectory(
+        at url: URL,
+        includingPropertiesForKeys keys: [URLResourceKey]?,
+        options mask: FileManager.DirectoryEnumerationOptions = []
+    ) throws -> [URL] {
+        directoryRequests.append(DirectoryRequest(path: url.path, keys: keys.map(Set.init)))
+        return childrenByPath[url.path] ?? []
+    }
+}
 
 @Suite("Permission Policy")
 struct PermissionPolicyTests {
@@ -163,52 +442,100 @@ struct SecretRedactionInputTests {
     }
 }
 
-@Suite("Plugin Signing")
-struct PluginSigningTests {
-
-    @Test("Hash produces consistent SHA-256 hex string")
-    func consistentHash() {
-        let data = "hello world".data(using: .utf8)!
-        let hash1 = PluginSigning.hash(pluginJSON: data)
-        let hash2 = PluginSigning.hash(pluginJSON: data)
-        #expect(hash1 == hash2)
-        #expect(hash1.count == 64)
-    }
-
-    @Test("Valid signature verifies successfully")
-    func validSignature() {
-        let (privateKey, publicKey) = PluginSigning.generateKeyPair()
-        let data = "{\"name\": \"test-plugin\"}".data(using: .utf8)!
-        let signature = PluginSigning.sign(pluginJSON: data, privateKey: privateKey)
-        #expect(PluginSigning.verify(pluginJSON: data, signature: signature, publicKey: publicKey))
-    }
-
-    @Test("Tampered data fails verification")
-    func tamperedData() {
-        let (privateKey, publicKey) = PluginSigning.generateKeyPair()
-        let data = "{\"name\": \"test-plugin\"}".data(using: .utf8)!
-        let signature = PluginSigning.sign(pluginJSON: data, privateKey: privateKey)
-        let tampered = "{\"name\": \"evil-plugin\"}".data(using: .utf8)!
-        #expect(!PluginSigning.verify(pluginJSON: tampered, signature: signature, publicKey: publicKey))
-    }
-
-    @Test("Wrong key fails verification")
-    func wrongKey() {
-        let (privateKey, _) = PluginSigning.generateKeyPair()
-        let (_, otherPublic) = PluginSigning.generateKeyPair()
-        let data = "{\"name\": \"test\"}".data(using: .utf8)!
-        let signature = PluginSigning.sign(pluginJSON: data, privateKey: privateKey)
-        #expect(!PluginSigning.verify(pluginJSON: data, signature: signature, publicKey: otherPublic))
-    }
-
-    @Test("Unsigned plugin has isTrusted false")
-    func unsignedPlugin() throws {
+@Suite("Plugin Package Decode Compatibility")
+struct PluginPackageDecodeCompatibilityTests {
+    @Test("Legacy package JSON with retired signature/isTrusted keys still decodes")
+    func legacySigningKeysAreIgnored() throws {
         let json = """
-        {"formatVersion":2,"id":"test","name":"Test","icon":"star","description":"desc","author":"me","category":"dev","tags":[],"version":"1.0","skills":[],"connectors":[],"localTools":[],"templates":[]}
+        {"formatVersion":2,"id":"test","name":"Test","icon":"star","description":"desc","author":"me","category":"dev","tags":[],"version":"1.0","skills":[],"connectors":[],"localTools":[],"templates":[],"signature":"ZmFrZQ==","isTrusted":true}
         """
         let plugin = try JSONDecoder().decode(PluginPackage.self, from: json.data(using: .utf8)!)
-        #expect(!plugin.isTrusted)
-        #expect(plugin.signature == nil)
+        #expect(plugin.id == "test")
+        // Retired keys must not grant trust: governance falls back to the
+        // source-metadata default, which is a local draft for bare JSON.
+        #expect(plugin.governance.approvalStatus == .draft)
+    }
+}
+
+@Suite("Connector Security Policy")
+struct ConnectorSecurityPolicyTests {
+    @Test("Authenticated connectors require protected transport even when credentials come from env")
+    func authenticatedConnectorsRequireProtectedTransportWithoutCredentialKeys() {
+        let violation = ConnectorSecurityPolicy.credentialTransportViolation(
+            baseURL: "http://api.example.com",
+            authMethod: "bearer",
+            credentialKeys: []
+        )
+
+        #expect(violation != nil)
+    }
+
+    @Test("Unauthenticated HTTP connectors remain allowed")
+    func unauthenticatedHTTPConnectorsRemainAllowed() {
+        let violation = ConnectorSecurityPolicy.credentialTransportViolation(
+            baseURL: "http://api.example.com",
+            authMethod: "none",
+            credentialKeys: []
+        )
+
+        #expect(violation == nil)
+    }
+}
+
+@Suite("Credential Storage Policy")
+struct CredentialStoragePolicyTests {
+    @Test("Keychain credentials are device local")
+    func keychainCredentialsAreDeviceLocal() {
+        #expect(
+            KeychainCredentialPolicy.accessibility as String
+                == kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String
+        )
+    }
+}
+
+@Suite("Session History Redaction")
+struct SessionHistoryRedactionTests {
+    @Test("Session history redacts short explicit secrets and common token formats")
+    func sessionHistoryRedactsShortSecretsAndKnownTokenFormats() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-redaction-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let body = """
+        pin xy
+        github ghp_1234567890abcdef1234567890abcdef1234
+        fine-grained github_pat_1234567890abcdef_1234567890abcdef
+        aws AKIA1234567890ABCDEF
+        anthropic sk-ant-api03-1234567890abcdef
+        """
+
+        SessionHistoryManager.recordTurn(
+            taskFolder: root.path,
+            taskTitle: "Redaction",
+            turnMessage: "pin xy",
+            output: body,
+            tokensUsed: 0,
+            costUSD: 0,
+            fileChanges: [],
+            redactions: ["xy"]
+        )
+
+        let history = try String(
+            contentsOf: root.appendingPathComponent("session_history.md"),
+            encoding: .utf8
+        )
+        let output = try String(
+            contentsOf: root.appendingPathComponent("outputs/turn_001.md"),
+            encoding: .utf8
+        )
+        let combined = history + "\n" + output
+
+        #expect(!combined.contains("xy"))
+        #expect(!combined.contains("ghp_1234567890abcdef1234567890abcdef1234"))
+        #expect(!combined.contains("github_pat_1234567890abcdef_1234567890abcdef"))
+        #expect(!combined.contains("AKIA1234567890ABCDEF"))
+        #expect(!combined.contains("sk-ant-api03-1234567890abcdef"))
+        #expect(combined.contains("[REDACTED]"))
     }
 }
 

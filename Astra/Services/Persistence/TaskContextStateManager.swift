@@ -321,7 +321,10 @@ enum TaskContextStateManager {
 
     static func loadResult(taskFolder: String) -> TaskContextStateLoadResult {
         let url = URL(fileURLWithPath: taskFolder).appendingPathComponent(jsonFileName)
-        guard FileManager.default.fileExists(atPath: url.path) else {
+        let accessRoot = URL(fileURLWithPath: taskFolder, isDirectory: true)
+        let hostFileAccess = HostFileAccessBroker()
+        let intent = HostFileAccessIntent.astraManagedStorage(root: accessRoot)
+        guard hostFileAccess.fileExists(at: url, intent: intent) else {
             return TaskContextStateLoadResult(
                 status: .missingFile,
                 path: url.path,
@@ -333,7 +336,7 @@ enum TaskContextStateManager {
 
         let data: Data
         do {
-            data = try Data(contentsOf: url)
+            data = try hostFileAccess.readData(at: url, intent: intent)
         } catch {
             return TaskContextStateLoadResult(
                 status: .unreadableFile,
@@ -634,8 +637,7 @@ enum TaskContextStateManager {
     @MainActor
     private static func updateDerivedFields(_ state: inout TaskContextState, task: AgentTask, latestRun: TaskRun?) {
         let planState = TaskPlanService.reconstruct(for: task)
-        let artifactReconciliation = TaskArtifactPersistenceService.reconcileTaskOutputArtifacts(for: task)
-        let discoveredTaskOutputFiles = artifactReconciliation.discoveredFiles
+        let discoveredTaskOutputFiles = TaskOutputDiscovery.files(for: task)
         state.mode = inferredMode(task: task, planState: planState, latestRun: latestRun)
         state.startingRequest = firstNonEmpty(
             firstConversationRequest(for: task),
@@ -1062,20 +1064,21 @@ enum TaskContextStateManager {
         var indexByPath: [String: Int] = [:]
 
         for artifact in task.artifacts.sorted(by: { $0.createdAt < $1.createdAt }) {
-            let key = artifactReferenceKey(artifact.path)
+            let path = TaskArtifactPathNormalizer.normalizedPath(artifact.path, task: task)
+            let key = artifactReferenceKey(path)
             guard !key.isEmpty else { continue }
 
             let pointer = sourcePointer(
                 kind: "artifact",
                 id: artifact.id.uuidString,
-                path: artifact.path,
+                path: path,
                 summary: "Generated artifact"
             )
             let incoming = TaskContextState.ArtifactReference(
-                type: artifact.type,
-                path: artifact.path,
+                type: ArtifactKind(rawValue: artifact.type).rawValue,
+                path: path,
                 version: artifact.version,
-                isStale: artifact.isStale,
+                isStale: !FileManager.default.fileExists(atPath: path),
                 sourcePointers: [pointer]
             )
 
@@ -1712,19 +1715,6 @@ enum TaskContextStateManager {
         let latest = outputTurnFiles(in: outputDirectory.path)
             .last
         return latest.map { "outputs/\(($0 as NSString).lastPathComponent)" }
-    }
-
-    private static func outputTurnFiles(in outputDirectory: String) -> [String] {
-        guard !outputDirectory.isEmpty,
-              let urls = try? FileManager.default.contentsOfDirectory(
-                at: URL(fileURLWithPath: outputDirectory),
-                includingPropertiesForKeys: [.isRegularFileKey],
-                options: [.skipsHiddenFiles]
-              ) else { return [] }
-        return urls
-            .filter { $0.lastPathComponent.hasPrefix("turn_") && $0.lastPathComponent.hasSuffix(".md") }
-            .map(\.path)
-            .sorted()
     }
 
     private static func fileSize(_ path: String) -> Int {

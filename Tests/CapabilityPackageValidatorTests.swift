@@ -88,6 +88,21 @@ struct CapabilityPackageValidatorTests {
         #expect(collisionReport.blockers.map(\.code).contains(.duplicatePackageFilename))
     }
 
+    @Test("package identity rejects case-only installed ID collisions")
+    func packageIdentityRejectsCaseOnlyInstalledIDCollisions() {
+        let installed = [makePackage(id: "local.casepkg", governance: .localDraft())]
+        let casedReplacement = makePackage(id: "Local.CasePkg", governance: .localDraft())
+
+        let report = CapabilityPackageValidator.validate(
+            package: casedReplacement,
+            installedPackages: installed,
+            allowReplacingExistingPackageID: true,
+            checkPrerequisites: false
+        )
+
+        #expect(report.blockers.map(\.code).contains(.duplicatePackageID))
+    }
+
     @Test("package identity rejects whitespace punctuation unicode and malformed semver")
     func packageIdentityRejectsUnsafeLiterals() {
         let invalidIDs = [
@@ -212,6 +227,43 @@ struct CapabilityPackageValidatorTests {
 
         #expect(report.canInstall)
         #expect(report.warnings.map(\.code).contains(.missingPrerequisite))
+    }
+
+    @Test("asset icon path must be local relative and under assets")
+    func assetIconPathMustBeLocalRelativeAndUnderAssets() {
+        let invalidValues = [
+            "https://example.com/icon.svg",
+            "/tmp/icon.svg",
+            "../icon.svg",
+            "icons/icon.svg",
+            "assets/../icon.svg",
+            "assets/icon.gif"
+        ]
+
+        for value in invalidValues {
+            var package = makePackage(governance: .localDraft())
+            package.iconDescriptor = .asset(value, fallbackSystemName: package.icon)
+
+            let report = CapabilityPackageValidator.validate(package: package, checkPrerequisites: false)
+
+            #expect(report.blockers.map(\.code).contains(.invalidIconAsset), "\(value) should be blocked")
+        }
+    }
+
+    @Test("capability folder validation requires declared icon asset to exist")
+    func capabilityFolderValidationRequiresDeclaredIconAssetToExist() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-missing-asset-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        var package = makePackage(governance: .localDraft())
+        package.iconDescriptor = .asset("assets/icon.svg", fallbackSystemName: package.icon)
+        try encodedData(package).write(to: root.appendingPathComponent("capability.json"))
+
+        let report = CapabilityPackageValidator.validateSource(at: root, checkPrerequisites: false)
+
+        #expect(!report.canInstall)
+        #expect(report.blockers.map(\.code).contains(.missingIconAsset))
     }
 
     @Test("documented example packages validate without blockers")
@@ -348,6 +400,35 @@ struct CapabilityPackageImporterTests {
         #expect(installed.governance.approvalStatus == .draft)
     }
 
+    @Test("valid folder import copies declared icon asset")
+    func validFolderImportCopiesDeclaredIconAsset() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-import-folder-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceRoot = root.appendingPathComponent("source", isDirectory: true)
+        let assetsRoot = sourceRoot.appendingPathComponent("assets", isDirectory: true)
+        try FileManager.default.createDirectory(at: assetsRoot, withIntermediateDirectories: true)
+        try Data("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"><circle cx=\"0.5\" cy=\"0.5\" r=\"0.5\"/></svg>".utf8)
+            .write(to: assetsRoot.appendingPathComponent("icon.svg"))
+
+        var package = makePackage(id: "local.folder-import-\(UUID().uuidString)", governance: nil)
+        package.iconDescriptor = .asset("assets/icon.svg", fallbackSystemName: package.icon)
+        try encodedData(package).write(to: sourceRoot.appendingPathComponent("capability.json"))
+
+        let libraryRoot = root.appendingPathComponent("library", isDirectory: true)
+        let importer = CapabilityPackageImporter(library: CapabilityLibrary(directory: libraryRoot))
+
+        let result = try importer.importFile(at: sourceRoot, checkPrerequisites: false)
+        let installed = try #require(importer.library.installedPackage(id: result.package.id))
+        let copiedIcon = result.installedURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("assets/icon.svg")
+
+        #expect(result.installedURL.lastPathComponent == "capability.json")
+        #expect(FileManager.default.fileExists(atPath: copiedIcon.path))
+        #expect(installed.iconDescriptor == .asset("assets/icon.svg", fallbackSystemName: package.icon))
+    }
+
     @Test("validated import rechecks current library before writing")
     func validatedImportRechecksCurrentLibraryBeforeWriting() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -457,6 +538,55 @@ struct CapabilityPackageImporterTests {
 
         #expect(result.status == 0, "Script failed: \(result.output)")
         #expect(result.output.contains("OK 2 capability packages are valid for local import"))
+    }
+
+    @Test("developer script validates single capability folder with icon asset")
+    func developerScriptValidatesSingleCapabilityFolderWithIconAsset() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-script-folder-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageRoot = root.appendingPathComponent("asset-package", isDirectory: true)
+        let assets = packageRoot.appendingPathComponent("assets", isDirectory: true)
+        try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
+        try Data("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"><path d=\"M0 0h1v1H0z\"/></svg>".utf8)
+            .write(to: assets.appendingPathComponent("icon.svg"))
+        var package = makePackage(id: "local.script-folder-\(UUID().uuidString)", governance: nil)
+        package.iconDescriptor = .asset("assets/icon.svg", fallbackSystemName: package.icon)
+        try encodedData(package).write(to: packageRoot.appendingPathComponent("capability.json"))
+
+        let result = try runCapabilityPackageScript(arguments: ["validate", packageRoot.path])
+
+        #expect(result.status == 0, "Script failed: \(result.output)")
+        #expect(result.output.contains("OK capability package is valid for local import"))
+    }
+
+    @Test("developer script install folder copies icon asset")
+    func developerScriptInstallFolderCopiesIconAsset() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-script-folder-install-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageRoot = root.appendingPathComponent("asset-package", isDirectory: true)
+        let assets = packageRoot.appendingPathComponent("assets", isDirectory: true)
+        let homeRoot = root.appendingPathComponent("home", isDirectory: true)
+        try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: homeRoot, withIntermediateDirectories: true)
+        try Data("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"><circle cx=\"0.5\" cy=\"0.5\" r=\"0.5\"/></svg>".utf8)
+            .write(to: assets.appendingPathComponent("icon.svg"))
+        let packageID = "local.script-folder-install-\(UUID().uuidString)"
+        var package = makePackage(id: packageID, governance: nil)
+        package.iconDescriptor = .asset("assets/icon.svg", fallbackSystemName: package.icon)
+        try encodedData(package).write(to: packageRoot.appendingPathComponent("capability.json"))
+
+        let result = try runCapabilityPackageScript(arguments: ["install-dev", packageRoot.path], home: homeRoot)
+
+        let installedRoot = homeRoot
+            .appendingPathComponent("Library/Application Support/AstraDev/Capabilities", isDirectory: true)
+            .appendingPathComponent(CapabilityLibrary.safeFileName(for: packageID), isDirectory: true)
+        let manifest = installedRoot.appendingPathComponent("capability.json")
+        let icon = installedRoot.appendingPathComponent("assets/icon.svg")
+        #expect(result.status == 0, "Script failed: \(result.output)")
+        #expect(FileManager.default.fileExists(atPath: manifest.path))
+        #expect(FileManager.default.fileExists(atPath: icon.path))
     }
 
     @Test("developer script install directory writes normalized packages to dev library")

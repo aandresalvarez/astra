@@ -1,6 +1,7 @@
 import Testing
 import AppKit
 import SwiftUI
+import Darwin
 @testable import ASTRA
 import ASTRACore
 
@@ -67,6 +68,39 @@ extension TaskThreadSnapshotTests {
         #expect(destinations["index.html"] == .browser)
         #expect(destinations["query.sql"] == .query)
         #expect(!files.contains { $0.path.hasSuffix(".runtime-bin/astra-browser") })
+    }
+
+    @Test("Task file index ignores non-regular entries")
+    func taskFileIndexIgnoresNonRegularEntries() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-task-file-index-nonregular-\(UUID().uuidString)")
+        let pipe = root.appendingPathComponent("stream.md")
+
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        #expect(mkfifo(pipe.path, S_IRUSR | S_IWUSR) == 0)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let files = TaskFileIndex.scanTaskFolder(root.path)
+
+        #expect(!files.contains { $0.path == pipe.path })
+    }
+
+    @Test("Task detail artifact scan ignores non-regular entries")
+    func taskDetailArtifactScanIgnoresNonRegularEntries() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-task-detail-artifacts-nonregular-\(UUID().uuidString)")
+        let report = root.appendingPathComponent("report.md")
+        let pipe = root.appendingPathComponent("stream.md")
+
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try "# Report".write(to: report, atomically: true, encoding: .utf8)
+        #expect(mkfifo(pipe.path, S_IRUSR | S_IWUSR) == 0)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let files = TaskDetailArtifactScanner.scanTaskFolder(root.path)
+
+        #expect(files.contains { $0.path == report.path })
+        #expect(!files.contains { $0.path == pipe.path })
     }
 
     @Test("Task file index merges visible files without duplicates")
@@ -514,6 +548,42 @@ extension TaskThreadSnapshotTests {
         #expect(hiddenPaths.contains(".claude/settings.json"))
         #expect(!hiddenPaths.contains(".astra/tasks"))
         #expect(!hiddenPaths.contains(".astra/tasks/ABC12345/current_state.md"))
+    }
+
+    @Test("Workspace file scan skips privacy-sensitive user media folders")
+    func workspaceFileScanSkipsPrivacySensitiveUserMediaFolders() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-workspace-privacy-folders-\(UUID().uuidString)")
+        let sources = root.appendingPathComponent("Sources", isDirectory: true)
+        let pictures = root.appendingPathComponent("Pictures", isDirectory: true)
+        let music = root.appendingPathComponent("Music", isDirectory: true)
+
+        try FileManager.default.createDirectory(at: sources, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: pictures, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: music, withIntermediateDirectories: true)
+        try "swift".write(to: sources.appendingPathComponent("App.swift"), atomically: true, encoding: .utf8)
+        try "photo-metadata".write(to: pictures.appendingPathComponent("library.txt"), atomically: true, encoding: .utf8)
+        try "music-metadata".write(to: music.appendingPathComponent("library.txt"), atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let rootModel = WorkspaceFileRoot(
+            id: "primary:\(root.standardizedFileURL.path)",
+            kind: .primary,
+            title: "Primary",
+            path: root.standardizedFileURL.path,
+            isDirectory: true
+        )
+
+        let paths = Set(WorkspaceFileIndexService.scanSync(
+            roots: [rootModel],
+            privacyHomeDirectory: root
+        ).nodes.map(\.relativePath))
+
+        #expect(paths.contains("Sources/App.swift"))
+        #expect(!paths.contains("Pictures"))
+        #expect(!paths.contains("Pictures/library.txt"))
+        #expect(!paths.contains("Music"))
+        #expect(!paths.contains("Music/library.txt"))
     }
 
     @Test("Workspace file scan hides task folder runtime documents")

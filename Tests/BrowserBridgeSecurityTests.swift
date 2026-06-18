@@ -1,9 +1,27 @@
 import Foundation
 import Testing
+import WebKit
 @testable import ASTRA
 
 @Suite("Browser Bridge Security")
 struct BrowserBridgeSecurityTests {
+    @Test("Embedded preview blocks WebKit file and media pickers")
+    func embeddedPreviewBlocksWebKitFileAndMediaPickers() {
+        #expect(ShelfBrowserPrivacyBoundary.blocksEmbeddedPreviewFilePickers)
+        #expect(ShelfBrowserPrivacyBoundary.blocksEmbeddedPreviewMediaCapture)
+    }
+
+    @Test("Embedded preview uses an ephemeral WebKit data store")
+    @MainActor
+    func embeddedPreviewUsesEphemeralWebKitDataStore() {
+        let configuration = ShelfBrowserWebViewConfigurationFactory.makeEmbeddedConfiguration(
+            pageReadMessageHandler: NoopScriptMessageHandler()
+        )
+
+        #expect(ShelfBrowserPrivacyBoundary.usesEphemeralEmbeddedPreviewDataStore)
+        #expect(!configuration.websiteDataStore.isPersistent)
+    }
+
     @Test("Bridge requires per-session access token")
     func bridgeRequiresAccessToken() async throws {
         let endpoint = LockedEndpoint()
@@ -46,6 +64,46 @@ struct BrowserBridgeSecurityTests {
 
         #expect(statusCode == 200)
         #expect(body.contains(#""ok" : true"#) || body.contains(#""ok":true"#))
+    }
+
+    @Test("Bridge rate limiter blocks bursts and refills after the window")
+    func bridgeRateLimiterBlocksBurstsAndRefills() {
+        let clock = RateLimitClock(now: Date(timeIntervalSince1970: 100))
+        let limiter = BrowserBridgeRateLimiter(
+            maxRequests: 2,
+            window: 1,
+            now: { clock.now }
+        )
+
+        #expect(limiter.allowsRequest())
+        #expect(limiter.allowsRequest())
+        #expect(!limiter.allowsRequest())
+
+        clock.now = Date(timeIntervalSince1970: 101.1)
+        #expect(limiter.allowsRequest())
+    }
+
+    @Test("Unauthorized bridge requests do not consume the authorized request limiter")
+    func unauthorizedBridgeRequestsDoNotConsumeAuthorizedLimiter() async throws {
+        let endpoint = LockedEndpoint()
+        let limiter = BrowserBridgeRateLimiter(maxRequests: 1, window: 60)
+        let server = BrowserBridgeServer(
+            requiredAccessToken: "session-token",
+            rateLimiter: limiter,
+            route: { _ in .json(["ok": true]) },
+            onEndpointChanged: { value in
+                Task { await endpoint.set(value) }
+            }
+        )
+        server.start()
+        defer { server.stop() }
+
+        let baseURL = try await endpoint.waitForURL()
+        let unauthorized = try await httpGet(baseURL.appendingPathComponent("health"), token: "wrong-token")
+        #expect(unauthorized.statusCode == 403)
+
+        let authorized = try await httpGet(baseURL.appendingPathComponent("health"), token: "session-token")
+        #expect(authorized.statusCode == 200)
     }
 
     @Test("Bridge command contracts normalize decoded targeting fields")
@@ -144,6 +202,7 @@ struct BrowserBridgeSecurityTests {
     func bridgeActionsResponsePreservesMetadataContract() throws {
         let response = ShelfBrowserBridgeCommandRouter.actionsResponse(
             backend: "controlled Chromium profile",
+            automationEngine: BrowserAutomationEngineDescriptor(kind: .controlledCDP),
             capabilities: ["actions", "google.drive.open"],
             canUseGoogleDriveOpen: true,
             googleDriveOpenDefaultTimeoutSeconds: 24
@@ -151,6 +210,10 @@ struct BrowserBridgeSecurityTests {
 
         #expect(response["ok"] as? Bool == true)
         #expect(response["backend"] as? String == "controlled Chromium profile")
+        let engine = try #require(response["automationEngine"] as? [String: Any])
+        #expect(engine["kind"] as? String == "controlled-cdp")
+        #expect(engine["providerToolName"] as? String == "astra-browser")
+        #expect(engine["exposesRawDebugEndpoint"] as? Bool == false)
         #expect(response["actionMetadataVersion"] as? Int == 1)
         #expect(response["capabilities"] as? [String] == ["actions", "google.drive.open"])
 
@@ -179,6 +242,10 @@ struct BrowserBridgeSecurityTests {
     }
 }
 
+private final class NoopScriptMessageHandler: NSObject, WKScriptMessageHandler {
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {}
+}
+
 private actor LockedEndpoint {
     private var value: String?
 
@@ -200,4 +267,12 @@ private actor LockedEndpoint {
 
 private enum BrowserBridgeSecurityTestError: Error {
     case endpointUnavailable
+}
+
+private final class RateLimitClock {
+    var now: Date
+
+    init(now: Date) {
+        self.now = now
+    }
 }

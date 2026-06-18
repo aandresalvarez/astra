@@ -44,33 +44,51 @@ enum CodexCLIRuntime {
         providerHomeDirectory: String = "",
         pathPrefix: [String] = [],
         includeAstraToolsPath: Bool = false,
+        allowExternalFileReadsForSSH: Bool = false,
         resumeSessionID: String? = nil
     ) -> CodexCLICommandPlan {
         let providerModel = resolvedModelName(model)
         // No `--ephemeral`: native continuation needs the session persisted so a
         // follow-up turn can `exec resume` it. CODEX_HOME scoping (below) keeps
         // ASTRA-run sessions out of the user's own Codex history when configured.
-        var args = ["exec"]
-        if let resumeSessionID = resumeSessionID?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !resumeSessionID.isEmpty {
-            args += ["resume", resumeSessionID]
-        }
-        args += [
-            "--json",
-            "--color", "never",
-            "--ignore-user-config",
-            "--ignore-rules",
-            "--model", providerModel,
-            "--cd", workspacePath
-        ]
+        let trimmedResumeSessionID = resumeSessionID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let usesResume = !trimmedResumeSessionID.isEmpty
+        var args = usesResume ? ["exec", "resume"] : ["exec"]
 
-        let uniquePaths = Array(Set(additionalPaths.filter { !$0.isEmpty && $0 != workspacePath })).sorted()
-        for path in uniquePaths {
-            args += ["--add-dir", path]
-        }
+        if usesResume {
+            args += [
+                "--json",
+                "--ignore-user-config",
+                "--ignore-rules",
+                "--model", providerModel
+            ]
+            args += codexResumePermissionArguments(policy: permissionPolicy)
+            if allowExternalFileReadsForSSH, permissionPolicy != .autonomous {
+                args += ["--config", "sandbox_permissions=[\"disk-full-read-access\"]"]
+            }
+            args.append("--skip-git-repo-check")
+            args.append(trimmedResumeSessionID)
+        } else {
+            args += [
+                "--json",
+                "--color", "never",
+                "--ignore-user-config",
+                "--ignore-rules",
+                "--model", providerModel,
+                "--cd", workspacePath
+            ]
 
-        args += codexPermissionArguments(policy: permissionPolicy)
-        args.append("--skip-git-repo-check")
+            let uniquePaths = Array(Set(additionalPaths.filter { !$0.isEmpty && $0 != workspacePath })).sorted()
+            for path in uniquePaths {
+                args += ["--add-dir", path]
+            }
+
+            args += codexPermissionArguments(policy: permissionPolicy)
+            if allowExternalFileReadsForSSH, permissionPolicy != .autonomous {
+                args += ["--config", "sandbox_permissions=[\"disk-full-read-access\"]"]
+            }
+            args.append("--skip-git-repo-check")
+        }
         args.append(prompt)
 
         var extraVars: [String: String] = [
@@ -110,6 +128,23 @@ enum CodexCLIRuntime {
             return ["--sandbox", "workspace-write"]
         case .interactive:
             return ["--sandbox", "read-only"]
+        }
+    }
+
+    static func codexResumePermissionArguments(policy: PermissionPolicy) -> [String] {
+        // `codex exec resume` rejects `-s/--sandbox` (it's an `exec`-only flag),
+        // so preserve the run-phase sandbox mode via the supported `-c` config
+        // override instead. Without this a restricted (workspace-write) task would
+        // silently fall back to codex's default sandbox on a resumed turn,
+        // diverging from `codexPermissionArguments` above. The value spellings
+        // match the `--sandbox` enum (`sandbox_mode` config key).
+        switch policy {
+        case .autonomous:
+            return ["--dangerously-bypass-approvals-and-sandbox"]
+        case .restricted:
+            return ["-c", "sandbox_mode=\"workspace-write\""]
+        case .interactive:
+            return ["-c", "sandbox_mode=\"read-only\""]
         }
     }
 
@@ -154,9 +189,70 @@ enum CodexCLIRuntime {
         return nil
     }
 
-    static func directoriesToCreate(providerHomeDirectory: String) -> [String] {
+    static func directoriesToCreate(
+        providerHomeDirectory: String,
+        environment: [String: String] = [:]
+    ) -> [String] {
         let trimmed = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? [] : [trimmed]
+        if !trimmed.isEmpty {
+            return [trimmed]
+        }
+        let inheritedHome = environment["CODEX_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return inheritedHome.isEmpty ? [] : [inheritedHome]
+    }
+
+    static func sandboxReadablePaths(
+        providerHomeDirectory: String,
+        environment: [String: String],
+        processHomeDirectory: String = NSHomeDirectory()
+    ) -> [String] {
+        var paths: [String] = []
+        if let codexHome = codexHomeDirectory(
+            providerHomeDirectory: providerHomeDirectory,
+            environment: environment,
+            processHomeDirectory: processHomeDirectory
+        ) {
+            paths.append(codexHome)
+        }
+        paths.append("/etc/codex")
+        #if os(macOS)
+        paths.append(contentsOf: [
+            "/Library/Managed Preferences",
+            "/Library/Preferences"
+        ])
+        #endif
+        return uniqueNonEmpty(paths)
+    }
+
+    private static func codexHomeDirectory(
+        providerHomeDirectory: String,
+        environment: [String: String],
+        processHomeDirectory: String
+    ) -> String? {
+        let configuredHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !configuredHome.isEmpty {
+            return configuredHome
+        }
+        let inheritedCodexHome = environment["CODEX_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !inheritedCodexHome.isEmpty {
+            return inheritedCodexHome
+        }
+        let inheritedHome = environment["HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let home = inheritedHome.isEmpty
+            ? processHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+            : inheritedHome
+        return home.isEmpty ? nil : (home as NSString).appendingPathComponent(".codex")
+    }
+
+    private static func uniqueNonEmpty(_ paths: [String]) -> [String] {
+        var seen: Set<String> = []
+        return paths.compactMap { rawPath in
+            let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else {
+                return nil
+            }
+            return trimmed
+        }
     }
 
     static func extractUtilityText(from output: String) -> String {

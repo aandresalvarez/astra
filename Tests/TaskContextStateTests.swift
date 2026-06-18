@@ -164,6 +164,28 @@ struct TaskContextStateTests {
         #expect(state.standingInstructions == nil) // no follow-ups → nil, not []
     }
 
+    @Test("refresh discovers output artifacts without mutating artifact rows")
+    func refreshDiscoversOutputArtifactsWithoutMutatingArtifactRows() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Discovered Artifact", primaryPath: root)
+        let task = AgentTask(title: "Discover", goal: "Notice output files", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let reportPath = (folder as NSString).appendingPathComponent("report.md")
+        try "# Report".write(toFile: reportPath, atomically: true, encoding: .utf8)
+
+        TaskContextStateManager.refresh(task: task)
+
+        let state = try #require(TaskContextStateManager.load(taskFolder: folder))
+        #expect(state.artifacts.contains { $0.path == reportPath && $0.type == "markdown" })
+        #expect(task.artifacts.isEmpty)
+    }
+
     @Test("turn numbering follows saved state and deterministic output paths")
     func turnNumberingUsesStateFloorAndFormattedOutputPath() throws {
         let root = try temporaryRoot()
@@ -203,6 +225,34 @@ struct TaskContextStateTests {
         let state = try #require(TaskContextStateManager.load(taskFolder: folder))
         #expect(state.turns.map(\.turn) == [1, 2])
         #expect(state.turns.map(\.outputFile) == ["outputs/turn_001.md", "outputs/turn_002.md"])
+    }
+
+    @Test("runtime browser shell failure is not reported as manual completion")
+    func runtimeBrowserShellFailureIsNotReportedAsManualCompletion() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Browser Runtime", primaryPath: root)
+        let task = AgentTask(title: "Use browser", goal: "Inspect the browser", workspace: workspace)
+        task.status = .pendingUser
+        context.insert(workspace)
+        context.insert(task)
+
+        let run = TaskRun(task: task)
+        run.status = .failed
+        run.stopReason = "provider_missing_browser_shell_tool"
+        run.output = "ASTRA blocked this browser task before launch because Copilot CLI cannot execute astra-browser."
+        run.completedAt = Date()
+        context.insert(run)
+        TaskContextStateManager.recordTurn(task: task, run: run, message: "Inspect the browser")
+
+        let state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        #expect(state.mode == .blocked)
+        #expect(state.verification.status == "failed")
+        #expect(state.verification.summary == "provider_missing_browser_shell_tool")
+        #expect(state.verification.completionVerified == false)
+        #expect(state.verification.status != "manual_completion")
     }
 
     @Test("completed run clears prior permission blocker from current state")
@@ -748,6 +798,46 @@ struct TaskContextStateTests {
         #expect(state.verification.artifactStatus == "1 current")
     }
 
+    @Test("context capsule normalizes legacy artifact paths without mutating rows")
+    func contextCapsuleNormalizesLegacyArtifactPathsWithoutMutatingRows() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Legacy Artifact", primaryPath: root)
+        let task = AgentTask(
+            title: "Legacy artifact state",
+            goal: "Render current state without duplicate artifact references",
+            workspace: workspace
+        )
+        context.insert(workspace)
+        context.insert(task)
+
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let indexPath = (folder as NSString).appendingPathComponent("index.html")
+        try "<html>current</html>".write(toFile: indexPath, atomically: true, encoding: .utf8)
+        let relativePath = String(indexPath.dropFirst(root.count + 1))
+        let legacy = Artifact(task: task, type: "html", path: relativePath, version: 2)
+        legacy.type = "HTML"
+        context.insert(legacy)
+        task.artifacts.append(legacy)
+
+        TaskContextStateManager.refresh(task: task)
+
+        let state = try #require(TaskContextStateManager.load(taskFolder: folder))
+        #expect(state.artifacts.count == 1)
+        let reference = try #require(state.artifacts.first)
+        #expect(reference.path == indexPath)
+        #expect(reference.type == "html")
+        #expect(reference.version == 2)
+        #expect(!reference.isStale)
+        #expect(reference.sourcePointers.contains { $0.kind == "artifact" })
+        #expect(reference.sourcePointers.contains { $0.kind == "task_output_file" })
+        #expect(state.verification.artifactStatus == "1 current")
+        #expect(legacy.path == relativePath)
+        #expect(legacy.type == "HTML")
+    }
+
     @Test("context capsule discovers task output files when provider metadata is missing")
     func contextCapsuleDiscoversTaskOutputFilesWhenProviderMetadataIsMissing() throws {
         let root = try temporaryRoot()
@@ -812,17 +902,12 @@ struct TaskContextStateTests {
                 !$0.isStale &&
                 $0.sourcePointers.contains { $0.kind == "task_output_file" }
         })
-        #expect(task.artifacts.contains {
-            $0.path == indexPath &&
-                $0.type == "html" &&
-                !$0.isStale
-        })
-        #expect(task.artifacts.filter { $0.path == indexPath }.count == 1)
+        #expect(task.artifacts.isEmpty)
         #expect(state.verification.artifactStatus == "1 current")
         #expect(state.turns.first?.filesChanged.contains(indexPath) == true)
 
         TaskContextStateManager.refresh(task: task)
-        #expect(task.artifacts.filter { $0.path == indexPath }.count == 1)
+        #expect(task.artifacts.isEmpty)
     }
 
     @Test("context capsule ignores Local Agent request payloads")
@@ -957,12 +1042,11 @@ struct TaskContextStateTests {
         #expect(repairedState.filesChanged.contains(indexPath))
         #expect(repairedState.changedFiles.contains { $0.path == indexPath })
         #expect(repairedState.artifacts.contains { $0.path == indexPath && $0.type == "html" })
-        #expect(task.artifacts.contains { $0.path == indexPath && $0.type == "html" && !$0.isStale })
-        #expect(task.artifacts.filter { $0.path == indexPath }.count == 1)
+        #expect(task.artifacts.isEmpty)
         #expect(repairedState.verification.artifactStatus == "1 current")
 
         TaskContextStateManager.refresh(task: task)
-        #expect(task.artifacts.filter { $0.path == indexPath }.count == 1)
+        #expect(task.artifacts.isEmpty)
     }
 
     @Test("context capsule surfaces deliverable verification evidence")

@@ -142,6 +142,78 @@ struct TaskThreadViewModelTests {
         #expect(vm.snapshot?.sortedRuns.count == 50)
         #expect(vm.snapshot?.omittedRunCount == 70)
     }
+
+    @MainActor
+    @Test("Completed large task reset reuses terminal snapshot cache")
+    func completedLargeTaskResetReusesTerminalSnapshotCache() async {
+        TaskThreadViewModel.resetSnapshotCacheForTesting()
+
+        let vm = TaskThreadViewModel()
+        let task = makeTask(goal: "Summarize a large completed task", status: .completed)
+        task.createdAt = Date(timeIntervalSince1970: 0)
+        task.completedAt = Date(timeIntervalSince1970: 30_000)
+
+        for i in 0..<220 {
+            let run = TaskRun(task: task)
+            run.status = .completed
+            run.startedAt = Date(timeIntervalSince1970: Double(i * 100))
+            run.completedAt = Date(timeIntervalSince1970: Double(i * 100 + 90))
+            run.output = "completed run \(i)"
+            task.runs.append(run)
+
+            let event = TaskEvent(task: task, type: "agent.response", payload: "response \(i)", run: run)
+            event.timestamp = Date(timeIntervalSince1970: Double(i * 100 + 95))
+            task.events.append(event)
+        }
+
+        vm.reset(for: task)
+        _ = await awaitSnapshot(vm, where: { $0.sortedRuns.count == 50 })
+
+        let firstStats = TaskThreadViewModel.snapshotCacheStatsForTesting
+        #expect(firstStats.entryCount == 1)
+        #expect(firstStats.missCount == 1)
+        #expect(firstStats.hitCount == 0)
+
+        vm.reset(for: task)
+
+        let secondStats = TaskThreadViewModel.snapshotCacheStatsForTesting
+        #expect(vm.snapshot?.sortedRuns.count == 50)
+        #expect(vm.snapshot?.omittedRunCount == 170)
+        #expect(secondStats.entryCount == 1)
+        #expect(secondStats.hitCount == 1)
+        #expect(secondStats.missCount == 1)
+
+        TaskThreadViewModel.resetSnapshotCacheForTesting()
+    }
+
+    @MainActor
+    @Test("Terminal snapshot cache key stores a goal fingerprint instead of full goal text")
+    func terminalSnapshotCacheKeyStoresGoalFingerprintInsteadOfFullGoalText() throws {
+        let task = makeTask(
+            goal: String(repeating: "Long goal with expensive retained text. ", count: 300),
+            status: .completed
+        )
+        task.createdAt = Date(timeIntervalSince1970: 0)
+        task.completedAt = Date(timeIntervalSince1970: 100)
+        let trigger = TaskThreadSnapshotTrigger(task: task)
+        let key = try #require(TaskThreadSnapshotCacheKey(task: task, trigger: trigger, maxRuns: 50))
+
+        let fieldNames = Set(Mirror(reflecting: key).children.compactMap(\.label))
+        #expect(fieldNames.contains("goalHash"))
+        #expect(!fieldNames.contains("goal"))
+    }
+
+    @Test("Task thread view model reuses one cache key for terminal snapshot lookup and storage")
+    func taskThreadViewModelReusesOneCacheKeyForTerminalSnapshotLookupAndStorage() throws {
+        let sourceURL = URL(filePath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appending(path: "Astra/Views/TaskThreadViewModel.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let constructorCount = source.components(separatedBy: "TaskThreadSnapshotCacheKey(task:").count - 1
+
+        #expect(constructorCount == 1)
+    }
 }
 
 // MARK: - TaskCheckpointPresentation

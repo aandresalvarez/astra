@@ -555,10 +555,20 @@ final class ControlledBrowserController: ObservableObject {
               let targetY = Self.doubleValue(target["y"]) else {
             throw ControlledBrowserError.invalidDevToolsResponse
         }
-        try await dispatchMouseClick(x: targetX, y: targetY)
+        let beforeURL = currentURL
+        let beforeTitle = pageTitle
+        let settlement = try await dispatchMouseClickWithSettlement(x: targetX, y: targetY)
         try await refreshPageMetadata()
         target["clicked"] = true
         target["url"] = currentURL
+        target["cdpSettlement"] = settlementResult(
+            from: settlement,
+            action: "click",
+            beforeURL: beforeURL,
+            beforeTitle: beforeTitle,
+            afterURL: currentURL,
+            afterTitle: pageTitle
+        ).jsonObject
         return try Self.jsonString(target)
     }
 
@@ -593,11 +603,25 @@ final class ControlledBrowserController: ObservableObject {
               let targetY = Self.doubleValue(target["y"]) else {
             throw ControlledBrowserError.invalidDevToolsResponse
         }
-        try await dispatchMouseClick(x: targetX, y: targetY, clickCount: 2)
+        let beforeURL = currentURL
+        let beforeTitle = pageTitle
+        let settlement = try await dispatchMouseClickWithSettlement(
+            x: targetX,
+            y: targetY,
+            clickCount: 2
+        )
         try await refreshPageMetadata()
         target["clicked"] = true
         target["doubleClicked"] = true
         target["url"] = currentURL
+        target["cdpSettlement"] = settlementResult(
+            from: settlement,
+            action: "doubleClick",
+            beforeURL: beforeURL,
+            beforeTitle: beforeTitle,
+            afterURL: currentURL,
+            afterTitle: pageTitle
+        ).jsonObject
         return try Self.jsonString(target)
     }
 
@@ -639,7 +663,12 @@ final class ControlledBrowserController: ObservableObject {
         testID: String? = nil
     ) async throws -> String {
         try await ensureLaunched(initialURL: URL(string: "about:blank"))
-        let value = try await evaluate(script: BrowserAutomationScripts.typeScript(
+        let beforeURL = currentURL
+        let beforeTitle = pageTitle
+        let action = clear ? "setValue" : "type"
+        let value = try await evaluateWithSettlement(
+            action: action,
+            script: BrowserAutomationScripts.typeScript(
             selector: selector,
             text: text,
             clear: clear,
@@ -647,19 +676,29 @@ final class ControlledBrowserController: ObservableObject {
             role: role,
             placeholder: placeholder,
             testID: testID
-        ))
+            ),
+            beforeURL: beforeURL,
+            beforeTitle: beforeTitle
+        )
         try await refreshPageMetadata()
         return value
     }
 
     func replaceText(find: String, replacement: String, selector: String?, all: Bool) async throws -> String {
         try await ensureLaunched(initialURL: URL(string: "about:blank"))
-        let value = try await evaluate(script: BrowserAutomationScripts.replaceTextScript(
+        let beforeURL = currentURL
+        let beforeTitle = pageTitle
+        let value = try await evaluateWithSettlement(
+            action: "replaceText",
+            script: BrowserAutomationScripts.replaceTextScript(
             find: find,
             replacement: replacement,
             selector: selector,
             all: all
-        ))
+            ),
+            beforeURL: beforeURL,
+            beforeTitle: beforeTitle
+        )
         try await refreshPageMetadata()
         return value
     }
@@ -682,29 +721,58 @@ final class ControlledBrowserController: ObservableObject {
             downParams["unmodifiedText"] = text
         }
 
-        try await sendCDPCommand(method: "Input.dispatchKeyEvent", params: downParams)
-        try await sendCDPCommand(method: "Input.dispatchKeyEvent", params: [
-            "type": "keyUp",
-            "key": definition.key,
-            "code": definition.code,
-            "windowsVirtualKeyCode": definition.virtualKeyCode,
-            "nativeVirtualKeyCode": definition.virtualKeyCode,
-            "modifiers": modifierMask
-        ])
-        try await refreshPageMetadata()
+        let beforeURL = currentURL
+        let beforeTitle = pageTitle
+        let webSocketURL = try await currentPageWebSocketURL()
+        let settlement = try await ControlledBrowserActionSettlementRunner.run(webSocketURL: webSocketURL) { client in
+            _ = try await client.send(method: "Input.dispatchKeyEvent", params: downParams)
+            _ = try await client.send(method: "Input.dispatchKeyEvent", params: [
+                "type": "keyUp",
+                "key": definition.key,
+                "code": definition.code,
+                "windowsVirtualKeyCode": definition.virtualKeyCode,
+                "nativeVirtualKeyCode": definition.virtualKeyCode,
+                "modifiers": modifierMask
+            ])
+        }
+        try? await refreshPageMetadata()
         return try Self.jsonString([
             "ok": true,
             "key": definition.key,
             "code": definition.code,
-            "modifiers": modifiers
+            "modifiers": modifiers,
+            "cdpSettlement": settlementResult(
+                from: settlement,
+                action: "keypress",
+                beforeURL: beforeURL,
+                beforeTitle: beforeTitle,
+                afterURL: currentURL,
+                afterTitle: pageTitle
+            ).jsonObject
         ])
     }
 
     func insertText(_ text: String) async throws -> String {
         try await ensureLaunched(initialURL: URL(string: "about:blank"))
-        try await sendCDPCommand(method: "Input.insertText", params: ["text": text])
-        try await refreshPageMetadata()
-        return try Self.jsonString(["ok": true, "textLength": text.count])
+        let beforeURL = currentURL
+        let beforeTitle = pageTitle
+        let webSocketURL = try await currentPageWebSocketURL()
+        let settlement = try await ControlledBrowserActionSettlementRunner.run(webSocketURL: webSocketURL) { client in
+            _ = try await client.send(method: "Input.insertText", params: ["text": text])
+        }
+        try? await refreshPageMetadata()
+        return try Self.jsonString([
+            "ok": true,
+            "textLength": text.count,
+            "cdpSettlement": settlementResult(
+                from: settlement,
+                action: "insertText",
+                beforeURL: beforeURL,
+                beforeTitle: beforeTitle,
+                afterURL: currentURL,
+                afterTitle: pageTitle
+            ).jsonObject
+        ])
     }
 
     func showWindow() async {
@@ -852,32 +920,75 @@ final class ControlledBrowserController: ObservableObject {
         try await refreshPageMetadata()
     }
 
-    private func dispatchMouseClick(x: Double, y: Double, clickCount: Int = 1) async throws {
-        try await sendCDPCommand(method: "Input.dispatchMouseEvent", params: [
-            "type": "mouseMoved",
-            "x": x,
-            "y": y,
-            "button": "none"
-        ])
-        for count in 1...max(1, clickCount) {
-            try await sendCDPCommand(method: "Input.dispatchMouseEvent", params: [
-                "type": "mousePressed",
-                "x": x,
-                "y": y,
-                "button": "left",
-                "clickCount": count
-            ])
-            try await sendCDPCommand(method: "Input.dispatchMouseEvent", params: [
-                "type": "mouseReleased",
-                "x": x,
-                "y": y,
-                "button": "left",
-                "clickCount": count
-            ])
-            if count < clickCount {
-                try? await Task.sleep(nanoseconds: 90_000_000)
-            }
+    private func dispatchMouseClickWithSettlement(
+        x: Double,
+        y: Double,
+        clickCount: Int = 1
+    ) async throws -> ControlledBrowserActionSettlementSample {
+        let webSocketURL = try await currentPageWebSocketURL()
+        return try await ControlledBrowserActionSettlementRunner.dispatchMouseClick(
+            webSocketURL: webSocketURL,
+            x: x,
+            y: y,
+            clickCount: clickCount
+        )
+    }
+
+    private func evaluateWithSettlement(
+        action: String,
+        script: String,
+        beforeURL: String,
+        beforeTitle: String
+    ) async throws -> String {
+        let webSocketURL = try await currentPageWebSocketURL()
+        let evaluated = try await ControlledBrowserActionSettlementRunner.evaluate(
+            webSocketURL: webSocketURL,
+            script: script
+        )
+        let value = evaluated.value
+        let settlement = evaluated.sample
+        try? await refreshPageMetadata()
+        var object = (try? Self.jsonObject(from: value)) ?? [:]
+        if !object.isEmpty {
+            object["cdpSettlement"] = settlementResult(
+                from: settlement,
+                action: action,
+                beforeURL: beforeURL,
+                beforeTitle: beforeTitle,
+                afterURL: currentURL,
+                afterTitle: pageTitle
+            ).jsonObject
+            return try Self.jsonString(object)
         }
+        return value
+    }
+
+    private func settlementResult(
+        from sample: ControlledBrowserActionSettlementSample,
+        action: String,
+        beforeURL: String,
+        beforeTitle: String,
+        afterURL: String,
+        afterTitle: String
+    ) -> ControlledBrowserActionSettlementResult {
+        ControlledBrowserActionSettlement.evaluate(
+            action: action,
+            beforeURL: beforeURL,
+            beforeTitle: beforeTitle,
+            afterURL: afterURL,
+            afterTitle: afterTitle,
+            events: sample.events,
+            accessibilityNodeCount: sample.accessibilityNodeCount,
+            elapsedMs: sample.elapsedMs
+        )
+    }
+
+    private func currentPageWebSocketURL() async throws -> URL {
+        let page = try await currentPage()
+        guard let webSocketURL = URL(string: page.webSocketDebuggerURL) else {
+            throw ControlledBrowserError.invalidDevToolsResponse
+        }
+        return webSocketURL
     }
 
     private func readPageWithScopedCDP(

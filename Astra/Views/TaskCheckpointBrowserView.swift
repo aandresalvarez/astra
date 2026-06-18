@@ -286,16 +286,12 @@ struct TaskCheckpointBrowserSheet: View {
                         .font(Stanford.ui(14, weight: .semibold))
                         .foregroundStyle(Stanford.black)
                         .lineLimit(1)
-                    Text(summary.subtitle)
+                    Text(combinedRowSubtitle(for: summary))
                         .font(Stanford.caption(11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                    if summary.fileCount > 0 || !summary.durationText.isEmpty {
-                        Text(rowDetail(for: summary))
-                            .font(Stanford.caption(10))
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                    }
+                        .truncationMode(.tail)
+                        .help(combinedRowSubtitle(for: summary))
                 }
 
                 Spacer(minLength: 8)
@@ -360,7 +356,7 @@ struct TaskCheckpointBrowserSheet: View {
                 if task.isForked {
                     Text("This task was already forked at source step \(task.forkedAtRunIndex + 1).")
                         .font(Stanford.caption(12))
-                        .foregroundStyle(Stanford.plum)
+                        .foregroundStyle(.secondary)
                         .padding(.top, 2)
                 }
             }
@@ -413,7 +409,7 @@ struct TaskCheckpointBrowserSheet: View {
         HStack(spacing: 8) {
             Image(systemName: icon)
                 .font(Stanford.ui(13, weight: .medium))
-                .foregroundStyle(Stanford.lagunita)
+                .foregroundStyle(.secondary)
                 .frame(width: 18)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -509,6 +505,14 @@ struct TaskCheckpointBrowserSheet: View {
             parts.append("\(summary.fileCount) file\(summary.fileCount == 1 ? "" : "s")")
         }
         return parts.joined(separator: " - ")
+    }
+
+    /// One quiet subtitle line for the checkpoint row — the status/token summary
+    /// plus any duration/file detail, folded together so the collapsed row stays
+    /// a single line (full text in the row's .help tooltip).
+    private func combinedRowSubtitle(for summary: TaskCheckpointSummary) -> String {
+        let detail = rowDetail(for: summary)
+        return detail.isEmpty ? summary.subtitle : "\(summary.subtitle) · \(detail)"
     }
 
     private func ensureSelection() {

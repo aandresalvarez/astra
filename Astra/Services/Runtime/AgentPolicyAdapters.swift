@@ -1008,6 +1008,7 @@ enum AgentPolicyManifestService {
         providerCapabilities: AgentRuntimePolicyCapabilities = .conservative,
         capabilityPackages: [PluginPackage]? = nil,
         approvalRecords: [CapabilityApprovalRecord]? = nil,
+        contextText: String = "",
         modelContext: ModelContext
     ) -> RunPermissionManifest {
         let defaultLevel = AgentPolicyDefaults.effectiveUserFacingLevel(
@@ -1022,7 +1023,7 @@ enum AgentPolicyManifestService {
         )
         let basePolicy = resolution.policy
         let taskCapabilityResolver = TaskCapabilityResolver(task: task)
-        let taskCapabilityScope = taskCapabilityResolver.promptScope()
+        let taskCapabilityScope = taskCapabilityResolver.promptScope(contextText: contextText)
         let taskScopedGrants = TaskRuntimePermissionGrants.approvedGrants(for: task)
         let executionGrants = executionPolicy.permissionGrantsOverride ?? []
         let effectiveGrants = PermissionBroker.sanitizeApprovedGrants(taskScopedGrants + executionGrants)
@@ -1052,14 +1053,18 @@ enum AgentPolicyManifestService {
             workspacePath: workspacePath,
             additionalPaths: runtimePaths,
             requestedAllowedTools: requestedAllowedTools,
-            localToolCommands: localToolCommands(for: task),
+            localToolCommands: localToolCommands(for: task, contextText: contextText),
             environmentKeyNames: envKeys,
-            credentialLabels: credentialLabels(for: task),
+            credentialLabels: credentialLabels(for: task, contextText: contextText),
             providerFeatures: providerPolicyAdapter.supportedFeatures,
             providerConfigOwnership: configOwnership,
             existingProviderConfigSummary: runtimeAdapter.existingProviderConfigSummary(workspacePath: workspacePath)
         )
         var render = providerPolicyAdapter.render(policy: policy, context: context)
+        render.allowedShellPatterns = uniqueStrings(
+            render.allowedShellPatterns
+                + runtimeSupportAllowedShellPatterns(environmentKeyNames: envKeys)
+        )
         render.diagnostics = providerPolicyAdapter.validate(render: render, context: context)
         // Reflect ASTRA's OS-level Seatbelt sandbox in the declared enforcement
         // tiers — but only when the run will both be wrapped (runtime in scope)
@@ -1096,7 +1101,7 @@ enum AgentPolicyManifestService {
             workspacePath: workspacePath,
             additionalPaths: runtimePaths,
             environmentKeyNames: envKeys,
-            credentialLabels: credentialLabels(for: task),
+            credentialLabels: credentialLabels(for: task, contextText: contextText),
             mcpServers: capabilityPackages.map {
                 TaskCapabilityResolver.enabledMCPServerManifests(
                     for: task.workspace,
@@ -1143,16 +1148,20 @@ enum AgentPolicyManifestService {
     static func recordPostRunSummary(task: AgentTask, run: TaskRun, modelContext: ModelContext) {
         let runEvents = task.events.filter { $0.run?.id == run.id }
         let manifest = latestManifest(in: runEvents)
+        let deniedActionValues = deniedActions(from: runEvents)
+        let explicitDeniedEventCount = runEvents.filter {
+            $0.type == "permission.denied" || $0.type == "permission.approval.requested"
+        }.count
         let summary = PolicyRunSummary(
             runID: run.id,
             status: run.status.rawValue,
             stopReason: run.stopReason,
             toolUseCount: runEvents.filter { $0.type == "tool.use" }.count,
-            deniedCount: runEvents.filter { $0.type == "permission.denied" || $0.type == "permission.approval.requested" }.count,
+            deniedCount: max(explicitDeniedEventCount, deniedActionValues.count),
             fileChangeCount: run.fileChanges.count,
             toolsUsed: toolsUsed(from: runEvents),
             commandsRun: commandsRun(from: runEvents),
-            deniedActions: deniedActions(from: runEvents),
+            deniedActions: deniedActionValues,
             filesChanged: run.fileChanges.map(\.path).sorted(),
             externalDomains: externalDomains(from: runEvents),
             environmentKeyNames: manifest?.environmentKeyNames ?? [],
@@ -1167,8 +1176,8 @@ enum AgentPolicyManifestService {
     }
 
     @MainActor
-    private static func localToolCommands(for task: AgentTask) -> [String] {
-        let capabilityScope = TaskCapabilityResolver(task: task).promptScope()
+    private static func localToolCommands(for task: AgentTask, contextText: String) -> [String] {
+        let capabilityScope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
         var commands: [String] = capabilityScope.localTools.compactMap { tool in
             guard tool.toolType != "mcp" else { return nil }
             let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1181,11 +1190,33 @@ enum AgentPolicyManifestService {
     }
 
     @MainActor
-    private static func credentialLabels(for task: AgentTask) -> [String] {
-        let capabilityScope = TaskCapabilityResolver(task: task).promptScope()
+    private static func credentialLabels(for task: AgentTask, contextText: String) -> [String] {
+        let capabilityScope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
         let skillKeys = capabilityScope.behaviorSkills.flatMap(\.environmentKeys)
         let connectorKeys = capabilityScope.connectors.flatMap(\.credentialKeys)
         return Array(Set(skillKeys + connectorKeys)).sorted()
+    }
+
+    private static func runtimeSupportAllowedShellPatterns(environmentKeyNames: [String]) -> [String] {
+        guard environmentKeyNames.contains("ASTRA_CONNECTORS") else { return [] }
+        return [
+            #"echo "$ASTRA_CONNECTORS""#,
+            #"echo "$ASTRA_CONNECTORS" | head"#,
+            #"echo "$ASTRA_CONNECTORS" | head -50"#,
+            #"echo "$ASTRA_CONNECTORS" | head -n 50"#,
+            #"echo $ASTRA_CONNECTORS"#,
+            #"echo $ASTRA_CONNECTORS | head"#,
+            #"echo $ASTRA_CONNECTORS | head -50"#,
+            #"echo $ASTRA_CONNECTORS | head -n 50"#,
+            #"printf "%s\n" "$ASTRA_CONNECTORS""#,
+            #"printf "%s\n" "$ASTRA_CONNECTORS" | head"#,
+            #"printf "%s\n" "$ASTRA_CONNECTORS" | head -50"#,
+            #"printf "%s\n" "$ASTRA_CONNECTORS" | head -n 50"#,
+            #"printf '%s\n' "$ASTRA_CONNECTORS""#,
+            #"printf '%s\n' "$ASTRA_CONNECTORS" | head"#,
+            #"printf '%s\n' "$ASTRA_CONNECTORS" | head -50"#,
+            #"printf '%s\n' "$ASTRA_CONNECTORS" | head -n 50"#
+        ]
     }
 
     private static func uniqueStrings(_ values: [String]) -> [String] {
@@ -1283,10 +1314,32 @@ enum AgentPolicyManifestService {
     }
 
     private static func deniedActions(from events: [TaskEvent]) -> [String] {
-        uniqueLimited(events.compactMap { event in
+        let explicitActions: [String] = events.compactMap { event -> String? in
             guard event.type == "permission.denied" || event.type == "permission.approval.requested" else { return nil }
             return LogSanitizer.sanitize(event.payload, maxLength: 240)
-        })
+        }
+        let providerSandboxActions: [String] = events.compactMap(providerSandboxDeniedAction(from:))
+        return uniqueLimited(explicitActions + providerSandboxActions)
+    }
+
+    private static func providerSandboxDeniedAction(from event: TaskEvent) -> String? {
+        guard event.type == "agent.response" || event.type == "agent.thinking" else { return nil }
+        let lower = event.payload.lowercased()
+        guard lower.contains("write") || lower.contains("create") else { return nil }
+        guard lower.contains("blocked") || lower.contains("rejected") || lower.contains("denied") else { return nil }
+        guard lower.contains("sandbox") || lower.contains("outside") || lower.contains("workspace") else { return nil }
+        guard let path = filesystemPaths(in: event.payload).first else { return nil }
+        return "provider_sandbox_blocked_write path=\(path)"
+    }
+
+    private static func filesystemPaths(in text: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: #"(?:~|/)[^\s`"'<>]+"#) else { return [] }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return regex.matches(in: text, range: range).compactMap { match in
+            guard let valueRange = Range(match.range, in: text) else { return nil }
+            let value = String(text[valueRange]).trimmingCharacters(in: CharacterSet(charactersIn: ".,);:"))
+            return value.isEmpty ? nil : value
+        }
     }
 
     private static func externalDomains(from events: [TaskEvent]) -> [String] {

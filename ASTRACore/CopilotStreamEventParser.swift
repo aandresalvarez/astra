@@ -27,6 +27,8 @@ public enum CopilotStreamEventParser {
         var emittedMergedResult = false
         for event in events {
             switch event {
+            case .control:
+                continue
             case .stats where hasCompletion:
                 if let stats, !emittedMergedResult {
                     parsed.append(.result(
@@ -199,6 +201,8 @@ public enum CopilotStreamEventParser {
 
     private static func parsedEvent(from event: AgentEvent) -> ParsedEvent? {
         switch event {
+        case .control:
+            return nil
         case .started(let sessionID, let model):
             return .systemInit(model: model, sessionId: sessionID)
         case .thinking(let text):

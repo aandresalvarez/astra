@@ -243,23 +243,6 @@ private struct SidebarTopToolbar: View {
     }
 }
 
-enum SidebarTaskIndexInvalidation {
-    static func signature(for tasks: [AgentTask]) -> Int {
-        tasks.reduce(into: 0) { acc, task in
-            acc ^= task.id.hashValue
-            acc ^= task.workspace?.id.hashValue ?? 0
-            acc ^= task.title.hashValue
-            acc ^= task.goal.hashValue
-            acc ^= task.status.rawValue.hashValue
-            acc ^= task.isPinned ? 1 : 0
-            acc ^= task.isDone ? 2 : 0
-            acc ^= task.shouldShowUnread ? 4 : 0
-            acc &+= Int(task.updatedAt.timeIntervalSince1970)
-            acc &+= Int(task.unreadAt?.timeIntervalSince1970 ?? 0)
-        }
-    }
-}
-
 enum SidebarWorkspaceTaskList {
     static let collapsedLimit = 6
 
@@ -344,7 +327,7 @@ struct TaskSidebarView: View {
     // Lightweight fingerprint of task fields that the sidebar index cares about.
     // Avoids rebuilding the index when unrelated fields (output, tokens) change.
     private var sidebarTasksVersion: Int {
-        SidebarTaskIndexInvalidation.signature(for: tasks)
+        SidebarTaskIndexInvalidation.signature(for: tasks, searchText: searchText)
     }
 
     private var schedulesVersion: Int {
@@ -394,15 +377,6 @@ struct TaskSidebarView: View {
                 }
             }
 
-            // Was `List { ... }.listStyle(.sidebar)`. Switched to a
-            // ScrollView + LazyVStack because List on macOS is backed by
-            // NSTableView, which manages its own row insertion/removal
-            // animations and ignores SwiftUI `.transition` modifiers on
-            // its rows. That made the workspace expand/collapse animation
-            // impossible to drive through SwiftUI — tasks snapped in even
-            // inside `withAnimation`. With a plain LazyVStack the tasks
-            // are regular SwiftUI views again, transitions fire, and the
-            // workspace row stays put while children animate.
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     pinnedSection(using: taskIndex)
@@ -412,8 +386,11 @@ struct TaskSidebarView: View {
                 }
                 .padding(.bottom, 12)
             }
+
+            appAccessFooter
         }
         .onAppear {
+            loadSidebarDisclosure()
             rebuildTaskIndex()
             rebuildSchedules()
             updateNewTaskNudge()
@@ -451,6 +428,17 @@ struct TaskSidebarView: View {
         } message: {
             Text("Enter a new name for this task.")
         }
+    }
+
+    private var appAccessFooter: some View {
+        VStack(spacing: 0) {
+            Divider()
+                .opacity(0.35)
+            AppAccessMenu()
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+        }
+        .accessibilityIdentifier("AppAccessSidebarFooter")
     }
 
     // MARK: - Pinned Section
@@ -523,6 +511,7 @@ struct TaskSidebarView: View {
                 withAnimation(disclosureAnimation) {
                     isPinnedExpanded.toggle()
                 }
+                persistSidebarDisclosure()
             } label: {
                 HStack(spacing: 5) {
                     Text("Pinned")
@@ -853,6 +842,7 @@ struct TaskSidebarView: View {
                     withAnimation(disclosureAnimation) {
                         isSchedulesExpanded.toggle()
                     }
+                    persistSidebarDisclosure()
                 } label: {
                     HStack(spacing: 5) {
                         Text("Routines")
@@ -898,17 +888,32 @@ struct TaskSidebarView: View {
     // MARK: - Workspace Section
 
     private func visibleWorkspaces(using taskIndex: SidebarTaskIndex) -> [Workspace] {
-        WorkspaceSidebarFilter.visibleWorkspaces(
-            workspaces,
-            showStarredOnly: showStarredWorkspacesOnly,
-            searchText: searchText,
-            workspaceMatchesSearch: workspaceMatchesSearch
-        ) { workspace in
-            taskIndex.reviewTasks(
-                for: workspace,
-                matchingSearch: true,
-                workspaceMatchesSearch: false
-            ).isEmpty == false
+        PerformanceTelemetry.measure(
+            "sidebar_visible_workspaces",
+            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            fields: [
+                "task_count": PerformanceTelemetryFields.count(tasks.count),
+                "workspace_count": PerformanceTelemetryFields.count(workspaces.count),
+                "search_active": PerformanceTelemetryFields.bool(!searchText.isEmpty)
+            ],
+            resultFields: { visibleWorkspaces in
+                [
+                    "visible_workspace_count": PerformanceTelemetryFields.count(visibleWorkspaces.count)
+                ]
+            }
+        ) {
+            WorkspaceSidebarFilter.visibleWorkspaces(
+                workspaces,
+                showStarredOnly: showStarredWorkspacesOnly,
+                searchText: searchText,
+                workspaceMatchesSearch: workspaceMatchesSearch
+            ) { workspace in
+                taskIndex.reviewTasks(
+                    for: workspace,
+                    matchingSearch: true,
+                    workspaceMatchesSearch: false
+                ).isEmpty == false
+            }
         }
     }
 
@@ -936,6 +941,7 @@ struct TaskSidebarView: View {
                     withAnimation(disclosureAnimation) {
                         isWorkspacesExpanded.toggle()
                     }
+                    persistSidebarDisclosure()
                 } label: {
                     HStack(spacing: 5) {
                         Text("Workspaces")
@@ -1278,12 +1284,33 @@ struct TaskSidebarView: View {
     private func expandWorkspace(_ workspace: Workspace) {
         collapsedWorkspaceIDs.remove(workspace.id)
         expandedWorkspaceIDs.insert(workspace.id)
+        persistSidebarDisclosure()
     }
 
     private func collapseWorkspace(_ workspace: Workspace) {
         expandedWorkspaceIDs.remove(workspace.id)
         collapsedWorkspaceIDs.insert(workspace.id)
         expandedWorkspaceTaskLists.remove(workspace.id)
+        persistSidebarDisclosure()
+    }
+
+    private func loadSidebarDisclosure() {
+        let state = TaskSidebarDisclosureStore.load()
+        isPinnedExpanded = state.isPinnedExpanded
+        isWorkspacesExpanded = state.isWorkspacesExpanded
+        isSchedulesExpanded = state.isSchedulesExpanded
+        collapsedWorkspaceIDs = state.collapsedWorkspaceIDs
+        expandedWorkspaceIDs = state.expandedWorkspaceIDs
+    }
+
+    private func persistSidebarDisclosure() {
+        TaskSidebarDisclosureStore.save(TaskSidebarDisclosureState(
+            isPinnedExpanded: isPinnedExpanded,
+            isWorkspacesExpanded: isWorkspacesExpanded,
+            isSchedulesExpanded: isSchedulesExpanded,
+            collapsedWorkspaceIDs: collapsedWorkspaceIDs,
+            expandedWorkspaceIDs: expandedWorkspaceIDs
+        ))
     }
 
     private func sidebarShowMoreButton(title: String, action: @escaping () -> Void) -> some View {
@@ -1730,7 +1757,7 @@ private struct WorkspaceRowActions: View {
             if workspace.isStarred {
                 Image(systemName: "star.fill")
                     .font(Stanford.ui(10, weight: .semibold))
-                    .foregroundStyle(Stanford.lagunita)
+                    .foregroundStyle(.secondary)
                     .frame(width: 16, height: 22)
                     .accessibilityLabel("Starred")
             }
@@ -2183,31 +2210,19 @@ struct SearchPanelOverlay: View {
     }
 
     private var recentTasks: [AgentTask] {
-        Array(tasks.sorted { $0.updatedAt > $1.updatedAt }.prefix(9))
+        SearchPanelOverlayResults.recentTasks(tasks, workspaces: workspaces)
     }
 
     private var filteredTasks: [AgentTask] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return recentTasks }
-        return tasks.filter {
-            $0.title.localizedCaseInsensitiveContains(query) ||
-            $0.goal.localizedCaseInsensitiveContains(query) ||
-            ($0.workspace?.name.localizedCaseInsensitiveContains(query) ?? false) ||
-            ($0.workspace?.primaryPath.localizedCaseInsensitiveContains(query) ?? false)
-        }
-        .sorted { $0.updatedAt > $1.updatedAt }
-        .prefix(12)
-        .map { $0 }
+        SearchPanelOverlayResults.filteredTasks(searchText: searchText, tasks: tasks, workspaces: workspaces)
     }
 
     private var filteredWorkspaces: [Workspace] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return [] }
-        return workspaces.filter {
-            $0.name.localizedCaseInsensitiveContains(query) ||
-            $0.primaryPath.localizedCaseInsensitiveContains(query)
-        }
-        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        SearchPanelOverlayResults.filteredWorkspaces(
+            searchText: searchText,
+            workspaces: workspaces,
+            taskCount: tasks.count
+        )
     }
 
     private func toggleStarred(for workspace: Workspace) {

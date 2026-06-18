@@ -16,6 +16,24 @@ enum CapabilityRuntimeResourceMatcher {
         return packageDefinitions(library: library).filter { enabledIDs.contains($0.id) }
     }
 
+    /// Resolves enabled packages from an already-loaded definition list, without
+    /// touching the filesystem. SwiftUI `body`-path callers (the right rail) pass
+    /// the catalog they have already cached in view state so capability
+    /// resolution stays off the synchronous I/O path — the `library`-backed
+    /// overload above re-derives the fingerprint on every call, which is fine for
+    /// runtime/launch callers but is a per-frame scan when invoked from `body`.
+    /// Built-ins are merged in so the result matches `packageDefinitions()`.
+    static func enabledPackages(
+        for workspace: Workspace?,
+        in definitions: [PluginPackage]
+    ) -> [PluginPackage] {
+        guard let workspace else { return [] }
+        let enabledIDs = Set(workspace.enabledCapabilityIDs)
+        guard !enabledIDs.isEmpty else { return [] }
+        return uniquePackages(definitions + PluginCatalog.builtInPackages)
+            .filter { enabledIDs.contains($0.id) }
+    }
+
     static func skillMatches(_ pluginSkill: PluginSkill, skill: Skill) -> Bool {
         normalizedName(pluginSkill.name) == normalizedName(skill.name)
     }
@@ -84,10 +102,11 @@ enum CapabilityRuntimeResourceMatcher {
     }
 
     private static func directoryFingerprint(for directory: URL) -> DirectoryFingerprint {
-        guard let urls = try? FileManager.default.contentsOfDirectory(
+        guard let urls = try? HostFileAccessBroker().contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
+            options: [.skipsHiddenFiles],
+            intent: .astraManagedStorage(root: directory)
         ) else {
             return DirectoryFingerprint(fileCount: 0, latestModificationTime: 0)
         }

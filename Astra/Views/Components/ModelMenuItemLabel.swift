@@ -1,24 +1,32 @@
 import SwiftUI
 
-/// Menu row label for a model choice: the provider-reported display name as
-/// the title and, when it differs, the raw `--model` ID underneath so the
-/// exact string stays discoverable (it is what tasks launch with and what
-/// the custom-model text fields accept).
+/// Menu row label for a model choice: readable family/version first, provider
+/// metadata next, and the exact `--model` value kept visible underneath.
 struct ModelMenuItemLabel: View {
-    let model: String
-    let displayName: String
+    let presentation: RuntimeModelMenuOptionPresentation
     let isSelected: Bool
 
+    init(presentation: RuntimeModelMenuOptionPresentation, isSelected: Bool) {
+        self.presentation = presentation
+        self.isSelected = isSelected
+    }
+
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(displayName)
-                if displayName != model {
-                    Text(model)
+        HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(presentation.title)
+                if let subtitle = presentation.subtitle {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let detail = presentation.detail {
+                    Text(detail)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
+            Spacer(minLength: 8)
             if isSelected {
                 Image(systemName: "checkmark")
             }

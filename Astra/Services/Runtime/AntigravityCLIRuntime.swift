@@ -75,7 +75,7 @@ enum AntigravityCLIRuntime {
     }
 
     static func configuredModel(settingsURL: URL = settingsURL()) -> String? {
-        guard let data = try? Data(contentsOf: settingsURL),
+        guard let data = readProviderFile(at: settingsURL),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let model = object["model"] as? String else {
             return nil
@@ -102,7 +102,7 @@ enum AntigravityCLIRuntime {
         guard !selected.isEmpty else { return false }
 
         var object: [String: Any] = [:]
-        if let data = try? Data(contentsOf: settingsURL),
+        if let data = readProviderFile(at: settingsURL),
            let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             object = existing
         }
@@ -216,11 +216,18 @@ enum AntigravityCLIRuntime {
 
     static func diagnosticSummary(logPath: String?) -> DiagnosticSummary? {
         guard let logPath,
-              let data = try? Data(contentsOf: URL(fileURLWithPath: logPath)),
+              let data = readProviderFile(at: URL(fileURLWithPath: logPath)),
               let raw = String(data: data, encoding: .utf8) else {
             return nil
         }
         return diagnosticSummary(logText: raw, logPath: logPath)
+    }
+
+    private static func readProviderFile(at url: URL) -> Data? {
+        try? HostFileAccessBroker().readData(
+            at: url,
+            intent: .astraManagedStorage(root: url.deletingLastPathComponent())
+        )
     }
 
     static func diagnosticSummary(logText: String, logPath: String) -> DiagnosticSummary? {

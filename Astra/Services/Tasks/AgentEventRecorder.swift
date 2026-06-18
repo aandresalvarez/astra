@@ -6,9 +6,30 @@ import ASTRACore
 final class AgentEventRecordingState {
     private let maxCoalescedPayloadLength: Int
     private var lastConversationEventByKey: [String: TaskEvent] = [:]
+    /// Runs whose `run.output` was last written by a `.completed` summary.
+    /// Providers like Codex emit several `agent_message` items per turn (progress
+    /// notes first, the final answer last). Tracking this lets a later
+    /// `.completed` replace an earlier one (last-completed-wins) while never
+    /// clobbering output assembled from streamed `.text` deltas.
+    private var runsWithCompletedOutput: Set<UUID> = []
 
     init(maxCoalescedPayloadLength: Int = 4_096) {
         self.maxCoalescedPayloadLength = maxCoalescedPayloadLength
+    }
+
+    func markOutputFromCompletedSummary(for run: TaskRun) {
+        runsWithCompletedOutput.insert(run.id)
+    }
+
+    /// Call when streamed `.text` deltas are appended to `run.output`: the output
+    /// is now stream-assembled, so a later `.completed` envelope must not replace
+    /// it even if an earlier `.completed` had seeded the output first.
+    func clearOutputFromCompletedSummary(for run: TaskRun) {
+        runsWithCompletedOutput.remove(run.id)
+    }
+
+    func outputCameFromCompletedSummary(for run: TaskRun) -> Bool {
+        runsWithCompletedOutput.contains(run.id)
     }
 
     func appendConversationChunk(
@@ -548,6 +569,9 @@ enum AgentEventRecorder {
         recordingState: AgentEventRecordingState? = nil
     ) {
         switch event {
+        case .control:
+            break
+
         case .started(let sessionID, let model):
             recordingState?.breakConversationCoalescing(for: run)
             if let sessionID {
@@ -630,10 +654,18 @@ enum AgentEventRecorder {
 
         case .completed(let summary):
             recordingState?.breakConversationCoalescing(for: run)
-            if let summary, run.output.isEmpty {
+            if let summary {
                 let visibleText = AgentEventRecordingPresentation.visibleTextWithoutProtocolMarkers(summary)
-                if !visibleText.isEmpty {
+                // First-completed sets the output; a later completed message
+                // replaces it (last-completed-wins) so multi-message providers
+                // like Codex keep the final answer rather than an opening
+                // preamble. Output already assembled from streamed `.text`
+                // deltas is never overwritten here.
+                let mayReplace = run.output.isEmpty
+                    || (recordingState?.outputCameFromCompletedSummary(for: run) ?? false)
+                if !visibleText.isEmpty, mayReplace {
                     run.output = visibleText
+                    recordingState?.markOutputFromCompletedSummary(for: run)
                 }
             }
 
@@ -656,6 +688,8 @@ enum AgentEventRecorder {
 
     static func parsedEvent(from event: AgentEvent) -> ParsedEvent? {
         switch event {
+        case .control:
+            return nil
         case .started(let sessionID, let model):
             return .systemInit(model: model, sessionId: sessionID)
         case .thinking(let text):
@@ -702,6 +736,9 @@ enum AgentEventRecorder {
         let textToAppend = AgentEventRecordingPresentation.responseTextToAppend(text, after: run.output)
         guard !textToAppend.isEmpty else { return }
         run.output += textToAppend
+        // Output now contains streamed deltas; a later `.completed` envelope must
+        // not clobber it even if an earlier `.completed` seeded the output.
+        recordingState?.clearOutputFromCompletedSummary(for: run)
         appendConversationChunk(
             eventType: TaskEventTypes.Conversation.agentResponse,
             text: textToAppend,

@@ -275,7 +275,7 @@ struct PolicySummaryPresentation: Identifiable, Hashable, Sendable {
             .init(title: "Paths", value: compactList([manifest.workspacePath] + manifest.additionalPaths, empty: "None"), isMonospaced: true),
             .init(title: "Environment keys", value: compactList(manifest.environmentKeyNames, empty: "None"), isMonospaced: true),
             .init(title: "Credential labels", value: compactList(manifest.credentialLabels, empty: "None")),
-            .init(title: "MCP servers", value: compactList(mcpServerSummaries(manifest.mcpServers), empty: "None")),
+            .init(title: "MCP servers", value: mcpServersFactValue(manifest)),
             .init(title: "Approvals", value: compactList(manifest.approvalsGranted, empty: "None"))
         ]
 
@@ -289,6 +289,17 @@ struct PolicySummaryPresentation: Identifiable, Hashable, Sendable {
             facts.append(.init(title: "Diagnostics", value: diagnostics))
         }
         return facts
+    }
+
+    static func mcpServersFactValue(_ manifest: RunPermissionManifest) -> String {
+        guard !manifest.mcpServers.isEmpty else { return "None" }
+        guard AgentRuntimeAdapterRegistry.descriptor(for: manifest.providerID).supportsMCPServers else {
+            // Declared servers must never read as active on a runtime that
+            // doesn't materialize them.
+            let count = manifest.mcpServers.count
+            return "\(count) skipped — \(manifest.providerID.displayName) doesn't support MCP servers"
+        }
+        return compactList(mcpServerSummaries(manifest.mcpServers), empty: "None")
     }
 
     private static func mcpServerSummaries(_ servers: [RunPermissionManifest.MCPServer]) -> [String] {
@@ -538,6 +549,7 @@ struct RunActivityPresentation: Hashable, Sendable {
     let localAgentSummary: LocalAgentRunSummaryPresentation?
     let technicalOutputs: [TechnicalOutputPresentation]
     let stats: [RunFactPresentation]
+    let prefersExpandedDetails: Bool
 
     init(
         run: TaskRunSnapshot,
@@ -597,10 +609,32 @@ struct RunActivityPresentation: Hashable, Sendable {
         )
         technicalOutputs = technicalRows
         stats = Self.statsFacts(for: run)
+        prefersExpandedDetails = Self.prefersExpandedDetails(
+            run: run,
+            issues: issueRows,
+            technicalOutputs: technicalRows
+        )
     }
 
     var hasVisibleDetails: Bool {
         !issues.isEmpty || !approvals.isEmpty || !progressMessages.isEmpty || !tools.isEmpty || !files.isEmpty || policy != nil || localAgentSummary != nil || !technicalOutputs.isEmpty || !stats.isEmpty
+    }
+
+    private static func prefersExpandedDetails(
+        run: TaskRunSnapshot,
+        issues: [RunIssuePresentation],
+        technicalOutputs: [TechnicalOutputPresentation]
+    ) -> Bool {
+        if run.status.prefersExpandedRunActivityDetails {
+            return true
+        }
+        if issues.contains(where: { $0.severity == .error }) {
+            return true
+        }
+        if technicalOutputs.contains(where: { $0.severity == .error }) {
+            return true
+        }
+        return false
     }
 
     private static func groupToolCalls(_ calls: [TaskToolCall]) -> [ToolActivityPresentation] {
@@ -780,7 +814,8 @@ struct RunActivityPresentation: Hashable, Sendable {
         files: [],
         policy: nil,
         technicalOutputs: [],
-        stats: []
+        stats: [],
+        prefersExpandedDetails: false
     )
 
     private init(
@@ -792,7 +827,8 @@ struct RunActivityPresentation: Hashable, Sendable {
         policy: PolicySummaryPresentation?,
         localAgentSummary: LocalAgentRunSummaryPresentation? = nil,
         technicalOutputs: [TechnicalOutputPresentation],
-        stats: [RunFactPresentation]
+        stats: [RunFactPresentation],
+        prefersExpandedDetails: Bool
     ) {
         self.issues = issues
         self.approvals = approvals
@@ -803,6 +839,49 @@ struct RunActivityPresentation: Hashable, Sendable {
         self.localAgentSummary = localAgentSummary
         self.technicalOutputs = technicalOutputs
         self.stats = stats
+        self.prefersExpandedDetails = prefersExpandedDetails
+    }
+}
+
+struct RunActivityDisclosureState: Hashable, Sendable {
+    private var manuallyExpandedRunIDs: Set<UUID> = []
+    private var manuallyCollapsedRunIDs: Set<UUID> = []
+
+    func isExpanded(
+        runID: UUID,
+        presentation: RunActivityPresentation
+    ) -> Bool {
+        if manuallyCollapsedRunIDs.contains(runID) {
+            return false
+        }
+        if manuallyExpandedRunIDs.contains(runID) {
+            return true
+        }
+        return presentation.prefersExpandedDetails
+    }
+
+    mutating func toggle(
+        runID: UUID,
+        presentation: RunActivityPresentation
+    ) {
+        if isExpanded(runID: runID, presentation: presentation) {
+            manuallyExpandedRunIDs.remove(runID)
+            manuallyCollapsedRunIDs.insert(runID)
+        } else {
+            manuallyCollapsedRunIDs.remove(runID)
+            manuallyExpandedRunIDs.insert(runID)
+        }
+    }
+}
+
+private extension RunStatus {
+    var prefersExpandedRunActivityDetails: Bool {
+        switch self {
+        case .failed, .timeout, .budgetExceeded:
+            true
+        case .running, .completed, .cancelled:
+            false
+        }
     }
 }
 

@@ -26,7 +26,7 @@ enum TaskContextStateRecovery {
             quarantine(path: result.path, reason: result.status.rawValue, taskID: taskID, diagnostic: result.errorDescription)
             return nil
         case .unsupportedSchema:
-            if let decoded = decode(atPath: result.path),
+            if let decoded = decode(atPath: result.path, taskFolder: taskFolder),
                decoded.schemaVersion > TaskContextStateManager.schemaVersion {
                 backupNewerSchema(path: result.path, version: decoded.schemaVersion, taskID: taskID)
                 // Re-label to the current schema: the in-memory value only carries
@@ -41,8 +41,14 @@ enum TaskContextStateRecovery {
         }
     }
 
-    private static func decode(atPath path: String) -> TaskContextState? {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return nil }
+    private static func decode(atPath path: String, taskFolder: String) -> TaskContextState? {
+        let hostFileAccess = HostFileAccessBroker()
+        let url = URL(fileURLWithPath: path)
+        let root = URL(fileURLWithPath: taskFolder, isDirectory: true)
+        guard let data = try? hostFileAccess.readData(
+            at: url,
+            intent: .astraManagedStorage(root: root)
+        ) else { return nil }
         return StructuredJSONDecoder.decode(TaskContextState.self, from: data).value
     }
 

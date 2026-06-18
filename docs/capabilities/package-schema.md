@@ -1,6 +1,6 @@
 # Capability Package Schema
 
-ASTRA external capabilities are JSON files that decode as `PluginPackage` v2 packages. They can be authored outside the app, validated, imported into the local capability library, reviewed, approved, and enabled in a workspace.
+ASTRA external capabilities are JSON files or package folders that decode as `PluginPackage` v2 packages. They can be authored outside the app, validated, imported into the local capability library, reviewed, approved, and enabled in a workspace.
 
 External packages are not native code plugins. ASTRA remains the trusted runtime for policy, credentials, browser adapters, provider launch, and workspace isolation.
 
@@ -25,6 +25,12 @@ This prevents an external file from declaring itself built-in or approved. Appro
   "id": "local.example-capability",
   "name": "Example Capability",
   "icon": "puzzlepiece.extension",
+  "iconDescriptor": {
+    "kind": "systemSymbol",
+    "value": "puzzlepiece.extension",
+    "fallbackSystemName": "puzzlepiece.extension",
+    "monochromePreferred": true
+  },
   "description": "Short user-facing summary",
   "author": "Local",
   "category": "Custom",
@@ -56,6 +62,40 @@ This prevents an external file from declaring itself built-in or approved. Appro
 }
 ```
 
+`icon` remains the legacy SF Symbol fallback. New packages may also provide
+`iconDescriptor`:
+
+- `kind: "systemSymbol"` renders `value` as an SF Symbol.
+- `kind: "brand"` renders an app-known brand mark such as `github`, `jira`,
+  `googledrive`, `googlecloud`, or `microsoft365`.
+- `kind: "asset"` renders a local package asset. `value` must be a relative
+  path under `assets/`, such as `assets/icon.svg`.
+
+Every descriptor needs `fallbackSystemName`; ASTRA uses it when the brand or
+asset cannot be rendered.
+
+## Package Folders
+
+Single-file JSON packages are still supported:
+
+```text
+minimal-skill.json
+```
+
+Packages that own icon assets should use a folder:
+
+```text
+my-capability/
+  capability.json
+  assets/
+    icon.svg
+```
+
+The folder root is the asset root. ASTRA imports the manifest and copies
+declared assets into the local capability library. Approval digests include
+the manifest plus the declared icon asset bytes, so changing `assets/icon.svg`
+invalidates a prior local approval.
+
 ## Stable Components
 
 - `skills`: behavior instructions, allowed provider tools, disallowed provider tools, custom tool names, and environment keys.
@@ -79,6 +119,14 @@ The importer blocks:
 - unknown browser adapter IDs
 - unsafe MCP stdio commands or arguments
 - remote MCP URLs that are not HTTPS, except loopback HTTP for local development
+- MCP servers requesting environment keys the package does not declare via
+  its own connector hints or skill environment keys (prevents a server from
+  reading unrelated host secrets)
+- MCP server IDs or tool names that break the `mcp__<server>__<tool>`
+  permission grammar (no `__`, whitespace, or other separators)
+- icon asset paths that are remote, absolute, outside `assets/`, contain path
+  traversal, use unsupported extensions, point to symlinks, or exceed 512 KB
+- declared icon assets that are missing from a package folder
 
 The importer warns:
 
@@ -87,6 +135,9 @@ The importer warns:
 - approval was reset to draft
 - declared prerequisites are missing locally
 - package has no installable payload
+- a strictly newer version of an installed local package imports as an
+  update: the file is replaced, the package returns to draft, and the
+  digest change requires re-approval before it runs again
 
 ## Developer Workflow
 
@@ -94,6 +145,12 @@ Validate a package:
 
 ```bash
 ./script/capability_package.sh validate docs/capabilities/examples/minimal-skill.json
+```
+
+Validate a package folder:
+
+```bash
+./script/capability_package.sh validate capabilities/local/my-capability
 ```
 
 Validate a repository-level capability library:
@@ -106,6 +163,12 @@ Install into the development channel:
 
 ```bash
 ./script/capability_package.sh install-dev docs/capabilities/examples/minimal-skill.json
+```
+
+Install a package folder and copy its assets into the development channel:
+
+```bash
+./script/capability_package.sh install-dev capabilities/local/my-capability
 ```
 
 Install all valid packages from a repository-level library into the development channel:

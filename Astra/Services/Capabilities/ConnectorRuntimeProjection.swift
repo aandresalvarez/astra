@@ -58,19 +58,50 @@ struct ConnectorRuntimeProjection {
             counts[binding.originalKey, default: 0] += 1
         }
         var output: [String: String] = [:]
+        var injectedLegacyKeys: [String] = []
 
         for binding in bindings {
             output[binding.envKey] = binding.value
             guard includeLegacySingleConnectorFallback,
                   serviceCounts[serviceTypesByConnectorID[binding.connectorID] ?? ""] == 1,
-                  legacyKeyCounts[binding.originalKey] == 1 else {
+                  legacyKeyCounts[binding.originalKey] == 1,
+                  Self.isSafeLegacyEnvName(binding.originalKey) else {
                 continue
             }
             output[binding.originalKey] = binding.value
+            injectedLegacyKeys.append(binding.originalKey)
+        }
+
+        if !injectedLegacyKeys.isEmpty {
+            // Deprecation telemetry: bare key names silently rebind when a
+            // second connector of the same service appears. The fallback is
+            // scheduled for removal once these audits go quiet.
+            AppLogger.audit(.connectorTested, category: "Capabilities", fields: [
+                "source": "connector_env_projection",
+                "result": "legacy_bare_env_fallback_injected",
+                "legacy_key_count": String(injectedLegacyKeys.count),
+                "legacy_key_names": injectedLegacyKeys.sorted().joined(separator: ",")
+            ], level: .info)
         }
 
         output["ASTRA_CONNECTORS"] = manifestJSON(aliases: aliases)
         return output
+    }
+
+    /// Declared credential keys that fail to load a non-empty value from
+    /// the secret store, per connector. Key names only — never values.
+    func missingCredentialKeysByConnector() -> [(connector: Connector, missingKeys: [String])] {
+        connectors.compactMap { connector in
+            let credentials = connector.credentials(store: secretStore)
+            let missing = connector.credentialKeys
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { key in
+                    guard !key.isEmpty else { return false }
+                    let value = credentials[key] ?? ""
+                    return value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                }
+            return missing.isEmpty ? nil : (connector, missing)
+        }
     }
 
     func manifest() -> Manifest {
@@ -258,6 +289,23 @@ struct ConnectorRuntimeProjection {
             value: value,
             kind: kind
         ))
+    }
+
+    /// The bare legacy fallback exports connector key names verbatim into
+    /// the task environment. Key names are package/user-controlled, so
+    /// process-critical and loader variables must never be claimable —
+    /// a connector config key literally named PATH would otherwise poison
+    /// every launch. The prefixed projected names are always safe.
+    static func isSafeLegacyEnvName(_ name: String) -> Bool {
+        let critical: Set<String> = [
+            "PATH", "HOME", "SHELL", "USER", "LOGNAME", "TMPDIR",
+            "SSH_AUTH_SOCK", "XPC_SERVICE_NAME"
+        ]
+        if critical.contains(name) { return false }
+        for prefix in ["DYLD_", "LD_", "ASTRA_"] where name.hasPrefix(prefix) {
+            return false
+        }
+        return true
     }
 
     private func normalizedServiceTypesByConnectorID() -> [UUID: String] {

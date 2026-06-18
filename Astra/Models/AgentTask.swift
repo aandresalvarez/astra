@@ -193,7 +193,11 @@ final class AgentTask {
             return messageCount
         }
 
-        return goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 1
+        return Self.fallbackThreadMessageCount(forGoal: goal)
+    }
+
+    static func fallbackThreadMessageCount(forGoal goal: String) -> Int {
+        goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 1
     }
 
     var statusColor: String {

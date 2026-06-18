@@ -89,6 +89,10 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
     public let supportsAstraRunProtocol: Bool
     public let executionCapabilities: AgentRuntimeExecutionCapabilities
     public let supportsNativeContinuation: Bool
+    /// Whether capability-package MCP servers are materialized into this
+    /// runtime's launches. Runtimes without support surface the skip
+    /// explicitly instead of silently dropping declared servers.
+    public let supportsMCPServers: Bool
 
     public init(
         id: AgentRuntimeID,
@@ -101,7 +105,8 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
         defaultModels: [String],
         supportsAstraRunProtocol: Bool,
         executionCapabilities: AgentRuntimeExecutionCapabilities = .providerHarness,
-        supportsNativeContinuation: Bool = false
+        supportsNativeContinuation: Bool = false,
+        supportsMCPServers: Bool = false
     ) {
         self.id = id
         self.displayName = displayName
@@ -120,6 +125,7 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
         self.supportsAstraRunProtocol = supportsAstraRunProtocol
         self.executionCapabilities = executionCapabilities
         self.supportsNativeContinuation = supportsNativeContinuation
+        self.supportsMCPServers = supportsMCPServers
     }
 
 }
@@ -189,6 +195,7 @@ public struct AgentRuntimeExecutionCapabilities: Sendable, Equatable {
 }
 
 public enum AgentEvent: Sendable, Equatable {
+    case control(type: String)
     case started(sessionID: String?, model: String?)
     case thinking(text: String)
     case text(text: String)

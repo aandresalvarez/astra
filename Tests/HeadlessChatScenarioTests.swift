@@ -11,7 +11,7 @@ struct HeadlessChatScenarioTests {
 
 extension HeadlessChatScenarioTests {
     static func copilotScript(body: String, argsFile: URL? = nil) -> String {
-        let recordArgs = argsFile.map { "printf '%s\\n' \"$@\" > \(shQuote($0.path))" } ?? ""
+        let recordArgs = argsFile.map { "printf '%s\\n' \"$@\" > \(shQuoteSandboxPath($0.path))" } ?? ""
         return """
         #!/bin/sh
         if [ "$1" = "help" ]; then
@@ -32,7 +32,7 @@ extension HeadlessChatScenarioTests {
     }
 
     static func claudeScript(body: String, argsFile: URL? = nil) -> String {
-        let recordArgs = argsFile.map { "printf '%s\\n' \"$@\" > \(shQuote($0.path))" } ?? ""
+        let recordArgs = argsFile.map { "printf '%s\\n' \"$@\" > \(shQuoteSandboxPath($0.path))" } ?? ""
         return """
         #!/bin/sh
         if [ "$1" = "--version" ]; then
@@ -49,7 +49,7 @@ extension HeadlessChatScenarioTests {
     }
 
     static func antigravityScript(body: String, argsFile: URL? = nil) -> String {
-        let recordArgs = argsFile.map { "printf '%s\\n' \"$@\" > \(shQuote($0.path))" } ?? ""
+        let recordArgs = argsFile.map { "printf '%s\\n' \"$@\" > \(shQuoteSandboxPath($0.path))" } ?? ""
         return """
         #!/bin/sh
         if [ "$1" = "--version" ]; then
@@ -67,6 +67,10 @@ extension HeadlessChatScenarioTests {
 
     static func shQuote(_ value: String) -> String {
         "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+
+    static func shQuoteSandboxPath(_ value: String) -> String {
+        shQuote(ExecutionSandbox.canonicalize(value) ?? value)
     }
 
     static func argumentValues(after flag: String, in arguments: [String]) -> [String] {
@@ -187,7 +191,15 @@ final class HeadlessChatHarness {
         model: String,
         tokenBudget: Int? = nil
     ) -> AgentTask {
-        let workspace = Workspace(name: "Headless", primaryPath: workspaceURL.path)
+        // Fake provider scripts in this harness intentionally write argv,
+        // counters, and launch markers under `rootURL`. Register that temp
+        // support directory as an explicit additional path so strict/autonomous
+        // sandbox runs model the same declared-path contract production uses.
+        let workspace = Workspace(
+            name: "Headless",
+            primaryPath: workspaceURL.path,
+            additionalPaths: [rootURL.path]
+        )
         context.insert(workspace)
         let resolvedBudget = tokenBudget ?? (runtime == .claudeCode ? 200_000 : 1_000)
 
@@ -211,7 +223,7 @@ final class HeadlessChatHarness {
         permissionPolicy: PermissionPolicy = .restricted,
         liveApprovals: Bool = false
     ) -> AgentRuntimeWorker {
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.timeoutSeconds = 10
         worker.permissionPolicy = permissionPolicy
         // Most scenario fakes assert on argv prompt delivery; live approvals
@@ -238,7 +250,7 @@ final class HeadlessChatHarness {
         copilotPath: String,
         permissionPolicy: PermissionPolicy = .restricted
     ) -> AgentRuntimeWorker {
-        let worker = AgentRuntimeWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker()
         worker.timeoutSeconds = 10
         worker.permissionPolicy = permissionPolicy
         worker.liveApprovalsEnabled = false

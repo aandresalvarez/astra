@@ -210,7 +210,7 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
         let configuredPath = configuration.executablePath(for: id)
         let executable = configuredPath.isEmpty ? OpenCodeCLIRuntime.detectPath() : configuredPath
         let models = OpenCodeCLIRuntime.modelNames(executablePath: executable) ?? OpenCodeCLIRuntime.availableModelNames()
-        RuntimeModelAvailability.persistAvailableModels(models, for: id, authority: modelAvailabilityAuthority)
+        await RuntimeModelAvailability.persistObservedAvailableModels(models, for: id, authority: modelAvailabilityAuthority)
         return RuntimeReadinessCheck(
             id: "opencode-models",
             title: "OpenCode models",
@@ -247,7 +247,10 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
             timeoutSeconds: context.timeoutSeconds,
             taskEnvironment: taskEnv,
             pathPrefix: pathPrefix,
-            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task)
+            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(
+                context.task,
+                contextText: context.contextText
+            )
                 || taskEnv["ASTRA_BROWSER_URL"] != nil
         )
 

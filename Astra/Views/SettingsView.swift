@@ -7,12 +7,16 @@ struct SettingsView: View {
     @AppStorage(AppStorageKeys.defaultModel) private var defaultModel = TaskExecutionDefaults.model
     @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultTokenBudget = TaskExecutionDefaults.tokenBudget
     @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var defaultAgentPolicyLevelRaw = AgentPolicyLevel.review.rawValue
-    @AppStorage(AppStorageKeys.budgetEnforcementMode) private var budgetEnforcementModeRaw = TaskExecutionDefaults.budgetEnforcementMode.rawValue
-    // Defaults derive from ExecutionSandboxSettings so the UI's initial state and
-    // the resolved (current()) behavior share one source of truth and can't drift.
-    @AppStorage(AppStorageKeys.sandboxEnforcement) private var sandboxEnforcementRaw = ExecutionSandboxSettings.defaultEnforcement.rawValue
-    @AppStorage(AppStorageKeys.sandboxAllowNetwork) private var sandboxAllowNetwork = ExecutionSandboxSettings.defaultAllowNetwork
-    @AppStorage(AppStorageKeys.sandboxLayerNativeProviders) private var sandboxLayerNativeProviders = ExecutionSandboxSettings.defaultLayerNativeProviders
+    @AppStorage(AppStorageKeys.budgetEnforcementMode) private var budgetEnforcementModeRaw =
+        TaskExecutionDefaults.budgetEnforcementMode.rawValue
+    @AppStorage(AppStorageKeys.sandboxEnforcement) private var sandboxEnforcementRaw =
+        ExecutionSandboxSettings.defaultEnforcement.rawValue
+    @AppStorage(AppStorageKeys.sandboxReadScope) private var sandboxReadScopeRaw =
+        ExecutionSandboxSettings.defaultReadScope.rawValue
+    @AppStorage(AppStorageKeys.sandboxAllowNetwork) private var sandboxAllowNetwork =
+        ExecutionSandboxSettings.defaultAllowNetwork
+    @AppStorage(AppStorageKeys.sandboxLayerNativeProviders) private var sandboxLayerNativeProviders =
+        ExecutionSandboxSettings.defaultLayerNativeProviders
     @AppStorage(AppStorageKeys.defaultRuntimeID) private var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
     @AppStorage(AppStorageKeys.claudePath) private var claudePath = ""
     @AppStorage(AppStorageKeys.copilotPath) private var copilotPath = ""
@@ -145,18 +149,7 @@ struct SettingsView: View {
             Text(candidate.consentMessage)
         }
         .onAppear {
-            loadProviderPathDrafts()
             loadRoleProfileDrafts()
-            detectClaudeCLI()
-            detectCopilotCLI()
-            if expandedProviderRuntime == nil {
-                expandedProviderRuntime = selectedRuntime
-            }
-            Task { await refreshRuntimeReadiness() }
-        }
-        .onChange(of: readinessSignature) {
-            readinessReport = nil
-            readinessCheckedAt = nil
         }
         .onChange(of: claudeAvailableModels) {
             alignDefaultModelsWithRuntime()
@@ -168,9 +161,7 @@ struct SettingsView: View {
             alignDefaultModelsWithRuntime()
         }
         .onChange(of: runtimeProviderSettingsRevision) {
-            loadProviderPathDrafts()
-            readinessReport = nil
-            readinessCheckedAt = nil
+            loadRoleProfileDrafts()
         }
         .onChange(of: roleProfileRevision) {
             loadRoleProfileDrafts()
@@ -274,6 +265,18 @@ struct SettingsView: View {
                 .pickerStyle(.segmented)
 
                 Text(selectedSandboxEnforcement.helpText)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+
+                Picker("Read Scope", selection: sandboxReadScopeSelectionBinding) {
+                    ForEach(ExecutionSandboxReadScope.allCases) { mode in
+                        Text(mode.displayName).tag(mode.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .disabled(selectedSandboxEnforcement != .bestEffort)
+
+                Text(selectedSandboxReadScope.helpText)
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
 
@@ -1269,7 +1272,7 @@ struct SettingsView: View {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: role.symbolName)
                     .font(Stanford.ui(15, weight: .semibold))
-                    .foregroundStyle(Stanford.lagunita)
+                    .foregroundStyle(.secondary)
                     .frame(width: 22)
 
                 VStack(alignment: .leading, spacing: 2) {
@@ -1717,6 +1720,10 @@ struct SettingsView: View {
         ExecutionSandboxEnforcement.normalized(sandboxEnforcementRaw)
     }
 
+    private var selectedSandboxReadScope: ExecutionSandboxReadScope {
+        ExecutionSandboxReadScope.normalized(sandboxReadScopeRaw)
+    }
+
     /// Normalizing binding so the segmented Picker always reads/writes a canonical
     /// raw value. A legacy/unknown stored value (which `normalized` tolerates)
     /// therefore still maps to a valid segment instead of leaving the control with
@@ -1725,6 +1732,13 @@ struct SettingsView: View {
         Binding(
             get: { ExecutionSandboxEnforcement.normalized(sandboxEnforcementRaw).rawValue },
             set: { sandboxEnforcementRaw = ExecutionSandboxEnforcement.normalized($0).rawValue }
+        )
+    }
+
+    private var sandboxReadScopeSelectionBinding: Binding<String> {
+        Binding(
+            get: { ExecutionSandboxReadScope.normalized(sandboxReadScopeRaw).rawValue },
+            set: { sandboxReadScopeRaw = ExecutionSandboxReadScope.normalized($0).rawValue }
         )
     }
 
@@ -1837,9 +1851,8 @@ struct SettingsView: View {
                         selection.wrappedValue = model
                     } label: {
                         ModelMenuItemLabel(
-                            model: model,
-                            displayName: RuntimeModelAvailability.displayName(
-                                for: model,
+                            presentation: RuntimeModelMenuOptionPresentation(
+                                model: model,
                                 runtime: selectedRuntime,
                                 cache: runtimeModelCache
                             ),
@@ -1854,6 +1867,7 @@ struct SettingsView: View {
             }
             .buttonStyle(.borderless)
             .accessibilityLabel("Choose \(title)")
+            .help("Choose \(title)")
         }
     }
 
@@ -1878,9 +1892,8 @@ struct SettingsView: View {
                         roleModelBinding(for: role).wrappedValue = model
                     } label: {
                         ModelMenuItemLabel(
-                            model: model,
-                            displayName: RuntimeModelAvailability.displayName(
-                                for: model,
+                            presentation: RuntimeModelMenuOptionPresentation(
+                                model: model,
                                 runtime: runtime,
                                 cache: runtimeModelCache
                             ),
@@ -1895,6 +1908,7 @@ struct SettingsView: View {
             }
             .buttonStyle(.borderless)
             .accessibilityLabel("Choose \(title)")
+            .help("Choose \(title)")
         }
     }
 
@@ -2418,7 +2432,10 @@ struct SettingsView: View {
 
         let service = RuntimeReadinessService()
         var report = await service.check(configuration: readinessConfiguration)
-        if report.checks.contains(where: { $0.id == readinessConfiguration.runtimeReadinessCheckID && $0.state == .ready }) {
+        let runtimeReadinessCheckID = AgentRuntimeAdapterRegistry
+            .adapter(for: readinessConfiguration.runtime)
+            .readinessCheckID
+        if report.checks.contains(where: { $0.id == runtimeReadinessCheckID && $0.state == .ready }) {
             let modelCheck = await refreshModelAvailability(for: readinessConfiguration)
             report = RuntimeReadinessReport(checks: report.checks + [modelCheck])
             alignDefaultModelsWithRuntime()
@@ -2600,11 +2617,5 @@ struct SettingsView: View {
             "validation_model": validationModel,
             "validation_model_changed": String(previousValidationModel != validationModel)
         ], level: previousDefaultModel == defaultModel && previousValidationModel == validationModel ? .debug : .info)
-    }
-}
-
-private extension RuntimeReadinessConfiguration {
-    var runtimeReadinessCheckID: String {
-        AgentRuntimeAdapterRegistry.adapter(for: runtime).readinessCheckID
     }
 }

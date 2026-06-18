@@ -50,12 +50,11 @@ struct RuntimeRemediationCatalogTests {
         }
     }
 
-    @Test("Copilot sign-in exports ASTRA's per-channel home, quoted for the shell")
-    func copilotSignInExportsChannelHome() {
+    @Test("Copilot sign-in uses the normal terminal state")
+    func copilotSignInUsesNormalTerminalState() {
         let auth = RuntimeRemediationCatalog.remediation(for: .copilotCLI).auth
-        let quotedHome = RuntimeRemediationCatalog.shellQuoted(CopilotCLIRuntime.channelHome())
-        #expect(auth.terminalCommand == "COPILOT_HOME=\(quotedHome) copilot")
-        #expect(auth.terminalCommand.contains("'"), "Application Support path needs quoting")
+        #expect(auth.terminalCommand == "copilot")
+        #expect(auth.instruction?.contains("same Copilot state as Terminal") == true)
         guard case .deferredToTaskStart = auth.verification else {
             Issue.record("Copilot has no safe local auth probe; verification must defer")
             return

@@ -68,7 +68,7 @@ struct RuntimeSetupSection: View {
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(presentation.title)
-                        .font(Stanford.heading(16))
+                        .font(Stanford.ui(16, weight: .semibold))
                         .foregroundStyle(Stanford.black)
                     Text(heroSubtitle(for: presentation))
                         .font(Stanford.caption(11))
@@ -287,9 +287,11 @@ struct RuntimeSetupSection: View {
     @ViewBuilder
     private var installStatusView: some View {
         if let installState = model.installState, installState.runtime == model.selectedRuntime {
+            Divider().opacity(0.45)
             HStack(spacing: 8) {
                 ProgressView()
                     .controlSize(.small)
+                    .frame(width: 16)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Installing \(installState.runtime.displayName)…")
                         .font(Stanford.caption(11).weight(.semibold))
@@ -305,10 +307,8 @@ struct RuntimeSetupSection: View {
                     .font(Stanford.caption(11))
                     .accessibilityLabel("Cancel install")
             }
-            .padding(9)
-            .background(Stanford.lagunita.opacity(0.08))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
         } else if let result = model.installResult, result.runtime == model.selectedRuntime {
+            Divider().opacity(0.45)
             installResultRow(result)
         }
     }
@@ -354,9 +354,6 @@ struct RuntimeSetupSection: View {
                 }
             }
         }
-        .padding(9)
-        .background(tint.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     // MARK: - Details disclosure
@@ -469,19 +466,25 @@ struct RuntimeSetupSection: View {
         let sections = RuntimeProviderListPresentation.sections(rows: rows)
 
         return VStack(spacing: 0) {
-            ForEach(sections.ready) { row in
-                catalogRow(row)
-                rowDivider
+            if !sections.ready.isEmpty {
+                groupHeading("Ready")
+                ForEach(sections.ready) { row in
+                    catalogRow(row, groupState: .ready)
+                    rowDivider
+                }
             }
-            ForEach(sections.needsAttention) { row in
-                catalogRow(row)
-                rowDivider
+            if !sections.needsAttention.isEmpty {
+                groupHeading("Needs attention")
+                ForEach(sections.needsAttention) { row in
+                    catalogRow(row, groupState: .needsAttention)
+                    rowDivider
+                }
             }
             if !sections.notInstalled.isEmpty {
                 DisclosureGroup(isExpanded: $showNotInstalled) {
                     VStack(spacing: 0) {
                         ForEach(sections.notInstalled) { row in
-                            catalogRow(row)
+                            catalogRow(row, groupState: .notInstalled)
                             if row.id != sections.notInstalled.last?.id {
                                 rowDivider
                             }
@@ -509,7 +512,60 @@ struct RuntimeSetupSection: View {
         Divider().opacity(0.45).padding(.leading, 34)
     }
 
-    private func catalogRow(_ presentation: RuntimeProviderRowPresentation) -> some View {
+    /// Which computed catalog group a row is rendered under. The heading
+    /// carries the shared status so the row can stay quiet (P2): the row
+    /// only repeats a status string when its state differs from what the
+    /// group label already implies.
+    private enum CatalogGroup {
+        case ready
+        case needsAttention
+        case notInstalled
+    }
+
+    private func groupHeading(_ title: String) -> some View {
+        Text(title)
+            .font(Stanford.caption(11).weight(.semibold))
+            .foregroundStyle(Stanford.coolGrey)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            .padding(.top, 8)
+            .padding(.bottom, 2)
+            .accessibilityAddTraits(.isHeader)
+    }
+
+    /// The status a row is allowed to keep even though its group heading
+    /// already states the shared status. Returns `nil` when the group label
+    /// fully implies the row's state, so the per-row status text is dropped.
+    private func exceptionalStatus(
+        for presentation: RuntimeProviderRowPresentation,
+        in group: CatalogGroup
+    ) -> String? {
+        switch group {
+        case .ready:
+            // "Ready" heading covers selectedReady/ready; surface the rest.
+            switch presentation.state {
+            case .selectedReady, .ready: return nil
+            default: return shortStatus(for: presentation)
+            }
+        case .needsAttention:
+            // The heading names the shared "needs attention"; each item's
+            // specific reason (sign-in vs not responding vs installing) is
+            // genuinely item-specific, so keep it.
+            return shortStatus(for: presentation)
+        case .notInstalled:
+            // "Not installed (N)" already states it; surface only the
+            // exceptional "not checked yet".
+            switch presentation.state {
+            case .missing: return nil
+            default: return shortStatus(for: presentation)
+            }
+        }
+    }
+
+    private func catalogRow(
+        _ presentation: RuntimeProviderRowPresentation,
+        groupState group: CatalogGroup
+    ) -> some View {
         HStack(alignment: .center, spacing: 10) {
             if presentation.state == .installing || presentation.state == .awaitingSignIn {
                 ProgressView()
@@ -529,12 +585,14 @@ struct RuntimeSetupSection: View {
 
             Spacer(minLength: 10)
 
-            Text(shortStatus(for: presentation))
-                .font(Stanford.caption(10))
-                .foregroundStyle(Stanford.coolGrey)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .help(presentation.subtitle)
+            if let status = exceptionalStatus(for: presentation, in: group) {
+                Text(status)
+                    .font(Stanford.caption(10))
+                    .foregroundStyle(Stanford.coolGrey)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(presentation.subtitle)
+            }
 
             actionButton(for: presentation)
                 .fixedSize()

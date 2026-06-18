@@ -23,7 +23,7 @@ enum SessionHistoryManager {
         try? FileManager.default.createDirectory(atPath: taskFolder, withIntermediateDirectories: true)
 
         let historyPath = (taskFolder as NSString).appendingPathComponent("session_history.md")
-        let turnNumber = nextTurnNumber(historyPath: historyPath)
+        let turnNumber = nextTurnNumber(historyPath: historyPath, taskFolder: taskFolder)
         let timestamp = Self.formatTimestamp(Date())
         let redactedMessage = redactSensitiveContent(turnMessage, redactions: redactions)
         let redactedOutput = redactSensitiveContent(output, redactions: redactions)
@@ -89,9 +89,15 @@ enum SessionHistoryManager {
 
     // MARK: - Private
 
-    private static func nextTurnNumber(historyPath: String) -> Int {
-        guard FileManager.default.fileExists(atPath: historyPath),
-              let content = try? String(contentsOfFile: historyPath, encoding: .utf8) else {
+    private static func nextTurnNumber(historyPath: String, taskFolder: String) -> Int {
+        let hostFileAccess = HostFileAccessBroker()
+        let accessIntent = HostFileAccessIntent.astraManagedStorage(root: URL(fileURLWithPath: taskFolder, isDirectory: true))
+        guard hostFileAccess.fileExists(at: URL(fileURLWithPath: historyPath), intent: accessIntent),
+              let content = try? hostFileAccess.readString(
+                at: URL(fileURLWithPath: historyPath),
+                encoding: .utf8,
+                intent: accessIntent
+              ) else {
             return 1
         }
         // Count existing "## Turn N" headers
@@ -141,7 +147,7 @@ enum SessionHistoryManager {
         let normalizedRedactions = Set(
             redactions
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { $0.count >= 4 }
+                .filter { $0.count >= 2 }
         ).sorted { $0.count > $1.count }
 
         for secret in normalizedRedactions where !secret.isEmpty {
@@ -150,6 +156,10 @@ enum SessionHistoryManager {
 
         let replacements: [(String, String)] = [
             (#"(?i)(authorization:\s*(?:bearer|basic)\s+)[^\s`"]+"#, "$1[REDACTED]"),
+            (#"\bgithub_pat_[A-Za-z0-9_]+\b"#, "[REDACTED]"),
+            (#"\bgh[pousr]_[A-Za-z0-9_]+\b"#, "[REDACTED]"),
+            (#"\bAKIA[0-9A-Z]{16}\b"#, "[REDACTED]"),
+            (#"\bsk-ant-[A-Za-z0-9_\-]+\b"#, "[REDACTED]"),
             (#"(?i)\b(sk-[A-Za-z0-9_\-]+)\b"#, "[REDACTED]"),
             (#"(?i)\b(api[_-]?key|token|secret|password)\s*[:=]\s*([^\s,;]+)"#, "$1=[REDACTED]")
         ]

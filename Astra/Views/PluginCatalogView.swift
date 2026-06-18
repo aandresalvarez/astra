@@ -68,6 +68,7 @@ struct PluginCatalogView: View {
     @State private var installingPackage: PluginPackage?
     @State private var installError: String?
     @State private var removalCandidate: PluginPackage?
+    @State private var disableCandidate: PluginPackage?
     @State private var removalError: String?
     @State private var approvalError: String?
     @State private var approvalRevision = 0
@@ -87,9 +88,8 @@ struct PluginCatalogView: View {
 
     private var catalogPolicyContext: CapabilityCatalogPolicyContext {
         _ = approvalRevision
-        return CapabilityCatalogPolicyContext.workspaceUser(
+        return CapabilityCatalogPolicyContext.currentUser(
             workspace: workspace,
-            isAdmin: true,
             approvalRecords: CapabilityApprovalStore().records()
         )
     }
@@ -268,6 +268,23 @@ struct PluginCatalogView: View {
         } message: { package in
             Text("This removes \(package.name) from the app-local capability library and disables it in every workspace. Shared resources that are still used by another installed package are kept.")
         }
+        .confirmationDialog(
+            "Disable \(disableCandidate?.name ?? "capability")?",
+            isPresented: Binding(
+                get: { disableCandidate != nil },
+                set: { if !$0 { disableCandidate = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: disableCandidate
+        ) { package in
+            Button("Disable", role: .destructive) {
+                disableCandidate = nil
+                disableCapability(package)
+            }
+            Button("Cancel", role: .cancel) { disableCandidate = nil }
+        } message: { package in
+            Text("This turns off \(package.name) in this workspace and removes the workspace-owned connectors and skills it added, clearing their saved credentials. Re-enabling it later requires entering those credentials again. Resources still used by another enabled capability are kept.")
+        }
         .alert("Capability could not be removed", isPresented: Binding(
             get: { removalError != nil },
             set: { if !$0 { removalError = nil } }
@@ -302,9 +319,12 @@ struct PluginCatalogView: View {
                 }
                 .buttonStyle(.plain)
 
-                Image(systemName: package.icon)
-                    .font(Stanford.ui(15, weight: .semibold))
-                    .foregroundStyle(Stanford.lagunita)
+                CapabilityIconView(
+                    presentation: .make(for: package),
+                    size: 15,
+                    color: Stanford.lagunita,
+                    weight: .semibold
+                )
                     .frame(width: 22, height: 22)
 
                 VStack(alignment: .leading, spacing: 1) {
@@ -324,7 +344,7 @@ struct PluginCatalogView: View {
                     enabledStatusLabel
 
                     Button(role: .destructive) {
-                        disableCapability(package)
+                        disableCandidate = package
                     } label: {
                         Label("Disable", systemImage: "minus.circle")
                             .font(Stanford.caption(12).weight(.semibold))
@@ -556,7 +576,9 @@ struct PluginCatalogView: View {
                     .font(Stanford.caption(12).weight(isSelected ? .semibold : .regular))
                 Text("\(count)")
                     .font(Stanford.caption(10).weight(.medium))
-                    .foregroundStyle(isSelected ? Stanford.lagunita.opacity(0.72) : Color.secondary)
+                    // COL: the count is metadata, never the interactive accent. The
+                    // chip's label tint + background carry the selected affordance.
+                    .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 9)
             .padding(.vertical, 5)
@@ -710,30 +732,30 @@ struct PluginCatalogView: View {
     }
 
     private func capabilityIconTile(_ package: PluginPackage, isEnabled: Bool) -> some View {
-        Image(systemName: package.icon)
-            .font(Stanford.ui(15, weight: .medium))
-            .foregroundStyle(isEnabled ? Stanford.lagunita : .secondary)
+        CapabilityIconView(
+            presentation: .make(for: package),
+            size: 15,
+            color: isEnabled ? Stanford.lagunita : .secondary
+        )
             .frame(width: 30, height: 30)
             .background((isEnabled ? Stanford.lagunita : Color.secondary).opacity(0.08))
             .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
-    private func capabilityRowMetadata(_ package: PluginPackage, needsSetup: Bool) -> String {
+    private func capabilityRowMetadata(_ package: PluginPackage, needsSetup _: Bool) -> String {
+        // P2: the group heading ("Needs attention" / "Enabled" / "Available" /
+        // "Blocked") already carries the attention signal, so the collapsed row
+        // keeps only item-specific facts (approval + risk). The full attention /
+        // blocker detail lives in the expanded detail status summary.
         let decision = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext)
         var parts: [String] = []
-        if let attention = CapabilityRowPresentation.attentionLabel(needsSetup: needsSetup, decision: decision) {
-            parts.append(attention)
-        }
         parts.append(capabilityApprovalLabel(decision.governance.approvalStatus))
         parts.append("\(capabilityRiskLabel(decision.governance.riskLevel)) risk")
         return parts.joined(separator: " · ")
     }
 
-    private func capabilityRowMetadataColor(_ package: PluginPackage, needsSetup: Bool) -> Color {
+    private func capabilityRowMetadataColor(_ package: PluginPackage, needsSetup _: Bool) -> Color {
         let decision = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext)
-        if CapabilityRowPresentation.attentionLabel(needsSetup: needsSetup, decision: decision) != nil {
-            return Stanford.poppy
-        }
         switch decision.governance.riskLevel {
         case .restricted:
             return Stanford.cardinalRed
@@ -744,31 +766,16 @@ struct PluginCatalogView: View {
         }
     }
 
+    @ViewBuilder
     private func packageActionRow(_ package: PluginPackage, enabled: Bool) -> some View {
-        Group {
-            if enabled {
-                enabledPackageControls(package)
-            } else {
-                installButton(for: package)
-            }
+        // P3/P5a: collapsed rows stay summaries. An enabled row's state is carried
+        // by the "Enabled" group heading, so it shows no trailing control — the row
+        // body opens the editor, whose header hosts the destructive "Disable" verb.
+        // A not-enabled row keeps a single "Enable" verb (row-level add).
+        if !enabled {
+            installButton(for: package)
+                .fixedSize()
         }
-        .fixedSize()
-    }
-
-    private func enabledPackageControls(_ package: PluginPackage) -> some View {
-        HStack(spacing: 8) {
-            enabledStatusLabel
-
-            Button(role: .destructive) {
-                disableCapability(package)
-            } label: {
-                Label("Disable", systemImage: "minus.circle")
-                    .font(Stanford.caption(11).weight(.medium))
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-        }
-        .fixedSize()
     }
 
     private var enabledStatusLabel: some View {
@@ -1012,6 +1019,34 @@ struct PluginCatalogView: View {
         }
     }
 
+    /// After approving an updated package version, workspaces that already
+    /// have it enabled would otherwise keep running the previous version's
+    /// SwiftData definitions until a manual re-enable. Re-running enable
+    /// upserts the refreshed skills/connectors/tools in place.
+    private func refreshEnabledDefinitionsAfterApproval(
+        _ package: PluginPackage,
+        status: CapabilityApprovalStatus,
+        traceID: String
+    ) {
+        guard status == .approved,
+              workspace.enabledCapabilityIDs.contains(package.id) else { return }
+        do {
+            _ = try CapabilityCatalogActionService().enable(
+                package,
+                workspace: workspace,
+                modelContext: modelContext,
+                policyContext: CapabilityCatalogPolicyContext.currentUser(
+                    workspace: workspace,
+                    approvalRecords: CapabilityApprovalStore().records()
+                ),
+                source: "approval_definition_refresh",
+                traceID: traceID
+            )
+        } catch {
+            approvalError = "Approved, but refreshing the enabled definition failed: \(error.localizedDescription)"
+        }
+    }
+
     private func saveApproval(_ package: PluginPackage, status: CapabilityApprovalStatus) {
         let traceID = AuditTrace.make("capability-approval")
         do {
@@ -1023,6 +1058,7 @@ struct PluginCatalogView: View {
             )
             approvalRevision += 1
             catalog.loadApprovedCapabilities()
+            refreshEnabledDefinitionsAfterApproval(package, status: status, traceID: traceID)
             onCatalogChanged?()
             AppLogger.audit(.capabilityApprovalChanged, category: "Capabilities", fields: [
                 "source": "catalog_review",
@@ -1292,7 +1328,7 @@ struct PluginCatalogView: View {
             sections.append(CapabilityDetailSection(
                 id: "mcp",
                 title: "MCP Servers",
-                subtitle: "Structured external tools and resources",
+                subtitle: CapabilityRuntimeSupportPresentation.mcpSupportSubtitle(),
                 icon: "server.rack",
                 color: Stanford.plum,
                 items: package.mcpServers.enumerated().map { index, server in
@@ -1525,6 +1561,16 @@ struct PluginCatalogView: View {
 
                 Spacer()
 
+                Button {
+                    exportPackageSource(package)
+                } label: {
+                    Label("Export", systemImage: "square.and.arrow.up")
+                        .font(Stanford.caption(11).weight(.semibold))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Save \(package.name) as a shareable JSON file (exports as draft; recipients review before use)")
+
                 Button(role: .destructive) {
                     removalCandidate = package
                 } label: {
@@ -1535,6 +1581,19 @@ struct PluginCatalogView: View {
                 .controlSize(.small)
                 .help("Remove \(package.name) from the capability library")
             }
+        }
+    }
+
+    private func exportPackageSource(_ package: PluginPackage) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "\(CapabilityLibrary.safeFileName(for: package.id)).json"
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            _ = try CapabilityCatalogActionService().exportSource(package, to: url)
+        } catch {
+            installError = "Couldn't export \(package.name): \(error.localizedDescription)"
         }
     }
 
@@ -1556,9 +1615,14 @@ struct PluginCatalogView: View {
 
                     Spacer()
 
-                    Text("\(links.count) editable")
-                        .font(Stanford.caption(10))
-                        .foregroundStyle(.tertiary)
+                    // P4a: a lone editable resource is already rendered expanded
+                    // below, so a bare "1 editable" count names nothing worth
+                    // counting. Show the count only when it summarizes 2+ items.
+                    if links.count > 1 {
+                        Text("\(links.count) editable")
+                            .font(Stanford.caption(10))
+                            .foregroundStyle(.tertiary)
+                    }
                 }
 
                 VStack(spacing: 0) {
@@ -1701,11 +1765,17 @@ private struct CapabilityImportReviewSheet: View {
     }
 
     var body: some View {
+        let iconPresentation = package.map(CapabilityIconPresentation.make)
+            ?? CapabilityIconPresentation.make(name: "Invalid Capability", fallbackSystemName: "exclamationmark.triangle")
+
         VStack(spacing: 0) {
             HStack(alignment: .top, spacing: 12) {
-                Image(systemName: package?.icon ?? "exclamationmark.triangle")
-                    .font(Stanford.ui(18, weight: .semibold))
-                    .foregroundStyle(report.canInstall ? Stanford.lagunita : Stanford.poppy)
+                CapabilityIconView(
+                    presentation: iconPresentation,
+                    size: 18,
+                    color: report.canInstall ? Stanford.lagunita : Stanford.poppy,
+                    weight: .semibold
+                )
                     .frame(width: 34, height: 34)
                     .background((report.canInstall ? Stanford.lagunita : Stanford.poppy).opacity(0.1))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -1953,9 +2023,12 @@ struct PluginInstallSheet: View {
         VStack(alignment: .leading, spacing: 0) {
             // Header
             HStack(alignment: .top, spacing: 12) {
-                Image(systemName: package.icon)
-                    .font(Stanford.ui(22, weight: .semibold))
-                    .foregroundStyle(Stanford.lagunita)
+                CapabilityIconView(
+                    presentation: .make(for: package),
+                    size: 22,
+                    color: Stanford.lagunita,
+                    weight: .semibold
+                )
                     .frame(width: 44, height: 44)
                     .background(Stanford.lagunita.opacity(0.1))
                     .clipShape(RoundedRectangle(cornerRadius: 12))

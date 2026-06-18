@@ -783,6 +783,7 @@ final class AgentRuntimeStreamDebugCapture: @unchecked Sendable {
 
     private static func eventType(_ event: AgentEvent) -> String {
         switch event {
+        case .control(let type): "control:\(type)"
         case .started: "started"
         case .thinking: "thinking"
         case .text: "text"
@@ -923,6 +924,8 @@ final class AgentRuntimeStreamTelemetry: @unchecked Sendable {
 
     private func record(_ event: AgentEvent) {
         switch event {
+        case .control:
+            break
         case .started:
             break
         case .thinking:
@@ -994,62 +997,6 @@ final class AgentRuntimeEventPipelineBox: @unchecked Sendable {
     }
 }
 
-struct AgentProcessResult {
-    let exitCode: Int
-    let error: String?
-    let providerVersion: String?
-    let policyViolation: Bool
-    let policyViolationMessage: String?
-    let policyApprovalRequired: Bool
-    let policyApprovalMessage: String?
-    let runtimeStopReason: String?
-    let runtimeStopMessage: String?
-    let budgetExceeded: Bool
-    let budgetWarning: Bool
-    let finalReportedBudgetExceededAfterCompletion: Bool
-    let timedOut: Bool
-    let repetitionKilled: Bool
-    let maxTurnsExceeded: Bool
-
-    init(
-        exitCode: Int,
-        error: String? = nil,
-        providerVersion: String? = nil,
-        policyViolation: Bool = false,
-        policyViolationMessage: String? = nil,
-        policyApprovalRequired: Bool = false,
-        policyApprovalMessage: String? = nil,
-        runtimeStopReason: String? = nil,
-        runtimeStopMessage: String? = nil,
-        budgetExceeded: Bool = false,
-        budgetWarning: Bool = false,
-        finalReportedBudgetExceededAfterCompletion: Bool = false,
-        timedOut: Bool = false,
-        repetitionKilled: Bool = false,
-        maxTurnsExceeded: Bool = false
-    ) {
-        self.exitCode = exitCode
-        self.error = error
-        self.providerVersion = providerVersion
-        self.policyViolation = policyViolation
-        self.policyViolationMessage = policyViolationMessage
-        self.policyApprovalRequired = policyApprovalRequired
-        self.policyApprovalMessage = policyApprovalMessage
-        self.runtimeStopReason = runtimeStopReason
-        self.runtimeStopMessage = runtimeStopMessage
-        self.budgetExceeded = budgetExceeded
-        self.budgetWarning = budgetWarning
-        self.finalReportedBudgetExceededAfterCompletion = finalReportedBudgetExceededAfterCompletion
-        self.timedOut = timedOut
-        self.repetitionKilled = repetitionKilled
-        self.maxTurnsExceeded = maxTurnsExceeded
-    }
-
-    var runtimeStopped: Bool {
-        runtimeStopReason?.isEmpty == false
-    }
-}
-
 /// Encapsulates budget enforcement, repetition circuit breaker, and idle timeout
 /// for agent runtime processes.
 nonisolated final class AgentProcessMonitor: @unchecked Sendable {
@@ -1075,8 +1022,15 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     let maxRepetitions: Int
     let idleTimeoutSeconds: TimeInterval
     let noSemanticProgressTimeoutSeconds: TimeInterval
+    let terminalProgressExitGraceSeconds: TimeInterval
     let taskID: UUID
     let policyGuard: AgentRuntimePolicyGuard?
+    /// True when the provider's live permission prompt (the stdio control
+    /// channel) gates ask-first tools before they run. When set, the post-hoc
+    /// guard stops re-flagging ask-first approvals — the live channel already
+    /// owns them — so it can't double-prompt or kill a run whose command simply
+    /// can't be reduced to a replayable scoped grant. Hard denies still stop.
+    let liveApprovalsActive: Bool
 
     private let lock = NSLock()
 
@@ -1085,6 +1039,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     private var _budgetExceeded: Bool = false
     private var _budgetWarning: Bool = false
     private var _finalReportedBudgetExceededAfterCompletion: Bool = false
+    private var _terminatedAfterTerminalProgress: Bool = false
     private var _maxTurnsExceeded: Bool = false
     private var _timedOut: Bool = false
     private var _repetitionKilled: Bool = false
@@ -1114,6 +1069,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     private var repetitionCount: Int = 0
     private var lastActivityTime = Date()
     private var lastAnyActivityTime = Date()
+    private var lastTerminalProgressTime: Date?
     private var hasSeenAnyActivity = false
     private var hasSeenProviderLivenessActivity = false
     private var hasSeenProgressActivity = false
@@ -1124,6 +1080,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     var budgetExceeded: Bool { lock.lock(); defer { lock.unlock() }; return _budgetExceeded }
     var budgetWarning: Bool { lock.lock(); defer { lock.unlock() }; return _budgetWarning }
     var finalReportedBudgetExceededAfterCompletion: Bool { lock.lock(); defer { lock.unlock() }; return _finalReportedBudgetExceededAfterCompletion }
+    var terminatedAfterTerminalProgress: Bool { lock.lock(); defer { lock.unlock() }; return _terminatedAfterTerminalProgress }
     var maxTurnsExceeded: Bool { lock.lock(); defer { lock.unlock() }; return _maxTurnsExceeded }
     var timedOut: Bool { lock.lock(); defer { lock.unlock() }; return _timedOut }
     var repetitionKilled: Bool { lock.lock(); defer { lock.unlock() }; return _repetitionKilled }
@@ -1142,8 +1099,10 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         maxRepetitions: Int = 8,
         idleTimeoutSeconds: TimeInterval = 600,
         noSemanticProgressTimeoutSeconds: TimeInterval? = nil,
+        terminalProgressExitGraceSeconds: TimeInterval? = nil,
         taskID: UUID = UUID(),
-        policyGuard: AgentRuntimePolicyGuard? = nil
+        policyGuard: AgentRuntimePolicyGuard? = nil,
+        liveApprovalsActive: Bool = false
     ) {
         self.tokenBudget = tokenBudget
         self.budgetEnforcementMode = budgetEnforcementMode
@@ -1151,8 +1110,10 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         self.maxRepetitions = maxRepetitions
         self.idleTimeoutSeconds = idleTimeoutSeconds
         self.noSemanticProgressTimeoutSeconds = noSemanticProgressTimeoutSeconds ?? min(idleTimeoutSeconds, 180)
+        self.terminalProgressExitGraceSeconds = terminalProgressExitGraceSeconds ?? min(self.noSemanticProgressTimeoutSeconds, 30)
         self.taskID = taskID
         self.policyGuard = policyGuard
+        self.liveApprovalsActive = liveApprovalsActive
     }
 
     static func estimatedTokenCount(for text: String) -> Int {
@@ -1173,6 +1134,9 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             hasSeenProgressActivity = true
         } else if progressKind == .providerLiveness || progressKind == .accounting {
             hasSeenProviderLivenessActivity = true
+        }
+        if Self.isSuccessfulTerminalProgress(parsed) {
+            lastTerminalProgressTime = now
         }
 
         if case .astraProtocol(.valid(.complete)) = parsed {
@@ -1196,6 +1160,16 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         }
 
         if let violation = policyGuard?.violation(for: parsed) {
+            // When the live channel gates ask-first tools at the provider's
+            // permission prompt, it has already approved (or denied) anything
+            // that ran. Re-flagging an ask-first approval here would double-
+            // prompt the user or, when the command can't be reduced to a
+            // replayable scoped grant, kill the run outright. Defer to the live
+            // channel for approvals; every non-approval violation (denies,
+            // out-of-scope paths) still terminates as a backstop.
+            if violation.requiresApproval, liveApprovalsActive {
+                return false
+            }
             return recordPolicyViolation(violation, process: process)
         }
 
@@ -1241,6 +1215,10 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
                 }
                 return recordRuntimeStop(reason: stop.reason, message: stop.message, process: process)
             }
+        }
+
+        if let stop = BrowserBridgeRuntimeLaunchGuard.transcriptStop(from: parsed) {
+            return recordRuntimeStop(reason: stop.reason, message: stop.message, process: process)
         }
 
         if case .result = parsed {
@@ -2019,7 +1997,10 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         lock.unlock()
 
         let processBox = AgentRuntimeProcessControlBox(process)
-        let checkInterval: TimeInterval = 30
+        let checkInterval = Self.watchdogCheckInterval(
+            idleTimeoutSeconds: idleTimeoutSeconds,
+            noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds
+        )
         DispatchQueue.global().async { [weak self] in
             while true {
                 Thread.sleep(forTimeInterval: checkInterval)
@@ -2030,6 +2011,15 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    static func watchdogCheckInterval(
+        idleTimeoutSeconds: TimeInterval,
+        noSemanticProgressTimeoutSeconds: TimeInterval
+    ) -> TimeInterval {
+        let shortestTimeout = min(idleTimeoutSeconds, noSemanticProgressTimeoutSeconds)
+        guard shortestTimeout.isFinite, shortestTimeout > 0 else { return 1 }
+        return min(shortestTimeout, max(0.1, min(30, shortestTimeout / 4)))
     }
 
     @discardableResult
@@ -2043,12 +2033,26 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         let now = Date()
         let idleDuration = now.timeIntervalSince(lastActivityTime)
         let anyIdleDuration = now.timeIntervalSince(lastAnyActivityTime)
+        let terminalIdleDuration = lastTerminalProgressTime.map { now.timeIntervalSince($0) }
         let hasMetadataOnlyActivity = hasSeenAnyActivity
             && !hasSeenProviderLivenessActivity
             && !hasSeenProgressActivity
         let hasProviderLivenessOnlyActivity = hasSeenProviderLivenessActivity
             && !hasSeenProgressActivity
+        let hasStalledAfterProgress = hasSeenProgressActivity
+            && terminalIdleDuration == nil
+            && anyIdleDuration < idleTimeoutSeconds
+            && idleDuration >= noSemanticProgressTimeoutSeconds
         lock.unlock()
+
+        if let terminalIdleDuration,
+           terminalIdleDuration >= terminalProgressExitGraceSeconds {
+            lock.lock()
+            _terminatedAfterTerminalProgress = true
+            lock.unlock()
+            terminate()
+            return true
+        }
 
         if hasMetadataOnlyActivity && idleDuration >= noSemanticProgressTimeoutSeconds {
             let reason = "provider_no_semantic_progress"
@@ -2094,9 +2098,32 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             return true
         }
 
-        if idleDuration >= idleTimeoutSeconds {
+        if hasStalledAfterProgress {
+            let reason = "provider_semantic_progress_stalled"
+            let message = """
+            ASTRA stopped the provider because it had produced semantic progress earlier but stopped advancing the task.
+            No visible text, tool use, tool output, file change, or result arrived for \(Int(idleDuration)) seconds; the last provider event was \(Int(anyIdleDuration)) seconds ago.
+            """
             AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: [
-                "idle_seconds": String(Int(idleDuration)),
+                "reason": reason,
+                "semantic_idle_seconds": String(Int(idleDuration)),
+                "last_event_age_seconds": String(Int(anyIdleDuration)),
+                "limit_seconds": String(Int(noSemanticProgressTimeoutSeconds))
+            ], level: .error)
+            lock.lock()
+            if _runtimeStopReason == nil {
+                _runtimeStopReason = reason
+                _runtimeStopMessage = message
+            }
+            lock.unlock()
+            terminate()
+            return true
+        }
+
+        if anyIdleDuration >= idleTimeoutSeconds {
+            AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: [
+                "idle_seconds": String(Int(anyIdleDuration)),
+                "semantic_idle_seconds": String(Int(idleDuration)),
                 "limit_seconds": String(Int(idleTimeoutSeconds))
             ], level: .error)
             lock.lock()
@@ -2129,6 +2156,17 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             return nonEmpty(content) == nil ? .diagnostic : .actionableProgress
         case .toolUse, .teammateStarted, .teammateCompleted, .teamCreated, .teamDeleted, .teamMessage, .permissionDenied:
             return .actionableProgress
+        }
+    }
+
+    private static func isSuccessfulTerminalProgress(_ parsed: ParsedEvent) -> Bool {
+        switch parsed {
+        case .astraProtocol(.valid(.complete)):
+            return true
+        case .result(_, _, _, _, _, _, let isError):
+            return !isError
+        default:
+            return false
         }
     }
 

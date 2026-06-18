@@ -281,7 +281,9 @@ struct TaskCapabilityResolver {
         guard let workspace else { return [] }
         let enabledPackageIDs = Set(workspace.enabledCapabilityIDs)
         guard !enabledPackageIDs.isEmpty else { return [] }
-        let context = CapabilityCatalogPolicyContext.workspaceUser(
+        // Single-user admin model: the manifest reflects what actually runs,
+        // so it uses the same currentUser context as MCPRuntimeProjection.
+        let context = CapabilityCatalogPolicyContext.currentUser(
             workspace: workspace,
             approvalRecords: approvalRecords
         )
@@ -366,7 +368,7 @@ struct TaskCapabilityResolver {
                 return true
             }
             guard let skill = connector.skill else { return false }
-            return includedSkillIDs.contains(skill.id) && Self.matchesConnector(connector, taskText: searchableText)
+            return includedSkillIDs.contains(skill.id)
         }
 
         let includedLocalTools = tools.filter { tool in
