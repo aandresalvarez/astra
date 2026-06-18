@@ -14,6 +14,10 @@ struct WorkspaceAppManifest: Codable, Sendable, Equatable {
     // branching ASTRA cannot honor exactly). Optional + nil-default so the fully-synthesized
     // Codable OMITS it for every existing manifest — digests stay byte-stable.
     var submitBlockedReasons: [String]?
+    // Self-test (Tier 2/3): builder-authored / AI-authored acceptance checks that travel with the
+    // app and run in the sandbox. Optional + nil-default → fully-synthesized Codable omits it, so
+    // check-less manifests keep byte-stable digests.
+    var checks: [WorkspaceAppCheck]?
 
     init(
         schemaVersion: Int = 1,
@@ -25,7 +29,8 @@ struct WorkspaceAppManifest: Codable, Sendable, Equatable {
         actions: [WorkspaceAppActionSpec] = [],
         automations: [WorkspaceAppAutomationSpec] = [],
         permissions: WorkspaceAppPermissions = WorkspaceAppPermissions(),
-        submitBlockedReasons: [String]? = nil
+        submitBlockedReasons: [String]? = nil,
+        checks: [WorkspaceAppCheck]? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.app = app
@@ -37,7 +42,35 @@ struct WorkspaceAppManifest: Codable, Sendable, Equatable {
         self.automations = automations
         self.permissions = permissions
         self.submitBlockedReasons = submitBlockedReasons
+        self.checks = checks
     }
+}
+
+/// A builder- or AI-authored acceptance check: run `steps` in the sandbox, then assert `expect`.
+struct WorkspaceAppCheck: Codable, Sendable, Equatable, Identifiable {
+    var id: String
+    var label: String
+    var steps: [WorkspaceAppCheckStep]
+    var expect: WorkspaceAppCheckExpectation
+}
+
+struct WorkspaceAppCheckStep: Codable, Sendable, Equatable {
+    var actionID: String
+    /// Optional explicit input record; when omitted the engine supplies a sample record.
+    var record: [String: WorkspaceAppStorageValue]?
+}
+
+/// A flat, fully-Codable expectation. `kind`:
+///   "noErrors"        — every step ran without throwing.
+///   "rowCount"        — `table` row count `op` (eq|gte|lte|gt|lt, default eq) `value`.
+///   "summaryContains" — the last run of `actionID` produced an outputSummary containing `text`.
+struct WorkspaceAppCheckExpectation: Codable, Sendable, Equatable {
+    var kind: String
+    var table: String?
+    var op: String?
+    var value: Int?
+    var text: String?
+    var actionID: String?
 }
 
 struct WorkspaceAppManifestMetadata: Codable, Sendable, Equatable {
