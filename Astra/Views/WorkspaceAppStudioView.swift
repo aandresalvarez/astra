@@ -48,17 +48,11 @@ struct WorkspaceAppStudioView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    intentSection
-                    ideasSection
-                    proposalSection
-                    inlinePreviewSection
-                    validationSection
-                    manifestSection
-                }
-                .frame(maxWidth: 980, alignment: .leading)
-                .padding(24)
+            // Divided workbench: build and iterate on the left, watch the live test
+            // version on the right, so every change is visible side-by-side.
+            HSplitView {
+                buildColumn
+                previewPane
             }
         }
         .background(Stanford.panelBackground)
@@ -294,11 +288,54 @@ struct WorkspaceAppStudioView: View {
         )
     }
 
-    private var inlinePreviewSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            sectionHeader("Preview", count: nil)
-            WorkspaceAppStudioInlinePreview(manifest: draft.manifest)
+    /// Left pane: the build surface — intent + controls, ideas, the generated app's
+    /// identity, refinements, validation, and the manifest inspector. Iterating here
+    /// updates the live test version on the right.
+    private var buildColumn: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                intentSection
+                ideasSection
+                proposalSection
+                validationSection
+                manifestSection
+            }
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(minWidth: 380, idealWidth: 500)
+    }
+
+    /// Right pane: the live "test version" of the app, re-rendered from the current
+    /// draft manifest as the builder iterates — the persistent preview shelf.
+    private var previewPane: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "play.rectangle")
+                    .font(Stanford.ui(13, weight: .semibold))
+                    .foregroundStyle(Stanford.lagunita)
+                Text("Test version")
+                    .font(Stanford.caption(13).weight(.semibold))
+                    .foregroundStyle(.primary)
+                Spacer()
+                Text(draft.manifest.app.name)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 12)
+
+            Divider()
+
+            ScrollView {
+                WorkspaceAppStudioInlinePreview(manifest: draft.manifest)
+                    .padding(20)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(minWidth: 360, idealWidth: 460)
+        .background(Color.primary.opacity(0.02))
     }
 
     private var typePickerRow: some View {
