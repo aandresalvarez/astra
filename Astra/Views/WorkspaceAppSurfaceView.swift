@@ -71,6 +71,11 @@ struct WorkspaceAppSurfaceView: View {
         }
     }
 
+    private var surfaceWidgetCount: Int {
+        surface.markdowns.count + surface.diagrams.count + surface.metrics.count
+            + surface.charts.count + surface.webReports.count
+    }
+
     @ViewBuilder
     private var nativeSurfaceSection: some View {
         if !surface.isEmpty {
@@ -80,7 +85,7 @@ struct WorkspaceAppSurfaceView: View {
                         .font(Stanford.ui(15, weight: .semibold))
                         .foregroundStyle(.primary)
 
-                    Text("\(surface.markdowns.count + surface.diagrams.count + surface.metrics.count + surface.charts.count) widgets")
+                    Text("\(surfaceWidgetCount) widgets")
                         .font(Stanford.caption(11).weight(.medium))
                         .foregroundStyle(.secondary)
 
@@ -109,6 +114,10 @@ struct WorkspaceAppSurfaceView: View {
 
                 ForEach(surface.charts) { chart in
                     WorkspaceAppChartCard(chart: chart)
+                }
+
+                ForEach(surface.webReports) { report in
+                    WorkspaceAppWebReportCard(report: report)
                 }
             }
         }

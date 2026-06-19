@@ -125,4 +125,55 @@ struct WorkspaceAppRendererTests {
         )
         #expect(errors.isEmpty)
     }
+
+    // MARK: - Sandboxed HTML report (flexible local visualization)
+
+    @Test("html report is CSP-locked, script-free, and escapes app data")
+    func htmlReportIsSandboxed() {
+        let html = WorkspaceAppWebReportHTML.html(
+            title: "Items report",
+            columns: ["name", "qty"],
+            rows: [["name": .text("<b>Ann</b> & Bob"), "qty": .integer(2)]]
+        )
+        #expect(html.contains("Content-Security-Policy"))
+        #expect(html.contains("default-src 'none'"))
+        #expect(!html.lowercased().contains("<script"))
+        // App data is escaped, never injected as markup.
+        #expect(html.contains("&lt;b&gt;Ann&lt;/b&gt; &amp; Bob"))
+        #expect(html.contains("<td>2</td>"))
+    }
+
+    @Test("html report renders an empty state with no data")
+    func htmlReportEmptyState() {
+        let html = WorkspaceAppWebReportHTML.html(title: "Report", columns: [], rows: [])
+        #expect(html.contains("No data yet"))
+        #expect(!html.contains("<table"))
+    }
+
+    @Test("a webView/htmlReport widget resolves to a sandboxed web report in the surface")
+    func webViewWidgetBecomesWebReport() {
+        let manifest = WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(id: "r", name: "R", description: "", archetypes: []),
+            storage: WorkspaceAppStorageSchema(tables: [
+                WorkspaceAppStorageTable(name: "items", columns: [
+                    WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true),
+                    WorkspaceAppStorageColumn(name: "title", type: "text")
+                ])
+            ]),
+            views: [WorkspaceAppViewSpec(id: "ov", type: "dashboard", title: "Overview", table: "items", widgets: [
+                WorkspaceAppWidgetSpec(id: "rep", type: "webView", label: "Items report", table: "items", webRenderer: "htmlReport")
+            ])],
+            actions: [],
+            permissions: WorkspaceAppPermissions(reads: [], writes: [], defaultMode: .draftOnly)
+        )
+        let snapshot = WorkspaceAppStorageTableSnapshot(
+            name: "items",
+            columns: ["id", "title"],
+            rows: [["id": .text("1"), "title": .text("Hello")]],
+            errorMessage: nil
+        )
+        let surface = WorkspaceAppNativeSurfaceBuilder.presentation(manifest: manifest, storageTables: [snapshot])
+        #expect(surface.webReports.count == 1)
+        #expect(surface.webReports[0].html.contains("Hello"))
+    }
 }

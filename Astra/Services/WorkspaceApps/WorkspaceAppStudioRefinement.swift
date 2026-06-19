@@ -5,6 +5,7 @@ import Foundation
 /// of re-typing intent. Transforms keep the manifest valid; the caller re-validates after applying.
 enum WorkspaceAppStudioRefinement: String, CaseIterable, Identifiable {
     case addChart
+    case addRichReport
     case addApproval
     case weeklySummary
     case connectREDCap
@@ -14,6 +15,7 @@ enum WorkspaceAppStudioRefinement: String, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .addChart: return "Add a chart"
+        case .addRichReport: return "Add a rich report"
         case .addApproval: return "Add an approval step"
         case .weeklySummary: return "Weekly summary"
         case .connectREDCap: return "Connect REDCap"
@@ -23,6 +25,7 @@ enum WorkspaceAppStudioRefinement: String, CaseIterable, Identifiable {
     var iconSystemName: String {
         switch self {
         case .addChart: return "chart.bar"
+        case .addRichReport: return "doc.richtext"
         case .addApproval: return "hand.raised"
         case .weeklySummary: return "calendar"
         case .connectREDCap: return "powerplug"
@@ -35,6 +38,9 @@ enum WorkspaceAppStudioRefinement: String, CaseIterable, Identifiable {
         case .addChart:
             return Self.primaryTable(manifest) != nil
                 && !manifest.views.flatMap(\.widgets).contains { $0.type == "chart" }
+        case .addRichReport:
+            return Self.primaryTable(manifest) != nil
+                && !manifest.views.flatMap(\.widgets).contains { $0.type == "webView" }
         case .addApproval:
             return !manifest.actions.contains { $0.type == "gate.humanApproval" }
         case .weeklySummary:
@@ -51,6 +57,8 @@ enum WorkspaceAppStudioRefinement: String, CaseIterable, Identifiable {
         switch self {
         case .addChart:
             applyAddChart(&updated)
+        case .addRichReport:
+            applyAddRichReport(&updated)
         case .addApproval:
             updated.actions.append(WorkspaceAppActionSpec(
                 id: "approve_step", type: "gate.humanApproval", label: "Approve",
@@ -78,6 +86,27 @@ enum WorkspaceAppStudioRefinement: String, CaseIterable, Identifiable {
         } else {
             manifest.views.insert(
                 WorkspaceAppViewSpec(id: "overview", type: "dashboard", title: "Overview", table: table.name, widgets: [widget]),
+                at: 0
+            )
+        }
+    }
+
+    /// Adds a sandboxed HTML report widget over the primary table — a flexible local-app
+    /// visualization (Swift builds the HTML; rendered in a locked-down WKWebView).
+    private func applyAddRichReport(_ manifest: inout WorkspaceAppManifest) {
+        guard let table = Self.primaryTable(manifest) else { return }
+        let widget = WorkspaceAppWidgetSpec(
+            id: "rich_report",
+            type: "webView",
+            label: "\(table.name.capitalized) report",
+            table: table.name,
+            webRenderer: "htmlReport"
+        )
+        if let dashboardIndex = manifest.views.firstIndex(where: { $0.type == "dashboard" && ($0.table == table.name || $0.table == nil) }) {
+            manifest.views[dashboardIndex].widgets.append(widget)
+        } else {
+            manifest.views.insert(
+                WorkspaceAppViewSpec(id: "report_overview", type: "dashboard", title: "Overview", table: table.name, widgets: [widget]),
                 at: 0
             )
         }

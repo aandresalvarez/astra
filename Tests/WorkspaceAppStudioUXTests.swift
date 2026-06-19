@@ -120,6 +120,18 @@ struct WorkspaceAppStudioUXTests {
         #expect(!WorkspaceAppStudioRefinement.addChart.isAvailable(for: updated))
     }
 
+    @Test("add-a-rich-report appends a sandboxed webView/htmlReport widget, stays valid, idempotent")
+    func refineAddRichReport() {
+        let manifest = base()
+        #expect(WorkspaceAppStudioRefinement.addRichReport.isAvailable(for: manifest))
+        let updated = WorkspaceAppStudioRefinement.addRichReport.apply(to: manifest)
+        let webWidgets = updated.views.flatMap(\.widgets).filter { $0.type == "webView" }
+        #expect(webWidgets.count == 1)
+        #expect(webWidgets.first?.webRenderer == "htmlReport")
+        #expect(valid(updated))
+        #expect(!WorkspaceAppStudioRefinement.addRichReport.isAvailable(for: updated))
+    }
+
     @Test("approval, weekly-summary, and connect-REDCap refinements apply and stay valid")
     func refineOthers() {
         let manifest = base(mode: .approvalRequired)

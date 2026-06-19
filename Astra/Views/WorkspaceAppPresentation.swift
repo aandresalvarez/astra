@@ -73,10 +73,23 @@ struct WorkspaceAppNativeSurfacePresentation: Equatable {
     var diagrams: [WorkspaceAppDiagramPresentation]
     var metrics: [WorkspaceAppMetricPresentation]
     var charts: [WorkspaceAppChartPresentation]
+    /// `webView`-widget renderers shown in a sandboxed WKWebView (flexible local-app
+    /// visualization — Swift builds the HTML from the app's own data; no network, no JS
+    /// bridge). Defaulted so existing initializers are unaffected.
+    var webReports: [WorkspaceAppWebReportPresentation] = []
 
     var isEmpty: Bool {
-        markdowns.isEmpty && diagrams.isEmpty && metrics.isEmpty && charts.isEmpty
+        markdowns.isEmpty && diagrams.isEmpty && metrics.isEmpty && charts.isEmpty && webReports.isEmpty
     }
+}
+
+/// A `webView` widget resolved to a self-contained, CSP-locked HTML document (built by
+/// Swift from the app's data) for display in a sandboxed WKWebView. The `html` is the
+/// final document — the view is a dumb renderer.
+struct WorkspaceAppWebReportPresentation: Identifiable, Equatable {
+    var id: String
+    var label: String
+    var html: String
 }
 
 struct WorkspaceAppRunHistoryPresentation: Equatable {
@@ -590,6 +603,7 @@ enum WorkspaceAppNativeSurfaceBuilder {
         var diagrams: [WorkspaceAppDiagramPresentation] = []
         var metrics: [WorkspaceAppMetricPresentation] = []
         var charts: [WorkspaceAppChartPresentation] = []
+        var webReports: [WorkspaceAppWebReportPresentation] = []
 
         for view in manifest.views {
             for widget in view.widgets {
@@ -610,13 +624,40 @@ enum WorkspaceAppNativeSurfaceBuilder {
                     if let table = table(for: widget, view: view, tablesByName: tablesByName) {
                         charts.append(chart(widget: widget, table: table))
                     }
+                case "webView":
+                    if let report = webReport(widget: widget, table: table(for: widget, view: view, tablesByName: tablesByName)) {
+                        webReports.append(report)
+                    }
                 default:
                     continue
                 }
             }
         }
 
-        return WorkspaceAppNativeSurfacePresentation(markdowns: markdowns, diagrams: diagrams, metrics: metrics, charts: charts)
+        return WorkspaceAppNativeSurfacePresentation(
+            markdowns: markdowns,
+            diagrams: diagrams,
+            metrics: metrics,
+            charts: charts,
+            webReports: webReports
+        )
+    }
+
+    /// Build a sandboxed HTML report for a `webView` widget. Only the ASTRA-known
+    /// `htmlReport` renderer is supported today; the HTML is assembled by Swift from the
+    /// bound table's data (escaped) — never from imported/arbitrary content.
+    private static func webReport(
+        widget: WorkspaceAppWidgetSpec,
+        table: WorkspaceAppStorageTableSnapshot?
+    ) -> WorkspaceAppWebReportPresentation? {
+        let renderer = widget.webRenderer?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard renderer == "htmlReport" else { return nil }
+        let html = WorkspaceAppWebReportHTML.html(
+            title: widget.label,
+            columns: table?.columns ?? [],
+            rows: table?.rows ?? []
+        )
+        return WorkspaceAppWebReportPresentation(id: widget.id, label: widget.label, html: html)
     }
 
     private static func table(
