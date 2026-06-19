@@ -383,4 +383,21 @@ struct WorkspaceAppStudioGeneratorTests {
         // The valid baseline is embedded as the few-shot example.
         #expect(prompt.contains("\"schemaVersion\""))
     }
+
+    @Test("the prompt tells the model which connectors the workspace has (capability-aware)")
+    func promptIsCapabilityAware() {
+        let families = WorkspaceAppContractRegistry().families
+        let withProviders = WorkspaceAppStudioGenerator.generationPrompt(
+            intent: "track samples", workspaceName: "Lab", base: Self.validManifest,
+            contractFamilies: families, availableProviders: ["redcap", "bigQuery"]
+        )
+        #expect(withProviders.contains("Connectors available in THIS workspace: bigQuery, redcap"))
+        #expect(withProviders.contains("optional: true"))
+
+        let none = WorkspaceAppStudioGenerator.generationPrompt(
+            intent: "track samples", workspaceName: "Lab", base: Self.validManifest,
+            contractFamilies: families, availableProviders: []
+        )
+        #expect(none.contains("Connectors available in THIS workspace: none"))
+    }
 }

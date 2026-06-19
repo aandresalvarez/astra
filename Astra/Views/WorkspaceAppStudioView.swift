@@ -562,6 +562,13 @@ struct WorkspaceAppStudioView: View {
             runtime: AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: generationRuntimeID),
             model: generationModel
         )
+        // Capability-aware generation: tell the model which connectors this workspace
+        // actually has, so it proposes a compatible design + wires requirements to them.
+        let availableProviders = Set(
+            CapabilityRuntimeResourceMatcher.enabledPackages(for: workspace)
+                .flatMap { $0.connectors.map(\.serviceType) }
+                .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        )
         isGeneratingDraft = true
         statusMessage = "Generating draft…"
         generationTask = Task { @MainActor in
@@ -570,7 +577,8 @@ struct WorkspaceAppStudioView: View {
                 workspaceName: workspaceName,
                 workspacePath: workspacePath,
                 existingManifest: existing,
-                configuration: configuration
+                configuration: configuration,
+                availableProviders: availableProviders
             )
             // Dismissed mid-generation: onDisappear cancelled us and the runtime
             // subprocess is already torn down, so drop the result instead of

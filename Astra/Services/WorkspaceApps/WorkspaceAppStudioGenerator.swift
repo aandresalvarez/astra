@@ -62,6 +62,7 @@ enum WorkspaceAppStudioGenerator {
         maxRepairAttempts: Int = 2,
         configuration: AgentUtilityRuntimeConfiguration = .claude(),
         contractFamilies: [WorkspaceAppContractFamily] = WorkspaceAppContractRegistry().families,
+        availableProviders: Set<String> = [],
         runner: WorkspaceAppStudioPromptRunner = defaultRunner
     ) async -> WorkspaceAppStudioGenerationResult {
         let intent = rawIntent.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -106,7 +107,8 @@ enum WorkspaceAppStudioGenerator {
             intent: intent,
             workspaceName: workspaceName,
             base: base,
-            contractFamilies: contractFamilies
+            contractFamilies: contractFamilies,
+            availableProviders: availableProviders
         )
         let firstResult = await runner(firstPrompt, workspacePath, configuration)
         guard firstResult.exitCode == 0 else {
@@ -261,7 +263,8 @@ enum WorkspaceAppStudioGenerator {
         intent: String,
         workspaceName: String,
         base: WorkspaceAppManifest,
-        contractFamilies: [WorkspaceAppContractFamily]
+        contractFamilies: [WorkspaceAppContractFamily],
+        availableProviders: Set<String> = []
     ) -> String {
         """
         You are ASTRA App Studio's manifest generator. Produce ONE Workspace App \
@@ -293,6 +296,8 @@ enum WorkspaceAppStudioGenerator {
         You may ONLY reference these capability contracts. Use the exact `contract` \
         id and operation names — do NOT invent contracts or operations:
         \(contractCatalog(contractFamilies))
+
+        \(availableConnectorsGuidance(availableProviders))
 
         Rules:
         - Output JSON only inside the block; ASTRA validates it and rejects anything invalid.
@@ -375,6 +380,23 @@ enum WorkspaceAppStudioGenerator {
             .replacingOccurrences(of: "</INTENT>", with: " ", options: .caseInsensitive)
             .replacingOccurrences(of: "<INTENT>", with: " ", options: .caseInsensitive)
         return String(stripped.prefix(2000))
+    }
+
+    /// Tells the model which external connectors THIS workspace actually has, so it
+    /// proposes a compatible design + emits requirements wired to available providers
+    /// instead of inventing absent connector flows (capability-aware generation).
+    static func availableConnectorsGuidance(_ providers: Set<String>) -> String {
+        let list = providers.sorted().joined(separator: ", ")
+        let available = list.isEmpty ? "none" : list
+        return """
+        Connectors available in THIS workspace: \(available).
+        - External-provider contracts (e.g. `tabularQuery.read` → bigQuery, `recordProject.*` / \
+        `formSchema.read` → redcap) require a matching connector. ONLY add a `requirement` for an \
+        external provider that is available above. If a provider is NOT available, build the app \
+        around local contracts (`appStorage.records`, `task.*`, `artifact.*`) rather than inventing \
+        an absent connector flow. Any external requirement you DO include must set `optional: true` \
+        with a `reason`, so the app still installs and the connector can be added later.
+        """
     }
 
     /// Bulleted catalog of the capability contracts the model may use. Both the prompt
