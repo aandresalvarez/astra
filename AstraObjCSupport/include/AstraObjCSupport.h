@@ -74,6 +74,19 @@ NS_ASSUME_NONNULL_BEGIN
                keychainPath:(NSString *)keychainPath
            bootstrapService:(NSString *)bootstrapService;
 
+/// Runs `block` with Security.framework keychain UI disabled, restoring the
+/// previous setting afterwards. Intended for deterministic regression tests and
+/// critical non-interactive keychain sections.
++ (void)performWithKeychainUserInteractionDisabled:(NS_NOESCAPE void (^)(void))block;
+
+/// Test-only bootstrap override used when the SwiftPM test host cannot create
+/// or read items in the user's login keychain without opening macOS UI.
++ (void)setTestBootstrapPassword:(NSString *)password
+             forBootstrapService:(NSString *)bootstrapService;
+
+/// Clears a test-only bootstrap password override.
++ (void)clearTestBootstrapPasswordForBootstrapService:(NSString *)bootstrapService;
+
 /// Move every generic-password item whose service is `service` from the login
 /// (default) keychain into the dedicated keychain, deleting each from login once
 /// it is safely copied. Enumerates by service so it catches every account

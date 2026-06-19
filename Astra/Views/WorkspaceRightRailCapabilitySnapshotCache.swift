@@ -462,6 +462,10 @@ struct CapabilityRailPackageSnapshotState {
         if connector.credentialKeys.isEmpty {
             return ["\(name): no credentials configured"]
         }
+        let missingKeys = connector.missingCredentialKeys()
+        if !missingKeys.isEmpty {
+            return ["\(name): missing Keychain value: \(missingKeys.joined(separator: ", "))"]
+        }
 
         return []
     }

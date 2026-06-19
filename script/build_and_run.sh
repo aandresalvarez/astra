@@ -48,6 +48,8 @@ default_app_build() {
 
 APP_VERSION="${ASTRA_VERSION:-$(default_app_version)}"
 APP_BUILD="${ASTRA_BUILD:-$(default_app_build)}"
+ASTRA_GIT_COMMIT="${ASTRA_GIT_COMMIT:-$(git -C "$ROOT_DIR" rev-parse --short=12 HEAD 2>/dev/null || printf unknown)}"
+ASTRA_BUILD_DATE="${ASTRA_BUILD_DATE:-$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')}"
 
 verify_arm64_binary() {
   local binary="$1"
@@ -234,6 +236,10 @@ cat >"$INFO_PLIST" <<PLIST
   <string>$APP_BUILD</string>
   <key>ASTRAChannel</key>
   <string>$ASTRA_CHANNEL</string>
+  <key>ASTRAGitCommit</key>
+  <string>$ASTRA_GIT_COMMIT</string>
+  <key>ASTRABuildDate</key>
+  <string>$ASTRA_BUILD_DATE</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>LSMinimumSystemVersion</key>
