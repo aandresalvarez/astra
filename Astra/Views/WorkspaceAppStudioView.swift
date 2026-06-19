@@ -176,7 +176,21 @@ struct WorkspaceAppStudioView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+
+            // Honest scope guard: a website/marketing intent can't be expressed by the
+            // data-app schema, so say so instead of silently shipping a data shell.
+            if let scopeNotice {
+                WorkspaceAppDetailNotice(
+                    title: "This looks like a website, not a data app",
+                    message: scopeNotice,
+                    systemImage: "exclamationmark.triangle"
+                )
+            }
         }
+    }
+
+    private var scopeNotice: String? {
+        WorkspaceAppStudioScope.outOfScopeNotice(for: intent)
     }
 
     @ViewBuilder

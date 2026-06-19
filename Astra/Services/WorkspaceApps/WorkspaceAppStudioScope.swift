@@ -1,0 +1,56 @@
+import Foundation
+
+/// Honest scope detection for App Studio. The Studio builds DATA and WORKFLOW apps
+/// (tables, dashboards, review queues, pipelines, report generators, AI workflows) —
+/// it has no view type for a content/marketing web page, so an intent like "a landing
+/// page for the foundation" can only ever produce a mislabeled data shell. Rather than
+/// silently ship that, we surface a plain-language notice. Pure + value-typed so the
+/// SwiftUI banner is a thin renderer and this is unit-tested.
+enum WorkspaceAppStudioScope {
+    /// Strong signals that the user wants a website / marketing / content page.
+    private static let contentSiteTokens = [
+        "landing page", "landing-page", "website", "web site", "web page", "webpage",
+        "marketing site", "marketing page", "home page", "homepage", "splash page",
+        "microsite", "static site", "html page", "brochure site", "company site",
+        "about page", "portfolio site", "personal site", "blog", "blog post",
+    ]
+
+    /// Data/workflow signals. When present alongside a content token, the intent is
+    /// probably a data app *about* pages ("track landing page performance"), so we do
+    /// not flag it — avoiding false positives.
+    private static let dataAppTokens = [
+        "track", "log", "manage", "database", "records", "record", "inventory",
+        "catalog", "queue", "pipeline", "report", "monitor", "dashboard", "table",
+        "crm", "ledger", "form", "intake", "review", "approval", "workflow", "metrics",
+        "spreadsheet", "checklist", "roster", "registry", "tracker", "kanban",
+    ]
+
+    /// A plain-language notice when the intent looks like a content/marketing website
+    /// rather than a data or workflow app. Returns nil when the intent is in scope (or
+    /// ambiguous enough that generation should just attempt it).
+    static func outOfScopeNotice(for intent: String) -> String? {
+        let text = intent.lowercased()
+        guard contentSiteTokens.contains(where: { text.contains($0) }) else { return nil }
+        if dataAppTokens.contains(where: { containsWord(text, $0) }) { return nil }
+        return "App Studio builds data and workflow apps — tables, dashboards, review queues, "
+            + "pipelines, and AI workflows — not websites or marketing pages. This intent looks "
+            + "like a web page, so generating will produce a data app, not a site. Try something "
+            + "like \u{201C}track donors and donations\u{201D}, \u{201C}a dashboard of campaign "
+            + "metrics\u{201D}, or \u{201C}a volunteer intake form\u{201D}."
+    }
+
+    /// Whether the intent reads as out of scope (drives the banner's presence).
+    static func isLikelyOutOfScope(_ intent: String) -> Bool {
+        outOfScopeNotice(for: intent) != nil
+    }
+
+    /// Word-ish containment so "log" doesn't match "blog" / "catalog" and "form"
+    /// doesn't match "platform". Matches the token at a word boundary.
+    private static func containsWord(_ text: String, _ token: String) -> Bool {
+        guard !token.isEmpty else { return false }
+        // Multi-word tokens are matched as plain substrings.
+        if token.contains(" ") { return text.contains(token) }
+        let separators = CharacterSet.alphanumerics.inverted
+        return text.components(separatedBy: separators).contains(token)
+    }
+}
