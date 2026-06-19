@@ -8,6 +8,9 @@ import UniformTypeIdentifiers
 /// and reads `modelContext` from the environment, so it needs no ContentView wiring.
 struct WorkspaceAppImportReviewView: View {
     let workspace: Workspace
+    /// When set (e.g. from the package library), the review loads this package on appear
+    /// instead of starting at the picker — so library → review → install is one flow.
+    var initialPackageURL: URL? = nil
     var onInstalled: (WorkspaceApp) -> Void
     var onCancel: () -> Void
 
@@ -16,6 +19,7 @@ struct WorkspaceAppImportReviewView: View {
     @State private var pickerPresented = false
     @State private var accessingURL: URL?
     @State private var statusMessage = ""
+    @State private var didLoadInitial = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -36,6 +40,11 @@ struct WorkspaceAppImportReviewView: View {
         .background(Stanford.panelBackground)
         .accessibilityIdentifier("WorkspaceAppImportReviewView")
         .fileImporter(isPresented: $pickerPresented, allowedContentTypes: [.directory], allowsMultipleSelection: false, onCompletion: handlePick)
+        .onAppear {
+            guard !didLoadInitial, let initialPackageURL else { return }
+            didLoadInitial = true
+            loadReview(packageURL: initialPackageURL)
+        }
         .onDisappear { stopAccessing() }
     }
 
@@ -131,14 +140,18 @@ struct WorkspaceAppImportReviewView: View {
         switch result {
         case .success(let urls):
             guard let url = urls.first else { return }
-            stopAccessing()
-            accessingURL = url.startAccessingSecurityScopedResource() ? url : nil
-            let built = WorkspaceAppPackageImportReviewer.review(packageURL: url)
-            review = built
-            statusMessage = built.canInstall ? "Ready to install." : "Resolve the issues below before installing."
+            loadReview(packageURL: url)
         case .failure(let error):
             statusMessage = "Couldn't open package: \(error.localizedDescription)"
         }
+    }
+
+    private func loadReview(packageURL url: URL) {
+        stopAccessing()
+        accessingURL = url.startAccessingSecurityScopedResource() ? url : nil
+        let built = WorkspaceAppPackageImportReviewer.review(packageURL: url)
+        review = built
+        statusMessage = built.canInstall ? "Ready to install." : "Resolve the issues below before installing."
     }
 
     private func install() {

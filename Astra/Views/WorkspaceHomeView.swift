@@ -273,6 +273,7 @@ struct WorkspaceHomeContainerView: View {
     @Query private var tasks: [AgentTask]
     @Query private var workspaceApps: [WorkspaceApp]
     @State private var isImportingApp = false
+    @State private var isBrowsingLibrary = false
 
     init(
         workspace: Workspace,
@@ -333,7 +334,8 @@ struct WorkspaceHomeContainerView: View {
             onEditSchedule: onEditSchedule,
             onManageCapabilities: onManageCapabilities,
             onOpenWorkspaceApp: onOpenWorkspaceApp,
-            onImportWorkspaceApp: { isImportingApp = true }
+            onImportWorkspaceApp: { isImportingApp = true },
+            onBrowseLibrary: { isBrowsingLibrary = true }
         )
         .sheet(isPresented: $isImportingApp) {
             WorkspaceAppImportReviewView(
@@ -343,6 +345,16 @@ struct WorkspaceHomeContainerView: View {
                     onOpenWorkspaceApp?(app)
                 },
                 onCancel: { isImportingApp = false }
+            )
+        }
+        .sheet(isPresented: $isBrowsingLibrary) {
+            WorkspaceAppPackageLibraryView(
+                workspace: workspace,
+                onInstalled: { app in
+                    isBrowsingLibrary = false
+                    onOpenWorkspaceApp?(app)
+                },
+                onCancel: { isBrowsingLibrary = false }
             )
         }
     }
@@ -362,6 +374,7 @@ struct WorkspaceHomeView: View {
     var onManageCapabilities: (() -> Void)?
     var onOpenWorkspaceApp: ((WorkspaceApp) -> Void)?
     var onImportWorkspaceApp: (() -> Void)?
+    var onBrowseLibrary: (() -> Void)?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isEditingInstructions = false
@@ -526,6 +539,14 @@ struct WorkspaceHomeView: View {
                     .font(Stanford.caption(12).weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
+                if let onBrowseLibrary {
+                    Button(action: onBrowseLibrary) {
+                        Label("Library", systemImage: "books.vertical")
+                            .font(Stanford.caption(11))
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Browse a shared folder of ASTRA app packages")
+                }
                 if let onImportWorkspaceApp {
                     Button(action: onImportWorkspaceApp) {
                         Label("Import", systemImage: "square.and.arrow.down")
