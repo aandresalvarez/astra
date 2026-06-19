@@ -320,14 +320,19 @@ enum CapabilityRuntimeIntegrityService {
         let hasDeclaredKeys: Bool
     }
 
+    private struct ConnectorCredentialRequirements {
+        let declaredKeys: [String]
+        let missingKeys: [String]
+    }
+
     private static func connectorHasUsableCredentials(
         _ connector: Connector,
         secretStore: SecretStore
     ) -> Bool {
         guard connector.authMethod != "none" else { return true }
-        let declaredKeys = normalizedCredentialKeys(for: connector)
-        guard !declaredKeys.isEmpty else { return false }
-        return connector.missingCredentialKeys(store: secretStore).isEmpty
+        let requirements = connectorCredentialRequirements(for: connector, secretStore: secretStore)
+        guard !requirements.declaredKeys.isEmpty else { return false }
+        return requirements.missingKeys.isEmpty
     }
 
     private static func connectorCredentialGaps(
@@ -336,22 +341,38 @@ enum CapabilityRuntimeIntegrityService {
     ) -> [ConnectorCredentialGap] {
         connectors.compactMap { connector in
             guard connector.authMethod != "none" else { return nil }
-            let declaredKeys = normalizedCredentialKeys(for: connector)
-            guard !declaredKeys.isEmpty else {
+            let requirements = connectorCredentialRequirements(for: connector, secretStore: secretStore)
+            guard !requirements.declaredKeys.isEmpty else {
                 return ConnectorCredentialGap(
                     connector: connector,
                     missingKeys: [],
                     hasDeclaredKeys: false
                 )
             }
-            let missing = connector.missingCredentialKeys(store: secretStore)
-            guard !missing.isEmpty else { return nil }
+            guard !requirements.missingKeys.isEmpty else { return nil }
             return ConnectorCredentialGap(
                 connector: connector,
-                missingKeys: missing,
+                missingKeys: requirements.missingKeys,
                 hasDeclaredKeys: true
             )
         }
+    }
+
+    private static func connectorCredentialRequirements(
+        for connector: Connector,
+        secretStore: SecretStore
+    ) -> ConnectorCredentialRequirements {
+        let declaredKeys = normalizedCredentialKeys(for: connector)
+        let entityID = KeychainSecretStore.connectorEntityID(for: connector.id)
+        let missingKeys = declaredKeys.filter { key in
+            let value = secretStore.load(key: key, entityID: entityID)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return value.isEmpty
+        }
+        return ConnectorCredentialRequirements(
+            declaredKeys: declaredKeys,
+            missingKeys: missingKeys
+        )
     }
 
     private static func normalizedCredentialKeys(for connector: Connector) -> [String] {

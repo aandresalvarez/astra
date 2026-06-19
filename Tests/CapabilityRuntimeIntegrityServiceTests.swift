@@ -187,6 +187,56 @@ struct CapabilityRuntimeIntegrityServiceTests {
         #expect(issue.message == "connector Jira-new is missing Keychain value: JIRA_EMAIL, JIRA_API_TOKEN")
     }
 
+    @Test("runtime integrity normalizes connector credential gaps in diagnostics")
+    func runtimeIntegrityNormalizesConnectorCredentialGapsInDiagnostics() throws {
+        let container = try makeRuntimeIntegrityContainer()
+        let context = container.mainContext
+        let jiraPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+
+        let workspace = Workspace(name: "Padded Shared Jira", primaryPath: "/tmp/padded-shared-jira")
+        workspace.enabledCapabilityIDs = [jiraPackage.id]
+        context.insert(workspace)
+
+        let jiraSkill = Skill(
+            name: "Jira Agent",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use Jira REST API."
+        )
+        jiraSkill.isGlobal = true
+        context.insert(jiraSkill)
+
+        let sharedJira = Connector(
+            name: "Jira-new",
+            serviceType: "jira",
+            connectorDescription: "Configured shared Jira",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "basic"
+        )
+        sharedJira.isGlobal = true
+        sharedJira.credentialKeys = [" JIRA_EMAIL ", "  ", "\nJIRA_API_TOKEN\t"]
+        workspace.enabledGlobalConnectorIDs = [sharedJira.id.uuidString]
+        context.insert(sharedJira)
+
+        let task = AgentTask(
+            title: "Use Jira",
+            goal: "List Jira tickets",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [jiraPackage],
+            checkExecutables: false,
+            secretStore: MockSecretStore()
+        )
+
+        let issue = try #require(issues.first { $0.resourceKind == .credential })
+        #expect(issue.resourceName == "Jira-new")
+        #expect(issue.message == "connector Jira-new is missing Keychain value: JIRA_EMAIL, JIRA_API_TOKEN")
+    }
+
     @Test("provider launch audit separates configured and scoped capabilities")
     func providerLaunchAuditSeparatesConfiguredAndScopedCapabilities() throws {
         let container = try makeRuntimeIntegrityContainer()
