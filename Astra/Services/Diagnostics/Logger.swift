@@ -250,7 +250,7 @@ enum AppLogCategory {
         "App", "Audit", "Worker", "Queue", "UI", "Isolation", "Validation",
         "Reflection", "SSH", "Persistence", "PluginCatalog", "Scheduler",
         "Keychain", "Updater", "Performance", "Capabilities", "Browser",
-        "Diagnostics", "Plan", "Git", "General"
+        "Diagnostics", "Plan", "Git", "WorkspaceApps", "General"
     ]
 }
 

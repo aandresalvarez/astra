@@ -71,7 +71,11 @@ enum WorkspaceAppStudioGenerator {
         let baseReport = WorkspaceAppManifestValidator.validate(base)
 
         func fallback(attempts: Int, providerFailure: String?) -> WorkspaceAppStudioGenerationResult {
-            WorkspaceAppStudioGenerationResult(
+            AppLogger.info(
+                "app_studio.generation_fallback runtime=\(configuration.runtime.rawValue) model=\(configuration.model) attempts=\(attempts) reason=\(providerFailure ?? "exhausted_repairs")",
+                category: "WorkspaceApps"
+            )
+            return WorkspaceAppStudioGenerationResult(
                 manifest: base,
                 validationReport: baseReport,
                 accepted: false,
@@ -79,6 +83,22 @@ enum WorkspaceAppStudioGenerator {
                 attemptCount: attempts,
                 providerFailure: providerFailure
             )
+        }
+
+        // Per-attempt diagnostics — the path was previously silent, so a failed
+        // generation was a black box (we couldn't tell a markerless model reply from
+        // a decode error from a validation rejection). `reason` is the first blocker
+        // message, which distinguishes those modes.
+        func trace(phase: String, attempt: Int, result: AgentUtilityRunResult, vetted: Vetted?) {
+            var message = "app_studio.generation_attempt phase=\(phase) attempt=\(attempt)"
+                + " runtime=\(configuration.runtime.rawValue) model=\(configuration.model)"
+                + " exit_code=\(result.exitCode) output_chars=\(result.output.count)"
+            if let vetted {
+                let reason = vetted.report.issues.first?.message ?? "ok"
+                message += " decoded=\(vetted.decoded != nil) publishable=\(vetted.publishable)"
+                    + " issue_count=\(vetted.report.issues.count) reason=\(reason.prefix(140))"
+            }
+            AppLogger.info(message, category: "WorkspaceApps")
         }
 
         // --- First attempt ---
@@ -90,6 +110,7 @@ enum WorkspaceAppStudioGenerator {
         )
         let firstResult = await runner(firstPrompt, workspacePath, configuration)
         guard firstResult.exitCode == 0 else {
+            trace(phase: "initial", attempt: 1, result: firstResult, vetted: nil)
             return fallback(attempts: 1, providerFailure: firstResult.failureDetail)
         }
 
@@ -99,6 +120,7 @@ enum WorkspaceAppStudioGenerator {
             rawOutput: firstResult.output,
             contractFamilies: contractFamilies
         )
+        trace(phase: "initial", attempt: attempts, result: firstResult, vetted: vetted)
         if vetted.publishable {
             return WorkspaceAppStudioGenerationResult(
                 manifest: vetted.manifest,
@@ -124,6 +146,7 @@ enum WorkspaceAppStudioGenerator {
             let result = await runner(prompt, workspacePath, configuration)
             attempts += 1
             guard result.exitCode == 0 else {
+                trace(phase: "repair", attempt: attempts, result: result, vetted: nil)
                 return fallback(attempts: attempts, providerFailure: result.failureDetail)
             }
             vetted = vet(
@@ -131,6 +154,7 @@ enum WorkspaceAppStudioGenerator {
                 rawOutput: result.output,
                 contractFamilies: contractFamilies
             )
+            trace(phase: "repair", attempt: attempts, result: result, vetted: vetted)
             if vetted.publishable {
                 return WorkspaceAppStudioGenerationResult(
                     manifest: vetted.manifest,
@@ -144,7 +168,13 @@ enum WorkspaceAppStudioGenerator {
         }
 
         // Exhausted without a valid model manifest -> deterministic template (valid).
-        return fallback(attempts: attempts, providerFailure: nil)
+        // Surface the model's actual rejection reason (markerless reply, decode error,
+        // or the first validation blocker) instead of a silent nil, so the user sees
+        // WHY it fell back rather than a generic "couldn't produce a valid manifest".
+        return fallback(
+            attempts: attempts,
+            providerFailure: vetted.report.issues.first?.message ?? "the model did not return a valid app manifest"
+        )
     }
 
     // MARK: - Vetting

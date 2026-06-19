@@ -162,7 +162,10 @@ struct WorkspaceAppStudioGeneratorTests {
         #expect(result.origin == .deterministicFallback)
         // Fallback manifest is the valid template, so it remains publishable.
         #expect(result.canPublish)
-        #expect(result.providerFailure == nil)
+        // The fallback now surfaces the model's real rejection reason (the first
+        // validation blocker) instead of a silent nil, so the user learns WHY.
+        #expect(result.providerFailure != nil)
+        #expect(result.providerFailure?.isEmpty == false)
         // 1 first attempt + 2 repair attempts.
         #expect(result.attemptCount == 3)
         #expect(runner.calls.count == 3)

@@ -530,10 +530,12 @@ struct WorkspaceAppStudioView: View {
         case .deterministicFallback:
             // In the editing case the fallback IS the user's existing app, not a template.
             let degraded = isEditing ? "your current app definition is unchanged" : "using a template draft"
+            // providerFailure now always carries the real reason (a provider error, a
+            // markerless reply, a decode error, or the first validation blocker).
             if let failure = result.providerFailure {
-                return "Model unavailable — \(degraded). (\(failure))"
+                return "Couldn't build from the model — \(degraded). (\(failure))"
             }
-            return "Model couldn't produce a valid manifest — \(degraded)."
+            return "Couldn't build from the model — \(degraded)."
         }
     }
 
