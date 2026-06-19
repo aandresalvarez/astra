@@ -651,13 +651,21 @@ enum WorkspaceAppNativeSurfaceBuilder {
         table: WorkspaceAppStorageTableSnapshot?
     ) -> WorkspaceAppWebReportPresentation? {
         let renderer = widget.webRenderer?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard renderer == "htmlReport" else { return nil }
-        let html = WorkspaceAppWebReportHTML.html(
-            title: widget.label,
-            columns: table?.columns ?? [],
-            rows: table?.rows ?? []
-        )
-        return WorkspaceAppWebReportPresentation(id: widget.id, label: widget.label, html: html)
+        switch renderer {
+        case "htmlReport":
+            let html = WorkspaceAppWebReportHTML.html(
+                title: widget.label,
+                columns: table?.columns ?? [],
+                rows: table?.rows ?? []
+            )
+            return WorkspaceAppWebReportPresentation(id: widget.id, label: widget.label, html: html)
+        case "chartComposite":
+            guard let table else { return nil }
+            let html = WorkspaceAppWebReportHTML.chartHTML(title: widget.label, bars: chart(widget: widget, table: table).bars)
+            return WorkspaceAppWebReportPresentation(id: widget.id, label: widget.label, html: html)
+        default:
+            return nil
+        }
     }
 
     private static func table(

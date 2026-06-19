@@ -219,7 +219,10 @@ struct WorkspaceAppDetailView: View {
                     spacing: 10
                 ) {
                     ForEach(dataSnapshot.automationStates, id: \.automationID) { automation in
-                        WorkspaceAppAutomationStateCard(automation: automation)
+                        WorkspaceAppAutomationStateCard(
+                            automation: automation,
+                            onSetEnabled: { setAutomationEnabled(automation.automationID, $0) }
+                        )
                     }
                 }
             }
@@ -298,6 +301,21 @@ struct WorkspaceAppDetailView: View {
             manifest: manifest, dependencyBindings: dependencyBindings, modelContext: modelContext
         )
         loadDataSnapshot()
+    }
+
+    private func setAutomationEnabled(_ automationID: String, _ isEnabled: Bool) {
+        do {
+            try WorkspaceAppService().setAutomationEnabled(
+                app: app,
+                automationID: automationID,
+                isEnabled: isEnabled,
+                workspace: workspace,
+                modelContext: modelContext
+            )
+            loadDataSnapshot()
+        } catch {
+            AppLogger.error("Toggle automation \(automationID) failed: \(error)", category: "WorkspaceApps")
+        }
     }
 
     private func loadDataSnapshot() {
@@ -886,6 +904,7 @@ struct WorkspaceAppDependencyBindingCard: View {
 
 struct WorkspaceAppAutomationStateCard: View {
     let automation: WorkspaceAppAutomationStateSnapshot
+    var onSetEnabled: ((Bool) -> Void)? = nil
 
     private var statusLabel: String {
         switch automation.status {
@@ -957,6 +976,26 @@ struct WorkspaceAppAutomationStateCard: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
+
+            if automation.isEnabled, let nextRunAt = automation.nextRunAt {
+                Text("Next run \(nextRunAt.formatted(date: .abbreviated, time: .shortened))")
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            // Schedule governance: an explicit enable/disable that the user controls.
+            // Blocked automations can't be enabled until their dependency resolves.
+            if let onSetEnabled, automation.status != .blocked {
+                Button(automation.isEnabled ? "Disable" : "Enable") {
+                    onSetEnabled(!automation.isEnabled)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help(automation.isEnabled
+                    ? "Stop this schedule from running."
+                    : "Enable this schedule. It runs under the app's permission mode and still respects approvals.")
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, minHeight: 104, alignment: .topLeading)

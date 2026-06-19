@@ -29,7 +29,7 @@ struct WorkspaceAppWebViewBridgeTests {
                     ),
                     WorkspaceAppWidgetSpec(
                         id: "panel_b", type: "webView", label: "Panel B",
-                        webRenderer: "mermaidDiagram", allowedActions: ["export_secret"]
+                        webRenderer: "chartComposite", allowedActions: ["export_secret"]
                     )
                 ]
             )
@@ -122,7 +122,9 @@ struct WorkspaceAppWebViewBridgeTests {
 
     @Test("only ASTRA-known renderers are permitted, and the validator shares the bridge's allowlist")
     func rendererAllowlistIsSharedAndClosed() {
-        #expect(WorkspaceAppWebViewBridge.allowedRenderers == ["mermaidDiagram", "htmlReport", "chartComposite"])
+        #expect(WorkspaceAppWebViewBridge.allowedRenderers == ["htmlReport", "chartComposite"])
+        // mermaidDiagram was removed (needs blocked JS; native diagram widget covers it).
+        #expect(!WorkspaceAppWebViewBridge.allowedRenderers.contains("mermaidDiagram"))
 
         var manifest = Self.bridgeManifest()
         manifest.views[0].widgets[0].webRenderer = "customJavaScript"  // arbitrary JS renderer

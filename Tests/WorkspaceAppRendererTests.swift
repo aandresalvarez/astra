@@ -176,4 +176,14 @@ struct WorkspaceAppRendererTests {
         #expect(surface.webReports.count == 1)
         #expect(surface.webReports[0].html.contains("Hello"))
     }
+
+    @Test("chartComposite renders CSP-locked, script-free CSS bars with escaped labels")
+    func chartCompositeIsSandboxed() {
+        let bars = [WorkspaceAppChartPresentation.Bar(label: "<x>", value: 3, displayValue: "3", fraction: 0.5)]
+        let html = WorkspaceAppWebReportHTML.chartHTML(title: "By status", bars: bars)
+        #expect(html.contains("default-src 'none'"))
+        #expect(!html.lowercased().contains("<script"))
+        #expect(html.contains("&lt;x&gt;"))
+        #expect(html.contains("width:50%"))
+    }
 }

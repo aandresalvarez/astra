@@ -44,7 +44,12 @@ enum WorkspaceAppWebViewBridge {
     /// "no arbitrary imported custom JavaScript widgets"). Single source of truth, shared
     /// with `WorkspaceAppManifestValidator`, so the publish-time guard and any runtime
     /// guard can never drift apart.
-    static let allowedRenderers: Set<String> = ["mermaidDiagram", "htmlReport", "chartComposite"]
+    /// `htmlReport` (data table/report) and `chartComposite` (CSS bar chart) are both
+    /// implemented by `WorkspaceAppWebReportHTML` as Swift-built, no-JS, CSP-locked
+    /// documents. `mermaidDiagram` is intentionally excluded: it would require bundling
+    /// + running mermaid.js (blocked by the host's JS-off, no-network policy) and the
+    /// native `diagram` widget already renders flow/pipeline/ER diagrams.
+    static let allowedRenderers: Set<String> = ["htmlReport", "chartComposite"]
 
     static func validate(
         _ request: WorkspaceAppWebViewBridgeRequest,
