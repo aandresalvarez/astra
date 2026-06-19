@@ -3676,34 +3676,10 @@ struct TaskMainView: View {
     }
 
     private var failureReason: String {
-        let errorEvents = task.events.filter { $0.type == "error" }
-        if let lastError = errorEvents.last {
-            let payload = lastError.payload
-            if payload.contains("idle timeout") || payload.contains("timed out") {
-                return "Agent went idle — no output for the timeout period."
-            }
-            if payload.contains("CLI not found") {
-                return "Provider CLI not found. Check Settings."
-            }
-            if payload.contains("not found") || payload.contains("Workspace") {
-                return "Workspace directory not found."
-            }
-            if payload.contains("isolation") || payload.contains("Isolation") {
-                return "Workspace isolation setup failed."
-            }
-            if payload.contains("exit") || payload.contains("exited") {
-                if let run = latestRun {
-                    if run.exitCode == 143 { return "Process killed (SIGTERM) — likely timeout." }
-                    if run.exitCode == 137 { return "Process killed (SIGKILL) — may be out of memory." }
-                    if run.exitCode != 0 { return "Agent exited with code \(run.exitCode ?? -1)." }
-                }
-            }
-            return String(payload.prefix(200))
-        }
-        if let run = latestRun, run.exitCode == 143 {
-            return "Process killed (SIGTERM) — likely timeout."
-        }
-        return "The agent encountered an error. Check the activity log."
+        TaskFailureReasonPresentation.reason(
+            errorPayloads: task.events.filter { $0.type == "error" }.map(\.payload),
+            latestExitCode: latestRun?.exitCode
+        )
     }
 
     // MARK: - Composer
