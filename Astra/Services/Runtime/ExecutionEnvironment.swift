@@ -12,6 +12,11 @@ enum ExecutionEnvironmentKind: String, Codable, CaseIterable, Sendable {
     var isContainerized: Bool { self != .host }
 }
 
+enum ExecutionEnvironmentProviderPlacement: String, Codable, Sendable {
+    case host
+    case container
+}
+
 enum ExecutionEnvironmentMountAccess: String, Codable, Sendable {
     case readWrite = "rw"
     case readOnly = "ro"
@@ -65,6 +70,7 @@ struct WorkspaceExecutionEnvironment: Codable, Equatable, Sendable {
     var composeService: String?
     var containerName: String?
     var runtimeExecutablePath: String?
+    var providerPlacement: ExecutionEnvironmentProviderPlacement?
     var containerWorkingDirectory: String
     var mounts: [ExecutionEnvironmentMount]
     var environmentKeyAllowlist: [String]
@@ -87,6 +93,7 @@ struct WorkspaceExecutionEnvironment: Codable, Equatable, Sendable {
         composeService: String? = nil,
         containerName: String? = nil,
         runtimeExecutablePath: String? = nil,
+        providerPlacement: ExecutionEnvironmentProviderPlacement? = nil,
         containerWorkingDirectory: String = "/workspace",
         mounts: [ExecutionEnvironmentMount] = [],
         environmentKeyAllowlist: [String] = [],
@@ -108,6 +115,7 @@ struct WorkspaceExecutionEnvironment: Codable, Equatable, Sendable {
         self.composeService = Self.cleanString(composeService)
         self.containerName = Self.cleanString(containerName)
         self.runtimeExecutablePath = Self.cleanString(runtimeExecutablePath)
+        self.providerPlacement = providerPlacement
         self.containerWorkingDirectory = Self.normalizedContainerPath(containerWorkingDirectory)
         self.mounts = mounts
         self.environmentKeyAllowlist = Array(Set(environmentKeyAllowlist.map(Self.cleanEnvironmentKey).filter { !$0.isEmpty })).sorted()
@@ -129,6 +137,16 @@ struct WorkspaceExecutionEnvironment: Codable, Equatable, Sendable {
 
     var isHost: Bool { kind == .host }
     var isContainerized: Bool { kind.isContainerized }
+    var effectiveProviderPlacement: ExecutionEnvironmentProviderPlacement {
+        guard isContainerized else { return .host }
+        return providerPlacement ?? .host
+    }
+    var providerRunsInsideContainer: Bool {
+        isContainerized && effectiveProviderPlacement == .container
+    }
+    var workspaceCommandsRunInsideContainer: Bool {
+        isContainerized && effectiveProviderPlacement == .host
+    }
 
     var signatureFingerprint: String {
         [
@@ -143,6 +161,7 @@ struct WorkspaceExecutionEnvironment: Codable, Equatable, Sendable {
             "service=\(composeService ?? "")",
             "container=\(containerName ?? "")",
             "exe=\(runtimeExecutablePath ?? "")",
+            "provider=\(effectiveProviderPlacement.rawValue)",
             "workdir=\(containerWorkingDirectory)",
             "mounts=\(mounts.map { "\($0.role.rawValue):\($0.access.rawValue):\($0.hostPath)=\($0.containerPath)" }.sorted().joined(separator: ","))",
             "env=\(environmentKeyAllowlist.joined(separator: ","))",
@@ -505,12 +524,6 @@ enum DockerExecutionPlanner {
         guard let image = environment.image, !image.isEmpty else {
             return .failure(.missingImage(environment.id))
         }
-        let explicitExecutable = environment.runtimeExecutablePath?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let providerExecutable = URL(fileURLWithPath: base.executablePath).lastPathComponent
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let containerExecutable = explicitExecutable?.isEmpty == false ? explicitExecutable! : providerExecutable
-        guard !containerExecutable.isEmpty else { return .failure(.missingRuntimeExecutable) }
-
         let mounts = mountPlan(base: base, environment: environment, task: task)
         for mount in mounts {
             let canonical = ExecutionSandbox.canonicalize(mount.hostPath) ?? mount.hostPath
@@ -526,6 +539,26 @@ enum DockerExecutionPlanner {
         let containerCurrentDirectory = mapper.containerPath(forHostPath: base.currentDirectory)
             ?? environment.containerWorkingDirectory
         let name = "astra-\(task.id.uuidString.prefix(8).lowercased())-\((runID?.uuidString.prefix(8).lowercased()) ?? "run")"
+        var resolvedEnvironment = environment
+        resolvedEnvironment.mounts = mounts
+
+        guard environment.providerRunsInsideContainer else {
+            return .success(hostProviderWorkspaceContainerPlan(
+                base: base,
+                environment: resolvedEnvironment,
+                image: image,
+                containerName: name,
+                containerCurrentDirectory: containerCurrentDirectory,
+                mounts: mounts,
+                mapper: mapper
+            ))
+        }
+
+        let explicitExecutable = environment.runtimeExecutablePath?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let providerExecutable = URL(fileURLWithPath: base.executablePath).lastPathComponent
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let containerExecutable = explicitExecutable?.isEmpty == false ? explicitExecutable! : providerExecutable
+        guard !containerExecutable.isEmpty else { return .failure(.missingRuntimeExecutable) }
         var dockerArgs = [
             "docker", "run", "--rm", "-i",
             "--name", name,
@@ -553,16 +586,16 @@ enum DockerExecutionPlanner {
         commandFields["execution_environment_kind"] = environment.kind.rawValue
         commandFields["execution_environment_id"] = environment.id
         commandFields["execution_environment_fingerprint"] = environment.signatureFingerprint
+        commandFields["execution_environment_provider_placement"] = environment.effectiveProviderPlacement.rawValue
+        commandFields["workspace_executor"] = "docker"
+        commandFields["workspace_executor_mode"] = "provider_inside_container"
         commandFields["container_image"] = image
         commandFields["container_image_digest"] = environment.imageDigest ?? ""
         commandFields["container_name"] = name
         commandFields["container_workdir"] = containerCurrentDirectory
         commandFields["container_executable"] = containerExecutable
         commandFields["container_mount_count"] = String(mounts.count)
-        commandFields["container_mount_summary"] = mounts
-            .map { "\($0.role.rawValue):\($0.access.rawValue):\($0.hostPath)=\($0.containerPath)" }
-            .sorted()
-            .joined(separator: ",")
+        commandFields["container_mount_summary"] = mountSummary(mounts)
         commandFields["container_network_mode"] = environment.networkMode
         commandFields["container_privileged"] = String(environment.privileged)
         commandFields["container_env_key_count"] = String(allowedEnv.count)
@@ -593,8 +626,56 @@ enum DockerExecutionPlanner {
             commandPlannedFields: commandFields,
             interactiveAsk: base.interactiveAsk,
             pathMapper: mapper,
-            executionEnvironment: environment
+            executionEnvironment: resolvedEnvironment
         ))
+    }
+
+    private static func hostProviderWorkspaceContainerPlan(
+        base: AgentRuntimeProcessLaunchPlan,
+        environment: WorkspaceExecutionEnvironment,
+        image: String,
+        containerName: String,
+        containerCurrentDirectory: String,
+        mounts: [ExecutionEnvironmentMount],
+        mapper: ExecutionEnvironmentPathMapper
+    ) -> AgentRuntimeProcessLaunchPlan {
+        var commandFields = base.commandPlannedFields
+        commandFields["execution_environment_kind"] = environment.kind.rawValue
+        commandFields["execution_environment_id"] = environment.id
+        commandFields["execution_environment_fingerprint"] = environment.signatureFingerprint
+        commandFields["execution_environment_provider_placement"] = environment.effectiveProviderPlacement.rawValue
+        commandFields["workspace_executor"] = "docker"
+        commandFields["workspace_executor_mode"] = "host_provider_container_workspace"
+        commandFields["container_image"] = image
+        commandFields["container_image_digest"] = environment.imageDigest ?? ""
+        commandFields["container_name"] = containerName
+        commandFields["container_workdir"] = containerCurrentDirectory
+        commandFields["container_mount_count"] = String(mounts.count)
+        commandFields["container_mount_summary"] = mountSummary(mounts)
+        commandFields["container_network_mode"] = environment.networkMode
+        commandFields["container_privileged"] = String(environment.privileged)
+        commandFields["container_env_key_count"] = "0"
+        commandFields["container_executable_source"] = "astra_workspace_mcp"
+        commandFields["os_sandbox_claim"] = "true"
+
+        return AgentRuntimeProcessLaunchPlan(
+            runtime: base.runtime,
+            executablePath: base.executablePath,
+            arguments: base.arguments,
+            currentDirectory: base.currentDirectory,
+            environment: base.environment,
+            browserShimDirectory: base.browserShimDirectory,
+            providerVersion: base.providerVersion,
+            parsesJSONLines: base.parsesJSONLines,
+            directoriesToCreate: base.directoriesToCreate,
+            sandboxReadablePaths: base.sandboxReadablePaths,
+            sandboxProtectedWriteDenyPaths: base.sandboxProtectedWriteDenyPaths,
+            providerDetectedFields: base.providerDetectedFields,
+            commandPlannedFields: commandFields,
+            interactiveAsk: base.interactiveAsk,
+            pathMapper: mapper,
+            executionEnvironment: environment
+        )
     }
 
     static func isDockerSocketMount(rawPath: String, canonicalPath: String? = nil) -> Bool {
@@ -670,6 +751,13 @@ enum DockerExecutionPlanner {
         let allowed = Set(environment.environmentKeyAllowlist)
         guard !allowed.isEmpty else { return [:] }
         return baseEnvironment.filter { allowed.contains($0.key) }
+    }
+
+    static func mountSummary(_ mounts: [ExecutionEnvironmentMount]) -> String {
+        mounts
+            .map { "\($0.role.rawValue):\($0.access.rawValue):\($0.hostPath)=\($0.containerPath)" }
+            .sorted()
+            .joined(separator: ",")
     }
 }
 
@@ -842,5 +930,129 @@ enum DockerRuntimeFailureDiagnostics {
         guard value.count > limit else { return value }
         let end = value.index(value.startIndex, offsetBy: limit)
         return String(value[..<end]) + " [truncated]"
+    }
+}
+
+enum DockerWorkspaceMCPProjection {
+    static let serverID = "astra_workspace"
+    static let toolName = "workspace_shell"
+    static let providerToolPermission = "mcp__\(serverID)__\(toolName)"
+
+    static func isEnabled(for environment: WorkspaceExecutionEnvironment) -> Bool {
+        environment.workspaceCommandsRunInsideContainer
+    }
+
+    static func supportsHostProviderWorkspaceExecutor(runtime: AgentRuntimeID) -> Bool {
+        runtime == .claudeCode
+    }
+
+    static func resolvedServer(
+        task: AgentTask,
+        environment: WorkspaceExecutionEnvironment,
+        currentDirectory: String,
+        runID: UUID?
+    ) -> MCPRuntimeProjection.ResolvedServer? {
+        guard isEnabled(for: environment) else { return nil }
+        return MCPRuntimeProjection.ResolvedServer(
+            packageID: "astra-builtin",
+            server: PluginMCPServer(
+                id: serverID,
+                displayName: "ASTRA Workspace Shell",
+                transport: .stdio,
+                command: astraWorkspaceToolPath(),
+                arguments: [],
+                environmentKeys: environmentKeys,
+                allowedTools: [toolName],
+                trustLevel: .high
+            ),
+            permittedEnvironmentKeys: Set(environmentKeys)
+        )
+    }
+
+    static func environmentVariables(
+        task: AgentTask,
+        environment: WorkspaceExecutionEnvironment,
+        currentDirectory: String,
+        runID: UUID?
+    ) -> [String: String] {
+        guard isEnabled(for: environment),
+              let image = environment.image,
+              !image.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return [:]
+        }
+        let mounts = DockerExecutionPlanner.mountPlan(
+            currentDirectory: currentDirectory,
+            environment: environment,
+            task: task
+        )
+        let mapper = ExecutionEnvironmentPathMapper(mounts: mounts)
+        let workdir = mapper.containerPath(forHostPath: currentDirectory) ?? environment.containerWorkingDirectory
+        let containerName = containerName(taskID: task.id, runID: runID)
+        return [
+            "ASTRA_WORKSPACE_DOCKER_EXECUTABLE": "docker",
+            "ASTRA_WORKSPACE_DOCKER_IMAGE": image,
+            "ASTRA_WORKSPACE_DOCKER_CONTAINER": containerName,
+            "ASTRA_WORKSPACE_DOCKER_WORKDIR": workdir,
+            "ASTRA_WORKSPACE_DOCKER_NETWORK": environment.networkMode,
+            "ASTRA_WORKSPACE_DOCKER_MOUNTS": mountsJSON(mounts),
+            "ASTRA_WORKSPACE_TASK_ID": task.id.uuidString,
+            "ASTRA_WORKSPACE_RUN_ID": runID?.uuidString ?? "run"
+        ]
+    }
+
+    static func removingNativeShellTools(_ tools: [String]) -> [String] {
+        tools.filter { !isNativeShellTool($0) }
+    }
+
+    static func containerName(taskID: UUID, runID: UUID?) -> String {
+        "astra-\(taskID.uuidString.prefix(8).lowercased())-\((runID?.uuidString.prefix(8).lowercased()) ?? "run")"
+    }
+
+    private static let environmentKeys = [
+        "ASTRA_WORKSPACE_DOCKER_EXECUTABLE",
+        "ASTRA_WORKSPACE_DOCKER_IMAGE",
+        "ASTRA_WORKSPACE_DOCKER_CONTAINER",
+        "ASTRA_WORKSPACE_DOCKER_WORKDIR",
+        "ASTRA_WORKSPACE_DOCKER_NETWORK",
+        "ASTRA_WORKSPACE_DOCKER_MOUNTS",
+        "ASTRA_WORKSPACE_TASK_ID",
+        "ASTRA_WORKSPACE_RUN_ID"
+    ]
+
+    private struct MountPayload: Codable {
+        var hostPath: String
+        var containerPath: String
+        var access: String
+        var role: String
+    }
+
+    private static func astraWorkspaceToolPath() -> String {
+        (RuntimePathResolver.astraToolsPath as NSString).appendingPathComponent("astra-workspace")
+    }
+
+    private static func mountsJSON(_ mounts: [ExecutionEnvironmentMount]) -> String {
+        let payload = mounts.map {
+            MountPayload(
+                hostPath: $0.hostPath,
+                containerPath: $0.containerPath,
+                access: $0.access.rawValue,
+                role: $0.role.rawValue
+            )
+        }
+        guard let data = try? JSONEncoder().encode(payload),
+              let json = String(data: data, encoding: .utf8) else {
+            return "[]"
+        }
+        return json
+    }
+
+    private static func isNativeShellTool(_ tool: String) -> Bool {
+        let base = tool
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: "(", maxSplits: 1, omittingEmptySubsequences: true)
+            .first
+            .map(String.init)?
+            .lowercased() ?? ""
+        return base == "bash" || base == "shell"
     }
 }

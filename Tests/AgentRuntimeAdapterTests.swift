@@ -1312,6 +1312,81 @@ struct AgentRuntimeAdapterTests {
         #expect(AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI).sharedLaunchStateKey(context: context) == nil)
     }
 
+    @Test("Claude Docker workspace mode routes native shell through ASTRA MCP helper")
+    @MainActor
+    func claudeDockerWorkspaceModeRoutesNativeShellThroughAstraMCPHelper() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-claude-docker-workspace-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Docker Workspace", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Summarize",
+            goal: "Summarize files",
+            workspace: workspace,
+            model: "claude-sonnet-4-6",
+            runtime: .claudeCode
+        )
+        let shellSkill = Skill(name: "Shell", allowedTools: ["Read", "Bash"])
+        shellSkill.workspace = workspace
+        task.skills = [shellSkill]
+        let executionEnvironment = WorkspaceExecutionEnvironment(
+            id: "image:workspace",
+            kind: .dockerImage,
+            displayName: "Workspace Image",
+            image: "astra/workspace:latest"
+        )
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(executionEnvironment)
+        let runID = UUID(uuidString: "5EB2B3FA-CB19-4B0D-8BB2-D0673C49B113")
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .claudeCode)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "summarize",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/claude",
+                providerHomeDirectory: "",
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30,
+                runID: runID
+            ))
+
+        #expect(plan.executablePath == "/bin/claude")
+        #expect(plan.environment["ASTRA_WORKSPACE_DOCKER_IMAGE"] == "astra/workspace:latest")
+        #expect(plan.environment["ASTRA_WORKSPACE_DOCKER_CONTAINER"] == DockerWorkspaceMCPProjection.containerName(taskID: task.id, runID: runID))
+        #expect(plan.environment["ASTRA_WORKSPACE_DOCKER_WORKDIR"] == "/workspace")
+        #expect(plan.commandPlannedFields["docker_workspace_executor"] == "true")
+        #expect(plan.commandPlannedFields["docker_workspace_tool"] == DockerWorkspaceMCPProjection.providerToolPermission)
+        #expect(plan.commandPlannedFields["native_shell_removed_for_workspace_executor"] == "true")
+
+        let visibleToolsIndex = try #require(plan.arguments.firstIndex(of: "--tools"))
+        let visibleTools = Set(plan.arguments[visibleToolsIndex + 1].split(separator: ",").map(String.init))
+        #expect(visibleTools.contains(DockerWorkspaceMCPProjection.providerToolPermission))
+        #expect(!visibleTools.contains("Bash"))
+
+        let allowedTools = Self.argumentValues(after: "--allowedTools", in: plan.arguments)
+        #expect(allowedTools.contains(DockerWorkspaceMCPProjection.providerToolPermission))
+        #expect(allowedTools.contains("Read"))
+        #expect(!allowedTools.contains("Bash"))
+
+        let deniedTools = Self.argumentValues(after: "--disallowedTools", in: plan.arguments)
+        #expect(deniedTools.contains("Bash"))
+
+        let mcpConfigIndex = try #require(plan.arguments.firstIndex(of: "--mcp-config"))
+        let mcpConfigURL = URL(fileURLWithPath: plan.arguments[mcpConfigIndex + 1])
+        let data = try Data(contentsOf: mcpConfigURL)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let servers = try #require(object["mcpServers"] as? [String: Any])
+        let workspaceServer = try #require(servers[DockerWorkspaceMCPProjection.serverID] as? [String: Any])
+        #expect(workspaceServer["command"] as? String == (RuntimePathResolver.astraToolsPath as NSString).appendingPathComponent("astra-workspace"))
+        let env = try #require(workspaceServer["env"] as? [String: String])
+        #expect(env["ASTRA_WORKSPACE_DOCKER_IMAGE"] == "${ASTRA_WORKSPACE_DOCKER_IMAGE}")
+    }
+
     @Test("Adapters own provider stream parsing")
     func adaptersOwnProviderStreamParsing() {
         let claude = AgentRuntimeAdapterRegistry.adapter(for: .claudeCode)

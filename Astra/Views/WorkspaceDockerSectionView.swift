@@ -193,7 +193,7 @@ struct WorkspaceDockerSectionView: View {
             rowIcon("shippingbox", color: .secondary)
             VStack(alignment: .leading, spacing: CapabilityRailLayout.titleSubtitleSpacing) {
                 rowTitle(title)
-                Text("Only loaded Docker images can run tasks right now.")
+                Text("Only loaded Docker images can run workspace commands right now.")
                     .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)

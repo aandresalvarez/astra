@@ -106,6 +106,22 @@ final class AgentRuntimeProcessRunner {
                 )
         }
         let environment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
+        if environment.workspaceCommandsRunInsideContainer,
+           !DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: plan.runtime) {
+            let message = "\(plan.runtime.displayName) cannot yet route workspace shell commands through ASTRA's Docker executor. Switch this task to Claude Code or choose Host execution, then retry."
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.task.id, fields: [
+                "runtime": plan.runtime.rawValue,
+                "reason": "docker_workspace_executor_unsupported_runtime",
+                "execution_environment": environment.kind.rawValue,
+                "provider_placement": environment.effectiveProviderPlacement.rawValue
+            ], level: .error)
+            return .blocked(AgentProcessResult(
+                exitCode: -1,
+                error: message,
+                runtimeStopReason: "docker_workspace_executor_unsupported_runtime",
+                runtimeStopMessage: message
+            ))
+        }
         switch DockerExecutionPlanner.plan(
             base: plan,
             environment: environment,
@@ -143,11 +159,12 @@ final class AgentRuntimeProcessRunner {
         // for override-autonomous runs — matching how the preflight manifest
         // resolves the sandbox tier.
         let settings = sandboxSettingsProvider(effectivePermissionPolicy)
-        if plan.executionEnvironment.isContainerized {
+        if plan.executionEnvironment.providerRunsInsideContainer {
             AppLogger.audit(.sandboxSkipped, category: "Worker", taskID: context.task.id, fields: [
                 "runtime": plan.runtime.rawValue,
                 "reason": "container_environment_uses_docker_policy",
-                "execution_environment": plan.executionEnvironment.kind.rawValue
+                "execution_environment": plan.executionEnvironment.kind.rawValue,
+                "provider_placement": plan.executionEnvironment.effectiveProviderPlacement.rawValue
             ], level: .debug)
             return .plan(plan)
         }

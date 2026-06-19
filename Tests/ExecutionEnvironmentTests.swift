@@ -56,6 +56,58 @@ struct ExecutionEnvironmentTests {
         #expect(images.map(\.name) == ["astra-api:dev", "astra-demo:latest"])
     }
 
+    @Test("Docker launch planning keeps provider on host by default and routes workspace commands through Docker")
+    func dockerPlannerKeepsProviderOnHostByDefault() throws {
+        let root = try makeTempDir("docker-plan-host-provider")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let workspace = Workspace(name: "Docker", primaryPath: root)
+        let task = AgentTask(title: "Run", goal: "Run in container", workspace: workspace)
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test Image",
+            image: "astra/test:latest"
+        )
+        let base = makeBasePlan(currentDirectory: root)
+
+        let plan = try DockerExecutionPlanner.plan(
+            base: base,
+            environment: environment,
+            task: task,
+            runID: UUID()
+        ).get()
+
+        #expect(plan.executablePath == "/host/claude")
+        #expect(plan.arguments == ["--print"])
+        #expect(plan.executionEnvironment.workspaceCommandsRunInsideContainer)
+        #expect(plan.commandPlannedFields["workspace_executor_mode"] == "host_provider_container_workspace")
+        #expect(plan.commandPlannedFields["os_sandbox_claim"] == "true")
+        #expect(plan.commandPlannedFields["container_image"] == "astra/test:latest")
+        #expect(plan.pathMapper?.containerPath(forHostPath: root) == "/workspace")
+    }
+
+    @MainActor
+    @Test("Docker prompt section tells the provider to use the ASTRA workspace shell MCP tool")
+    func dockerPromptSectionUsesWorkspaceShellToolForHostProviderMode() throws {
+        let root = try makeTempDir("docker-prompt")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let workspace = Workspace(name: "Docker", primaryPath: root)
+        let task = AgentTask(title: "Run", goal: "Run in container", workspace: workspace)
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test Image",
+            image: "astra/test:latest"
+        ))
+
+        let section = try #require(AgentPromptExecutionEnvironmentSection.section(for: task, codeDir: root))
+
+        #expect(section.text.contains("Provider placement: host macOS"))
+        #expect(section.text.contains("Workspace command executor: Docker image astra/test:latest"))
+        #expect(section.text.contains("mcp__astra_workspace__workspace_shell"))
+        #expect(section.text.contains("Do not use native host Bash"))
+    }
+
     @Test("Docker launch planning builds a typed docker run command with minimal environment")
     func dockerPlannerBuildsRunCommand() throws {
         let root = try makeTempDir("docker-plan")
@@ -68,6 +120,7 @@ struct ExecutionEnvironmentTests {
             displayName: "Test Image",
             image: "astra/test:latest",
             runtimeExecutablePath: "/usr/local/bin/claude",
+            providerPlacement: .container,
             environmentKeyAllowlist: ["FOO"]
         )
         task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(environment)
@@ -94,6 +147,7 @@ struct ExecutionEnvironmentTests {
         #expect(plan.environment["SECRET"] == nil)
         #expect(plan.pathMapper?.hostPath(forContainerPath: "/workspace/file.txt") == (root as NSString).appendingPathComponent("file.txt"))
         #expect(plan.commandPlannedFields["os_sandbox_claim"] == "false")
+        #expect(plan.commandPlannedFields["workspace_executor_mode"] == "provider_inside_container")
         #expect(plan.commandPlannedFields["container_executable_source"] == "environment")
         #expect(plan.commandPlannedFields["container_image"] == "astra/test:latest")
         #expect(plan.commandPlannedFields["container_workdir"] == "/workspace")
@@ -111,7 +165,8 @@ struct ExecutionEnvironmentTests {
             id: "image:test",
             kind: .dockerImage,
             displayName: "Test Image",
-            image: "astra/test:latest"
+            image: "astra/test:latest",
+            providerPlacement: .container
         )
         let base = makeBasePlan(currentDirectory: root)
 
@@ -137,7 +192,8 @@ struct ExecutionEnvironmentTests {
             id: "image:astra-starr-data-lake:latest",
             kind: .dockerImage,
             displayName: "starr-data-lake Image",
-            image: "astra-starr-data-lake:latest"
+            image: "astra-starr-data-lake:latest",
+            providerPlacement: .container
         )
         let plan = try DockerExecutionPlanner.plan(
             base: makeBasePlan(currentDirectory: root),
@@ -380,8 +436,8 @@ struct ExecutionEnvironmentTests {
         let selected = ExecutionEnvironmentStore.decode(workspace.activeExecutionEnvironmentJSON)
         #expect(selected.kind == .dockerImage)
         #expect(selected.image == "\(repository):latest")
-        #expect(viewModel.environmentPickerSubtitle == "\(URL(fileURLWithPath: root).lastPathComponent) Image - \(repository):latest")
-        #expect(viewModel.environmentPickerHelp.contains("docker run using \(repository):latest"))
+        #expect(viewModel.environmentPickerSubtitle == "\(URL(fileURLWithPath: root).lastPathComponent) Image - commands in \(repository):latest")
+        #expect(viewModel.environmentPickerHelp.contains("route project shell commands through Docker image \(repository):latest"))
         #expect(viewModel.environmentOptions.map(\.isSelected) == [false, true])
         #expect(AgentTask(title: "Task", goal: "Run", workspace: workspace).executionEnvironmentSnapshotJSON == workspace.activeExecutionEnvironmentJSON)
     }
