@@ -977,10 +977,22 @@ enum AgentPolicyManifestService {
         // at launch time.
         let effectiveSandboxPolicy = manifestExecutionPolicy.permissionPolicyOverride ?? permissionPolicy
         let sandboxSettings = ExecutionSandboxSettings.current(permissionPolicy: effectiveSandboxPolicy)
-        if sandboxSettings.shouldWrap(runtime: runtime),
+        let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: task)
+        if executionEnvironment.isHost,
+           sandboxSettings.shouldWrap(runtime: runtime),
            ExecutionSandbox.willLikelyApply(workspacePath: workspacePath, settings: sandboxSettings),
            !render.enforcementTiers.contains(.osSandboxed) {
             render.enforcementTiers.append(.osSandboxed)
+        }
+        if executionEnvironment.isContainerized {
+            render.diagnostics.append(PolicyDiagnostic(
+                id: "container.execution-environment",
+                severity: .info,
+                title: "Container execution environment",
+                message: "This run uses ASTRA's Docker execution environment policy; host Seatbelt sandboxing is not reported for the container workload.",
+                affectedCapability: "execution_environment",
+                remediation: "Review the selected image, mounts, network mode, and allowed environment keys before running credentialed work."
+            ))
         }
         let approvals = approvalsGranted(executionPolicy: manifestExecutionPolicy, render: render)
         let policyScope = if executionPolicy.allowedToolsOverride != nil || !executionGrants.isEmpty {

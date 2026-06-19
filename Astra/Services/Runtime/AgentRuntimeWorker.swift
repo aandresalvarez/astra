@@ -597,6 +597,14 @@ final class AgentRuntimeWorker {
             shouldCleanupIsolation = false
         }
 
+        let executionEnvironment = DockerExecutionPlanner.snapshotForRun(
+            task: task,
+            currentDirectory: executionPath
+        )
+        let executionEnvironmentJSON = ExecutionEnvironmentStore.encode(executionEnvironment)
+        task.executionEnvironmentSnapshotJSON = executionEnvironmentJSON
+        run.executionEnvironmentSnapshotJSON = executionEnvironmentJSON
+
         let prompt = promptOverride ?? buildPrompt(for: task)
         logContextPromptDiagnostics(for: task, prompt: prompt, phase: auditPhase)
         let budgetEnforcementMode = currentBudgetEnforcementMode
@@ -1410,8 +1418,10 @@ final class AgentRuntimeWorker {
         nextTask.status = .queued
         nextTask.chainedFromID = task.id
         nextTask.runtimeID = task.runtimeID
-        // A chained follow-up continues in the same checkout as its parent.
+        // A chained follow-up continues in the same checkout and execution
+        // environment as its parent.
         nextTask.executionRootPath = task.executionRootPath
+        nextTask.executionEnvironmentSnapshotJSON = task.executionEnvironmentSnapshotJSON
         if !output.isEmpty {
             nextTask.inputs = ["Previous task output (\(task.title)):\n\(String(output.prefix(5000)))"]
         }
@@ -1636,6 +1646,7 @@ final class AgentRuntimeWorker {
         let mcpServerIDs: [String]
         let browserAdapters: [String]
         let promptSchemaVersion: String
+        let executionEnvironmentFingerprint: String?
 
         var signatureValue: String {
             [
@@ -1663,7 +1674,8 @@ final class AgentRuntimeWorker {
                 "credentials=\(credentialLabels.joined(separator: ","))",
                 "mcp=\(mcpServerIDs.joined(separator: ","))",
                 "browserAdapters=\(browserAdapters.joined(separator: ","))",
-                "prompt=\(promptSchemaVersion)"
+                "prompt=\(promptSchemaVersion)",
+                "environment=\(executionEnvironmentFingerprint ?? WorkspaceExecutionEnvironment.host.signatureFingerprint)"
             ].joined(separator: "\u{1f}")
         }
     }
@@ -1812,7 +1824,8 @@ final class AgentRuntimeWorker {
             credentialLabels: canonicalStrings(manifest.credentialLabels),
             mcpServerIDs: canonicalStrings(manifest.mcpServers.map { "\($0.packageID):\($0.id)" }),
             browserAdapters: canonicalStrings(scope.enabledBrowserAdapters),
-            promptSchemaVersion: "context_capsule_v2"
+            promptSchemaVersion: "context_capsule_v2",
+            executionEnvironmentFingerprint: DockerExecutionPlanner.resolveEnvironment(for: task).signatureFingerprint
         )
     }
 

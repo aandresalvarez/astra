@@ -114,6 +114,7 @@ struct AgentRuntimePolicyGuard: Sendable {
     private let manifest: RunPermissionManifest
     private let allowedPathRoots: [String]
     private let taskOutputPathRoots: [String]
+    private let pathMapper: ExecutionEnvironmentPathMapper?
 
     var providerID: AgentRuntimeID {
         manifest.providerID
@@ -123,8 +124,9 @@ struct AgentRuntimePolicyGuard: Sendable {
         manifest.providerRender.usesBroadProviderPermissions
     }
 
-    init(manifest: RunPermissionManifest) {
+    init(manifest: RunPermissionManifest, pathMapper: ExecutionEnvironmentPathMapper? = nil) {
         self.manifest = manifest
+        self.pathMapper = pathMapper
         let roots = [manifest.workspacePath] + manifest.additionalPaths
         let baseRoots = roots
             .map(Self.standardizedAbsolutePath)
@@ -595,6 +597,7 @@ struct AgentRuntimePolicyGuard: Sendable {
     }
 
     private func isPathInScope(_ rawPath: String) -> Bool {
+        let rawPath = translatedPath(rawPath)
         let candidate: String
         if rawPath.hasPrefix("/") {
             candidate = Self.standardizedAbsolutePath(rawPath)
@@ -620,6 +623,7 @@ struct AgentRuntimePolicyGuard: Sendable {
     }
 
     private func taskOutputRelativePath(_ rawPath: String) -> String? {
+        let rawPath = translatedPath(rawPath)
         let candidate: String
         if rawPath.hasPrefix("/") {
             candidate = Self.standardizedAbsolutePath(rawPath)
@@ -637,6 +641,14 @@ struct AgentRuntimePolicyGuard: Sendable {
             }
         }
         return nil
+    }
+
+    private func translatedPath(_ rawPath: String) -> String {
+        guard rawPath.hasPrefix("/"),
+              let hostPath = pathMapper?.hostPath(forContainerPath: rawPath) else {
+            return rawPath
+        }
+        return hostPath
     }
 
     private func requiresApproval(toolName: String, command: String?) -> Bool {

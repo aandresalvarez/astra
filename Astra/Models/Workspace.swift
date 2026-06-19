@@ -23,6 +23,9 @@ final class Workspace: Identifiable {
     /// a git worktree. Existing threads are never moved by this value: they keep
     /// their own `executionRootPath` snapshot.
     var activeWorkingPath: String?
+    /// JSON-encoded default execution environment for new runs. Nil means host.
+    /// Existing threads keep their own task/run snapshot once execution starts.
+    var activeExecutionEnvironmentJSON: String?
     var createdAt: Date
     var updatedAt: Date
 
@@ -60,6 +63,7 @@ final class Workspace: Identifiable {
         self.lastUsedSkillNames = []
         self.isStarred = false
         self.activeWorkingPath = nil
+        self.activeExecutionEnvironmentJSON = nil
         self.createdAt = Date()
         self.updatedAt = Date()
     }

@@ -1,0 +1,449 @@
+import Foundation
+import SwiftUI
+
+struct DockerEnvironmentOption: Identifiable, Equatable, Sendable {
+    var id: String
+    var title: String
+    var subtitle: String
+    var iconSystemName: String
+    var help: String
+    var isSelected: Bool
+    var isEnabled: Bool
+    var environment: WorkspaceExecutionEnvironment
+}
+
+@MainActor
+final class WorkspaceDockerViewModel: ObservableObject {
+    @Published var candidates: [DockerWorkspaceCandidate] = []
+    @Published var selectedEnvironment: WorkspaceExecutionEnvironment = .host
+    @Published var isRefreshing = false
+    @Published var isBuildingImage = false
+    @Published var imageInventoryIssue: String?
+    @Published var errorMessage: String?
+    @Published var statusMessage: String?
+
+    private var workspace: Workspace?
+    private var selectedTask: AgentTask?
+    private let imageInventory: any DockerImageInventoryListing
+    private let imageBuilder: any DockerImageBuilding
+
+    init(
+        imageInventory: any DockerImageInventoryListing = DockerImageInventoryService(),
+        imageBuilder: any DockerImageBuilding = DockerImageBuildService()
+    ) {
+        self.imageInventory = imageInventory
+        self.imageBuilder = imageBuilder
+    }
+
+    func setup(for workspace: Workspace, selectedTask: AgentTask? = nil) {
+        self.workspace = workspace
+        self.selectedTask = selectedTask
+        syncSelectedEnvironment()
+        Task { await refresh() }
+    }
+
+    #if DEBUG
+    func setWorkspaceForTesting(_ workspace: Workspace, selectedTask: AgentTask? = nil) {
+        self.workspace = workspace
+        self.selectedTask = selectedTask
+        syncSelectedEnvironment()
+    }
+    #endif
+
+    func refresh() async {
+        guard let workspace else { return }
+        isRefreshing = true
+        statusMessage = nil
+        defer { isRefreshing = false }
+
+        let discovered = DockerWorkspaceDiscoveryService.candidates(
+            primaryPath: workspace.primaryPath,
+            additionalPaths: workspace.additionalPaths
+        )
+        let loadedImages = await imageInventory.listLoadedImages()
+        var next = discovered
+        switch loadedImages {
+        case .success(let images):
+            imageInventoryIssue = nil
+            next.append(contentsOf: imageCandidates(for: workspace, images: images))
+        case .failure(let error):
+            imageInventoryIssue = error.localizedDescription
+        }
+
+        candidates = Self.deduplicated(next)
+        syncSelectedEnvironment()
+    }
+
+    var shouldShowSection: Bool {
+        selectedEnvironment.isContainerized || !candidates.isEmpty
+    }
+
+    var runnableCandidates: [DockerWorkspaceCandidate] {
+        candidates.filter(\.isRunnable)
+    }
+
+    var dockerfileCandidate: DockerWorkspaceCandidate? {
+        candidates.first { $0.environment.kind == .dockerfile }
+    }
+
+    var environmentOptions: [DockerEnvironmentOption] {
+        var options = [
+            environmentOption(for: .host, isEnabled: canChangeActiveEnvironment)
+        ]
+        options.append(contentsOf: runnableCandidates.map {
+            environmentOption(for: $0.environment, isEnabled: canChangeActiveEnvironment)
+        })
+
+        if selectedEnvironment.isContainerized,
+           !options.contains(where: { $0.environment.id == selectedEnvironment.id }) {
+            options.insert(environmentOption(
+                for: selectedEnvironment,
+                isEnabled: false,
+                subtitleOverride: "\(selectedSubtitle) unavailable in Docker inventory"
+            ), at: min(1, options.count))
+        }
+        return options
+    }
+
+    var canChangeActiveEnvironment: Bool {
+        guard let task = selectedTask else { return true }
+        return task.status == .draft
+    }
+
+    var activeScopeLabel: String {
+        guard let task = selectedTask else { return "Workspace default" }
+        return task.status == .draft ? "Draft task" : "Pinned task"
+    }
+
+    var selectedTitle: String {
+        selectedEnvironment.isHost ? "Host" : selectedEnvironment.displayName
+    }
+
+    var selectedSubtitle: String {
+        if selectedEnvironment.isHost {
+            return "Runs directly on macOS"
+        }
+        if let image = selectedEnvironment.image {
+            return "Image \(image)"
+        }
+        return selectedEnvironment.kind.rawValue
+    }
+
+    var environmentPickerTitle: String {
+        guard let task = selectedTask else { return "Run new tasks in" }
+        return task.status == .draft ? "Run this draft in" : "Pinned to"
+    }
+
+    var environmentPickerSubtitle: String {
+        if selectedEnvironment.isHost {
+            return "Host - providers run directly on macOS"
+        }
+        if let image = selectedEnvironment.image {
+            return "\(selectedEnvironment.displayName) - \(image)"
+        }
+        return "\(selectedEnvironment.displayName) - \(selectedEnvironment.kind.rawValue)"
+    }
+
+    var environmentPickerHelp: String {
+        if !canChangeActiveEnvironment {
+            return "Pinned task. This task keeps \(selectedTitle) because it already has execution history. Start a new task or fork this one to use another environment."
+        }
+
+        let scope = selectedTask == nil
+            ? "Changing this sets the workspace default for new tasks. Existing tasks and runs keep their pinned environment."
+            : "Changing this sets only this draft task. The workspace default is unchanged."
+        let effect = selectedEnvironmentEffect(for: selectedEnvironment)
+        return "\(scope) \(effect)"
+    }
+
+    var dockerIssueTitle: String? {
+        imageInventoryIssue == nil ? nil : "Docker is not connected"
+    }
+
+    var dockerIssueSubtitle: String? {
+        imageInventoryIssue == nil ? nil : "Start Docker Desktop, then refresh."
+    }
+
+    var buildCommand: String? {
+        guard let request = buildRequest else { return nil }
+        return "docker build -t \(request.image) -f \(shellQuote(request.dockerfilePath)) \(shellQuote(request.sourcePath))"
+    }
+
+    var buildRequest: DockerImageBuildRequest? {
+        guard let candidate = dockerfileCandidate,
+              let dockerfilePath = candidate.environment.dockerfilePath,
+              let sourcePath = candidate.environment.sourcePath,
+              let image = candidate.environment.image else {
+            return nil
+        }
+        return DockerImageBuildRequest(
+            image: imageWithDefaultTag(image),
+            dockerfilePath: dockerfilePath,
+            sourcePath: sourcePath
+        )
+    }
+
+    var setupActionTitle: String {
+        if isBuildingImage { return "Building workspace image" }
+        return runnableCandidates.isEmpty ? "Build workspace image" : "Build another image"
+    }
+
+    var setupActionSubtitle: String {
+        guard let request = buildRequest else {
+            return "Load or build a Docker image that matches this workspace."
+        }
+        if isBuildingImage {
+            return "Docker is building \(request.image)."
+        }
+        return "Build \(request.image) from this workspace Dockerfile."
+    }
+
+    var setupActionHelp: String {
+        buildCommand ?? setupActionSubtitle
+    }
+
+    var detectedSummary: String? {
+        let names = candidates.filter { candidate in
+            !candidate.isRunnable && candidate.environment.kind != .dockerfile
+        }.map { candidate in
+            switch candidate.environment.kind {
+            case .dockerfile: "Dockerfile"
+            case .dockerCompose: "Compose"
+            case .devcontainer: "Dev Container"
+            case .dockerImage: "Image"
+            case .dockerContainer: "Container"
+            case .host: "Host"
+            }
+        }
+        guard !names.isEmpty else { return nil }
+        return "Detected \(names.joined(separator: ", "))"
+    }
+
+    func isSelected(_ candidate: DockerWorkspaceCandidate) -> Bool {
+        selectedEnvironment.id == candidate.environment.id
+    }
+
+    func selectHost() {
+        persist(.host)
+    }
+
+    func selectCandidate(_ candidate: DockerWorkspaceCandidate) {
+        guard candidate.isRunnable else {
+            errorMessage = candidate.issue ?? "This container source is discovered but not runnable yet."
+            return
+        }
+        persist(candidate.environment)
+    }
+
+    func selectEnvironmentOption(_ optionID: String) {
+        guard let option = environmentOptions.first(where: { $0.id == optionID }) else { return }
+        guard option.isEnabled else {
+            errorMessage = "This task already has execution history, so its execution environment is pinned. Fork or start a new task to use another container."
+            return
+        }
+        persist(option.environment)
+    }
+
+    func buildWorkspaceImage() async {
+        guard let request = buildRequest, !isBuildingImage else { return }
+        isBuildingImage = true
+        errorMessage = nil
+        statusMessage = "Building \(request.image)"
+        AppLogger.audit(.executionEnvironmentChanged, category: "ExecutionEnvironment", fields: [
+            "result": "build_started",
+            "image": request.image,
+            "dockerfile": request.dockerfilePath
+        ], level: .info)
+        defer { isBuildingImage = false }
+
+        switch await imageBuilder.buildImage(request) {
+        case .success(let summary):
+            AppLogger.audit(.executionEnvironmentChanged, category: "ExecutionEnvironment", fields: [
+                "result": "build_succeeded",
+                "image": summary.image
+            ], level: .info)
+            await refresh()
+            if let candidate = candidates.first(where: { $0.environment.image == summary.image }),
+               canChangeActiveEnvironment {
+                selectCandidate(candidate)
+                statusMessage = "Image built and selected"
+            } else if canChangeActiveEnvironment {
+                statusMessage = "Image built. Refresh containers to select it."
+            } else {
+                statusMessage = "Image built. Start a new task to use it."
+            }
+        case .failure(let error):
+            let detail = error.localizedDescription
+            errorMessage = detail
+            statusMessage = nil
+            if case .unavailable(let rawDetail) = error {
+                imageInventoryIssue = rawDetail
+            }
+            AppLogger.audit(.executionEnvironmentChanged, category: "ExecutionEnvironment", fields: [
+                "result": "build_failed",
+                "image": request.image,
+                "detail": detail
+            ], level: .error)
+        }
+    }
+
+    func subtitle(for candidate: DockerWorkspaceCandidate) -> String {
+        switch candidate.environment.kind {
+        case .dockerImage:
+            return candidate.environment.image.map { "Loaded image \($0)" } ?? "Loaded Docker image"
+        case .dockerfile:
+            return candidate.issue ?? "Dockerfile discovered"
+        case .dockerCompose:
+            return candidate.issue ?? "Compose file discovered"
+        case .devcontainer:
+            return candidate.issue ?? "Dev container discovered"
+        case .dockerContainer:
+            return candidate.environment.containerName.map { "Container \($0)" } ?? "Docker container"
+        case .host:
+            return "Runs directly on macOS"
+        }
+    }
+
+    private func persist(_ environment: WorkspaceExecutionEnvironment) {
+        guard canChangeActiveEnvironment else {
+            errorMessage = "This task already has execution history, so its execution environment is pinned. Fork or start a new task to use another container."
+            AppLogger.audit(.executionEnvironmentChanged, category: "ExecutionEnvironment", fields: [
+                "result": "blocked",
+                "environment": environment.kind.rawValue,
+                "scope": activeScopeLabel
+            ], level: .warning)
+            return
+        }
+
+        let json = ExecutionEnvironmentStore.encode(environment)
+        if let selectedTask {
+            guard selectedTask.executionEnvironmentSnapshotJSON != json else {
+                selectedEnvironment = environment
+                return
+            }
+            selectedTask.executionEnvironmentSnapshotJSON = json
+            selectedTask.updatedAt = Date()
+        } else if let workspace {
+            guard workspace.activeExecutionEnvironmentJSON != json else {
+                selectedEnvironment = environment
+                return
+            }
+            workspace.activeExecutionEnvironmentJSON = json
+            workspace.updatedAt = Date()
+        }
+        selectedEnvironment = environment
+        errorMessage = nil
+        AppLogger.audit(.executionEnvironmentChanged, category: "ExecutionEnvironment", fields: [
+            "result": "changed",
+            "environment": environment.kind.rawValue,
+            "environment_id": environment.id,
+            "scope": activeScopeLabel
+        ])
+    }
+
+    private func syncSelectedEnvironment() {
+        if let selectedTask,
+           let snapshot = selectedTask.executionEnvironmentSnapshotJSON,
+           !snapshot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            selectedEnvironment = ExecutionEnvironmentStore.decode(snapshot)
+            return
+        }
+        if let workspace {
+            selectedEnvironment = ExecutionEnvironmentStore.decode(workspace.activeExecutionEnvironmentJSON)
+        } else {
+            selectedEnvironment = .host
+        }
+    }
+
+    private func imageCandidates(
+        for workspace: Workspace,
+        images: [DockerImageReference]
+    ) -> [DockerWorkspaceCandidate] {
+        WorkspacePathPresentation.descriptors(
+            primaryPath: workspace.primaryPath,
+            additionalPaths: workspace.additionalPaths
+        )
+        .flatMap { descriptor -> [DockerWorkspaceCandidate] in
+            let expectedRepository = DockerWorkspaceDiscoveryService.generatedImageName(for: descriptor.path)
+            return images
+                .filter { $0.repository == expectedRepository }
+                .map { image in
+                    DockerWorkspaceCandidate(
+                        environment: WorkspaceExecutionEnvironment(
+                            id: "image:\(image.name)",
+                            kind: .dockerImage,
+                            displayName: "\(descriptor.title) Image",
+                            sourcePath: descriptor.path,
+                            image: image.name,
+                            imageDigest: image.imageID
+                        ),
+                        isRunnable: true,
+                        issue: nil
+                    )
+                }
+        }
+    }
+
+    private static func deduplicated(_ candidates: [DockerWorkspaceCandidate]) -> [DockerWorkspaceCandidate] {
+        var seen: Set<String> = []
+        return candidates.filter { candidate in
+            guard !seen.contains(candidate.id) else { return false }
+            seen.insert(candidate.id)
+            return true
+        }
+    }
+
+    private func imageWithDefaultTag(_ image: String) -> String {
+        let name = image.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lastComponent = name.split(separator: "/").last.map(String.init) ?? name
+        return lastComponent.contains(":") ? name : "\(name):latest"
+    }
+
+    private func shellQuote(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+
+    private func environmentOption(
+        for environment: WorkspaceExecutionEnvironment,
+        isEnabled: Bool,
+        subtitleOverride: String? = nil
+    ) -> DockerEnvironmentOption {
+        DockerEnvironmentOption(
+            id: environment.id,
+            title: environment.isHost ? "Host" : environment.displayName,
+            subtitle: subtitleOverride ?? environmentOptionSubtitle(for: environment),
+            iconSystemName: environment.isHost ? "desktopcomputer" : "shippingbox.fill",
+            help: environmentOptionHelp(for: environment),
+            isSelected: selectedEnvironment.id == environment.id,
+            isEnabled: isEnabled,
+            environment: environment
+        )
+    }
+
+    private func environmentOptionSubtitle(for environment: WorkspaceExecutionEnvironment) -> String {
+        if environment.isHost {
+            return "Run providers directly on macOS"
+        }
+        if let image = environment.image {
+            return "Run providers through image \(image)"
+        }
+        return "Run providers through \(environment.kind.rawValue)"
+    }
+
+    private func environmentOptionHelp(for environment: WorkspaceExecutionEnvironment) -> String {
+        let scope = selectedTask == nil
+            ? "Select this to set the workspace default for new tasks."
+            : "Select this to set the execution environment for this draft task."
+        return "\(scope) \(selectedEnvironmentEffect(for: environment))"
+    }
+
+    private func selectedEnvironmentEffect(for environment: WorkspaceExecutionEnvironment) -> String {
+        if environment.isHost {
+            return "ASTRA will launch provider CLIs directly on macOS."
+        }
+        if let image = environment.image {
+            return "ASTRA will launch provider CLIs with docker run using \(image), mount the workspace into the container, and record that environment on the task."
+        }
+        return "ASTRA will use the selected container environment when launching provider CLIs."
+    }
+}
