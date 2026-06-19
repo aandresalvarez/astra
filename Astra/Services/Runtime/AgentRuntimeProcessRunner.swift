@@ -32,7 +32,14 @@ final class AgentRuntimeProcessRunner {
         ) else {
             return .empty
         }
-        return GitCredentialContextResolver.sandboxContext(repositoryPath: context.workspacePath)
+        return GitCredentialContextResolver.sandboxContext(
+            repositoryPath: context.workspacePath,
+            intentText: GitOperationIntentDetector.networkGitIntentText(
+                prompt: context.prompt,
+                task: context.task,
+                contextText: context.contextText
+            )
+        )
     }) {
         self.sandboxSettingsProvider = sandboxSettingsProvider
         self.gitCredentialContextProvider = gitCredentialContextProvider

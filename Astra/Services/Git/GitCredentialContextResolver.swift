@@ -24,18 +24,11 @@ struct GitCredentialSandboxContext: Equatable, Sendable {
 
 enum GitOperationIntentDetector {
     static func detectsNetworkGitOperation(prompt: String, task: AgentTask, contextText: String = "") -> Bool {
-        let haystack = [
-            prompt,
-            task.title,
-            task.goal,
-            contextText
-        ]
-            .joined(separator: "\n")
-            .lowercased()
+        let haystack = networkGitIntentText(prompt: prompt, task: task, contextText: contextText)
 
         let exactCommands = [
-            "git pull", "git fetch", "git push", "git ls-remote",
-            "git remote update", "gh pr", "gh repo", "gh auth"
+            "git pull", "git fetch", "git push", "git clone", "git ls-remote",
+            "git remote update", "git submodule update", "gh pr", "gh repo", "gh auth"
         ]
         if exactCommands.contains(where: { haystack.contains($0) }) {
             return true
@@ -50,10 +43,26 @@ enum GitOperationIntentDetector {
             "sync with origin",
             "sync from github",
             "push to github",
+            "clone from github",
+            "clone from git hub",
+            "clone the repo",
+            "clone this repo",
+            "clone repository",
             "create pull request",
             "open pull request"
         ]
         return naturalLanguageSignals.contains { haystack.contains($0) }
+    }
+
+    static func networkGitIntentText(prompt: String, task: AgentTask, contextText: String = "") -> String {
+        [
+            prompt,
+            task.title,
+            task.goal,
+            contextText
+        ]
+            .joined(separator: "\n")
+            .lowercased()
     }
 }
 
@@ -78,21 +87,42 @@ enum GitCredentialContextResolver {
         var credentialHelpers: [String] = []
     }
 
+    private struct GitConfigEvaluationContext {
+        let repositoryRoot: String
+        let gitDirectory: String?
+        let currentBranch: String?
+    }
+
     static func sandboxContext(
         repositoryPath: String,
+        intentText: String = "",
         homeDirectory: String = FileManager.default.homeDirectoryForCurrentUser.path,
         fileManager: FileManager = .default
     ) -> GitCredentialSandboxContext {
         let trimmedRepo = repositoryPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedRepo.isEmpty,
-              let repositoryRoot = repositoryRoot(startingAt: trimmedRepo, fileManager: fileManager),
-              let gitLayout = gitLayout(repositoryRoot: repositoryRoot, fileManager: fileManager) else {
+        guard !trimmedRepo.isEmpty else {
             return .empty
+        }
+        let intentRemotes = remotesFromNetworkGitIntent(intentText)
+        guard let repositoryRoot = repositoryRoot(startingAt: trimmedRepo, fileManager: fileManager),
+              let gitLayout = gitLayout(repositoryRoot: repositoryRoot, fileManager: fileManager) else {
+            guard !intentRemotes.isEmpty else { return .empty }
+            return credentialContextWithoutRepository(
+                workspacePath: trimmedRepo,
+                intentRemotes: intentRemotes,
+                homeDirectory: homeDirectory,
+                fileManager: fileManager
+            )
         }
 
         var diagnostics: [String] = []
         var configs = defaultGitConfigPaths(homeDirectory: homeDirectory, fileManager: fileManager)
         configs.append(gitLayout.configPath)
+        let evaluationContext = GitConfigEvaluationContext(
+            repositoryRoot: repositoryRoot,
+            gitDirectory: gitLayout.gitDirectory,
+            currentBranch: currentBranch(gitDirectory: gitLayout.gitDirectory, fileManager: fileManager)
+        )
 
         var parsedConfigs: [GitConfigData] = []
         var processedConfigs: Set<String> = []
@@ -100,7 +130,12 @@ enum GitCredentialContextResolver {
         while let config = pendingConfigs.popLast() {
             guard processedConfigs.insert(config).inserted,
                   fileManager.fileExists(atPath: config),
-                  let data = parseGitConfig(at: config, homeDirectory: homeDirectory, fileManager: fileManager) else {
+                  let data = parseGitConfig(
+                    at: config,
+                    homeDirectory: homeDirectory,
+                    evaluationContext: evaluationContext,
+                    fileManager: fileManager
+                  ) else {
                 continue
             }
             parsedConfigs.append(data)
@@ -109,7 +144,7 @@ enum GitCredentialContextResolver {
             })
         }
 
-        let remotes = uniqueRemotes(parsedConfigs.flatMap(\.remotes))
+        let remotes = uniqueRemotes(parsedConfigs.flatMap(\.remotes) + intentRemotes)
         guard !remotes.isEmpty else {
             return GitCredentialSandboxContext(
                 readablePaths: externalReadablePaths(
@@ -167,6 +202,73 @@ enum GitCredentialContextResolver {
         let configPath: String
     }
 
+    private static func credentialContextWithoutRepository(
+        workspacePath: String,
+        intentRemotes: [Remote],
+        homeDirectory: String,
+        fileManager: FileManager
+    ) -> GitCredentialSandboxContext {
+        let workspaceRoot = canonicalPath(workspacePath, fileManager: fileManager)
+        let configs = defaultGitConfigPaths(homeDirectory: homeDirectory, fileManager: fileManager)
+        let evaluationContext = GitConfigEvaluationContext(
+            repositoryRoot: workspaceRoot,
+            gitDirectory: nil,
+            currentBranch: nil
+        )
+        var parsedConfigs: [GitConfigData] = []
+        var processedConfigs: Set<String> = []
+        var pendingConfigs = configs
+        while let config = pendingConfigs.popLast() {
+            guard processedConfigs.insert(config).inserted,
+                  fileManager.fileExists(atPath: config),
+                  let data = parseGitConfig(
+                    at: config,
+                    homeDirectory: homeDirectory,
+                    evaluationContext: evaluationContext,
+                    fileManager: fileManager
+                  ) else {
+                continue
+            }
+            parsedConfigs.append(data)
+            pendingConfigs.append(contentsOf: data.includePaths.filter {
+                !processedConfigs.contains($0) && fileManager.fileExists(atPath: $0)
+            })
+        }
+
+        var readable = Array(processedConfigs)
+        var diagnostics = ["intent_remotes_without_repository"]
+        let remotes = uniqueRemotes(parsedConfigs.flatMap(\.remotes) + intentRemotes)
+        let transports = uniqueTransports(remotes.map(\.transport))
+        let credentialHelpers = parsedConfigs.flatMap(\.credentialHelpers)
+        if transports.contains(.ssh) {
+            let sshPaths = sshCredentialPaths(
+                remotes: remotes.filter { $0.transport == .ssh },
+                homeDirectory: homeDirectory,
+                fileManager: fileManager
+            )
+            readable.append(contentsOf: sshPaths.paths)
+            diagnostics.append(contentsOf: sshPaths.diagnostics)
+        }
+        if transports.contains(.https) {
+            readable.append(contentsOf: httpsCredentialPaths(
+                homeDirectory: homeDirectory,
+                credentialHelpers: credentialHelpers,
+                fileManager: fileManager
+            ))
+        }
+
+        return GitCredentialSandboxContext(
+            readablePaths: externalReadablePaths(
+                rawPaths: readable,
+                repositoryRoot: workspaceRoot,
+                fileManager: fileManager
+            ),
+            writablePaths: [],
+            transports: transports,
+            diagnostics: uniqueNonEmpty(diagnostics)
+        )
+    }
+
     private static func repositoryRoot(
         startingAt path: String,
         fileManager: FileManager
@@ -221,6 +323,15 @@ enum GitCredentialContextResolver {
         return canonicalPath(resolvePath(value, relativeTo: gitDirectory, homeDirectory: nil), fileManager: fileManager)
     }
 
+    private static func currentBranch(gitDirectory: String, fileManager: FileManager) -> String? {
+        let headFile = (gitDirectory as NSString).appendingPathComponent("HEAD")
+        guard let raw = try? String(contentsOfFile: headFile, encoding: .utf8) else { return nil }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefix = "ref: refs/heads/"
+        guard value.hasPrefix(prefix) else { return nil }
+        return String(value.dropFirst(prefix.count))
+    }
+
     private static func defaultGitConfigPaths(homeDirectory: String, fileManager _: FileManager) -> [String] {
         let home = homeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !home.isEmpty else { return [] }
@@ -230,9 +341,15 @@ enum GitCredentialContextResolver {
         ]
     }
 
-    private static func parseGitConfig(at path: String, homeDirectory: String, fileManager: FileManager) -> GitConfigData? {
+    private static func parseGitConfig(
+        at path: String,
+        homeDirectory: String,
+        evaluationContext: GitConfigEvaluationContext,
+        fileManager: FileManager
+    ) -> GitConfigData? {
         guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
         let directory = (path as NSString).deletingLastPathComponent
+        var rawSection = ""
         var section = ""
         var data = GitConfigData()
 
@@ -240,9 +357,9 @@ enum GitCredentialContextResolver {
             let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !line.isEmpty, !line.hasPrefix("#"), !line.hasPrefix(";") else { continue }
             if line.hasPrefix("["), line.hasSuffix("]") {
-                section = String(line.dropFirst().dropLast())
+                rawSection = String(line.dropFirst().dropLast())
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .lowercased()
+                section = rawSection.lowercased()
                 continue
             }
             let parts = splitConfigLine(line)
@@ -256,6 +373,16 @@ enum GitCredentialContextResolver {
                 data.remotes.append(parsed)
             } else if (section == "include" || section.hasPrefix("includeif ")),
                       key == "path" {
+                if section.hasPrefix("includeif "),
+                   !includeIfConditionMatches(
+                    rawSection,
+                    configDirectory: directory,
+                    homeDirectory: homeDirectory,
+                    context: evaluationContext,
+                    fileManager: fileManager
+                   ) {
+                    continue
+                }
                 data.includePaths.append(canonicalPath(
                     resolvePath(value, relativeTo: directory, homeDirectory: homeDirectory),
                     fileManager: fileManager
@@ -266,6 +393,132 @@ enum GitCredentialContextResolver {
             }
         }
         return data
+    }
+
+    private static func includeIfConditionMatches(
+        _ rawSection: String,
+        configDirectory: String,
+        homeDirectory: String,
+        context: GitConfigEvaluationContext,
+        fileManager: FileManager
+    ) -> Bool {
+        guard let condition = quotedSectionValue(rawSection) else { return false }
+        let lower = condition.lowercased()
+        if lower.hasPrefix("gitdir/i:") {
+            let pattern = String(condition.dropFirst("gitdir/i:".count))
+            return gitDirectoryMatches(
+                pattern: pattern,
+                caseInsensitive: true,
+                configDirectory: configDirectory,
+                homeDirectory: homeDirectory,
+                context: context,
+                fileManager: fileManager
+            )
+        }
+        if lower.hasPrefix("gitdir:") {
+            let pattern = String(condition.dropFirst("gitdir:".count))
+            return gitDirectoryMatches(
+                pattern: pattern,
+                caseInsensitive: false,
+                configDirectory: configDirectory,
+                homeDirectory: homeDirectory,
+                context: context,
+                fileManager: fileManager
+            )
+        }
+        if lower.hasPrefix("onbranch:") {
+            guard let branch = context.currentBranch else { return false }
+            var pattern = String(condition.dropFirst("onbranch:".count))
+            if pattern.hasSuffix("/") {
+                pattern += "**"
+            }
+            return wildcardPatternMatches(pattern: pattern, candidate: branch, caseInsensitive: false)
+        }
+        return false
+    }
+
+    private static func gitDirectoryMatches(
+        pattern: String,
+        caseInsensitive: Bool,
+        configDirectory: String,
+        homeDirectory: String,
+        context: GitConfigEvaluationContext,
+        fileManager: FileManager
+    ) -> Bool {
+        guard let gitDirectory = context.gitDirectory else { return false }
+        let normalizedPattern = normalizedGitDirectoryPattern(
+            pattern,
+            configDirectory: configDirectory,
+            homeDirectory: homeDirectory,
+            fileManager: fileManager
+        )
+        let targets = uniqueNonEmpty([
+            canonicalPath(gitDirectory, fileManager: fileManager),
+            canonicalPath((context.repositoryRoot as NSString).appendingPathComponent(".git"), fileManager: fileManager)
+        ])
+        return targets.contains { target in
+            wildcardPatternMatches(pattern: normalizedPattern, candidate: target, caseInsensitive: caseInsensitive)
+                || wildcardPatternMatches(pattern: normalizedPattern, candidate: target + "/", caseInsensitive: caseInsensitive)
+        }
+    }
+
+    private static func normalizedGitDirectoryPattern(
+        _ pattern: String,
+        configDirectory: String,
+        homeDirectory: String,
+        fileManager: FileManager
+    ) -> String {
+        let trimmed = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolved: String
+        if trimmed.hasPrefix("~/") || trimmed == "~" {
+            resolved = resolvePath(trimmed, relativeTo: configDirectory, homeDirectory: homeDirectory)
+        } else if trimmed.hasPrefix("./") {
+            resolved = resolvePath(trimmed, relativeTo: configDirectory, homeDirectory: homeDirectory)
+        } else if trimmed.hasPrefix("/") {
+            resolved = trimmed
+        } else {
+            resolved = "**/" + trimmed
+        }
+        let suffix = resolved.hasSuffix("/") ? "**" : ""
+        return canonicalPath(resolved, fileManager: fileManager) + suffix
+    }
+
+    private static func wildcardPatternMatches(
+        pattern: String,
+        candidate: String,
+        caseInsensitive: Bool
+    ) -> Bool {
+        let regex = "^" + wildcardPatternRegex(pattern) + "$"
+        var options: String.CompareOptions = [.regularExpression]
+        if caseInsensitive {
+            options.insert(.caseInsensitive)
+        }
+        return candidate.range(of: regex, options: options) != nil
+    }
+
+    private static func wildcardPatternRegex(_ pattern: String) -> String {
+        var regex = ""
+        var index = pattern.startIndex
+        while index < pattern.endIndex {
+            let char = pattern[index]
+            if char == "*" {
+                let next = pattern.index(after: index)
+                if next < pattern.endIndex, pattern[next] == "*" {
+                    regex += ".*"
+                    index = pattern.index(after: next)
+                } else {
+                    regex += "[^/]*"
+                    index = next
+                }
+            } else if char == "?" {
+                regex += "[^/]"
+                index = pattern.index(after: index)
+            } else {
+                regex += NSRegularExpression.escapedPattern(for: String(char))
+                index = pattern.index(after: index)
+            }
+        }
+        return regex
     }
 
     private static func splitConfigLine(_ line: String) -> (key: String?, value: String) {
@@ -315,6 +568,19 @@ enum GitCredentialContextResolver {
             return Remote(name: name, url: url, transport: .file, host: nil)
         }
         return Remote(name: name, url: url, transport: .unknown, host: nil)
+    }
+
+    private static func remotesFromNetworkGitIntent(_ text: String) -> [Remote] {
+        let trimCharacters = CharacterSet(charactersIn: "\"'`()[]{}<>.,;")
+        let tokens = text.components(separatedBy: .whitespacesAndNewlines)
+        let remotes = tokens.enumerated().compactMap { index, token -> Remote? in
+            let cleaned = token.trimmingCharacters(in: trimCharacters)
+            guard !cleaned.isEmpty, !cleaned.hasPrefix("-") else { return nil }
+            let remote = parseRemote(url: cleaned, name: "intent-\(index)")
+            guard remote.transport == .ssh || remote.transport == .https else { return nil }
+            return remote
+        }
+        return uniqueRemotes(remotes)
     }
 
     private static func sshCredentialPaths(

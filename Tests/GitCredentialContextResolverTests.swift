@@ -131,12 +131,91 @@ struct GitCredentialContextResolverTests {
         #expect(context.writablePaths.contains(commonGit.path))
     }
 
+    @Test("Clone intent resolves credential context before a repository exists")
+    func cloneIntentWithoutRepositoryResolvesCredentialContext() throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        let workspace = root.appendingPathComponent("workspace", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+
+        try write("[user]\nname = Astra\n", to: home.appendingPathComponent(".gitconfig"))
+        try write("""
+        Host github.com
+            IdentityFile ~/.ssh/id_ed25519
+        """, to: home.appendingPathComponent(".ssh/config"))
+        try write("github.com ssh-ed25519 AAAA\n", to: home.appendingPathComponent(".ssh/known_hosts"))
+        try write("private", to: home.appendingPathComponent(".ssh/id_ed25519"))
+
+        let context = GitCredentialContextResolver.sandboxContext(
+            repositoryPath: workspace.path,
+            intentText: "git clone git@github.com:susom/astra.git",
+            homeDirectory: home.path
+        )
+
+        #expect(context.transports == [.ssh])
+        #expect(context.diagnostics.contains("intent_remotes_without_repository"))
+        #expect(context.readablePaths.contains(home.appendingPathComponent(".gitconfig").path))
+        #expect(context.readablePaths.contains(home.appendingPathComponent(".ssh/config").path))
+        #expect(context.readablePaths.contains(home.appendingPathComponent(".ssh/known_hosts").path))
+        #expect(context.readablePaths.contains(home.appendingPathComponent(".ssh/id_ed25519").path))
+        #expect(context.writablePaths.isEmpty)
+    }
+
+    @Test("includeIf gitdir only loads matching conditional config")
+    func includeIfGitdirOnlyLoadsMatchingConfig() throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        let matchingParent = root.appendingPathComponent("matching", isDirectory: true)
+        let otherParent = root.appendingPathComponent("other", isDirectory: true)
+        let repo = matchingParent.appendingPathComponent("repo", isDirectory: true)
+        let git = repo.appendingPathComponent(".git", isDirectory: true)
+        try FileManager.default.createDirectory(at: git, withIntermediateDirectories: true)
+
+        let always = home.appendingPathComponent("always.gitconfig")
+        let matching = home.appendingPathComponent("matching.gitconfig")
+        let unmatched = home.appendingPathComponent("unmatched.gitconfig")
+        try write("""
+        [include]
+            path = ~/always.gitconfig
+        [includeIf "gitdir:\(matchingParent.path)/"]
+            path = ~/matching.gitconfig
+        [includeIf "gitdir:\(otherParent.path)/"]
+            path = ~/unmatched.gitconfig
+        """, to: home.appendingPathComponent(".gitconfig"))
+        try write("[user]\nname = Always\n", to: always)
+        try write("[user]\nemail = matching@example.com\n", to: matching)
+        try write("[user]\nemail = unmatched@example.com\n", to: unmatched)
+        try write("""
+        [remote "origin"]
+            url = git@github.com:susom/astra.git
+        """, to: git.appendingPathComponent("config"))
+
+        let context = GitCredentialContextResolver.sandboxContext(
+            repositoryPath: repo.path,
+            homeDirectory: home.path
+        )
+
+        #expect(context.readablePaths.contains(always.path))
+        #expect(context.readablePaths.contains(matching.path))
+        #expect(!context.readablePaths.contains(unmatched.path))
+    }
+
     @Test("Network Git intent detection handles commands and plain English")
     func gitNetworkIntentDetection() {
         let task = AgentTask(title: "Sync", goal: "Please pull from GitHub before editing.")
         #expect(GitOperationIntentDetector.detectsNetworkGitOperation(prompt: "", task: task))
         #expect(GitOperationIntentDetector.detectsNetworkGitOperation(
             prompt: "run git fetch origin main",
+            task: AgentTask(title: "Other", goal: "Other")
+        ))
+        #expect(GitOperationIntentDetector.detectsNetworkGitOperation(
+            prompt: "git clone git@github.com:susom/astra.git",
+            task: AgentTask(title: "Other", goal: "Other")
+        ))
+        #expect(GitOperationIntentDetector.detectsNetworkGitOperation(
+            prompt: "please clone the repo from GitHub",
             task: AgentTask(title: "Other", goal: "Other")
         ))
         #expect(!GitOperationIntentDetector.detectsNetworkGitOperation(
