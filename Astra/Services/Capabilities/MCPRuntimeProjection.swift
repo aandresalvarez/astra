@@ -307,7 +307,8 @@ enum MCPRuntimeProjection {
     /// runtime fail opaquely mid-run, so it fails fast here instead.
     static func preflightIssues(
         servers: [ResolvedServer],
-        detectExecutable: (String) -> String = { RuntimePathResolver.detectExecutablePath(named: $0) }
+        detectExecutable: (String) -> String = { RuntimePathResolver.detectExecutablePath(named: $0) },
+        isExecutableFile: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
     ) -> [PreflightIssue] {
         servers.compactMap { resolved in
             let server = resolved.server
@@ -315,7 +316,7 @@ enum MCPRuntimeProjection {
                 return nil
             }
             if command.hasPrefix("/") {
-                return FileManager.default.isExecutableFile(atPath: command)
+                return isExecutableFile(command)
                     ? nil
                     : .missingExecutable(serverID: server.id, command: command)
             }

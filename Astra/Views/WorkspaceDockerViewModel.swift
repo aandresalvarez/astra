@@ -124,7 +124,10 @@ final class WorkspaceDockerViewModel: ObservableObject {
             return "Runs directly on macOS"
         }
         if let image = selectedEnvironment.image {
-            return "Image \(image)"
+            if selectedEnvironment.workspaceCommandsRunInsideContainer {
+                return "Commands run in image \(image)"
+            }
+            return "Provider runs in image \(image)"
         }
         return selectedEnvironment.kind.rawValue
     }
@@ -139,7 +142,10 @@ final class WorkspaceDockerViewModel: ObservableObject {
             return "Host - providers run directly on macOS"
         }
         if let image = selectedEnvironment.image {
-            return "\(selectedEnvironment.displayName) - \(image)"
+            if selectedEnvironment.workspaceCommandsRunInsideContainer {
+                return "\(selectedEnvironment.displayName) - commands in \(image)"
+            }
+            return "\(selectedEnvironment.displayName) - provider in \(image)"
         }
         return "\(selectedEnvironment.displayName) - \(selectedEnvironment.kind.rawValue)"
     }
@@ -290,7 +296,11 @@ final class WorkspaceDockerViewModel: ObservableObject {
     func subtitle(for candidate: DockerWorkspaceCandidate) -> String {
         switch candidate.environment.kind {
         case .dockerImage:
-            return candidate.environment.image.map { "Loaded image \($0)" } ?? "Loaded Docker image"
+            return candidate.environment.image.map {
+                candidate.environment.workspaceCommandsRunInsideContainer
+                    ? "Run project commands in \($0)"
+                    : "Run provider inside \($0)"
+            } ?? "Loaded Docker image"
         case .dockerfile:
             return candidate.issue ?? "Dockerfile discovered"
         case .dockerCompose:
@@ -425,7 +435,10 @@ final class WorkspaceDockerViewModel: ObservableObject {
             return "Run providers directly on macOS"
         }
         if let image = environment.image {
-            return "Run providers through image \(image)"
+            if environment.workspaceCommandsRunInsideContainer {
+                return "Run project commands inside image \(image)"
+            }
+            return "Run provider inside image \(image)"
         }
         return "Run providers through \(environment.kind.rawValue)"
     }
@@ -442,6 +455,9 @@ final class WorkspaceDockerViewModel: ObservableObject {
             return "ASTRA will launch provider CLIs directly on macOS."
         }
         if let image = environment.image {
+            if environment.workspaceCommandsRunInsideContainer {
+                return "ASTRA will keep the AI provider on macOS and route project shell commands through Docker image \(image)."
+            }
             return "ASTRA will launch provider CLIs with docker run using \(image), mount the workspace into the container, and record that environment on the task."
         }
         return "ASTRA will use the selected container environment when launching provider CLIs."

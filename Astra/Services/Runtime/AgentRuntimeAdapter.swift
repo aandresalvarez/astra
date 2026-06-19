@@ -1166,19 +1166,27 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         let allowed = context.executionPolicy.allowedTools(
             default: capabilityScope.resolver.resolvedProviderAllowedTools
         )
-        let providerAllowed = AgentRuntimeProcessRunner.providerAllowedTools(
+        let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
+        let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
+        let baseProviderAllowed = AgentRuntimeProcessRunner.providerAllowedTools(
             for: id,
             baseAllowedTools: allowed,
             permissionManifest: context.permissionManifest
         )
+        let providerAllowed = usesDockerWorkspaceExecutor
+            ? DockerWorkspaceMCPProjection.removingNativeShellTools(baseProviderAllowed)
+            : baseProviderAllowed
         let runtimeSupportTools = AgentRuntimeProcessRunner.providerRuntimeSupportToolPermissions(
             for: id,
             permissionManifest: context.permissionManifest
         )
-        let askFirstToolPermissions = AgentRuntimeProcessRunner.providerAskFirstToolPermissions(
+        let baseAskFirstToolPermissions = AgentRuntimeProcessRunner.providerAskFirstToolPermissions(
             for: id,
             permissionManifest: context.permissionManifest
         )
+        let askFirstToolPermissions = usesDockerWorkspaceExecutor
+            ? DockerWorkspaceMCPProjection.removingNativeShellTools(baseAskFirstToolPermissions)
+            : baseAskFirstToolPermissions
         let artifactBootstrapTools = ProviderArtifactBootstrapPolicy.launchTools(
             task: context.task,
             permissionPolicy: effectivePermissionPolicy,
@@ -1188,11 +1196,19 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         // Capability-package MCP servers: render the per-launch config and
         // grant the projected tool names. Secrets stay out of the file via
         // ${KEY} env indirection (the CLI expands from the task environment).
-        let mcpServers = MCPRuntimeProjection.enabledServers(
+        var mcpServers = MCPRuntimeProjection.enabledServers(
             for: context.task.workspace,
             packages: CapabilityRuntimeResourceMatcher.packageDefinitions(),
             approvalRecords: CapabilityApprovalStore().records()
         )
+        if let workspaceServer = DockerWorkspaceMCPProjection.resolvedServer(
+            task: context.task,
+            environment: executionEnvironment,
+            currentDirectory: context.workspacePath,
+            runID: context.runID
+        ) {
+            mcpServers.append(workspaceServer)
+        }
         // allowEmpty: strict mode must apply even with zero governed servers,
         // or a repository's own .mcp.json loads ungoverned on those runs.
         let mcpConfigURL = MCPRuntimeProjection.writeClaudeConfig(servers: mcpServers, taskID: context.task.id, allowEmpty: true)
@@ -1200,6 +1216,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         let sandboxReadablePaths = mcpConfigReadablePaths + ClaudeCodeRuntime.authReadablePaths()
         let mcpAllowedTools = mcpConfigURL == nil ? [] : MCPRuntimeProjection.allowedToolPermissions(servers: mcpServers)
         let mcpDeniedTools = mcpConfigURL == nil ? [] : MCPRuntimeProjection.deniedToolPermissions(servers: mcpServers)
+        let nativeDeniedTools = Array(Set(mcpDeniedTools + (usesDockerWorkspaceExecutor ? ["Bash"] : []))).sorted()
         // Live approvals use the stdio control protocol (stream-json input, so
         // the prompt travels over stdin). Resolved before the allow-list so it
         // can decide whether ask-first tools are gated at the provider prompt.
@@ -1224,11 +1241,26 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         let visibleToolSource = usesArtifactBootstrapProfile
             ? Array(Set(providerAllowed + runtimeSupportTools + artifactBootstrapTools + askFirstToolPermissions + mcpAllowedTools)).sorted()
             : Array(Set(nativeAllowedTools + askFirstToolPermissions)).sorted()
-        let visibleTools = Self.visibleProviderTools(
+        let visibleTools = ClaudeVisibleToolProjection.visibleProviderTools(
             from: visibleToolSource,
             task: context.task,
             permissionPolicy: effectivePermissionPolicy
         )
+        let workspaceExecutorEnvironment = DockerWorkspaceMCPProjection.environmentVariables(
+            task: context.task,
+            environment: executionEnvironment,
+            currentDirectory: context.workspacePath,
+            runID: context.runID
+        )
+        var processEnvironment = AgentRuntimeProcessRunner.environment(
+            phase: context.phase,
+            task: context.task,
+            taskEnv: taskEnv,
+            includeClaudeTeamFlag: true
+        )
+        for (key, value) in workspaceExecutorEnvironment {
+            processEnvironment[key] = value
+        }
         let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
         var args = interactiveAsk == nil ? ["-p", context.prompt] : ["-p"]
         if let sessionID = context.nativeContinuationSessionID,
@@ -1270,20 +1302,15 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         if let mcpConfigURL {
             args += ["--mcp-config", mcpConfigURL.path]
         }
-        if !mcpDeniedTools.isEmpty {
-            args += ["--disallowedTools"] + mcpDeniedTools
+        if !nativeDeniedTools.isEmpty {
+            args += ["--disallowedTools"] + nativeDeniedTools
         }
         return AgentRuntimeProcessLaunchPlan(
             runtime: id,
             executablePath: context.executablePath,
             arguments: args,
             currentDirectory: context.workspacePath,
-            environment: AgentRuntimeProcessRunner.environment(
-                phase: context.phase,
-                task: context.task,
-                taskEnv: taskEnv,
-                includeClaudeTeamFlag: true
-            ),
+            environment: processEnvironment,
             browserShimDirectory: browserShimDirectory,
             providerVersion: nil,
             parsesJSONLines: true,
@@ -1305,6 +1332,10 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
                 "artifact_bootstrap_profile": String(usesArtifactBootstrapProfile),
                 "launch_effort": usesArtifactBootstrapProfile ? "low" : "default",
                 "allowed_tools_count": String(providerAllowed.count),
+                "base_allowed_tools_count": String(baseProviderAllowed.count),
+                "docker_workspace_executor": String(usesDockerWorkspaceExecutor),
+                "docker_workspace_tool": usesDockerWorkspaceExecutor ? DockerWorkspaceMCPProjection.providerToolPermission : "none",
+                "native_shell_removed_for_workspace_executor": String(usesDockerWorkspaceExecutor),
                 "provider_launch_allowed_tool_count": String(nativeAllowedTools.count),
                 "runtime_support_tool_count": String(runtimeSupportTools.count),
                 "runtime_support_tool_names": runtimeSupportTools.joined(separator: ","),
@@ -1323,77 +1354,12 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
                 "native_session_prefix": context.nativeContinuationSessionID.map { String($0.prefix(8)) } ?? "none",
                 "uses_live_approvals": String(interactiveAsk != nil),
                 "mcp_server_count": String(mcpConfigURL == nil ? 0 : mcpServers.count),
-                "mcp_config_rendered": String(mcpConfigURL != nil)
+                "mcp_config_rendered": String(mcpConfigURL != nil),
+                "native_denied_tool_count": String(nativeDeniedTools.count),
+                "native_denied_tool_names": nativeDeniedTools.joined(separator: ",")
             ],
             interactiveAsk: interactiveAsk
         )
-    }
-
-    private static func visibleProviderTools(
-        from nativeAllowedTools: [String],
-        task: AgentTask,
-        permissionPolicy: PermissionPolicy
-    ) -> [String] {
-        guard permissionPolicy != .autonomous else { return [] }
-
-        var visible = Set<String>()
-        for tool in nativeAllowedTools {
-            if let normalized = visibleProviderToolName(for: tool) {
-                visible.insert(normalized)
-            }
-        }
-
-        if task.useAgentTeam {
-            visible.formUnion([
-                "Task",
-                "TeamCreate",
-                "TeamDelete",
-                "TaskCreate",
-                "TaskGet",
-                "TaskList",
-                "TaskOutput",
-                "TaskStop",
-                "TaskUpdate"
-            ])
-        }
-
-        return visible.sorted()
-    }
-
-    private static func visibleProviderToolName(for rawTool: String) -> String? {
-        let trimmed = rawTool.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-
-        let baseName = trimmed
-            .split(separator: "(", maxSplits: 1, omittingEmptySubsequences: true)
-            .first
-            .map(String.init) ?? trimmed
-        let normalized = baseName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-
-        switch normalized {
-        case "bash", "shell":
-            return "Bash"
-        case "edit":
-            return "Edit"
-        case "glob":
-            return "Glob"
-        case "grep":
-            return "Grep"
-        case "multiedit":
-            return "MultiEdit"
-        case "notebookedit":
-            return "NotebookEdit"
-        case "read":
-            return "Read"
-        case "webfetch":
-            return "WebFetch"
-        case "websearch":
-            return "WebSearch"
-        case "write":
-            return "Write"
-        default:
-            return nil
-        }
     }
 
     func parseProcessEvents(line: String, parsesJSONLines _: Bool) -> [ParsedEvent] {

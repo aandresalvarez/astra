@@ -184,6 +184,44 @@ struct ExecutionSandboxRunnerTests {
         }
     }
 
+    @Test("sandboxedPlan blocks unsupported runtimes for Docker workspace command execution")
+    func sandboxedPlanBlocksUnsupportedDockerWorkspaceRuntime() {
+        withStandardEnforcement(.off) {
+            let task = AgentTask(title: "Docker", goal: "Run commands", runtime: .copilotCLI)
+            task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+                id: "image:workspace",
+                kind: .dockerImage,
+                displayName: "Workspace Image",
+                image: "astra/workspace:latest"
+            ))
+            let context = AgentRuntimeProcessLaunchContext(
+                prompt: "p",
+                task: task,
+                workspacePath: "/tmp/whatever",
+                executablePath: "/bin/copilot",
+                providerHomeDirectory: "",
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 1
+            )
+
+            let runner = AgentRuntimeProcessRunner()
+            let outcome = runner.sandboxedPlan(
+                adapter: FakeLaunchAdapter(runtime: .copilotCLI, currentDirectory: "/tmp/whatever"),
+                context: context
+            )
+
+            guard case .blocked(let result) = outcome else {
+                Issue.record("Expected unsupported runtime to fail closed for Docker workspace execution")
+                return
+            }
+            #expect(result.exitCode == -1)
+            #expect(result.runtimeStopReason == "docker_workspace_executor_unsupported_runtime")
+            #expect(result.runtimeStopMessage?.contains("cannot yet route workspace shell commands") == true)
+        }
+    }
+
     @Test("sandboxedPlan honors the execution-policy permissionPolicy override (autonomous escalates to strict)")
     func sandboxedPlanHonorsPermissionPolicyOverride() {
         withStandardEnforcement(.bestEffort) {

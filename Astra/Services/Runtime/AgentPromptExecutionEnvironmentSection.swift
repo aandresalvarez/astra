@@ -10,10 +10,27 @@ enum AgentPromptExecutionEnvironmentSection {
         let containerCodeDir = mapper.containerPath(forHostPath: codeDir) ?? environment.containerWorkingDirectory
         let taskDir = TaskWorkspaceAccess(task: task).taskFolder
         let containerTaskDir = mapper.containerPath(forHostPath: taskDir) ?? "/astra/task"
+        if environment.workspaceCommandsRunInsideContainer {
+            return PromptContextSection(
+                kind: .supportingContext,
+                text: """
+                Execution Environment: \(environment.displayName) (\(environment.kind.rawValue))
+                Provider placement: host macOS
+                Workspace command executor: Docker image \(environment.image ?? environment.displayName)
+                Container working directory: \(containerCodeDir)
+                Container task output folder: \(containerTaskDir)
+                Run project commands with the ASTRA MCP tool `mcp__astra_workspace__workspace_shell`; it executes inside the Docker container. Do not use native host Bash for project commands in this workspace. Host workspace files are bind-mounted into the container; use the container paths above while running commands and report host paths in final summaries when relevant.
+                """,
+                sourcePointers: [codeDir, taskDir].map {
+                    PromptContextSourcePointer(label: "workspace path", target: $0)
+                }
+            )
+        }
         return PromptContextSection(
             kind: .supportingContext,
             text: """
             Execution Environment: \(environment.displayName) (\(environment.kind.rawValue))
+            Provider placement: container
             Container working directory: \(containerCodeDir)
             Container task output folder: \(containerTaskDir)
             Host workspace files are bind-mounted into the container; use the container paths above while running commands.
@@ -24,4 +41,3 @@ enum AgentPromptExecutionEnvironmentSection {
         )
     }
 }
-

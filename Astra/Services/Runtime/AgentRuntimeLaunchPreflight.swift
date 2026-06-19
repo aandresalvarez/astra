@@ -397,7 +397,9 @@ enum AgentRuntimeLaunchPreflight {
         modelContext: ModelContext,
         phase: String,
         contextText: String = "",
-        prerequisiteStatuses: [String: HealthStatus] = [:]
+        prerequisiteStatuses: [String: HealthStatus] = [:],
+        mcpDetectExecutable: (String) -> String = { RuntimePathResolver.detectExecutablePath(named: $0) },
+        mcpIsExecutableFile: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
     ) -> AgentRuntimeLaunchPreflightResult {
         let policyContext = task.workspace.map {
             CapabilityCatalogPolicyContext.workspaceUser(
@@ -429,12 +431,24 @@ enum AgentRuntimeLaunchPreflight {
         let runtime = AgentRuntimeID(rawValue: task.runtimeID ?? "") ?? TaskExecutionDefaults.runtime
         let mcpIssues: [MCPRuntimeProjection.PreflightIssue]
         if AgentRuntimeAdapterRegistry.descriptor(for: runtime).supportsMCPServers {
+            var mcpServers = MCPRuntimeProjection.enabledServers(
+                for: task.workspace,
+                packages: CapabilityRuntimeResourceMatcher.packageDefinitions(),
+                approvalRecords: CapabilityApprovalStore().records()
+            )
+            let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: task)
+            if let workspaceServer = DockerWorkspaceMCPProjection.resolvedServer(
+                task: task,
+                environment: executionEnvironment,
+                currentDirectory: TaskWorkspaceAccess(task: task).effectiveWorkspacePath,
+                runID: run.id
+            ) {
+                mcpServers.append(workspaceServer)
+            }
             mcpIssues = MCPRuntimeProjection.preflightIssues(
-                servers: MCPRuntimeProjection.enabledServers(
-                    for: task.workspace,
-                    packages: CapabilityRuntimeResourceMatcher.packageDefinitions(),
-                    approvalRecords: CapabilityApprovalStore().records()
-                )
+                servers: mcpServers,
+                detectExecutable: mcpDetectExecutable,
+                isExecutableFile: mcpIsExecutableFile
             )
         } else {
             mcpIssues = []

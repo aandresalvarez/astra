@@ -978,18 +978,21 @@ enum AgentPolicyManifestService {
         let effectiveSandboxPolicy = manifestExecutionPolicy.permissionPolicyOverride ?? permissionPolicy
         let sandboxSettings = ExecutionSandboxSettings.current(permissionPolicy: effectiveSandboxPolicy)
         let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: task)
-        if executionEnvironment.isHost,
+        if !executionEnvironment.providerRunsInsideContainer,
            sandboxSettings.shouldWrap(runtime: runtime),
            ExecutionSandbox.willLikelyApply(workspacePath: workspacePath, settings: sandboxSettings),
            !render.enforcementTiers.contains(.osSandboxed) {
             render.enforcementTiers.append(.osSandboxed)
         }
         if executionEnvironment.isContainerized {
+            let message = executionEnvironment.workspaceCommandsRunInsideContainer
+                ? "This run keeps the provider on macOS and routes workspace shell commands through ASTRA's Docker command executor."
+                : "This run launches the provider inside ASTRA's Docker execution environment; host Seatbelt sandboxing is not reported for the container workload."
             render.diagnostics.append(PolicyDiagnostic(
                 id: "container.execution-environment",
                 severity: .info,
                 title: "Container execution environment",
-                message: "This run uses ASTRA's Docker execution environment policy; host Seatbelt sandboxing is not reported for the container workload.",
+                message: message,
                 affectedCapability: "execution_environment",
                 remediation: "Review the selected image, mounts, network mode, and allowed environment keys before running credentialed work."
             ))
