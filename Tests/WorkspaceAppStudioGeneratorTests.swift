@@ -25,6 +25,22 @@ struct WorkspaceAppStudioGeneratorTests {
         }
     }
 
+    /// Records the configuration the generator hands the runner, so the App Studio
+    /// provider/model picker is proven to actually route generation.
+    final class ConfigCapturingRunner {
+        private(set) var configuration: AgentUtilityRuntimeConfiguration?
+        private let output: AgentUtilityRunResult
+
+        init(output: AgentUtilityRunResult) { self.output = output }
+
+        var runner: WorkspaceAppStudioPromptRunner {
+            { [self] _, _, configuration in
+                self.configuration = configuration
+                return output
+            }
+        }
+    }
+
     private static func ok(_ output: String) -> AgentUtilityRunResult {
         AgentUtilityRunResult(exitCode: 0, output: output, error: "")
     }
@@ -76,6 +92,21 @@ struct WorkspaceAppStudioGeneratorTests {
         #expect(result.attemptCount == 1)
         #expect(result.canPublish)
         #expect(runner.calls.count == 1)
+    }
+
+    @Test("the chosen provider + model configuration is forwarded to the runner")
+    func forwardsConfiguration() async {
+        let capture = ConfigCapturingRunner(output: Self.manifestBlock(Self.json(Self.validManifest)))
+        let configuration = AgentUtilityRuntimeConfiguration(runtime: .codexCLI, model: "gpt-5.5")
+        _ = await WorkspaceAppStudioGenerator.generate(
+            intent: "Build me a grocery database app.",
+            workspaceName: "Demo",
+            workspacePath: "/tmp/demo",
+            configuration: configuration,
+            runner: capture.runner
+        )
+        #expect(capture.configuration == configuration)
+        #expect(capture.configuration?.runtime == .codexCLI)
     }
 
     @Test("an invalid first attempt is repaired on the next turn")

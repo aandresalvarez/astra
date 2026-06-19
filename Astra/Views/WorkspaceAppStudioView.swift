@@ -16,6 +16,13 @@ struct WorkspaceAppStudioView: View {
     @State private var isPreviewing = false
     @State private var isTesting = false
 
+    // Generation provider + model. Bound to the same global default the task
+    // composer uses, so picking a provider here (e.g. switching off an
+    // unauthenticated Claude) carries across the app and is respected by generation.
+    @AppStorage(AppStorageKeys.defaultRuntimeID) private var generationRuntimeID = TaskExecutionDefaults.runtime.rawValue
+    @AppStorage(AppStorageKeys.defaultModel) private var generationModel = TaskExecutionDefaults.model
+    @AppStorage(AppStorageKeys.runtimeModelCacheRevision) private var runtimeModelCacheRevision = 0
+
     init(
         workspace: Workspace,
         initialIntent: String = WorkspaceAppStudioBuilder.defaultIntent,
@@ -154,6 +161,13 @@ struct WorkspaceAppStudioView: View {
                     Label("Ideate", systemImage: "sparkles")
                 }
                 .buttonStyle(.bordered)
+                .disabled(isGeneratingDraft)
+
+                WorkspaceAppStudioModelPicker(
+                    runtimeID: $generationRuntimeID,
+                    model: $generationModel,
+                    cacheRevision: runtimeModelCacheRevision
+                )
                 .disabled(isGeneratingDraft)
 
                 if !statusMessage.isEmpty {
@@ -471,6 +485,12 @@ struct WorkspaceAppStudioView: View {
         let workspaceName = workspace.name
         let workspacePath = workspace.primaryPath
         let existing = existingManifest
+        // Build the generation config from the chosen provider + model (instead of the
+        // hardcoded Claude default), so the picker actually routes generation.
+        let configuration = AgentUtilityRuntimeConfiguration(
+            runtime: AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: generationRuntimeID),
+            model: generationModel
+        )
         isGeneratingDraft = true
         statusMessage = "Generating draft…"
         generationTask = Task { @MainActor in
@@ -478,7 +498,8 @@ struct WorkspaceAppStudioView: View {
                 intent: currentIntent,
                 workspaceName: workspaceName,
                 workspacePath: workspacePath,
-                existingManifest: existing
+                existingManifest: existing,
+                configuration: configuration
             )
             // Dismissed mid-generation: onDisappear cancelled us and the runtime
             // subprocess is already torn down, so drop the result instead of
