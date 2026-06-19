@@ -437,7 +437,7 @@ enum LogDiagnosticsService {
             "issueCount": report.issueCount,
             "noticeCount": report.notices.count,
             "appChannel": AppChannel.current.displayName,
-            "appBuild": AppBuildInfo.current.installedBuildSummary,
+            "appBuild": AppBuildInfo.current.provenanceSummary,
             "sensitiveMode": AppLogger.isSensitiveMode,
             "logDirectory": CrashDiagnosticsService.userFacingPath(logDirectory),
             "artifactKinds": [
@@ -1321,6 +1321,15 @@ enum LogDiagnosticsService {
             )
         }
 
+        if lower.contains(AuditEvent.remoteWorkspacePreflight.rawValue) {
+            return (
+                key: "remote_workspace.preflight.\(field("workspace_id", in: message) ?? "unknown")",
+                title: "Remote workspace preflight was recorded",
+                signal: AuditEvent.remoteWorkspacePreflight.rawValue,
+                analysis: "ASTRA detected SSH workspace metadata before launching the runtime and recorded the app build plus SSH alias count. Use this to verify that the run used the SSH-aware launch path before investigating VM state, gcloud auth, or provider sandbox errors."
+            )
+        }
+
         if lower.contains(AuditEvent.capabilityRuntimeIntegrity.rawValue),
            field("result", in: message) == "passed" {
             return (
@@ -1864,7 +1873,7 @@ enum LogDiagnosticsService {
             "",
             "Generated: \(displayTimestamp(generatedAt))",
             "App channel: \(AppChannel.current.displayName)",
-            "App build: \(AppBuildInfo.current.installedBuildSummary)",
+            "App build: \(AppBuildInfo.current.provenanceSummary)",
             "Log directory: \(LogSanitizer.sanitize(AppLogger.mainLogFile.deletingLastPathComponent().path))",
             "Breadcrumb file: \(LogSanitizer.sanitize(AppLogger.breadcrumbLogFile.path))",
             "Scope: \(scope.label)",

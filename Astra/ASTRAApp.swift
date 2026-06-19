@@ -240,7 +240,16 @@ public struct ASTRAApp: App {
         UserDefaults.standard.register(defaults: defaults)
         // Rotate logs if needed
         AppLogger.rotateIfNeeded()
-        AppLogger.audit(.appStarted, category: "App")
+        let appInfo = AppBuildInfo.current
+        AppLogger.audit(.appStarted, category: "App", fields: [
+            "channel": appInfo.channelRawValue,
+            "version": appInfo.version,
+            "build": appInfo.build,
+            "git_commit": appInfo.gitCommit,
+            "build_date": appInfo.buildDate,
+            "bundle_path": appInfo.bundlePath,
+            "executable_path": appInfo.executablePath
+        ], fieldMaxLength: 120)
         // AppKit/NSApplication setup (activation policy, dock icon, foreground
         // activation, App Shortcuts) is deferred to ASTRAAppDelegate's
         // applicationDidFinishLaunching. Touching NSApplication.shared *here*,
@@ -318,10 +327,12 @@ public struct ASTRAApp: App {
                     modelContainerResult: "created"
                 )
             }
-            // Post-container chores (workspace recovery, capability sync +
+            // Keychain credential migration is scheduled immediately after the
+            // model container is ready, independent of view lifecycle. Other
+            // post-container chores (workspace recovery, capability sync +
             // definition repair, one-time Skill migrations, orphaned-run
             // recovery) are deferred to runDeferredStartupWork(), invoked from
-            // ContentView after the first frame, so none of this DB/JSON/FS
+            // ContentView after the first frame, so none of that DB/JSON/FS
             // work blocks launch. See runDeferredStartupWork below.
         } catch {
             AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
@@ -353,7 +364,8 @@ public struct ASTRAApp: App {
                     persistentStoreURL: persistentStoreURL,
                     modelContainerResult: "recreated"
                 )
-                // Post-container chores are deferred to runDeferredStartupWork()
+                // Keychain credential migration is scheduled below; other
+                // post-container chores are deferred to runDeferredStartupWork()
                 // (invoked from ContentView after first frame). See above.
             } catch {
                 AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
@@ -371,6 +383,7 @@ public struct ASTRAApp: App {
                 fatalError("Failed to create ModelContainer: \(error)")
             }
         }
+        StartupCredentialMigrationService.schedule(modelContainer: modelContainer)
     }
 
     /// Guards `runDeferredStartupWork` so post-launch chores run once per

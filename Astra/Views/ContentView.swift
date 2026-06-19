@@ -2077,18 +2077,6 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Migration
-
-    private func migrateConnectorCredentials() {
-        coordinator.migrateConnectorCredentials(workspaces: workspaces)
-    }
-
-    private func migrateSkillSecrets() {
-        let descriptor = FetchDescriptor<Skill>(sortBy: [SortDescriptor(\.name)])
-        let skills = (try? modelContext.fetch(descriptor)) ?? []
-        coordinator.migrateSkillSecrets(skills: skills)
-    }
-
     private func runStoreMaintenanceIfNeeded() {
         runtime.runStoreMaintenanceIfNeeded(
             modelContext: modelContext,
@@ -2137,8 +2125,6 @@ struct ContentView: View {
         applySecurityGateDefaultIfNeeded()
         applySettings()
         seedTestDataIfNeeded()
-        migrateConnectorCredentials()
-        migrateSkillSecrets()
         // Run the destructive store maintenance (draft prune + import dedup)
         // BEFORE restoring selection, so it can never delete the task that
         // `restoreWorkspaceSelection` is about to point `selectedTask` at.
