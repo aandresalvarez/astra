@@ -63,17 +63,19 @@ needed in practice and should be folded back into the spec:
 - **Sandbox developer-toolchain fix**: sandboxed providers' `git` shim no longer
   trips the macOS "install command line developer tools" dialog.
 
-### Remaining gaps (planned-but-not-built, ordered by user impact)
+### Remaining gaps — status as of 2026-06-19 (later pass)
+
+All seven were worked; most are now closed. Updated state:
 
 | # | Capability | Spec ref | Status | Note |
 |---|---|---|---|---|
-| 1 | **Rich native renderer** — forms with validation, sortable/filterable/selectable tables, real charts/diagrams, approval controls, layout collapse | §14, §24.3, success #5 | **PARTIAL** | Build renders table + metric + basic chart. The spec's own §5 non-goal says "do not make every app a dashboard" — closing this is the top lever for "useful apps". |
-| 2 | **Flexible visualization via sandboxed WKWebView** (reframed §24.8 below) | §13.2–13.3, §24.8 | **SCAFFOLDING** | Bridge + validation exist; no production WKWebView host. Path to strong, flexible LOCAL app visuals — NOT web publishing. |
-| 3 | **Empty-state seeding** of freshly published apps | §10 (not addressed for fresh publish) | **MISSING** | Published apps render over empty storage and feel dead; preview seeds sample rows, publish does not. |
-| 4 | **Capability-aware generation** — builder inspects workspace connectors, proposes compatible designs + dependency requirements | §24.4, success #2 | **PARTIAL** | |
-| 5 | **Pipeline-builder controls** in Studio + schedule governance UI | §24.6 | **PARTIAL** (run viz + approval queue done) | |
-| 6 | **REDCap form rendering + branching + data-entry workflow** | §24.3, success #3 | **PARTIAL** (primitives only) | |
-| 7 | **Team library + package signing** | §24.9, §25.7 | **PARTIAL** | only if remote/team distribution is in scope |
+| 1 | **Rich native renderer** — forms with validation, sortable/filterable tables, charts, approval controls | §14, §24.3, success #5 | **DONE** | Tap-to-sort + filter tables, required/number/date form validation, bar/line/pie charts, gate/approval forms. `WorkspaceAppTablePresentation`/`WorkspaceAppFormValidation` (unit-tested). |
+| 2 | **Flexible visualization via sandboxed WKWebView** | §13.2–13.3, §24.8 | **DONE** | `WorkspaceAppWebReportView` (hardened: no JS, no network, no bridge) + `htmlReport` & `chartComposite` renderers (Swift-built, CSP-locked). `mermaidDiagram` dropped from allowlist (needs blocked JS; native diagram covers it). |
+| 3 | **Empty-state seeding** of freshly published apps | §10 | **DONE** | Friendly empty state + opt-in "Start with sample data" toggle (`WorkspaceAppSampleSeeder`); round-trip tested. |
+| 4 | **Capability-aware generation** — generation knows the workspace's connectors | §24.4, success #2 | **DONE** | Prompt lists the workspace's enabled connector serviceTypes and steers requirements to available providers (`availableConnectorsGuidance`); derived via `CapabilityRuntimeResourceMatcher.enabledPackages`. |
+| 5 | **Schedule governance UI** + pipeline-builder controls | §24.6 | **DONE (schedules)** / pipeline direct-editing deferred | Enable/Disable toggle on `WorkspaceAppAutomationStateCard` → `setAutomationEnabled` (was built+tested but unwired). Direct visual pipeline-step editing in Studio remains future (creation is via generation + refinement chips + run viz). |
+| 6 | **REDCap form rendering + branching + data-entry workflow** | §24.3, success #3 | **LOCAL DONE** / submit connector-gated | `WorkspaceAppREDCapMetadataParser` bridges a metadata read → the tested form builder (fixture-tested). Live `formSchema.read` + end-to-end submit require a real REDCap connector. |
+| 7 | **Team library** + package signing | §24.9, §25.7 | **LIBRARY DONE** / signing deferred-by-spec | `WorkspaceAppPackageLibraryView` browses a shared folder, lists discovered packages + install state, routes into the governed import review. Signing deferred per §18.15/§25.7 (only if remote/team distribution is in scope). |
 
 ### §24.8 Advanced Rendering — reframed intent (2026-06-19)
 
@@ -91,14 +93,14 @@ in-scope capability rather than guarded scaffolding.
 
 ### Success-criteria snapshot (2026-06-19)
 
-- #1 local DB app from prompt — **mostly** (generates + previews + publishes; renderer polish pending).
-- #2 connector-backed app — **partial** (capability-aware generation pending).
-- #3 REDCap data-entry/reconciliation with governance — **partial** (form UI pending).
-- #4 conversation/process → reusable app — **partial**.
-- #5 metrics/charts/diagrams/tables/forms/controls — **partial** (the #1 gap above).
+- #1 local DB app from prompt — **DONE** (generate + preview + publish + sortable/filterable tables + validated forms + seed).
+- #2 connector-backed app — **mostly** (capability-aware generation lands; live connector read still needed end-to-end).
+- #3 REDCap data-entry/reconciliation with governance — **mostly** (metadata→form bridge done; live submit connector-gated).
+- #4 conversation/process → reusable app — **partial** (deep conversation-context ideation still future).
+- #5 metrics/charts/diagrams/tables/forms/controls — **DONE** (rich native renderer + sandboxed htmlReport/chartComposite).
 - #6 apps create/run ASTRA tasks — **DONE** (agentic Slice 9).
-- #7 share without credentials — **mostly**.
-- #8 imports declare deps/permissions — **mostly**.
+- #7 share without credentials — **mostly** (export/import + library browse; signing deferred).
+- #8 imports declare deps/permissions — **DONE** (import review + library route through it).
 - #9 packages declare contract ops — **partial** (HTTP/CLI/MCP execution intentionally later).
 - #10 Swift trusted runtime — **DONE** (invariant).
 - #11 WebView sandboxed presentation — **partial** (host pending; see reframed §24.8).
