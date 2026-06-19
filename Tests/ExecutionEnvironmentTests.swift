@@ -95,6 +95,10 @@ struct ExecutionEnvironmentTests {
         #expect(plan.pathMapper?.hostPath(forContainerPath: "/workspace/file.txt") == (root as NSString).appendingPathComponent("file.txt"))
         #expect(plan.commandPlannedFields["os_sandbox_claim"] == "false")
         #expect(plan.commandPlannedFields["container_executable_source"] == "environment")
+        #expect(plan.commandPlannedFields["container_image"] == "astra/test:latest")
+        #expect(plan.commandPlannedFields["container_workdir"] == "/workspace")
+        #expect(plan.commandPlannedFields["container_executable"] == "/usr/local/bin/claude")
+        #expect(plan.commandPlannedFields["container_mount_summary"]?.contains("\(root)=/workspace") == true)
     }
 
     @Test("Docker launch planning falls back to provider binary name inside the image")
@@ -122,6 +126,43 @@ struct ExecutionEnvironmentTests {
 
         #expect(plan.arguments.contains("claude"))
         #expect(plan.commandPlannedFields["container_executable_source"] == "provider_basename")
+    }
+
+    @Test("Docker launch failures identify missing provider executables inside the image")
+    func dockerLaunchFailuresIdentifyMissingProviderExecutable() throws {
+        let root = try makeTempDir("docker-failure-diagnostic")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let task = AgentTask(title: "Run", goal: "Run", workspace: Workspace(name: "Docker", primaryPath: root))
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:astra-starr-data-lake:latest",
+            kind: .dockerImage,
+            displayName: "starr-data-lake Image",
+            image: "astra-starr-data-lake:latest"
+        )
+        let plan = try DockerExecutionPlanner.plan(
+            base: makeBasePlan(currentDirectory: root),
+            environment: environment,
+            task: task,
+            runID: UUID(uuidString: "67A17493-5FFA-47AB-9CB0-F304DE933B89")
+        ).get()
+        let error = """
+        docker: Error response from daemon: failed to create task for container: failed to create shim task: OCI runtime create failed: runc create failed: unable to start container process: error during container init: exec: "claude": executable file not found in $PATH
+        Run 'docker run --help' for more information
+        """
+
+        let diagnostic = try #require(DockerRuntimeFailureDiagnostics.diagnose(
+            exitCode: 127,
+            error: error,
+            plan: plan
+        ))
+
+        #expect(diagnostic.stopReason == TaskRunStopReason.dockerProviderExecutableMissing.rawValue)
+        #expect(diagnostic.message.contains("Missing provider executable \"claude\""))
+        #expect(diagnostic.message.contains("astra-starr-data-lake:latest"))
+        #expect(diagnostic.auditFields["docker_failure_kind"] == "provider_executable_missing")
+        #expect(diagnostic.auditFields["missing_executable"] == "claude")
+        #expect(diagnostic.auditFields["container_image"] == "astra-starr-data-lake:latest")
+        #expect(diagnostic.auditFields["docker_exit_code"] == "127")
     }
 
     @Test("Docker launch planning fails closed for unsafe container policy")

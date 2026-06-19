@@ -16,6 +16,11 @@ struct TaskRunStopReasonTests {
         #expect(TaskRunStopReason.validationContractFailed.rawValue == "validation_contract_failed")
         #expect(TaskRunStopReason.deliverableVerificationFailed.rawValue == "deliverable_verification_failed")
         #expect(TaskRunStopReason.inferredValidationFailed.rawValue == "inferred_validation_failed")
+        #expect(TaskRunStopReason.dockerProviderExecutableMissing.rawValue == "docker_provider_executable_missing")
+        #expect(TaskRunStopReason.dockerDaemonUnavailable.rawValue == "docker_daemon_unavailable")
+        #expect(TaskRunStopReason.dockerImageUnavailable.rawValue == "docker_image_unavailable")
+        #expect(TaskRunStopReason.dockerMountFailed.rawValue == "docker_mount_failed")
+        #expect(TaskRunStopReason.dockerLaunchFailed.rawValue == "docker_launch_failed")
         #expect(TaskRunStopReason.permissionApprovalRequired.rawValue == "permission_approval_required")
         #expect(TaskRunStopReason.policyViolation.rawValue == "policy_violation")
         #expect(TaskRunStopReason.repetitionDetected.rawValue == "repetition_detected")
@@ -45,6 +50,13 @@ struct TaskRunStopReasonTests {
         #expect(!TaskRunStopReason.noUsableResult.isPolicyBlocked)
         #expect(PendingTaskReviewPolicy.stopReasonIsPolicyBlocked(.policyViolation))
         #expect(!PendingTaskReviewPolicy.stopReasonIsPolicyBlocked(.completed))
+    }
+
+    @Test("Docker runtime stop reasons are grouped for terminal failures")
+    func dockerRuntimeStopReasonsAreGroupedForTerminalFailures() {
+        #expect(TaskRunStopReason.dockerProviderExecutableMissing.isDockerRuntimeBlocked)
+        #expect(TaskRunStopReason.dockerDaemonUnavailable.isDockerRuntimeBlocked)
+        #expect(!TaskRunStopReason.noUsableResult.isDockerRuntimeBlocked)
     }
 
     @Test("String literal stop reasons apply the same trimming normalization")

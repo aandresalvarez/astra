@@ -435,6 +435,21 @@ final class AgentRuntimeProcessRunner {
                     _ = monitor.processEvent(filtered, process: process)
                 }
                 let error = errorOutput.value
+                let dockerFailure = DockerRuntimeFailureDiagnostics.diagnose(
+                    exitCode: Int(proc.terminationStatus),
+                    error: error,
+                    plan: plan
+                )
+                if let dockerFailure {
+                    AppLogger.audit(
+                        .runtimeFailureDiagnostic,
+                        category: "Worker",
+                        taskID: taskID,
+                        fields: dockerFailure.auditFields,
+                        level: .error,
+                        fieldMaxLength: 900
+                    )
+                }
                 Self.cleanupBrowserToolShim(at: plan.browserShimDirectory, taskID: taskID)
                 resumeOnce(AgentProcessResult(
                     exitCode: Int(proc.terminationStatus),
@@ -444,8 +459,8 @@ final class AgentRuntimeProcessRunner {
                     policyViolationMessage: monitor.policyViolationMessage,
                     policyApprovalRequired: monitor.policyApprovalRequired,
                     policyApprovalMessage: monitor.policyApprovalMessage,
-                    runtimeStopReason: monitor.runtimeStopReason,
-                    runtimeStopMessage: monitor.runtimeStopMessage,
+                    runtimeStopReason: dockerFailure?.stopReason ?? monitor.runtimeStopReason,
+                    runtimeStopMessage: dockerFailure?.message ?? monitor.runtimeStopMessage,
                     budgetExceeded: monitor.budgetExceeded,
                     budgetWarning: monitor.budgetWarning,
                     finalReportedBudgetExceededAfterCompletion: monitor.finalReportedBudgetExceededAfterCompletion,

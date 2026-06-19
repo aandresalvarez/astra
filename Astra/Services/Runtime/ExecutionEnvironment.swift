@@ -553,11 +553,21 @@ enum DockerExecutionPlanner {
         commandFields["execution_environment_kind"] = environment.kind.rawValue
         commandFields["execution_environment_id"] = environment.id
         commandFields["execution_environment_fingerprint"] = environment.signatureFingerprint
+        commandFields["container_image"] = image
+        commandFields["container_image_digest"] = environment.imageDigest ?? ""
+        commandFields["container_name"] = name
+        commandFields["container_workdir"] = containerCurrentDirectory
+        commandFields["container_executable"] = containerExecutable
         commandFields["container_mount_count"] = String(mounts.count)
+        commandFields["container_mount_summary"] = mounts
+            .map { "\($0.role.rawValue):\($0.access.rawValue):\($0.hostPath)=\($0.containerPath)" }
+            .sorted()
+            .joined(separator: ",")
         commandFields["container_network_mode"] = environment.networkMode
         commandFields["container_privileged"] = String(environment.privileged)
         commandFields["container_env_key_count"] = String(allowedEnv.count)
         commandFields["container_executable_source"] = explicitExecutable == nil ? "provider_basename" : "environment"
+        commandFields["docker_argument_count"] = String(dockerArgs.count)
         commandFields["os_sandbox_claim"] = "false"
 
         var processEnvironment: [String: String] = [
@@ -660,5 +670,177 @@ enum DockerExecutionPlanner {
         let allowed = Set(environment.environmentKeyAllowlist)
         guard !allowed.isEmpty else { return [:] }
         return baseEnvironment.filter { allowed.contains($0.key) }
+    }
+}
+
+struct DockerRuntimeFailureDiagnostic: Equatable, Sendable {
+    var stopReason: String
+    var message: String
+    var auditFields: [String: String]
+}
+
+enum DockerRuntimeFailureDiagnostics {
+    static func diagnose(
+        exitCode: Int,
+        error: String,
+        plan: AgentRuntimeProcessLaunchPlan
+    ) -> DockerRuntimeFailureDiagnostic? {
+        guard plan.executionEnvironment.isContainerized else { return nil }
+        let cleanedError = oneLine(error)
+        guard !cleanedError.isEmpty else { return nil }
+
+        let lower = cleanedError.lowercased()
+        guard looksLikeDockerLaunchFailure(lower) else { return nil }
+
+        let environment = plan.executionEnvironment
+        let image = clean(plan.commandPlannedFields["container_image"]) ?? environment.image ?? "selected image"
+        let executable = clean(plan.commandPlannedFields["container_executable"])
+            ?? clean(environment.runtimeExecutablePath)
+            ?? URL(fileURLWithPath: plan.executablePath).lastPathComponent
+        var fields = baseFields(
+            exitCode: exitCode,
+            error: cleanedError,
+            image: image,
+            executable: executable,
+            plan: plan
+        )
+
+        if let missingExecutable = missingExecutable(in: cleanedError) {
+            fields["docker_failure_kind"] = "provider_executable_missing"
+            fields["missing_executable"] = missingExecutable
+            return DockerRuntimeFailureDiagnostic(
+                stopReason: TaskRunStopReason.dockerProviderExecutableMissing.rawValue,
+                message: """
+                Missing provider executable "\(missingExecutable)" inside Docker image \(image). ASTRA started Docker, but Docker could not exec the provider command in the container. Build or select an ASTRA-ready image that includes the provider CLI on PATH, or set the container runtime executable to a valid path.
+                """,
+                auditFields: fields
+            )
+        }
+
+        if dockerDaemonUnavailable(lower) {
+            fields["docker_failure_kind"] = "daemon_unavailable"
+            return DockerRuntimeFailureDiagnostic(
+                stopReason: TaskRunStopReason.dockerDaemonUnavailable.rawValue,
+                message: "Docker is not available to run image \(image). Start Docker Desktop, verify the local Docker context, then retry the task.",
+                auditFields: fields
+            )
+        }
+
+        if imageUnavailable(lower) {
+            fields["docker_failure_kind"] = "image_unavailable"
+            return DockerRuntimeFailureDiagnostic(
+                stopReason: TaskRunStopReason.dockerImageUnavailable.rawValue,
+                message: "Docker could not load image \(image). Build or pull the image, then retry the task.",
+                auditFields: fields
+            )
+        }
+
+        if mountFailed(lower) {
+            fields["docker_failure_kind"] = "mount_failed"
+            return DockerRuntimeFailureDiagnostic(
+                stopReason: TaskRunStopReason.dockerMountFailed.rawValue,
+                message: "Docker could not mount one of the ASTRA workspace paths into image \(image). Review the Docker failure diagnostic, fix the mount or sharing permission, then retry.",
+                auditFields: fields
+            )
+        }
+
+        fields["docker_failure_kind"] = "launch_failed"
+        return DockerRuntimeFailureDiagnostic(
+            stopReason: TaskRunStopReason.dockerLaunchFailed.rawValue,
+            message: "Docker could not start image \(image). Review the Docker failure diagnostic for the daemon error, then retry the task.",
+            auditFields: fields
+        )
+    }
+
+    private static func baseFields(
+        exitCode: Int,
+        error: String,
+        image: String,
+        executable: String,
+        plan: AgentRuntimeProcessLaunchPlan
+    ) -> [String: String] {
+        var fields = plan.commandPlannedFields
+        fields["reason"] = "docker_runtime_launch_failed"
+        fields["runtime"] = plan.runtime.rawValue
+        fields["docker_exit_code"] = String(exitCode)
+        fields["container_image"] = image
+        fields["container_executable"] = executable
+        fields["docker_error"] = clipped(error, limit: 1_400)
+        return fields
+    }
+
+    private static func looksLikeDockerLaunchFailure(_ lower: String) -> Bool {
+        [
+            "docker:",
+            "cannot connect to the docker daemon",
+            "failed to connect to the docker api",
+            "runc create failed",
+            "failed to create shim task",
+            "error during container init",
+            "unable to start container process",
+            "invalid mount config",
+            "mounts denied",
+            "no such image",
+            "unable to find image",
+            "pull access denied"
+        ].contains { lower.contains($0) }
+    }
+
+    private static func missingExecutable(in error: String) -> String? {
+        let lower = error.lowercased()
+        guard lower.contains("exec: \""),
+              lower.contains("error during container init"),
+              lower.contains("unable to start container process"),
+              lower.contains("executable file not found in $path")
+                || lower.contains("no such file or directory") else {
+            return nil
+        }
+        let marker = "exec: \""
+        guard let start = error.range(of: marker) else { return nil }
+        let tail = error[start.upperBound...]
+        guard let end = tail.firstIndex(of: "\"") else { return nil }
+        let executable = tail[..<end].trimmingCharacters(in: .whitespacesAndNewlines)
+        return executable.isEmpty ? nil : String(executable)
+    }
+
+    private static func dockerDaemonUnavailable(_ lower: String) -> Bool {
+        lower.contains("cannot connect to the docker daemon")
+            || lower.contains("failed to connect to the docker api")
+            || lower.contains("is the docker daemon running")
+            || lower.contains("docker daemon is not running")
+    }
+
+    private static func imageUnavailable(_ lower: String) -> Bool {
+        lower.contains("no such image")
+            || lower.contains("unable to find image")
+            || lower.contains("pull access denied")
+            || lower.contains("repository does not exist")
+            || lower.contains("manifest unknown")
+    }
+
+    private static func mountFailed(_ lower: String) -> Bool {
+        lower.contains("invalid mount config")
+            || lower.contains("mounts denied")
+            || lower.contains("mount denied")
+    }
+
+    private static func oneLine(_ value: String) -> String {
+        value
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func clean(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func clipped(_ value: String, limit: Int) -> String {
+        guard value.count > limit else { return value }
+        let end = value.index(value.startIndex, offsetBy: limit)
+        return String(value[..<end]) + " [truncated]"
     }
 }

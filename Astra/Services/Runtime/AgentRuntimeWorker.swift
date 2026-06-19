@@ -1938,6 +1938,9 @@ final class AgentRuntimeWorker {
 
     private static func isTerminalRuntimeStop(_ reason: String) -> Bool {
         guard let stopReason = TaskRunStopReason(rawValue: reason) else { return false }
+        if stopReason.isDockerRuntimeBlocked {
+            return true
+        }
         return [
             .providerPermissionDeniedBroadPermissions,
             .providerPermissionUnresumable,
