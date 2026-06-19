@@ -688,7 +688,6 @@ struct AgentRuntimePostProcessContext {
     let recordingState: AgentEventRecordingState
     let onEvent: (ParsedEvent) -> Void
 }
-
 struct AgentRuntimeProcessLaunchPlan: Equatable {
     let runtime: AgentRuntimeID
     let executablePath: String
@@ -706,6 +705,8 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
     let providerDetectedFields: [String: String]
     let commandPlannedFields: [String: String]
     var interactiveAsk: AgentRuntimeInteractiveAskPlan?
+    var pathMapper: ExecutionEnvironmentPathMapper?
+    var executionEnvironment: WorkspaceExecutionEnvironment
 
     init(
         runtime: AgentRuntimeID,
@@ -721,7 +722,9 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
         sandboxProtectedWriteDenyPaths: [String] = [],
         providerDetectedFields: [String: String] = [:],
         commandPlannedFields: [String: String] = [:],
-        interactiveAsk: AgentRuntimeInteractiveAskPlan? = nil
+        interactiveAsk: AgentRuntimeInteractiveAskPlan? = nil,
+        pathMapper: ExecutionEnvironmentPathMapper? = nil,
+        executionEnvironment: WorkspaceExecutionEnvironment = .host
     ) {
         self.runtime = runtime
         self.executablePath = executablePath
@@ -737,6 +740,8 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
         self.providerDetectedFields = providerDetectedFields
         self.commandPlannedFields = commandPlannedFields
         self.interactiveAsk = interactiveAsk
+        self.pathMapper = pathMapper
+        self.executionEnvironment = executionEnvironment
     }
 }
 

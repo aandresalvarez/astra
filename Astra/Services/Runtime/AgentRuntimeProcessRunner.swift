@@ -76,7 +76,31 @@ final class AgentRuntimeProcessRunner {
         adapter: any AgentRuntimeProcessLaunchPlanning & AgentRuntimeProcessEventParsing,
         context: AgentRuntimeProcessLaunchContext
     ) -> SandboxedPlanOutcome {
-        let plan = adapter.makeProcessLaunchPlan(context: context)
+        var plan = adapter.makeProcessLaunchPlan(context: context)
+        let environment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
+        switch DockerExecutionPlanner.plan(
+            base: plan,
+            environment: environment,
+            task: context.task,
+            runID: context.runID
+        ) {
+        case .success(let resolvedPlan):
+            plan = resolvedPlan
+        case .failure(let error):
+            let message = error.localizedDescription
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.task.id, fields: [
+                "runtime": plan.runtime.rawValue,
+                "reason": "execution_environment_unavailable",
+                "execution_environment": environment.kind.rawValue,
+                "detail": message
+            ], level: .error)
+            return .blocked(AgentProcessResult(
+                exitCode: -1,
+                error: message,
+                runtimeStopReason: "execution_environment_unavailable",
+                runtimeStopMessage: message
+            ))
+        }
         if let block = BrowserBridgeRuntimeLaunchGuard.launchBlock(for: plan) {
             AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.task.id, fields: [
                 "runtime": plan.runtime.rawValue,
@@ -92,6 +116,14 @@ final class AgentRuntimeProcessRunner {
         // resolves the sandbox tier.
         let effectivePermissionPolicy = context.executionPolicy.permissionPolicyOverride ?? context.permissionPolicy
         let settings = sandboxSettingsProvider(effectivePermissionPolicy)
+        if plan.executionEnvironment.isContainerized {
+            AppLogger.audit(.sandboxSkipped, category: "Worker", taskID: context.task.id, fields: [
+                "runtime": plan.runtime.rawValue,
+                "reason": "container_environment_uses_docker_policy",
+                "execution_environment": plan.executionEnvironment.kind.rawValue
+            ], level: .debug)
+            return .plan(plan)
+        }
         // Multi-path workspaces: the agent is granted the workspace's additional
         // paths + input dirs (same set passed to providers via `--add-dir` and
         // honored by the in-band policy guard), so include them in the sandbox's
@@ -296,7 +328,9 @@ final class AgentRuntimeProcessRunner {
                 idleTimeoutSeconds: timeoutSeconds,
                 noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
                 taskID: task.id,
-                policyGuard: permissionManifest.map(AgentRuntimePolicyGuard.init),
+                policyGuard: permissionManifest.map {
+                    AgentRuntimePolicyGuard(manifest: $0, pathMapper: plan.pathMapper)
+                },
                 liveApprovalsActive: plan.interactiveAsk != nil
             )
 
