@@ -978,21 +978,68 @@ struct WorkspaceAppStorageTableView: View {
     let onDelete: (WorkspaceAppDetailActionPresentation, String, [String: WorkspaceAppStorageValue]) -> Void
 
     @State private var expanded = false
+    @State private var filterText = ""
+    @State private var sortColumn: String?
+    @State private var sortAscending = true
     private let collapsedRowLimit = 5
 
+    private var displayedRows: [[String: WorkspaceAppStorageValue]] {
+        WorkspaceAppTablePresentation.displayRows(
+            table.rows,
+            searchableColumns: table.columns,
+            filter: filterText,
+            sortColumn: sortColumn,
+            ascending: sortAscending
+        )
+    }
+
+    private func toggleSort(_ column: String) {
+        if sortColumn == column {
+            sortAscending.toggle()
+        } else {
+            sortColumn = column
+            sortAscending = true
+        }
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
+        let rows = displayedRows
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 8) {
                 Text(table.name)
                     .font(Stanford.ui(13, weight: .semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
 
-                Text("\(table.rowCount) rows")
+                Text(filterText.isEmpty ? "\(table.rowCount) rows" : "\(rows.count) of \(table.rowCount)")
                     .font(Stanford.caption(11).weight(.medium))
                     .foregroundStyle(.secondary)
 
                 Spacer()
+
+                if !table.rows.isEmpty {
+                    HStack(spacing: 4) {
+                        Image(systemName: "magnifyingglass")
+                            .font(Stanford.caption(10))
+                            .foregroundStyle(.secondary)
+                        TextField("Filter", text: $filterText)
+                            .textFieldStyle(.plain)
+                            .font(Stanford.caption(11))
+                            .frame(width: 110)
+                        if !filterText.isEmpty {
+                            Button { filterText = "" } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(Stanford.caption(10))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(Color.primary.opacity(0.04))
+                    .clipShape(Capsule())
+                }
             }
 
             if let errorMessage = table.errorMessage {
@@ -1007,30 +1054,43 @@ struct WorkspaceAppStorageTableView: View {
                     .foregroundStyle(.secondary)
             } else {
                 VStack(alignment: .leading, spacing: 6) {
-                    WorkspaceAppStorageHeaderRow(columns: table.columns, hasActions: rowActions.hasActions)
-                    let visibleRows = expanded ? table.rows : Array(table.rows.prefix(collapsedRowLimit))
-                    ForEach(Array(visibleRows.enumerated()), id: \.offset) { _, row in
-                        WorkspaceAppStorageRecordRow(
-                            columns: table.columns,
-                            row: row,
-                            rowActions: rowActions,
-                            isPendingDelete: isPendingDelete(row),
-                            onEdit: { action in
-                                onEdit(action, table.name, row)
-                            },
-                            onDelete: { action, primaryKey in
-                                onDelete(action, primaryKey, row)
-                            }
-                        )
-                    }
-                    if table.rows.count > collapsedRowLimit {
-                        Button(expanded ? "Show fewer" : "Show all \(table.rows.count) rows") {
-                            expanded.toggle()
+                    WorkspaceAppStorageHeaderRow(
+                        columns: table.columns,
+                        hasActions: rowActions.hasActions,
+                        sortColumn: sortColumn,
+                        ascending: sortAscending,
+                        onSort: toggleSort
+                    )
+                    if rows.isEmpty {
+                        Text("No rows match “\(filterText)”")
+                            .font(Stanford.caption(12))
+                            .foregroundStyle(.secondary)
+                            .padding(.vertical, 4)
+                    } else {
+                        let visibleRows = expanded ? rows : Array(rows.prefix(collapsedRowLimit))
+                        ForEach(Array(visibleRows.enumerated()), id: \.offset) { _, row in
+                            WorkspaceAppStorageRecordRow(
+                                columns: table.columns,
+                                row: row,
+                                rowActions: rowActions,
+                                isPendingDelete: isPendingDelete(row),
+                                onEdit: { action in
+                                    onEdit(action, table.name, row)
+                                },
+                                onDelete: { action, primaryKey in
+                                    onDelete(action, primaryKey, row)
+                                }
+                            )
                         }
-                        .buttonStyle(.plain)
-                        .font(Stanford.caption(11).weight(.medium))
-                        .foregroundStyle(Stanford.lagunita)
-                        .padding(.top, 2)
+                        if rows.count > collapsedRowLimit {
+                            Button(expanded ? "Show fewer" : "Show all \(rows.count) rows") {
+                                expanded.toggle()
+                            }
+                            .buttonStyle(.plain)
+                            .font(Stanford.caption(11).weight(.medium))
+                            .foregroundStyle(Stanford.lagunita)
+                            .padding(.top, 2)
+                        }
                     }
                 }
             }
@@ -1054,15 +1114,32 @@ struct WorkspaceAppStorageTableView: View {
 struct WorkspaceAppStorageHeaderRow: View {
     let columns: [String]
     let hasActions: Bool
+    var sortColumn: String? = nil
+    var ascending: Bool = true
+    var onSort: ((String) -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 10) {
             ForEach(columns.prefix(4), id: \.self) { column in
-                Text(column)
-                    .font(Stanford.caption(11).weight(.semibold))
-                    .foregroundStyle(.secondary)
+                Button { onSort?(column) } label: {
+                    HStack(spacing: 3) {
+                        Text(column)
+                            .font(Stanford.caption(11).weight(.semibold))
+                            .foregroundStyle(sortColumn == column ? Stanford.lagunita : .secondary)
+                            .lineLimit(1)
+                        if sortColumn == column {
+                            Image(systemName: ascending ? "chevron.up" : "chevron.down")
+                                .font(Stanford.caption(8).weight(.bold))
+                                .foregroundStyle(Stanford.lagunita)
+                        }
+                        Spacer(minLength: 0)
+                    }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .lineLimit(1)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(onSort == nil)
+                .help(onSort == nil ? "" : "Sort by \(column)")
             }
             if hasActions {
                 Text("Actions")

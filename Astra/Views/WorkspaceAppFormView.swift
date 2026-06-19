@@ -10,12 +10,23 @@ struct WorkspaceAppFormView: View {
     let onSubmit: ([String: WorkspaceAppStorageValue]) -> Void
 
     @State private var values: [String: WorkspaceAppStorageValue] = [:]
+    @State private var showErrors = false
 
     private var fields: [WorkspaceAppFormFieldPresentation] {
         WorkspaceAppFormPresentationBuilder.presentation(view: view, draft: values)
     }
 
+    private var validationErrors: [String: String] {
+        WorkspaceAppFormValidation.errors(fields: fields, values: values)
+    }
+
     private var isBlocked: Bool { !submitBlockedReasons.isEmpty }
+
+    private func submit() {
+        showErrors = true
+        guard !isBlocked, validationErrors.isEmpty else { return }
+        onSubmit(values)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -37,11 +48,18 @@ struct WorkspaceAppFormView: View {
                 )
             }
 
+            let errors = validationErrors
             ForEach(fields) { field in
-                fieldControl(field)
+                fieldControl(field, error: showErrors ? errors[field.name] : nil)
             }
 
-            Button(action: { onSubmit(values) }) {
+            if showErrors && !errors.isEmpty {
+                Text("Fix the highlighted fields before submitting.")
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(Stanford.poppy)
+            }
+
+            Button(action: submit) {
                 Label("Submit", systemImage: "paperplane")
             }
             .buttonStyle(.borderedProminent)
@@ -59,7 +77,7 @@ struct WorkspaceAppFormView: View {
     }
 
     @ViewBuilder
-    private func fieldControl(_ field: WorkspaceAppFormFieldPresentation) -> some View {
+    private func fieldControl(_ field: WorkspaceAppFormFieldPresentation, error: String?) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 4) {
                 Text(field.label)
@@ -108,6 +126,12 @@ struct WorkspaceAppFormView: View {
                 Text(reason)
                     .font(Stanford.caption(11))
                     .foregroundStyle(.secondary)
+            }
+
+            if let error {
+                Text(error)
+                    .font(Stanford.caption(11).weight(.medium))
+                    .foregroundStyle(Stanford.poppy)
             }
         }
     }

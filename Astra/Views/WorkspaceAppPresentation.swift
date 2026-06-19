@@ -1180,3 +1180,95 @@ enum WorkspaceAppsPresentation {
         return "\(days)d ago"
     }
 }
+
+/// Pure sort + filter for a storage table's rows, so the table view's column-header
+/// sorting and search box stay thin renderers over tested logic. Numeric columns sort
+/// numerically, empty/null values sort last, and ties keep input order (stable).
+enum WorkspaceAppTablePresentation {
+    static func displayRows(
+        _ rows: [[String: WorkspaceAppStorageValue]],
+        searchableColumns: [String],
+        filter: String,
+        sortColumn: String?,
+        ascending: Bool
+    ) -> [[String: WorkspaceAppStorageValue]] {
+        let query = filter.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let filtered = query.isEmpty ? rows : rows.filter { row in
+            searchableColumns.contains { column in
+                WorkspaceAppStorageRowActionPresentationBuilder.displayValue(row[column])
+                    .lowercased()
+                    .contains(query)
+            }
+        }
+        guard let sortColumn else { return filtered }
+        // Empty/null values always sort last, independent of direction — so partition
+        // them out, sort the present values by direction (stable on ties), then append.
+        func isEmpty(_ row: [String: WorkspaceAppStorageValue]) -> Bool {
+            WorkspaceAppStorageRowActionPresentationBuilder.displayValue(row[sortColumn])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty
+        }
+        let indexed = Array(filtered.enumerated())
+        let present = indexed.filter { !isEmpty($0.element) }
+        let empties = indexed.filter { isEmpty($0.element) }
+        let sortedPresent = present.sorted { lhs, rhs in
+            let order = compare(lhs.element[sortColumn], rhs.element[sortColumn])
+            if order == .orderedSame { return lhs.offset < rhs.offset }
+            return ascending ? order == .orderedAscending : order == .orderedDescending
+        }
+        return sortedPresent.map(\.element) + empties.map(\.element)
+    }
+
+    /// Empty/null sorts last; numeric when both parse as numbers; else
+    /// case/diacritic-insensitive natural order.
+    static func compare(_ a: WorkspaceAppStorageValue?, _ b: WorkspaceAppStorageValue?) -> ComparisonResult {
+        let sa = WorkspaceAppStorageRowActionPresentationBuilder.displayValue(a)
+        let sb = WorkspaceAppStorageRowActionPresentationBuilder.displayValue(b)
+        if sa.isEmpty || sb.isEmpty {
+            if sa.isEmpty && sb.isEmpty { return .orderedSame }
+            return sa.isEmpty ? .orderedDescending : .orderedAscending
+        }
+        if let da = Double(sa), let db = Double(sb) {
+            if da == db { return .orderedSame }
+            return da < db ? .orderedAscending : .orderedDescending
+        }
+        return sa.localizedStandardCompare(sb)
+    }
+}
+
+/// Pure per-field validation for a form draft: required fields must be present, and
+/// `number` / `date` fields must parse. Returns field-name → message; empty == valid.
+enum WorkspaceAppFormValidation {
+    static func errors(
+        fields: [WorkspaceAppFormFieldPresentation],
+        values: [String: WorkspaceAppStorageValue]
+    ) -> [String: String] {
+        var errors: [String: String] = [:]
+        for field in fields where !field.readOnly {
+            let raw = WorkspaceAppStorageRowActionPresentationBuilder.displayValue(values[field.name])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if raw.isEmpty {
+                if field.required { errors[field.name] = "Required." }
+                continue
+            }
+            switch field.fieldType {
+            case "number":
+                if Double(raw) == nil { errors[field.name] = "Enter a number." }
+            case "date":
+                if !isISODate(raw) { errors[field.name] = "Use YYYY-MM-DD." }
+            default:
+                break
+            }
+        }
+        return errors
+    }
+
+    /// Strict `yyyy-MM-dd` calendar validity (rejects 2026-13-40), POSIX locale.
+    static func isISODate(_ text: String) -> Bool {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.isLenient = false
+        return formatter.date(from: text) != nil
+    }
+}
