@@ -1049,9 +1049,21 @@ struct WorkspaceAppStorageTableView: View {
                     systemImage: "exclamationmark.triangle"
                 )
             } else if table.rows.isEmpty {
-                Text("No records yet")
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "tray")
+                            .font(Stanford.caption(12))
+                            .foregroundStyle(.secondary)
+                        Text("No records yet")
+                            .font(Stanford.caption(12).weight(.medium))
+                            .foregroundStyle(.primary)
+                    }
+                    Text("Use an Add action above to create the first record.")
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 8)
             } else {
                 VStack(alignment: .leading, spacing: 6) {
                     WorkspaceAppStorageHeaderRow(

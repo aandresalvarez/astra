@@ -36,6 +36,31 @@ struct WorkspaceAppStorageTests {
         #expect(rows[0]["purchased"] == .integer(0))
     }
 
+    @Test("publish seed writes the preview's sample rows into a fresh app database")
+    func seedSampleRowsRoundTrips() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("workspace-app-seed-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let databaseURL = root.appendingPathComponent("app.sqlite")
+        let service = WorkspaceAppStorageService()
+        let schema = Self.grocerySchema()
+        try service.applySchema(schema, databaseURL: databaseURL)
+
+        // Same generator the Studio preview uses — proves seed-on-publish populates a real DB.
+        let table = schema.tables[0]
+        let sampleRows = WorkspaceAppDraftPreviewBuilder.defaultSampleRows(for: table, count: 3, seed: 0)
+        for row in sampleRows {
+            try service.insertRecord(row, into: table.name, databaseURL: databaseURL)
+        }
+
+        let stored = try service.records(in: table.name, databaseURL: databaseURL)
+        #expect(stored.count == 3)
+        // Every declared column is populated, so a seeded app never renders dead-empty.
+        #expect(stored.allSatisfy { $0.count == table.columns.count })
+    }
+
     @Test("storage rejects unsafe table and column identifiers")
     func storageRejectsUnsafeIdentifiers() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())

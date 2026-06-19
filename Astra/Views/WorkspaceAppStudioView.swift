@@ -5,7 +5,7 @@ struct WorkspaceAppStudioView: View {
     let initialIntent: String
     let existingManifest: WorkspaceAppManifest?
     let onCancel: () -> Void
-    let onPublish: (WorkspaceAppStudioDraft) throws -> Void
+    let onPublish: (WorkspaceAppStudioDraft, _ seedSampleData: Bool) throws -> Void
 
     @State private var intent: String
     @State private var draft: WorkspaceAppStudioDraft
@@ -15,6 +15,7 @@ struct WorkspaceAppStudioView: View {
     @State private var generationTask: Task<Void, Never>?
     @State private var isPreviewing = false
     @State private var isTesting = false
+    @State private var seedSampleData = false
 
     // Generation provider + model. Bound to the same global default the task
     // composer uses, so picking a provider here (e.g. switching off an
@@ -28,7 +29,7 @@ struct WorkspaceAppStudioView: View {
         initialIntent: String = WorkspaceAppStudioBuilder.defaultIntent,
         existingManifest: WorkspaceAppManifest? = nil,
         onCancel: @escaping () -> Void,
-        onPublish: @escaping (WorkspaceAppStudioDraft) throws -> Void
+        onPublish: @escaping (WorkspaceAppStudioDraft, _ seedSampleData: Bool) throws -> Void
     ) {
         self.workspace = workspace
         self.initialIntent = initialIntent
@@ -298,12 +299,31 @@ struct WorkspaceAppStudioView: View {
                 ideasSection
                 proposalSection
                 validationSection
+                publishOptionsRow
                 manifestSection
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(minWidth: 380, idealWidth: 500)
+    }
+
+    /// Opt-in seed: write a few example rows into the published app's storage so it
+    /// opens populated instead of dead-empty. Default off; the rows are clearly marked
+    /// "Sample …" and the user can delete them.
+    private var publishOptionsRow: some View {
+        Toggle(isOn: $seedSampleData) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Start with sample data")
+                    .font(Stanford.caption(12).weight(.medium))
+                    .foregroundStyle(.primary)
+                Text("Seed a few example rows on publish so the app isn't empty. You can delete them anytime.")
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .toggleStyle(.switch)
+        .controlSize(.small)
     }
 
     /// Right pane: the live "test version" of the app, re-rendered from the current
@@ -603,8 +623,8 @@ struct WorkspaceAppStudioView: View {
 
     private func publishDraft() {
         do {
-            try onPublish(draft)
-            statusMessage = "Published."
+            try onPublish(draft, seedSampleData)
+            statusMessage = seedSampleData ? "Published with sample data." : "Published."
         } catch {
             statusMessage = String(describing: error)
         }

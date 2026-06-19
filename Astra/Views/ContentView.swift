@@ -700,7 +700,9 @@ struct ContentView: View {
             initialIntent: "Build a Workspace App for \(workspace.name).",
             existingManifest: nil,
             onCancel: { isComposingWorkspaceApp = false },
-            onPublish: { draft in try publishWorkspaceApp(draft, workspace: workspace) }
+            onPublish: { draft, seedSampleData in
+                try publishWorkspaceApp(draft, seedSampleData: seedSampleData, workspace: workspace)
+            }
         )
     }
 
@@ -742,7 +744,7 @@ struct ContentView: View {
         )
     }
 
-    private func publishWorkspaceApp(_ draft: WorkspaceAppStudioDraft, workspace: Workspace) throws {
+    private func publishWorkspaceApp(_ draft: WorkspaceAppStudioDraft, seedSampleData: Bool = false, workspace: Workspace) throws {
         // Dedup the logical id against this workspace's apps so two apps generated from the
         // same intent don't collide on appID — a collision would duplicate the @Model record
         // and share one versions/ directory. (createApp itself does not dedup; it inserts.)
@@ -772,6 +774,9 @@ struct ContentView: View {
             )
         } catch {
             AppLogger.error("Workspace app published but version snapshot failed: \(error)", category: "WorkspaceApps")
+        }
+        if seedSampleData {
+            WorkspaceAppSampleSeeder.seed(manifest: manifest, workspacePath: workspace.primaryPath, appID: result.app.logicalID)
         }
         isComposingWorkspaceApp = false
         setSelectedWorkspaceApp(result.app)
