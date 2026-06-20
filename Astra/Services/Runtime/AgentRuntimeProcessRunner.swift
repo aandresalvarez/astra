@@ -107,13 +107,19 @@ final class AgentRuntimeProcessRunner {
         }
         let environment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
         if environment.workspaceCommandsRunInsideContainer,
-           !DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: plan.runtime) {
-            let message = "\(plan.runtime.displayName) cannot yet route workspace shell commands through ASTRA's Docker executor. Switch this task to Claude Code or choose Host execution, then retry."
+           (!DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: plan.runtime)
+            || plan.commandPlannedFields["docker_workspace_executor_supported"] == "false") {
+            let detail = plan.commandPlannedFields["docker_workspace_executor_unsupported_detail"]?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let message = detail?.isEmpty == false
+                ? detail!
+                : "\(plan.runtime.displayName) cannot yet route workspace shell commands through ASTRA's Docker executor. Switch this task to Claude Code or choose Host execution, then retry."
             AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.task.id, fields: [
                 "runtime": plan.runtime.rawValue,
                 "reason": "docker_workspace_executor_unsupported_runtime",
                 "execution_environment": environment.kind.rawValue,
-                "provider_placement": environment.effectiveProviderPlacement.rawValue
+                "provider_placement": environment.effectiveProviderPlacement.rawValue,
+                "detail": detail ?? ""
             ], level: .error)
             return .blocked(AgentProcessResult(
                 exitCode: -1,

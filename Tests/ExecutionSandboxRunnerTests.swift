@@ -190,10 +190,10 @@ struct ExecutionSandboxRunnerTests {
         }
     }
 
-    @Test("sandboxedPlan blocks unsupported runtimes for Docker workspace command execution")
-    func sandboxedPlanBlocksUnsupportedDockerWorkspaceRuntime() {
+    @Test("sandboxedPlan blocks runtimes without Docker workspace command support")
+    func sandboxedPlanBlocksRuntimeWithoutDockerWorkspaceSupport() {
         withStandardEnforcement(.off) {
-            let task = AgentTask(title: "Docker", goal: "Run commands", runtime: .copilotCLI)
+            let task = AgentTask(title: "Docker", goal: "Run commands", runtime: .codexCLI)
             task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
                 id: "image:workspace",
                 kind: .dockerImage,
@@ -204,7 +204,7 @@ struct ExecutionSandboxRunnerTests {
                 prompt: "p",
                 task: task,
                 workspacePath: "/tmp/whatever",
-                executablePath: "/bin/copilot",
+                executablePath: "/bin/codex",
                 providerHomeDirectory: "",
                 permissionPolicy: .restricted,
                 executionPolicy: .default,
@@ -214,7 +214,7 @@ struct ExecutionSandboxRunnerTests {
 
             let runner = AgentRuntimeProcessRunner()
             let outcome = runner.sandboxedPlan(
-                adapter: FakeLaunchAdapter(runtime: .copilotCLI, currentDirectory: "/tmp/whatever"),
+                adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: "/tmp/whatever"),
                 context: context
             )
 

@@ -1121,7 +1121,7 @@ enum DockerWorkspaceMCPProjection {
     }
 
     static func supportsHostProviderWorkspaceExecutor(runtime: AgentRuntimeID) -> Bool {
-        runtime == .claudeCode
+        runtime == .claudeCode || runtime == .copilotCLI
     }
 
     static func resolvedServer(
