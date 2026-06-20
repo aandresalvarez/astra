@@ -483,7 +483,7 @@ struct ComposerToolbar: View {
             Button {
                 isPolicySheetPresented = true
             } label: {
-                Label("Policy details...", systemImage: "checklist.shield")
+                Label("Policy details...", systemImage: "checkmark.shield")
             }
         } label: {
             ViewThatFits(in: .horizontal) {
