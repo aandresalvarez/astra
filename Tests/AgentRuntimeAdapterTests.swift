@@ -1477,6 +1477,72 @@ struct AgentRuntimeAdapterTests {
         #expect(!availableTools.contains("bash"))
     }
 
+    @Test("Codex Docker workspace mode routes native shell through ASTRA MCP helper")
+    @MainActor
+    func codexDockerWorkspaceModeRoutesNativeShellThroughAstraMCPHelper() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-codex-docker-workspace-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Docker Workspace", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Summarize",
+            goal: "Summarize files",
+            workspace: workspace,
+            model: "gpt-5.5",
+            runtime: .codexCLI
+        )
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:workspace",
+            kind: .dockerImage,
+            displayName: "Workspace Image",
+            image: "astra/workspace:latest",
+            credentialProjections: [
+                ExecutionEnvironmentCredentialProjection.gcpADC(
+                    hostPath: root.appendingPathComponent(".config/gcloud").path
+                )
+            ]
+        ))
+        let runID = UUID(uuidString: "F34F4B79-4906-4F26-BD27-F902D3EAC391")
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .codexCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "summarize",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/codex-not-present",
+                providerHomeDirectory: root.appendingPathComponent("codex-home", isDirectory: true).path,
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30,
+                runID: runID
+            ))
+
+        #expect(plan.executablePath == "/bin/codex-not-present")
+        #expect(plan.environment["ASTRA_WORKSPACE_DOCKER_IMAGE"] == "astra/workspace:latest")
+        #expect(plan.environment["ASTRA_WORKSPACE_DOCKER_CONTAINER"] == DockerWorkspaceMCPProjection.containerName(taskID: task.id, runID: runID))
+        #expect(plan.environment["ASTRA_WORKSPACE_DOCKER_ENV"]?.contains("GOOGLE_APPLICATION_CREDENTIALS") == true)
+        #expect(plan.commandPlannedFields["docker_workspace_executor"] == "true")
+        #expect(plan.commandPlannedFields["docker_workspace_executor_supported"] == "true")
+        #expect(plan.commandPlannedFields["docker_workspace_tool"] == DockerWorkspaceMCPProjection.providerToolPermission)
+        #expect(plan.commandPlannedFields["docker_workspace_credential_projection_count"] == "1")
+        #expect(plan.commandPlannedFields["uses_mcp_config_overrides"] == "true")
+        #expect(plan.commandPlannedFields["mcp_server_ids"]?.contains(DockerWorkspaceMCPProjection.serverID) == true)
+
+        let configValues = Self.argumentValues(after: "-c", in: plan.arguments)
+        let mcpConfig = try #require(configValues.first { $0.hasPrefix("mcp_servers=") })
+        #expect(mcpConfig.contains("\"astra_workspace\"={"))
+        #expect(mcpConfig.contains("command=\"\((RuntimePathResolver.astraToolsPath as NSString).appendingPathComponent("astra-workspace"))\""))
+        #expect(mcpConfig.contains("args=[]"))
+        let envVars = mcpConfig
+        #expect(envVars.contains("ASTRA_WORKSPACE_DOCKER_IMAGE"))
+        #expect(envVars.contains("ASTRA_WORKSPACE_DOCKER_ENV"))
+        #expect(envVars.contains("ASTRA_WORKSPACE_TASK_ID"))
+    }
+
     @Test("Copilot Docker workspace mode avoids broad native shell in Auto policy")
     @MainActor
     func copilotDockerWorkspaceModeAvoidsBroadNativeShellInAutoPolicy() throws {
