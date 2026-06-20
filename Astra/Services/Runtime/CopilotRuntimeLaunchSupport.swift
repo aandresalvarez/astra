@@ -8,6 +8,7 @@ struct CopilotMCPLaunchProjection {
     let workspaceExecutorEnvironment: [String: String]
     let dockerWorkspaceExecutorSupported: Bool
     let dockerWorkspaceUnsupportedDetail: String
+    let browserBridgeMCPToolSupported: Bool
 
     var readablePaths: [String] {
         configURL.map { [$0.deletingLastPathComponent().path] } ?? []
@@ -18,9 +19,11 @@ struct CopilotMCPLaunchProjection {
         workspacePath: String,
         runID: UUID?,
         executionEnvironment: WorkspaceExecutionEnvironment,
+        contextText: String,
         capabilities: CopilotCLICapabilities
     ) -> CopilotMCPLaunchProjection {
         let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
+        var browserServerProjected = false
         var servers: [MCPRuntimeProjection.ResolvedServer] = []
         if capabilities.supportsAdditionalMCPConfig {
             servers = MCPRuntimeProjection.enabledServers(
@@ -35,6 +38,13 @@ struct CopilotMCPLaunchProjection {
                 runID: runID
             ) {
                 servers.append(workspaceServer)
+            }
+            if let browserServer = BrowserBridgeMCPProjection.resolvedServer(
+                for: task,
+                contextText: contextText
+            ) {
+                servers.append(browserServer)
+                browserServerProjected = true
             }
         }
 
@@ -61,7 +71,8 @@ struct CopilotMCPLaunchProjection {
             allowedTools: configURL == nil ? [] : MCPRuntimeProjection.allowedToolPermissions(servers: servers),
             workspaceExecutorEnvironment: workspaceExecutorEnvironment,
             dockerWorkspaceExecutorSupported: dockerWorkspaceExecutorSupported,
-            dockerWorkspaceUnsupportedDetail: unsupportedDetail
+            dockerWorkspaceUnsupportedDetail: unsupportedDetail,
+            browserBridgeMCPToolSupported: browserServerProjected && configURL != nil
         )
     }
 
@@ -165,6 +176,7 @@ enum CopilotLaunchDiagnostics {
             "docker_workspace_mcp_env_key_count": String(mcpProjection.workspaceExecutorEnvironment.count),
             "docker_workspace_container_env_key_count": String(dockerContainerEnvCount),
             "docker_workspace_credential_projection_count": String(dockerCredentialProjectionCount),
+            "browser_bridge_mcp_tool": mcpProjection.browserBridgeMCPToolSupported ? BrowserBridgeMCPProjection.providerToolPermission : "none",
             "mcp_server_count": String(mcpProjection.configURL == nil ? 0 : mcpProjection.servers.count),
             "mcp_config_rendered": String(mcpProjection.configURL != nil),
             "uses_output_format_json": String(plan.arguments.contains("--output-format=json")),

@@ -1959,6 +1959,39 @@ struct TaskCapabilityResolverTests {
         #expect(prompt?.contains("astra-browser google-drive-open") == true)
     }
 
+    @Test("Hidden adapter-only browser state does not expose browser bridge to unrelated tasks")
+    func hiddenAdapterOnlyBrowserStateDoesNotExposeBrowserBridgeToUnrelatedTasks() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Docker Browser Adapter Workspace", primaryPath: "/tmp/docker-browser-adapter-workspace")
+        context.insert(workspace)
+
+        let task = AgentTask(
+            title: "Summarize folder contents",
+            goal: "summarize the contents of this folder using the configured Docker image",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: nil,
+            currentTitle: nil,
+            taskID: task.id,
+            isPresented: false,
+            isEnabled: true,
+            enabledBrowserAdapters: [BrowserSiteAdapterID.github]
+        )
+        defer { ShelfBrowserBridgeRegistry.shared.reset() }
+
+        let contextText = "summarize the contents of this folder using the configured Docker image"
+
+        #expect(!TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText))
+        #expect(AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: task, contextText: contextText)["ASTRA_BROWSER_URL"] == nil)
+    }
+
     @Test("Browser adapters require runnable catalog policy")
     func browserAdaptersRequireRunnableCatalogPolicy() throws {
         let workspace = Workspace(name: "Draft Browser Workspace", primaryPath: "/tmp/draft-browser-workspace")

@@ -564,7 +564,7 @@ struct TaskCapabilityResolver {
     static func shouldExposeBrowserBridge(for task: AgentTask, contextText: String = "") -> Bool {
         let state = ShelfBrowserBridgeRegistry.shared.promptState(for: task.id)
         guard state.isExposed else { return false }
-        if state.isPresented || state.hasCurrentURL || !state.enabledBrowserAdapters.isEmpty {
+        if state.isPresented || state.hasCurrentURL {
             return true
         }
         let text = searchableTaskText(task: task, contextText: contextText)
