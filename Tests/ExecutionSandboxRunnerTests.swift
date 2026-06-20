@@ -187,6 +187,44 @@ struct ExecutionSandboxRunnerTests {
     @Test("sandboxedPlan blocks runtimes without Docker workspace command support")
     func sandboxedPlanBlocksRuntimeWithoutDockerWorkspaceSupport() {
         withStandardEnforcement(.off) {
+            let task = AgentTask(title: "Docker", goal: "Run commands", runtime: .cursorCLI)
+            task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+                id: "image:workspace",
+                kind: .dockerImage,
+                displayName: "Workspace Image",
+                image: "astra/workspace:latest"
+            ))
+            let context = AgentRuntimeProcessLaunchContext(
+                prompt: "p",
+                task: task,
+                workspacePath: "/tmp/whatever",
+                executablePath: "/bin/cursor-agent",
+                providerHomeDirectory: "",
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 1
+            )
+
+            let runner = AgentRuntimeProcessRunner()
+            let outcome = runner.sandboxedPlan(
+                adapter: FakeLaunchAdapter(runtime: .cursorCLI, currentDirectory: "/tmp/whatever"),
+                context: context
+            )
+
+            guard case .blocked(let result) = outcome else {
+                Issue.record("Expected unsupported runtime to fail closed for Docker workspace execution")
+                return
+            }
+            #expect(result.exitCode == -1)
+            #expect(result.runtimeStopReason == "docker_workspace_executor_unsupported_runtime")
+            #expect(result.runtimeStopMessage?.contains("cannot yet route workspace shell commands") == true)
+        }
+    }
+
+    @Test("sandboxedPlan allows Codex Docker workspace command support")
+    func sandboxedPlanAllowsCodexDockerWorkspaceSupport() {
+        withStandardEnforcement(.off) {
             let task = AgentTask(title: "Docker", goal: "Run commands", runtime: .codexCLI)
             task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
                 id: "image:workspace",
@@ -212,13 +250,12 @@ struct ExecutionSandboxRunnerTests {
                 context: context
             )
 
-            guard case .blocked(let result) = outcome else {
-                Issue.record("Expected unsupported runtime to fail closed for Docker workspace execution")
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected Codex Docker workspace execution to proceed to a launch plan")
                 return
             }
-            #expect(result.exitCode == -1)
-            #expect(result.runtimeStopReason == "docker_workspace_executor_unsupported_runtime")
-            #expect(result.runtimeStopMessage?.contains("cannot yet route workspace shell commands") == true)
+            #expect(plan.commandPlannedFields["workspace_executor_mode"] == "host_provider_container_workspace")
+            #expect(plan.commandPlannedFields["workspace_executor"] == "docker")
         }
     }
 
