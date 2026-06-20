@@ -23,6 +23,7 @@ struct TaskRunStopReason: RawRepresentable, Codable, Sendable, Hashable, Express
     static let capabilityRuntimeResourcesMissing: TaskRunStopReason = "capability_runtime_resources_missing"
     static let completed: TaskRunStopReason = "completed"
     static let connectorPreflightFailed: TaskRunStopReason = "connector_preflight_failed"
+    static let credentialProjectionRequired: TaskRunStopReason = "credential_projection_required"
     static let deliverableVerificationFailed: TaskRunStopReason = "deliverable_verification_failed"
     static let dockerDaemonUnavailable: TaskRunStopReason = "docker_daemon_unavailable"
     static let dockerImageUnavailable: TaskRunStopReason = "docker_image_unavailable"

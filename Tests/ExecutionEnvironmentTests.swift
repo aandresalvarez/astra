@@ -228,6 +228,154 @@ struct ExecutionEnvironmentTests {
         #expect(containerEnvironment["GOOGLE_APPLICATION_CREDENTIALS"] == "/root/.config/gcloud/application_default_credentials.json")
     }
 
+    @Test("Docker credential readiness blocks BigQuery workspaces when host ADC is not projected")
+    func dockerCredentialReadinessBlocksBigQueryWorkspaceWithoutProjection() throws {
+        let root = try makeTempDir("docker-credential-readiness-missing")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try writeBigQueryDBTProfile(in: root)
+        let home = try makeTempDir("docker-credential-readiness-home")
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        try writeADCFile(inHome: home)
+        let workspace = Workspace(name: "Docker", primaryPath: root)
+        workspace.activeExecutionEnvironmentJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test Image",
+            sourcePath: root,
+            image: "astra/test:latest"
+        ))
+        let task = AgentTask(title: "Run dbt", goal: "Check BigQuery", workspace: workspace)
+
+        let report = ExecutionEnvironmentCredentialReadinessService.evaluate(
+            task: task,
+            codeDirectory: root,
+            homeDirectoryPath: home
+        )
+
+        #expect(report.state == .hostCredentialAvailableButNotProjected)
+        #expect(report.shouldBlockLaunch)
+        #expect(report.requiredProjectionIDs == [ExecutionEnvironmentCredentialProjection.gcpADCID])
+        #expect(report.evidence.contains("dbt/profiles.yml"))
+        #expect(report.userMessage.contains("Container credential preflight stopped this task"))
+    }
+
+    @Test("Docker credential readiness passes BigQuery workspaces when ADC is projected")
+    func dockerCredentialReadinessPassesBigQueryWorkspaceWithProjection() throws {
+        let root = try makeTempDir("docker-credential-readiness-ready")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try writeBigQueryDBTProfile(in: root)
+        let home = try makeTempDir("docker-credential-readiness-ready-home")
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let gcloudDirectory = try writeADCFile(inHome: home)
+        let workspace = Workspace(name: "Docker", primaryPath: root)
+        workspace.activeExecutionEnvironmentJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test Image",
+            sourcePath: root,
+            image: "astra/test:latest",
+            credentialProjections: [
+                ExecutionEnvironmentCredentialProjection.gcpADC(hostPath: gcloudDirectory)
+            ]
+        ))
+        let task = AgentTask(title: "Run dbt", goal: "Check BigQuery", workspace: workspace)
+
+        let report = ExecutionEnvironmentCredentialReadinessService.evaluate(
+            task: task,
+            codeDirectory: root,
+            homeDirectoryPath: home
+        )
+
+        #expect(report.state == .ready)
+        #expect(!report.shouldBlockLaunch)
+        #expect(report.projectedContainerPath == ExecutionEnvironmentCredentialProjection.gcpADCContainerPath)
+        #expect(report.projectedEnvironmentKeys == ["CLOUDSDK_CONFIG", "GOOGLE_APPLICATION_CREDENTIALS"])
+    }
+
+    @Test("Docker credential readiness detects pinned task snapshots missing workspace credentials")
+    func dockerCredentialReadinessDetectsPinnedSnapshotMissingProjection() throws {
+        let root = try makeTempDir("docker-credential-readiness-stale")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try writeBigQueryDBTProfile(in: root)
+        let home = try makeTempDir("docker-credential-readiness-stale-home")
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let gcloudDirectory = try writeADCFile(inHome: home)
+        let staleEnvironment = WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test Image",
+            sourcePath: root,
+            image: "astra/test:latest"
+        )
+        let connectedEnvironment = WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test Image",
+            sourcePath: root,
+            image: "astra/test:latest",
+            credentialProjections: [
+                ExecutionEnvironmentCredentialProjection.gcpADC(hostPath: gcloudDirectory)
+            ]
+        )
+        let workspace = Workspace(name: "Docker", primaryPath: root)
+        workspace.activeExecutionEnvironmentJSON = ExecutionEnvironmentStore.encode(connectedEnvironment)
+        let task = AgentTask(title: "Run dbt", goal: "Check BigQuery", workspace: workspace)
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(staleEnvironment)
+
+        let report = ExecutionEnvironmentCredentialReadinessService.evaluate(
+            task: task,
+            codeDirectory: root,
+            homeDirectoryPath: home
+        )
+
+        #expect(report.state == .pinnedTaskSnapshotMissingProjection)
+        #expect(report.shouldBlockLaunch)
+        #expect(report.isTaskSnapshotStale)
+        #expect(report.remediation?.contains("Fork this task") == true)
+    }
+
+    @MainActor
+    @Test("Credential projection preflight stops provider launch before agent execution")
+    func credentialProjectionPreflightStopsProviderLaunchBeforeAgentExecution() throws {
+        let root = try makeTempDir("docker-credential-preflight")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try writeBigQueryDBTProfile(in: root)
+        let home = try makeTempDir("docker-credential-preflight-home")
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        try writeADCFile(inHome: home)
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Docker", primaryPath: root)
+        workspace.activeExecutionEnvironmentJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test Image",
+            sourcePath: root,
+            image: "astra/test:latest"
+        ))
+        let task = AgentTask(title: "Run dbt", goal: "Check BigQuery", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let result = AgentRuntimeLaunchPreflight.preflightCredentialProjectionBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "test",
+            codeDirectory: root,
+            homeDirectoryPath: home
+        )
+
+        #expect(!result.didPass)
+        #expect(result.status == .credentialProjectionFailed)
+        #expect(result.reason == TaskRunStopReason.credentialProjectionRequired.rawValue)
+        #expect(run.status == .failed)
+        #expect(run.typedStopReason == .credentialProjectionRequired)
+        #expect(task.status == .failed)
+    }
+
     @Test("Docker launch planning falls back to provider binary name inside the image")
     func dockerPlannerUsesProviderBinaryNameWhenContainerExecutableIsNotConfigured() throws {
         let root = try makeTempDir("docker-plan-provider")
@@ -833,6 +981,38 @@ struct ExecutionEnvironmentTests {
             .appendingPathComponent("\(name)-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url.path
+    }
+
+    private func writeBigQueryDBTProfile(in root: String) throws {
+        let dbt = (root as NSString).appendingPathComponent("dbt")
+        try FileManager.default.createDirectory(atPath: dbt, withIntermediateDirectories: true)
+        try """
+        pedsnet:
+          target: local
+          outputs:
+            local:
+              type: bigquery
+              method: oauth
+              project: som-rit-phi-starr-dev
+              dataset: root
+        """.write(
+            toFile: (dbt as NSString).appendingPathComponent("profiles.yml"),
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
+    @discardableResult
+    private func writeADCFile(inHome home: String) throws -> String {
+        let gcloudDirectory = (home as NSString).appendingPathComponent(".config/gcloud")
+        try FileManager.default.createDirectory(atPath: gcloudDirectory, withIntermediateDirectories: true)
+        try "{}".write(
+            toFile: (gcloudDirectory as NSString)
+                .appendingPathComponent(ExecutionEnvironmentCredentialProjection.gcpADCFileName),
+            atomically: true,
+            encoding: .utf8
+        )
+        return gcloudDirectory
     }
 
     private func makeContainer() throws -> ModelContainer {

@@ -63,6 +63,29 @@ struct ProviderLaunchCapabilityScopeTests {
         ) == "success")
     }
 
+    @Test("Credential projection preflight runs in shared worker path before provider launch")
+    func credentialProjectionPreflightRunsBeforeProviderLaunch() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let workerURL = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Runtime")
+            .appendingPathComponent("AgentRuntimeWorker.swift")
+        let workerSource = try String(contentsOf: workerURL, encoding: .utf8)
+        let preflight = "AgentRuntimeLaunchPreflight.preflightCredentialProjectionBeforeLaunch("
+        let promptBuild = "let prompt = promptOverride ?? buildPrompt(for: task)"
+        let providerLaunch = "processRunner.runRuntimeProcess"
+        let preflightRange = try #require(workerSource.range(of: preflight))
+        let promptBuildRange = try #require(workerSource.range(of: promptBuild))
+        let providerLaunchRange = try #require(workerSource.range(of: providerLaunch))
+
+        #expect(sourceContains(workerSource, preflight))
+        #expect(preflightRange.lowerBound < promptBuildRange.lowerBound)
+        #expect(preflightRange.lowerBound < providerLaunchRange.lowerBound)
+    }
+
     private func sourceContains(_ source: String, _ expected: String) -> Bool {
         normalizeWhitespace(source).contains(normalizeWhitespace(expected))
     }
