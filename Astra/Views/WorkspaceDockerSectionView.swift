@@ -29,6 +29,11 @@ struct WorkspaceDockerSectionView: View {
 
             environmentPickerRow
 
+            if viewModel.shouldShowCredentialProjectionRow {
+                rowDivider
+                credentialProjectionRow
+            }
+
             if viewModel.buildRequest != nil {
                 rowDivider
                 buildActionRow
@@ -130,6 +135,36 @@ struct WorkspaceDockerSectionView: View {
         .buttonStyle(.plain)
         .disabled(!viewModel.canChangeActiveEnvironment)
         .help(viewModel.environmentPickerHelp)
+    }
+
+    private var credentialProjectionRow: some View {
+        Button {
+            viewModel.toggleGCPADCProjection()
+        } label: {
+            HStack(spacing: Self.rowIconSpacing) {
+                rowIcon("key.fill", color: viewModel.credentialProjectionIsEnabled ? Stanford.lagunita : .secondary)
+
+                VStack(alignment: .leading, spacing: CapabilityRailLayout.titleSubtitleSpacing) {
+                    rowTitle(viewModel.credentialProjectionTitle)
+                    Text(viewModel.credentialProjectionSubtitle)
+                        .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                .layoutPriority(1)
+
+                Spacer(minLength: 8)
+
+                Image(systemName: viewModel.credentialProjectionActionSystemName)
+                    .font(Stanford.ui(CapabilityRailLayout.rowChevronFontSize + 2, weight: .semibold))
+                    .foregroundStyle(viewModel.credentialProjectionIsEnabled ? Stanford.lagunita : .secondary)
+            }
+            .frame(maxWidth: .infinity, minHeight: CapabilityRailLayout.setupRowMinHeight, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!viewModel.credentialProjectionIsEnabled)
+        .help(viewModel.credentialProjectionHelp)
     }
 
     private var buildActionRow: some View {

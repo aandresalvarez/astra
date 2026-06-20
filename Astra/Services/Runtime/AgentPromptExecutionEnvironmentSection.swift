@@ -10,6 +10,7 @@ enum AgentPromptExecutionEnvironmentSection {
         let containerCodeDir = mapper.containerPath(forHostPath: codeDir) ?? environment.containerWorkingDirectory
         let taskDir = TaskWorkspaceAccess(task: task).taskFolder
         let containerTaskDir = mapper.containerPath(forHostPath: taskDir) ?? "/astra/task"
+        let credentialLine = credentialProjectionLine(for: environment)
         if environment.workspaceCommandsRunInsideContainer {
             return PromptContextSection(
                 kind: .supportingContext,
@@ -19,6 +20,7 @@ enum AgentPromptExecutionEnvironmentSection {
                 Workspace command executor: Docker image \(environment.image ?? environment.displayName)
                 Container working directory: \(containerCodeDir)
                 Container task output folder: \(containerTaskDir)
+                \(credentialLine)
                 Run project commands with the ASTRA MCP tool `mcp__astra_workspace__workspace_shell`; it executes inside the Docker container. Do not use native host Bash for project commands in this workspace. Host workspace files are bind-mounted into the container; use the container paths above while running commands and report host paths in final summaries when relevant.
                 Prefer tools installed in the image environment. Do not use host-created virtual environments from bind-mounted workspace paths, such as `/workspace/.venv`; macOS virtualenv symlinks and compiled extensions are not portable to Linux containers.
                 """,
@@ -34,11 +36,21 @@ enum AgentPromptExecutionEnvironmentSection {
             Provider placement: container
             Container working directory: \(containerCodeDir)
             Container task output folder: \(containerTaskDir)
+            \(credentialLine)
             Host workspace files are bind-mounted into the container; use the container paths above while running commands.
             """,
             sourcePointers: [codeDir, taskDir].map {
                 PromptContextSourcePointer(label: "workspace path", target: $0)
             }
         )
+    }
+
+    private static func credentialProjectionLine(for environment: WorkspaceExecutionEnvironment) -> String {
+        let projections = environment.effectiveCredentialProjections
+        guard !projections.isEmpty else { return "Credential projections: none." }
+        let summary = projections
+            .map { "\($0.displayName) mounted \($0.access == .readOnly ? "read-only" : "read-write") at \($0.containerPath)" }
+            .joined(separator: "; ")
+        return "Credential projections: \(summary)."
     }
 }

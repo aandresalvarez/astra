@@ -1425,6 +1425,11 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
                 "base_allowed_tools_count": String(baseProviderAllowed.count),
                 "docker_workspace_executor": String(usesDockerWorkspaceExecutor),
                 "docker_workspace_tool": usesDockerWorkspaceExecutor ? DockerWorkspaceMCPProjection.providerToolPermission : "none",
+                "docker_workspace_mcp_env_key_count": String(workspaceExecutorEnvironment.count),
+                "docker_workspace_container_env_key_count": String(
+                    DockerExecutionPlanner.credentialProjectionEnvironment(environment: executionEnvironment).count
+                ),
+                "docker_workspace_credential_projection_count": String(executionEnvironment.effectiveCredentialProjections.count),
                 "native_shell_removed_for_workspace_executor": String(usesDockerWorkspaceExecutor),
                 "provider_launch_allowed_tool_count": String(nativeAllowedTools.count),
                 "runtime_support_tool_count": String(runtimeSupportTools.count),

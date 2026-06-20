@@ -1335,7 +1335,12 @@ struct AgentRuntimeAdapterTests {
             id: "image:workspace",
             kind: .dockerImage,
             displayName: "Workspace Image",
-            image: "astra/workspace:latest"
+            image: "astra/workspace:latest",
+            credentialProjections: [
+                ExecutionEnvironmentCredentialProjection.gcpADC(
+                    hostPath: root.appendingPathComponent(".config/gcloud").path
+                )
+            ]
         )
         task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(executionEnvironment)
         let runID = UUID(uuidString: "5EB2B3FA-CB19-4B0D-8BB2-D0673C49B113")
@@ -1359,8 +1364,10 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.environment["ASTRA_WORKSPACE_DOCKER_IMAGE"] == "astra/workspace:latest")
         #expect(plan.environment["ASTRA_WORKSPACE_DOCKER_CONTAINER"] == DockerWorkspaceMCPProjection.containerName(taskID: task.id, runID: runID))
         #expect(plan.environment["ASTRA_WORKSPACE_DOCKER_WORKDIR"] == "/workspace")
+        #expect(plan.environment["ASTRA_WORKSPACE_DOCKER_ENV"]?.contains("GOOGLE_APPLICATION_CREDENTIALS") == true)
         #expect(plan.commandPlannedFields["docker_workspace_executor"] == "true")
         #expect(plan.commandPlannedFields["docker_workspace_tool"] == DockerWorkspaceMCPProjection.providerToolPermission)
+        #expect(plan.commandPlannedFields["docker_workspace_credential_projection_count"] == "1")
         #expect(plan.commandPlannedFields["native_shell_removed_for_workspace_executor"] == "true")
 
         let visibleToolsIndex = try #require(plan.arguments.firstIndex(of: "--tools"))
@@ -1385,6 +1392,7 @@ struct AgentRuntimeAdapterTests {
         #expect(workspaceServer["command"] as? String == (RuntimePathResolver.astraToolsPath as NSString).appendingPathComponent("astra-workspace"))
         let env = try #require(workspaceServer["env"] as? [String: String])
         #expect(env["ASTRA_WORKSPACE_DOCKER_IMAGE"] == "${ASTRA_WORKSPACE_DOCKER_IMAGE}")
+        #expect(env["ASTRA_WORKSPACE_DOCKER_ENV"] == "${ASTRA_WORKSPACE_DOCKER_ENV}")
     }
 
     @Test("Adapters own provider stream parsing")
