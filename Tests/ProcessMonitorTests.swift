@@ -1269,6 +1269,74 @@ struct RuntimePolicyGuardTests {
         #expect(monitor.policyApprovalRequired == false)
     }
 
+    @Test("Docker workspace MCP command support allows provider aliases")
+    func dockerWorkspaceMCPCommandSupportAllowsProviderAliases() throws {
+        let cases: [(AgentRuntimeID, String)] = [
+            (.claudeCode, DockerWorkspaceMCPProjection.providerToolPermission),
+            (.copilotCLI, DockerWorkspaceMCPProjection.copilotObservedToolName),
+            (.codexCLI, DockerWorkspaceMCPProjection.toolName)
+        ]
+
+        for (runtime, toolName) in cases {
+            let descriptor = try #require(DockerWorkspaceMCPProjection.runtimeSupportToolDescriptor(for: runtime))
+            let manifest = runtimePolicyManifest(
+                allowedTools: ["read"],
+                providerID: runtime,
+                runtimeSupportTools: [descriptor]
+            )
+            let monitor = AgentRuntimeWorker.ProcessMonitor(
+                tokenBudget: Int.max,
+                taskID: manifest.taskID,
+                policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+            )
+
+            let shouldKill = monitor.processEvent(
+                .toolUse(
+                    name: toolName,
+                    id: "docker-workspace",
+                    input: [
+                        "command": "test -r /root/.config/gcloud/application_default_credentials.json",
+                        "timeout_seconds": 5
+                    ]
+                ),
+                process: nil
+            )
+
+            #expect(shouldKill == false)
+            #expect(monitor.policyViolation == false)
+            #expect(monitor.policyApprovalRequired == false)
+        }
+    }
+
+    @Test("Docker workspace support does not bless Codex native command execution")
+    func dockerWorkspaceSupportDoesNotBlessCodexNativeCommandExecution() throws {
+        let descriptor = try #require(DockerWorkspaceMCPProjection.runtimeSupportToolDescriptor(for: .codexCLI))
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["read"],
+            providerID: .codexCLI,
+            runtimeSupportTools: [descriptor]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(
+                name: "command_execution",
+                id: "native-shell",
+                input: ["summary": "/bin/zsh -lc 'cat .astra-docker-secret.txt'"]
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolationMessage?.contains("not in the provider allow-list") == true)
+    }
+
     @Test("Copilot documentation support tool with empty input does not trip policy")
     func copilotDocumentationSupportToolWithEmptyInputDoesNotTripPolicy() {
         let manifest = runtimePolicyManifest(

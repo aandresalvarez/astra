@@ -1115,6 +1115,8 @@ enum DockerWorkspaceMCPProjection {
     static let serverID = "astra_workspace"
     static let toolName = "workspace_shell"
     static let providerToolPermission = "mcp__\(serverID)__\(toolName)"
+    static let copilotObservedToolName = "\(serverID)-\(toolName)"
+    static let copilotPermissionPattern = "\(serverID)(\(toolName))"
 
     static func isEnabled(for environment: WorkspaceExecutionEnvironment) -> Bool {
         environment.workspaceCommandsRunInsideContainer
@@ -1122,6 +1124,52 @@ enum DockerWorkspaceMCPProjection {
 
     static func supportsHostProviderWorkspaceExecutor(runtime: AgentRuntimeID) -> Bool {
         runtime == .claudeCode || runtime == .copilotCLI || runtime == .codexCLI
+    }
+
+    static func runtimeSupportToolDescriptor(for runtime: AgentRuntimeID) -> ProviderRuntimeSupportToolDescriptor? {
+        guard supportsHostProviderWorkspaceExecutor(runtime: runtime) else { return nil }
+        return ProviderRuntimeSupportToolDescriptor(
+            name: providerToolPermission,
+            purpose: "Run project shell commands inside ASTRA's selected Docker workspace container.",
+            allowedInputKeys: ["command", "timeout_seconds"],
+            deniedInputKeys: ProviderRuntimeSupportToolDescriptor.defaultDeniedActionInputKeys.filter {
+                $0 != "command" && $0 != "cmd"
+            },
+            maxSummaryLength: 2_000
+        )
+    }
+
+    static func isObservedWorkspaceTool(_ observedToolName: String, runtime: AgentRuntimeID) -> Bool {
+        let normalized = observedToolName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return false }
+        let commonNames: Set<String> = [
+            providerToolPermission.lowercased(),
+            "\(serverID).\(toolName)".lowercased(),
+            "\(serverID)/\(toolName)".lowercased(),
+            toolName.lowercased()
+        ]
+        if commonNames.contains(normalized) {
+            return true
+        }
+        if runtime == .copilotCLI {
+            return normalized == copilotObservedToolName.lowercased()
+                || normalized == copilotPermissionPattern.lowercased()
+        }
+        return false
+    }
+
+    static func manifestServer() -> RunPermissionManifest.MCPServer {
+        RunPermissionManifest.MCPServer(
+            id: serverID,
+            packageID: "astra-builtin",
+            displayName: "ASTRA Workspace Shell",
+            transport: PluginMCPServer.Transport.stdio.rawValue,
+            allowedTools: [toolName],
+            excludedTools: [],
+            resourcesEnabled: false,
+            promptsEnabled: false,
+            trustLevel: PluginMCPServer.TrustLevel.high.rawValue
+        )
     }
 
     static func resolvedServer(

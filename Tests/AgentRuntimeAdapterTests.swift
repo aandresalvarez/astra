@@ -634,6 +634,7 @@ struct AgentRuntimeAdapterTests {
         #expect(codexPlan.arguments.contains(workspace.primaryPath))
         #expect(codexPlan.arguments.contains("--sandbox"))
         #expect(codexPlan.arguments.contains("workspace-write"))
+        #expect(codexPlan.arguments.contains(#"approval_policy="never""#))
         #expect(codexPlan.arguments.contains("--ask-for-approval") == false)
         #expect(codexPlan.arguments.last == "hello")
         #expect(codexPlan.parsesJSONLines)
@@ -1537,6 +1538,9 @@ struct AgentRuntimeAdapterTests {
         #expect(mcpConfig.contains("\"astra_workspace\"={"))
         #expect(mcpConfig.contains("command=\"\((RuntimePathResolver.astraToolsPath as NSString).appendingPathComponent("astra-workspace"))\""))
         #expect(mcpConfig.contains("args=[]"))
+        #expect(mcpConfig.contains("enabled_tools=[\"workspace_shell\"]"))
+        #expect(mcpConfig.contains("default_tools_enabled=false"))
+        #expect(mcpConfig.contains("default_tools_approval_mode=\"approve\""))
         let envVars = mcpConfig
         #expect(envVars.contains("ASTRA_WORKSPACE_DOCKER_IMAGE"))
         #expect(envVars.contains("ASTRA_WORKSPACE_DOCKER_ENV"))

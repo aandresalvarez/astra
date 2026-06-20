@@ -119,6 +119,24 @@ enum CodexMCPConfigRenderer {
         if !envVars.isEmpty {
             fields.append("env_vars=\(tomlArray(envVars))")
         }
+        let enabledTools = server.allowedTools
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter(MCPEnvironmentKeyPolicy.isValidPermissionName)
+            .sorted()
+        if !enabledTools.isEmpty {
+            fields.append("enabled_tools=\(tomlArray(enabledTools))")
+            fields.append("default_tools_enabled=false")
+        }
+        let disabledTools = server.excludedTools
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter(MCPEnvironmentKeyPolicy.isValidPermissionName)
+            .sorted()
+        if !disabledTools.isEmpty {
+            fields.append("disabled_tools=\(tomlArray(disabledTools))")
+        }
+        if server.trustLevel == .high {
+            fields.append("default_tools_approval_mode=\"approve\"")
+        }
 
         return "\(tomlString(server.id))={\(fields.joined(separator: ","))}"
     }

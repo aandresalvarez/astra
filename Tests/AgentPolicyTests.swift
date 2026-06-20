@@ -1389,6 +1389,76 @@ struct RunPermissionManifestTests {
         #expect(manifestEvent?.payload.contains("\"fetch_copilot_cli_documentation\"") == true)
     }
 
+    @Test("Docker preflight manifest exposes workspace executor and projected credential state")
+    func dockerPreflightManifestExposesWorkspaceExecutorAndProjectedCredentialState() throws {
+        for runtime in [AgentRuntimeID.claudeCode, .copilotCLI, .codexCLI] {
+            let container = try makeAgentPolicyContainer()
+            let context = container.mainContext
+            let root = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("astra-docker-manifest-\(runtime.rawValue)-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+            let workspace = Workspace(name: "Docker Manifest", primaryPath: root.path)
+            let task = AgentTask(
+                title: "Docker",
+                goal: "Check dbt inside Docker",
+                workspace: workspace,
+                model: "test-model",
+                runtime: runtime
+            )
+            let shellSkill = Skill(name: "Shell", allowedTools: ["Read", "Bash"])
+            shellSkill.workspace = workspace
+            task.skills = [shellSkill]
+            task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+                id: "image:starr",
+                kind: .dockerImage,
+                displayName: "starr Image",
+                image: "astra-starr-data-lake:latest",
+                credentialProjections: [
+                    ExecutionEnvironmentCredentialProjection.gcpADC(
+                        hostPath: root.appendingPathComponent(".config/gcloud", isDirectory: true).path
+                    )
+                ]
+            ))
+            let run = TaskRun(task: task)
+            context.insert(workspace)
+            context.insert(shellSkill)
+            context.insert(task)
+            context.insert(run)
+
+            let manifest = AgentPolicyManifestService.recordPreflightManifest(
+                task: task,
+                run: run,
+                runtime: runtime,
+                model: "test-model",
+                workspacePath: workspace.primaryPath,
+                phase: "test",
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+                modelContext: context
+            )
+
+            #expect(manifest.environmentKeyNames.contains("CLOUDSDK_CONFIG"))
+            #expect(manifest.environmentKeyNames.contains("GOOGLE_APPLICATION_CREDENTIALS"))
+            #expect(manifest.credentialLabels.contains("docker:GCP Application Default Credentials:ro:/root/.config/gcloud"))
+            #expect(manifest.mcpServers.contains { server in
+                server.packageID == "astra-builtin"
+                    && server.id == DockerWorkspaceMCPProjection.serverID
+                    && server.allowedTools == [DockerWorkspaceMCPProjection.toolName]
+            })
+            #expect(manifest.providerRender.runtimeSupportTools.contains { descriptor in
+                descriptor.name == DockerWorkspaceMCPProjection.providerToolPermission
+                    && descriptor.allowedInputKeys.contains("command")
+            })
+            #expect(!manifest.providerRender.allowedTools.contains { tool in
+                let lower = tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                return lower == "bash" || lower == "shell" || lower.hasPrefix("bash(") || lower.hasPrefix("shell(")
+            })
+        }
+    }
+
     @Test("Preflight manifest allows exact connector manifest shell probe when connectors are projected")
     func preflightManifestAllowsExactConnectorManifestShellProbeWhenConnectorsAreProjected() throws {
         let container = try makeAgentPolicyContainer()

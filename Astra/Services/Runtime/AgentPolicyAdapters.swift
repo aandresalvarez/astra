@@ -944,7 +944,15 @@ enum AgentPolicyManifestService {
             allowedToolsOverride: policyApprovedTools.isEmpty ? executionPolicy.allowedToolsOverride : policyApprovedTools,
             permissionGrantsOverride: effectiveGrants.isEmpty ? executionPolicy.permissionGrantsOverride : effectiveGrants
         )
-        let envKeys = Array(taskCapabilityScope.resolver.resolvedEnvironmentVariables.keys).sorted()
+        let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: task)
+        let envKeys = uniqueStrings(
+            Array(taskCapabilityScope.resolver.resolvedEnvironmentVariables.keys)
+                + dockerCredentialEnvironmentKeyNames(environment: executionEnvironment)
+        )
+        let manifestCredentialLabels = uniqueStrings(
+            credentialLabels(for: task, contextText: contextText)
+                + dockerCredentialLabels(environment: executionEnvironment)
+        )
         let runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: runtime)
         let providerPolicyAdapter = runtimeAdapter.policyAdapter(runtimeCapabilities: providerCapabilities)
         let configOwnership = runtimeAdapter.providerConfigOwnership(workspacePath: workspacePath)
@@ -963,6 +971,11 @@ enum AgentPolicyManifestService {
             existingProviderConfigSummary: runtimeAdapter.existingProviderConfigSummary(workspacePath: workspacePath)
         )
         var render = providerPolicyAdapter.render(policy: policy, context: context)
+        render = applyingDockerWorkspaceManifestSupport(
+            to: render,
+            runtime: runtime,
+            executionEnvironment: executionEnvironment
+        )
         render.allowedShellPatterns = uniqueStrings(
             render.allowedShellPatterns
                 + runtimeSupportAllowedShellPatterns(environmentKeyNames: envKeys)
@@ -977,7 +990,6 @@ enum AgentPolicyManifestService {
         // at launch time.
         let effectiveSandboxPolicy = manifestExecutionPolicy.permissionPolicyOverride ?? permissionPolicy
         let sandboxSettings = ExecutionSandboxSettings.current(permissionPolicy: effectiveSandboxPolicy)
-        let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: task)
         if !executionEnvironment.providerRunsInsideContainer,
            sandboxSettings.shouldWrap(runtime: runtime),
            ExecutionSandbox.willLikelyApply(workspacePath: workspacePath, settings: sandboxSettings),
@@ -1018,14 +1030,18 @@ enum AgentPolicyManifestService {
             workspacePath: workspacePath,
             additionalPaths: runtimePaths,
             environmentKeyNames: envKeys,
-            credentialLabels: credentialLabels(for: task, contextText: contextText),
-            mcpServers: capabilityPackages.map {
-                TaskCapabilityResolver.enabledMCPServerManifests(
-                    for: task.workspace,
-                    packages: $0,
-                    approvalRecords: approvalRecords ?? CapabilityApprovalStore().records()
-                )
-            } ?? taskCapabilityResolver.enabledMCPServerManifests,
+            credentialLabels: manifestCredentialLabels,
+            mcpServers: dockerAugmentedMCPServers(
+                base: capabilityPackages.map {
+                    TaskCapabilityResolver.enabledMCPServerManifests(
+                        for: task.workspace,
+                        packages: $0,
+                        approvalRecords: approvalRecords ?? CapabilityApprovalStore().records()
+                    )
+                } ?? taskCapabilityResolver.enabledMCPServerManifests,
+                runtime: runtime,
+                executionEnvironment: executionEnvironment
+            ),
             approvalsGranted: approvals,
             approvalGrants: effectiveGrants
         )
@@ -1059,6 +1075,64 @@ enum AgentPolicyManifestService {
             guard !path.isEmpty, seen.insert(path).inserted else { return nil }
             return path
         }
+    }
+
+    private static func applyingDockerWorkspaceManifestSupport(
+        to render: ProviderPolicyRender,
+        runtime: AgentRuntimeID,
+        executionEnvironment: WorkspaceExecutionEnvironment
+    ) -> ProviderPolicyRender {
+        guard DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment),
+              DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: runtime) else {
+            return render
+        }
+
+        var updated = render
+        updated.allowedTools = DockerWorkspaceMCPProjection.removingNativeShellTools(updated.allowedTools)
+        updated.askFirstTools = DockerWorkspaceMCPProjection.removingNativeShellTools(updated.askFirstTools)
+        updated.deniedTools = uniqueStrings(updated.deniedTools + ["Bash", "shell"])
+
+        if let descriptor = DockerWorkspaceMCPProjection.runtimeSupportToolDescriptor(for: runtime),
+           !updated.runtimeSupportTools.contains(where: { $0.name == descriptor.name }) {
+            updated.runtimeSupportTools.append(descriptor)
+            updated.runtimeSupportTools.sort { $0.name < $1.name }
+        }
+        return updated
+    }
+
+    private static func dockerAugmentedMCPServers(
+        base: [RunPermissionManifest.MCPServer],
+        runtime: AgentRuntimeID,
+        executionEnvironment: WorkspaceExecutionEnvironment
+    ) -> [RunPermissionManifest.MCPServer] {
+        guard DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment),
+              DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: runtime) else {
+            return base
+        }
+        return uniqueMCPServers(base + [DockerWorkspaceMCPProjection.manifestServer()])
+    }
+
+    private static func uniqueMCPServers(
+        _ servers: [RunPermissionManifest.MCPServer]
+    ) -> [RunPermissionManifest.MCPServer] {
+        var seen: Set<String> = []
+        return servers.filter { server in
+            seen.insert("\(server.packageID):\(server.id)").inserted
+        }
+    }
+
+    private static func dockerCredentialEnvironmentKeyNames(
+        environment: WorkspaceExecutionEnvironment
+    ) -> [String] {
+        uniqueStrings(Array(DockerExecutionPlanner.credentialProjectionEnvironment(environment: environment).keys))
+    }
+
+    private static func dockerCredentialLabels(
+        environment: WorkspaceExecutionEnvironment
+    ) -> [String] {
+        uniqueStrings(environment.effectiveCredentialProjections.map {
+            "docker:\($0.displayName):\($0.access.rawValue):\($0.containerPath)"
+        })
     }
 
     @MainActor

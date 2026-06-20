@@ -116,6 +116,15 @@ final class WorkspaceDockerViewModel: ObservableObject {
         return task.status == .draft
     }
 
+    var canRepairCredentialProjection: Bool {
+        guard let task = selectedTask,
+              !canChangeActiveEnvironment,
+              !task.runs.isEmpty else {
+            return false
+        }
+        return task.runs.allSatisfy(Self.isCredentialProjectionSetupFailure)
+    }
+
     var activeScopeLabel: String {
         guard let task = selectedTask else { return "Workspace default" }
         return task.status == .draft ? "Draft task" : "Pinned task"
@@ -226,9 +235,9 @@ final class WorkspaceDockerViewModel: ObservableObject {
             case .requiredButHostCredentialMissing:
                 return "GCP credentials missing"
             case .hostCredentialAvailableButNotProjected:
-                return "GCP credentials required"
+                return "Connect GCP credentials"
             case .pinnedTaskSnapshotMissingProjection:
-                return "Task missing GCP credentials"
+                return canRepairCredentialProjection ? "Update task credentials" : "Task missing GCP credentials"
             case .projectedButHostCredentialMissing:
                 return "GCP credentials need refresh"
             case .failed:
@@ -252,8 +261,14 @@ final class WorkspaceDockerViewModel: ObservableObject {
             case .ready:
                 return "Application Default Credentials are projected read-only for Docker commands."
             case .hostCredentialAvailableButNotProjected:
+                if canRepairCredentialProjection {
+                    return "BigQuery/dbt detected. Connect ADC to this task, then retry."
+                }
                 return "BigQuery/dbt detected. Connect local ADC before running container tasks."
             case .pinnedTaskSnapshotMissingProjection:
+                if canRepairCredentialProjection {
+                    return "Workspace credentials changed. Update this setup-only task, then retry."
+                }
                 return "Workspace credentials changed; fork or start a new task to use them."
             case .requiredButHostCredentialMissing:
                 return "BigQuery/dbt detected, but no local ADC file was found on this Mac."
@@ -278,19 +293,36 @@ final class WorkspaceDockerViewModel: ObservableObject {
         if credentialReadinessReport?.state == .pinnedTaskSnapshotMissingProjection {
             return "exclamationmark.triangle.fill"
         }
+        if !canChangeActiveEnvironment && hasGCPADCProjection {
+            return "checkmark.circle.fill"
+        }
         return hasGCPADCProjection ? "minus.circle.fill" : "link.circle.fill"
     }
 
     var credentialProjectionIsEnabled: Bool {
-        canChangeActiveEnvironment && (hasGCPADCProjection || gcpADCCredentialFileExists)
+        if canChangeActiveEnvironment {
+            return hasGCPADCProjection || gcpADCCredentialFileExists
+        }
+        return canRepairCredentialProjection
+            && !hasGCPADCProjection
+            && gcpADCCredentialFileExists
     }
 
     var credentialProjectionHelp: String {
         if let report = credentialReadinessReport, report.shouldBlockLaunch {
+            if canRepairCredentialProjection {
+                return "\(report.detail) Connect local GCP Application Default Credentials to this setup-only failed task, then retry it."
+            }
             let remediation = report.remediation.map { " \($0)" } ?? ""
             return "\(report.detail)\(remediation)"
         }
         if !canChangeActiveEnvironment {
+            if canRepairCredentialProjection {
+                if hasGCPADCProjection {
+                    return "This task snapshot has local GCP Application Default Credentials projected. Retry the task so ASTRA can run Docker workspace commands with those credentials."
+                }
+                return "This task only failed during Docker credential setup. ASTRA can connect local GCP Application Default Credentials to this task snapshot so retry uses the repaired environment."
+            }
             return "Pinned task. This task keeps its current Docker credential projection because it already has execution history."
         }
         if hasGCPADCProjection {
@@ -346,7 +378,7 @@ final class WorkspaceDockerViewModel: ObservableObject {
 
     func toggleGCPADCProjection() {
         guard selectedEnvironment.isContainerized else { return }
-        guard canChangeActiveEnvironment else {
+        guard canChangeActiveEnvironment || canRepairCredentialProjection else {
             errorMessage = "This task already has execution history, so its Docker credential projection is pinned. Fork or start a new task to change it."
             return
         }
@@ -354,6 +386,11 @@ final class WorkspaceDockerViewModel: ObservableObject {
         var environment = selectedEnvironment
         var projections = environment.effectiveCredentialProjections
         if hasGCPADCProjection {
+            guard canChangeActiveEnvironment else {
+                errorMessage = nil
+                statusMessage = "GCP credentials are connected. Retry this task."
+                return
+            }
             projections.removeAll { $0.id == ExecutionEnvironmentCredentialProjection.gcpADCID }
             environment.setCredentialProjections(projections)
             persist(environment)
@@ -368,8 +405,13 @@ final class WorkspaceDockerViewModel: ObservableObject {
         projections.removeAll { $0.id == ExecutionEnvironmentCredentialProjection.gcpADCID }
         projections.append(ExecutionEnvironmentCredentialProjection.gcpADC(hostPath: gcpADCHostPath))
         environment.setCredentialProjections(projections)
-        persist(environment)
-        statusMessage = "GCP credentials connected"
+        if canRepairCredentialProjection, !canChangeActiveEnvironment {
+            repairCredentialProjection(environment)
+            statusMessage = "GCP credentials connected. Retry this task."
+        } else {
+            persist(environment)
+            statusMessage = "GCP credentials connected"
+        }
     }
 
     func buildWorkspaceImage() async {
@@ -473,6 +515,36 @@ final class WorkspaceDockerViewModel: ObservableObject {
         ])
     }
 
+    private func repairCredentialProjection(_ environment: WorkspaceExecutionEnvironment) {
+        guard canRepairCredentialProjection,
+              let selectedTask else {
+            persist(environment)
+            return
+        }
+
+        let json = ExecutionEnvironmentStore.encode(environment)
+        selectedTask.executionEnvironmentSnapshotJSON = json
+        selectedTask.updatedAt = Date()
+
+        if let workspace {
+            let workspaceEnvironment = ExecutionEnvironmentStore.decode(workspace.activeExecutionEnvironmentJSON)
+            if workspaceEnvironment.id == environment.id {
+                workspace.activeExecutionEnvironmentJSON = json
+                workspace.updatedAt = Date()
+            }
+        }
+
+        selectedEnvironment = environment
+        errorMessage = nil
+        AppLogger.audit(.executionEnvironmentChanged, category: "ExecutionEnvironment", fields: [
+            "result": "credential_projection_repaired",
+            "environment": environment.kind.rawValue,
+            "environment_id": environment.id,
+            "scope": activeScopeLabel,
+            "task_id": selectedTask.id.uuidString
+        ])
+    }
+
     private func syncSelectedEnvironment() {
         if let selectedTask,
            let snapshot = selectedTask.executionEnvironmentSnapshotJSON,
@@ -523,6 +595,15 @@ final class WorkspaceDockerViewModel: ObservableObject {
             seen.insert(candidate.id)
             return true
         }
+    }
+
+    private static func isCredentialProjectionSetupFailure(_ run: TaskRun) -> Bool {
+        run.typedStopReason == .credentialProjectionRequired
+            && run.inputTokens == 0
+            && run.outputTokens == 0
+            && run.tokensUsed == 0
+            && run.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && run.fileChanges.isEmpty
     }
 
     private func imageWithDefaultTag(_ image: String) -> String {

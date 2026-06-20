@@ -718,6 +718,137 @@ struct ExecutionEnvironmentTests {
     }
 
     @MainActor
+    @Test("Docker view model repairs setup-only credential projection failures")
+    func dockerViewModelRepairsSetupOnlyCredentialProjectionFailures() async throws {
+        let root = try makeTempDir("docker-viewmodel-gcp-repair")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try writeBigQueryDBTProfile(in: root)
+        let home = try makeTempDir("docker-viewmodel-gcp-repair-home")
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let gcloudDirectory = try writeADCFile(inHome: home)
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test Image",
+            sourcePath: root,
+            image: "astra/test:latest"
+        )
+        let workspace = Workspace(name: "Docker", primaryPath: root)
+        workspace.activeExecutionEnvironmentJSON = ExecutionEnvironmentStore.encode(environment)
+        let task = AgentTask(title: "Task", goal: "Run dbt", workspace: workspace)
+        task.status = .failed
+        task.executionEnvironmentSnapshotJSON = workspace.activeExecutionEnvironmentJSON
+        let run = TaskRun(task: task)
+        run.status = .failed
+        run.typedStopReason = .credentialProjectionRequired
+        run.completedAt = Date()
+        task.runs = [run]
+
+        let viewModel = WorkspaceDockerViewModel(
+            imageInventory: FakeDockerImageInventory(result: .success([])),
+            homeDirectoryPath: home
+        )
+        viewModel.setWorkspaceForTesting(workspace, selectedTask: task)
+
+        #expect(viewModel.canChangeActiveEnvironment == false)
+        #expect(viewModel.canRepairCredentialProjection)
+        #expect(viewModel.credentialProjectionTitle == "Connect GCP credentials")
+        #expect(viewModel.credentialProjectionSubtitle.contains("then retry"))
+        #expect(viewModel.credentialProjectionIsEnabled)
+        #expect(viewModel.credentialProjectionHelp.contains("setup-only failed task"))
+
+        viewModel.toggleGCPADCProjection()
+
+        let taskEnvironment = ExecutionEnvironmentStore.decode(task.executionEnvironmentSnapshotJSON)
+        let workspaceEnvironment = ExecutionEnvironmentStore.decode(workspace.activeExecutionEnvironmentJSON)
+        #expect(taskEnvironment.effectiveCredentialProjections.map(\.id) == [ExecutionEnvironmentCredentialProjection.gcpADCID])
+        #expect(taskEnvironment.effectiveCredentialProjections.first?.hostPath == gcloudDirectory)
+        #expect(workspaceEnvironment.effectiveCredentialProjections.map(\.id) == [ExecutionEnvironmentCredentialProjection.gcpADCID])
+        #expect(viewModel.statusMessage == "GCP credentials connected. Retry this task.")
+        #expect(viewModel.errorMessage == nil)
+        #expect(task.status == .failed)
+        #expect(viewModel.credentialProjectionTitle == "GCP credentials ready")
+        #expect(viewModel.credentialProjectionIsEnabled == false)
+        #expect(viewModel.credentialProjectionActionSystemName == "checkmark.circle.fill")
+
+        let report = ExecutionEnvironmentCredentialReadinessService.evaluate(
+            task: task,
+            codeDirectory: root,
+            homeDirectoryPath: home
+        )
+        #expect(report.state == .ready)
+        #expect(!report.shouldBlockLaunch)
+
+        viewModel.toggleGCPADCProjection()
+
+        let repairedEnvironmentAfterExtraClick = ExecutionEnvironmentStore.decode(task.executionEnvironmentSnapshotJSON)
+        #expect(repairedEnvironmentAfterExtraClick.effectiveCredentialProjections.map(\.id) == [ExecutionEnvironmentCredentialProjection.gcpADCID])
+        #expect(viewModel.errorMessage == nil)
+        #expect(viewModel.statusMessage == "GCP credentials are connected. Retry this task.")
+
+        let container = try makeContainer()
+        let context = container.mainContext
+        context.insert(workspace)
+        context.insert(task)
+        let retryRun = TaskRun(task: task)
+        context.insert(retryRun)
+        let preflight = AgentRuntimeLaunchPreflight.preflightCredentialProjectionBeforeLaunchResult(
+            task: task,
+            run: retryRun,
+            modelContext: context,
+            phase: "test",
+            codeDirectory: root,
+            homeDirectoryPath: home
+        )
+        #expect(preflight.status == .credentialProjectionPassed)
+        #expect(preflight.reason == nil)
+    }
+
+    @MainActor
+    @Test("Docker view model keeps substantive failed tasks pinned")
+    func dockerViewModelDoesNotRepairSubstantiveFailedTaskCredentialProjection() async throws {
+        let root = try makeTempDir("docker-viewmodel-gcp-no-repair")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try writeBigQueryDBTProfile(in: root)
+        let home = try makeTempDir("docker-viewmodel-gcp-no-repair-home")
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        try writeADCFile(inHome: home)
+        let workspace = Workspace(name: "Docker", primaryPath: root)
+        workspace.activeExecutionEnvironmentJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test Image",
+            sourcePath: root,
+            image: "astra/test:latest"
+        ))
+        let task = AgentTask(title: "Task", goal: "Run dbt", workspace: workspace)
+        task.status = .failed
+        task.executionEnvironmentSnapshotJSON = workspace.activeExecutionEnvironmentJSON
+        let run = TaskRun(task: task)
+        run.status = .failed
+        run.typedStopReason = .failed
+        run.output = "provider started"
+        run.outputTokens = 5
+        task.runs = [run]
+
+        let viewModel = WorkspaceDockerViewModel(
+            imageInventory: FakeDockerImageInventory(result: .success([])),
+            homeDirectoryPath: home
+        )
+        viewModel.setWorkspaceForTesting(workspace, selectedTask: task)
+
+        #expect(viewModel.canRepairCredentialProjection == false)
+        #expect(viewModel.credentialProjectionTitle == "Connect GCP credentials")
+        #expect(viewModel.credentialProjectionIsEnabled == false)
+
+        viewModel.toggleGCPADCProjection()
+
+        let taskEnvironment = ExecutionEnvironmentStore.decode(task.executionEnvironmentSnapshotJSON)
+        #expect(taskEnvironment.effectiveCredentialProjections.isEmpty)
+        #expect(viewModel.errorMessage?.contains("pinned") == true)
+    }
+
+    @MainActor
     @Test("Docker view model presents Dockerfile setup as an executable build action")
     func dockerViewModelPresentsDockerfileSetupAction() async throws {
         let root = try makeTempDir("docker-build-action")
