@@ -1395,6 +1395,86 @@ struct AgentRuntimeAdapterTests {
         #expect(env["ASTRA_WORKSPACE_DOCKER_ENV"] == "${ASTRA_WORKSPACE_DOCKER_ENV}")
     }
 
+    @Test("Copilot Docker workspace mode routes native shell through ASTRA MCP helper")
+    @MainActor
+    func copilotDockerWorkspaceModeRoutesNativeShellThroughAstraMCPHelper() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-docker-workspace-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let copilotPath = try Self.writeFakeCopilotExecutable(in: root)
+
+        let workspace = Workspace(name: "Docker Workspace", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Summarize",
+            goal: "Summarize files",
+            workspace: workspace,
+            model: "claude-sonnet-4.6",
+            runtime: .copilotCLI
+        )
+        let shellSkill = Skill(name: "Shell", allowedTools: ["Read", "Bash"])
+        shellSkill.workspace = workspace
+        task.skills = [shellSkill]
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:workspace",
+            kind: .dockerImage,
+            displayName: "Workspace Image",
+            image: "astra/workspace:latest",
+            credentialProjections: [
+                ExecutionEnvironmentCredentialProjection.gcpADC(
+                    hostPath: root.appendingPathComponent(".config/gcloud").path
+                )
+            ]
+        ))
+        let runID = UUID(uuidString: "D7818CE9-3F7A-4E75-82DB-C0E8D2D2E916")
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .copilotCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "summarize",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: copilotPath,
+                providerHomeDirectory: root.appendingPathComponent("copilot-home", isDirectory: true).path,
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30,
+                runID: runID
+            ))
+
+        #expect(plan.executablePath == copilotPath)
+        #expect(plan.environment["ASTRA_WORKSPACE_DOCKER_IMAGE"] == "astra/workspace:latest")
+        #expect(plan.environment["ASTRA_WORKSPACE_DOCKER_CONTAINER"] == DockerWorkspaceMCPProjection.containerName(taskID: task.id, runID: runID))
+        #expect(plan.environment["ASTRA_WORKSPACE_DOCKER_ENV"]?.contains("GOOGLE_APPLICATION_CREDENTIALS") == true)
+        #expect(plan.commandPlannedFields["docker_workspace_executor"] == "true")
+        #expect(plan.commandPlannedFields["docker_workspace_executor_supported"] == "true")
+        #expect(plan.commandPlannedFields["docker_workspace_tool"] == DockerWorkspaceMCPProjection.providerToolPermission)
+        #expect(plan.commandPlannedFields["docker_workspace_credential_projection_count"] == "1")
+        #expect(plan.commandPlannedFields["uses_additional_mcp_config"] == "true")
+
+        let configIndex = try #require(plan.arguments.firstIndex(of: "--additional-mcp-config"))
+        #expect(plan.arguments.indices.contains(configIndex + 1))
+        let configArg = plan.arguments[configIndex + 1]
+        #expect(configArg.hasPrefix("@"))
+        let mcpConfigURL = URL(fileURLWithPath: String(configArg.dropFirst()))
+        let data = try Data(contentsOf: mcpConfigURL)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let servers = try #require(object["mcpServers"] as? [String: Any])
+        let workspaceServer = try #require(servers[DockerWorkspaceMCPProjection.serverID] as? [String: Any])
+        #expect(workspaceServer["command"] as? String == (RuntimePathResolver.astraToolsPath as NSString).appendingPathComponent("astra-workspace"))
+        let env = try #require(workspaceServer["env"] as? [String: String])
+        #expect(env["ASTRA_WORKSPACE_DOCKER_IMAGE"] == "${ASTRA_WORKSPACE_DOCKER_IMAGE}")
+        #expect(env["ASTRA_WORKSPACE_DOCKER_ENV"] == "${ASTRA_WORKSPACE_DOCKER_ENV}")
+
+        let allowTools = Self.argumentValues(after: "--allow-tool", in: plan.arguments)
+        #expect(allowTools.contains(DockerWorkspaceMCPProjection.providerToolPermission))
+        #expect(!allowTools.contains { $0.contains("shell(") })
+        let availableTools = Self.argumentValues(after: "--available-tools", in: plan.arguments)
+        #expect(availableTools.contains(DockerWorkspaceMCPProjection.providerToolPermission))
+        #expect(!availableTools.contains("bash"))
+    }
+
     @Test("Adapters own provider stream parsing")
     func adaptersOwnProviderStreamParsing() {
         let claude = AgentRuntimeAdapterRegistry.adapter(for: .claudeCode)
@@ -1649,7 +1729,7 @@ struct AgentRuntimeAdapterTests {
         #!/bin/sh
         if [ "$1" = "help" ]; then
           cat <<'HELP'
-        --allow-tool TOOL --available-tools=TOOLS --excluded-tools=TOOLS --output-format=FORMAT --stream=MODE --no-ask-user --effort LEVEL
+        --allow-tool TOOL --available-tools=TOOLS --excluded-tools=TOOLS --output-format=FORMAT --stream=MODE --no-ask-user --effort LEVEL --additional-mcp-config CONFIG
         HELP
           exit 0
         fi

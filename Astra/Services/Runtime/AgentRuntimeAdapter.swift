@@ -1657,7 +1657,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         prerequisite: CommonCLIPrerequisites.copilot,
         defaultModel: CopilotCLIRuntime.defaultModel,
         defaultModels: CopilotCLIRuntime.defaultModels,
-        supportsAstraRunProtocol: true
+        supportsAstraRunProtocol: true,
+        supportsMCPServers: true
     )
     let readinessCheckID = "copilot-cli"
     let availableModelsStorageKey = AppStorageKeys.copilotAvailableModels
@@ -1765,23 +1766,30 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let allowed = context.executionPolicy.allowedTools(
             default: capabilityScope.resolver.resolvedProviderAllowedTools
         )
-        let providerAllowed = AgentRuntimeProcessRunner.providerAllowedTools(
+        let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
+        let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
+        let baseProviderAllowed = AgentRuntimeProcessRunner.providerAllowedTools(
             for: id,
             baseAllowedTools: allowed,
             permissionManifest: context.permissionManifest
         )
+        let providerAllowed = usesDockerWorkspaceExecutor
+            ? DockerWorkspaceMCPProjection.removingNativeShellTools(baseProviderAllowed)
+            : baseProviderAllowed
         let runtimeSupportTools = AgentRuntimeProcessRunner.providerRuntimeSupportToolPermissions(
             for: id,
             permissionManifest: context.permissionManifest
         )
-        let askFirstTools = context.permissionManifest?.providerRender.askFirstTools ?? []
+        let baseAskFirstTools = context.permissionManifest?.providerRender.askFirstTools ?? []
+        let askFirstTools = usesDockerWorkspaceExecutor
+            ? DockerWorkspaceMCPProjection.removingNativeShellTools(baseAskFirstTools)
+            : baseAskFirstTools
         let artifactBootstrapTools = ProviderArtifactBootstrapPolicy.launchTools(
             task: context.task,
             permissionPolicy: effectivePermissionPolicy,
             providerAllowedTools: providerAllowed,
             askFirstTools: askFirstTools
         )
-        let providerLaunchAllowed = Array(Set(providerAllowed + artifactBootstrapTools)).sorted()
         let pathPrefix = AgentRuntimeProcessRunner.pathPrefix(for: context.task, taskEnv: taskEnv)
         let executable = context.executablePath.isEmpty ? CopilotCLIRuntime.detectPath() : context.executablePath
         let providerVersion = CopilotCLIRuntime.versionSummary(executablePath: executable)
@@ -1796,6 +1804,18 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             localToolCommands.append("astra-browser")
         }
         let surfacedAskFirstTools = askFirstTools
+        let mcpProjection = CopilotMCPLaunchProjection.resolve(
+            task: context.task,
+            workspacePath: context.workspacePath,
+            runID: context.runID,
+            executionEnvironment: executionEnvironment,
+            capabilities: capabilities
+        )
+        let providerLaunchAllowed = Array(Set(providerAllowed + artifactBootstrapTools + mcpProjection.allowedTools)).sorted()
+        var launchTaskEnv = taskEnv
+        for (key, value) in mcpProjection.workspaceExecutorEnvironment {
+            launchTaskEnv[key] = value
+        }
         let plan = CopilotCLIRuntime.buildCommand(
             executablePath: executable,
             prompt: context.prompt,
@@ -1806,7 +1826,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             allowedTools: providerLaunchAllowed,
             timeoutSeconds: context.timeoutSeconds,
             capabilities: capabilities,
-            taskEnvironment: taskEnv,
+            taskEnvironment: launchTaskEnv,
             copilotHome: context.providerHomeDirectory,
             copilotStateHome: copilotStateHome,
             userHome: userHome,
@@ -1816,8 +1836,48 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             localToolCommands: localToolCommands,
             runtimeSupportTools: runtimeSupportTools,
             askFirstTools: surfacedAskFirstTools,
+            additionalMCPConfigPaths: mcpProjection.configURL.map { [$0.path] } ?? [],
             reasoningEffort: artifactBootstrapTools.isEmpty ? nil : "none",
             allowAllPathsForSSHConnections: AgentRuntimeProcessRunner.hasWorkspaceSSHConnections(for: context.task)
+        )
+        let directoriesToCreate = CopilotCLIRuntime.directoriesToCreate(
+            copilotHome: context.providerHomeDirectory,
+            copilotStateHome: copilotStateHome,
+            userHome: userHome
+        )
+        let sandboxReadablePaths = CopilotCLIRuntime.authReadablePaths(userHome: userHome) + mcpProjection.readablePaths
+        let providerDetectedFields = CopilotLaunchDiagnostics.providerDetectedFields(
+            id: id,
+            providerVersion: providerVersion,
+            executable: executable,
+            executableConfigured: !context.executablePath.isEmpty
+        )
+        let dockerContainerEnvCount = DockerExecutionPlanner
+            .credentialProjectionEnvironment(environment: executionEnvironment)
+            .count
+        let commandPlannedFields = CopilotLaunchDiagnostics.commandPlannedFields(
+            id: id,
+            phase: context.phase,
+            model: model,
+            plan: plan,
+            capabilities: capabilities,
+            effectivePermissionPolicy: effectivePermissionPolicy,
+            providerAllowed: providerAllowed,
+            baseProviderAllowed: baseProviderAllowed,
+            providerLaunchAllowed: providerLaunchAllowed,
+            runtimeSupportTools: runtimeSupportTools,
+            baseAskFirstTools: baseAskFirstTools,
+            surfacedAskFirstTools: surfacedAskFirstTools,
+            artifactBootstrapTools: artifactBootstrapTools,
+            allowedToolsOverride: context.executionPolicy.allowedToolsOverride != nil,
+            localToolCommands: localToolCommands,
+            additionalPaths: additionalPaths,
+            taskEnv: launchTaskEnv,
+            usesDockerWorkspaceExecutor: usesDockerWorkspaceExecutor,
+            mcpProjection: mcpProjection,
+            dockerContainerEnvCount: dockerContainerEnvCount,
+            dockerCredentialProjectionCount: executionEnvironment.effectiveCredentialProjections.count,
+            browserBridgeMetadata: browserBridgeMetadata
         )
 
         return AgentRuntimeProcessLaunchPlan(
@@ -1829,70 +1889,11 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             browserShimDirectory: browserShimDirectory,
             providerVersion: providerVersion,
             parsesJSONLines: plan.parsesJSONLines,
-            directoriesToCreate: CopilotCLIRuntime.directoriesToCreate(
-                copilotHome: context.providerHomeDirectory,
-                copilotStateHome: copilotStateHome,
-                userHome: userHome
-            ),
-            sandboxReadablePaths: CopilotCLIRuntime.authReadablePaths(userHome: userHome),
+            directoriesToCreate: directoriesToCreate,
+            sandboxReadablePaths: sandboxReadablePaths,
             sandboxProtectedWriteDenyPaths: CopilotCLIRuntime.configWriteDenyPaths(userHome: userHome),
-            providerDetectedFields: [
-                "runtime": id.rawValue,
-                "provider_version": providerVersion ?? "unknown",
-                "executable_configured": String(!context.executablePath.isEmpty),
-                "executable_exists": String(FileManager.default.isExecutableFile(atPath: executable)),
-                "executable_path": executable,
-                "executable_mtime": AgentRuntimeProcessRunner.fileModificationTimestamp(executable)
-            ],
-            commandPlannedFields: [
-                "runtime": id.rawValue,
-                "phase": context.phase,
-                "model": model,
-                "parses_json_lines": String(plan.parsesJSONLines),
-                "supports_output_format_json": String(capabilities.supportsOutputFormatJSON),
-                "supports_streaming_flag": String(capabilities.supportsStreamingFlag),
-                "supports_no_ask_user": String(capabilities.supportsNoAskUser),
-                "supports_secret_env_vars": String(capabilities.supportsSecretEnvVars),
-                "supports_allow_all": String(capabilities.supportsAllowAll),
-                "supports_silent": String(capabilities.supportsSilent),
-                "supports_allow_all_tools": String(capabilities.supportsAllowAllTools),
-                "supports_allow_all_paths": String(capabilities.supportsAllowAllPaths),
-                "supports_allow_all_urls": String(capabilities.supportsAllowAllURLs),
-                "supports_available_tools": String(capabilities.supportsAvailableTools),
-                "supports_excluded_tools": String(capabilities.supportsExcludedTools),
-                "supports_reasoning_effort": String(capabilities.supportsReasoningEffort),
-                "requires_allow_all_tools": String(capabilities.requiresAllowAllToolsForPrompt),
-                "permission_policy": effectivePermissionPolicy.rawValue,
-                "allowed_tools_count": String(providerAllowed.count),
-                "provider_launch_allowed_tool_count": String(providerLaunchAllowed.count),
-                "runtime_support_tool_count": String(runtimeSupportTools.count),
-                "runtime_support_tool_names": runtimeSupportTools.joined(separator: ","),
-                "ask_first_tool_count": String(askFirstTools.count),
-                "ask_first_tool_names": askFirstTools.joined(separator: ","),
-                "surfaced_ask_first_tool_count": String(surfacedAskFirstTools.count),
-                "surfaced_ask_first_tool_names": surfacedAskFirstTools.joined(separator: ","),
-                "artifact_bootstrap_tool_count": String(artifactBootstrapTools.count),
-                "artifact_bootstrap_tool_names": artifactBootstrapTools.joined(separator: ","),
-                "artifact_bootstrap_profile": String(!artifactBootstrapTools.isEmpty),
-                "allowed_tools_override": String(context.executionPolicy.allowedToolsOverride != nil),
-                "local_tool_commands_count": String(localToolCommands.count),
-                "additional_paths_count": String(additionalPaths.count),
-                "task_env_count": String(taskEnv.count),
-                "uses_output_format_json": String(plan.arguments.contains("--output-format=json")),
-                "uses_stream_flag": String(plan.arguments.contains("--stream=on")),
-                "uses_no_ask_user": String(plan.arguments.contains("--no-ask-user")),
-                "uses_reasoning_effort": String(plan.arguments.contains("--effort")),
-                "uses_secret_env_vars": String(plan.arguments.contains("--secret-env-vars")),
-                "uses_silent": String(plan.arguments.contains("--silent")),
-                "uses_allow_all": String(plan.arguments.contains("--allow-all")),
-                "uses_allow_all_tools": String(plan.arguments.contains("--allow-all-tools")),
-                "uses_allow_all_paths": String(plan.arguments.contains("--allow-all-paths")),
-                "uses_allow_all_urls": String(plan.arguments.contains("--allow-all-urls")),
-                "uses_allow_tool": String(plan.arguments.contains("--allow-tool")),
-                "uses_available_tools": String(plan.arguments.contains("--available-tools")),
-                "uses_excluded_tools": String(plan.arguments.contains("--excluded-tools")),
-                "excludes_task_tool": String(AgentRuntimeArgumentInspector.argumentList(plan.arguments, after: "--excluded-tools").contains("task"))
-            ].merging(browserBridgeMetadata.commandPlannedFields) { current, _ in current }
+            providerDetectedFields: providerDetectedFields,
+            commandPlannedFields: commandPlannedFields
         )
     }
 

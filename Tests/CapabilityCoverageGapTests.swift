@@ -95,12 +95,18 @@ struct MCPServersFactValueTests {
         )
         #expect(value.contains("files"))
         #expect(!value.contains("skipped"))
+
+        let copilotValue = PolicySummaryPresentation.mcpServersFactValue(
+            manifest(providerID: .copilotCLI, servers: [server(id: "files")])
+        )
+        #expect(copilotValue.contains("files"))
+        #expect(!copilotValue.contains("skipped"))
     }
 
     @Test("Servers on a non-supporting runtime read as skipped, never active")
     func nonSupportingRuntimeSkips() {
         let value = PolicySummaryPresentation.mcpServersFactValue(
-            manifest(providerID: .copilotCLI, servers: [server(id: "files"), server(id: "db")])
+            manifest(providerID: .codexCLI, servers: [server(id: "files"), server(id: "db")])
         )
         #expect(value.contains("2 skipped"))
         #expect(value.contains("doesn't support MCP"))
