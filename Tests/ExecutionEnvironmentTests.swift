@@ -112,6 +112,7 @@ struct ExecutionEnvironmentTests {
         #expect(section.text.contains("mcp__astra_workspace__workspace_shell"))
         #expect(section.text.contains("Do not use native host Bash"))
         #expect(section.text.contains("Prefer tools installed in the image environment"))
+        #expect(section.text.contains("command -v dbt && dbt --version"))
         #expect(section.text.contains("Do not use host-created virtual environments"))
         #expect(section.text.contains("/workspace/.venv"))
         #expect(section.text.contains("Credential projections: GCP Application Default Credentials mounted read-only at /root/.config/gcloud."))

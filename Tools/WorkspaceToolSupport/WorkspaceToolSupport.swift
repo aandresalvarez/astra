@@ -263,7 +263,7 @@ public final class WorkspaceMCPServer {
             return encodeResult(id: id, result: [
                 "tools": [[
                     "name": "workspace_shell",
-                    "description": "Run a shell command inside the ASTRA-managed Docker workspace container using the image environment. Prefer tools installed in the image and avoid host-created virtual environments from bind-mounted workspaces.",
+                    "description": "Run a shell command inside the ASTRA-managed Docker workspace container using the image environment. Check tools by name from the container PATH and avoid host-created virtual environments from bind-mounted workspaces.",
                     "inputSchema": [
                         "type": "object",
                         "properties": [
