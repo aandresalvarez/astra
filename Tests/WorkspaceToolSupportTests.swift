@@ -47,6 +47,9 @@ struct WorkspaceToolSupportTests {
         let listResult = try #require(list["result"] as? [String: Any])
         let tools = try #require(listResult["tools"] as? [[String: Any]])
         #expect(tools.first?["name"] as? String == "workspace_shell")
+        let description = try #require(tools.first?["description"] as? String)
+        #expect(description.contains("using the image environment"))
+        #expect(description.contains("avoid host-created virtual environments"))
 
         let call = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"workspace_shell","arguments":{"command":"pwd","timeout_seconds":7}}}"#)))
         let callResult = try #require(call["result"] as? [String: Any])
@@ -112,9 +115,11 @@ struct WorkspaceToolSupportTests {
             .map(String.init)
         #expect(logLines.contains("inspect -f {{.State.Running}} astra-test"))
         #expect(logLines.contains("rm -f astra-test"))
-        #expect(logLines.contains { $0.hasPrefix("run --rm -d --name astra-test") })
+        let runLine = try #require(logLines.first { $0.hasPrefix("run --rm -d --name astra-test") })
+        #expect(runLine.hasSuffix("astra/workspace:latest sh -c while :; do sleep 3600; done"))
         #expect(logLines.contains { $0.contains("--volume \(root.path):/workspace:rw") })
-        #expect(logLines.contains("exec -i --workdir /workspace astra-test sh -lc echo ok"))
+        #expect(logLines.contains("exec -i --workdir /workspace astra-test sh -c echo ok"))
+        #expect(!logLines.contains { $0.contains(" sh -lc ") })
         #expect(logLines.contains("stop astra-test"))
     }
 

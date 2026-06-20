@@ -125,7 +125,7 @@ public final class DockerWorkspaceCommandExecutor: WorkspaceCommandExecutor {
             )
         }
         return runDocker(
-            ["exec", "-i", "--workdir", configuration.workdir, configuration.containerName, "sh", "-lc", trimmed],
+            ["exec", "-i", "--workdir", configuration.workdir, configuration.containerName, "sh", "-c", trimmed],
             commandLabel: command,
             timeoutSeconds: timeoutSeconds
         )
@@ -165,7 +165,7 @@ public final class DockerWorkspaceCommandExecutor: WorkspaceCommandExecutor {
         for mount in configuration.mounts {
             args += ["--volume", "\(mount.hostPath):\(mount.containerPath):\(mount.access)"]
         }
-        args += [configuration.image, "sh", "-lc", "while :; do sleep 3600; done"]
+        args += [configuration.image, "sh", "-c", "while :; do sleep 3600; done"]
 
         let result = runDocker(args, commandLabel: "docker run", timeoutSeconds: 30)
         if result.exitCode == 0 {
@@ -227,7 +227,7 @@ public final class WorkspaceMCPServer {
             return encodeResult(id: id, result: [
                 "tools": [[
                     "name": "workspace_shell",
-                    "description": "Run a shell command inside the ASTRA-managed Docker workspace container.",
+                    "description": "Run a shell command inside the ASTRA-managed Docker workspace container using the image environment. Prefer tools installed in the image and avoid host-created virtual environments from bind-mounted workspaces.",
                     "inputSchema": [
                         "type": "object",
                         "properties": [
