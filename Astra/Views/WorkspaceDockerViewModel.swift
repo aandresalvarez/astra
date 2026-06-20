@@ -26,13 +26,19 @@ final class WorkspaceDockerViewModel: ObservableObject {
     private var selectedTask: AgentTask?
     private let imageInventory: any DockerImageInventoryListing
     private let imageBuilder: any DockerImageBuilding
+    private let fileManager: FileManager
+    private let homeDirectoryPath: String
 
     init(
         imageInventory: any DockerImageInventoryListing = DockerImageInventoryService(),
-        imageBuilder: any DockerImageBuilding = DockerImageBuildService()
+        imageBuilder: any DockerImageBuilding = DockerImageBuildService(),
+        fileManager: FileManager = .default,
+        homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path
     ) {
         self.imageInventory = imageInventory
         self.imageBuilder = imageBuilder
+        self.fileManager = fileManager
+        self.homeDirectoryPath = WorkspacePathPresentation.standardizedPath(homeDirectoryPath)
     }
 
     func setup(for workspace: Workspace, selectedTask: AgentTask? = nil) {
@@ -208,6 +214,51 @@ final class WorkspaceDockerViewModel: ObservableObject {
         buildCommand ?? setupActionSubtitle
     }
 
+    var shouldShowCredentialProjectionRow: Bool {
+        selectedEnvironment.isContainerized
+    }
+
+    var credentialProjectionTitle: String {
+        if hasGCPADCProjection {
+            return "GCP credentials connected"
+        }
+        if gcpADCCredentialFileExists {
+            return "Connect GCP credentials"
+        }
+        return "GCP credentials not found"
+    }
+
+    var credentialProjectionSubtitle: String {
+        if hasGCPADCProjection {
+            return "Application Default Credentials are mounted read-only for container commands."
+        }
+        if gcpADCCredentialFileExists {
+            return "Use local Application Default Credentials in container commands."
+        }
+        return "No Application Default Credentials file was found on this Mac."
+    }
+
+    var credentialProjectionActionSystemName: String {
+        hasGCPADCProjection ? "minus.circle.fill" : "link.circle.fill"
+    }
+
+    var credentialProjectionIsEnabled: Bool {
+        canChangeActiveEnvironment && (hasGCPADCProjection || gcpADCCredentialFileExists)
+    }
+
+    var credentialProjectionHelp: String {
+        if !canChangeActiveEnvironment {
+            return "Pinned task. This task keeps its current Docker credential projection because it already has execution history."
+        }
+        if hasGCPADCProjection {
+            return "Disconnect local GCP Application Default Credentials from this Docker environment. New workspace command containers will stop mounting \(gcpADCHostPath)."
+        }
+        if gcpADCCredentialFileExists {
+            return "Connect local GCP Application Default Credentials. ASTRA will mount \(gcpADCHostPath) read-only at \(ExecutionEnvironmentCredentialProjection.gcpADCContainerPath), set CLOUDSDK_CONFIG and GOOGLE_APPLICATION_CREDENTIALS, keep the AI provider on macOS, and let only Docker workspace commands use those credentials."
+        }
+        return "No Application Default Credentials file was found at \(gcpADCCredentialFilePath)."
+    }
+
     var detectedSummary: String? {
         let names = candidates.filter { candidate in
             !candidate.isRunnable && candidate.environment.kind != .dockerfile
@@ -248,6 +299,34 @@ final class WorkspaceDockerViewModel: ObservableObject {
             return
         }
         persist(option.environment)
+    }
+
+    func toggleGCPADCProjection() {
+        guard selectedEnvironment.isContainerized else { return }
+        guard canChangeActiveEnvironment else {
+            errorMessage = "This task already has execution history, so its Docker credential projection is pinned. Fork or start a new task to change it."
+            return
+        }
+
+        var environment = selectedEnvironment
+        var projections = environment.effectiveCredentialProjections
+        if hasGCPADCProjection {
+            projections.removeAll { $0.id == ExecutionEnvironmentCredentialProjection.gcpADCID }
+            environment.setCredentialProjections(projections)
+            persist(environment)
+            statusMessage = "GCP credentials disconnected"
+            return
+        }
+
+        guard gcpADCCredentialFileExists else {
+            errorMessage = "GCP Application Default Credentials were not found on this Mac."
+            return
+        }
+        projections.removeAll { $0.id == ExecutionEnvironmentCredentialProjection.gcpADCID }
+        projections.append(ExecutionEnvironmentCredentialProjection.gcpADC(hostPath: gcpADCHostPath))
+        environment.setCredentialProjections(projections)
+        persist(environment)
+        statusMessage = "GCP credentials connected"
     }
 
     func buildWorkspaceImage() async {
@@ -461,5 +540,26 @@ final class WorkspaceDockerViewModel: ObservableObject {
             return "ASTRA will launch provider CLIs with docker run using \(image), mount the workspace into the container, and record that environment on the task."
         }
         return "ASTRA will use the selected container environment when launching provider CLIs."
+    }
+
+    private var hasGCPADCProjection: Bool {
+        selectedEnvironment.effectiveCredentialProjections.contains {
+            $0.id == ExecutionEnvironmentCredentialProjection.gcpADCID
+        }
+    }
+
+    private var gcpADCHostPath: String {
+        ExecutionEnvironmentCredentialProjection.defaultGCPADCHostPath(homeDirectory: homeDirectoryPath)
+    }
+
+    private var gcpADCCredentialFilePath: String {
+        (gcpADCHostPath as NSString)
+            .appendingPathComponent(ExecutionEnvironmentCredentialProjection.gcpADCFileName)
+    }
+
+    private var gcpADCCredentialFileExists: Bool {
+        var isDirectory = ObjCBool(false)
+        return fileManager.fileExists(atPath: gcpADCCredentialFilePath, isDirectory: &isDirectory)
+            && !isDirectory.boolValue
     }
 }

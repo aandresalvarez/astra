@@ -97,7 +97,12 @@ struct ExecutionEnvironmentTests {
             id: "image:test",
             kind: .dockerImage,
             displayName: "Test Image",
-            image: "astra/test:latest"
+            image: "astra/test:latest",
+            credentialProjections: [
+                ExecutionEnvironmentCredentialProjection.gcpADC(
+                    hostPath: (root as NSString).appendingPathComponent(".config/gcloud")
+                )
+            ]
         ))
 
         let section = try #require(AgentPromptExecutionEnvironmentSection.section(for: task, codeDir: root))
@@ -109,6 +114,7 @@ struct ExecutionEnvironmentTests {
         #expect(section.text.contains("Prefer tools installed in the image environment"))
         #expect(section.text.contains("Do not use host-created virtual environments"))
         #expect(section.text.contains("/workspace/.venv"))
+        #expect(section.text.contains("Credential projections: GCP Application Default Credentials mounted read-only at /root/.config/gcloud."))
     }
 
     @Test("Docker launch planning builds a typed docker run command with minimal environment")
@@ -156,6 +162,65 @@ struct ExecutionEnvironmentTests {
         #expect(plan.commandPlannedFields["container_workdir"] == "/workspace")
         #expect(plan.commandPlannedFields["container_executable"] == "/usr/local/bin/claude")
         #expect(plan.commandPlannedFields["container_mount_summary"]?.contains("\(root)=/workspace") == true)
+    }
+
+    @Test("Docker credential projections mount ADC read-only and forward path environment")
+    func dockerCredentialProjectionsFlowIntoContainerPlans() throws {
+        let root = try makeTempDir("docker-credential-plan")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let gcloudPath = (root as NSString).appendingPathComponent(".config/gcloud")
+        let workspace = Workspace(name: "Docker", primaryPath: root)
+        let task = AgentTask(title: "Run", goal: "Run in container", workspace: workspace)
+        let projection = ExecutionEnvironmentCredentialProjection.gcpADC(hostPath: gcloudPath)
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test Image",
+            image: "astra/test:latest",
+            runtimeExecutablePath: "/usr/local/bin/claude",
+            providerPlacement: .container,
+            credentialProjections: [projection]
+        )
+        let base = makeBasePlan(currentDirectory: root)
+
+        let plan = try DockerExecutionPlanner.plan(
+            base: base,
+            environment: environment,
+            task: task,
+            runID: UUID()
+        ).get()
+
+        #expect(plan.arguments.contains("--volume"))
+        #expect(plan.arguments.contains("\(gcloudPath):/root/.config/gcloud:ro"))
+        #expect(plan.arguments.contains("--env"))
+        #expect(plan.arguments.contains("CLOUDSDK_CONFIG"))
+        #expect(plan.arguments.contains("GOOGLE_APPLICATION_CREDENTIALS"))
+        #expect(!plan.arguments.contains { $0.hasPrefix("GOOGLE_APPLICATION_CREDENTIALS=") })
+        #expect(plan.environment["CLOUDSDK_CONFIG"] == "/root/.config/gcloud")
+        #expect(plan.environment["GOOGLE_APPLICATION_CREDENTIALS"] == "/root/.config/gcloud/application_default_credentials.json")
+        #expect(plan.commandPlannedFields["container_credential_projection_count"] == "1")
+        #expect(plan.commandPlannedFields["container_credential_projection_summary"]?.contains("/root/.config/gcloud") == true)
+
+        let mcpVariables = DockerWorkspaceMCPProjection.environmentVariables(
+            task: task,
+            environment: WorkspaceExecutionEnvironment(
+                id: "image:test",
+                kind: .dockerImage,
+                displayName: "Test Image",
+                image: "astra/test:latest",
+                credentialProjections: [projection]
+            ),
+            currentDirectory: root,
+            runID: UUID(uuidString: "5EB2B3FA-CB19-4B0D-8BB2-D0673C49B113")
+        )
+        let mounts = try jsonArray(mcpVariables["ASTRA_WORKSPACE_DOCKER_MOUNTS"])
+        let credentialMount = try #require(mounts.first { $0["role"] as? String == "credential" })
+        #expect(credentialMount["hostPath"] as? String == gcloudPath)
+        #expect(credentialMount["containerPath"] as? String == "/root/.config/gcloud")
+        #expect(credentialMount["access"] as? String == "ro")
+        let containerEnvironment = try #require(jsonDictionary(mcpVariables["ASTRA_WORKSPACE_DOCKER_ENV"]) as? [String: String])
+        #expect(containerEnvironment["CLOUDSDK_CONFIG"] == "/root/.config/gcloud")
+        #expect(containerEnvironment["GOOGLE_APPLICATION_CREDENTIALS"] == "/root/.config/gcloud/application_default_credentials.json")
     }
 
     @Test("Docker launch planning falls back to provider binary name inside the image")
@@ -381,7 +446,12 @@ struct ExecutionEnvironmentTests {
             displayName: "Test Image",
             image: "astra/test",
             runtimeExecutablePath: "/bin/tool",
-            environmentKeyAllowlist: ["TOKEN_NAME"]
+            environmentKeyAllowlist: ["TOKEN_NAME"],
+            credentialProjections: [
+                ExecutionEnvironmentCredentialProjection.gcpADC(
+                    hostPath: (root as NSString).appendingPathComponent(".config/gcloud")
+                )
+            ]
         )
         workspace.activeExecutionEnvironmentJSON = ExecutionEnvironmentStore.encode(environment)
         let task = AgentTask(title: "Task", goal: "Run", workspace: workspace)
@@ -400,6 +470,7 @@ struct ExecutionEnvironmentTests {
         let importedEnvironment = ExecutionEnvironmentStore.decode(imported.activeExecutionEnvironmentJSON)
         #expect(importedEnvironment.kind == .dockerImage)
         #expect(importedEnvironment.environmentKeyAllowlist == ["TOKEN_NAME"])
+        #expect(importedEnvironment.effectiveCredentialProjections.map(\.id) == [ExecutionEnvironmentCredentialProjection.gcpADCID])
         let importedTask = try #require(imported.tasks.first)
         #expect(ExecutionEnvironmentStore.decode(importedTask.executionEnvironmentSnapshotJSON).id == "image:test")
         let importedRun = try #require(importedTask.runs.first)
@@ -443,6 +514,54 @@ struct ExecutionEnvironmentTests {
         #expect(viewModel.environmentPickerHelp.contains("route project shell commands through Docker image \(repository):latest"))
         #expect(viewModel.environmentOptions.map(\.isSelected) == [false, true])
         #expect(AgentTask(title: "Task", goal: "Run", workspace: workspace).executionEnvironmentSnapshotJSON == workspace.activeExecutionEnvironmentJSON)
+    }
+
+    @MainActor
+    @Test("Docker view model connects and disconnects GCP ADC projections")
+    func dockerViewModelTogglesGCPADCProjection() async throws {
+        let root = try makeTempDir("docker-viewmodel-gcp")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let home = try makeTempDir("docker-viewmodel-home")
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let gcloudDirectory = (home as NSString).appendingPathComponent(".config/gcloud")
+        try FileManager.default.createDirectory(atPath: gcloudDirectory, withIntermediateDirectories: true)
+        try "{}".write(
+            toFile: (gcloudDirectory as NSString)
+                .appendingPathComponent(ExecutionEnvironmentCredentialProjection.gcpADCFileName),
+            atomically: true,
+            encoding: .utf8
+        )
+        let workspace = Workspace(name: "Docker", primaryPath: root)
+        workspace.activeExecutionEnvironmentJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test Image",
+            image: "astra/test:latest"
+        ))
+        let viewModel = WorkspaceDockerViewModel(
+            imageInventory: FakeDockerImageInventory(result: .success([])),
+            homeDirectoryPath: home
+        )
+        viewModel.setWorkspaceForTesting(workspace)
+
+        #expect(viewModel.shouldShowCredentialProjectionRow)
+        #expect(viewModel.credentialProjectionTitle == "Connect GCP credentials")
+        #expect(viewModel.credentialProjectionIsEnabled)
+
+        viewModel.toggleGCPADCProjection()
+
+        let connected = ExecutionEnvironmentStore.decode(workspace.activeExecutionEnvironmentJSON)
+        #expect(connected.effectiveCredentialProjections.map(\.id) == [ExecutionEnvironmentCredentialProjection.gcpADCID])
+        #expect(connected.effectiveCredentialProjections.first?.hostPath == gcloudDirectory)
+        #expect(viewModel.credentialProjectionTitle == "GCP credentials connected")
+        #expect(viewModel.statusMessage == "GCP credentials connected")
+
+        viewModel.toggleGCPADCProjection()
+
+        let disconnected = ExecutionEnvironmentStore.decode(workspace.activeExecutionEnvironmentJSON)
+        #expect(disconnected.effectiveCredentialProjections.isEmpty)
+        #expect(viewModel.credentialProjectionTitle == "Connect GCP credentials")
+        #expect(viewModel.statusMessage == "GCP credentials disconnected")
     }
 
     @MainActor
@@ -715,6 +834,16 @@ struct ExecutionEnvironmentTests {
         let schema = ASTRASchema.current
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
+    }
+
+    private func jsonArray(_ json: String?) throws -> [[String: Any]] {
+        let data = try #require(json?.data(using: .utf8))
+        return try #require(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+    }
+
+    private func jsonDictionary(_ json: String?) throws -> [String: Any] {
+        let data = try #require(json?.data(using: .utf8))
+        return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 }
 

@@ -9,6 +9,9 @@ struct WorkspaceToolSupportTests {
         let mountsJSON = """
         [{"hostPath":"/tmp/workspace","containerPath":"/workspace","access":"rw","role":"workspace"}]
         """
+        let containerEnvironmentJSON = """
+        {"CLOUDSDK_CONFIG":"/root/.config/gcloud","GOOGLE_APPLICATION_CREDENTIALS":"/root/.config/gcloud/application_default_credentials.json"}
+        """
 
         let configuration = try WorkspaceToolConfiguration.fromEnvironment([
             "ASTRA_WORKSPACE_DOCKER_IMAGE": "astra/workspace:latest",
@@ -16,6 +19,7 @@ struct WorkspaceToolSupportTests {
             "ASTRA_WORKSPACE_DOCKER_WORKDIR": "/workspace",
             "ASTRA_WORKSPACE_DOCKER_NETWORK": "bridge",
             "ASTRA_WORKSPACE_DOCKER_MOUNTS": mountsJSON,
+            "ASTRA_WORKSPACE_DOCKER_ENV": containerEnvironmentJSON,
             "ASTRA_WORKSPACE_TASK_ID": "task-1",
             "ASTRA_WORKSPACE_RUN_ID": "run-1"
         ])
@@ -25,6 +29,10 @@ struct WorkspaceToolSupportTests {
         #expect(configuration.containerName == "astra-task-run")
         #expect(configuration.mounts == [
             WorkspaceDockerMount(hostPath: "/tmp/workspace", containerPath: "/workspace", access: "rw", role: "workspace")
+        ])
+        #expect(configuration.containerEnvironment == [
+            "CLOUDSDK_CONFIG": "/root/.config/gcloud",
+            "GOOGLE_APPLICATION_CREDENTIALS": "/root/.config/gcloud/application_default_credentials.json"
         ])
     }
 
@@ -80,7 +88,7 @@ struct WorkspaceToolSupportTests {
         case "$1" in
           inspect) exit 1 ;;
           rm) exit 0 ;;
-          run) echo container-id; exit 0 ;;
+          run) printf 'env CLOUDSDK_CONFIG=%s\\n' "$CLOUDSDK_CONFIG" >> "$FAKE_DOCKER_LOG"; echo container-id; exit 0 ;;
           exec) echo workspace-output; echo workspace-error >&2; exit 0 ;;
           stop) exit 0 ;;
           *) exit 99 ;;
@@ -99,7 +107,12 @@ struct WorkspaceToolSupportTests {
             taskID: "task-1",
             runID: "run-1",
             mounts: [
-                WorkspaceDockerMount(hostPath: root.path, containerPath: "/workspace", access: "rw", role: "workspace")
+                WorkspaceDockerMount(hostPath: root.path, containerPath: "/workspace", access: "rw", role: "workspace"),
+                WorkspaceDockerMount(hostPath: root.appendingPathComponent("gcloud").path, containerPath: "/root/.config/gcloud", access: "ro", role: "credential")
+            ],
+            containerEnvironment: [
+                "CLOUDSDK_CONFIG": "/root/.config/gcloud",
+                "GOOGLE_APPLICATION_CREDENTIALS": "/root/.config/gcloud/application_default_credentials.json"
             ]
         )
         let executor = DockerWorkspaceCommandExecutor(configuration: configuration)
@@ -118,6 +131,11 @@ struct WorkspaceToolSupportTests {
         let runLine = try #require(logLines.first { $0.hasPrefix("run --rm -d --name astra-test") })
         #expect(runLine.hasSuffix("astra/workspace:latest sh -c while :; do sleep 3600; done"))
         #expect(logLines.contains { $0.contains("--volume \(root.path):/workspace:rw") })
+        #expect(logLines.contains { $0.contains("--volume \(root.appendingPathComponent("gcloud").path):/root/.config/gcloud:ro") })
+        #expect(runLine.contains("--env CLOUDSDK_CONFIG"))
+        #expect(runLine.contains("--env GOOGLE_APPLICATION_CREDENTIALS"))
+        #expect(!runLine.contains("GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json"))
+        #expect(logLines.contains("env CLOUDSDK_CONFIG=/root/.config/gcloud"))
         #expect(logLines.contains("exec -i --workdir /workspace astra-test sh -c echo ok"))
         #expect(!logLines.contains { $0.contains(" sh -lc ") })
         #expect(logLines.contains("stop astra-test"))

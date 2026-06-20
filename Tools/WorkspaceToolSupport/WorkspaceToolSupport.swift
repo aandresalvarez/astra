@@ -23,6 +23,7 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
     public var taskID: String
     public var runID: String
     public var mounts: [WorkspaceDockerMount]
+    public var containerEnvironment: [String: String]
 
     public init(
         dockerExecutable: String,
@@ -32,7 +33,8 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         network: String,
         taskID: String,
         runID: String,
-        mounts: [WorkspaceDockerMount]
+        mounts: [WorkspaceDockerMount],
+        containerEnvironment: [String: String] = [:]
     ) {
         self.dockerExecutable = dockerExecutable
         self.image = image
@@ -42,6 +44,7 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         self.taskID = taskID
         self.runID = runID
         self.mounts = mounts
+        self.containerEnvironment = Self.normalizedContainerEnvironment(containerEnvironment)
     }
 
     public static func fromEnvironment(_ env: [String: String] = ProcessInfo.processInfo.environment) throws -> WorkspaceToolConfiguration {
@@ -62,6 +65,9 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         guard !mounts.isEmpty else {
             throw WorkspaceToolError("ASTRA_WORKSPACE_DOCKER_MOUNTS must contain at least the workspace mount")
         }
+        let containerEnvironmentJSON = clean(env["ASTRA_WORKSPACE_DOCKER_ENV"]) ?? "{}"
+        let containerEnvironmentData = Data(containerEnvironmentJSON.utf8)
+        let decodedContainerEnvironment = (try? JSONDecoder().decode([String: String].self, from: containerEnvironmentData)) ?? [:]
         return WorkspaceToolConfiguration(
             dockerExecutable: dockerExecutable,
             image: image,
@@ -70,13 +76,33 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
             network: network,
             taskID: taskID,
             runID: runID,
-            mounts: mounts
+            mounts: mounts,
+            containerEnvironment: decodedContainerEnvironment
         )
     }
 
     private static func clean(_ value: String?) -> String? {
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func normalizedContainerEnvironment(_ environment: [String: String]) -> [String: String] {
+        environment.reduce(into: [String: String]()) { result, pair in
+            let (key, value) = pair
+            let cleanedKey = cleanEnvironmentKey(key)
+            guard !cleanedKey.isEmpty else { return }
+            let cleanedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleanedValue.isEmpty else { return }
+            result[cleanedKey] = cleanedValue
+        }
+    }
+
+    private static func cleanEnvironmentKey(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.range(of: #"^[A-Za-z_][A-Za-z0-9_]*$"#, options: .regularExpression) != nil else {
+            return ""
+        }
+        return trimmed
     }
 }
 
@@ -165,9 +191,17 @@ public final class DockerWorkspaceCommandExecutor: WorkspaceCommandExecutor {
         for mount in configuration.mounts {
             args += ["--volume", "\(mount.hostPath):\(mount.containerPath):\(mount.access)"]
         }
+        for key in configuration.containerEnvironment.keys.sorted() {
+            args += ["--env", key]
+        }
         args += [configuration.image, "sh", "-c", "while :; do sleep 3600; done"]
 
-        let result = runDocker(args, commandLabel: "docker run", timeoutSeconds: 30)
+        let result = runDocker(
+            args,
+            commandLabel: "docker run",
+            timeoutSeconds: 30,
+            environment: configuration.containerEnvironment
+        )
         if result.exitCode == 0 {
             containerStarted = true
         }
@@ -177,14 +211,16 @@ public final class DockerWorkspaceCommandExecutor: WorkspaceCommandExecutor {
     private func runDocker(
         _ arguments: [String],
         commandLabel: String,
-        timeoutSeconds: TimeInterval
+        timeoutSeconds: TimeInterval,
+        environment: [String: String] = [:]
     ) -> WorkspaceCommandResult {
         let invocation = dockerInvocation(arguments)
         return ProcessRunner.run(
             executablePath: invocation.executablePath,
             arguments: invocation.arguments,
             commandLabel: commandLabel,
-            timeoutSeconds: timeoutSeconds
+            timeoutSeconds: timeoutSeconds,
+            environment: environment
         )
     }
 
@@ -387,12 +423,17 @@ private enum ProcessRunner {
         executablePath: String,
         arguments: [String],
         commandLabel: String,
-        timeoutSeconds: TimeInterval
+        timeoutSeconds: TimeInterval,
+        environment: [String: String] = [:]
     ) -> WorkspaceCommandResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executablePath)
         process.arguments = arguments
-        process.environment = ProcessInfo.processInfo.environment
+        var processEnvironment = ProcessInfo.processInfo.environment
+        for (key, value) in environment {
+            processEnvironment[key] = value
+        }
+        process.environment = processEnvironment
 
         let stdout = Pipe()
         let stderr = Pipe()

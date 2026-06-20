@@ -27,6 +27,7 @@ enum ExecutionEnvironmentMountRole: String, Codable, Sendable {
     case taskFolder = "task_folder"
     case additionalPath = "additional_path"
     case input
+    case credential
 }
 
 struct ExecutionEnvironmentMount: Codable, Equatable, Hashable, Sendable {
@@ -55,6 +56,111 @@ struct ExecutionEnvironmentMount: Codable, Equatable, Hashable, Sendable {
     }
 }
 
+enum ExecutionEnvironmentCredentialProjectionKind: String, Codable, Sendable {
+    case gcpADC = "gcp_adc"
+    case serviceAccountFile = "service_account_file"
+    case genericDirectory = "generic_directory"
+    case genericFile = "generic_file"
+}
+
+struct ExecutionEnvironmentCredentialProjection: Codable, Equatable, Hashable, Sendable {
+    static let gcpADCID = "gcp_adc"
+    static let gcpADCContainerPath = "/root/.config/gcloud"
+    static let gcpADCFileName = "application_default_credentials.json"
+
+    var id: String
+    var kind: ExecutionEnvironmentCredentialProjectionKind
+    var displayName: String
+    var hostPath: String
+    var containerPath: String
+    var access: ExecutionEnvironmentMountAccess
+    var environment: [String: String]
+
+    init(
+        id: String,
+        kind: ExecutionEnvironmentCredentialProjectionKind,
+        displayName: String,
+        hostPath: String,
+        containerPath: String,
+        access: ExecutionEnvironmentMountAccess = .readOnly,
+        environment: [String: String] = [:]
+    ) {
+        self.id = Self.cleanString(id) ?? kind.rawValue
+        self.kind = kind
+        self.displayName = Self.cleanString(displayName) ?? kind.rawValue
+        self.hostPath = WorkspacePathPresentation.standardizedPath(hostPath)
+        self.containerPath = Self.normalizedContainerPath(containerPath)
+        self.access = access
+        self.environment = Self.normalizedEnvironment(environment)
+    }
+
+    static func defaultGCPADCHostPath(
+        homeDirectory: String = FileManager.default.homeDirectoryForCurrentUser.path
+    ) -> String {
+        (WorkspacePathPresentation.standardizedPath(homeDirectory) as NSString)
+            .appendingPathComponent(".config/gcloud")
+    }
+
+    static func gcpADC(
+        hostPath: String = defaultGCPADCHostPath(),
+        containerPath: String = gcpADCContainerPath
+    ) -> ExecutionEnvironmentCredentialProjection {
+        ExecutionEnvironmentCredentialProjection(
+            id: gcpADCID,
+            kind: .gcpADC,
+            displayName: "GCP Application Default Credentials",
+            hostPath: hostPath,
+            containerPath: containerPath,
+            access: .readOnly,
+            environment: [
+                "CLOUDSDK_CONFIG": containerPath,
+                "GOOGLE_APPLICATION_CREDENTIALS": (containerPath as NSString)
+                    .appendingPathComponent(gcpADCFileName)
+            ]
+        )
+    }
+
+    var mount: ExecutionEnvironmentMount {
+        ExecutionEnvironmentMount(
+            hostPath: hostPath,
+            containerPath: containerPath,
+            access: access,
+            role: .credential
+        )
+    }
+
+    private static func cleanString(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func normalizedContainerPath(_ path: String) -> String {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        let prefixed = trimmed.hasPrefix("/") ? trimmed : "/\(trimmed)"
+        return URL(fileURLWithPath: prefixed).standardizedFileURL.path
+    }
+
+    private static func normalizedEnvironment(_ environment: [String: String]) -> [String: String] {
+        environment.reduce(into: [String: String]()) { result, pair in
+            let (key, value) = pair
+            let cleanedKey = cleanEnvironmentKey(key)
+            guard !cleanedKey.isEmpty else { return }
+            let cleanedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleanedValue.isEmpty else { return }
+            result[cleanedKey] = cleanedValue
+        }
+    }
+
+    private static func cleanEnvironmentKey(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.range(of: #"^[A-Za-z_][A-Za-z0-9_]*$"#, options: .regularExpression) != nil else {
+            return ""
+        }
+        return trimmed
+    }
+}
+
 struct WorkspaceExecutionEnvironment: Codable, Equatable, Sendable {
     static let currentSchemaVersion = 1
 
@@ -78,6 +184,7 @@ struct WorkspaceExecutionEnvironment: Codable, Equatable, Sendable {
     var user: String?
     var privileged: Bool
     var allowCredentialEnvironment: Bool
+    var credentialProjections: [ExecutionEnvironmentCredentialProjection]?
     var configFingerprint: String?
 
     init(
@@ -101,6 +208,7 @@ struct WorkspaceExecutionEnvironment: Codable, Equatable, Sendable {
         user: String? = nil,
         privileged: Bool = false,
         allowCredentialEnvironment: Bool = false,
+        credentialProjections: [ExecutionEnvironmentCredentialProjection] = [],
         configFingerprint: String? = nil
     ) {
         self.version = version
@@ -123,6 +231,7 @@ struct WorkspaceExecutionEnvironment: Codable, Equatable, Sendable {
         self.user = Self.cleanString(user)
         self.privileged = privileged
         self.allowCredentialEnvironment = allowCredentialEnvironment
+        self.credentialProjections = Self.normalizedCredentialProjections(credentialProjections)
         self.configFingerprint = Self.cleanString(configFingerprint)
     }
 
@@ -147,6 +256,9 @@ struct WorkspaceExecutionEnvironment: Codable, Equatable, Sendable {
     var workspaceCommandsRunInsideContainer: Bool {
         isContainerized && effectiveProviderPlacement == .host
     }
+    var effectiveCredentialProjections: [ExecutionEnvironmentCredentialProjection] {
+        Self.normalizedCredentialProjections(credentialProjections ?? []) ?? []
+    }
 
     var signatureFingerprint: String {
         [
@@ -169,8 +281,13 @@ struct WorkspaceExecutionEnvironment: Codable, Equatable, Sendable {
             "user=\(user ?? "")",
             "privileged=\(privileged)",
             "credentials=\(allowCredentialEnvironment)",
+            "credential_projections=\(credentialProjectionFingerprint)",
             "config=\(configFingerprint ?? "")"
         ].joined(separator: "\u{1f}")
+    }
+
+    mutating func setCredentialProjections(_ projections: [ExecutionEnvironmentCredentialProjection]) {
+        credentialProjections = Self.normalizedCredentialProjections(projections)
     }
 
     private static func cleanString(_ value: String?) -> String? {
@@ -196,6 +313,26 @@ struct WorkspaceExecutionEnvironment: Codable, Equatable, Sendable {
         guard !trimmed.isEmpty else { return "" }
         let prefixed = trimmed.hasPrefix("/") ? trimmed : "/\(trimmed)"
         return URL(fileURLWithPath: prefixed).standardizedFileURL.path
+    }
+
+    private static func normalizedCredentialProjections(
+        _ projections: [ExecutionEnvironmentCredentialProjection]
+    ) -> [ExecutionEnvironmentCredentialProjection]? {
+        var byID: [String: ExecutionEnvironmentCredentialProjection] = [:]
+        for projection in projections where !projection.id.isEmpty && !projection.hostPath.isEmpty && !projection.containerPath.isEmpty {
+            byID[projection.id] = projection
+        }
+        let normalized = byID.values.sorted { $0.id < $1.id }
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    private var credentialProjectionFingerprint: String {
+        effectiveCredentialProjections
+            .map {
+                let envKeys = $0.environment.keys.sorted().joined(separator: "|")
+                return "\($0.id):\($0.kind.rawValue):\($0.access.rawValue):\($0.hostPath)=\($0.containerPath):env=\(envKeys)"
+            }
+            .joined(separator: ",")
     }
 }
 
@@ -599,6 +736,8 @@ enum DockerExecutionPlanner {
         commandFields["container_network_mode"] = environment.networkMode
         commandFields["container_privileged"] = String(environment.privileged)
         commandFields["container_env_key_count"] = String(allowedEnv.count)
+        commandFields["container_credential_projection_count"] = String(environment.effectiveCredentialProjections.count)
+        commandFields["container_credential_projection_summary"] = credentialProjectionSummary(environment)
         commandFields["container_executable_source"] = explicitExecutable == nil ? "provider_basename" : "environment"
         commandFields["docker_argument_count"] = String(dockerArgs.count)
         commandFields["os_sandbox_claim"] = "false"
@@ -639,6 +778,7 @@ enum DockerExecutionPlanner {
         mounts: [ExecutionEnvironmentMount],
         mapper: ExecutionEnvironmentPathMapper
     ) -> AgentRuntimeProcessLaunchPlan {
+        let containerEnv = credentialProjectionEnvironment(environment: environment)
         var commandFields = base.commandPlannedFields
         commandFields["execution_environment_kind"] = environment.kind.rawValue
         commandFields["execution_environment_id"] = environment.id
@@ -654,7 +794,9 @@ enum DockerExecutionPlanner {
         commandFields["container_mount_summary"] = mountSummary(mounts)
         commandFields["container_network_mode"] = environment.networkMode
         commandFields["container_privileged"] = String(environment.privileged)
-        commandFields["container_env_key_count"] = "0"
+        commandFields["container_env_key_count"] = String(containerEnv.count)
+        commandFields["container_credential_projection_count"] = String(environment.effectiveCredentialProjections.count)
+        commandFields["container_credential_projection_summary"] = credentialProjectionSummary(environment)
         commandFields["container_executable_source"] = "astra_workspace_mcp"
         commandFields["os_sandbox_claim"] = "true"
 
@@ -702,11 +844,20 @@ enum DockerExecutionPlanner {
         task: AgentTask
     ) -> [ExecutionEnvironmentMount] {
         var mounts = environment.mounts
+        func appendMount(_ mount: ExecutionEnvironmentMount, avoidContainerCollision: Bool = false) {
+            let standardized = WorkspacePathPresentation.standardizedPath(mount.hostPath)
+            guard !standardized.isEmpty else { return }
+            guard !mounts.contains(where: { $0.hostPath == standardized }) else { return }
+            if avoidContainerCollision,
+               mounts.contains(where: { $0.containerPath == mount.containerPath }) {
+                return
+            }
+            mounts.append(mount)
+        }
         func append(_ hostPath: String, _ containerPath: String, _ role: ExecutionEnvironmentMountRole) {
             let standardized = WorkspacePathPresentation.standardizedPath(hostPath)
             guard !standardized.isEmpty else { return }
-            guard !mounts.contains(where: { $0.hostPath == standardized }) else { return }
-            mounts.append(ExecutionEnvironmentMount(
+            appendMount(ExecutionEnvironmentMount(
                 hostPath: standardized,
                 containerPath: containerPath,
                 access: .readWrite,
@@ -726,6 +877,9 @@ enum DockerExecutionPlanner {
             }
             append(standardized, "/mnt/astra/path-\(index)", .additionalPath)
             index += 1
+        }
+        for projection in environment.effectiveCredentialProjections {
+            appendMount(projection.mount, avoidContainerCollision: true)
         }
         return mounts
     }
@@ -749,8 +903,32 @@ enum DockerExecutionPlanner {
         environment: WorkspaceExecutionEnvironment
     ) -> [String: String] {
         let allowed = Set(environment.environmentKeyAllowlist)
-        guard !allowed.isEmpty else { return [:] }
-        return baseEnvironment.filter { allowed.contains($0.key) }
+        var result: [String: String] = allowed.isEmpty
+            ? [:]
+            : baseEnvironment.filter { allowed.contains($0.key) }
+        for (key, value) in credentialProjectionEnvironment(environment: environment) {
+            result[key] = value
+        }
+        return result
+    }
+
+    static func credentialProjectionEnvironment(
+        environment: WorkspaceExecutionEnvironment
+    ) -> [String: String] {
+        var result: [String: String] = [:]
+        for projection in environment.effectiveCredentialProjections {
+            for (key, value) in projection.environment {
+                result[key] = value
+            }
+        }
+        return result
+    }
+
+    static func credentialProjectionSummary(_ environment: WorkspaceExecutionEnvironment) -> String {
+        environment.effectiveCredentialProjections
+            .map { "\($0.displayName):\($0.access.rawValue):\($0.containerPath)" }
+            .sorted()
+            .joined(separator: ",")
     }
 
     static func mountSummary(_ mounts: [ExecutionEnvironmentMount]) -> String {
@@ -988,6 +1166,7 @@ enum DockerWorkspaceMCPProjection {
         let mapper = ExecutionEnvironmentPathMapper(mounts: mounts)
         let workdir = mapper.containerPath(forHostPath: currentDirectory) ?? environment.containerWorkingDirectory
         let containerName = containerName(taskID: task.id, runID: runID)
+        let containerEnv = DockerExecutionPlanner.credentialProjectionEnvironment(environment: environment)
         return [
             "ASTRA_WORKSPACE_DOCKER_EXECUTABLE": "docker",
             "ASTRA_WORKSPACE_DOCKER_IMAGE": image,
@@ -995,6 +1174,7 @@ enum DockerWorkspaceMCPProjection {
             "ASTRA_WORKSPACE_DOCKER_WORKDIR": workdir,
             "ASTRA_WORKSPACE_DOCKER_NETWORK": environment.networkMode,
             "ASTRA_WORKSPACE_DOCKER_MOUNTS": mountsJSON(mounts),
+            "ASTRA_WORKSPACE_DOCKER_ENV": containerEnvironmentJSON(containerEnv),
             "ASTRA_WORKSPACE_TASK_ID": task.id.uuidString,
             "ASTRA_WORKSPACE_RUN_ID": runID?.uuidString ?? "run"
         ]
@@ -1015,6 +1195,7 @@ enum DockerWorkspaceMCPProjection {
         "ASTRA_WORKSPACE_DOCKER_WORKDIR",
         "ASTRA_WORKSPACE_DOCKER_NETWORK",
         "ASTRA_WORKSPACE_DOCKER_MOUNTS",
+        "ASTRA_WORKSPACE_DOCKER_ENV",
         "ASTRA_WORKSPACE_TASK_ID",
         "ASTRA_WORKSPACE_RUN_ID"
     ]
@@ -1042,6 +1223,15 @@ enum DockerWorkspaceMCPProjection {
         guard let data = try? JSONEncoder().encode(payload),
               let json = String(data: data, encoding: .utf8) else {
             return "[]"
+        }
+        return json
+    }
+
+    private static func containerEnvironmentJSON(_ environment: [String: String]) -> String {
+        guard !environment.isEmpty,
+              let data = try? JSONEncoder().encode(environment),
+              let json = String(data: data, encoding: .utf8) else {
+            return "{}"
         }
         return json
     }
