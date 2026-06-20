@@ -4,14 +4,24 @@ import ASTRACore
 struct BrowserBridgeRuntimeLaunchMetadata: Equatable {
     let isAttached: Bool
     let shellToolSupported: Bool
+    let mcpToolSupported: Bool
     let launchBlockReason: String
 
     var commandPlannedFields: [String: String] {
         [
             "browser_bridge_attached": String(isAttached),
             "browser_bridge_shell_tool_supported": String(shellToolSupported),
+            "browser_bridge_mcp_tool_supported": String(mcpToolSupported),
+            "browser_bridge_tool_transport": toolTransport,
             "browser_bridge_launch_block_reason": launchBlockReason
         ]
+    }
+
+    private var toolTransport: String {
+        guard isAttached else { return "none" }
+        if mcpToolSupported { return "mcp" }
+        if shellToolSupported { return "cli" }
+        return "unsupported"
     }
 }
 
@@ -20,14 +30,17 @@ enum BrowserBridgeRuntimeLaunchGuard {
 
     static func planMetadata(
         runtime: AgentRuntimeID,
-        environment: [String: String]
+        environment: [String: String],
+        mcpToolSupported: Bool = false
     ) -> BrowserBridgeRuntimeLaunchMetadata {
         let isAttached = environment["ASTRA_BROWSER_URL"]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         let shellToolSupported = supportsShellToolForBrowserBridge(runtime: runtime)
+        let launchSupported = shellToolSupported || mcpToolSupported
         return BrowserBridgeRuntimeLaunchMetadata(
             isAttached: isAttached,
             shellToolSupported: shellToolSupported,
-            launchBlockReason: isAttached && !shellToolSupported ? missingShellToolReason : "none"
+            mcpToolSupported: mcpToolSupported,
+            launchBlockReason: isAttached && !launchSupported ? missingShellToolReason : "none"
         )
     }
 

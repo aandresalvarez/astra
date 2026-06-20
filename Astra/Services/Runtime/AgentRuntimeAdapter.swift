@@ -1209,6 +1209,12 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         ) {
             mcpServers.append(workspaceServer)
         }
+        if let browserServer = BrowserBridgeMCPProjection.resolvedServer(
+            for: context.task,
+            contextText: context.contextText
+        ) {
+            mcpServers.append(browserServer)
+        }
         // allowEmpty: strict mode must apply even with zero governed servers,
         // or a repository's own .mcp.json loads ungoverned on those runs.
         let mcpConfigURL = MCPRuntimeProjection.writeClaudeConfig(servers: mcpServers, taskID: context.task.id, allowEmpty: true)
@@ -1796,21 +1802,26 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let capabilities = CopilotCLIRuntime.capabilities(executablePath: executable)
         let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
         let additionalPaths = AgentRuntimeProcessRunner.copilotAdditionalPaths(for: context.task)
-        let browserBridgeMetadata = BrowserBridgeRuntimeLaunchGuard.planMetadata(runtime: id, environment: taskEnv)
         let userHome = FileManager.default.homeDirectoryForCurrentUser.path
         let copilotStateHome = CopilotCLIRuntime.defaultHome(userHome: userHome)
-        var localToolCommands = AgentRuntimeProcessRunner.copilotLocalToolCommands(for: context.task, contextText: context.contextText)
-        if browserBridgeMetadata.isAttached {
-            localToolCommands.append("astra-browser")
-        }
-        let surfacedAskFirstTools = askFirstTools
         let mcpProjection = CopilotMCPLaunchProjection.resolve(
             task: context.task,
             workspacePath: context.workspacePath,
             runID: context.runID,
             executionEnvironment: executionEnvironment,
+            contextText: context.contextText,
             capabilities: capabilities
         )
+        let browserBridgeMetadata = BrowserBridgeRuntimeLaunchGuard.planMetadata(
+            runtime: id,
+            environment: taskEnv,
+            mcpToolSupported: mcpProjection.browserBridgeMCPToolSupported
+        )
+        var localToolCommands = AgentRuntimeProcessRunner.copilotLocalToolCommands(for: context.task, contextText: context.contextText)
+        if browserBridgeMetadata.isAttached && !mcpProjection.browserBridgeMCPToolSupported {
+            localToolCommands.append("astra-browser")
+        }
+        let surfacedAskFirstTools = askFirstTools
         let providerLaunchAllowed = Array(Set(providerAllowed + artifactBootstrapTools + mcpProjection.allowedTools)).sorted()
         var launchTaskEnv = taskEnv
         for (key, value) in mcpProjection.workspaceExecutorEnvironment {

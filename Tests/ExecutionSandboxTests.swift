@@ -641,6 +641,21 @@ struct ExecutionSandboxTests {
         #expect(result.runtimeStopMessage?.contains("cannot execute the astra-browser command") == true)
     }
 
+    @Test("Browser bridge launch block allows provider native MCP browser tool")
+    func browserBridgeLaunchBlockAllowsProviderNativeMCPBrowserTool() {
+        let plan = makePlan(
+            runtime: .copilotCLI,
+            environment: ["ASTRA_BROWSER_URL": "http://127.0.0.1:49152"],
+            commandPlannedFields: [
+                "browser_bridge_shell_tool_supported": "false",
+                "browser_bridge_mcp_tool_supported": "true",
+                "browser_bridge_launch_block_reason": "none"
+            ]
+        )
+
+        #expect(BrowserBridgeRuntimeLaunchGuard.launchBlock(for: plan) == nil)
+    }
+
     @Test("Best-effort enforcement falls back when there is no execution path")
     func decisionFallback() {
         let decision = ExecutionSandbox.decide(

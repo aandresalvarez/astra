@@ -445,6 +445,12 @@ enum AgentRuntimeLaunchPreflight {
             ) {
                 mcpServers.append(workspaceServer)
             }
+            if let browserServer = BrowserBridgeMCPProjection.resolvedServer(
+                for: task,
+                contextText: contextText
+            ) {
+                mcpServers.append(browserServer)
+            }
             mcpIssues = MCPRuntimeProjection.preflightIssues(
                 servers: mcpServers,
                 detectExecutable: mcpDetectExecutable,

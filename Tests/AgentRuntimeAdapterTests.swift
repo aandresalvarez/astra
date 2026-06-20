@@ -1606,6 +1606,80 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.commandPlannedFields["browser_bridge_launch_block_reason"] == "provider_missing_browser_shell_tool")
     }
 
+    @Test("Copilot browser bridge launch plan uses ASTRA browser MCP tool when supported")
+    @MainActor
+    func copilotBrowserBridgeLaunchPlanUsesAstraBrowserMCPToolWhenSupported() throws {
+        ShelfBrowserBridgeRegistry.shared.reset()
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-browser-mcp-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            ShelfBrowserBridgeRegistry.shared.reset()
+            try? FileManager.default.removeItem(at: root)
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let copilotPath = try Self.writeFakeCopilotExecutable(in: root)
+
+        let workspace = Workspace(name: "Browser MCP", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Use browser",
+            goal: "Use the browser shelf",
+            workspace: workspace,
+            model: "gpt-5",
+            runtime: .copilotCLI
+        )
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: nil,
+            currentTitle: nil,
+            taskID: task.id,
+            isPresented: false,
+            isEnabled: true
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .copilotCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "Use the browser shelf",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: copilotPath,
+                providerHomeDirectory: root.appendingPathComponent("copilot-home").path,
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30,
+                phase: "run",
+                contextText: "Use the browser shelf to inspect the current page."
+            ))
+
+        #expect(plan.environment["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+        #expect(plan.commandPlannedFields["browser_bridge_shell_tool_supported"] == "false")
+        #expect(plan.commandPlannedFields["browser_bridge_mcp_tool_supported"] == "true")
+        #expect(plan.commandPlannedFields["browser_bridge_tool_transport"] == "mcp")
+        #expect(plan.commandPlannedFields["browser_bridge_launch_block_reason"] == "none")
+        #expect(plan.commandPlannedFields["browser_bridge_mcp_tool"] == BrowserBridgeMCPProjection.providerToolPermission)
+
+        let configIndex = try #require(plan.arguments.firstIndex(of: "--additional-mcp-config"))
+        #expect(plan.arguments.indices.contains(configIndex + 1))
+        let configArg = plan.arguments[configIndex + 1]
+        #expect(configArg.hasPrefix("@"))
+        let mcpConfigURL = URL(fileURLWithPath: String(configArg.dropFirst()))
+        let data = try Data(contentsOf: mcpConfigURL)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let servers = try #require(object["mcpServers"] as? [String: Any])
+        let browserServer = try #require(servers[BrowserBridgeMCPProjection.serverID] as? [String: Any])
+        #expect(browserServer["command"] as? String == (RuntimePathResolver.astraToolsPath as NSString).appendingPathComponent("astra-browser"))
+        #expect(browserServer["args"] as? [String] == ["mcp"])
+        let env = try #require(browserServer["env"] as? [String: String])
+        #expect(env["ASTRA_BROWSER_URL"] == "${ASTRA_BROWSER_URL}")
+        #expect(env["ASTRA_BROWSER_TOKEN"] == "${ASTRA_BROWSER_TOKEN}")
+
+        let allowTools = Self.argumentValues(after: "--allow-tool", in: plan.arguments)
+        #expect(allowTools.contains(BrowserBridgeMCPProjection.providerToolPermission))
+        let availableTools = Self.argumentValues(after: "--available-tools", in: plan.arguments)
+        #expect(availableTools.contains(BrowserBridgeMCPProjection.providerToolPermission))
+    }
+
     @Test("CDP-only browser tasks inject required controlled engine into browser environment")
     @MainActor
     func cdpOnlyBrowserTasksInjectRequiredControlledEngineIntoBrowserEnvironment() throws {

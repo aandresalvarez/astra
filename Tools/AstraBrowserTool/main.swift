@@ -6,7 +6,12 @@ import ASTRACore
 struct AstraBrowserTool {
     static func main() async {
         do {
-            let result = try await run(arguments: Array(CommandLine.arguments.dropFirst()))
+            let arguments = Array(CommandLine.arguments.dropFirst())
+            if arguments.first == "mcp" {
+                await runMCPServer()
+                return
+            }
+            let result = try await run(arguments: arguments)
             print(result)
         } catch {
             fputs(errorJSON(error.localizedDescription) + "\n", stderr)
@@ -14,7 +19,7 @@ struct AstraBrowserTool {
         }
     }
 
-    private static func run(arguments: [String]) async throws -> String {
+    static func run(arguments: [String]) async throws -> String {
         let sanitizedArguments = try BrowserToolCommandParser.sanitizedArguments(arguments)
         guard let command = sanitizedArguments.first else {
             return usageJSON()
@@ -500,6 +505,15 @@ struct AstraBrowserTool {
         }
     }
 
+    private static func runMCPServer() async {
+        let server = BrowserMCPServer(executor: BrowserToolMCPExecutor())
+        while let line = readLine() {
+            if let response = await server.handleLine(line) {
+                FileHandle.standardOutput.write(Data((response + "\n").utf8))
+            }
+        }
+    }
+
     private static func browserEndpoint() throws -> URL {
         guard let raw = ProcessInfo.processInfo.environment["ASTRA_BROWSER_URL"]?.trimmingCharacters(in: .whitespacesAndNewlines),
               !raw.isEmpty,
@@ -633,5 +647,11 @@ struct AstraBrowserTool {
         var errorDescription: String? {
             message
         }
+    }
+}
+
+private final class BrowserToolMCPExecutor: BrowserMCPCommandExecutor {
+    func runBrowserCommand(arguments: [String]) async throws -> String {
+        try await AstraBrowserTool.run(arguments: arguments)
     }
 }
