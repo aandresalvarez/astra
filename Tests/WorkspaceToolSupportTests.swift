@@ -57,6 +57,7 @@ struct WorkspaceToolSupportTests {
         #expect(tools.first?["name"] as? String == "workspace_shell")
         let description = try #require(tools.first?["description"] as? String)
         #expect(description.contains("using the image environment"))
+        #expect(description.contains("container PATH"))
         #expect(description.contains("avoid host-created virtual environments"))
 
         let call = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"workspace_shell","arguments":{"command":"pwd","timeout_seconds":7}}}"#)))

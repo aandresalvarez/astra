@@ -1475,6 +1475,75 @@ struct AgentRuntimeAdapterTests {
         #expect(!availableTools.contains("bash"))
     }
 
+    @Test("Copilot Docker workspace mode avoids broad native shell in Auto policy")
+    @MainActor
+    func copilotDockerWorkspaceModeAvoidsBroadNativeShellInAutoPolicy() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-docker-auto-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let copilotPath = root.appendingPathComponent("copilot")
+        try """
+        #!/bin/sh
+        if [ "$1" = "help" ]; then
+          cat <<'HELP'
+        --allow-all --allow-all-tools --allow-all-paths --allow-all-urls --allow-tool TOOL --available-tools=TOOLS --excluded-tools=TOOLS --output-format=FORMAT --stream=MODE --no-ask-user --effort LEVEL --additional-mcp-config CONFIG
+        HELP
+          exit 0
+        fi
+        if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+          echo "copilot fake 1.0"
+          exit 0
+        fi
+        exit 0
+        """.write(to: copilotPath, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: copilotPath.path)
+
+        let workspace = Workspace(name: "Docker Workspace", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Inspect dbt",
+            goal: "Check dbt in the configured Docker image",
+            workspace: workspace,
+            model: "claude-sonnet-4.6",
+            runtime: .copilotCLI
+        )
+        let shellSkill = Skill(name: "Shell", allowedTools: ["Read", "Bash"])
+        shellSkill.workspace = workspace
+        task.skills = [shellSkill]
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:workspace",
+            kind: .dockerImage,
+            displayName: "Workspace Image",
+            image: "astra/workspace:latest"
+        ))
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .copilotCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "check dbt",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: copilotPath.path,
+                providerHomeDirectory: root.appendingPathComponent("copilot-home", isDirectory: true).path,
+                permissionPolicy: .autonomous,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30,
+                runID: UUID(uuidString: "7F2F42AD-F221-49A7-AC04-4434F0F03881")
+            ))
+
+        #expect(plan.commandPlannedFields["docker_workspace_executor"] == "true")
+        #expect(plan.commandPlannedFields["permission_policy"] == PermissionPolicy.restricted.rawValue)
+        #expect(!plan.arguments.contains("--allow-all"))
+        #expect(!plan.arguments.contains("--allow-all-tools"))
+        let allowTools = Self.argumentValues(after: "--allow-tool", in: plan.arguments)
+        #expect(allowTools.contains(DockerWorkspaceMCPProjection.providerToolPermission))
+        #expect(!allowTools.contains { $0.contains("shell(") })
+        let availableTools = Self.argumentValues(after: "--available-tools", in: plan.arguments)
+        #expect(availableTools.contains(DockerWorkspaceMCPProjection.providerToolPermission))
+        #expect(!availableTools.contains("bash"))
+    }
+
     @Test("Adapters own provider stream parsing")
     func adaptersOwnProviderStreamParsing() {
         let claude = AgentRuntimeAdapterRegistry.adapter(for: .claudeCode)

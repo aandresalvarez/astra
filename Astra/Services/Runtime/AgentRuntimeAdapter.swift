@@ -1774,6 +1774,9 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         )
         let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
         let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
+        let providerLaunchPermissionPolicy = usesDockerWorkspaceExecutor && effectivePermissionPolicy == .autonomous
+            ? PermissionPolicy.restricted
+            : effectivePermissionPolicy
         let baseProviderAllowed = AgentRuntimeProcessRunner.providerAllowedTools(
             for: id,
             baseAllowedTools: allowed,
@@ -1792,7 +1795,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             : baseAskFirstTools
         let artifactBootstrapTools = ProviderArtifactBootstrapPolicy.launchTools(
             task: context.task,
-            permissionPolicy: effectivePermissionPolicy,
+            permissionPolicy: providerLaunchPermissionPolicy,
             providerAllowedTools: providerAllowed,
             askFirstTools: askFirstTools
         )
@@ -1833,7 +1836,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             model: model,
             workspacePath: context.workspacePath,
             additionalPaths: additionalPaths,
-            permissionPolicy: effectivePermissionPolicy,
+            permissionPolicy: providerLaunchPermissionPolicy,
             allowedTools: providerLaunchAllowed,
             timeoutSeconds: context.timeoutSeconds,
             capabilities: capabilities,
@@ -1872,7 +1875,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             model: model,
             plan: plan,
             capabilities: capabilities,
-            effectivePermissionPolicy: effectivePermissionPolicy,
+            effectivePermissionPolicy: providerLaunchPermissionPolicy,
             providerAllowed: providerAllowed,
             baseProviderAllowed: baseProviderAllowed,
             providerLaunchAllowed: providerLaunchAllowed,
