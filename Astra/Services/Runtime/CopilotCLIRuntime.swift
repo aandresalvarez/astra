@@ -636,8 +636,8 @@ enum CopilotCLIRuntime {
             if lower.hasPrefix("shell(") || lower == "read" || lower == "write" {
                 return [trimmed]
             }
-            if lower.hasPrefix("mcp__") {
-                return [trimmed]
+            if let mcpPermission = copilotMCPPermissionPattern(for: trimmed) {
+                return [mcpPermission]
             }
             return []
         }
@@ -670,11 +670,40 @@ enum CopilotCLIRuntime {
         case "agent", "task":
             return ["task"]
         default:
+            if let mcpToolName = copilotMCPAvailableToolName(for: trimmed) {
+                return [mcpToolName]
+            }
             if lower.hasPrefix("bash(") || lower.hasPrefix("shell(") {
                 return ["bash"]
             }
             return trimmed.isEmpty ? [] : [trimmed]
         }
+    }
+
+    static func copilotMCPPermissionPattern(for permission: String) -> String? {
+        guard let parsed = parseClaudeStyleMCPPermission(permission) else { return nil }
+        guard let toolName = parsed.toolName else { return parsed.serverID }
+        return "\(parsed.serverID)(\(toolName))"
+    }
+
+    static func copilotMCPAvailableToolName(for permission: String) -> String? {
+        guard let parsed = parseClaudeStyleMCPPermission(permission) else { return nil }
+        guard let toolName = parsed.toolName else { return parsed.serverID }
+        return "\(parsed.serverID)-\(toolName)"
+    }
+
+    private static func parseClaudeStyleMCPPermission(_ permission: String) -> (serverID: String, toolName: String?)? {
+        let trimmed = permission.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.lowercased().hasPrefix("mcp__") else { return nil }
+        let remainder = String(trimmed.dropFirst("mcp__".count))
+        guard !remainder.isEmpty else { return nil }
+        guard let separator = remainder.range(of: "__") else {
+            return (serverID: remainder, toolName: nil)
+        }
+        let serverID = String(remainder[..<separator.lowerBound])
+        let toolName = String(remainder[separator.upperBound...])
+        guard !serverID.isEmpty, !toolName.isEmpty else { return nil }
+        return (serverID: serverID, toolName: toolName)
     }
 
     private static func isDelegationToolPermission(_ value: String) -> Bool {

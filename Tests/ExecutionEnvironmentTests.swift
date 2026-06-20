@@ -110,6 +110,7 @@ struct ExecutionEnvironmentTests {
         #expect(section.text.contains("Provider placement: host macOS"))
         #expect(section.text.contains("Workspace command executor: Docker image astra/test:latest"))
         #expect(section.text.contains("mcp__astra_workspace__workspace_shell"))
+        #expect(section.text.contains("astra_workspace-workspace_shell"))
         #expect(section.text.contains("Do not use native host Bash"))
         #expect(section.text.contains("Prefer tools installed in the image environment"))
         #expect(section.text.contains("command -v dbt && dbt --version"))

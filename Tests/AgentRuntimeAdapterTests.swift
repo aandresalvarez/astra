@@ -1468,10 +1468,12 @@ struct AgentRuntimeAdapterTests {
         #expect(env["ASTRA_WORKSPACE_DOCKER_ENV"] == "${ASTRA_WORKSPACE_DOCKER_ENV}")
 
         let allowTools = Self.argumentValues(after: "--allow-tool", in: plan.arguments)
-        #expect(allowTools.contains(DockerWorkspaceMCPProjection.providerToolPermission))
+        #expect(allowTools.contains("astra_workspace(workspace_shell)"))
+        #expect(!allowTools.contains(DockerWorkspaceMCPProjection.providerToolPermission))
         #expect(!allowTools.contains { $0.contains("shell(") })
         let availableTools = Self.argumentValues(after: "--available-tools", in: plan.arguments)
-        #expect(availableTools.contains(DockerWorkspaceMCPProjection.providerToolPermission))
+        #expect(availableTools.contains("astra_workspace-workspace_shell"))
+        #expect(!availableTools.contains(DockerWorkspaceMCPProjection.providerToolPermission))
         #expect(!availableTools.contains("bash"))
     }
 
@@ -1537,10 +1539,12 @@ struct AgentRuntimeAdapterTests {
         #expect(!plan.arguments.contains("--allow-all"))
         #expect(!plan.arguments.contains("--allow-all-tools"))
         let allowTools = Self.argumentValues(after: "--allow-tool", in: plan.arguments)
-        #expect(allowTools.contains(DockerWorkspaceMCPProjection.providerToolPermission))
+        #expect(allowTools.contains("astra_workspace(workspace_shell)"))
+        #expect(!allowTools.contains(DockerWorkspaceMCPProjection.providerToolPermission))
         #expect(!allowTools.contains { $0.contains("shell(") })
         let availableTools = Self.argumentValues(after: "--available-tools", in: plan.arguments)
-        #expect(availableTools.contains(DockerWorkspaceMCPProjection.providerToolPermission))
+        #expect(availableTools.contains("astra_workspace-workspace_shell"))
+        #expect(!availableTools.contains(DockerWorkspaceMCPProjection.providerToolPermission))
         #expect(!availableTools.contains("bash"))
     }
 
@@ -1744,9 +1748,11 @@ struct AgentRuntimeAdapterTests {
         #expect(env["ASTRA_BROWSER_TOKEN"] == "${ASTRA_BROWSER_TOKEN}")
 
         let allowTools = Self.argumentValues(after: "--allow-tool", in: plan.arguments)
-        #expect(allowTools.contains(BrowserBridgeMCPProjection.providerToolPermission))
+        #expect(allowTools.contains("astra_browser(browser)"))
+        #expect(!allowTools.contains(BrowserBridgeMCPProjection.providerToolPermission))
         let availableTools = Self.argumentValues(after: "--available-tools", in: plan.arguments)
-        #expect(availableTools.contains(BrowserBridgeMCPProjection.providerToolPermission))
+        #expect(availableTools.contains("astra_browser-browser"))
+        #expect(!availableTools.contains(BrowserBridgeMCPProjection.providerToolPermission))
     }
 
     @Test("CDP-only browser tasks inject required controlled engine into browser environment")
