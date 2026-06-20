@@ -564,6 +564,17 @@ final class AgentRuntimeWorker {
             return
         }
 
+        guard AgentRuntimeLaunchPreflight.preflightCredentialProjectionBeforeLaunch(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: auditPhase,
+            codeDirectory: codeDir
+        ) else {
+            isRunning = false
+            return
+        }
+
         let executionPath: String
         let shouldCleanupIsolation: Bool
         if runtimeAdapter.shouldPrepareIsolation(phase: auditPhase) {

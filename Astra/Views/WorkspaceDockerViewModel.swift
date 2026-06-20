@@ -219,6 +219,24 @@ final class WorkspaceDockerViewModel: ObservableObject {
     }
 
     var credentialProjectionTitle: String {
+        if let report = credentialReadinessReport {
+            switch report.state {
+            case .ready:
+                return "GCP credentials ready"
+            case .requiredButHostCredentialMissing:
+                return "GCP credentials missing"
+            case .hostCredentialAvailableButNotProjected:
+                return "GCP credentials required"
+            case .pinnedTaskSnapshotMissingProjection:
+                return "Task missing GCP credentials"
+            case .projectedButHostCredentialMissing:
+                return "GCP credentials need refresh"
+            case .failed:
+                return "GCP credentials need review"
+            case .notRequired:
+                break
+            }
+        }
         if hasGCPADCProjection {
             return "GCP credentials connected"
         }
@@ -229,6 +247,24 @@ final class WorkspaceDockerViewModel: ObservableObject {
     }
 
     var credentialProjectionSubtitle: String {
+        if let report = credentialReadinessReport, report.state != .notRequired {
+            switch report.state {
+            case .ready:
+                return "Application Default Credentials are projected read-only for Docker commands."
+            case .hostCredentialAvailableButNotProjected:
+                return "BigQuery/dbt detected. Connect local ADC before running container tasks."
+            case .pinnedTaskSnapshotMissingProjection:
+                return "Workspace credentials changed; fork or start a new task to use them."
+            case .requiredButHostCredentialMissing:
+                return "BigQuery/dbt detected, but no local ADC file was found on this Mac."
+            case .projectedButHostCredentialMissing:
+                return "The configured ADC projection points to a missing file."
+            case .failed:
+                return report.detail
+            case .notRequired:
+                break
+            }
+        }
         if hasGCPADCProjection {
             return "Application Default Credentials are mounted read-only for container commands."
         }
@@ -239,7 +275,10 @@ final class WorkspaceDockerViewModel: ObservableObject {
     }
 
     var credentialProjectionActionSystemName: String {
-        hasGCPADCProjection ? "minus.circle.fill" : "link.circle.fill"
+        if credentialReadinessReport?.state == .pinnedTaskSnapshotMissingProjection {
+            return "exclamationmark.triangle.fill"
+        }
+        return hasGCPADCProjection ? "minus.circle.fill" : "link.circle.fill"
     }
 
     var credentialProjectionIsEnabled: Bool {
@@ -247,6 +286,10 @@ final class WorkspaceDockerViewModel: ObservableObject {
     }
 
     var credentialProjectionHelp: String {
+        if let report = credentialReadinessReport, report.shouldBlockLaunch {
+            let remediation = report.remediation.map { " \($0)" } ?? ""
+            return "\(report.detail)\(remediation)"
+        }
         if !canChangeActiveEnvironment {
             return "Pinned task. This task keeps its current Docker credential projection because it already has execution history."
         }
@@ -546,6 +589,29 @@ final class WorkspaceDockerViewModel: ObservableObject {
         selectedEnvironment.effectiveCredentialProjections.contains {
             $0.id == ExecutionEnvironmentCredentialProjection.gcpADCID
         }
+    }
+
+    private var credentialReadinessReport: ExecutionEnvironmentCredentialReadinessReport? {
+        guard selectedEnvironment.isContainerized,
+              let workspace else {
+            return nil
+        }
+        let task: AgentTask
+        if let selectedTask {
+            task = selectedTask
+        } else {
+            task = AgentTask(title: "Credential readiness", goal: "Evaluate Docker credentials", workspace: workspace)
+            task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(selectedEnvironment)
+        }
+        let codeDirectory = selectedEnvironment.sourcePath
+            ?? workspace.activeWorkingPath
+            ?? workspace.primaryPath
+        return ExecutionEnvironmentCredentialReadinessService.evaluate(
+            task: task,
+            codeDirectory: codeDirectory,
+            homeDirectoryPath: homeDirectoryPath,
+            fileManager: fileManager
+        )
     }
 
     private var gcpADCHostPath: String {

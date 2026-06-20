@@ -9,6 +9,7 @@ struct TaskRunStopReasonTests {
         #expect(TaskRunStopReason.completed.rawValue == "completed")
         #expect(TaskRunStopReason.failed.rawValue == "failed")
         #expect(TaskRunStopReason.cancelled.rawValue == "cancelled")
+        #expect(TaskRunStopReason.credentialProjectionRequired.rawValue == "credential_projection_required")
         #expect(TaskRunStopReason.timeout.rawValue == "timeout")
         #expect(TaskRunStopReason.maxBudgetReached.rawValue == "max_budget_reached")
         #expect(TaskRunStopReason.maxTurnsReached.rawValue == "max_turns_reached")
