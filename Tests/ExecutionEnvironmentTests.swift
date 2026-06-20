@@ -106,6 +106,9 @@ struct ExecutionEnvironmentTests {
         #expect(section.text.contains("Workspace command executor: Docker image astra/test:latest"))
         #expect(section.text.contains("mcp__astra_workspace__workspace_shell"))
         #expect(section.text.contains("Do not use native host Bash"))
+        #expect(section.text.contains("Prefer tools installed in the image environment"))
+        #expect(section.text.contains("Do not use host-created virtual environments"))
+        #expect(section.text.contains("/workspace/.venv"))
     }
 
     @Test("Docker launch planning builds a typed docker run command with minimal environment")
