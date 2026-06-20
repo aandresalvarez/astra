@@ -21,8 +21,8 @@ enum AgentPromptExecutionEnvironmentSection {
                 Container working directory: \(containerCodeDir)
                 Container task output folder: \(containerTaskDir)
                 \(credentialLine)
-                Run project commands with the ASTRA MCP tool `mcp__astra_workspace__workspace_shell`; it executes inside the Docker container. Do not use native host Bash for project commands in this workspace. Host workspace files are bind-mounted into the container; use the container paths above while running commands and report host paths in final summaries when relevant.
-                Prefer tools installed in the image environment. Check tools by name from the container PATH, such as `command -v dbt && dbt --version`, through `mcp__astra_workspace__workspace_shell`.
+                Run project commands with the ASTRA workspace MCP tool; it executes inside the Docker container. Claude-style runtimes call it as `mcp__astra_workspace__workspace_shell`, and GitHub Copilot CLI displays it as `astra_workspace-workspace_shell`. Do not use native host Bash for project commands in this workspace. Host workspace files are bind-mounted into the container; use the container paths above while running commands and report host paths in final summaries when relevant.
+                Prefer tools installed in the image environment. Check tools by name from the container PATH, such as `command -v dbt && dbt --version`, through the ASTRA workspace MCP tool.
                 Do not use host-created virtual environments from bind-mounted workspace paths, such as `/workspace/.venv`; macOS virtualenv symlinks and compiled extensions are not portable to Linux containers.
                 """,
                 sourcePointers: [codeDir, taskDir].map {

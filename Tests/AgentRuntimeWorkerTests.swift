@@ -1199,6 +1199,7 @@ struct BuildPromptTests {
         #expect(prompt.contains("Execution Environment: starr-data-lake Image"))
         #expect(prompt.contains("Provider placement: host macOS"))
         #expect(prompt.contains("mcp__astra_workspace__workspace_shell"))
+        #expect(prompt.contains("astra_workspace-workspace_shell"))
         #expect(prompt.contains("command -v dbt && dbt --version"))
         #expect(prompt.contains("Do not use host-created virtual environments"))
         #expect(prompt.contains("User's follow-up request:\nis dbt installed and working correctly?"))

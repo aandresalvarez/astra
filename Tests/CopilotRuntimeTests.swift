@@ -1103,6 +1103,37 @@ struct CopilotCLICommandPlanningTests {
         #expect(allowedEntries.contains("report_intent"))
     }
 
+    @Test("Restricted command planning maps MCP tools to Copilot-native names")
+    func restrictedCommandPlanningMapsMCPToolsToCopilotNativeNames() {
+        let capabilities = CopilotCLICapabilities(
+            helpText: "--allow-tool --available-tools --excluded-tools --output-format --stream --no-ask-user"
+        )
+        let plan = CopilotCLIRuntime.buildCommand(
+            executablePath: "/bin/copilot",
+            prompt: "Run a workspace command",
+            model: "gpt-5",
+            workspacePath: "/tmp/ws",
+            additionalPaths: [],
+            permissionPolicy: .restricted,
+            allowedTools: ["mcp__astra_workspace__workspace_shell"],
+            timeoutSeconds: 60,
+            capabilities: capabilities,
+            taskEnvironment: [:],
+            copilotHome: "/tmp/copilot-home",
+            runtimeSupportTools: ["fetch_copilot_cli_documentation", "report_intent"]
+        )
+
+        let allowedEntries = Set(Self.argumentValues(after: "--allow-tool", in: plan.arguments))
+        let availableEntries = Set(Self.argumentValues(after: "--available-tools", in: plan.arguments))
+
+        #expect(allowedEntries.contains("astra_workspace(workspace_shell)"))
+        #expect(!allowedEntries.contains("mcp__astra_workspace__workspace_shell"))
+        #expect(availableEntries.contains("astra_workspace-workspace_shell"))
+        #expect(!availableEntries.contains("mcp__astra_workspace__workspace_shell"))
+        #expect(availableEntries.contains("fetch_copilot_cli_documentation"))
+        #expect(availableEntries.contains("report_intent"))
+    }
+
     @Test("Restricted command planning hides Copilot task delegation unless allowed")
     func restrictedCommandPlanningHidesTaskDelegationUnlessAllowed() throws {
         let capabilities = CopilotCLICapabilities(
