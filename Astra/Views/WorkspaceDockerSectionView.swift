@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct WorkspaceDockerSectionView: View {
+    private static let viewUpdateDeferralNanoseconds: UInt64 = 1_000_000
+
     @StateObject var viewModel = WorkspaceDockerViewModel()
     let workspace: Workspace
     var selectedTask: AgentTask?
@@ -50,24 +52,31 @@ struct WorkspaceDockerSectionView: View {
                 detectedSummaryRow(detected)
             }
         }
-        .onAppear {
-            viewModel.setup(for: workspace, selectedTask: selectedTask)
+        .task(id: setupSignature) {
+            await setupAfterViewUpdate()
         }
-        .onChange(of: selectedTask?.id) {
-            viewModel.setup(for: workspace, selectedTask: selectedTask)
+    }
+
+    private var setupSignature: String {
+        [
+            workspace.id.uuidString,
+            selectedTask?.id.uuidString ?? "none",
+            selectedTask?.status.rawValue ?? "none",
+            workspace.primaryPath,
+            workspace.additionalPaths.joined(separator: "\u{1F}"),
+            workspace.activeExecutionEnvironmentJSON ?? "none"
+        ].joined(separator: "\u{1E}")
+    }
+
+    @MainActor
+    private func setupAfterViewUpdate() async {
+        do {
+            try await Task.sleep(nanoseconds: Self.viewUpdateDeferralNanoseconds)
+        } catch {
+            return
         }
-        .onChange(of: selectedTask?.status) {
-            viewModel.setup(for: workspace, selectedTask: selectedTask)
-        }
-        .onChange(of: workspace.primaryPath) {
-            viewModel.setup(for: workspace, selectedTask: selectedTask)
-        }
-        .onChange(of: workspace.additionalPaths) {
-            viewModel.setup(for: workspace, selectedTask: selectedTask)
-        }
-        .onChange(of: workspace.activeExecutionEnvironmentJSON) {
-            viewModel.setup(for: workspace, selectedTask: selectedTask)
-        }
+        guard !Task.isCancelled else { return }
+        viewModel.setup(for: workspace, selectedTask: selectedTask)
     }
 
     private var header: some View {

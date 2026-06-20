@@ -161,6 +161,8 @@ private struct TaskThreadChangeObserver: View {
 
 /// Unified main view: compact status bar + chat-style activity thread + composer
 struct TaskMainView: View {
+    private static let viewUpdateDeferralNanoseconds: UInt64 = 1_000_000
+
     let task: AgentTask
     var taskQueue: TaskQueue?
     var onRunTask: ((AgentTask) -> Void)?
@@ -470,6 +472,9 @@ struct TaskMainView: View {
         .task(id: runtimeAvailabilitySignature) {
             await refreshRuntimeAvailability()
         }
+        .task(id: task.id) {
+            await initializeDisplayedTaskState()
+        }
         .task(id: planStateCacheRefreshTrigger) {
             refreshPlanStateCache()
         }
@@ -479,65 +484,54 @@ struct TaskMainView: View {
         .task(id: verificationLoadRequest) {
             await refreshVerificationPresentation(for: verificationLoadRequest)
         }
-        .onChange(of: task.id) {
-            PerformanceTelemetry.log("chat_open_selected_task", level: .info, fields: TaskMainViewPerformanceTelemetry.chatOpenFields(task: task, source: "task_change"))
-            isChatAtBottom = true
-            hasUnseenChatActivity = false
-            shouldScrollAfterUserMessage = true
-            pendingInitialChatScrollTaskID = task.id
-            isExpandingWindow = false
-            expansionAnchorItemID = nil
-            runtimeHealthNow = Date()
-            lastLoggedRuntimeHealthSignature = nil
-            threadViewModel.reset(for: task)
-            loadSSHConnections()
-            alignTaskAfterRuntimeAvailabilityRefresh()
-            initializeTaskPolicySelection()
-            cachedVerificationRequest = nil
-            cachedVerificationPresentation = nil
-            refreshTaskContextState()
-            refreshForkSourceAvailabilityWarning()
-            refreshPlanStateCache()
-        }
         .onAppear {
-            PerformanceTelemetry.log("chat_open_selected_task", level: .info, fields: TaskMainViewPerformanceTelemetry.chatOpenFields(task: task, source: "appear"))
-            alignTaskModelWithRuntime()
-            initializeTaskPolicySelection()
-            runtimeHealthNow = Date()
-            pendingInitialChatScrollTaskID = task.id
-            threadViewModel.reset(for: task)
-            loadSSHConnections()
-            cachedVerificationRequest = nil
-            cachedVerificationPresentation = nil
-            refreshTaskContextState()
-            refreshForkSourceAvailabilityWarning()
-            refreshPlanStateCache()
-            logRuntimeHealthIfNeeded(reason: "appear")
-            installPasteMonitor()
+            deferTaskViewMutation {
+                installPasteMonitor()
+            }
         }
         .onDisappear {
             pendingPlanStateRefreshTask?.cancel()
             threadViewModel.cancelGeneratedFilesRefresh()
             removePasteMonitor()
         }
-        .onChange(of: sshReloadTrigger) { loadSSHConnections() }
-        .onChange(of: claudeAvailableModels) { alignTaskModelWithRuntime() }
-        .onChange(of: copilotAvailableModels) { alignTaskModelWithRuntime() }
-        .onChange(of: runtimeModelCacheRevision) { alignTaskModelWithRuntime() }
+        .onChange(of: sshReloadTrigger) {
+            deferTaskViewMutation {
+                loadSSHConnections()
+            }
+        }
+        .onChange(of: claudeAvailableModels) {
+            deferTaskViewMutation {
+                alignTaskModelWithRuntime()
+            }
+        }
+        .onChange(of: copilotAvailableModels) {
+            deferTaskViewMutation {
+                alignTaskModelWithRuntime()
+            }
+        }
+        .onChange(of: runtimeModelCacheRevision) {
+            deferTaskViewMutation {
+                alignTaskModelWithRuntime()
+            }
+        }
         .background {
             TaskThreadChangeObserver(
                 task: task,
                 generatedFilesLatestRun: currentThreadSnapshot.latestRun,
                 onSnapshotChange: {
-                    threadViewModel.refreshSnapshot(for: task)
-                    schedulePlanStateCacheRefresh()
-                    runtimeHealthNow = Date()
-                    logRuntimeHealthIfNeeded(reason: "snapshot")
+                    deferTaskViewMutation {
+                        threadViewModel.refreshSnapshot(for: task)
+                        schedulePlanStateCacheRefresh()
+                        runtimeHealthNow = Date()
+                        logRuntimeHealthIfNeeded(reason: "snapshot")
+                    }
                 },
                 onGeneratedFilesChange: {
-                    threadViewModel.refreshGeneratedFiles(folder: TaskWorkspaceAccess(task: task).taskFolder)
-                    refreshTaskContextState()
-                    refreshForkSourceAvailabilityWarning()
+                    deferTaskViewMutation {
+                        threadViewModel.refreshGeneratedFiles(folder: TaskWorkspaceAccess(task: task).taskFolder)
+                        refreshTaskContextState()
+                        refreshForkSourceAvailabilityWarning()
+                    }
                 }
             )
         }
@@ -573,6 +567,44 @@ struct TaskMainView: View {
             fields: health.telemetryFields(reason: reason),
             level: health.isAttentionState ? .warning : .debug
         )
+    }
+
+    @MainActor
+    private func initializeDisplayedTaskState() async {
+        guard await waitForViewUpdateBoundary() else { return }
+
+        PerformanceTelemetry.log("chat_open_selected_task", level: .info, fields: TaskMainViewPerformanceTelemetry.chatOpenFields(task: task, source: "task_lifecycle"))
+        isChatAtBottom = true
+        hasUnseenChatActivity = false
+        shouldScrollAfterUserMessage = true
+        pendingInitialChatScrollTaskID = task.id
+        isExpandingWindow = false
+        expansionAnchorItemID = nil
+        runtimeHealthNow = Date()
+        lastLoggedRuntimeHealthSignature = nil
+        alignTaskModelWithRuntime()
+        threadViewModel.reset(for: task)
+        loadSSHConnections()
+        alignTaskAfterRuntimeAvailabilityRefresh()
+        initializeTaskPolicySelection()
+        cachedVerificationRequest = nil
+        cachedVerificationPresentation = nil
+        refreshTaskContextState()
+        refreshForkSourceAvailabilityWarning()
+        refreshPlanStateCache()
+        logRuntimeHealthIfNeeded(reason: "task_lifecycle")
+    }
+
+    private func deferTaskViewMutation(_ operation: @escaping @MainActor () -> Void) {
+        Task { @MainActor in
+            guard await waitForViewUpdateBoundary() else { return }
+            operation()
+        }
+    }
+
+    private func waitForViewUpdateBoundary() async -> Bool {
+        do { try await Task.sleep(nanoseconds: Self.viewUpdateDeferralNanoseconds) } catch { return false }
+        return !Task.isCancelled
     }
 
     private func refreshRuntimeAvailability() async {
@@ -1227,11 +1259,6 @@ struct TaskMainView: View {
                     .padding(.vertical, 16)
                     .frame(maxWidth: .infinity)
                 }
-                // Pin the resting position to the latest message. Unlike a one-shot
-                // scrollTo("chatBottom"), this layout-time anchor re-applies as the async
-                // snapshot lands and as LazyVStack rows realize their true heights, so an
-                // existing chat opens at the bottom without the user scrolling down.
-                .defaultScrollAnchor(.bottom)
                 .coordinateSpace(name: "task-chat-scroll")
                 .overlay(alignment: .bottom) {
                     newActivityPill(proxy: proxy)
@@ -1240,20 +1267,28 @@ struct TaskMainView: View {
                         .animation(.easeOut(duration: 0.18), value: hasUnseenChatActivity)
                 }
                 .onPreferenceChange(ChatBottomPositionPreferenceKey.self) { bottomMinY in
-                    updateChatBottomState(bottomMinY: bottomMinY, viewportHeight: viewport.size.height)
+                    deferTaskViewMutation {
+                        updateChatBottomState(bottomMinY: bottomMinY, viewportHeight: viewport.size.height)
+                    }
                 }
                 .onPreferenceChange(ChatTopPositionPreferenceKey.self) { topMinY in
-                    handleChatTopPositionChange(topMinY: topMinY)
+                    deferTaskViewMutation {
+                        handleChatTopPositionChange(topMinY: topMinY)
+                    }
                 }
                 .onAppear {
-                    scrollChatToBottom(proxy, animated: false)
+                    deferTaskViewMutation {
+                        scrollChatToBottom(proxy, animated: false)
+                    }
                 }
                 .onChange(of: threadScrollSignature) { oldValue, newValue in
-                    handleThreadScrollChange(
-                        oldSignature: oldValue,
-                        newSignature: newValue,
-                        proxy: proxy
-                    )
+                    deferTaskViewMutation {
+                        handleThreadScrollChange(
+                            oldSignature: oldValue,
+                            newSignature: newValue,
+                            proxy: proxy
+                        )
+                    }
                 }
             }
         }
@@ -1719,9 +1754,6 @@ struct TaskMainView: View {
 
     @ViewBuilder
     private func newActivityPill(proxy: ScrollViewProxy) -> some View {
-        // Show whenever the user is scrolled away from the bottom — a general
-        // "scroll to latest" affordance. hasUnseenChatActivity only changes the
-        // emphasis (label + accent + dot) when live output arrived while scrolled up.
         if !isChatAtBottom {
             ChatJumpToLatestButton(hasUnseenActivity: hasUnseenChatActivity) {
                 scrollChatToBottom(proxy)
@@ -1731,13 +1763,10 @@ struct TaskMainView: View {
 
     private func updateChatBottomState(bottomMinY: CGFloat, viewportHeight: CGFloat) {
         let wasAtBottom = isChatAtBottom
-        isChatAtBottom = ChatScrollMetrics.isAtBottom(
-            bottomMinY: bottomMinY,
-            viewportHeight: viewportHeight
-        )
-        if isChatAtBottom && !wasAtBottom {
-            hasUnseenChatActivity = false
-        }
+        let isNowAtBottom = ChatScrollMetrics.isAtBottom(bottomMinY: bottomMinY, viewportHeight: viewportHeight)
+        guard isNowAtBottom != isChatAtBottom else { return }
+        isChatAtBottom = isNowAtBottom
+        if isChatAtBottom && !wasAtBottom { hasUnseenChatActivity = false }
     }
 
     private func handleThreadScrollChange(
@@ -1750,9 +1779,7 @@ struct TaskMainView: View {
         if let anchorID = expansionAnchorItemID {
             expansionAnchorItemID = nil
             isExpandingWindow = false
-            DispatchQueue.main.async {
-                proxy.scrollTo(anchorID, anchor: .top)
-            }
+            DispatchQueue.main.async { proxy.scrollTo(anchorID, anchor: .top) }
             return
         }
 
@@ -1766,18 +1793,12 @@ struct TaskMainView: View {
         }
 
         if shouldScrollAfterUserMessage {
-            // Discrete user action — a short animation reads well here.
             scrollChatToBottom(proxy)
             shouldScrollAfterUserMessage = false
             return
         }
 
         if isChatAtBottom {
-            // Tail-follow during streaming: this handler fires on every snapshot
-            // update (~8×/sec). An animated scroll would stack a fresh 0.18s
-            // animation each time, interrupted before it settles, reading as
-            // jitter. Snap unanimated and reserve animation for discrete events.
-            // See the UI responsiveness audit (Cluster 5).
             scrollChatToBottom(proxy, animated: false)
             return
         }
@@ -2424,7 +2445,7 @@ struct TaskMainView: View {
             }
 
             if let policy = presentation.policy {
-                runActivityDetailSection(title: "Policy", systemImage: "checklist.shield") {
+                runActivityDetailSection(title: "Policy", systemImage: "checkmark.shield") {
                     runPolicySummaryView(policy, for: run)
                 }
             }
@@ -2646,7 +2667,7 @@ struct TaskMainView: View {
                 }
             } label: {
                 HStack(spacing: 7) {
-                    Image(systemName: "checklist.shield")
+                    Image(systemName: "checkmark.shield")
                         .font(Stanford.ui(11))
                         .frame(width: 14)
                     Text(policy.title)
@@ -3122,7 +3143,7 @@ struct TaskMainView: View {
         case "permission.approval.requested":
             ("Permission requested", "hand.raised", Stanford.coolGrey)
         case "astra.permission_summary":
-            ("Permission summary", "checklist.shield", Stanford.coolGrey)
+            ("Permission summary", "checkmark.shield", Stanford.coolGrey)
         case "error":
             runNoticeLooksPolicyBlocked(notice)
                 ? ("Policy blocked this run", "shield.slash", Stanford.failed)
@@ -3857,10 +3878,14 @@ struct TaskMainView: View {
                 onAction: handleTaskDecisionDockAction
             )
             .onAppear {
-                isTaskDecisionDetailsExpanded = false
+                deferTaskViewMutation {
+                    isTaskDecisionDetailsExpanded = false
+                }
             }
             .onChange(of: presentation.id) { _, _ in
-                isTaskDecisionDetailsExpanded = false
+                deferTaskViewMutation {
+                    isTaskDecisionDetailsExpanded = false
+                }
             }
         }
     }
