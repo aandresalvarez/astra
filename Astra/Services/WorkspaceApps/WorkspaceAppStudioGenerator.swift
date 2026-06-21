@@ -30,6 +30,10 @@ struct WorkspaceAppStudioGenerationResult: Sendable, Equatable {
     var attemptCount: Int
     /// Human-readable provider failure when a `runPrompt` call errored (degraded).
     var providerFailure: String?
+    /// A one-line, model-written summary of what was built ("A lab sample tracker with
+    /// status and owner"), shown in the App Studio chat. Nil on the deterministic fallback
+    /// or when the model omitted it — the chat then falls back to a deterministic summary.
+    var summary: String? = nil
 
     /// Mirrors `WorkspaceAppStudioDraft.canPublish`: a blockers-only gate. Warnings
     /// never block publishing.
@@ -130,7 +134,8 @@ enum WorkspaceAppStudioGenerator {
                 accepted: true,
                 origin: .model,
                 attemptCount: attempts,
-                providerFailure: nil
+                providerFailure: nil,
+                summary: extractSummary(from: vetted.rawOutput)
             )
         }
 
@@ -164,7 +169,8 @@ enum WorkspaceAppStudioGenerator {
                     accepted: true,
                     origin: .modelRepaired,
                     attemptCount: attempts,
-                    providerFailure: nil
+                    providerFailure: nil,
+                    summary: extractSummary(from: vetted.rawOutput)
                 )
             }
         }
@@ -278,9 +284,10 @@ enum WorkspaceAppStudioGenerator {
         \(sanitizedIntent(intent))
         </INTENT>
 
-        Respond with EXACTLY ONE block. Put each marker on its own line with NO \
-        markdown fences and NO backticks:
+        Respond with a one-line plain-language summary, then EXACTLY ONE manifest block. \
+        Put each marker on its own line with NO markdown fences and NO backticks:
 
+        ASTRA_APP_SUMMARY: <one friendly sentence describing the app you built>
         ASTRA_APP_MANIFEST
         { ...the manifest JSON... }
         END_ASTRA_APP_MANIFEST
@@ -357,9 +364,10 @@ enum WorkspaceAppStudioGenerator {
 
         \(priorAttempt)
 
-        Return a corrected manifest as EXACTLY ONE block, each marker on its own \
-        line, NO markdown fences and NO backticks:
+        Return a one-line plain-language summary, then a corrected manifest block, each \
+        marker on its own line, NO markdown fences and NO backticks:
 
+        ASTRA_APP_SUMMARY: <one friendly sentence describing the app you built>
         ASTRA_APP_MANIFEST
         { ...the corrected manifest JSON... }
         END_ASTRA_APP_MANIFEST
@@ -367,6 +375,21 @@ enum WorkspaceAppStudioGenerator {
         You may ONLY reference these capability contracts (exact ids/operations):
         \(contractCatalog(contractFamilies))
         """
+    }
+
+    /// Pull the model's one-line `ASTRA_APP_SUMMARY:` out of its reply. Display-only: a
+    /// single trimmed line, length-capped — never parsed or used in a decision, so it's a
+    /// safe surface for model text. Nil when the line is absent or empty.
+    static func extractSummary(from output: String) -> String? {
+        for rawLine in output.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            guard line.hasPrefix("ASTRA_APP_SUMMARY:") else { continue }
+            let value = line.dropFirst("ASTRA_APP_SUMMARY:".count)
+            let oneLine = String(value).replacingOccurrences(of: "\n", with: " ").prefix(220)
+            let trimmed = String(oneLine).trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        return nil
     }
 
     // MARK: - Helpers

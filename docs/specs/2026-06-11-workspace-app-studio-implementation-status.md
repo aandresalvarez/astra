@@ -55,6 +55,35 @@ build on the right, publish when ready.
 
 All 3177 tests + 41 architecture-fitness tests green.
 
+### Gap closure (2026-06-21)
+
+Closed the residuals from the conversational rework:
+- **Model-written turn summaries.** The generator now asks for a one-line `ASTRA_APP_SUMMARY:`
+  and surfaces it on `WorkspaceAppStudioGenerationResult.summary`; the chat leads the assistant
+  turn with it (always appending the honest validation line) and falls back to the deterministic
+  summary when absent or on the template fallback. Sanitized + length-capped (display-only).
+- **"Test" re-surfaced.** A `…` menu in the chat header opens the existing `WorkspaceAppTestPanelView`
+  sheet (self-check / plain-English tests / saved checks); authored checks save back onto the draft
+  via `WorkspaceAppStudioSession.applyChecks`.
+- **Manifest inspector re-surfaced.** The same menu opens a read-only `WorkspaceAppManifestInspectorView`
+  sheet (identity / sources / storage / actions / automations / permissions), reusing
+  `WorkspaceAppManifestInspectorPresentationBuilder`.
+- **Ideate + identity card.** Their standalone form UIs are intentionally NOT re-surfaced —
+  conversational generation supersedes the ideation cards, and the live interactive preview replaces
+  the identity card. The engines (`WorkspaceAppStudioIdeator`, `WorkspaceAppStudioIdentityBuilder`,
+  and the core `WorkspaceAppStudioIdea` plumbing) are retained and still test-covered; they were
+  NOT deleted (they back the deterministic manifest builders + archetype tests).
+- **Workspace-switch correctness.** Switching workspaces while in the Studio now exits it
+  (`handleSelectedWorkspaceChanged`), so a stale session can't publish into the wrong workspace.
+
+**Still deferred (deliberate, not a defect): persistent/resumable app-build conversations.** They
+remain ephemeral. Real persistence is a separate feature (a SwiftData model for in-progress builds,
+sidebar entries, reopen lifecycle) and `ContentView.swift` is at its line budget; it should be its
+own slice rather than bolted onto this change.
+
+Live-verified end-to-end (publish → install → sidebar app row; Edit-in-Studio seeds the manifest;
+Test + Inspect sheets; honest model-timeout fallback).
+
 ## 2026-06-19 Update — Progress And Gaps
 
 The F1–F7 runtime re-land and the product slices that were "pending" on

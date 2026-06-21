@@ -133,11 +133,15 @@ final class WorkspaceAppStudioSession: ObservableObject {
         // draft so validation + publish-gating recompute from it.
         draft = WorkspaceAppStudioBuilder.draft(intent: text, workspace: workspace, existingManifest: result.manifest)
         draftRevision &+= 1
-        messages.append(StudioMessage(
-            role: .assistant,
-            kind: .summary,
-            text: StudioTurnSummary.line(for: result, isEditing: existing != nil)
-        ))
+        // Prefer the model's own one-line summary (more natural); always append the honest
+        // validation status. Fall back to the fully deterministic summary when absent.
+        let assistantText: String
+        if let modelSummary = result.summary, !modelSummary.isEmpty {
+            assistantText = modelSummary + " " + StudioTurnSummary.validationLine(result.validationReport)
+        } else {
+            assistantText = StudioTurnSummary.line(for: result, isEditing: existing != nil)
+        }
+        messages.append(StudioMessage(role: .assistant, kind: .summary, text: assistantText))
         isGenerating = false
     }
 
@@ -155,6 +159,16 @@ final class WorkspaceAppStudioSession: ObservableObject {
             kind: .summary,
             text: "Done — \(refinement.label.lowercased()). \(StudioTurnSummary.validationLine(rebuilt.validationReport))"
         ))
+    }
+
+    /// Save authored test checks onto the current draft (from the "Test" sheet) so they
+    /// travel with the app when published.
+    func applyChecks(_ checks: [WorkspaceAppCheck], workspace: Workspace) {
+        guard let current = draft else { return }
+        var manifest = current.manifest
+        manifest.checks = checks.isEmpty ? nil : checks
+        draft = WorkspaceAppStudioBuilder.draft(intent: current.intent, workspace: workspace, existingManifest: manifest)
+        draftRevision &+= 1
     }
 
     // MARK: - Default generator

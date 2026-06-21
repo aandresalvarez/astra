@@ -20,6 +20,8 @@ struct WorkspaceAppStudioChatView: View {
 
     @State private var inputText = ""
     @State private var seedSampleData = false
+    @State private var isTesting = false
+    @State private var isInspecting = false
     @FocusState private var composerFocused: Bool
 
     private var canSend: Bool {
@@ -37,6 +39,25 @@ struct WorkspaceAppStudioChatView: View {
         .background(Stanford.panelBackground)
         .accessibilityIdentifier("WorkspaceAppStudioChatView")
         .onAppear { composerFocused = true }
+        .sheet(isPresented: $isTesting) {
+            if let draft = session.draft {
+                WorkspaceAppTestPanelView(
+                    manifest: draft.manifest,
+                    workspacePath: workspace.primaryPath,
+                    onSaveChecks: { session.applyChecks($0, workspace: workspace) },
+                    onDismiss: { isTesting = false }
+                )
+            }
+        }
+        .sheet(isPresented: $isInspecting) {
+            if let draft = session.draft {
+                WorkspaceAppManifestInspectorView(
+                    manifest: draft.manifest,
+                    validationReport: draft.validationReport,
+                    onDismiss: { isInspecting = false }
+                )
+            }
+        }
     }
 
     // MARK: - Header
@@ -68,6 +89,17 @@ struct WorkspaceAppStudioChatView: View {
             .controlSize(.small)
             .fixedSize()
             .help("Seed a few example rows on publish so the app isn't empty. You can delete them anytime.")
+
+            Menu {
+                Button { isTesting = true } label: { Label("Test app…", systemImage: "checkmark.seal") }
+                Button { isInspecting = true } label: { Label("Inspect manifest…", systemImage: "doc.text.magnifyingglass") }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .disabled(session.draft == nil)
+            .help("Test the app, or inspect its manifest")
 
             Button("Cancel", action: onCancel)
                 .buttonStyle(.borderless)

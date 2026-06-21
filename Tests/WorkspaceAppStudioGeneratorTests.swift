@@ -400,4 +400,52 @@ struct WorkspaceAppStudioGeneratorTests {
         )
         #expect(none.contains("Connectors available in THIS workspace: none"))
     }
+
+    // MARK: - Model-written summary
+
+    @Test("extractSummary pulls the ASTRA_APP_SUMMARY line; nil when absent")
+    func extractsSummaryLine() {
+        let withSummary = "ASTRA_APP_SUMMARY:  A lab sample tracker.  \nASTRA_APP_MANIFEST\n{}\nEND_ASTRA_APP_MANIFEST"
+        #expect(WorkspaceAppStudioGenerator.extractSummary(from: withSummary) == "A lab sample tracker.")
+        #expect(WorkspaceAppStudioGenerator.extractSummary(from: "ASTRA_APP_MANIFEST\n{}\nEND_ASTRA_APP_MANIFEST") == nil)
+    }
+
+    @Test("an accepted manifest carries the model's summary onto the result")
+    func acceptedResultCarriesSummary() async {
+        let output = Self.ok(
+            "ASTRA_APP_SUMMARY: A grocery database.\nASTRA_APP_MANIFEST\n\(Self.json(Self.validManifest))\nEND_ASTRA_APP_MANIFEST"
+        )
+        let runner = ScriptedRunner([output])
+        let result = await WorkspaceAppStudioGenerator.generate(
+            intent: "Build me a grocery database app.",
+            workspaceName: "Demo", workspacePath: "/tmp/demo", runner: runner.runner
+        )
+        #expect(result.accepted)
+        #expect(result.summary == "A grocery database.")
+    }
+
+    @Test("the deterministic fallback carries no model summary")
+    func fallbackHasNoSummary() async {
+        let runner = ScriptedRunner([Self.manifestBlock(Self.json(Self.invalidManifest))])
+        let result = await WorkspaceAppStudioGenerator.generate(
+            intent: "Build me a grocery database app.",
+            workspaceName: "Demo", workspacePath: "/tmp/demo", maxRepairAttempts: 0, runner: runner.runner
+        )
+        #expect(result.origin == .deterministicFallback)
+        #expect(result.summary == nil)
+    }
+
+    @Test("both prompts request the one-line summary")
+    func promptsAskForSummary() {
+        let families = WorkspaceAppContractRegistry().families
+        let gen = WorkspaceAppStudioGenerator.generationPrompt(
+            intent: "track groceries", workspaceName: "Demo", base: Self.validManifest, contractFamilies: families
+        )
+        #expect(gen.contains("ASTRA_APP_SUMMARY:"))
+        let repair = WorkspaceAppStudioGenerator.repairPrompt(
+            intent: "track groceries", rejected: Self.invalidManifest, rawOutput: nil,
+            report: WorkspaceAppManifestValidator.validate(Self.invalidManifest), contractFamilies: families
+        )
+        #expect(repair.contains("ASTRA_APP_SUMMARY:"))
+    }
 }

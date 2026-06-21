@@ -41,7 +41,8 @@ struct WorkspaceAppStudioSessionTests {
         _ manifest: WorkspaceAppManifest,
         origin: WorkspaceAppStudioGenerationResult.Origin = .model,
         attemptCount: Int = 1,
-        providerFailure: String? = nil
+        providerFailure: String? = nil,
+        summary: String? = nil
     ) -> WorkspaceAppStudioGenerationResult {
         WorkspaceAppStudioGenerationResult(
             manifest: manifest,
@@ -49,7 +50,8 @@ struct WorkspaceAppStudioSessionTests {
             accepted: origin != .deterministicFallback,
             origin: origin,
             attemptCount: attemptCount,
-            providerFailure: providerFailure
+            providerFailure: providerFailure,
+            summary: summary
         )
     }
 
@@ -196,6 +198,19 @@ struct WorkspaceAppStudioSessionTests {
         #expect(session.draft == nil)
         #expect(session.messages.count == 1)
         #expect(session.messages.first?.role == .assistant)
+    }
+
+    // MARK: - Model-written summary
+
+    @Test("a model-written summary leads the assistant turn, with validation appended")
+    func usesModelSummaryWhenPresent() async {
+        let (session, _) = session([Self.result(Self.validManifest, summary: "A tidy lab sample tracker")])
+        let ws = workspace()
+        await submit(session, "track lab samples", ws)
+        let last = session.messages.last
+        #expect(last?.role == .assistant)
+        #expect(last?.text.hasPrefix("A tidy lab sample tracker") == true)
+        #expect(last?.text.contains("ready to publish") == true)
     }
 
     // MARK: - Honest summary wording
