@@ -56,12 +56,117 @@ enum WorkspaceAppWebReportHTML {
         return document(body)
     }
 
+    /// A `chartInteractive` renderer: the ONLY renderer that runs JavaScript, and only a
+    /// Swift-authored, vetted script (below) — never model/user code. The bar data is handed
+    /// over as an escaped JSON **data island** (`<script type="application/json">`), so a
+    /// malicious cell value cannot break out into an executable context; the script reads it
+    /// with `JSON.parse` and writes every data-derived string with `textContent` (never
+    /// `innerHTML`). CSP still blocks all network (`default-src 'none'`, no `connect-src`),
+    /// there is no JS↔native bridge, and `baseURL` is nil — so the script can render an
+    /// interactive chart but can neither exfiltrate data nor escape the sandbox.
+    static func interactiveChartHTML(
+        title: String,
+        bars: [WorkspaceAppChartPresentation.Bar]
+    ) -> String {
+        let island = scriptSafeJSON(chartDataJSON(bars: bars))
+        let body = """
+        <h1>\(escape(title))</h1>
+        <div id="chart" class="ichart"></div>
+        <div id="tip" class="tip" hidden></div>
+        <script type="application/json" id="astra-chart-data">\(island)</script>
+        <script>\(interactiveChartScript)</script>
+        """
+        return interactiveDocument(body)
+    }
+
+    /// JSON for the data island: a fixed `{ "bars": [{label,value,display}] }` shape encoded
+    /// by Swift (so values are properly JSON-escaped). Never interpolates raw cell strings.
+    private static func chartDataJSON(bars: [WorkspaceAppChartPresentation.Bar]) -> String {
+        struct Item: Encodable { let label: String; let value: Double; let display: String }
+        let payload = ["bars": bars.map { Item(label: $0.label, value: $0.value, display: $0.displayValue) }]
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(payload), let json = String(data: data, encoding: .utf8) else {
+            return "{\"bars\":[]}"
+        }
+        return json
+    }
+
+    /// Neutralize a JSON string for embedding inside a `<script type="application/json">`
+    /// block: escaping `<`/`>`/`&` to their `\uXXXX` JSON forms makes the literal `</script>`
+    /// (and `<!--`) impossible to appear from data, while still parsing back identically.
+    private static func scriptSafeJSON(_ json: String) -> String {
+        json.replacingOccurrences(of: "&", with: "\\u0026")
+            .replacingOccurrences(of: "<", with: "\\u003c")
+            .replacingOccurrences(of: ">", with: "\\u003e")
+    }
+
+    /// The vetted interactive-chart script. Reads the JSON data island and renders SVG-free
+    /// DOM bars with a hover tooltip. Every data-derived string goes through `textContent`;
+    /// the only data→style path is a clamped numeric width. No `eval`, no `innerHTML`, no
+    /// network (CSP blocks it anyway), no navigation.
+    private static let interactiveChartScript = """
+    (function () {
+      var node = document.getElementById('astra-chart-data');
+      var bars = [];
+      try { bars = ((JSON.parse(node.textContent) || {}).bars) || []; } catch (e) { bars = []; }
+      var root = document.getElementById('chart');
+      var tip = document.getElementById('tip');
+      if (!bars.length) { root.textContent = 'No data yet.'; return; }
+      var max = 0, i;
+      for (i = 0; i < bars.length; i++) { var v = +bars[i].value || 0; if (v > max) max = v; }
+      if (max <= 0) max = 1;
+      for (i = 0; i < bars.length; i++) {
+        var b = bars[i];
+        var frac = Math.max(0, Math.min(1, (+b.value || 0) / max));
+        var row = document.createElement('div'); row.className = 'irow';
+        var lbl = document.createElement('div'); lbl.className = 'ilbl'; lbl.textContent = String(b.label);
+        var track = document.createElement('div'); track.className = 'itrack';
+        var bar = document.createElement('div'); bar.className = 'ibar'; bar.style.width = (frac * 100).toFixed(2) + '%';
+        var val = document.createElement('div'); val.className = 'ival'; val.textContent = String(b.display);
+        track.appendChild(bar); row.appendChild(lbl); row.appendChild(track); row.appendChild(val);
+        (function (item, el) {
+          el.addEventListener('mouseenter', function () { tip.textContent = String(item.label) + ': ' + String(item.display); tip.hidden = false; });
+          el.addEventListener('mouseleave', function () { tip.hidden = true; });
+        })(b, row);
+        root.appendChild(row);
+      }
+    })();
+    """
+
+    /// JS-enabled document shell for the vetted interactive renderer. Same locked-down CSP as
+    /// the static shell PLUS `script-src 'unsafe-inline'` (only Swift-authored inline scripts
+    /// exist here); `default-src 'none'` still blocks every network fetch.
+    private static func interactiveDocument(_ body: String) -> String {
+        """
+        <!DOCTYPE html>
+        <html><head><meta charset="utf-8">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none';">
+        <style>
+        :root { color-scheme: light dark; }
+        body { font: 13px -apple-system, system-ui, sans-serif; margin: 16px; color: #1d1d1f; background: transparent; }
+        @media (prefers-color-scheme: dark) { body { color: #f5f5f7; } }
+        h1 { font-size: 15px; margin: 0 0 12px; }
+        .ichart { display: flex; flex-direction: column; gap: 8px; }
+        .irow { display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: default; }
+        .ilbl { width: 32%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .itrack { flex: 1; background: rgba(127,127,127,0.12); border-radius: 4px; height: 16px; }
+        .ibar { height: 16px; border-radius: 4px; background: #4a7ba6; min-width: 2px; transition: filter .1s; }
+        .irow:hover .ibar { filter: brightness(1.15); }
+        .ival { width: 48px; text-align: right; color: #666; }
+        .tip { position: fixed; top: 8px; right: 8px; background: rgba(0,0,0,0.78); color: #fff; padding: 4px 8px; border-radius: 6px; font-size: 12px; pointer-events: none; }
+        </style></head><body>
+        \(body)
+        </body></html>
+        """
+    }
+
     /// Wraps body HTML in the shared, CSP-locked document shell (no script, no network).
     private static func document(_ body: String) -> String {
         """
         <!DOCTYPE html>
         <html><head><meta charset="utf-8">
-        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none';">
         <style>
         :root { color-scheme: light dark; }
         body { font: 13px -apple-system, system-ui, sans-serif; margin: 16px; color: #1d1d1f; background: transparent; }

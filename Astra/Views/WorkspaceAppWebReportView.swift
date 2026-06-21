@@ -9,13 +9,16 @@ import WebKit
 /// the Swift-built HTML — it can never reach the network or escape the sandbox.
 struct WorkspaceAppWebReportView: NSViewRepresentable {
     let html: String
+    /// JavaScript stays OFF by default. Only the vetted `chartInteractive` renderer opts in
+    /// (Swift-authored inline script, escaped-JSON data, no network, no native bridge).
+    var allowsJavaScript = false
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
-        configuration.defaultWebpagePreferences.allowsContentJavaScript = false
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = allowsJavaScript
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         context.coordinator.loadedHTML = html
@@ -32,15 +35,19 @@ struct WorkspaceAppWebReportView: NSViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate {
         var loadedHTML: String?
 
-        // Allow only the initial in-memory `loadHTMLString` (navigationType `.other`);
-        // cancel link clicks, form submits, and any other navigation so the report can
-        // never leave the sandbox or hit the network.
+        // Allow only Swift-initiated in-memory loads — `loadHTMLString(baseURL: nil)` resolves
+        // to an `about:` URL, including reloads when the data changes. Cancel everything else:
+        // link clicks, form submits, and — now that the interactive renderer runs JS — any
+        // script-initiated navigation to a real URL (http/https/file/...). So even if a script
+        // tried `location = "https://attacker/..."`, the nav layer blocks it independently of CSP.
         func webView(
             _ webView: WKWebView,
             decidePolicyFor navigationAction: WKNavigationAction,
             decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
         ) {
-            decisionHandler(navigationAction.navigationType == .other ? .allow : .cancel)
+            let scheme = navigationAction.request.url?.scheme
+            let isInMemoryLoad = scheme == nil || scheme == "about"
+            decisionHandler(navigationAction.navigationType == .other && isInMemoryLoad ? .allow : .cancel)
         }
     }
 }
@@ -60,7 +67,7 @@ struct WorkspaceAppWebReportCard: View {
                     .foregroundStyle(.primary)
                     .lineLimit(1)
             }
-            WorkspaceAppWebReportView(html: report.html)
+            WorkspaceAppWebReportView(html: report.html, allowsJavaScript: report.allowsJavaScript)
                 .frame(height: 260)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }

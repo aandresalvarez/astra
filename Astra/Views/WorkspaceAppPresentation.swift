@@ -90,6 +90,9 @@ struct WorkspaceAppWebReportPresentation: Identifiable, Equatable {
     var id: String
     var label: String
     var html: String
+    /// True only for the vetted `chartInteractive` renderer (Swift-authored script). The
+    /// static renderers (htmlReport, chartComposite) leave this false so JS stays off.
+    var allowsJavaScript = false
 }
 
 struct WorkspaceAppRunHistoryPresentation: Equatable {
@@ -663,6 +666,11 @@ enum WorkspaceAppNativeSurfaceBuilder {
             guard let table else { return nil }
             let html = WorkspaceAppWebReportHTML.chartHTML(title: widget.label, bars: chart(widget: widget, table: table).bars)
             return WorkspaceAppWebReportPresentation(id: widget.id, label: widget.label, html: html)
+        case "chartInteractive":
+            guard let table else { return nil }
+            let html = WorkspaceAppWebReportHTML.interactiveChartHTML(title: widget.label, bars: chart(widget: widget, table: table).bars)
+            // The only renderer that opts into JavaScript (a vetted Swift-authored script).
+            return WorkspaceAppWebReportPresentation(id: widget.id, label: widget.label, html: html, allowsJavaScript: true)
         default:
             return nil
         }

@@ -99,6 +99,29 @@ Studio diff returned GATE: PASS (no critical findings) and two [P2] regressions,
 Live-verified end-to-end (publish → install → sidebar app row; Edit-in-Studio seeds from the app's
 manifest; Test + Inspect sheets; honest model-timeout fallback).
 
+### Sandboxed interactive-JS visualization (2026-06-21)
+
+Added a third web renderer, `chartInteractive` — the **only** renderer that runs JavaScript, and
+only a **vetted, Swift-authored** script (no third-party/bundled lib → no supply chain; no
+model/user-authored code). The bar data is handed over as an **escaped JSON data-island**
+(`<script type="application/json">`, `<`/`>`/`&` → `\uXXXX`), parsed with `JSON.parse`, and every
+data-derived string is written with `textContent` (no `innerHTML`/`eval`/attribute injection).
+JavaScript is enabled for ONLY this renderer (`WorkspaceAppWebReportPresentation.allowsJavaScript`,
+true just for `chartInteractive`); `htmlReport`/`chartComposite` stay JS-off. The document keeps
+`default-src 'none'` (no network), now with explicit `base-uri 'none'; form-action 'none'`; there is
+no JS↔native bridge, `baseURL` is nil, and the nav delegate allows only in-memory `about:` loads (so
+a script-initiated navigation to a real URL is blocked independently of CSP). Reachable from the chat
+via the "Add an interactive chart" refinement and from generation (`allowedRenderers`). 6 safety unit
+tests; live-verified (renders + JS hover tooltip works, scoped to this renderer only).
+
+**Adversarial codex review (2026-06-21):** found NO app-data→executable-JS exploit (data-island
+breakout, network/exfil, native bridge, JS scoping, DOM-XSS all hold). Two Low defense-in-depth gaps
+it raised — nav not locked to the initial load, CSP not maximally explicit — were both closed (the
+nav-scheme guard + `base-uri`/`form-action`).
+
+Arbitrary model/user-authored JS apps remain deliberately **out of scope** (that would be running
+untrusted code — a different threat model).
+
 ## 2026-06-19 Update — Progress And Gaps
 
 The F1–F7 runtime re-land and the product slices that were "pending" on

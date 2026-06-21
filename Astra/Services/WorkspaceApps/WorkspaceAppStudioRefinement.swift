@@ -6,6 +6,7 @@ import Foundation
 enum WorkspaceAppStudioRefinement: String, CaseIterable, Identifiable {
     case addChart
     case addRichReport
+    case addInteractiveChart
     case addApproval
     case weeklySummary
     case connectREDCap
@@ -16,6 +17,7 @@ enum WorkspaceAppStudioRefinement: String, CaseIterable, Identifiable {
         switch self {
         case .addChart: return "Add a chart"
         case .addRichReport: return "Add a rich report"
+        case .addInteractiveChart: return "Add an interactive chart"
         case .addApproval: return "Add an approval step"
         case .weeklySummary: return "Weekly summary"
         case .connectREDCap: return "Connect REDCap"
@@ -26,6 +28,7 @@ enum WorkspaceAppStudioRefinement: String, CaseIterable, Identifiable {
         switch self {
         case .addChart: return "chart.bar"
         case .addRichReport: return "doc.richtext"
+        case .addInteractiveChart: return "chart.bar.xaxis"
         case .addApproval: return "hand.raised"
         case .weeklySummary: return "calendar"
         case .connectREDCap: return "powerplug"
@@ -41,6 +44,9 @@ enum WorkspaceAppStudioRefinement: String, CaseIterable, Identifiable {
         case .addRichReport:
             return Self.primaryTable(manifest) != nil
                 && !manifest.views.flatMap(\.widgets).contains { $0.type == "webView" }
+        case .addInteractiveChart:
+            return Self.primaryTable(manifest) != nil
+                && !manifest.views.flatMap(\.widgets).contains { $0.webRenderer == "chartInteractive" }
         case .addApproval:
             return !manifest.actions.contains { $0.type == "gate.humanApproval" }
         case .weeklySummary:
@@ -59,6 +65,8 @@ enum WorkspaceAppStudioRefinement: String, CaseIterable, Identifiable {
             applyAddChart(&updated)
         case .addRichReport:
             applyAddRichReport(&updated)
+        case .addInteractiveChart:
+            applyAddInteractiveChart(&updated)
         case .addApproval:
             updated.actions.append(WorkspaceAppActionSpec(
                 id: "approve_step", type: "gate.humanApproval", label: "Approve",
@@ -107,6 +115,32 @@ enum WorkspaceAppStudioRefinement: String, CaseIterable, Identifiable {
         } else {
             manifest.views.insert(
                 WorkspaceAppViewSpec(id: "report_overview", type: "dashboard", title: "Overview", table: table.name, widgets: [widget]),
+                at: 0
+            )
+        }
+    }
+
+    /// Adds a sandboxed INTERACTIVE chart widget (`chartInteractive`) over the primary table —
+    /// the one renderer that runs a vetted Swift-authored script (JS on, escaped-JSON data,
+    /// no network). Grouped by a categorical column, same as the native chart.
+    private func applyAddInteractiveChart(_ manifest: inout WorkspaceAppManifest) {
+        guard let table = Self.primaryTable(manifest) else { return }
+        let groupField = Self.categoricalColumn(of: table)
+        let widget = WorkspaceAppWidgetSpec(
+            id: "interactive_chart",
+            type: "webView",
+            label: "\(table.name.capitalized) by \(groupField)",
+            table: table.name,
+            groupBy: groupField,
+            aggregation: "count",
+            chartKind: "bar",
+            webRenderer: "chartInteractive"
+        )
+        if let dashboardIndex = manifest.views.firstIndex(where: { $0.type == "dashboard" && ($0.table == table.name || $0.table == nil) }) {
+            manifest.views[dashboardIndex].widgets.append(widget)
+        } else {
+            manifest.views.insert(
+                WorkspaceAppViewSpec(id: "chart_overview", type: "dashboard", title: "Overview", table: table.name, widgets: [widget]),
                 at: 0
             )
         }
