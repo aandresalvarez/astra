@@ -122,6 +122,27 @@ nav-scheme guard + `base-uri`/`form-action`).
 Arbitrary model/user-authored JS apps remain deliberately **out of scope** (that would be running
 untrusted code — a different threat model).
 
+### Provider reliability — real generation, not constant templates (2026-06-21)
+
+Generation was almost always falling back to the deterministic template. Investigated the shared
+utility runtime (`AgentUtilityRuntimeRunner` → per-adapter `runUtilityPrompt`) and found two distinct
+provider problems, not an App Studio bug:
+
+- **codex (FIXED, now a real working provider).** Auth is file-based (`~/.codex/auth.json`) and works,
+  but `codex exec` ran at default reasoning and explored the workspace, so a one-shot manifest
+  generation deliberated **past the timeout** (>180s) and fell back. Fix: utility one-shots now run
+  codex at **`model_reasoning_effort="low"`** (`CodexCLIRuntimeAdapter.runUtilityPrompt`) — a probe
+  dropped a trivial call from >180s to ~10s, and a full App Studio generation now finishes in ~80s.
+  App Studio generation timeout raised 60→120s for headroom (`WorkspaceAppStudioSession`). Live-
+  verified: codex generated a real tailored "Reading List Tracker" (books table, per-field actions,
+  an inferred "Average rating" metric, model-written summary) — origin `.model`, not template.
+- **claude_code (root-caused; needs an infra/signing fix, not a code change).** Its OAuth token lives
+  in the macOS **Keychain** (`~/.claude.json` holds only `oauthAccount` metadata; no API key in the
+  shell). A Finder-launched, **ad-hoc-signed** dev build can't read/refresh that token in the spawned
+  subprocess → `401 Invalid authentication credentials` (a stripped-env repro shows "Not logged in").
+  This is the known keychain-signing issue (stable Developer ID signing is the real fix; or set
+  `ANTHROPIC_API_KEY`). **Workaround today: use the codex provider in App Studio** (its auth works).
+
 ## 2026-06-19 Update — Progress And Gaps
 
 The F1–F7 runtime re-land and the product slices that were "pending" on

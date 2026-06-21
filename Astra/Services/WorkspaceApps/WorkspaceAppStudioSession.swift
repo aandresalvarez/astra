@@ -63,6 +63,12 @@ final class WorkspaceAppStudioSession: ObservableObject {
     /// submit/reset/cancel; a turn only applies its result if the token is still current.
     private var generationToken = 0
 
+    /// App-builder generation is a heavier one-shot than a typical utility prompt (a full
+    /// manifest + a repair loop), so the 60s utility default can cut a provider off mid-answer
+    /// and force the template fallback. Give it more headroom (codex utility runs at low
+    /// reasoning, so this is comfortable rather than a hang ceiling).
+    private static let generationTimeoutSeconds: TimeInterval = 120
+
     init(generate: @escaping WorkspaceAppStudioGenerate = WorkspaceAppStudioSession.defaultGenerate) {
         self.generate = generate
     }
@@ -142,7 +148,8 @@ final class WorkspaceAppStudioSession: ObservableObject {
         let existing = draft?.manifest
         let configuration = AgentUtilityRuntimeConfiguration(
             runtime: AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID),
-            model: model
+            model: model,
+            timeoutSeconds: Self.generationTimeoutSeconds
         )
         let result = await generate(text, workspace.name, workspace.primaryPath, existing, configuration, availableProviders)
         // Stale-completion guard: if the user reset, cancelled, switched workspaces, or started

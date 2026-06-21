@@ -382,9 +382,17 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
             try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
         }
 
+        // Utility prompts are one-shot structured generations (e.g. App Studio manifests), not
+        // interactive agent sessions. Run codex at LOW reasoning so it answers promptly instead
+        // of deliberating (and exploring the workspace) past the timeout and forcing a fallback.
+        // Output validity is still enforced by the caller's validation + repair loop.
+        var arguments = plan.arguments
+        if let execIndex = arguments.firstIndex(of: "exec") {
+            arguments.insert(contentsOf: ["-c", "model_reasoning_effort=\"low\""], at: execIndex + 1)
+        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: plan.executablePath)
-        process.arguments = plan.arguments
+        process.arguments = arguments
         process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
         process.environment = plan.environment
 
