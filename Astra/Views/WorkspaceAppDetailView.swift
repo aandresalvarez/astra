@@ -4,7 +4,9 @@ import SwiftUI
 struct WorkspaceAppDetailView: View {
     let app: WorkspaceApp
     let workspace: Workspace?
-    let onOpenStudio: () -> Void
+    /// Edit in Studio, seeded with the app's current manifest so the conversation continues
+    /// from it (nil if the manifest hasn't loaded yet — the Studio then starts fresh).
+    let onOpenStudio: (WorkspaceAppManifest?) -> Void
     let onRefresh: () -> Void
     let onExportPackage: () throws -> URL
     let onRunAction: (WorkspaceAppActionSpec, WorkspaceAppManifest, WorkspaceAppActionInput) throws -> WorkspaceAppActionExecutionResult
@@ -96,7 +98,7 @@ struct WorkspaceAppDetailView: View {
             .buttonStyle(.borderless)
             .help("Refresh app data")
 
-            Button(action: onOpenStudio) {
+            Button(action: { onOpenStudio(dataSnapshot.manifest) }) {
                 Label("Edit", systemImage: "slider.horizontal.3")
             }
             .buttonStyle(.borderless)

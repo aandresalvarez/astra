@@ -1,7 +1,7 @@
 # Workspace App Studio Implementation Status
 
 **Originally:** 2026-06-11 (branch `alvaro/workspace-app-studio-spec`, susom PR #122)
-**Last updated:** 2026-06-19 (branch `claude/loving-rhodes-87e735`)
+**Last updated:** 2026-06-20 (branch `claude/loving-rhodes-87e735`)
 **Parent spec:** `docs/specs/2026-06-05-workspace-app-studio-spec.md`
 
 This document tracks implementation status against the Workspace App Studio
@@ -10,9 +10,50 @@ target product. This document is the execution tracker: what exists now, what
 is partially implemented, and what still needs to be built before the final
 product direction is true.
 
-> **Read the 2026-06-19 update first.** It supersedes the per-area "Pending"
+> **Read the 2026-06-20 update first.** It supersedes the per-area "Pending"
 > lists below where they conflict. The original 2026-06-11 snapshot is kept
 > underneath for history.
+
+## 2026-06-20 Update — Conversational App Studio (Lovable/Replit-style)
+
+App Studio is no longer a form. Creating an app is now a **conversation in the main
+detail column** (the same surface tasks render in), with the **live app docked in the
+right shelf** — reusing the existing chat-style UI and the global shelf system instead of
+a bespoke builder screen. Describe the app, refine it by chatting, watch the test version
+build on the right, publish when ready.
+
+**What changed**
+- New `WorkspaceAppStudioSession` (`Astra/Services/WorkspaceApps/`) — the conversational
+  engine. Each message generates the first app or refines the current one through the
+  existing `WorkspaceAppStudioGenerator` (which already accepts `existingManifest` and
+  emits a full manifest OR an `ASTRA_APP_PATCH`, so multi-turn refinement is "pass the
+  prior manifest as the base"). Includes the out-of-scope guard and deterministic, honest
+  turn summaries. The generator is injected, so the 8 new unit tests never spawn a CLI.
+- New `WorkspaceAppStudioChatView` — the left conversation: reuses the model picker, the
+  archetype quick-starts, and the `WorkspaceAppStudioRefinement` chips (now things you can
+  just say), plus publish / sample-data / cancel / preview-toggle in a slim header.
+- New `ShelfWorkspaceAppPreviewView` + a new `.appPreview` case on `WorkspaceCanvasItem` —
+  docks the **existing** full interactive `WorkspaceAppPreviewView` (sandboxed CRUD/actions)
+  in the global right shelf; re-renders per `session.draftRevision`. The preview is a
+  first-class shelf in the **top-right dynamic menu** (`WorkspaceTopRightToolbar`): a "Preview"
+  button governed by `canShowAppPreviewShelf: isComposingWorkspaceApp`, so it surfaces only in
+  App Studio, alongside Files, with the same active-highlight + toggle behavior as the other
+  shelves (it auto-docks on entry; switching workspaces or leaving the Studio dismisses it).
+- `ContentView`: the studio now renders through the docking shell (`ContentDetailAreaView`
+  → `ContentDetailContentView` `.workspaceAppStudio` case) so the preview docks beside the
+  chat. The old form `WorkspaceAppStudioView` + `WorkspaceAppStudioInlinePreview` are
+  retired. `WorkspaceCanvasItem` + the shelf-boundary value/overlay types moved to
+  `Astra/Views/WorkspaceCanvasItem.swift` to keep `ContentView.swift` within its 5000-line
+  budget (now 4969). "Edit in Studio" seeds the conversation from the app's manifest.
+
+**v1 scope (noted, reversible)**
+- App-build conversations are ephemeral (build → publish/cancel; not saved to the task
+  list) — matches the prior Studio lifecycle.
+- Assistant turns are deterministic summaries (no second model round-trip); honest about
+  validation and model-unavailable fallbacks.
+- Regenerating resets the preview's in-memory sandbox (disposable test data).
+
+All 3177 tests + 41 architecture-fitness tests green.
 
 ## 2026-06-19 Update — Progress And Gaps
 

@@ -9,13 +9,17 @@ import SwiftUI
 struct WorkspaceAppPreviewView: View {
     let manifest: WorkspaceAppManifest
     var onClose: (() -> Void)?
+    /// Minimum width. The sheet uses the roomy default; the docked preview shelf passes a
+    /// smaller floor so the chat column beside it isn't crushed on narrower windows.
+    var minWidth: CGFloat = 680
 
     @State private var runner: WorkspaceAppPreviewRunner
     @State private var snapshot: WorkspaceAppDetailDataSnapshot
 
-    init(manifest: WorkspaceAppManifest, onClose: (() -> Void)? = nil) {
+    init(manifest: WorkspaceAppManifest, onClose: (() -> Void)? = nil, minWidth: CGFloat = 680) {
         self.manifest = manifest
         self.onClose = onClose
+        self.minWidth = minWidth
         let runner = WorkspaceAppPreviewRunner(manifest: manifest)
         _runner = State(initialValue: runner)
         _snapshot = State(initialValue: runner.snapshot())
@@ -40,7 +44,7 @@ struct WorkspaceAppPreviewView: View {
                 .padding(24)
             }
         }
-        .frame(minWidth: 680, minHeight: 560)
+        .frame(minWidth: minWidth, minHeight: 560)
         .background(Stanford.panelBackground)
         .accessibilityIdentifier("WorkspaceAppPreviewView")
     }

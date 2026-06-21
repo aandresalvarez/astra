@@ -1,0 +1,205 @@
+import Combine
+import Foundation
+
+/// The conversational engine behind App Studio. Instead of a form, the user builds an
+/// app by chatting: the first message generates a draft, later messages refine it, and a
+/// docked live preview re-renders after every turn. This is the UI-agnostic state +
+/// behavior — `WorkspaceAppStudioChatView` renders it and `ShelfWorkspaceAppPreviewView`
+/// renders its `draft`. All the heavy lifting is reused: generation runs through
+/// `WorkspaceAppStudioGenerator` (which already accepts an `existingManifest` and emits a
+/// full manifest OR an `ASTRA_APP_PATCH`, so multi-turn refinement is just "pass the prior
+/// manifest as the base"); refinements are the pure `WorkspaceAppStudioRefinement`
+/// transforms; the scope guard is `WorkspaceAppStudioScope`.
+///
+/// The generator is injected (`generate`) so tests drive turns with canned results and
+/// never spawn a provider CLI.
+
+/// One turn in the build conversation.
+struct StudioMessage: Identifiable, Equatable {
+    enum Role: Equatable { case user, assistant }
+    /// `summary` marks an assistant turn that reports the result of a generation/refinement
+    /// (so the view can style it distinctly from a plain note).
+    enum Kind: Equatable { case message, summary }
+
+    let id: UUID
+    let role: Role
+    let kind: Kind
+    let text: String
+
+    init(id: UUID = UUID(), role: Role, kind: Kind = .message, text: String) {
+        self.id = id
+        self.role = role
+        self.kind = kind
+        self.text = text
+    }
+}
+
+/// The one model call a turn makes. Mirrors `WorkspaceAppStudioGenerator.generate`'s
+/// inputs/outputs so the default is a thin pass-through and tests inject a stub.
+typealias WorkspaceAppStudioGenerate = (
+    _ intent: String,
+    _ workspaceName: String,
+    _ workspacePath: String,
+    _ existingManifest: WorkspaceAppManifest?,
+    _ configuration: AgentUtilityRuntimeConfiguration,
+    _ availableProviders: Set<String>
+) async -> WorkspaceAppStudioGenerationResult
+
+@MainActor
+final class WorkspaceAppStudioSession: ObservableObject {
+    @Published private(set) var messages: [StudioMessage] = []
+    /// The work-in-progress app. `nil` until the first turn produces one — the preview
+    /// shows an empty state meanwhile.
+    @Published private(set) var draft: WorkspaceAppStudioDraft?
+    @Published private(set) var isGenerating = false
+    /// Bumped whenever `draft` changes so the preview shelf can key its sandbox on it and
+    /// re-render (a regen is a fresh disposable preview, by design).
+    @Published private(set) var draftRevision = 0
+
+    private(set) var workspaceID: UUID?
+    private let generate: WorkspaceAppStudioGenerate
+
+    init(generate: @escaping WorkspaceAppStudioGenerate = WorkspaceAppStudioSession.defaultGenerate) {
+        self.generate = generate
+    }
+
+    // MARK: - Derived
+
+    /// App name for the chat header / shelf title.
+    var appName: String? { draft?.manifest.app.name }
+
+    /// Publish is gated on the validator (blockers only — warnings never block).
+    var canPublish: Bool { draft?.canPublish ?? false }
+
+    /// Refinements offered as tappable chips: only those that can still apply to the draft.
+    var availableSuggestions: [WorkspaceAppStudioRefinement] {
+        guard let manifest = draft?.manifest else { return [] }
+        return WorkspaceAppStudioRefinement.allCases.filter { $0.isAvailable(for: manifest) }
+    }
+
+    // MARK: - Lifecycle
+
+    /// Start (or restart) a conversation. With `existingManifest`, seed the draft from it so
+    /// "Edit in Studio" continues from the current app instead of a blank slate.
+    func reset(for workspace: Workspace, existingManifest: WorkspaceAppManifest? = nil) {
+        workspaceID = workspace.id
+        isGenerating = false
+        if let existingManifest {
+            draft = WorkspaceAppStudioBuilder.draft(intent: "", workspace: workspace, existingManifest: existingManifest)
+            messages = [StudioMessage(
+                role: .assistant,
+                text: "You're editing \(existingManifest.app.name). Tell me what to change — add a field, a chart, an approval step — and I'll update it."
+            )]
+        } else {
+            draft = nil
+            messages = [StudioMessage(
+                role: .assistant,
+                text: "Describe the app you want — what you need to track, review, or report on — and I'll build it. You can refine it by chatting."
+            )]
+        }
+        draftRevision &+= 1
+    }
+
+    // MARK: - Turns
+
+    /// Run one conversation turn: generate the first app, or refine the current one.
+    func submit(
+        _ rawText: String,
+        workspace: Workspace,
+        runtimeID: String,
+        model: String,
+        availableProviders: Set<String>
+    ) async {
+        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !isGenerating else { return }
+        workspaceID = workspace.id
+        messages.append(StudioMessage(role: .user, text: text))
+
+        // Honest scope guard, first build only: a website/marketing intent can't be expressed
+        // by the data-app schema, so say so instead of shipping a mislabeled data shell.
+        if draft == nil, let notice = WorkspaceAppStudioScope.outOfScopeNotice(for: text) {
+            messages.append(StudioMessage(role: .assistant, text: notice))
+            return
+        }
+
+        isGenerating = true
+        let existing = draft?.manifest
+        let configuration = AgentUtilityRuntimeConfiguration(
+            runtime: AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID),
+            model: model
+        )
+        let result = await generate(text, workspace.name, workspace.primaryPath, existing, configuration, availableProviders)
+        // The result manifest is always valid (model or deterministic fallback); rebuild the
+        // draft so validation + publish-gating recompute from it.
+        draft = WorkspaceAppStudioBuilder.draft(intent: text, workspace: workspace, existingManifest: result.manifest)
+        draftRevision &+= 1
+        messages.append(StudioMessage(
+            role: .assistant,
+            kind: .summary,
+            text: StudioTurnSummary.line(for: result, isEditing: existing != nil)
+        ))
+        isGenerating = false
+    }
+
+    /// Apply a refinement chip — a pure, instant manifest transform (no model call). Shown in
+    /// the thread as if the user asked for it, so the conversation reads naturally.
+    func applyRefinement(_ refinement: WorkspaceAppStudioRefinement, workspace: Workspace) {
+        guard let current = draft, refinement.isAvailable(for: current.manifest) else { return }
+        let updated = refinement.apply(to: current.manifest)
+        let rebuilt = WorkspaceAppStudioBuilder.draft(intent: current.intent, workspace: workspace, existingManifest: updated)
+        draft = rebuilt
+        draftRevision &+= 1
+        messages.append(StudioMessage(role: .user, text: refinement.label))
+        messages.append(StudioMessage(
+            role: .assistant,
+            kind: .summary,
+            text: "Done — \(refinement.label.lowercased()). \(StudioTurnSummary.validationLine(rebuilt.validationReport))"
+        ))
+    }
+
+    // MARK: - Default generator
+
+    /// Real generation: the existing model-backed generator, read-only tool mode.
+    static let defaultGenerate: WorkspaceAppStudioGenerate = { intent, name, path, existing, configuration, providers in
+        await WorkspaceAppStudioGenerator.generate(
+            intent: intent,
+            workspaceName: name,
+            workspacePath: path,
+            existingManifest: existing,
+            configuration: configuration,
+            availableProviders: providers
+        )
+    }
+}
+
+/// Deterministic, conversational summaries of a generation/refinement turn. No second model
+/// call — honest about validation and about model-unavailable fallbacks.
+enum StudioTurnSummary {
+    static func line(for result: WorkspaceAppStudioGenerationResult, isEditing: Bool) -> String {
+        switch result.origin {
+        case .model:
+            let lead = isEditing ? "Updated your app." : "Here's your app."
+            return lead + " " + validationLine(result.validationReport)
+        case .modelRepaired:
+            let lead = isEditing
+                ? "Updated your app (refined over \(result.attemptCount) passes)."
+                : "Built your app (refined over \(result.attemptCount) passes)."
+            return lead + " " + validationLine(result.validationReport)
+        case .deterministicFallback:
+            // Editing: the fallback is the user's unchanged app, not a template.
+            let degraded = isEditing ? "kept your current app unchanged" : "started you from a template"
+            let why = result.providerFailure.map { " (\($0))" } ?? ""
+            return "I couldn't build that from the model, so I \(degraded)\(why). " + validationLine(result.validationReport)
+        }
+    }
+
+    static func validationLine(_ report: WorkspaceAppManifestValidationReport) -> String {
+        guard report.isValid else {
+            let blockers = report.blockers.count
+            return "It has \(blockers) blocker\(blockers == 1 ? "" : "s") to resolve before publishing."
+        }
+        let warnings = report.warnings.count
+        if warnings == 0 { return "It's valid and ready to publish." }
+        return "It's valid (\(warnings) warning\(warnings == 1 ? "" : "s")) and ready to publish."
+    }
+}
