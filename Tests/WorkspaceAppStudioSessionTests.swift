@@ -192,7 +192,8 @@ struct WorkspaceAppStudioSessionTests {
         session.reset(for: ws, existingManifest: Self.validManifest)
         #expect(session.draft != nil)
         #expect(session.appName == Self.validManifest.app.name)
-        #expect(session.messages.first?.text.contains("editing") == true)
+        // Honest greeting names the source app (it builds a copy; in-place edit isn't wired).
+        #expect(session.messages.first?.text.contains(Self.validManifest.app.name) == true)
 
         session.reset(for: ws) // fresh start clears the draft
         #expect(session.draft == nil)
@@ -211,6 +212,54 @@ struct WorkspaceAppStudioSessionTests {
         #expect(last?.role == .assistant)
         #expect(last?.text.hasPrefix("A tidy lab sample tracker") == true)
         #expect(last?.text.contains("ready to publish") == true)
+    }
+
+    // MARK: - Stale-completion guard
+
+    @Test("a turn cancelled mid-generation is discarded instead of clobbering state")
+    func staleCompletionIsDiscarded() async {
+        let ws = workspace()
+        var session: WorkspaceAppStudioSession?
+        let stub: WorkspaceAppStudioGenerate = { _, _, _, _, _, _ in
+            // Simulate the user leaving the Studio (or switching workspaces) mid-generation.
+            session?.cancelGeneration()
+            return Self.result(Self.validManifest)
+        }
+        let s = WorkspaceAppStudioSession(generate: stub)
+        session = s
+
+        await s.submit(
+            "track things", workspace: ws,
+            runtimeID: TaskExecutionDefaults.runtime.rawValue,
+            model: TaskExecutionDefaults.model, availableProviders: []
+        )
+
+        #expect(s.draft == nil)          // stale result dropped — no draft applied
+        #expect(s.isGenerating == false) // cancel cleared the in-flight flag
+        #expect(!s.messages.contains { $0.role == .assistant && $0.kind == .summary })
+    }
+
+    @Test("reset invalidates an in-flight generation so its result is dropped")
+    func resetInvalidatesInFlight() async {
+        let ws = workspace()
+        var session: WorkspaceAppStudioSession?
+        let stub: WorkspaceAppStudioGenerate = { _, _, _, _, _, _ in
+            session?.reset(for: ws)  // a brand-new conversation started mid-flight
+            return Self.result(Self.validManifest)
+        }
+        let s = WorkspaceAppStudioSession(generate: stub)
+        session = s
+
+        await s.submit(
+            "first idea", workspace: ws,
+            runtimeID: TaskExecutionDefaults.runtime.rawValue,
+            model: TaskExecutionDefaults.model, availableProviders: []
+        )
+
+        // After reset, the session is the fresh greeting state; the stale turn applied nothing.
+        #expect(s.draft == nil)
+        #expect(s.messages.count == 1)
+        #expect(s.messages.first?.role == .assistant)
     }
 
     // MARK: - Honest summary wording

@@ -58,6 +58,10 @@ final class WorkspaceAppStudioSession: ObservableObject {
 
     private(set) var workspaceID: UUID?
     private let generate: WorkspaceAppStudioGenerate
+    /// Monotonic guard so a slow generation that finishes after the user leaves, switches
+    /// workspaces, or starts a new turn can't overwrite newer state. Bumped on every
+    /// submit/reset/cancel; a turn only applies its result if the token is still current.
+    private var generationToken = 0
 
     init(generate: @escaping WorkspaceAppStudioGenerate = WorkspaceAppStudioSession.defaultGenerate) {
         self.generate = generate
@@ -84,11 +88,14 @@ final class WorkspaceAppStudioSession: ObservableObject {
     func reset(for workspace: Workspace, existingManifest: WorkspaceAppManifest? = nil) {
         workspaceID = workspace.id
         isGenerating = false
+        generationToken &+= 1  // invalidate any in-flight generation from a prior session
         if let existingManifest {
             draft = WorkspaceAppStudioBuilder.draft(intent: "", workspace: workspace, existingManifest: existingManifest)
+            // Honest about scope: in-place editing of the published app isn't wired yet, so
+            // publishing saves a new app. Don't promise "I'll update it".
             messages = [StudioMessage(
                 role: .assistant,
-                text: "You're editing \(existingManifest.app.name). Tell me what to change — add a field, a chart, an approval step — and I'll update it."
+                text: "Starting from \(existingManifest.app.name). Tell me what to change — add a field, a chart, an approval step — and I'll rebuild it. Publishing saves it as a new app."
             )]
         } else {
             draft = nil
@@ -98,6 +105,13 @@ final class WorkspaceAppStudioSession: ObservableObject {
             )]
         }
         draftRevision &+= 1
+    }
+
+    /// Invalidate any in-flight generation (on Cancel / leaving the Studio / workspace switch),
+    /// so a late result can't resume into a session that's no longer active.
+    func cancelGeneration() {
+        generationToken &+= 1
+        isGenerating = false
     }
 
     // MARK: - Turns
@@ -123,12 +137,17 @@ final class WorkspaceAppStudioSession: ObservableObject {
         }
 
         isGenerating = true
+        generationToken &+= 1
+        let token = generationToken
         let existing = draft?.manifest
         let configuration = AgentUtilityRuntimeConfiguration(
             runtime: AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID),
             model: model
         )
         let result = await generate(text, workspace.name, workspace.primaryPath, existing, configuration, availableProviders)
+        // Stale-completion guard: if the user reset, cancelled, switched workspaces, or started
+        // a newer turn while this was in flight, drop the result instead of clobbering newer state.
+        guard token == generationToken else { return }
         // The result manifest is always valid (model or deterministic fallback); rebuild the
         // draft so validation + publish-gating recompute from it.
         draft = WorkspaceAppStudioBuilder.draft(intent: text, workspace: workspace, existingManifest: result.manifest)

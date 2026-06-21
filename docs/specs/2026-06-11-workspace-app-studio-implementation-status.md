@@ -76,13 +76,28 @@ Closed the residuals from the conversational rework:
 - **Workspace-switch correctness.** Switching workspaces while in the Studio now exits it
   (`handleSelectedWorkspaceChanged`), so a stale session can't publish into the wrong workspace.
 
-**Still deferred (deliberate, not a defect): persistent/resumable app-build conversations.** They
-remain ephemeral. Real persistence is a separate feature (a SwiftData model for in-progress builds,
-sidebar entries, reopen lifecycle) and `ContentView.swift` is at its line budget; it should be its
-own slice rather than bolted onto this change.
+**Codex second opinion (2026-06-21).** An independent `codex review` of the conversational
+Studio diff returned GATE: PASS (no critical findings) and two [P2] regressions, both addressed:
+- *Stale generation could clobber state* — FIXED. `WorkspaceAppStudioSession` now carries a
+  monotonic `generationToken`; a turn only applies its result if the token is still current, and
+  `reset` / `cancelGeneration` (called on Cancel, leaving the Studio, and workspace switch)
+  invalidate any in-flight turn. Covered by two new tests.
+- *Editing an app publishes a duplicate* — MITIGATED + deferred. The seeded "Edit in Studio"
+  flow now says it builds an updated **copy** (publishing saves a new app), so it no longer implies
+  in-place update. True in-place editing is deferred (see below).
 
-Live-verified end-to-end (publish → install → sidebar app row; Edit-in-Studio seeds the manifest;
-Test + Inspect sheets; honest model-timeout fallback).
+**Still deferred (deliberate, not defects):**
+- *Persistent/resumable app-build conversations* — still ephemeral. A separate feature (SwiftData
+  model for in-progress builds, sidebar entries, reopen lifecycle); `ContentView.swift` is at its
+  line budget. Its own slice.
+- *In-place editing of a published app* — publishing an edited app creates a new app rather than
+  updating the original's manifest + version history. `WorkspaceAppService` has no update path, and
+  a correct one needs additive storage migration (`ALTER TABLE ADD COLUMN`, with the NOT-NULL-on-
+  existing-rows case) — a data-migration slice that shouldn't be rushed. The current copy behavior
+  is non-destructive (the logical-ID dedup prevents record/version-dir collisions).
+
+Live-verified end-to-end (publish → install → sidebar app row; Edit-in-Studio seeds from the app's
+manifest; Test + Inspect sheets; honest model-timeout fallback).
 
 ## 2026-06-19 Update — Progress And Gaps
 

@@ -613,8 +613,9 @@ struct ContentView: View {
         setActiveWorkspaceCanvasItem(.appPreview, remember: false)
     }
 
-    /// Leave the Studio without publishing: drop the composer and collapse the preview.
+    /// Leave the Studio without publishing: drop the composer, collapse the preview, cancel gen.
     private func cancelWorkspaceAppStudio() {
+        workspaceAppStudioSession.cancelGeneration()
         isComposingWorkspaceApp = false
         if activeWorkspaceCanvasItem == .appPreview {
             setActiveWorkspaceCanvasItem(nil, remember: false)
