@@ -146,12 +146,87 @@ UI regardless of model speed/availability:
   session load to show a bespoke upgrade, but the deterministic floor is the guarantee — the user
   always ends up with a working dynamic UI.)
 
-**Phase 2 (designed, not built — needs its own plan + adversarial review):** a vetted
-manifest-scoped data bridge (a single `astraAppBridge` `WKScriptMessageHandler` + an injected
-`astra.*` JS API: query/insert/update/delete scoped to the app's own tables, validated via
-`WorkspaceAppWebViewBridge` and executed via `WorkspaceAppActionExecutor` /
-`WorkspaceAppPreviewRunner`) so HTML apps can use data. No network, no arbitrary native. Note: this
-does NOT enable connectors (GitHub/Jira live data) — that's a later connector-bridge phase.
+### Phase 2 — vetted data bridge LANDED (HTML apps can use their own governed data)
+
+A dynamic HTML app can now read/write ITS OWN governed storage via an injected `astra.*` JS API,
+so HTML can be a real data app (the step toward making HTML the universal surface + retiring native
+widgets). `WorkspaceAppDataBridge` (new) is a `WKScriptMessageHandlerWithReply` (`astraAppBridge`)
+exposing `astra.query/insert/update`. The bridge adds NO new data-access surface: each request goes
+`parse` → `resolve` (allowlist) → the SAME `onRunAction` the native UI uses →
+`WorkspaceAppActionExecutor`, which enforces `permissionMode`, records an audit run, and scopes the
+SQLite file to the app's own `logicalID`. Wired in via `WorkspaceAppWebReportView.onBridgeRequest`
+(registered ONLY for data-backed HTML apps) + `WorkspaceAppSurfaceView.dataBridgeRun` (preview/live
+parity for free). `validateHTMLApp` relaxed: an HTML app may declare its own storage + appStorage
+actions (the allowlist), still no connectors/views/automations/non-storage actions.
+
+**Security (codex adversarial review, DO NOT SHIP → fixes → re-review):**
+- **No delete via the bridge.** Delete is `.destructive` (native UI needs a two-step confirm), so a
+  JS-minted confirmation would let a page wipe records on load. Dropped entirely (`allowedOps` =
+  query/insert/update; the bridge never sets `confirmedDestructive`). Deferred to a host-confirmed path.
+- **Exact-table allowlist.** `resolve` requires `action.table == request.table` (a table-less action
+  no longer grants the op on every table); `validateHTMLApp` requires each appStorage action to name
+  a declared table.
+- **No stale allowlist.** `updateNSView` refreshes the handler's closure (live manifest) each
+  update; and bridge eligibility is part of the WebView's SwiftUI `.id` (storage added/removed
+  recreates the WebView), so a page can't keep calling `astra.*` after the app loses storage.
+- **DoS caps** (≤200 record fields, ≤256KB values) + **strict values** (NaN/Infinity/nested rejected,
+  not stored as null).
+- Confirmed by codex: no cross-app DB access, no SQL injection (quoted identifiers + bound values),
+  no connector/task/export escalation, CSP/nav/UIDelegate posture intact.
+- Tests: `Tests/WorkspaceAppDataBridgeTests.swift` (allowlist, exact-table, value mapping, governed
+  insert→query round-trip). Full suite green (3229). NOTE: the full GUI round-trip (live JS →
+  SQLite) is exercised in Phase 3, when generation/templates emit data-backed HTML apps.
+
+### Phase 3 + 4 LANDED — HTML is the primary surface; native is legacy/workflow-only
+
+**Phase 3 — data apps are now data-backed HTML.** A record-tracking data app (track/list/store X) is
+generated as a DATA-BACKED HTML app: `storage` + `appStorage.query/insert/update` actions (the bridge
+allowlist) + an HTML UI wired to `astra.*`. New file `WorkspaceAppDataHTMLTemplate` (a real CRUD UI —
+list + add-form + inline edit, model-authored then adversarially verified) is the deterministic
+floor; `WorkspaceAppStudioBuilder.dataBackedHTMLManifest` assembles it.
+`WorkspaceAppStudioRecipes` routes localDatabase(non-grocery) / dataEntry →
+data-backed HTML. The generation prompt now describes both PURE-UI and DATA-BACKED HTML apps (with
+the `astra.*` contract); the provisional-then-upgrade fires for any html-baseline intent (data + tool)
+so a real UI shows instantly. Governance is fully preserved — every read/write still goes
+`astra.*` → the governed executor (permission + audit + app-scoped DB).
+
+**Phase 4 — native widgets are legacy/workflow-only.** `WorkspaceAppSurfaceView.declarativeSurface`
+renders ONLY when `manifest.html == nil`: already-published declarative apps (backward-compat, digests
+unchanged) + the governed-WORKFLOW archetypes. Native data-presentation widgets are frozen (new data
+apps never use them). `WorkspaceAppStudioRefinement` native chips are disabled for HTML apps (refine
+by chatting instead).
+
+**The honest boundary (what stays native + why):** governed-workflow archetypes — `pipeline`,
+`agenticWorkflow`, `reportGenerator`, `monitor` — plus `dashboard` (metric/chart widgets), `reviewQueue`
+(triage + approval gate), and the curated multi-table grocery reference stay native, because they need
+agent tasks / approval+agent gates / pipelines / scheduled automations / artifact exports / charts /
+multi-table UI that the appStorage-only bridge does not expose. **Fully deleting the native widget
+library + "no declarative views ever" requires a future governed WORKFLOW bridge (tasks/gates/connectors)
+— Phase 5 — plus multi-table and chart data templates.** Until then native is retained (frozen) for
+those cases. Tests: `WorkspaceAppArchetypeTests` (plain-record archetypes → html + astra.*; workflow +
+chart/queue archetypes → native) + `WorkspaceAppHTMLTemplateTests` (data template safe + uses bridge +
+validates + injection-safe) + `WorkspaceAppHTMLAppTests` (network-API / `<link>` / `<script src>` reject).
+
+**Codex Phase 3/4 adversarial review (2026-06-22, verdict SHIP WITH FIXES) — all four applied:**
+- **HIGH (sandbox contract):** `validateHTMLApp` now also rejects network/external-resource markers it
+  previously let through — `fetch(` / `import(` (standalone-matched), `xmlhttprequest`, `websocket`,
+  `eventsource`, `sendbeacon`, `@import`, `importscripts`, `navigator.serviceworker`, any `<script src>`
+  (incl. `data:`), and any `<link>`. The CSP (`default-src 'none'`) is still the real boundary; this
+  keeps a non-self-contained app from passing review and keeps the repair loop honest.
+- **HIGH (lost semantics):** `dashboard` + `reviewQueue` were collapsing into the generic CRUD template
+  and silently dropping charts / the approval gate (and native refinement chips don't apply to HTML
+  apps), so they were routed back to native. Only `localDatabase`(non-grocery) and `dataEntry` are
+  data-backed HTML now.
+- **MEDIUM (template injection):** `WorkspaceAppDataHTMLTemplate` is injection-safe by construction —
+  `table`/`primaryKey` are JSON-encoded into the JS context and a `scriptSafe` pass escapes `<` so a
+  crafted identifier can't close the inline `<script>`. (The manifest validator's identifier-charset
+  rule already blocks such names upstream; this is defense in depth.)
+- **LOW (stale copy):** the deterministic fallback summary now distinguishes a data-backed HTML fallback
+  ("saves to this app's own local storage") from a pure-UI one ("can't sync live data yet").
+
+Full suite green (**3235**, +3 tests). GUI live-verify of the data-app round-trip (live JS → SQLite)
+was blocked the prior session by a host screen-capture failure; the data path + allowlist are
+unit-verified through the real executor.
 
 ## 2026-06-20 Update — Conversational App Studio (Lovable/Replit-style)
 

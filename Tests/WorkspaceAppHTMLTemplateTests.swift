@@ -55,6 +55,64 @@ struct WorkspaceAppHTMLTemplateTests {
         #expect(html.contains("&lt;img"))
     }
 
+    @Test("the data-backed HTML template is sandbox-safe, uses the astra bridge, and validates")
+    func dataTemplateUsesBridgeAndValidates() {
+        let cols = [
+            WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true),
+            WorkspaceAppStorageColumn(name: "title", type: "text")
+        ]
+        let html = WorkspaceAppDataHTMLTemplate.html(title: "Notes", table: "notes", columns: cols, primaryKey: "id")
+        // Uses the bridge, all placeholders substituted, sandbox-safe.
+        #expect(html.contains("astra.query") && html.contains("astra.insert") && html.contains("astra.update"))
+        for token in ["__APP_TITLE__", "__TABLE__", "__COLUMNS__", "__PRIMARY_KEY__"] { #expect(!html.contains(token)) }
+        #expect(html.contains("\"notes\""))   // table injected as a JS string
+        #expect(html.contains("\"title\""))    // editable (non-pk) column injected into COLUMNS
+        let low = html.lowercased()
+        for banned in ["eval(", "<iframe", "http://", "https://", "crypto.randomuuid", "fetch("] { #expect(!low.contains(banned)) }
+        // Validates as a data-backed HTML app.
+        let manifest = WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(id: "notes", name: "Notes"),
+            storage: WorkspaceAppStorageSchema(tables: [WorkspaceAppStorageTable(name: "notes", columns: cols)]),
+            actions: [WorkspaceAppActionSpec(id: "q", type: "appStorage.query", table: "notes")],
+            permissions: WorkspaceAppPermissions(defaultMode: .draftOnly),
+            html: html
+        )
+        #expect(WorkspaceAppManifestValidator.validate(manifest).isValid)
+    }
+
+    @Test("the data template is injection-safe by construction (crafted table/pk can't break out)")
+    func dataTemplateIsInjectionSafe() {
+        // Today's callers pass hardcoded "records"/"id", but the helper must be safe for any
+        // identifier: a table/pk containing a quote or a `</script>` must stay inside its JS string
+        // literal and must NOT close the inline <script> element via the HTML parser.
+        let nasty = "evil\"; window.x=1; var y=\"</script><img src=x onerror=alert(1)>"
+        let cols = [
+            WorkspaceAppStorageColumn(name: nasty, type: "text", primaryKey: true, required: true),
+            WorkspaceAppStorageColumn(name: "ok", type: "text")
+        ]
+        let html = WorkspaceAppDataHTMLTemplate.html(title: "T", table: nasty, columns: cols, primaryKey: nasty)
+        // The payload's `</script>` and `<img>` never appear unescaped (they would close the script
+        // element / inject a tag); every `<` is neutralized to its < escape, and the quote is
+        // JSON-escaped (`evil\"`) so it stays inside the JS string literal rather than breaking out.
+        #expect(!html.contains("</script><img"))
+        #expect(!html.contains("<img src=x"))
+        #expect(html.contains("\\u003c"))      // the payload's `<` was neutralized
+        #expect(html.contains("evil\\\""))     // the payload's `"` was JSON-escaped
+        // Defense in depth: a published data app can never carry such an identifier in the first place
+        // — the manifest validator independently rejects out-of-charset table/column names, so this
+        // string can't reach the template through a real manifest.
+        let manifest = WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(id: "t", name: "T"),
+            storage: WorkspaceAppStorageSchema(tables: [WorkspaceAppStorageTable(name: nasty, columns: cols)]),
+            actions: [WorkspaceAppActionSpec(id: "q", type: "appStorage.query", table: nasty)],
+            permissions: WorkspaceAppPermissions(defaultMode: .draftOnly),
+            html: html
+        )
+        let report = WorkspaceAppManifestValidator.validate(manifest)
+        #expect(!report.isValid)
+        #expect(report.blockers.contains { $0.message.contains("Table name may contain only") })
+    }
+
     @Test("the htmlApp fallback manifest is a real interactive UI, not a placeholder or data shell")
     func scaffoldManifestIsRealInteractiveUI() {
         let manifest = WorkspaceAppStudioBuilder.htmlAppScaffoldManifest(intent: "a ui to manage open prs and comments")

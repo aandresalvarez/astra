@@ -333,34 +333,37 @@ enum WorkspaceAppStudioGenerator {
         Goals may also interpolate prior captured fields with `{{field}}` placeholders. Use these so \
         a multi-step agent workflow actually passes data forward instead of dropping it.
 
-        DYNAMIC HTML APPS — for interactive tools the data vocabulary above CANNOT express:
-        - If the intent is a self-contained interactive tool or custom UI — a calculator, unit/ \
-        currency converter, timer/stopwatch/countdown, color picker, text/markdown utility, custom \
-        visualization, or a small single-screen game — do NOT force it into storage + tables + a \
-        dashboard. Build a DYNAMIC HTML APP instead, so the UI actually matches the intent.
-        - ALSO build a DYNAMIC HTML APP when the user explicitly asks for "a UI", "an interface", a \
-        "dynamic"/"interactive" app, or any custom single-screen interface that is NOT primarily \
-        about storing/tracking records — even if it would normally need live data, build the \
-        interactive UI with realistic PLACEHOLDER/SAMPLE data (the sandbox has no network). Do NOT \
-        fall back to a records table + dashboard for a UI-centric intent.
-        - CRITICAL — keep the UI SMALL so it generates quickly: ONE concise screen, target well \
-        under ~160 lines of HTML+CSS+JS combined. Ship a clean, WORKING MINIMAL version rather than \
-        an elaborate one — the user refines it by chatting afterward, so do NOT pre-build every \
-        feature. Avoid long sample-data arrays (3-5 sample rows max), unused styles, animations, and \
-        boilerplate. A tight working UI that renders beats an ambitious one that times out.
-        - For an HTML app, emit a MINIMAL manifest: complete app metadata (id, name, icon, \
-        description, tags, `archetypes: ["HTML App"]`); EMPTY ARRAYS `[]` for requirements, sources, \
-        views, actions, and automations (include the keys with `[]`, do not omit them); no `storage`; \
-        and `permissions` with defaultMode "draftOnly". Then add the ASTRA_APP_HTML block with the \
-        complete UI.
-        - The HTML block is INNER content only — your markup, a `<style>` block, and a `<script>` \
-        block. Do NOT include <!DOCTYPE>, <html>, <head>, or <body>; ASTRA wraps it in a locked \
-        document. Inline event handlers (onclick=…) are fine.
-        - It runs in a SANDBOX with NO network and NO external resources: everything must be \
-        self-contained and computed in-browser. No <iframe>, no <script src=…>, no stylesheet/font/ \
-        image URLs, no fetch/XHR/WebSocket, no CDN links. A calculator must really compute on click.
-        - Use an HTML app ONLY for self-contained interactive UIs. For anything that STORES, tracks, \
-        reviews, or reports on data, use the declarative manifest (storage + views + actions) above.
+        DYNAMIC HTML APPS — build the UI as self-contained HTML/CSS/JS. This is the DEFAULT for \
+        almost every app. There are two kinds:
+
+        (A) PURE-UI HTML app — an interactive tool or view with no saved data: a calculator, \
+        converter, timer/stopwatch, color picker, text utility, a list/board/dashboard over SAMPLE \
+        data, a small game, any custom interface ("a UI", "show me X", "a board of Y"). Emit a \
+        MINIMAL manifest: app metadata; EMPTY ARRAYS `[]` for requirements/sources/views/actions/ \
+        automations; NO `storage`; permissions defaultMode "draftOnly". Then the ASTRA_APP_HTML block.
+
+        (B) DATA-BACKED HTML app — the user STORES/tracks their own records over time (a tracker, \
+        log, a list/database of X, simple CRUD, notes, inventory). Emit: `storage` with your table(s) \
+        + columns (one column with `primaryKey: true`); an `actions` array of `appStorage.query`, \
+        `appStorage.insert`, `appStorage.update`, EACH with `table` set to your table (this is the \
+        data allowlist); permissions reads/writes `["appStorage.records"]`, defaultMode "draftOnly"; \
+        NO `views`, NO non-appStorage actions, NO connectors. Then an ASTRA_APP_HTML block whose JS \
+        uses the injected `astra` bridge to read/write that storage (REAL persistence, no network):
+          - `await astra.query(table, { limit })`  →  { rows: [ {col: value, ...}, ... ] }
+          - `await astra.insert(table, record)`    (record = flat {col: value}; set the primary key)
+          - `await astra.update(table, record)`    (record MUST include the primary-key column)
+        Generate the primary-key id client-side with a Math.random string (crypto.randomUUID is NOT \
+        available). Handle a rejected `astra.*` promise with an inline error (never throw uncaught).
+
+        Use the DECLARATIVE (non-HTML) manifest ONLY for GOVERNED WORKFLOWS that need agent tasks, \
+        approval/agent gates, pipelines, connectors, scheduled automations, or artifact exports — \
+        features the HTML bridge does not expose. Everything else (tools, views, data/CRUD) → HTML.
+
+        SANDBOX (both kinds): the HTML block is INNER content only (markup + <style> + <script>; no \
+        <!DOCTYPE>/<html>/<head>/<body> — ASTRA wraps it). NO eval()/new Function, NO <iframe>, NO \
+        <script src>/<link>/@import, NO fetch/XHR/WebSocket, NO external URLs/fonts/CDN; inline \
+        onclick is fine. Keep it SMALL/focused (~160 lines) so it generates fast — a tight working \
+        UI beats one that times out.
 
         Here is a VALID baseline manifest. Adapt it to the intent — keep its overall \
         structure, change ids/names/fields as needed. (For a dynamic HTML app, ignore this shape \

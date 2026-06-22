@@ -863,6 +863,44 @@ enum WorkspaceAppStudioBuilder {
         )
     }
 
+    /// Phase 3: a DATA-BACKED HTML app — the deterministic surface for a record-tracking data app
+    /// (track/list/store X). A single `records` table the user CRUDs through a real HTML UI wired to
+    /// the `astra.*` bridge, instead of the static native records-table shell. Still fully governed:
+    /// the bridge routes every read/write through the action executor (permission + audit + app-scoped
+    /// DB). This is the data-app analogue of the pure-UI `WorkspaceAppHTMLTemplate` floor.
+    static func dataBackedHTMLManifest(intent: String) -> WorkspaceAppManifest {
+        let titled = title(from: intent)
+        let name = titled == "Workspace App" ? "Records" : titled
+        let table = "records"
+        let columns = [
+            WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true),
+            WorkspaceAppStorageColumn(name: "name", type: "text", required: true),
+            WorkspaceAppStorageColumn(name: "status", type: "text"),
+            WorkspaceAppStorageColumn(name: "notes", type: "text")
+        ]
+        return WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(
+                id: slug(from: name),
+                name: name,
+                icon: "tablecells",
+                description: "A dynamic local app for tracking your records.",
+                tags: ["local-storage", "html-app"],
+                archetypes: ["Local Database App", "HTML App"]
+            ),
+            storage: WorkspaceAppStorageSchema(tables: [WorkspaceAppStorageTable(name: table, columns: columns)]),
+            // The appStorage actions ARE the data-bridge allowlist (each names the table).
+            actions: [
+                WorkspaceAppActionSpec(id: "list_records", type: "appStorage.query", label: "List", table: table),
+                WorkspaceAppActionSpec(id: "add_record", type: "appStorage.insert", label: "Add", table: table),
+                WorkspaceAppActionSpec(id: "update_record", type: "appStorage.update", label: "Update", table: table)
+            ],
+            permissions: WorkspaceAppPermissions(
+                reads: ["appStorage.records"], writes: ["appStorage.records"], defaultMode: .draftOnly
+            ),
+            html: WorkspaceAppDataHTMLTemplate.html(title: name, table: table, columns: columns, primaryKey: "id")
+        )
+    }
+
     static func operationalSurfaceManifest(intent: String) -> WorkspaceAppManifest {
         let name = title(from: intent)
         let id = slug(from: name)

@@ -86,7 +86,9 @@ struct WorkspaceAppStudioSessionTests {
         #expect(stub.calls.count == 1)
         #expect(stub.calls[0].existing == nil) // first turn has no prior manifest
         #expect(session.draft != nil)
-        #expect(session.draftRevision == 1)
+        // A data intent is now a data-backed HTML app: a provisional draft shows instantly, then the
+        // model result upgrades it → two revisions.
+        #expect(session.draftRevision == 2)
         #expect(session.isGenerating == false)
         #expect(session.canPublish)
         // user turn + assistant summary (the seeded greeting is replaced on reset, not here)
@@ -111,7 +113,9 @@ struct WorkspaceAppStudioSessionTests {
         #expect(stub.calls[0].existing == nil)
         // Turn 2 must carry turn 1's manifest so the generator patches/extends it.
         #expect(stub.calls[1].existing == Self.validManifest)
-        #expect(session.draftRevision == 2)
+        // Turn 1: provisional (data-backed HTML) + model result = 2 revisions; turn 2: result only
+        // (no provisional once a draft exists) = 3.
+        #expect(session.draftRevision == 3)
     }
 
     // MARK: - Refinement chips (pure, no model call)
@@ -206,8 +210,8 @@ struct WorkspaceAppStudioSessionTests {
         #expect(s.draft?.manifest.html == modelHTML.html)
     }
 
-    @Test("a data intent does NOT get a provisional HTML draft")
-    func dataIntentHasNoProvisional() async {
+    @Test("a governed-workflow intent (native, no html baseline) gets NO provisional draft")
+    func workflowIntentHasNoProvisional() async {
         let ws = workspace()
         var sessionRef: WorkspaceAppStudioSession?
         var draftDuringGeneration: WorkspaceAppStudioDraft?
@@ -218,13 +222,15 @@ struct WorkspaceAppStudioSessionTests {
         let s = WorkspaceAppStudioSession(generate: stub)
         sessionRef = s
 
+        // A pipeline intent stays a native declarative app (no html baseline) → no instant provisional.
+        // (Data intents ARE now data-backed HTML and DO get a provisional — see firstTurnGenerates.)
         await s.submit(
-            "track lab samples by status and owner", workspace: ws,
+            "a multi-step intake approval pipeline", workspace: ws,
             runtimeID: TaskExecutionDefaults.runtime.rawValue,
             model: TaskExecutionDefaults.model, availableProviders: []
         )
 
-        #expect(draftDuringGeneration == nil) // no provisional for a data app
+        #expect(draftDuringGeneration == nil)
     }
 
     // MARK: - Publish gating
@@ -292,8 +298,9 @@ struct WorkspaceAppStudioSessionTests {
         let s = WorkspaceAppStudioSession(generate: stub)
         session = s
 
+        // A native (no-provisional) intent so the assertion isolates the stale-result guard.
         await s.submit(
-            "track things", workspace: ws,
+            "a multi-step intake approval pipeline", workspace: ws,
             runtimeID: TaskExecutionDefaults.runtime.rawValue,
             model: TaskExecutionDefaults.model, availableProviders: []
         )

@@ -10,12 +10,20 @@ enum WorkspaceAppStudioRecipes {
     static func manifest(for archetype: WorkspaceAppArchetype, intent: String) -> WorkspaceAppManifest {
         switch archetype {
         case .localDatabase:
-            // The fixed grocery template only for genuinely grocery intents; any other
-            // "track X / database / inventory" intent gets a generic records database named from
-            // the intent (so "track lab samples" is a samples app, not groceries).
+            // Phase 3: a record-tracking data app is now a DATA-BACKED HTML app (a CRUD UI over the
+            // app's own storage via the astra.* bridge), not the static native records shell. The
+            // curated multi-table grocery reference stays native (multi-table HTML is a later
+            // enhancement); every other "track/list/store X" intent becomes dynamic HTML.
             return WorkspaceAppStudioBuilder.isGroceryIntent(intent)
                 ? WorkspaceAppStudioBuilder.localDatabaseManifest(intent: intent)
-                : WorkspaceAppStudioBuilder.genericDatabaseManifest(intent: intent)
+                : WorkspaceAppStudioBuilder.dataBackedHTMLManifest(intent: intent)
+        case .dataEntry:
+            // Phase 3: plain record capture is a data-backed HTML CRUD app (a real add/edit UI over
+            // the app's own storage via astra.*), not a native table shell. Dashboard + review queue
+            // stay native below — they need charts / a triage-approval gate the CRUD template can't
+            // express yet, and their native refinement chips (add chart / approval) only apply to
+            // native apps.
+            return WorkspaceAppStudioBuilder.dataBackedHTMLManifest(intent: intent)
         case .pipeline:
             return pipelineManifest(intent: intent)
         case .reportGenerator:
@@ -24,17 +32,18 @@ enum WorkspaceAppStudioRecipes {
             return reviewQueueManifest(intent: intent)
         case .agenticWorkflow:
             return agenticWorkflowManifest(intent: intent)
-        case .htmlApp:
-            // An interactive tool the data vocabulary can't express. The model normally authors
-            // the UI; this deterministic scaffold is the fallback when the model is unavailable —
-            // an honest HTML starting point, NOT a mislabeled data shell.
-            return WorkspaceAppStudioBuilder.htmlAppScaffoldManifest(intent: intent)
-        case .dataEntry, .dashboard, .monitor:
-            // The operational-surface template is a usable single-subject records app
-            // (table + Add/Update/Delete + dashboard). Label it per the chosen archetype.
+        case .dashboard, .monitor:
+            // Dashboard (metric/chart widgets) and monitor (scheduled automations) need governed
+            // primitives the HTML data bridge can't express, and the native refinement chips only
+            // apply to native apps → stay native. Convert once an HTML dashboard/chart template +
+            // a workflow bridge exist (future phase).
             var manifest = WorkspaceAppStudioBuilder.operationalSurfaceManifest(intent: intent)
             manifest.app.archetypes = [archetype.label]
             return manifest
+        case .htmlApp:
+            // An interactive tool the data vocabulary can't express. The model normally authors
+            // the UI; this deterministic scaffold is the fallback when the model is unavailable.
+            return WorkspaceAppStudioBuilder.htmlAppScaffoldManifest(intent: intent)
         }
     }
 
@@ -77,7 +86,8 @@ enum WorkspaceAppStudioRecipes {
     }
 
     /// A triage queue: the operational-surface base already provides the table, Add/Update/Delete,
-    /// and a draft-task action; relabel it as a review queue.
+    /// and a draft-task action; relabel it as a review queue. Stays native (the triage + approval
+    /// flow needs governed primitives the CRUD HTML template can't express yet).
     private static func reviewQueueManifest(intent: String) -> WorkspaceAppManifest {
         var manifest = WorkspaceAppStudioBuilder.operationalSurfaceManifest(intent: intent)
         manifest.app.archetypes = ["Review Queue", "Action Panel"]

@@ -156,19 +156,19 @@ final class WorkspaceAppStudioSession: ObservableObject {
         generationToken &+= 1
         let token = generationToken
         let existing = draft?.manifest
-        // Resilient, self-healing UX: for a UI-centric FIRST build, show a real deterministic
-        // interactive UI (the `WorkspaceAppHTMLTemplate` floor) IMMEDIATELY, so the preview is never
-        // blank while the model works (which can take minutes, or time out). If the model succeeds it
-        // UPGRADES this draft to the bespoke version; if it times out/fails the fallback is the same
-        // template — the user always ends up with a dynamic UI, and it never downgrades. `existing`
-        // is captured above, so generation still treats this as a first build, not an edit.
-        if existing == nil, WorkspaceAppArchetype.classify(text) == .htmlApp {
-            draft = WorkspaceAppStudioBuilder.draft(
-                intent: text,
-                workspace: workspace,
-                existingManifest: WorkspaceAppStudioBuilder.htmlAppScaffoldManifest(intent: text)
-            )
-            draftRevision &+= 1
+        // Resilient, self-healing UX: for a FIRST build whose deterministic baseline is an HTML app
+        // (now almost everything — interactive tools AND data apps, which render as data-backed HTML
+        // via the astra.* bridge), show that real UI IMMEDIATELY so the preview is never blank while
+        // the model works (which can take minutes, or time out). If the model succeeds it UPGRADES
+        // this draft; if it times out/fails the fallback is the same baseline — the user always ends
+        // up with a dynamic UI, never a downgrade. Governed-workflow intents (native, no html) get no
+        // provisional. `existing` is captured above, so generation still treats this as a first build.
+        if existing == nil {
+            let baseline = WorkspaceAppStudioBuilder.baseManifest(intent: text)
+            if baseline.html != nil {
+                draft = WorkspaceAppStudioBuilder.draft(intent: text, workspace: workspace, existingManifest: baseline)
+                draftRevision &+= 1
+            }
         }
         let configuration = AgentUtilityRuntimeConfiguration(
             runtime: AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID),
@@ -252,8 +252,13 @@ enum StudioTurnSummary {
         case .deterministicFallback:
             let why = result.providerFailure.map { " (\($0))" } ?? ""
             // For a UI-centric intent the fallback is a dynamic HTML scaffold, not a data shell —
-            // say so honestly (and that it's a sample, not live data) instead of "a template".
+            // say so honestly instead of "a template". A DATA-backed HTML fallback (declares its own
+            // storage) persists through the astra.* bridge, so don't claim it "can't sync live data";
+            // a pure-UI fallback is a sample with no persistence.
             if !isEditing, result.manifest.html != nil {
+                if result.manifest.storage?.tables.isEmpty == false {
+                    return "I couldn't finish that from the model, so I started you from a working records app\(why) — a real add/edit UI that saves to this app's own local storage. Refine it by chatting. " + validationLine(result.validationReport)
+                }
                 return "I couldn't finish that from the model, so I started you from an interactive HTML starting point\(why). It's a sample UI you can refine by chatting (it can't sync live data yet). " + validationLine(result.validationReport)
             }
             // Editing: the fallback is the user's unchanged app, not a template.

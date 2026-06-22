@@ -136,13 +136,19 @@ enum WorkspaceAppArchetype: String, CaseIterable, Sendable {
         let text = intent.lowercased()
         func has(_ words: [String]) -> Bool { words.contains { text.contains($0) } }
 
-        // UI-centric intent → an HTML app, so the deterministic FALLBACK (used on model
-        // timeout/failure) is a dynamic HTML scaffold rather than the static records shell the
-        // user dislikes. Gated by `!has(dataTokens)` so a genuine data app dressed in UI language
-        // ("track inventory with a nice ui") still routes to its data archetype.
+        // UI-centric intent → an HTML app, so BOTH the deterministic FALLBACK and the few-shot
+        // baseline steer toward a real dynamic UI rather than the generic records shell the user
+        // dislikes. Covers explicit UI language AND view/list/prioritize intents ("a list of open
+        // PRs ordered by comments"), which are presentation UIs, not data-entry apps. Gated by
+        // `!has(dataTokens)` so a genuine persist-my-records app ("track inventory with a nice ui",
+        // "a CRM") still routes to its data archetype.
         let uiTokens = [
             "a ui", "ui to", "ui for", "interface", "interactive", "dynamic ui",
             "web app", "single page", "single-page", "custom ui", "make it nice", "make it dynamic",
+            // NOTE: no bare "board"/"board of" — they are substrings of "dashboard".
+            "a list of", "list of", "show me", "view of", "prioriti", "ranked by", "rank by",
+            "ordered by", "sorted by", "sort by", "leaderboard", "feed of", "kanban", "gallery of",
+            "browse",
         ]
         let dataTokens = [
             "database", "store my", "grocery", "groceries", "tracker", "track ",

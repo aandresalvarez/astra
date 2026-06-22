@@ -384,7 +384,7 @@ struct WorkspaceAppStudioGeneratorTests {
         #expect(prompt.contains("\"schemaVersion\""))
     }
 
-    @Test("the prompt steers UI-centric intents toward a dynamic HTML app, not a data shell")
+    @Test("the prompt steers tools, views, AND data apps to HTML (pure-UI + data-backed via astra.*)")
     func promptSteersUIIntentsToHTML() {
         let prompt = WorkspaceAppStudioGenerator.generationPrompt(
             intent: "a ui to manage open PRs, make it dynamic",
@@ -395,9 +395,12 @@ struct WorkspaceAppStudioGeneratorTests {
         let lower = prompt.lowercased()
         #expect(lower.contains("\"a ui\""))
         #expect(lower.contains("dynamic html app"))
-        // It must explicitly say NOT to fall back to a records table for a UI intent.
-        #expect(lower.contains("do not fall back to a records table"))
-        #expect(lower.contains("placeholder"))
+        // Both kinds described: pure-UI and data-backed (the latter using the astra.* bridge).
+        #expect(lower.contains("pure-ui html app"))
+        #expect(lower.contains("data-backed html app"))
+        #expect(lower.contains("astra.query") && lower.contains("astra.insert"))
+        // Declarative manifest reserved for governed workflows only.
+        #expect(lower.contains("governed workflows"))
     }
 
     @Test("the prompt tells the model which connectors the workspace has (capability-aware)")

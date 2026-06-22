@@ -205,8 +205,10 @@ struct WorkspaceAppEndToEndTests {
         let env = try Self.makeEnv()
         defer { try? FileManager.default.removeItem(at: env.root) }
 
-        // Generate a deterministic draft (offline path) for a review-queue intent.
-        var manifest = WorkspaceAppStudioBuilder.baseManifest(intent: "triage incoming issues by status")
+        // A governed-WORKFLOW intent stays a native declarative app — the surface native refinement
+        // chips (connect REDCap, charts) operate on. (Data/CRUD intents are now HTML apps whose only
+        // data surface is the astra bridge, so native chips don't apply to them.)
+        var manifest = WorkspaceAppStudioBuilder.baseManifest(intent: "a multi-step intake approval pipeline")
 
         // Phase 1: the identity reads as a human-facing app, not a manifest dump.
         let identity = WorkspaceAppStudioIdentityBuilder.identity(

@@ -11,7 +11,7 @@ import Foundation
 /// templates were model-authored then adversarially verified for sandbox-safety + interactivity;
 /// the unit tests re-assert both invariants. `__APP_TITLE__` is replaced with the app name.
 enum WorkspaceAppHTMLTemplate: String, CaseIterable, Sendable {
-    case calculator, checklist, board, dashboard, form, generic
+    case calculator, checklist, board, dashboard, form, list, generic
 
     /// Pick the closest template for a free-text intent. Specific archetypes win; anything that
     /// doesn't match a known shape gets the polished `generic` shell — so there is ALWAYS a real
@@ -23,6 +23,9 @@ enum WorkspaceAppHTMLTemplate: String, CaseIterable, Sendable {
                 "tip calculator", "bmi", "mortgage", "loan", "percentage"]) { return .calculator }
         // Dashboard BEFORE board: "board" is a substring of "dashboard".
         if has(["dashboard", "metrics", "analytics", "kpi", "stats", "chart", "graph", "report"]) { return .dashboard }
+        // List BEFORE board: a sorted/prioritized list beats a kanban for "ordered by" intents.
+        if has(["list of", "ordered by", "sorted by", "ranked by", "rank by", "prioriti",
+                "leaderboard", "feed of", "table of", "queue of", "sortable"]) { return .list }
         if has(["kanban", "board", "pull request", "open pr", " prs", "ticket", "issue tracker",
                 "issues", "triage", "backlog", "sprint", "cards"]) { return .board }
         if has(["form", "intake", "survey", "questionnaire", "sign up", "signup", "register",
@@ -49,6 +52,7 @@ enum WorkspaceAppHTMLTemplate: String, CaseIterable, Sendable {
         case .board: return Self.boardHTML
         case .dashboard: return Self.dashboardHTML
         case .form: return Self.formHTML
+        case .list: return Self.listHTML
         case .generic: return Self.genericHTML
         }
     }
@@ -809,6 +813,152 @@ enum WorkspaceAppHTMLTemplate: String, CaseIterable, Sendable {
     document.getElementById('gaPlus').addEventListener('click', function () {
       if (val < 99) { val += 1; valEl.textContent = val; }
     });
+  })();
+</script>
+"""
+
+    private static let listHTML = """
+<style>
+  .plist-wrap {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    color: #1d1d22;
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 4px;
+  }
+  .plist-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 14px;
+  }
+  .plist-title { font-size: 21px; font-weight: 680; letter-spacing: -0.01em; margin: 0; }
+  .plist-sub { font-size: 13px; color: #71717a; margin: 3px 0 0; }
+  .plist-sort { display: flex; align-items: center; gap: 8px; }
+  .plist-sort label { font-size: 12px; color: #71717a; font-weight: 560; }
+  .plist-sort select {
+    font: inherit; font-size: 13px; padding: 7px 10px;
+    border: 1px solid #e0e0e6; border-radius: 9px; background: #fff;
+    color: inherit; cursor: pointer;
+  }
+  .plist-table { border: 1px solid #e8e8ee; border-radius: 14px; overflow: hidden; background: #fff; }
+  .plist-row {
+    display: grid;
+    grid-template-columns: 4px 1fr auto auto auto;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 16px 12px 0;
+    border-top: 1px solid #f0f0f4;
+    cursor: default;
+    transition: background 0.12s ease;
+  }
+  .plist-row:first-of-type { border-top: none; }
+  .plist-row:nth-child(even) { background: #fafafb; }
+  .plist-row:hover { background: #f3f4f8; }
+  .accent { width: 4px; align-self: stretch; border-radius: 0 3px 3px 0; }
+  .accent.high { background: #e0483d; }
+  .accent.medium { background: #e0992f; }
+  .accent.low { background: #3d8be0; }
+  .cell-main { min-width: 0; }
+  .row-title { font-size: 14px; font-weight: 560; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row-proj { font-size: 12px; color: #8a8a93; margin: 2px 0 0; }
+  .badge {
+    font-size: 12px; font-weight: 620; font-variant-numeric: tabular-nums;
+    background: #eef0f4; color: #50505a; padding: 4px 9px; border-radius: 999px;
+    white-space: nowrap;
+  }
+  .age { font-size: 12.5px; color: #8a8a93; font-variant-numeric: tabular-nums; min-width: 34px; text-align: right; }
+  .pill {
+    font-size: 11.5px; font-weight: 640; padding: 4px 11px; border-radius: 999px; white-space: nowrap;
+  }
+  .pill.high { background: #fbe5e3; color: #b6342a; }
+  .pill.medium { background: #fbefdc; color: #98661a; }
+  .pill.low { background: #e2eefb; color: #2a64a8; }
+  @media (prefers-color-scheme: dark) {
+    .plist-wrap { color: #e8e8ec; }
+    .plist-sub, .plist-sort label { color: #9a9aa3; }
+    .plist-sort select { background: #1c1c20; border-color: #38383f; color: #e8e8ec; }
+    .plist-table { background: #161619; border-color: #2c2c32; }
+    .plist-row { border-top-color: #232328; }
+    .plist-row:nth-child(even) { background: #1a1a1e; }
+    .plist-row:hover { background: #25252b; }
+    .row-proj, .age { color: #8d8d96; }
+    .badge { background: #2a2a30; color: #c2c2cc; }
+  }
+</style>
+
+<div class="plist-wrap">
+  <div class="plist-head">
+    <div>
+      <h1 class="plist-title">__APP_TITLE__</h1>
+      <p class="plist-sub" id="summary">6 items</p>
+    </div>
+    <div class="plist-sort">
+      <label for="sortby">Sort</label>
+      <select id="sortby">
+        <option value="comments">Most comments</option>
+        <option value="age">Oldest first</option>
+        <option value="title">Title (A-Z)</option>
+        <option value="project">Project</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="plist-table" id="list">
+    <div class="plist-row" data-comments="14" data-age="12" data-title="Fix flaky auth test" data-project="astra-core" data-prio="high">
+      <span class="accent high"></span>
+      <div class="cell-main"><p class="row-title">Fix flaky auth test</p><p class="row-proj">astra-core</p></div>
+      <span class="badge">14</span><span class="age">12d</span><span class="pill high">High</span>
+    </div>
+    <div class="plist-row" data-comments="3" data-age="31" data-title="Add dark-mode tokens" data-project="design-sys" data-prio="low">
+      <span class="accent low"></span>
+      <div class="cell-main"><p class="row-title">Add dark-mode tokens</p><p class="row-proj">design-sys</p></div>
+      <span class="badge">3</span><span class="age">31d</span><span class="pill low">Low</span>
+    </div>
+    <div class="plist-row" data-comments="9" data-age="5" data-title="Refactor preview shelf" data-project="app-studio" data-prio="medium">
+      <span class="accent medium"></span>
+      <div class="cell-main"><p class="row-title">Refactor preview shelf</p><p class="row-proj">app-studio</p></div>
+      <span class="badge">9</span><span class="age">5d</span><span class="pill medium">Medium</span>
+    </div>
+    <div class="plist-row" data-comments="21" data-age="2" data-title="Sandbox egress audit" data-project="astra-core" data-prio="high">
+      <span class="accent high"></span>
+      <div class="cell-main"><p class="row-title">Sandbox egress audit</p><p class="row-proj">astra-core</p></div>
+      <span class="badge">21</span><span class="age">2d</span><span class="pill high">High</span>
+    </div>
+    <div class="plist-row" data-comments="6" data-age="18" data-title="Capsule query conditioning" data-project="capsule" data-prio="medium">
+      <span class="accent medium"></span>
+      <div class="cell-main"><p class="row-title">Capsule query conditioning</p><p class="row-proj">capsule</p></div>
+      <span class="badge">6</span><span class="age">18d</span><span class="pill medium">Medium</span>
+    </div>
+    <div class="plist-row" data-comments="1" data-age="44" data-title="Bump VERSION docs" data-project="docs" data-prio="low">
+      <span class="accent low"></span>
+      <div class="cell-main"><p class="row-title">Bump VERSION docs</p><p class="row-proj">docs</p></div>
+      <span class="badge">1</span><span class="age">44d</span><span class="pill low">Low</span>
+    </div>
+  </div>
+</div>
+
+<script>
+  (function () {
+    var list = document.getElementById("list");
+    var select = document.getElementById("sortby");
+    var summary = document.getElementById("summary");
+    var comparators = {
+      comments: function (a, b) { return Number(b.dataset.comments) - Number(a.dataset.comments); },
+      age: function (a, b) { return Number(b.dataset.age) - Number(a.dataset.age); },
+      title: function (a, b) { return a.dataset.title.localeCompare(b.dataset.title); },
+      project: function (a, b) { return a.dataset.project.localeCompare(b.dataset.project); }
+    };
+    function render(key) {
+      var rows = Array.prototype.slice.call(list.querySelectorAll(".plist-row"));
+      rows.sort(comparators[key] || comparators.comments);
+      rows.forEach(function (r) { list.appendChild(r); });
+      summary.textContent = rows.length + " items";
+    }
+    select.addEventListener("change", function () { render(select.value); });
+    render(select.value);
   })();
 </script>
 """

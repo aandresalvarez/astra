@@ -24,6 +24,11 @@ struct WorkspaceAppWebReportView: NSViewRepresentable {
     /// JavaScript stays OFF by default. The vetted `chartInteractive` renderer and Phase 1 HTML
     /// apps opt in (locked CSP, no native bridge, no network — see the type doc).
     var allowsJavaScript = false
+    /// Phase 2 data bridge. When non-nil, an `astraAppBridge` message handler + the `astra.*` JS API
+    /// are registered so the page can read/write its OWN governed storage through this closure
+    /// (which routes to the existing action executor). Nil for charts/static reports and pure-UI
+    /// HTML apps — those keep the no-native-bridge posture. See `WorkspaceAppDataBridge`.
+    var onBridgeRequest: WorkspaceAppDataBridge.Run?
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -31,6 +36,20 @@ struct WorkspaceAppWebReportView: NSViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = allowsJavaScript
+        if let onBridgeRequest {
+            // Vetted, allowlisted, local-only data channel (no network). The handler is retained by
+            // the userContentController; the injected script runs before the app's own JS.
+            let handler = WorkspaceAppDataBridgeHandler(run: onBridgeRequest)
+            context.coordinator.bridgeHandler = handler
+            configuration.userContentController.addScriptMessageHandler(
+                handler, contentWorld: .page, name: WorkspaceAppDataBridge.handlerName
+            )
+            configuration.userContentController.addUserScript(WKUserScript(
+                source: WorkspaceAppDataBridge.injectedScript,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            ))
+        }
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
@@ -40,6 +59,12 @@ struct WorkspaceAppWebReportView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
+        // Keep the bridge allowlist current: refresh the handler's closure (it captures the live
+        // manifest) so an app refinement that changes storage/actions/permission takes effect even
+        // when the HTML itself is unchanged.
+        if let onBridgeRequest {
+            context.coordinator.bridgeHandler?.run = onBridgeRequest
+        }
         guard context.coordinator.loadedHTML != html else { return }
         context.coordinator.loadedHTML = html
         webView.loadHTMLString(html, baseURL: nil)
@@ -47,6 +72,8 @@ struct WorkspaceAppWebReportView: NSViewRepresentable {
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         var loadedHTML: String?
+        /// Retains the Phase 2 data-bridge handler for the WebView's lifetime (nil when no bridge).
+        var bridgeHandler: WorkspaceAppDataBridgeHandler?
 
         // Allow only Swift-initiated in-memory loads — `loadHTMLString(baseURL: nil)` resolves
         // to an `about:` URL, including reloads when the data changes. Cancel everything else:

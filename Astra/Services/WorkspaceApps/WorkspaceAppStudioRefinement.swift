@@ -37,6 +37,10 @@ enum WorkspaceAppStudioRefinement: String, CaseIterable, Identifiable {
 
     /// Only offer a refinement when it can apply AND hasn't already been applied (keeps chips honest).
     func isAvailable(for manifest: WorkspaceAppManifest) -> Bool {
+        // These chips mutate the NATIVE declarative manifest (views/widgets/connector actions). An
+        // HTML app's UI is its HTML and its only data surface is the astra bridge, so native chips
+        // don't apply — refine an HTML app by chatting (it regenerates the HTML) instead.
+        guard manifest.html == nil else { return false }
         switch self {
         case .addChart:
             return Self.primaryTable(manifest) != nil

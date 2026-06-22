@@ -222,20 +222,77 @@ struct WorkspaceAppHTMLAppTests {
         #expect(report.blockers.contains { $0.message.contains("self-contained") })
     }
 
-    @Test("an HTML app that also declares storage/views is rejected (self-contained-UI invariant)")
-    func htmlAppWithDataFeaturesRejected() {
-        // Phase 1: an HTML app is self-contained UI only. Carrying storage/views (which the WebView
-        // surface would never render) is a governance blind spot, so the validator blocks it.
+    @Test("an HTML app MAY declare its own storage + appStorage actions (Phase 2 data-bridge allowlist)")
+    func htmlAppWithOwnStorageIsValid() {
         var manifest = htmlManifest()
         manifest.storage = WorkspaceAppStorageSchema(tables: [
             WorkspaceAppStorageTable(name: "rows", columns: [
-                WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true)
+                WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true),
+                WorkspaceAppStorageColumn(name: "title", type: "text")
             ])
         ])
-        manifest.views = [WorkspaceAppViewSpec(id: "t", type: "table", title: "Rows", table: "rows")]
-        let report = WorkspaceAppManifestValidator.validate(manifest)
-        #expect(!report.isValid)
-        #expect(report.blockers.contains { $0.message.contains("self-contained UI only") })
+        manifest.actions = [
+            WorkspaceAppActionSpec(id: "q", type: "appStorage.query", table: "rows"),
+            WorkspaceAppActionSpec(id: "i", type: "appStorage.insert", table: "rows")
+        ]
+        #expect(WorkspaceAppManifestValidator.validate(manifest).isValid)
+    }
+
+    @Test("an HTML app declaring connectors / native views / non-storage actions is rejected")
+    func htmlAppWithForbiddenFeaturesRejected() {
+        // Native views: the HTML renders the UI, so declaring widgets is a governance blind spot.
+        var withViews = htmlManifest()
+        withViews.views = [WorkspaceAppViewSpec(id: "t", type: "table", title: "Rows", table: "rows")]
+        #expect(!WorkspaceAppManifestValidator.validate(withViews).isValid)
+
+        // Connectors: Phase 2 is local-storage only — no network surface from an HTML app.
+        var withConnector = htmlManifest()
+        withConnector.requirements = [
+            WorkspaceAppRequirement(id: "r", contract: "tabularQuery.read", operations: ["runReadOnlyQuery"], optional: true, reason: "x")
+        ]
+        #expect(!WorkspaceAppManifestValidator.validate(withConnector).isValid)
+
+        // A non-appStorage action (e.g. a task) is not reachable by the bridge → forbidden.
+        var withTask = htmlManifest()
+        withTask.actions = [WorkspaceAppActionSpec(id: "t", type: "task.createDraft", taskTitle: "x", taskGoal: "y")]
+        #expect(!WorkspaceAppManifestValidator.validate(withTask).isValid)
+    }
+
+    @Test("network APIs (fetch/XHR/WebSocket/EventSource/sendBeacon/@import/import()) are rejected")
+    func networkAPIsRejected() {
+        // The CSP blocks the actual egress at runtime, but the validator must also reject these so a
+        // non-self-contained app can't pass review — a data app reaches its own storage through the
+        // astra.* bridge, never the network.
+        let cases: [String] = [
+            "<script>fetch('https://x')</script><main>x</main>",
+            "<script>new XMLHttpRequest()</script><main>x</main>",
+            "<script>new WebSocket('wss://x')</script><main>x</main>",
+            "<script>new EventSource('/x')</script><main>x</main>",
+            "<script>navigator.sendBeacon('/x')</script><main>x</main>",
+            "<style>@import url('x.css')</style><main>x</main>",
+            "<script>import('./x.js')</script><main>x</main>"
+        ]
+        for html in cases {
+            let report = WorkspaceAppManifestValidator.validate(htmlManifest(html: html))
+            #expect(!report.isValid, "should reject: \(html)")
+        }
+        // A standalone-call check, so 'prefetch(' / a property named 'eventsourceUrl' don't false-positive.
+        let ok = htmlManifest(html: "<script>function prefetch(){return 1;} prefetch();</script><main>x</main>")
+        #expect(WorkspaceAppManifestValidator.validate(ok).isValid)
+    }
+
+    @Test("a <link> or a <script src> (even data:) is rejected — inline-only")
+    func externalScriptAndLinkRejected() {
+        let link = WorkspaceAppManifestValidator.validate(
+            htmlManifest(html: "<link rel=\"stylesheet\" href=\"x.css\"><main>x</main>")
+        )
+        #expect(!link.isValid)
+        // data: bypasses the http-only src check but is still an external/non-inline script.
+        let dataScript = WorkspaceAppManifestValidator.validate(
+            htmlManifest(html: "<script src=\"data:text/javascript,alert(1)\"></script><main>x</main>")
+        )
+        #expect(!dataScript.isValid)
+        #expect(dataScript.blockers.contains { $0.message.contains("self-contained") })
     }
 
     @Test("an HTML app using eval()/new Function is rejected (no 'unsafe-eval' in the CSP)")

@@ -79,22 +79,35 @@ enum WorkspaceAppManifestValidator {
             issues.append(blocker("/html", "HTML app body is empty."))
             return
         }
-        // Phase 1 invariant: an HTML app is self-contained UI ONLY. It must not ALSO declare data /
-        // workflow features — those would render nowhere (the WebView fills the surface) yet skip
-        // the usability + governance review, creating hidden/dead capabilities. Block them so the
-        // permission surface stays honest; move data features to a declarative (non-HTML) app.
-        var declared: [String] = []
-        if manifest.storage != nil { declared.append("storage") }
-        if !manifest.requirements.isEmpty { declared.append("requirements") }
-        if !manifest.sources.isEmpty { declared.append("sources") }
-        if !manifest.views.isEmpty { declared.append("views") }
-        if !manifest.actions.isEmpty { declared.append("actions") }
-        if !manifest.automations.isEmpty { declared.append("automations") }
-        if !declared.isEmpty {
+        // Phase 2 invariant: an HTML app's UI is the HTML itself, and its ONLY data access is its
+        // own storage via the vetted `astra.*` bridge. So it MAY declare its own `storage` +
+        // `appStorage.*` actions (that IS the bridge allowlist), but it must NOT declare connectors
+        // (`requirements`/`sources`), native `views`/widgets (the HTML renders the UI), `automations`,
+        // or any non-`appStorage` action (no networked/workflow surface from an HTML app yet). This
+        // keeps the permission surface honest while letting HTML apps be real data apps.
+        var forbidden: [String] = []
+        if !manifest.requirements.isEmpty { forbidden.append("connector requirements") }
+        if !manifest.sources.isEmpty { forbidden.append("sources") }
+        if !manifest.views.isEmpty { forbidden.append("views") }
+        if !manifest.automations.isEmpty { forbidden.append("automations") }
+        if manifest.actions.contains(where: { !$0.type.hasPrefix("appStorage.") }) {
+            forbidden.append("non-storage actions")
+        }
+        if !forbidden.isEmpty {
             issues.append(blocker(
                 "/html",
-                "An HTML app must be self-contained UI only — it must not also declare \(declared.joined(separator: ", ")). Move data or workflow features to a declarative (non-HTML) app."
+                "An HTML app may only declare its own storage + appStorage actions (reached via the astra bridge); it must not declare \(forbidden.joined(separator: ", ")). Move connector/workflow features to a declarative app."
             ))
+        }
+        // Each appStorage action an HTML app declares is a data-bridge allowlist entry, so it must
+        // name a specific declared table — a table-less grant would expose the op on EVERY table.
+        for (index, action) in manifest.actions.enumerated() where action.type.hasPrefix("appStorage.") {
+            if action.table?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+                issues.append(blocker(
+                    "/actions/\(index)/table",
+                    "An HTML app's appStorage action '\(action.id)' must name one of its declared tables (a table-less grant would expose the operation on every table)."
+                ))
+            }
         }
         if html.utf8.count > maxHTMLAppBytes {
             issues.append(blocker("/html", "HTML app body exceeds the \(maxHTMLAppBytes / 1024) KB limit."))
@@ -123,18 +136,67 @@ enum WorkspaceAppManifestValidator {
             ))
             break
         }
+        // Network / external-resource APIs. The CSP (default-src 'none') already blocks the actual
+        // egress at runtime, so these would silently no-op — but letting them through ships a
+        // broken app AND lets a non-self-contained app pass review (defeating the repair loop). A
+        // data-backed app reaches its OWN storage through the astra.* bridge (postMessage), never
+        // the network, so none of these have a legitimate use.
+        for marker in ["xmlhttprequest", "websocket", "eventsource", "sendbeacon",
+                       "@import", "importscripts", "navigator.serviceworker"] where lowered.contains(marker) {
+            issues.append(blocker(
+                "/html",
+                "HTML apps run with no network (CSP default-src 'none') — remove '\(marker)'. Use the astra.* data bridge for storage."
+            ))
+            break
+        }
+        for call in ["fetch(", "import("] where containsStandaloneCall(lowered, call) {
+            issues.append(blocker(
+                "/html",
+                "HTML apps run with no network (CSP default-src 'none') — remove '\(call)'. Use the astra.* data bridge for storage."
+            ))
+            break
+        }
+        if containsExternalScript(lowered) {
+            issues.append(blocker(
+                "/html",
+                "HTML apps must be self-contained — a <script src> or <link> pulls an external resource. Inline all CSS and JS; there is no network."
+            ))
+        } else if lowered.contains("<link") {
+            issues.append(blocker(
+                "/html",
+                "HTML apps must be self-contained — no <link> elements. Inline all CSS; there is no network."
+            ))
+        }
     }
 
     /// True if `lowered` contains an `eval(` call or `new Function`. `eval(` is matched only as a
     /// standalone call (preceding char is not an identifier char), so "retrieval(" is not flagged.
     private static func containsUnsafeEval(_ lowered: String) -> Bool {
-        if lowered.contains("new function") { return true }
+        lowered.contains("new function") || containsStandaloneCall(lowered, "eval(")
+    }
+
+    /// True if `lowered` contains `needle` as a standalone call — the char immediately before it is
+    /// not an identifier char — so "fetch(" does not match inside "prefetch(" and "import(" does not
+    /// match inside "reimport(".
+    private static func containsStandaloneCall(_ lowered: String, _ needle: String) -> Bool {
         var search = lowered.startIndex..<lowered.endIndex
-        while let range = lowered.range(of: "eval(", range: search) {
+        while let range = lowered.range(of: needle, range: search) {
             if range.lowerBound == lowered.startIndex { return true }
             let before = lowered[lowered.index(before: range.lowerBound)]
             if !(before.isLetter || before.isNumber || before == "_") { return true }
             search = range.upperBound..<lowered.endIndex
+        }
+        return false
+    }
+
+    /// True if any `<script …>` open tag carries a `src` attribute — an external or `data:` script
+    /// that bypasses the inline-only contract (and the CSP would block it anyway).
+    private static func containsExternalScript(_ lowered: String) -> Bool {
+        var search = lowered.startIndex..<lowered.endIndex
+        while let open = lowered.range(of: "<script", range: search) {
+            let tagEnd = lowered.range(of: ">", range: open.upperBound..<lowered.endIndex)?.lowerBound ?? lowered.endIndex
+            if lowered[open.upperBound..<tagEnd].contains("src") { return true }
+            search = tagEnd..<lowered.endIndex
         }
         return false
     }

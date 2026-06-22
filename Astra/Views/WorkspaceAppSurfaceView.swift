@@ -61,21 +61,53 @@ struct WorkspaceAppSurfaceView: View {
     }
 
     var body: some View {
-        // A dynamic HTML app (Phase 1) owns the whole surface: render its model-authored UI in the
-        // CSP-locked, no-network, no-bridge WebView sandbox instead of the native sections. Same
-        // path for the live Studio preview and the published detail view (both host this view).
+        // HTML is the primary surface. A dynamic HTML app — interactive tools AND (Phase 3) data
+        // apps wired to the astra.* bridge — owns the whole surface: render its model/template UI in
+        // the CSP-locked WebView. The native `declarativeSurface` below is the LEGACY + governed-
+        // WORKFLOW path: it renders only when `manifest.html == nil` (already-published declarative
+        // apps + workflow archetypes that need tasks/gates/automations the HTML bridge can't yet
+        // express). New data apps no longer take it. Same surface for the live preview + published view.
         if let html = snapshot.manifest?.html,
            !html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             WorkspaceAppWebReportView(
                 html: WorkspaceAppWebReportHTML.appDocument(innerHTML: html),
-                allowsJavaScript: true
+                allowsJavaScript: true,
+                onBridgeRequest: dataBridgeRun()
             )
+            // Bridge eligibility is part of the WebView's IDENTITY: if the app gains or loses its
+            // own storage, recreate the WebView so the handler is installed/removed accordingly
+            // (updateNSView only refreshes a still-present handler, never adds/removes one). This
+            // closes the eligibility-flip staleness hole — a page can't keep calling astra.* against
+            // an app that no longer grants storage.
+            .id(snapshot.manifest?.storage?.tables.isEmpty == false)
             .frame(maxWidth: .infinity)
             .frame(minHeight: 600)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .accessibilityIdentifier("WorkspaceAppHTMLSurface")
         } else {
             declarativeSurface
+        }
+    }
+
+    /// Phase 2 data bridge: the closure for a DATA-BACKED HTML app (one that declares its own
+    /// storage). It routes `astra.*` requests through the SAME governed `onRunAction` the native UI
+    /// uses, so permission enforcement + audit are preserved and preview (in-memory) / published
+    /// (SQLite) parity is automatic. Returns nil for a pure-UI HTML app (no storage) so no native
+    /// bridge is registered at all.
+    private func dataBridgeRun() -> WorkspaceAppDataBridge.Run? {
+        guard let manifest = snapshot.manifest,
+              manifest.storage?.tables.isEmpty == false else { return nil }
+        let onRunAction = self.onRunAction
+        return { request in
+            guard let resolved = WorkspaceAppDataBridge.resolve(request, in: manifest) else {
+                return .error("Operation '\(request.op)' on '\(request.table)' is not permitted by this app.")
+            }
+            do {
+                let result = try onRunAction(resolved.action, manifest, resolved.input)
+                return .rows(result.rows)
+            } catch {
+                return .error(String(describing: error))
+            }
         }
     }
 
