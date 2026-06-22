@@ -32,6 +32,11 @@ enum WorkspaceAppStudioScope {
         let text = intent.lowercased()
         guard contentSiteTokens.contains(where: { text.contains($0) }) else { return nil }
         if dataAppTokens.contains(where: { containsWord(text, $0) }) { return nil }
+        // App Studio now ALSO builds self-contained HTML/CSS/JS tools, so a TOOL intent phrased as
+        // a "page" is buildable. Reuse the SAME tight token set `classify` routes to `.htmlApp`, so
+        // "in scope as a tool" and "classifies as an HTML app" agree — generic nouns (tool/widget/
+        // game) are deliberately excluded so a real marketing site still warns.
+        if WorkspaceAppArchetype.htmlToolIntentTokens.contains(where: { text.contains($0) }) { return nil }
         return "App Studio builds data and workflow apps — tables, dashboards, review queues, "
             + "pipelines, and AI workflows — not websites or marketing pages. This intent looks "
             + "like a web page, so generating will produce a data app, not a site. Try something "
@@ -42,6 +47,28 @@ enum WorkspaceAppStudioScope {
     /// Whether the intent reads as out of scope (drives the banner's presence).
     static func isLikelyOutOfScope(_ intent: String) -> Bool {
         outOfScopeNotice(for: intent) != nil
+    }
+
+    /// External-service / live-data signals — intents that need a connector (GitHub, Jira, …) or
+    /// internet access to be truly functional.
+    private static let connectorTokens = [
+        "github", "gitlab", "bitbucket", "pull request", "open pr", "open prs",
+        "jira", "linear", "asana", "trello", "slack", "notion", "salesforce", "zendesk",
+        "fetch from", "sync with", "pull from", "live data", "real-time data", "from the api",
+        "rest api", "google sheets", "airtable",
+    ]
+
+    /// A non-blocking notice for an intent that needs live/external data a sandboxed app can't
+    /// reach. UNLIKE `outOfScopeNotice` (which blocks a marketing-site build), this is additive:
+    /// the interactive UI IS buildable with sample data, so the caller surfaces the limitation and
+    /// then proceeds. Returns nil when no connector/live-data signal is present.
+    static func needsConnectorNotice(for intent: String) -> String? {
+        let text = intent.lowercased()
+        guard connectorTokens.contains(where: { text.contains($0) }) else { return nil }
+        return "Heads up: apps built here run in a locked sandbox with no internet access, so this "
+            + "one can\u{2019}t pull live data (GitHub, Jira, etc.) yet. I\u{2019}ll build the "
+            + "interactive UI with sample data \u{2014} live connector sync is planned for a later "
+            + "release."
     }
 
     /// Word-ish containment so "log" doesn't match "blog" / "catalog" and "form"

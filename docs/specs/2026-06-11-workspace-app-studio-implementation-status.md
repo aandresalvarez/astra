@@ -1,7 +1,7 @@
 # Workspace App Studio Implementation Status
 
 **Originally:** 2026-06-11 (branch `alvaro/workspace-app-studio-spec`, susom PR #122)
-**Last updated:** 2026-06-20 (branch `claude/loving-rhodes-87e735`)
+**Last updated:** 2026-06-21 (branch `claude/loving-rhodes-87e735`)
 **Parent spec:** `docs/specs/2026-06-05-workspace-app-studio-spec.md`
 
 This document tracks implementation status against the Workspace App Studio
@@ -10,9 +10,148 @@ target product. This document is the execution tracker: what exists now, what
 is partially implemented, and what still needs to be built before the final
 product direction is true.
 
-> **Read the 2026-06-20 update first.** It supersedes the per-area "Pending"
-> lists below where they conflict. The original 2026-06-11 snapshot is kept
-> underneath for history.
+> **Read the 2026-06-21 update first.** It supersedes the per-area "Pending"
+> lists below where they conflict. The 2026-06-20 and original 2026-06-11
+> snapshots are kept underneath for history.
+
+## 2026-06-21 Update — Dynamic HTML/CSS/JS apps (Phase 1)
+
+App Studio could only express **data apps** (storage + table/dashboard/form/chart/diagram
+views rendered natively), so every intent collapsed to the same data shell — ask for a
+"calculator" and you got a `calculations` table, not a calculator. Phase 1 breaks that
+ceiling: for an interactive tool the declarative vocabulary can't express, the model now
+authors the **UI as self-contained HTML/CSS/JS** rendered in the existing locked WebView
+sandbox. **Live-verified**: "a calculator …" generates a real keypad calculator that
+computes on click (7×8=56), previews in the shelf, and publishes + renders identically in
+the detail view (9+6=15).
+
+**Security model (the boundary).** Swift owns the document shell + CSP; the model only
+contributes inner content. `WorkspaceAppWebReportHTML.appDocument(innerHTML:)` wraps the
+model HTML in the same locked CSP family as `interactiveDocument`
+(`default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline';
+base-uri 'none'; form-action 'none'`), rendered by the hardened `WorkspaceAppWebReportView`
+(`allowsJavaScript: true`, non-persistent store, **no `WKScriptMessageHandler` — no bridge
+in Phase 1**, `baseURL: nil`, nav delegate cancels every non-in-memory load). Net: model JS
+runs but can't reach network/native/filesystem or navigate out. Pure-UI apps have no data
+to leak.
+
+**What changed**
+- `WorkspaceAppManifest.html: String?` (nil-default; manifest-level). Non-nil ⇒ HTML app.
+  Encodes omitted when nil → declarative digests stay byte-stable.
+- `WorkspaceAppSurfaceView.body` branches: `manifest.html` non-empty → render the sandbox
+  full-surface; else the native sections. One branch serves BOTH the live preview shelf and
+  the published detail view.
+- Generation (`WorkspaceAppStudioGenerator`) teaches the model to classify tool-vs-data and,
+  for a tool, emit a minimal metadata manifest + an `ASTRA_APP_HTML … END_ASTRA_APP_HTML`
+  block; `WorkspaceAppStudioBuilder.applyStructuredOutput` parses it onto `manifest.html`
+  (attached before validation; a separate block wins over inline html).
+- Validator: `validateHTMLApp` (non-empty, 256 KB cap, blocks `<iframe>`/external `src` as a
+  clear authoring error — the CSP already blocks them); the storage-usability net is skipped
+  when `html` is present (the WebView fills the surface).
+- **Robustness fix (root cause of the first failed live run):** model-authored manifests
+  routinely OMIT empty/default fields, which the synthesized `Codable` rejected with an
+  opaque keyNotFound ("the data couldn't be read because it is missing") → template
+  fallback. `WorkspaceAppManifest`, `WorkspaceAppManifestMetadata`, and
+  `WorkspaceAppPermissions` now have **lenient decoders** (omitted arrays → `[]`, omitted
+  scalars → defaults, omitted id/name → "" so the validator reports a clear blocker).
+  `encode(to:)` stays synthesized, so digests are unaffected. This hardens ALL generation,
+  not just HTML apps.
+- Tests: `Tests/WorkspaceAppHTMLAppTests.swift` (15) — round-trip + nil-omission, locked-CSP
+  appDocument, ASTRA_APP_HTML parsing, validator rules, lenient minimal-manifest decode, the
+  surface-decision precondition. Full suite green (3205 tests incl. the 41 fitness tests).
+
+**Codex adversarial review (2026-06-21, verdict SHIP WITH FIXES) — fixes applied:**
+- **Accurate boundary + explicit local-device denial (was HIGH).** The CSP/nav-lock blocks network
+  egress + navigation, but not local DOM APIs. `WorkspaceAppWebReportView` now installs a denying
+  `WKUIDelegate`: `window.open` → nil, file-open panel → nil (so `<input type=file>` can't read
+  disk), JS alert/confirm/prompt dismissed. Docs corrected: the guarantee is **no exfiltration
+  channel** (no network egress, no native bridge, no navigation, no persistence) — a user-gesture
+  `clipboard.writeText` can still run but has nowhere to send data, so it stays allowed (legit
+  "copy result" buttons).
+- **HTML apps are self-contained UI only (was MEDIUM).** `validateHTMLApp` now rejects an `html`
+  manifest that ALSO declares storage/requirements/sources/views/actions/automations (hidden/dead
+  capabilities that skip governance).
+- **Reject `eval()`/`new Function` (was MEDIUM).** The CSP has no `'unsafe-eval'`, so an eval-based
+  calculator would silently no-op; the validator now blocks it (standalone-call match, so
+  `retrieval()` isn't a false positive) → the repair loop rewrites it.
+- **Repair prompt carries the `ASTRA_APP_HTML` contract (was MEDIUM)** so a rejected HTML app
+  re-emits the UI block instead of dropping it.
+- **Shared tool tokens (was LOW).** `WorkspaceAppArchetype.htmlToolIntentTokens` is the single
+  tight list used by BOTH `classify` and `WorkspaceAppStudioScope`, so "in scope as a tool" and
+  "classifies as an HTML app" agree; generic nouns (tool/widget/game) no longer suppress the
+  website warning.
+- Confirmed FINE by codex: CSP/no-bridge posture ≥ the vetted chart shell; `img-src data:` is not a
+  network channel; lenient decoders default permissions to empty grants + `readOnly` and keep
+  `encode(to:)` synthesized (digests byte-stable); deferring height auto-sizing is correct (a
+  height handler is still a bridge → its own review). Full suite green (3208 tests).
+
+### Dynamic-UI reliability follow-up (same day) — a "dynamic UI" intent no longer degrades to a static data shell
+
+Live testing surfaced the real failure: asking for "a ui to manage open PRs … make it nice and
+dynamic" produced the static `review_items` shell because generation **timed out** and the
+deterministic fallback routed a UI intent to `.dataEntry`. Diagnosed via a parallel diagnostic
+workflow (timeout / routing / data-honesty traces → synthesis). Fixes:
+- **Timeout** (`WorkspaceAppStudioSession.generationTimeoutSeconds`) 120 → **240s**. The provider
+  timeout is pure wall-clock and `codex exec` buffers output to the end, so an output-heavy HTML
+  generation was killed mid-write.
+- **Output bound** in `generationPrompt`: hard "ship a WORKING MINIMAL UI (~160 lines), refine by
+  chatting" so generation finishes fast instead of over-producing.
+- **`classify()` UI-gate** (`WorkspaceAppArchetype`): UI-centric intents ("a ui", "interface",
+  "interactive", "dynamic ui", "web app", "single page") → `.htmlApp` UNLESS data tokens present.
+  So the deterministic FALLBACK is now a dynamic HTML scaffold, not the static records shell.
+- **Model steering** (`generationPrompt` DYNAMIC HTML APPS): explicitly build an HTML app for "a UI /
+  interface / dynamic / interactive" intents (with sample data) — "do NOT fall back to a records
+  table + dashboard for a UI-centric intent". (classify() is the fallback path only, so both the
+  classifier AND the prompt are needed — verified by the workflow.)
+- **Honest messaging**: `WorkspaceAppStudioScope.needsConnectorNotice` surfaces a non-blocking
+  notice for connector/live-data intents (GitHub/Jira/…) — "sandbox has no internet, sample data
+  only" — then proceeds. `StudioTurnSummary` distinguishes the HTML-scaffold fallback
+  ("interactive HTML starting point … sample UI … can't sync live data yet") from the data template.
+- Tests: +6 (`uiCentricToHtmlApp`, `dataCentricIgnoresUILanguage`, `promptSteersUIIntentsToHTML`,
+  `connectorIntentsGetNotice`, `connectorIntentDisclosesButGenerates`, `htmlScaffoldFallbackMessage`).
+  Full suite green (3214).
+
+**Live-verified**: connector notice fires + is non-blocking; a UI intent now falls back to a dynamic
+HTML scaffold (NOT the data shell) with honest messaging + the interactive-app banner. CAVEAT: a
+fresh *successful* model generation couldn't be re-shown in the test session because codex was
+running extremely slowly under cumulative session load (even a tip-calculator hit the 240s ceiling);
+the earlier-session calculator (generated + computed 7×8=56) confirms the happy path when codex is
+healthy. **Known limit / deferred:** when codex is slow or the UI is very large, generation still
+times out → scaffold. The real UX fix is **streaming the HTML as it generates** or a true
+**idle-timeout** (reset on stdout activity) — both touch the shared `AsyncProcessRunner` primitive
+(`SpecEngine.swift`) used by every task runtime, so they're a separate, higher-blast-radius change.
+
+### Resilient, self-healing dynamic UI (same day) — ALWAYS a real interactive UI, instantly
+
+Even with the timeout/routing fixes above, a slow/timed-out model still left a UI intent on a
+placeholder scaffold (and the wait was a blank "Building…"). Two layers now guarantee a real dynamic
+UI regardless of model speed/availability:
+- **Deterministic interactive-HTML template library** (`WorkspaceAppHTMLTemplate`, new): real,
+  working, sandbox-safe UIs — `calculator / checklist / board / dashboard / form / generic` — authored
+  by a parallel multi-agent workflow then adversarially verified (and re-asserted by unit tests) for
+  no-eval / no-network / self-contained + genuine interactivity. `classify(intent)` picks the closest
+  (e.g. "manage open PRs" → kanban board); unknown intents get the polished `generic` shell, so there
+  is ALWAYS a real interactive result. `WorkspaceAppStudioBuilder.htmlAppScaffoldManifest` now returns
+  a template instead of the old "describe what you want" placeholder — so any model timeout/failure
+  heals to a genuine dynamic UI.
+- **Provisional-then-upgrade** (`WorkspaceAppStudioSession.submit`): for a UI-centric first build, the
+  deterministic template draft is shown IMMEDIATELY (preview never blank), then UPGRADED to the
+  model's bespoke UI if generation succeeds, or kept as-is if it times out — never a downgrade.
+- Tests: +6 (`WorkspaceAppHTMLTemplateTests` ×4 + 2 session tests for provisional/upgrade and the
+  data-intent-has-no-provisional guard). Full suite green (3220).
+- **Live-verified**: "a ui to manage open PRs … make it very nice and dynamic" → an interactive kanban
+  board renders INSTANTLY (To Do / In Progress / Done with sample cards) while the model is still
+  building; clicking a card advances its column and updates the counts (real JS in the no-network
+  sandbox). The static-data-shell outcome is gone for UI intents. (Codex remained too slow under
+  session load to show a bespoke upgrade, but the deterministic floor is the guarantee — the user
+  always ends up with a working dynamic UI.)
+
+**Phase 2 (designed, not built — needs its own plan + adversarial review):** a vetted
+manifest-scoped data bridge (a single `astraAppBridge` `WKScriptMessageHandler` + an injected
+`astra.*` JS API: query/insert/update/delete scoped to the app's own tables, validated via
+`WorkspaceAppWebViewBridge` and executed via `WorkspaceAppActionExecutor` /
+`WorkspaceAppPreviewRunner`) so HTML apps can use data. No network, no arbitrary native. Note: this
+does NOT enable connectors (GitHub/Jira live data) — that's a later connector-bridge phase.
 
 ## 2026-06-20 Update — Conversational App Studio (Lovable/Replit-style)
 

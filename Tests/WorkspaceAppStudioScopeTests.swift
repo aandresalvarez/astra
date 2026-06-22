@@ -27,6 +27,32 @@ struct WorkspaceAppStudioScopeTests {
         #expect(WorkspaceAppStudioScope.outOfScopeNotice(for: "track donors and donations") == nil)
     }
 
+    @Test("interactive-tool intents are in scope even when phrased as a page/site")
+    func interactiveToolIntentsInScope() {
+        // App Studio now builds self-contained HTML tools, so a tool phrased as a "page" is buildable.
+        #expect(!WorkspaceAppStudioScope.isLikelyOutOfScope("a unit converter web page"))
+        #expect(!WorkspaceAppStudioScope.isLikelyOutOfScope("a calculator webpage"))
+        #expect(!WorkspaceAppStudioScope.isLikelyOutOfScope("a countdown timer website"))
+        #expect(WorkspaceAppStudioScope.outOfScopeNotice(for: "a pomodoro timer web page") == nil)
+        // A genuine marketing site with no tool/data signal is still flagged.
+        #expect(WorkspaceAppStudioScope.isLikelyOutOfScope("a landing page for the foundation"))
+        // Generic nouns ("tool") must NOT suppress the warning — only real tool signals do. A
+        // marketing site for a "tool company" is still out of scope (it isn't an interactive tool).
+        #expect(WorkspaceAppStudioScope.isLikelyOutOfScope("a landing page for my tool company"))
+    }
+
+    @Test("connector/live-data intents get a non-blocking notice (sandbox has no internet)")
+    func connectorIntentsGetNotice() {
+        #expect(WorkspaceAppStudioScope.needsConnectorNotice(for: "a ui to manage open PRs in github") != nil)
+        #expect(WorkspaceAppStudioScope.needsConnectorNotice(for: "sync with jira and show tickets") != nil)
+        #expect(WorkspaceAppStudioScope.needsConnectorNotice(for: "fetch from the rest api") != nil)
+        // A purely local intent gets no connector notice.
+        #expect(WorkspaceAppStudioScope.needsConnectorNotice(for: "a calculator") == nil)
+        #expect(WorkspaceAppStudioScope.needsConnectorNotice(for: "track lab samples locally") == nil)
+        // It is NOT an out-of-scope (blocking) signal — connector UIs are still buildable.
+        #expect(!WorkspaceAppStudioScope.isLikelyOutOfScope("a ui to manage open PRs in github"))
+    }
+
     @Test("a data app that merely mentions pages is not a false positive")
     func dataAppAboutPagesNotFlagged() {
         // "track landing page performance" is a data app ABOUT pages, not a website.

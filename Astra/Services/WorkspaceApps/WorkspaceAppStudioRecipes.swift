@@ -24,6 +24,11 @@ enum WorkspaceAppStudioRecipes {
             return reviewQueueManifest(intent: intent)
         case .agenticWorkflow:
             return agenticWorkflowManifest(intent: intent)
+        case .htmlApp:
+            // An interactive tool the data vocabulary can't express. The model normally authors
+            // the UI; this deterministic scaffold is the fallback when the model is unavailable —
+            // an honest HTML starting point, NOT a mislabeled data shell.
+            return WorkspaceAppStudioBuilder.htmlAppScaffoldManifest(intent: intent)
         case .dataEntry, .dashboard, .monitor:
             // The operational-surface template is a usable single-subject records app
             // (table + Add/Update/Delete + dashboard). Label it per the chosen archetype.

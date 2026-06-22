@@ -83,11 +83,16 @@ struct WorkspaceAppPreviewView: View {
     }
 
     private var banner: some View {
-        HStack(alignment: .top, spacing: 8) {
+        // A dynamic HTML app has no storage/tasks/connectors — the data-sandbox copy is irrelevant,
+        // so show interactive-app copy instead of the misleading "storage edits / simulated" text.
+        let bannerText = manifest.html != nil
+            ? "Live preview of your interactive app — it runs in a sandbox with no network. Nothing is saved."
+            : "Sample data — nothing is saved. Storage edits run against an in-memory copy; tasks, connector writes, exports, and links are simulated."
+        return HStack(alignment: .top, spacing: 8) {
             Image(systemName: "info.circle")
                 .font(Stanford.ui(13))
                 .foregroundStyle(Stanford.lagunita)
-            Text("Sample data — nothing is saved. Storage edits run against an in-memory copy; tasks, connector writes, exports, and links are simulated.")
+            Text(bannerText)
                 .font(Stanford.caption(12))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

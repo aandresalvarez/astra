@@ -284,13 +284,19 @@ enum WorkspaceAppStudioGenerator {
         \(sanitizedIntent(intent))
         </INTENT>
 
-        Respond with a one-line plain-language summary, then EXACTLY ONE manifest block. \
-        Put each marker on its own line with NO markdown fences and NO backticks:
+        Respond with a one-line plain-language summary, then the manifest block — and, for a \
+        dynamic HTML app (see DYNAMIC HTML APPS below), ALSO an HTML block. Put each marker on its \
+        own line with NO markdown fences and NO backticks:
 
         ASTRA_APP_SUMMARY: <one friendly sentence describing the app you built>
         ASTRA_APP_MANIFEST
         { ...the manifest JSON... }
         END_ASTRA_APP_MANIFEST
+
+        Then, ONLY for a dynamic HTML app, add the UI block:
+        ASTRA_APP_HTML
+        ...inner HTML (markup + <style> + <script>)...
+        END_ASTRA_APP_HTML
 
         The JSON must decode into this shape:
         - schemaVersion: Int (keep the value from the baseline below)
@@ -327,8 +333,38 @@ enum WorkspaceAppStudioGenerator {
         Goals may also interpolate prior captured fields with `{{field}}` placeholders. Use these so \
         a multi-step agent workflow actually passes data forward instead of dropping it.
 
+        DYNAMIC HTML APPS — for interactive tools the data vocabulary above CANNOT express:
+        - If the intent is a self-contained interactive tool or custom UI — a calculator, unit/ \
+        currency converter, timer/stopwatch/countdown, color picker, text/markdown utility, custom \
+        visualization, or a small single-screen game — do NOT force it into storage + tables + a \
+        dashboard. Build a DYNAMIC HTML APP instead, so the UI actually matches the intent.
+        - ALSO build a DYNAMIC HTML APP when the user explicitly asks for "a UI", "an interface", a \
+        "dynamic"/"interactive" app, or any custom single-screen interface that is NOT primarily \
+        about storing/tracking records — even if it would normally need live data, build the \
+        interactive UI with realistic PLACEHOLDER/SAMPLE data (the sandbox has no network). Do NOT \
+        fall back to a records table + dashboard for a UI-centric intent.
+        - CRITICAL — keep the UI SMALL so it generates quickly: ONE concise screen, target well \
+        under ~160 lines of HTML+CSS+JS combined. Ship a clean, WORKING MINIMAL version rather than \
+        an elaborate one — the user refines it by chatting afterward, so do NOT pre-build every \
+        feature. Avoid long sample-data arrays (3-5 sample rows max), unused styles, animations, and \
+        boilerplate. A tight working UI that renders beats an ambitious one that times out.
+        - For an HTML app, emit a MINIMAL manifest: complete app metadata (id, name, icon, \
+        description, tags, `archetypes: ["HTML App"]`); EMPTY ARRAYS `[]` for requirements, sources, \
+        views, actions, and automations (include the keys with `[]`, do not omit them); no `storage`; \
+        and `permissions` with defaultMode "draftOnly". Then add the ASTRA_APP_HTML block with the \
+        complete UI.
+        - The HTML block is INNER content only — your markup, a `<style>` block, and a `<script>` \
+        block. Do NOT include <!DOCTYPE>, <html>, <head>, or <body>; ASTRA wraps it in a locked \
+        document. Inline event handlers (onclick=…) are fine.
+        - It runs in a SANDBOX with NO network and NO external resources: everything must be \
+        self-contained and computed in-browser. No <iframe>, no <script src=…>, no stylesheet/font/ \
+        image URLs, no fetch/XHR/WebSocket, no CDN links. A calculator must really compute on click.
+        - Use an HTML app ONLY for self-contained interactive UIs. For anything that STORES, tracks, \
+        reviews, or reports on data, use the declarative manifest (storage + views + actions) above.
+
         Here is a VALID baseline manifest. Adapt it to the intent — keep its overall \
-        structure, change ids/names/fields as needed:
+        structure, change ids/names/fields as needed. (For a dynamic HTML app, ignore this shape \
+        and emit the minimal metadata-only manifest + the ASTRA_APP_HTML block described above.)
 
         \(encode(base))
         """
@@ -371,6 +407,13 @@ enum WorkspaceAppStudioGenerator {
         ASTRA_APP_MANIFEST
         { ...the corrected manifest JSON... }
         END_ASTRA_APP_MANIFEST
+
+        If this is a dynamic HTML app, you MUST also re-send the UI block (do not drop it). The HTML \
+        is inner content only (markup + <style> + <script>); it runs under a strict CSP with NO \
+        network, NO external resources, and NO eval()/new Function — compute directly:
+        ASTRA_APP_HTML
+        ...corrected inner HTML...
+        END_ASTRA_APP_HTML
 
         You may ONLY reference these capability contracts (exact ids/operations):
         \(contractCatalog(contractFamilies))

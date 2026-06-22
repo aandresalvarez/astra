@@ -61,6 +61,25 @@ struct WorkspaceAppSurfaceView: View {
     }
 
     var body: some View {
+        // A dynamic HTML app (Phase 1) owns the whole surface: render its model-authored UI in the
+        // CSP-locked, no-network, no-bridge WebView sandbox instead of the native sections. Same
+        // path for the live Studio preview and the published detail view (both host this view).
+        if let html = snapshot.manifest?.html,
+           !html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            WorkspaceAppWebReportView(
+                html: WorkspaceAppWebReportHTML.appDocument(innerHTML: html),
+                allowsJavaScript: true
+            )
+            .frame(maxWidth: .infinity)
+            .frame(minHeight: 600)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .accessibilityIdentifier("WorkspaceAppHTMLSurface")
+        } else {
+            declarativeSurface
+        }
+    }
+
+    private var declarativeSurface: some View {
         VStack(alignment: .leading, spacing: 18) {
             nativeSurfaceSection
             formSection

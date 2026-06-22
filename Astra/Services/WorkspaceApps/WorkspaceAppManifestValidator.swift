@@ -60,8 +60,83 @@ enum WorkspaceAppManifestValidator {
         validatePermissionCoverage(manifest, issues: &issues)
         validateSubmitBlock(manifest, issues: &issues)
         validateUsability(manifest, issues: &issues)
+        validateHTMLApp(manifest, issues: &issues)
 
         return WorkspaceAppManifestValidationReport(issues: issues)
+    }
+
+    /// Phase 1 dynamic HTML apps: the model authors the UI, but Swift owns the CSP-locked,
+    /// no-network, no-bridge document shell (`WorkspaceAppWebReportHTML.appDocument`), so the
+    /// security guarantee is structural — it holds regardless of what the HTML contains. These
+    /// checks are therefore defense-in-depth + clear authoring errors, not the security boundary.
+    private static let maxHTMLAppBytes = 256 * 1024
+    private static func validateHTMLApp(
+        _ manifest: WorkspaceAppManifest,
+        issues: inout [WorkspaceAppManifestValidationReport.Issue]
+    ) {
+        guard let html = manifest.html else { return }
+        if html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            issues.append(blocker("/html", "HTML app body is empty."))
+            return
+        }
+        // Phase 1 invariant: an HTML app is self-contained UI ONLY. It must not ALSO declare data /
+        // workflow features — those would render nowhere (the WebView fills the surface) yet skip
+        // the usability + governance review, creating hidden/dead capabilities. Block them so the
+        // permission surface stays honest; move data features to a declarative (non-HTML) app.
+        var declared: [String] = []
+        if manifest.storage != nil { declared.append("storage") }
+        if !manifest.requirements.isEmpty { declared.append("requirements") }
+        if !manifest.sources.isEmpty { declared.append("sources") }
+        if !manifest.views.isEmpty { declared.append("views") }
+        if !manifest.actions.isEmpty { declared.append("actions") }
+        if !manifest.automations.isEmpty { declared.append("automations") }
+        if !declared.isEmpty {
+            issues.append(blocker(
+                "/html",
+                "An HTML app must be self-contained UI only — it must not also declare \(declared.joined(separator: ", ")). Move data or workflow features to a declarative (non-HTML) app."
+            ))
+        }
+        if html.utf8.count > maxHTMLAppBytes {
+            issues.append(blocker("/html", "HTML app body exceeds the \(maxHTMLAppBytes / 1024) KB limit."))
+        }
+        let lowered = html.lowercased()
+        if lowered.contains("<iframe") {
+            issues.append(blocker("/html", "HTML apps may not embed <iframe> elements."))
+        }
+        // The sandbox CSP has NO 'unsafe-eval', so eval()/new Function would silently no-op at
+        // runtime (a calculator that doesn't compute). Reject it as a clear blocker so the repair
+        // loop rewrites it to compute directly instead of shipping a dead UI.
+        if containsUnsafeEval(lowered) {
+            issues.append(blocker(
+                "/html",
+                "HTML apps run under a strict CSP with no 'unsafe-eval' — remove eval()/new Function(...) and compute directly, or the app will silently fail to run."
+            ))
+        }
+        // External resource loads are blocked by the CSP at render time; flagging them here turns a
+        // silently-blocked (broken) resource into a clear authoring error. A self-contained app
+        // needs none — all markup, CSS, and JS run locally with no network. (Best-effort string
+        // check; the CSP, not this, is the security boundary.)
+        for marker in ["src=\"http", "src='http", "src=http"] where lowered.contains(marker) {
+            issues.append(blocker(
+                "/html",
+                "HTML apps must be self-contained — no external resources (found '\(marker)'). Inline all markup, CSS, and JS; there is no network."
+            ))
+            break
+        }
+    }
+
+    /// True if `lowered` contains an `eval(` call or `new Function`. `eval(` is matched only as a
+    /// standalone call (preceding char is not an identifier char), so "retrieval(" is not flagged.
+    private static func containsUnsafeEval(_ lowered: String) -> Bool {
+        if lowered.contains("new function") { return true }
+        var search = lowered.startIndex..<lowered.endIndex
+        while let range = lowered.range(of: "eval(", range: search) {
+            if range.lowerBound == lowered.startIndex { return true }
+            let before = lowered[lowered.index(before: range.lowerBound)]
+            if !(before.isLetter || before.isNumber || before == "_") { return true }
+            search = range.upperBound..<lowered.endIndex
+        }
+        return false
     }
 
     /// Usability invariants — the safety net that stops generation (model OR deterministic) from
@@ -77,6 +152,10 @@ enum WorkspaceAppManifestValidator {
         _ manifest: WorkspaceAppManifest,
         issues: inout [WorkspaceAppManifestValidationReport.Issue]
     ) {
+        // A dynamic HTML app renders the WebView full-surface — its native storage/views/actions
+        // are never shown, so the "shows a table it can't fill" net doesn't apply. (See
+        // WorkspaceAppSurfaceView, which branches on `manifest.html`.)
+        guard manifest.html == nil else { return }
         let tableNames = Set((manifest.storage?.tables ?? []).map(\.name))
         if !tableNames.isEmpty {
             var shown = Set<String>()

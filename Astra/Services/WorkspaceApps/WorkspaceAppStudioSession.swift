@@ -63,11 +63,15 @@ final class WorkspaceAppStudioSession: ObservableObject {
     /// submit/reset/cancel; a turn only applies its result if the token is still current.
     private var generationToken = 0
 
-    /// App-builder generation is a heavier one-shot than a typical utility prompt (a full
-    /// manifest + a repair loop), so the 60s utility default can cut a provider off mid-answer
-    /// and force the template fallback. Give it more headroom (codex utility runs at low
-    /// reasoning, so this is comfortable rather than a hang ceiling).
-    private static let generationTimeoutSeconds: TimeInterval = 120
+    /// App-builder generation is a heavier one-shot than a typical utility prompt, and a dynamic
+    /// HTML app is the heaviest case: the model emits a whole HTML/CSS/JS blob, and `codex exec`
+    /// buffers its output to the end, so the provider's WALL-CLOCK timeout (not idle) can kill an
+    /// in-progress UI mid-write and force the static template fallback — the failure the user hit
+    /// ("Process timed out after 120 seconds"). HTML generation is output-bound, so the prompt hard-
+    /// bounds UI size ("ship a working minimal version") to keep generation fast, and this ceiling is
+    /// the safety net for the occasional larger UI: 240s. (codex utility runs at low reasoning, so
+    /// this is headroom, not a hang ceiling, and `cancelGeneration()` lets the user bail early.)
+    private static let generationTimeoutSeconds: TimeInterval = 240
 
     init(generate: @escaping WorkspaceAppStudioGenerate = WorkspaceAppStudioSession.defaultGenerate) {
         self.generate = generate
@@ -141,11 +145,31 @@ final class WorkspaceAppStudioSession: ObservableObject {
             messages.append(StudioMessage(role: .assistant, text: notice))
             return
         }
+        // Connector/live-data intents (GitHub, Jira, …) can't pull real data in the sandbox, but
+        // the interactive UI IS buildable with sample data — disclose the limit honestly, then
+        // proceed (non-blocking, first build only).
+        if draft == nil, let connectorNotice = WorkspaceAppStudioScope.needsConnectorNotice(for: text) {
+            messages.append(StudioMessage(role: .assistant, text: connectorNotice))
+        }
 
         isGenerating = true
         generationToken &+= 1
         let token = generationToken
         let existing = draft?.manifest
+        // Resilient, self-healing UX: for a UI-centric FIRST build, show a real deterministic
+        // interactive UI (the `WorkspaceAppHTMLTemplate` floor) IMMEDIATELY, so the preview is never
+        // blank while the model works (which can take minutes, or time out). If the model succeeds it
+        // UPGRADES this draft to the bespoke version; if it times out/fails the fallback is the same
+        // template — the user always ends up with a dynamic UI, and it never downgrades. `existing`
+        // is captured above, so generation still treats this as a first build, not an edit.
+        if existing == nil, WorkspaceAppArchetype.classify(text) == .htmlApp {
+            draft = WorkspaceAppStudioBuilder.draft(
+                intent: text,
+                workspace: workspace,
+                existingManifest: WorkspaceAppStudioBuilder.htmlAppScaffoldManifest(intent: text)
+            )
+            draftRevision &+= 1
+        }
         let configuration = AgentUtilityRuntimeConfiguration(
             runtime: AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID),
             model: model,
@@ -226,9 +250,14 @@ enum StudioTurnSummary {
                 : "Built your app (refined over \(result.attemptCount) passes)."
             return lead + " " + validationLine(result.validationReport)
         case .deterministicFallback:
+            let why = result.providerFailure.map { " (\($0))" } ?? ""
+            // For a UI-centric intent the fallback is a dynamic HTML scaffold, not a data shell —
+            // say so honestly (and that it's a sample, not live data) instead of "a template".
+            if !isEditing, result.manifest.html != nil {
+                return "I couldn't finish that from the model, so I started you from an interactive HTML starting point\(why). It's a sample UI you can refine by chatting (it can't sync live data yet). " + validationLine(result.validationReport)
+            }
             // Editing: the fallback is the user's unchanged app, not a template.
             let degraded = isEditing ? "kept your current app unchanged" : "started you from a template"
-            let why = result.providerFailure.map { " (\($0))" } ?? ""
             return "I couldn't build that from the model, so I \(degraded)\(why). " + validationLine(result.validationReport)
         }
     }

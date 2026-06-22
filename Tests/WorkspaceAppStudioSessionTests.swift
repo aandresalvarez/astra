@@ -163,6 +163,70 @@ struct WorkspaceAppStudioSessionTests {
         #expect(session.messages.last?.text.contains("data and workflow apps") == true)
     }
 
+    @Test("a connector intent discloses the no-internet limit but STILL generates (non-blocking)")
+    func connectorIntentDisclosesButGenerates() async {
+        let (session, stub) = session([Self.result(Self.validManifest)])
+        let ws = workspace()
+
+        await submit(session, "a ui to manage open PRs in github", ws)
+
+        #expect(stub.calls.count == 1) // generation proceeded — connector notice does NOT block
+        #expect(session.draft != nil)
+        #expect(session.messages.contains { $0.text.contains("no internet access") })
+    }
+
+    // MARK: - Resilient provisional draft (self-healing UX)
+
+    @Test("a UI intent shows a real provisional dynamic UI BEFORE the model returns, then upgrades")
+    func provisionalDynamicUIShownThenUpgraded() async {
+        let ws = workspace()
+        var sessionRef: WorkspaceAppStudioSession?
+        var draftDuringGeneration: WorkspaceAppStudioDraft?
+        // The model "succeeds" with a bespoke HTML app; capture the draft AT model-call time to prove
+        // a real interactive UI was already showing before the (slow) model returned.
+        var modelHTML = Self.validManifest
+        modelHTML.html = "<main><button onclick=\"void 0\">Go</button></main><script>1;</script>"
+        let stub: WorkspaceAppStudioGenerate = { _, _, _, _, _, _ in
+            draftDuringGeneration = sessionRef?.draft
+            return Self.result(modelHTML)
+        }
+        let s = WorkspaceAppStudioSession(generate: stub)
+        sessionRef = s
+
+        await s.submit(
+            "a ui to manage open prs and comments", workspace: ws,
+            runtimeID: TaskExecutionDefaults.runtime.rawValue,
+            model: TaskExecutionDefaults.model, availableProviders: []
+        )
+
+        // Provisional UI was showing during generation — never a blank wait.
+        #expect(draftDuringGeneration != nil)
+        #expect(draftDuringGeneration?.manifest.html != nil)
+        // …and it upgraded to the model's bespoke UI when generation completed.
+        #expect(s.draft?.manifest.html == modelHTML.html)
+    }
+
+    @Test("a data intent does NOT get a provisional HTML draft")
+    func dataIntentHasNoProvisional() async {
+        let ws = workspace()
+        var sessionRef: WorkspaceAppStudioSession?
+        var draftDuringGeneration: WorkspaceAppStudioDraft?
+        let stub: WorkspaceAppStudioGenerate = { _, _, _, _, _, _ in
+            draftDuringGeneration = sessionRef?.draft
+            return Self.result(Self.validManifest)
+        }
+        let s = WorkspaceAppStudioSession(generate: stub)
+        sessionRef = s
+
+        await s.submit(
+            "track lab samples by status and owner", workspace: ws,
+            runtimeID: TaskExecutionDefaults.runtime.rawValue,
+            model: TaskExecutionDefaults.model, availableProviders: []
+        )
+
+        #expect(draftDuringGeneration == nil) // no provisional for a data app
+    }
+
     // MARK: - Publish gating
 
     @Test("publish gating mirrors the validator, turn over turn")
@@ -272,5 +336,17 @@ struct WorkspaceAppStudioSessionTests {
         )
         #expect(line.contains("template"))
         #expect(line.contains("provider offline"))
+    }
+
+    @Test("a UI-intent fallback reads as an interactive HTML starting point, not a template")
+    func htmlScaffoldFallbackMessage() {
+        let scaffold = WorkspaceAppStudioBuilder.htmlAppScaffoldManifest(intent: "a ui to manage PRs")
+        let line = StudioTurnSummary.line(
+            for: Self.result(scaffold, origin: .deterministicFallback, providerFailure: "Process timed out after 180 seconds"),
+            isEditing: false
+        )
+        #expect(line.contains("interactive HTML starting point"))
+        #expect(!line.contains("template"))
+        #expect(line.contains("180 seconds"))
     }
 }

@@ -384,6 +384,22 @@ struct WorkspaceAppStudioGeneratorTests {
         #expect(prompt.contains("\"schemaVersion\""))
     }
 
+    @Test("the prompt steers UI-centric intents toward a dynamic HTML app, not a data shell")
+    func promptSteersUIIntentsToHTML() {
+        let prompt = WorkspaceAppStudioGenerator.generationPrompt(
+            intent: "a ui to manage open PRs, make it dynamic",
+            workspaceName: "Demo",
+            base: Self.validManifest,
+            contractFamilies: WorkspaceAppContractRegistry().families
+        )
+        let lower = prompt.lowercased()
+        #expect(lower.contains("\"a ui\""))
+        #expect(lower.contains("dynamic html app"))
+        // It must explicitly say NOT to fall back to a records table for a UI intent.
+        #expect(lower.contains("do not fall back to a records table"))
+        #expect(lower.contains("placeholder"))
+    }
+
     @Test("the prompt tells the model which connectors the workspace has (capability-aware)")
     func promptIsCapabilityAware() {
         let families = WorkspaceAppContractRegistry().families

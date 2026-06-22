@@ -22,6 +22,10 @@ enum WorkspaceAppArchetype: String, CaseIterable, Sendable {
     /// A multi-step AI workflow: agent task steps + agent/human gates + run history, with the
     /// app's data fed into the agent and its answer captured back (the agentic recipe).
     case agenticWorkflow
+    /// A self-contained interactive HTML/CSS/JS tool (calculator, converter, timer, custom UI)
+    /// the declarative data vocabulary can't express. The model authors the UI; it renders in the
+    /// locked WebView sandbox (no storage, no network, no bridge). See `WorkspaceAppManifest.html`.
+    case htmlApp
 
     var label: String {
         switch self {
@@ -33,6 +37,7 @@ enum WorkspaceAppArchetype: String, CaseIterable, Sendable {
         case .reportGenerator: return "Report Generator"
         case .monitor: return "Monitor"
         case .agenticWorkflow: return "Agentic Workflow"
+        case .htmlApp: return "HTML App"
         }
     }
 
@@ -47,6 +52,7 @@ enum WorkspaceAppArchetype: String, CaseIterable, Sendable {
         case .reportGenerator: return "Report generator"
         case .monitor: return "Monitor"
         case .agenticWorkflow: return "AI workflow"
+        case .htmlApp: return "Interactive tool"
         }
     }
 
@@ -61,6 +67,7 @@ enum WorkspaceAppArchetype: String, CaseIterable, Sendable {
         case .reportGenerator: return "doc.text"
         case .monitor: return "gauge"
         case .agenticWorkflow: return "cpu"
+        case .htmlApp: return "macwindow"
         }
     }
 
@@ -75,6 +82,7 @@ enum WorkspaceAppArchetype: String, CaseIterable, Sendable {
         case .reportGenerator: return "Collect records and export a report"
         case .monitor: return "Watch data and flag thresholds"
         case .agenticWorkflow: return "Orchestrate AI steps with approvals"
+        case .htmlApp: return "A custom interactive tool, built in HTML"
         }
     }
 
@@ -89,6 +97,7 @@ enum WorkspaceAppArchetype: String, CaseIterable, Sendable {
         case .reportGenerator: return "A weekly enrollment summary report"
         case .monitor: return "Alert when a sample is older than 30 days"
         case .agenticWorkflow: return "Orchestrate an AI agent to review and act on records"
+        case .htmlApp: return "A calculator with add, subtract, multiply, and divide"
         }
     }
 
@@ -100,6 +109,7 @@ enum WorkspaceAppArchetype: String, CaseIterable, Sendable {
         if let exact = allCases.first(where: { $0.label.lowercased() == normalized || $0.displayName.lowercased() == normalized }) {
             return exact
         }
+        if normalized.contains("html") { return .htmlApp }
         if normalized.contains("agentic") || normalized.contains("agent") { return .agenticWorkflow }
         if normalized.contains("review") || normalized.contains("queue") || normalized.contains("reconcil") { return .reviewQueue }
         if normalized.contains("workflow") || normalized.contains("pipeline") { return .pipeline }
@@ -110,6 +120,15 @@ enum WorkspaceAppArchetype: String, CaseIterable, Sendable {
         return nil
     }
 
+    /// Tight set of interactive-tool signals that route an intent to `.htmlApp`. Shared with
+    /// `WorkspaceAppStudioScope` so "in scope as a tool" and "classifies as an HTML app" agree.
+    /// Deliberately NOT generic nouns (tool/widget/game/interactive) — those would suppress the
+    /// website warning for a marketing page ("a landing page for my tool company").
+    static let htmlToolIntentTokens = [
+        "calculator", "calculate ", "converter", "unit conversion", "timer", "stopwatch",
+        "countdown", "color picker", "colour picker", "tip calc", "bmi", "interactive tool",
+    ]
+
     /// Classify a free-text intent into the best-fitting archetype. Specific archetypes win over
     /// general ones; an unrecognized intent falls to `.dataEntry` (a usable records app) rather
     /// than a read-only dashboard shell.
@@ -117,6 +136,27 @@ enum WorkspaceAppArchetype: String, CaseIterable, Sendable {
         let text = intent.lowercased()
         func has(_ words: [String]) -> Bool { words.contains { text.contains($0) } }
 
+        // UI-centric intent → an HTML app, so the deterministic FALLBACK (used on model
+        // timeout/failure) is a dynamic HTML scaffold rather than the static records shell the
+        // user dislikes. Gated by `!has(dataTokens)` so a genuine data app dressed in UI language
+        // ("track inventory with a nice ui") still routes to its data archetype.
+        let uiTokens = [
+            "a ui", "ui to", "ui for", "interface", "interactive", "dynamic ui",
+            "web app", "single page", "single-page", "custom ui", "make it nice", "make it dynamic",
+        ]
+        let dataTokens = [
+            "database", "store my", "grocery", "groceries", "tracker", "track ",
+            "inventory", "catalog", "collection", "ledger", "crm", "records of",
+            "log of", "manage records",
+        ]
+        if has(uiTokens) && !has(dataTokens) {
+            return .htmlApp
+        }
+
+        // Self-contained interactive tools the data vocabulary can't express → an HTML app.
+        if has(htmlToolIntentTokens) {
+            return .htmlApp
+        }
         if has(["agentic", "ai workflow", "ai agent", "agent workflow", "multi-agent", "orchestrate", "agent to", "ai to"]) {
             return .agenticWorkflow
         }
@@ -154,6 +194,7 @@ enum WorkspaceAppArchetype: String, CaseIterable, Sendable {
         - reportGenerator: a records table + a task action that drafts the report + an artifact.export action.
         - monitor: a records table + threshold metrics + an Add action (schedules stay disabled until enabled).
         - agenticWorkflow: a records table + a pipeline.run that chains task.createAndRun steps (the AI does the work) with gate.agentRecommendation/gate.humanApproval between them, plus run history. Use when the app should hand work to an AI agent and act on its answer.
+        - htmlApp: a self-contained interactive HTML/CSS/JS tool (calculator, converter, timer, custom UI) — NOT storage/views. See DYNAMIC HTML APPS below: emit metadata + an ASTRA_APP_HTML block. Use when the intent is an interactive tool the data views can't express.
         """
     }
 }

@@ -1,16 +1,28 @@
 import SwiftUI
 import WebKit
 
-/// Sandboxed WKWebView host for a workspace app's HTML report — the flexible-local-app
-/// visualization surface. Hardened so Swift keeps owning everything: JavaScript is
-/// disabled, the data store is non-persistent, there are NO JS↔native message handlers,
-/// and every navigation after the initial in-memory load is cancelled. Combined with the
-/// document's `default-src 'none'` CSP and `baseURL: nil`, the report can only display
-/// the Swift-built HTML — it can never reach the network or escape the sandbox.
+/// Sandboxed WKWebView host for a workspace app's HTML surface — the static `htmlReport`,
+/// the vetted `chartInteractive` renderer, and (Phase 1) MODEL-authored dynamic HTML apps.
+///
+/// The boundary Swift enforces, precisely (it holds regardless of what the HTML contains):
+/// - **No network egress.** The document CSP is `default-src 'none'` (plus the interactive
+///   shells' `'unsafe-inline'` script/style), so fetch/XHR/WebSocket/EventSource/beacon and
+///   every external resource are blocked.
+/// - **No JS↔native bridge.** No `WKScriptMessageHandler` is registered, so page JS has no
+///   channel to native code or app data.
+/// - **No navigation or window creation.** The nav delegate cancels every load that isn't the
+///   initial in-memory `about:` load; the UI delegate returns nil for `window.open`.
+/// - **No file panels or JS dialogs.** The UI delegate denies open panels (so `<input type=file>`
+///   can't read disk) and dismisses alert/confirm/prompt.
+/// - **No persistence.** The data store is `.nonPersistent()` and `baseURL` is nil.
+///
+/// What is NOT claimed: a user-gesture `navigator.clipboard.writeText` can still run — but with
+/// no network egress there is no exfiltration channel, so the residual risk is local clipboard
+/// nuisance, not data leakage. Legitimate "copy result" buttons rely on it, so it stays allowed.
 struct WorkspaceAppWebReportView: NSViewRepresentable {
     let html: String
-    /// JavaScript stays OFF by default. Only the vetted `chartInteractive` renderer opts in
-    /// (Swift-authored inline script, escaped-JSON data, no network, no native bridge).
+    /// JavaScript stays OFF by default. The vetted `chartInteractive` renderer and Phase 1 HTML
+    /// apps opt in (locked CSP, no native bridge, no network — see the type doc).
     var allowsJavaScript = false
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -21,6 +33,7 @@ struct WorkspaceAppWebReportView: NSViewRepresentable {
         configuration.defaultWebpagePreferences.allowsContentJavaScript = allowsJavaScript
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
+        webView.uiDelegate = context.coordinator
         context.coordinator.loadedHTML = html
         webView.loadHTMLString(html, baseURL: nil)
         return webView
@@ -32,7 +45,7 @@ struct WorkspaceAppWebReportView: NSViewRepresentable {
         webView.loadHTMLString(html, baseURL: nil)
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         var loadedHTML: String?
 
         // Allow only Swift-initiated in-memory loads — `loadHTMLString(baseURL: nil)` resolves
@@ -48,6 +61,58 @@ struct WorkspaceAppWebReportView: NSViewRepresentable {
             let scheme = navigationAction.request.url?.scheme
             let isInMemoryLoad = scheme == nil || scheme == "about"
             decisionHandler(navigationAction.navigationType == .other && isInMemoryLoad ? .allow : .cancel)
+        }
+
+        // Deny `window.open` / target=_blank popups: returning nil means no child WebView is
+        // created (and any URL it carried never loads).
+        func webView(
+            _ webView: WKWebView,
+            createWebViewWith configuration: WKWebViewConfiguration,
+            for navigationAction: WKNavigationAction,
+            windowFeatures: WKWindowFeatures
+        ) -> WKWebView? {
+            nil
+        }
+
+        // Deny the native file-open panel, so `<input type="file">` can never read disk. Making
+        // this explicit (vs. relying on the absence of a UI delegate) keeps the no-filesystem
+        // guarantee a deliberate policy with a regression test, not an assumed WebKit default.
+        func webView(
+            _ webView: WKWebView,
+            runOpenPanelWith parameters: WKOpenPanelParameters,
+            initiatedByFrame frame: WKFrameInfo,
+            completionHandler: @escaping ([URL]?) -> Void
+        ) {
+            completionHandler(nil)
+        }
+
+        // Silently dismiss JS dialogs — a sandboxed app surface must not drive modal UI.
+        func webView(
+            _ webView: WKWebView,
+            runJavaScriptAlertPanelWithMessage message: String,
+            initiatedByFrame frame: WKFrameInfo,
+            completionHandler: @escaping () -> Void
+        ) {
+            completionHandler()
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            runJavaScriptConfirmPanelWithMessage message: String,
+            initiatedByFrame frame: WKFrameInfo,
+            completionHandler: @escaping (Bool) -> Void
+        ) {
+            completionHandler(false)
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            runJavaScriptTextInputPanelWithPrompt prompt: String,
+            defaultText: String?,
+            initiatedByFrame frame: WKFrameInfo,
+            completionHandler: @escaping (String?) -> Void
+        ) {
+            completionHandler(nil)
         }
     }
 }

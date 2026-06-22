@@ -289,10 +289,27 @@ enum WorkspaceAppStudioBuilder {
             named: "ASTRA_APP_PATCH",
             in: output
         )
+        // Phase 1 dynamic apps: the model can ALSO emit a separate ASTRA_APP_HTML block carrying
+        // the app's inner UI (easier than JSON-escaping a large blob inside the manifest). A
+        // present-but-malformed block is a hard failure so the repair loop fixes it rather than
+        // silently shipping a UI-less app. The HTML rides the MANIFEST path only — an HTML app
+        // always re-emits a full manifest (not a patch), so a declarative patch never sets html.
+        let htmlBlock = structuredBlock(named: "ASTRA_APP_HTML", in: output)
+        let html: String?
+        switch htmlBlock {
+        case .success(let payload): html = payload
+        case .notFound: html = nil
+        case .failure(let message):
+            return structuredOutputFailure(
+                preserving: manifest,
+                path: "/structuredOutput/ASTRA_APP_HTML",
+                message: message
+            )
+        }
 
         switch (manifestBlock, patchBlock) {
         case (.success(let manifestPayload), .notFound):
-            return applyManifestPayload(manifestPayload, preserving: manifest)
+            return applyManifestPayload(manifestPayload, html: html, preserving: manifest)
         case (.notFound, .success(let patchPayload)):
             return applyPatchPayload(patchPayload, to: manifest)
         case (.notFound, .notFound):
@@ -360,13 +377,17 @@ enum WorkspaceAppStudioBuilder {
 
     private static func applyManifestPayload(
         _ payload: String,
+        html: String?,
         preserving manifest: WorkspaceAppManifest
     ) -> WorkspaceAppStudioStructuredOutputResult {
         do {
-            let decoded = try JSONDecoder().decode(
+            var decoded = try JSONDecoder().decode(
                 WorkspaceAppManifest.self,
                 from: Data(payload.utf8)
             )
+            // A separate ASTRA_APP_HTML block wins over any inline `html` in the JSON (the cleaner
+            // channel for a large blob); attach it BEFORE validation so the HTML-app rules run.
+            if let html { decoded.html = html }
             let report = WorkspaceAppManifestValidator.validate(decoded)
             guard report.isValid else {
                 return WorkspaceAppStudioStructuredOutputResult(
@@ -816,6 +837,29 @@ enum WorkspaceAppStudioBuilder {
                 writes: ["appStorage.records"],
                 defaultMode: .draftOnly
             )
+        )
+    }
+
+    /// The deterministic, RESILIENT fallback for an `.htmlApp` intent: a real, working, intent-matched
+    /// interactive HTML app drawn from `WorkspaceAppHTMLTemplate` (calculator / checklist / board /
+    /// dashboard / form / generic). Used when the model is unavailable, times out, or never produces
+    /// a valid app — so a UI intent ALWAYS lands on a genuine dynamic UI (not a placeholder, never a
+    /// `records` data shell). The model still authors a more bespoke UI when it succeeds; this is the
+    /// guaranteed floor beneath it.
+    static func htmlAppScaffoldManifest(intent: String) -> WorkspaceAppManifest {
+        let name = title(from: intent)
+        let appName = name == "Workspace App" ? "Interactive Tool" : name
+        return WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(
+                id: slug(from: appName),
+                name: appName,
+                icon: "macwindow",
+                description: "A self-contained interactive tool.",
+                tags: ["html-app"],
+                archetypes: ["HTML App"]
+            ),
+            permissions: WorkspaceAppPermissions(defaultMode: .draftOnly),
+            html: WorkspaceAppHTMLTemplate.classify(intent).html(title: appName)
         )
     }
 

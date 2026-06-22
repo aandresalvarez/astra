@@ -161,6 +161,38 @@ enum WorkspaceAppWebReportHTML {
         """
     }
 
+    /// JS-enabled, CSP-locked shell hosting a Phase 1 dynamic HTML app. UNLIKE every other shell
+    /// here, the `innerHTML` is MODEL-authored — so Swift keeps owning everything that matters:
+    /// the document, the locked CSP, and the network posture. The model only contributes inner
+    /// content (markup + its own `<style>` + `<script>`), which this drops into `<body>`.
+    ///
+    /// The CSP is the same family as `interactiveDocument`: `default-src 'none'` blocks every
+    /// network fetch (fetch/XHR/WebSocket/external script/font), `script-src 'unsafe-inline'` runs
+    /// only inline app script + inline event handlers (so an onclick calculator works) but NO
+    /// external `<script src>`, `style-src 'unsafe-inline'` allows the app's own CSS, `img-src
+    /// data:` allows inline (non-network) images, and `base-uri`/`form-action` are locked. Combined
+    /// with `baseURL: nil`, NO `WKScriptMessageHandler` (no native bridge in Phase 1), and the
+    /// `WorkspaceAppWebReportView` nav/UI delegates (cancel navigation, deny window.open, deny
+    /// file-open panels + JS dialogs), a model HTML app can compute locally but has no exfiltration
+    /// channel: no network egress, no native bridge, no navigation. The shell adds only a neutral
+    /// reset; the app's own `<style>` owns all layout.
+    static func appDocument(innerHTML: String) -> String {
+        """
+        <!DOCTYPE html>
+        <html><head><meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none';">
+        <style>
+        :root { color-scheme: light dark; }
+        * { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; }
+        body { font: 13px -apple-system, system-ui, sans-serif; background: transparent; }
+        </style></head><body>
+        \(innerHTML)
+        </body></html>
+        """
+    }
+
     /// Wraps body HTML in the shared, CSP-locked document shell (no script, no network).
     private static func document(_ body: String) -> String {
         """

@@ -18,6 +18,14 @@ struct WorkspaceAppManifest: Codable, Sendable, Equatable {
     // app and run in the sandbox. Optional + nil-default → fully-synthesized Codable omits it, so
     // check-less manifests keep byte-stable digests.
     var checks: [WorkspaceAppCheck]?
+    // Phase 1 dynamic apps: a self-contained HTML/CSS/JS UI authored by the model for interactive
+    // tools the declarative vocabulary can't express (a calculator, converter, timer, custom
+    // visualization). Stored as the INNER content (markup + <style> + <script>); Swift wraps it in
+    // a CSP-locked, no-network, no-bridge WebView shell at render time (`WorkspaceAppWebReportHTML
+    // .appDocument`). Non-nil ⇒ "this is an HTML app": `WorkspaceAppSurfaceView` renders the sandbox
+    // full-surface instead of the native sections. Optional + nil-default → the synthesized Codable
+    // omits it, so every existing (declarative) manifest keeps a byte-stable digest.
+    var html: String?
 
     init(
         schemaVersion: Int = 1,
@@ -30,7 +38,8 @@ struct WorkspaceAppManifest: Codable, Sendable, Equatable {
         automations: [WorkspaceAppAutomationSpec] = [],
         permissions: WorkspaceAppPermissions = WorkspaceAppPermissions(),
         submitBlockedReasons: [String]? = nil,
-        checks: [WorkspaceAppCheck]? = nil
+        checks: [WorkspaceAppCheck]? = nil,
+        html: String? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.app = app
@@ -43,6 +52,36 @@ struct WorkspaceAppManifest: Codable, Sendable, Equatable {
         self.permissions = permissions
         self.submitBlockedReasons = submitBlockedReasons
         self.checks = checks
+        self.html = html
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, app, requirements, storage, sources, views, actions
+        case automations, permissions, submitBlockedReasons, checks, html
+    }
+
+    /// Lenient decoder: a model-authored manifest (especially a minimal HTML-app manifest with
+    /// "empty" collections) routinely OMITS keys that carry no data instead of emitting `[]`/the
+    /// default. The synthesized decoder would reject those with an opaque keyNotFound ("the data
+    /// couldn't be read because it is missing"), forcing the generator to fall back to a template.
+    /// Default every omittable field to its empty/baseline value so a manifest that's missing only
+    /// no-op fields decodes; the validator (authoritative) then reports any genuinely missing
+    /// content (e.g. an empty app id/name) as an actionable blocker. `encode(to:)` stays synthesized
+    /// from `CodingKeys`, so existing manifests keep byte-stable digests.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        app = try container.decode(WorkspaceAppManifestMetadata.self, forKey: .app)
+        requirements = try container.decodeIfPresent([WorkspaceAppRequirement].self, forKey: .requirements) ?? []
+        storage = try container.decodeIfPresent(WorkspaceAppStorageSchema.self, forKey: .storage)
+        sources = try container.decodeIfPresent([WorkspaceAppSource].self, forKey: .sources) ?? []
+        views = try container.decodeIfPresent([WorkspaceAppViewSpec].self, forKey: .views) ?? []
+        actions = try container.decodeIfPresent([WorkspaceAppActionSpec].self, forKey: .actions) ?? []
+        automations = try container.decodeIfPresent([WorkspaceAppAutomationSpec].self, forKey: .automations) ?? []
+        permissions = try container.decodeIfPresent(WorkspaceAppPermissions.self, forKey: .permissions) ?? WorkspaceAppPermissions()
+        submitBlockedReasons = try container.decodeIfPresent([String].self, forKey: .submitBlockedReasons)
+        checks = try container.decodeIfPresent([WorkspaceAppCheck].self, forKey: .checks)
+        html = try container.decodeIfPresent(String.self, forKey: .html)
     }
 }
 
@@ -95,6 +134,25 @@ struct WorkspaceAppManifestMetadata: Codable, Sendable, Equatable {
         self.description = description
         self.tags = tags
         self.archetypes = archetypes
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, icon, description, tags, archetypes
+    }
+
+    /// Lenient decoder (mirrors `WorkspaceAppManifest`): a model often emits only `id`/`name` for a
+    /// minimal HTML-app, omitting `icon`/`description`/`tags`/`archetypes`. Default the omitted
+    /// fields rather than failing to decode; `id`/`name` default to "" so the validator reports a
+    /// missing identity as a clear blocker instead of an opaque decode error. `encode(to:)` stays
+    /// synthesized, so digests are unaffected.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(String.self, forKey: .id) ?? ""
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
+        icon = try container.decodeIfPresent(String.self, forKey: .icon) ?? "square.grid.2x2"
+        description = try container.decodeIfPresent(String.self, forKey: .description) ?? ""
+        tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
+        archetypes = try container.decodeIfPresent([String].self, forKey: .archetypes) ?? []
     }
 }
 
@@ -733,5 +791,21 @@ struct WorkspaceAppPermissions: Codable, Sendable, Equatable {
         self.writes = writes
         self.externalWrites = externalWrites
         self.defaultMode = defaultMode
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case reads, writes, externalWrites, defaultMode
+    }
+
+    /// Lenient decoder (mirrors `WorkspaceAppManifest`): a model commonly emits `permissions` with
+    /// only `defaultMode` (especially for a minimal HTML app), omitting the empty grant arrays.
+    /// Default them rather than failing to decode; `encode(to:)` stays synthesized, so digests are
+    /// unaffected.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        reads = try container.decodeIfPresent([String].self, forKey: .reads) ?? []
+        writes = try container.decodeIfPresent([String].self, forKey: .writes) ?? []
+        externalWrites = try container.decodeIfPresent([String].self, forKey: .externalWrites) ?? []
+        defaultMode = try container.decodeIfPresent(WorkspaceAppPermissionMode.self, forKey: .defaultMode) ?? .readOnly
     }
 }
