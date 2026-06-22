@@ -112,7 +112,10 @@ struct WorkspaceAppRunResumptionService {
     }
 
     private func consumedTokens(for task: AgentTask) -> Int {
-        task.runs.reduce(0) { $0 + $1.outputTokens }
+        // TOTAL provider spend, not output-only: a high-input/low-output run still burns tokens and
+        // must count toward the app's cumulative budget. Use the runtime's `tokensUsed` when set,
+        // else `inputTokens + outputTokens`.
+        task.runs.reduce(0) { $0 + max($1.tokensUsed, $1.inputTokens + $1.outputTokens) }
     }
 
     @MainActor

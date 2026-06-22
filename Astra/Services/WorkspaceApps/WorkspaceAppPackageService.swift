@@ -371,7 +371,9 @@ struct WorkspaceAppPackageService {
             sourcePackageVersion: package.version,
             sourcePackageDigest: packageDigest
         )
-        try importStorageData(from: packageURL, manifest: manifest, workspace: workspace)
+        // Seed storage against the PERSISTED manifest (createApp may have suffixed the logical id) so
+        // the imported rows land in the app's actual storage path.
+        try importStorageData(from: packageURL, manifest: result.manifest, workspace: workspace)
         return WorkspaceAppPackageImportResult(
             app: result.app,
             report: report,

@@ -44,6 +44,10 @@ enum WorkspaceAppServiceError: LocalizedError, Equatable {
 struct WorkspaceAppCreationResult {
     var app: WorkspaceApp
     var manifestURL: URL
+    /// The manifest as PERSISTED — may differ from the caller's input (e.g. `createApp` auto-suffixed
+    /// a duplicate logical id). Downstream (version snapshot, package storage seed) must use THIS, not
+    /// the pre-call manifest, so metadata/data match the app's actual id + storage path.
+    var manifest: WorkspaceAppManifest
 }
 
 struct WorkspaceAppService {
@@ -154,7 +158,7 @@ struct WorkspaceAppService {
             "manifest": URL(fileURLWithPath: manifestPath).lastPathComponent
         ])
 
-        return WorkspaceAppCreationResult(app: app, manifestURL: URL(fileURLWithPath: manifestPath))
+        return WorkspaceAppCreationResult(app: app, manifestURL: URL(fileURLWithPath: manifestPath), manifest: manifest)
     }
 
     private func dependencyBindings(
@@ -363,7 +367,8 @@ struct WorkspaceAppService {
 
             return WorkspaceAppCreationResult(
                 app: duplicate,
-                manifestURL: destinationDirectory.appendingPathComponent("manifest.json")
+                manifestURL: destinationDirectory.appendingPathComponent("manifest.json"),
+                manifest: manifest
             )
         } catch {
             try? fileManager.removeItem(at: destinationDirectory)

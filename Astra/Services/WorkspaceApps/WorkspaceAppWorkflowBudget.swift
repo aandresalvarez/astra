@@ -43,10 +43,12 @@ enum WorkspaceAppWorkflowBudget {
     static let appTokenCeiling = 1_000_000
     static let appAgentRunCeiling = 200
 
-    /// True if launching another agent task would breach the rolling per-app ceiling, given the tokens
-    /// the app has already consumed and the count of its agent-launching runs within the window. Pure
-    /// (the executor supplies the measured prior spend) so it is directly unit-testable.
-    static func exceedsAppAgentBudget(priorTokens: Int, priorAgentRuns: Int) -> Bool {
-        priorTokens >= appTokenCeiling || priorAgentRuns >= appAgentRunCeiling
+    /// True if launching `launching` more agent tasks would breach the rolling per-app ceiling, given
+    /// the tokens the app has already consumed and the count of agent tasks it has already launched in
+    /// the window. `launching` matters for a fan-out (N tasks at once) — a single pre-flight check must
+    /// account for the whole batch, not 1. Pure (the executor supplies the measured prior spend) so it
+    /// is directly unit-testable.
+    static func exceedsAppAgentBudget(priorTokens: Int, priorAgentRuns: Int, launching: Int = 1) -> Bool {
+        priorTokens >= appTokenCeiling || (priorAgentRuns + launching) > appAgentRunCeiling
     }
 }

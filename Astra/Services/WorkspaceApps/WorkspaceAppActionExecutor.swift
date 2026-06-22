@@ -891,6 +891,9 @@ struct WorkspaceAppActionExecutor {
             )
             return ([], "Created draft task '\(task.title)'.", task.id, nil)
         case "task.createAndRun":
+            // The per-app agent-spend budget applies to a DIRECT task launch too (a native action
+            // surface can run this), not only pipeline steps — same chokepoint, same ceiling.
+            try enforceAppAgentBudget(app: app, run: run, launching: 1, modelContext: modelContext)
             let task = try createTask(
                 action: action,
                 app: app,
@@ -1496,7 +1499,7 @@ struct WorkspaceAppActionExecutor {
             // B2: await an async agent step — launch the task and suspend the run
             // until it completes (resumed via WorkspaceAppActionExecutor.resume).
             if step.type == "task.createAndRun" {
-                try enforceAppAgentBudget(app: app, run: run, modelContext: modelContext)
+                try enforceAppAgentBudget(app: app, run: run, launching: 1, modelContext: modelContext)
                 let task = try createTask(
                     action: step,
                     app: app,
@@ -1534,7 +1537,8 @@ struct WorkspaceAppActionExecutor {
                 }
                 let fanRows = stepInput.boundRows
                 if fanRows.isEmpty { continue }
-                try enforceAppAgentBudget(app: app, run: run, modelContext: modelContext)
+                // Pre-flight the WHOLE batch: a fan-out launches one agent task per row.
+                try enforceAppAgentBudget(app: app, run: run, launching: fanRows.count, modelContext: modelContext)
                 var launchedIDs: [UUID] = []
                 for row in fanRows {
                     let task = try createTask(
@@ -2036,11 +2040,15 @@ struct WorkspaceAppActionExecutor {
     /// ceiling is reached, with an audit event. This complements the one-run token budget (B3) and the
     /// bridge's one-pending-run concurrency throttle: together they stop a `preApproved` app's page
     /// from serially triggering unbounded agent spend over time. Fails OPEN on a transient store-query
-    /// error — this is a coarse DoS ceiling, not an auth gate, so a rare query hiccup should not
-    /// permanently block an app's workflows (the concurrency throttle still bounds in-flight work).
+    /// error — this is a coarse DoS ceiling. It FAILS CLOSED (blocks the launch) if spend accounting
+    /// is unavailable, since a spend control that silently disappears on a query error is worse than a
+    /// rare false block. `launching` is the number of agent tasks about to be created (1 for a single
+    /// task step, N for a fan-out) so the pre-flight accounts for the whole batch. Called at EVERY
+    /// queued-agent creation boundary (pipeline task step, fan-out, and the direct dispatcher).
     private func enforceAppAgentBudget(
         app: WorkspaceApp,
         run: WorkspaceAppRun,
+        launching: Int,
         modelContext: ModelContext
     ) throws {
         let appID = app.id
@@ -2048,12 +2056,33 @@ struct WorkspaceAppActionExecutor {
         let descriptor = FetchDescriptor<WorkspaceAppRun>(
             predicate: #Predicate<WorkspaceAppRun> { $0.appID == appID && $0.startedAt >= windowStart }
         )
-        let priorRuns = (try? modelContext.fetch(descriptor)) ?? []
+        let priorRuns: [WorkspaceAppRun]
+        do {
+            priorRuns = try modelContext.fetch(descriptor)
+        } catch {
+            // Fail CLOSED: can't measure spend → block the launch (held for review) rather than let an
+            // unmeasurable budget silently open the gate.
+            recorder.recordEvent(
+                run: run,
+                type: "workspaceApp.appBudget.unavailable",
+                payload: ["appID": .text(appID.uuidString), "error": .text(String(describing: error))],
+                modelContext: modelContext
+            )
+            throw WorkspaceAppActionExecutionError.appBudgetExceeded(
+                "Could not verify this app's agent-activity budget — the run is held for review."
+            )
+        }
         let priorTokens = priorRuns.reduce(0) { $0 + $1.consumedTokens }
-        let priorAgentRuns = priorRuns.filter { $0.linkedTaskID != nil }.count
+        // Count agent TASKS launched, not runs: a fan-out run launches many tasks (recorded in
+        // `awaitedTaskIDs`) but carries only the first in `linkedTaskID`, so counting runs would
+        // undercount. Fall back to linkedTaskID for direct (non-suspending) task runs.
+        let priorAgentTasks = priorRuns.reduce(0) { sum, prior in
+            sum + max(prior.awaitedTaskIDs.count, prior.linkedTaskID == nil ? 0 : 1)
+        }
         guard WorkspaceAppWorkflowBudget.exceedsAppAgentBudget(
             priorTokens: priorTokens,
-            priorAgentRuns: priorAgentRuns
+            priorAgentRuns: priorAgentTasks,
+            launching: launching
         ) else {
             return
         }
@@ -2063,14 +2092,15 @@ struct WorkspaceAppActionExecutor {
             payload: [
                 "appID": .text(appID.uuidString),
                 "priorTokens": .integer(Int64(priorTokens)),
-                "priorAgentRuns": .integer(Int64(priorAgentRuns)),
+                "priorAgentTasks": .integer(Int64(priorAgentTasks)),
+                "launching": .integer(Int64(launching)),
                 "tokenCeiling": .integer(Int64(WorkspaceAppWorkflowBudget.appTokenCeiling)),
                 "agentRunCeiling": .integer(Int64(WorkspaceAppWorkflowBudget.appAgentRunCeiling))
             ],
             modelContext: modelContext
         )
         throw WorkspaceAppActionExecutionError.appBudgetExceeded(
-            "This app has reached its agent-activity budget (\(priorTokens) tokens / \(priorAgentRuns) agent runs in the last 24h). The run is held for review — try again later or raise the app's budget."
+            "This app has reached its agent-activity budget (\(priorTokens) tokens / \(priorAgentTasks) agent runs in the last 24h). The run is held for review — try again later or raise the app's budget."
         )
     }
 

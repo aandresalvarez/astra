@@ -701,7 +701,7 @@ struct ContentView: View {
         // createApp only succeeds on a valid manifest). Best-effort: index.json is the source of
         // truth and self-heals, so a snapshot failure is logged but must not block the publish.
         do {
-            let publishedData = try WorkspaceAppService.encodeManifest(manifest)
+            let publishedData = try WorkspaceAppService.encodeManifest(result.manifest)
             try WorkspaceAppVersionService().recordPublish(
                 app: result.app,
                 manifestData: publishedData,

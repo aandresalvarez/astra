@@ -843,6 +843,38 @@ struct WorkspaceAppActionExecutorTests {
     }
 
     @MainActor
+    @Test("token accounting counts TOTAL agent spend (input+output), not output-only")
+    func appBudgetCountsTotalTokens() throws {
+        let fixture = try Self.makePublishedApp(permissionMode: .preApproved)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let suspended = try WorkspaceAppActionExecutor().execute(
+            actionID: "awaitQueryPipeline",
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: fixture.manifest,
+            modelContext: fixture.context
+        )
+        let taskID = try #require(suspended.run.linkedTaskID)
+        let task = try #require(
+            try fixture.context.fetch(FetchDescriptor<AgentTask>()).first { $0.id == taskID }
+        )
+        // A high-INPUT, zero-OUTPUT run still burned provider tokens. Output-only accounting would
+        // record 0 (undercounting real spend); total accounting must record the 5000 input tokens.
+        let taskRun = TaskRun(task: task)
+        taskRun.inputTokens = 5000
+        taskRun.outputTokens = 0
+        taskRun.tokensUsed = 0
+        task.runs.append(taskRun)
+        fixture.context.insert(taskRun)
+        task.status = .completed
+        try fixture.context.save()
+
+        let results = WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: fixture.context)
+        #expect(results.count == 1)
+        #expect(results.first?.run.consumedTokens == 5000)
+    }
+
+    @MainActor
     @Test("whole-run token budget blocks a resume that overruns (B3)")
     func workflowTokenBudgetBlocksOverrun() throws {
         let fixture = try Self.makePublishedApp(permissionMode: .preApproved)
@@ -881,14 +913,18 @@ struct WorkspaceAppActionExecutorTests {
         #expect(blocked.outputSummary.contains("budget exceeded"))
     }
 
-    @Test("per-app agent budget ceilings trip on either the token or the agent-run limit")
+    @Test("per-app agent budget ceilings trip on token, agent-run, or a fan-out batch that would overrun")
     func appAgentBudgetCeilings() {
         let tokenCap = WorkspaceAppWorkflowBudget.appTokenCeiling
         let runCap = WorkspaceAppWorkflowBudget.appAgentRunCeiling
         #expect(!WorkspaceAppWorkflowBudget.exceedsAppAgentBudget(priorTokens: 0, priorAgentRuns: 0))
         #expect(!WorkspaceAppWorkflowBudget.exceedsAppAgentBudget(priorTokens: tokenCap - 1, priorAgentRuns: runCap - 1))
         #expect(WorkspaceAppWorkflowBudget.exceedsAppAgentBudget(priorTokens: tokenCap, priorAgentRuns: 0))
+        // The agent-run limit is about LAUNCHES: one more launch at the cap overruns.
         #expect(WorkspaceAppWorkflowBudget.exceedsAppAgentBudget(priorTokens: 0, priorAgentRuns: runCap))
+        // A fan-out of N is preflighted as a batch — under the cap individually, over it together.
+        #expect(WorkspaceAppWorkflowBudget.exceedsAppAgentBudget(priorTokens: 0, priorAgentRuns: runCap - 10, launching: 20))
+        #expect(!WorkspaceAppWorkflowBudget.exceedsAppAgentBudget(priorTokens: 0, priorAgentRuns: runCap - 10, launching: 5))
     }
 
     @MainActor
