@@ -697,9 +697,9 @@ struct ContentView: View {
             modelContext: modelContext,
             status: .published
         )
-        // createApp persists the app. Snapshot the published manifest as a version (validated —
-        // createApp only succeeds on a valid manifest). Best-effort: index.json is the source of
-        // truth and self-heals, so a snapshot failure is logged but must not block the publish.
+        // Flush the build journal onto the new app (publish mints a new id), then snapshot the
+        // manifest as a version — both best-effort, logged on failure, never blocking the publish.
+        WorkspaceAppStudioJournalService().save(workspaceAppStudioSession.journal, appID: result.app.logicalID, workspacePath: workspace.primaryPath)
         do {
             let publishedData = try WorkspaceAppService.encodeManifest(result.manifest)
             try WorkspaceAppVersionService().recordPublish(

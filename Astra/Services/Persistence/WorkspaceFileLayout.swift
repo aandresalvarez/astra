@@ -107,6 +107,21 @@ enum WorkspaceFileLayout {
         "\(relativeAppDirectory(appID: appID))/versions"
     }
 
+    // App Studio conversation journal: the build conversation + per-turn event log live under the
+    // app directory (like `versions/`), so `deleteApp`'s recursive remove cleans them and they
+    // travel with nothing.
+    static func appStudioDirectory(workspacePath: String, appID: String) -> String {
+        let directory = appDirectory(workspacePath: workspacePath, appID: appID)
+        guard !directory.isEmpty else { return "" }
+        return (directory as NSString).appendingPathComponent("studio")
+    }
+
+    static func appStudioJournalFile(workspacePath: String, appID: String) -> String {
+        let directory = appStudioDirectory(workspacePath: workspacePath, appID: appID)
+        guard !directory.isEmpty else { return "" }
+        return (directory as NSString).appendingPathComponent("journal.json")
+    }
+
     static func legacyTaskRoot(for workspacePath: String) -> String {
         guard !workspacePath.isEmpty else { return "" }
         return (workspacePath as NSString).appendingPathComponent("tasks")

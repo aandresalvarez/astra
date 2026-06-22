@@ -458,6 +458,17 @@ struct WorkspaceAppServiceTests {
         context.insert(event)
         try context.save()
 
+        // The App Studio build journal lives inside the app directory, so it must be removed with
+        // the app (no separate cascade — the recursive directory delete handles it).
+        let journalPath = WorkspaceFileLayout.appStudioJournalFile(
+            workspacePath: workspace.primaryPath, appID: result.app.logicalID
+        )
+        WorkspaceAppStudioJournalService().save(
+            WorkspaceAppStudioJournal(messages: [StudioMessage(role: .user, text: "hi")]),
+            appID: result.app.logicalID, workspacePath: workspace.primaryPath
+        )
+        #expect(FileManager.default.fileExists(atPath: journalPath))
+
         try service.deleteApp(
             result.app,
             in: workspace,
@@ -466,6 +477,7 @@ struct WorkspaceAppServiceTests {
         )
 
         #expect(!FileManager.default.fileExists(atPath: appDirectoryURL.path))
+        #expect(!FileManager.default.fileExists(atPath: journalPath))   // journal removed with the app dir
         #expect(try context.fetch(FetchDescriptor<WorkspaceApp>()).isEmpty)
         #expect(try context.fetch(FetchDescriptor<WorkspaceAppDependencyBinding>()).isEmpty)
         #expect(try context.fetch(FetchDescriptor<WorkspaceAppAutomationState>()).isEmpty)

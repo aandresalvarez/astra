@@ -14,12 +14,13 @@ import Foundation
 /// The generator is injected (`generate`) so tests drive turns with canned results and
 /// never spawn a provider CLI.
 
-/// One turn in the build conversation.
-struct StudioMessage: Identifiable, Equatable {
-    enum Role: Equatable { case user, assistant }
+/// One turn in the build conversation. `Codable` (with stable string raws) so the conversation
+/// survives across Studio sessions via the on-disk journal (`studio/journal.json`).
+struct StudioMessage: Identifiable, Equatable, Codable {
+    enum Role: String, Equatable, Codable { case user, assistant }
     /// `summary` marks an assistant turn that reports the result of a generation/refinement
     /// (so the view can style it distinctly from a plain note).
-    enum Kind: Equatable { case message, summary }
+    enum Kind: String, Equatable, Codable { case message, summary }
 
     let id: UUID
     let role: Role
@@ -60,9 +61,18 @@ final class WorkspaceAppStudioSession: ObservableObject {
     /// Bumped whenever `draft` changes so the preview shelf can key its sandbox on it and
     /// re-render (a regen is a fresh disposable preview, by design).
     @Published private(set) var draftRevision = 0
+    /// The per-turn generation event log — the "strong logs" half of the journal (one record per
+    /// generate/refine turn: origin, attempts, validation, the resulting manifest digest). Persisted
+    /// alongside `messages` so a published app's build history is durable and auditable.
+    @Published private(set) var generationEvents: [StudioGenerationEvent] = []
 
     private(set) var workspaceID: UUID?
     private let generate: WorkspaceAppStudioGenerate
+    private let journalStore: WorkspaceAppStudioJournalStoring
+    /// Set on Edit of an existing app: each turn persists to that app's on-disk journal so the
+    /// conversation + events survive across Studio sessions. nil for a not-yet-published app (no app
+    /// directory exists yet) — the journal is flushed on publish by the caller instead.
+    private var persistenceTarget: (appID: String, workspacePath: String)?
     /// Monotonic guard so a slow generation that finishes after the user leaves, switches
     /// workspaces, or starts a new turn can't overwrite newer state. Bumped on every
     /// submit/reset/cancel; a turn only applies its result if the token is still current.
@@ -78,8 +88,18 @@ final class WorkspaceAppStudioSession: ObservableObject {
     /// this is headroom, not a hang ceiling, and `cancelGeneration()` lets the user bail early.)
     private static let generationTimeoutSeconds: TimeInterval = 240
 
-    init(generate: @escaping WorkspaceAppStudioGenerate = WorkspaceAppStudioSession.defaultGenerate) {
+    init(
+        generate: @escaping WorkspaceAppStudioGenerate = WorkspaceAppStudioSession.defaultGenerate,
+        journalStore: WorkspaceAppStudioJournalStoring = WorkspaceAppStudioJournalService()
+    ) {
         self.generate = generate
+        self.journalStore = journalStore
+    }
+
+    /// The current conversation + event log, for per-turn persistence and the publish-time flush
+    /// (a not-yet-published app has no on-disk target, so the caller writes this to the new app dir).
+    var journal: WorkspaceAppStudioJournal {
+        WorkspaceAppStudioJournal(messages: messages, events: generationEvents)
     }
 
     // MARK: - Derived
@@ -105,14 +125,30 @@ final class WorkspaceAppStudioSession: ObservableObject {
         isGenerating = false
         isBuildingFirstDraft = false
         generationToken &+= 1  // invalidate any in-flight generation from a prior session
+        generationEvents = []
+        persistenceTarget = nil
         if let existingManifest {
             draft = WorkspaceAppStudioBuilder.draft(intent: "", workspace: workspace, existingManifest: existingManifest)
-            // Honest about scope: in-place editing of the published app isn't wired yet, so
-            // publishing saves a new app. Don't promise "I'll update it".
-            messages = [StudioMessage(
-                role: .assistant,
-                text: "Starting from \(existingManifest.app.name). Tell me what to change — add a field, a chart, an approval step — and I'll rebuild it. Publishing saves it as a new app."
-            )]
+            // Editing an existing app: target its on-disk journal so every turn from here persists,
+            // and RESUME prior history if any (so Edit continues the conversation instead of a fresh
+            // greeting). A pre-feature app has no journal → fall back to the greeting.
+            var resumed = false
+            if !workspace.primaryPath.isEmpty, !existingManifest.app.id.isEmpty {
+                persistenceTarget = (existingManifest.app.id, workspace.primaryPath)
+                let saved = journalStore.load(appID: existingManifest.app.id, workspacePath: workspace.primaryPath)
+                if !saved.messages.isEmpty {
+                    messages = saved.messages
+                    generationEvents = saved.events
+                    resumed = true
+                }
+            }
+            if !resumed {
+                // Honest about scope: publishing saves a new app, so don't promise "I'll update it".
+                messages = [StudioMessage(
+                    role: .assistant,
+                    text: "Starting from \(existingManifest.app.name). Tell me what to change — add a field, a chart, an approval step — and I'll rebuild it. Publishing saves it as a new app."
+                )]
+            }
         } else {
             draft = nil
             messages = [StudioMessage(
@@ -203,6 +239,12 @@ final class WorkspaceAppStudioSession: ObservableObject {
             assistantText = StudioTurnSummary.line(for: result, isEditing: existing != nil)
         }
         messages.append(StudioMessage(role: .assistant, kind: .summary, text: assistantText))
+        recordEvent(
+            kind: .generation, intent: text, origin: result.origin.rawValue,
+            attemptCount: result.attemptCount, accepted: result.canPublish,
+            blockerCount: result.validationReport.blockers.count, providerFailure: result.providerFailure,
+            manifest: result.manifest, runtimeID: runtimeID, model: model
+        )
         isGenerating = false
     }
 
@@ -220,6 +262,43 @@ final class WorkspaceAppStudioSession: ObservableObject {
             kind: .summary,
             text: "Done — \(refinement.label.lowercased()). \(StudioTurnSummary.validationLine(rebuilt.validationReport))"
         ))
+        recordEvent(
+            kind: .refinement, intent: refinement.label, origin: "refinement",
+            attemptCount: 0, accepted: rebuilt.canPublish,
+            blockerCount: rebuilt.validationReport.blockers.count, providerFailure: nil,
+            manifest: rebuilt.manifest, runtimeID: "", model: ""
+        )
+    }
+
+    // MARK: - Journal (durable conversation + event log)
+
+    /// Append a turn to the event log and persist the journal (when editing an app with an on-disk
+    /// target). `manifestDigest` is the canonical digest of the resulting manifest — the same digest
+    /// `versions/index.json` records — so a turn links to the version it produced.
+    private func recordEvent(
+        kind: StudioGenerationEvent.Kind,
+        intent: String,
+        origin: String,
+        attemptCount: Int,
+        accepted: Bool,
+        blockerCount: Int,
+        providerFailure: String?,
+        manifest: WorkspaceAppManifest,
+        runtimeID: String,
+        model: String
+    ) {
+        let digest = (try? WorkspaceAppService.encodeManifest(manifest)).map(WorkspaceAppService.digest(for:)) ?? ""
+        generationEvents.append(StudioGenerationEvent(
+            kind: kind, intent: intent, origin: origin, attemptCount: attemptCount,
+            accepted: accepted, blockerCount: blockerCount, providerFailure: providerFailure,
+            manifestDigest: digest, runtimeID: runtimeID, model: model
+        ))
+        persistJournal()
+    }
+
+    private func persistJournal() {
+        guard let target = persistenceTarget else { return }
+        journalStore.save(journal, appID: target.appID, workspacePath: target.workspacePath)
     }
 
     /// Save authored test checks onto the current draft (from the "Test" sheet) so they

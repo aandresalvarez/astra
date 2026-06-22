@@ -273,6 +273,94 @@ struct WorkspaceAppStudioSessionTests {
         #expect(s.isBuildingFirstDraft == false)
     }
 
+    // MARK: - Durable journal (persist conversation + per-turn event log)
+
+    /// In-memory journal store: returns a seeded journal on load, records every save.
+    final class JournalStoreSpy: WorkspaceAppStudioJournalStoring {
+        var loadResult = WorkspaceAppStudioJournal()
+        private(set) var saved: [WorkspaceAppStudioJournal] = []
+        private(set) var loadedAppIDs: [String] = []
+        func load(appID: String, workspacePath: String) -> WorkspaceAppStudioJournal {
+            loadedAppIDs.append(appID)
+            return loadResult
+        }
+        func save(_ journal: WorkspaceAppStudioJournal, appID: String, workspacePath: String) {
+            saved.append(journal)
+        }
+    }
+
+    @Test("Edit resumes the saved conversation + events instead of a fresh greeting")
+    func editResumesSavedHistory() {
+        let ws = workspace()
+        let spy = JournalStoreSpy()
+        spy.loadResult = WorkspaceAppStudioJournal(
+            messages: [
+                StudioMessage(role: .user, text: "earlier turn"),
+                StudioMessage(role: .assistant, kind: .summary, text: "earlier result")
+            ],
+            events: [StudioGenerationEvent(kind: .generation, intent: "earlier turn", origin: "model",
+                                           accepted: true, blockerCount: 0, manifestDigest: "d1")]
+        )
+        let s = WorkspaceAppStudioSession(generate: { _, _, _, _, _, _ in Self.result(Self.validManifest) },
+                                          journalStore: spy)
+        s.reset(for: ws, existingManifest: Self.validManifest)
+        #expect(s.messages.count == 2)
+        #expect(s.messages.first?.text == "earlier turn")          // history, not the greeting
+        #expect(s.generationEvents.count == 1)
+        #expect(spy.loadedAppIDs.contains(Self.validManifest.app.id))
+    }
+
+    @Test("editing an app records a generation event (with a digest) and persists it")
+    func editTurnRecordsAndPersists() async {
+        let ws = workspace()
+        let spy = JournalStoreSpy()
+        let s = WorkspaceAppStudioSession(generate: { _, _, _, _, _, _ in Self.result(Self.validManifest) },
+                                          journalStore: spy)
+        s.reset(for: ws, existingManifest: Self.validManifest)     // empty journal → greeting, target set
+        await s.submit("add an owner field", workspace: ws,
+                       runtimeID: TaskExecutionDefaults.runtime.rawValue,
+                       model: TaskExecutionDefaults.model, availableProviders: [])
+        #expect(s.generationEvents.count == 1)
+        #expect(s.generationEvents.first?.kind == .generation)
+        #expect(s.generationEvents.first?.intent == "add an owner field")
+        #expect(s.generationEvents.first?.origin == "model")
+        #expect(!(s.generationEvents.first?.manifestDigest.isEmpty ?? true))   // the version link
+        #expect(!spy.saved.isEmpty)                                            // persisted (target set)
+        #expect(spy.saved.last?.events.count == 1)
+    }
+
+    @Test("a not-yet-published app buffers its journal — events accumulate, nothing saved yet")
+    func newAppBuffersJournal() async {
+        let ws = workspace()
+        let spy = JournalStoreSpy()
+        let s = WorkspaceAppStudioSession(generate: { _, _, _, _, _, _ in Self.result(Self.validManifest) },
+                                          journalStore: spy)
+        s.reset(for: ws)   // new app → no on-disk target
+        await s.submit("track lab samples", workspace: ws,
+                       runtimeID: TaskExecutionDefaults.runtime.rawValue,
+                       model: TaskExecutionDefaults.model, availableProviders: [])
+        #expect(s.generationEvents.count == 1)        // recorded in-memory
+        #expect(spy.saved.isEmpty)                    // nothing written (flushed on publish instead)
+        #expect(s.journal.events.count == 1)          // available to the publish flush
+        #expect(s.journal.messages.contains { $0.text == "track lab samples" })
+    }
+
+    @Test("a refinement chip records a refinement event")
+    func refinementRecordsEvent() async {
+        let ws = workspace()
+        let spy = JournalStoreSpy()
+        let s = WorkspaceAppStudioSession(generate: { _, _, _, _, _, _ in Self.result(Self.validManifest) },
+                                          journalStore: spy)
+        await s.submit("track groceries", workspace: ws,
+                       runtimeID: TaskExecutionDefaults.runtime.rawValue,
+                       model: TaskExecutionDefaults.model, availableProviders: [])
+        let before = s.generationEvents.count
+        s.applyRefinement(.addApproval, workspace: ws)
+        #expect(s.generationEvents.count == before + 1)
+        #expect(s.generationEvents.last?.kind == .refinement)
+        #expect(s.generationEvents.last?.origin == "refinement")
+    }
+
     // MARK: - Publish gating
 
     @Test("publish gating mirrors the validator, turn over turn")
