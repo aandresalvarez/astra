@@ -10,6 +10,9 @@ struct WorkspaceAppDetailView: View {
     let onRefresh: () -> Void
     let onExportPackage: () throws -> URL
     let onRunAction: (WorkspaceAppActionSpec, WorkspaceAppManifest, WorkspaceAppActionInput) throws -> WorkspaceAppActionExecutionResult
+    /// Called after this app is permanently deleted, so the parent clears the selection (the
+    /// detail view must not linger on a now-deleted app).
+    let onDeleted: () -> Void
 
     @Query(sort: \WorkspaceAppDependencyBinding.requirementID) private var dependencyBindings: [WorkspaceAppDependencyBinding]
     @Query(sort: \WorkspaceAppAutomationState.automationID) private var automationStates: [WorkspaceAppAutomationState]
@@ -19,6 +22,7 @@ struct WorkspaceAppDetailView: View {
     @Environment(\.modelContext) private var modelContext
     @State private var versionEntries: [WorkspaceAppVersionService.Index.Entry] = []
     @State private var versionStatusMessage = ""
+    @State private var showDeleteConfirmation = false
 
     private var presentation: WorkspaceAppDetailPresentation {
         WorkspaceAppsPresentation.detail(for: app)
@@ -109,11 +113,27 @@ struct WorkspaceAppDetailView: View {
                 Button(action: exportPackage) {
                     Label("Export ASTRA App Package", systemImage: "square.and.arrow.up")
                 }
+                Divider()
+                Button(role: .destructive) {
+                    showDeleteConfirmation = true
+                } label: {
+                    Label("Delete App…", systemImage: "trash")
+                }
             } label: {
-                Label("Share", systemImage: "square.and.arrow.up")
+                Label("More", systemImage: "ellipsis.circle")
             }
             .menuStyle(.borderlessButton)
-            .help("Share this app with another ASTRA workspace")
+            .help("Export this app, or delete it from this workspace")
+            .confirmationDialog(
+                "Delete “\(presentation.name)”?",
+                isPresented: $showDeleteConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("Delete App", role: .destructive, action: performDelete)
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This permanently removes the app, its local data, and its run history from this workspace. This can't be undone.")
+            }
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 14)
@@ -425,6 +445,15 @@ struct WorkspaceAppDetailView: View {
             packageStatusMessage = "Exported ASTRA app package to \(url.lastPathComponent)."
         } catch {
             packageStatusMessage = String(describing: error)
+        }
+    }
+
+    private func performDelete() {
+        do {
+            try WorkspaceAppService().deleteApp(app, in: workspace, modelContext: modelContext)
+            onDeleted()
+        } catch {
+            packageStatusMessage = "Couldn't delete the app: \(error.localizedDescription)"
         }
     }
 }

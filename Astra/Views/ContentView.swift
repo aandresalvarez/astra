@@ -593,7 +593,7 @@ struct ContentView: View {
             },
             onRunAction: { action, manifest, input in
                 try runWorkspaceAppAction(app: app, action: action, manifest: manifest, input: input)
-            }
+            }, onDeleted: { selectedWorkspaceApp = nil }
         )
         .id(app.id)
     }
