@@ -234,6 +234,45 @@ struct WorkspaceAppStudioSessionTests {
         #expect(draftDuringGeneration == nil)
     }
 
+    // MARK: - First-build "building" status (preview shows progress, not the provisional)
+
+    @Test("a first build signals isBuildingFirstDraft while generating, then clears")
+    func firstBuildSignalsBuildingThenClears() async {
+        let ws = workspace()
+        var sessionRef: WorkspaceAppStudioSession?
+        var buildingDuringFirst = false
+        var buildingDuringRefine = false
+        var call = 0
+        let stub: WorkspaceAppStudioGenerate = { _, _, _, _, _, _ in
+            call += 1
+            if call == 1 { buildingDuringFirst = sessionRef?.isBuildingFirstDraft ?? false }
+            else { buildingDuringRefine = sessionRef?.isBuildingFirstDraft ?? false }
+            return Self.result(Self.validManifest)
+        }
+        let s = WorkspaceAppStudioSession(generate: stub)
+        sessionRef = s
+        #expect(s.isBuildingFirstDraft == false) // nothing in flight yet
+
+        await s.submit(
+            "track lab samples with a status and an owner", workspace: ws,
+            runtimeID: TaskExecutionDefaults.runtime.rawValue,
+            model: TaskExecutionDefaults.model, availableProviders: []
+        )
+        // While the first build runs, the preview shows a "building" status (not the generic
+        // provisional, which reads as a finished/different app). It clears once the result lands.
+        #expect(buildingDuringFirst == true)
+        #expect(s.isBuildingFirstDraft == false)
+
+        await s.submit(
+            "add an owner field", workspace: ws,
+            runtimeID: TaskExecutionDefaults.runtime.rawValue,
+            model: TaskExecutionDefaults.model, availableProviders: []
+        )
+        // A refinement keeps the established app visible — no building takeover.
+        #expect(buildingDuringRefine == false)
+        #expect(s.isBuildingFirstDraft == false)
+    }
+
     // MARK: - Publish gating
 
     @Test("publish gating mirrors the validator, turn over turn")

@@ -71,7 +71,12 @@ struct WorkspaceAppManifest: Codable, Sendable, Equatable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
-        app = try container.decode(WorkspaceAppManifestMetadata.self, forKey: .app)
+        // A model that omits the whole `app` block (or sends it null) should hit the validator's
+        // dedicated "App name is required." blocker — actionable — rather than an opaque decode
+        // failure. Default to empty identity; the validator is authoritative on it (same rationale
+        // as the per-field defaults in WorkspaceAppManifestMetadata's decoder).
+        app = try container.decodeIfPresent(WorkspaceAppManifestMetadata.self, forKey: .app)
+            ?? WorkspaceAppManifestMetadata(id: "", name: "")
         requirements = try container.decodeIfPresent([WorkspaceAppRequirement].self, forKey: .requirements) ?? []
         storage = try container.decodeIfPresent(WorkspaceAppStorageSchema.self, forKey: .storage)
         sources = try container.decodeIfPresent([WorkspaceAppSource].self, forKey: .sources) ?? []

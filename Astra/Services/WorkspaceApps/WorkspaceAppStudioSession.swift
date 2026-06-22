@@ -52,6 +52,11 @@ final class WorkspaceAppStudioSession: ObservableObject {
     /// shows an empty state meanwhile.
     @Published private(set) var draft: WorkspaceAppStudioDraft?
     @Published private(set) var isGenerating = false
+    /// True while a FIRST build is generating and the draft is still the instant deterministic
+    /// provisional (not yet the model's result). The preview shows a "building" status during this
+    /// window instead of the generic provisional shell — which otherwise reads as a finished (or
+    /// different) app. False for refinements, where the established app stays visible while it updates.
+    @Published private(set) var isBuildingFirstDraft = false
     /// Bumped whenever `draft` changes so the preview shelf can key its sandbox on it and
     /// re-render (a regen is a fresh disposable preview, by design).
     @Published private(set) var draftRevision = 0
@@ -98,6 +103,7 @@ final class WorkspaceAppStudioSession: ObservableObject {
     func reset(for workspace: Workspace, existingManifest: WorkspaceAppManifest? = nil) {
         workspaceID = workspace.id
         isGenerating = false
+        isBuildingFirstDraft = false
         generationToken &+= 1  // invalidate any in-flight generation from a prior session
         if let existingManifest {
             draft = WorkspaceAppStudioBuilder.draft(intent: "", workspace: workspace, existingManifest: existingManifest)
@@ -122,6 +128,7 @@ final class WorkspaceAppStudioSession: ObservableObject {
     func cancelGeneration() {
         generationToken &+= 1
         isGenerating = false
+        isBuildingFirstDraft = false
     }
 
     // MARK: - Turns
@@ -156,6 +163,9 @@ final class WorkspaceAppStudioSession: ObservableObject {
         generationToken &+= 1
         let token = generationToken
         let existing = draft?.manifest
+        // A first build (no existing draft) shows a "building" status in the preview until the result
+        // lands, instead of the generic provisional shell.
+        isBuildingFirstDraft = existing == nil
         // Resilient, self-healing UX: for a FIRST build whose deterministic baseline is an HTML app
         // (now almost everything — interactive tools AND data apps, which render as data-backed HTML
         // via the astra.* bridge), show that real UI IMMEDIATELY so the preview is never blank while
@@ -183,6 +193,7 @@ final class WorkspaceAppStudioSession: ObservableObject {
         // draft so validation + publish-gating recompute from it.
         draft = WorkspaceAppStudioBuilder.draft(intent: text, workspace: workspace, existingManifest: result.manifest)
         draftRevision &+= 1
+        isBuildingFirstDraft = false   // the real result is in — show the app, not the building status
         // Prefer the model's own one-line summary (more natural); always append the honest
         // validation status. Fall back to the fully deterministic summary when absent.
         let assistantText: String

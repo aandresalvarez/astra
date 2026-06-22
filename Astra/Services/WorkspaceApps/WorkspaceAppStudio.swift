@@ -226,6 +226,7 @@ enum WorkspaceAppStudioBuilder {
 
     static func applyPatch(
         _ operations: [WorkspaceAppStudioManifestPatchOperation],
+        html: String? = nil,
         to manifest: WorkspaceAppManifest
     ) -> WorkspaceAppStudioPatchResult {
         do {
@@ -233,6 +234,11 @@ enum WorkspaceAppStudioBuilder {
             for operation in operations {
                 try apply(operation, to: &patched)
             }
+            // Progressive HTML-app refinement: a fresh ASTRA_APP_HTML block REPLACES the UI body
+            // (a blob can't be field-patched), while the manifest change rides the small op list.
+            // Absent ⇒ the patched manifest keeps the base's existing html — a manifest-only edit
+            // leaves the UI untouched.
+            if let html { patched.html = html }
             let report = WorkspaceAppManifestValidator.validate(patched)
             guard report.isValid else {
                 return WorkspaceAppStudioPatchResult(
@@ -311,7 +317,11 @@ enum WorkspaceAppStudioBuilder {
         case (.success(let manifestPayload), .notFound):
             return applyManifestPayload(manifestPayload, html: html, preserving: manifest)
         case (.notFound, .success(let patchPayload)):
-            return applyPatchPayload(patchPayload, to: manifest)
+            // Progressive refinement: a small manifest patch, plus (for an HTML app) a fresh
+            // ASTRA_APP_HTML block carrying the new UI. The html rides the patch path the same way
+            // it rides the manifest path — a blob can't be field-patched, but it replaces the body
+            // while the structured change stays a tiny, robust delta.
+            return applyPatchPayload(patchPayload, html: html, to: manifest)
         case (.notFound, .notFound):
             return structuredOutputFailure(
                 preserving: manifest,
@@ -409,13 +419,14 @@ enum WorkspaceAppStudioBuilder {
             return structuredOutputFailure(
                 preserving: manifest,
                 path: "/structuredOutput/ASTRA_APP_MANIFEST",
-                message: "Could not decode app manifest block: \(error.localizedDescription)"
+                message: "Could not decode app manifest block: \(decodeFailureMessage(error))"
             )
         }
     }
 
     private static func applyPatchPayload(
         _ payload: String,
+        html: String?,
         to manifest: WorkspaceAppManifest
     ) -> WorkspaceAppStudioStructuredOutputResult {
         do {
@@ -423,7 +434,7 @@ enum WorkspaceAppStudioBuilder {
                 [WorkspaceAppStudioManifestPatchOperation].self,
                 from: Data(payload.utf8)
             )
-            let patchResult = applyPatch(operations, to: manifest)
+            let patchResult = applyPatch(operations, html: html, to: manifest)
             return WorkspaceAppStudioStructuredOutputResult(
                 kind: .patch,
                 manifest: patchResult.manifest,
@@ -435,8 +446,48 @@ enum WorkspaceAppStudioBuilder {
             return structuredOutputFailure(
                 preserving: manifest,
                 path: "/structuredOutput/ASTRA_APP_PATCH",
-                message: "Could not decode app patch block: \(error.localizedDescription)"
+                message: "Could not decode app patch block: \(decodeFailureMessage(error))"
             )
+        }
+    }
+
+    /// Turn a `DecodingError` into a precise, repair-actionable message.
+    ///
+    /// `DecodingError.localizedDescription` collapses every shape — a missing key, a null value,
+    /// a type mismatch — into the SAME opaque string ("The data couldn't be read because it is
+    /// missing." / "...isn't in the correct format.") and drops the coding path entirely. That
+    /// message rides the validation report straight into the repair prompt, so the model is asked
+    /// to fix a manifest without being told WHICH field is wrong — it can't, and all repair turns
+    /// fail to the "kept your app unchanged" fallback. Naming the field + JSON path (e.g.
+    /// "required field 'type' is missing in actions[2]") is what lets the repair loop self-correct.
+    static func decodeFailureMessage(_ error: Error) -> String {
+        guard let decodingError = error as? DecodingError else { return error.localizedDescription }
+        func describe(_ codingPath: [CodingKey]) -> String {
+            var out = ""
+            for key in codingPath {
+                if let index = key.intValue {
+                    out += "[\(index)]"
+                } else {
+                    out += out.isEmpty ? key.stringValue : ".\(key.stringValue)"
+                }
+            }
+            return out
+        }
+        switch decodingError {
+        case let .keyNotFound(key, context):
+            let parent = describe(context.codingPath)
+            return "required field '\(key.stringValue)' is missing" + (parent.isEmpty ? "" : " in \(parent)")
+        case let .valueNotFound(_, context):
+            let location = describe(context.codingPath)
+            return "required field '\(location.isEmpty ? "value" : location)' is null — it must have a value"
+        case let .typeMismatch(type, context):
+            let location = describe(context.codingPath)
+            return "field '\(location.isEmpty ? "value" : location)' has the wrong type (expected \(type))"
+        case let .dataCorrupted(context):
+            let location = describe(context.codingPath)
+            return "malformed JSON" + (location.isEmpty ? "" : " at \(location)") + ": \(context.debugDescription)"
+        @unknown default:
+            return error.localizedDescription
         }
     }
 

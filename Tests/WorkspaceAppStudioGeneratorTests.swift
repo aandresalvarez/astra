@@ -49,6 +49,10 @@ struct WorkspaceAppStudioGeneratorTests {
         ok("ASTRA_APP_MANIFEST\n\(json)\nEND_ASTRA_APP_MANIFEST")
     }
 
+    private static func patchBlock(_ json: String) -> AgentUtilityRunResult {
+        ok("ASTRA_APP_PATCH\n\(json)\nEND_ASTRA_APP_PATCH")
+    }
+
     private static func json(_ manifest: WorkspaceAppManifest) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -144,6 +148,90 @@ struct WorkspaceAppStudioGeneratorTests {
         let repairPrompt = runner.calls[1].prompt
         #expect(repairPrompt.contains("[BLOCKER]"))
         #expect(repairPrompt.contains("REJECTED"))
+    }
+
+    // MARK: - Progressive refinement (editing an existing app)
+
+    @Test("editing an existing app asks for a small PATCH and applies it incrementally")
+    func refinementUsesPatch() async {
+        let current = Self.validManifest
+        let runner = ScriptedRunner([
+            Self.patchBlock(#"[{"op":"replace","path":"/app/name","value":"Renamed App"}]"#)
+        ])
+        let result = await WorkspaceAppStudioGenerator.generate(
+            intent: "rename it to Renamed App",
+            workspaceName: "Demo",
+            workspacePath: "/tmp/demo",
+            existingManifest: current,
+            runner: runner.runner
+        )
+        #expect(result.accepted)
+        #expect(result.origin == .model)
+        #expect(result.attemptCount == 1)
+        // The patch was applied to the CURRENT manifest, not a regenerated one.
+        #expect(result.manifest.app.name == "Renamed App")
+        // Unrelated structure is preserved (the whole point of a delta).
+        #expect(result.manifest.storage?.tables.count == current.storage?.tables.count)
+        #expect(result.manifest.actions.count == current.actions.count)
+        // The first prompt is the patch editor and embeds the current app.
+        let prompt = runner.calls[0].prompt
+        #expect(prompt.contains("ASTRA_APP_PATCH"))
+        #expect(prompt.contains("manifest editor"))
+        #expect(prompt.contains(current.app.name))
+    }
+
+    @Test("building a NEW app still asks for a full manifest, not a patch")
+    func firstBuildUsesFullManifest() async {
+        let runner = ScriptedRunner([Self.manifestBlock(Self.json(Self.validManifest))])
+        _ = await WorkspaceAppStudioGenerator.generate(
+            intent: "Build me a grocery database app.",
+            workspaceName: "Demo",
+            workspacePath: "/tmp/demo",
+            runner: runner.runner
+        )
+        let prompt = runner.calls[0].prompt
+        #expect(!prompt.contains("ASTRA_APP_PATCH"))
+        #expect(!prompt.contains("manifest editor"))
+    }
+
+    @Test("a refinement that returns a full manifest still works (channel-agnostic)")
+    func refinementAcceptsFullManifestFallback() async {
+        var edited = Self.validManifest
+        edited.app.name = "Wholesale Rewrite"
+        let runner = ScriptedRunner([Self.manifestBlock(Self.json(edited))])
+        let result = await WorkspaceAppStudioGenerator.generate(
+            intent: "make a big change",
+            workspaceName: "Demo",
+            workspacePath: "/tmp/demo",
+            existingManifest: Self.validManifest,
+            runner: runner.runner
+        )
+        #expect(result.accepted)
+        #expect(result.manifest.app.name == "Wholesale Rewrite")
+        #expect(result.attemptCount == 1)
+    }
+
+    @Test("a broken first patch recovers via the full-manifest repair, which shows the current app")
+    func brokenPatchRecoversWithCurrentAppContext() async {
+        let current = Self.validManifest
+        let runner = ScriptedRunner([
+            // Attempt 1: a patch to an unsupported path → apply fails.
+            Self.patchBlock(#"[{"op":"replace","path":"/nope","value":"x"}]"#),
+            // Attempt 2 (repair): a valid full manifest.
+            Self.manifestBlock(Self.json(current))
+        ])
+        let result = await WorkspaceAppStudioGenerator.generate(
+            intent: "tweak something",
+            workspaceName: "Demo",
+            workspacePath: "/tmp/demo",
+            existingManifest: current,
+            runner: runner.runner
+        )
+        #expect(result.accepted)
+        #expect(result.origin == .modelRepaired)
+        #expect(result.attemptCount == 2)
+        // The repair turn carried the current app so a non-parsing edit can be reconstructed.
+        #expect(runner.calls[1].prompt.contains("CURRENT manifest"))
     }
 
     // MARK: - Degradation

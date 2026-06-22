@@ -182,6 +182,117 @@ struct WorkspaceAppHTMLAppTests {
         #expect(!result.accepted)
     }
 
+    // MARK: - Decode failures name the offending field (so the repair loop can self-correct)
+
+    private func manifestOutput(_ json: String) -> String {
+        "ASTRA_APP_MANIFEST\n\(json)\nEND_ASTRA_APP_MANIFEST"
+    }
+
+    private static let preserved = WorkspaceAppManifest(
+        app: WorkspaceAppManifestMetadata(id: "keep", name: "Keep")
+    )
+
+    @Test("a manifest action missing 'type' fails with a path-named message, not an opaque one")
+    func decodeMissingActionTypeNamesField() {
+        // The exact shape behind the user's "the data couldn't be read because it is missing." —
+        // a model re-emitted the manifest but dropped a structural field on a new action.
+        let output = manifestOutput(#"{"app":{"id":"x","name":"X"},"actions":[{"id":"del"}]}"#)
+        let result = WorkspaceAppStudioBuilder.applyStructuredOutput(output, to: Self.preserved)
+        #expect(!result.accepted)
+        let message = result.validationReport.issues.first?.message ?? ""
+        #expect(message.contains("type"))           // names the missing field
+        #expect(message.contains("actions[0]"))      // and where it is
+        // The whole point: NOT the opaque Foundation string that starved the repair loop.
+        #expect(!message.contains("couldn't be read"))
+        // The base manifest is preserved on failure.
+        #expect(result.manifest == Self.preserved)
+    }
+
+    @Test("a null required field decodes to a 'is null' message, not 'missing'")
+    func decodeNullValueNamesField() {
+        let output = manifestOutput(#"{"app":{"id":"x","name":"X"},"actions":[{"id":"d","type":null}]}"#)
+        let result = WorkspaceAppStudioBuilder.applyStructuredOutput(output, to: Self.preserved)
+        #expect(!result.accepted)
+        let message = result.validationReport.issues.first?.message ?? ""
+        #expect(message.contains("actions[0].type"))
+        #expect(message.contains("null"))
+    }
+
+    @Test("a wrong-typed field decodes to a 'wrong type' message")
+    func decodeTypeMismatchNamesField() {
+        let output = manifestOutput(#"{"app":{"id":"x","name":"X"},"schemaVersion":"two"}"#)
+        let result = WorkspaceAppStudioBuilder.applyStructuredOutput(output, to: Self.preserved)
+        #expect(!result.accepted)
+        let message = result.validationReport.issues.first?.message ?? ""
+        #expect(message.contains("schemaVersion"))
+        #expect(message.contains("wrong type"))
+    }
+
+    @Test("an omitted app block decodes leniently → the validator's clear identity blocker")
+    func omittedAppBlockRoutesToValidator() {
+        // Lenient top-level decode: a missing `app` is no longer an opaque decode failure; it
+        // decodes to empty identity and the validator reports the actionable, dedicated blocker.
+        let output = manifestOutput(#"{"actions":[]}"#)
+        let result = WorkspaceAppStudioBuilder.applyStructuredOutput(output, to: Self.preserved)
+        #expect(!result.accepted)
+        #expect(result.validationReport.blockers.contains { $0.path == "/app/name" })
+        // It reached the validator, not the decode-failure path.
+        #expect(!(result.validationReport.issues.first?.message.contains("decode") ?? false))
+    }
+
+    // MARK: - Progressive refinement: a patch + a fresh HTML block
+
+    @Test("a refinement patch + a fresh HTML block updates the manifest AND swaps the UI")
+    func patchWithHTMLBlockUpdatesBoth() {
+        let base = htmlManifest()
+        let newHTML = "<main><h1>Edited</h1></main>"
+        let output = """
+        ASTRA_APP_SUMMARY: Renamed and rebuilt the UI.
+        ASTRA_APP_PATCH
+        [{"op":"replace","path":"/app/name","value":"Edited Name"}]
+        END_ASTRA_APP_PATCH
+        ASTRA_APP_HTML
+        \(newHTML)
+        END_ASTRA_APP_HTML
+        """
+        let result = WorkspaceAppStudioBuilder.applyStructuredOutput(output, to: base)
+        #expect(result.accepted)
+        #expect(result.manifest.app.name == "Edited Name")   // manifest delta applied
+        #expect(result.manifest.html == newHTML)             // UI body replaced
+    }
+
+    @Test("an empty patch + a fresh HTML block swaps ONLY the UI")
+    func emptyPatchSwapsHTMLOnly() {
+        let base = htmlManifest()
+        let newHTML = "<main><h1>UI only</h1></main>"
+        let output = """
+        ASTRA_APP_PATCH
+        []
+        END_ASTRA_APP_PATCH
+        ASTRA_APP_HTML
+        \(newHTML)
+        END_ASTRA_APP_HTML
+        """
+        let result = WorkspaceAppStudioBuilder.applyStructuredOutput(output, to: base)
+        #expect(result.accepted)
+        #expect(result.manifest.html == newHTML)
+        #expect(result.manifest.app.name == base.app.name)   // manifest untouched
+    }
+
+    @Test("a manifest-only patch (no HTML block) keeps the existing UI")
+    func patchOnlyKeepsHTML() {
+        let base = htmlManifest()
+        let output = """
+        ASTRA_APP_PATCH
+        [{"op":"replace","path":"/app/name","value":"Renamed"}]
+        END_ASTRA_APP_PATCH
+        """
+        let result = WorkspaceAppStudioBuilder.applyStructuredOutput(output, to: base)
+        #expect(result.accepted)
+        #expect(result.manifest.app.name == "Renamed")
+        #expect(result.manifest.html == base.html)           // UI preserved across a data-only edit
+    }
+
     // MARK: - Validator: self-containment + usability skip
 
     @Test("a valid HTML app passes validation")

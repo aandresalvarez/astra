@@ -13,7 +13,12 @@ struct ShelfWorkspaceAppPreviewView: View {
 
     var body: some View {
         Group {
-            if let draft = session.draft {
+            if session.isBuildingFirstDraft {
+                // A first build is still generating: show a clear "building" status instead of the
+                // generic deterministic provisional, which otherwise reads as a finished (or different)
+                // app. Once the result lands, the real app replaces this.
+                buildingState
+            } else if let draft = session.draft {
                 WorkspaceAppPreviewView(manifest: draft.manifest, onClose: onClose, minWidth: 400)
                     // A new draft => a new sandbox: discard the prior preview's in-memory edits.
                     .id(session.draftRevision)
@@ -26,26 +31,60 @@ struct ShelfWorkspaceAppPreviewView: View {
         .accessibilityIdentifier("ShelfWorkspaceAppPreviewView")
     }
 
+    private var header: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "play.rectangle")
+                .font(Stanford.ui(18, weight: .semibold))
+                .foregroundStyle(Stanford.lagunita)
+                .frame(width: 28, height: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Live preview")
+                    .font(Stanford.ui(16, weight: .semibold))
+                    .foregroundStyle(.primary)
+                Text("Sandbox · nothing is saved")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 14)
+        .background(Stanford.cardBackground)
+    }
+
+    private var buildingState: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            Divider()
+            VStack(spacing: 12) {
+                Spacer()
+                ProgressView().controlSize(.large)
+                Text("Building your app…")
+                    .font(Stanford.ui(14, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Text(buildingDetail)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 360)
+                Spacer()
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(24)
+            .accessibilityIdentifier("ShelfWorkspaceAppPreviewBuilding")
+        }
+    }
+
+    private var buildingDetail: String {
+        if let name = session.appName, !name.isEmpty, name != "Workspace App" {
+            return "Generating “\(name)” from your description. This can take a moment — it appears here when it's ready, and you can try it before publishing."
+        }
+        return "Generating your app from your description. This can take a moment — it appears here when it's ready, and you can try it before publishing."
+    }
+
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 12) {
-                Image(systemName: "play.rectangle")
-                    .font(Stanford.ui(18, weight: .semibold))
-                    .foregroundStyle(Stanford.lagunita)
-                    .frame(width: 28, height: 28)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Live preview")
-                        .font(Stanford.ui(16, weight: .semibold))
-                        .foregroundStyle(.primary)
-                    Text("Sandbox · nothing is saved")
-                        .font(Stanford.caption(12))
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 14)
-            .background(Stanford.cardBackground)
+            header
 
             Divider()
 
