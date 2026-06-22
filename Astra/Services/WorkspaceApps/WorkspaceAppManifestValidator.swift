@@ -222,10 +222,12 @@ enum WorkspaceAppManifestValidator {
     /// analysis complete. Also excludes `capability.*` (networked) and `url.open` (navigation).
     static func isHTMLAppActionAllowed(_ type: String) -> Bool {
         if type.hasPrefix("appStorage.") { return true }
+        // NOTE: `clipboard.copy` is intentionally excluded — it writes the system pasteboard with no
+        // gesture/approval gate; HTML apps use the browser's gesture-gated `navigator.clipboard`.
         return ["task.createDraft", "task.createAndRun",
                 "gate.humanApproval", "gate.agentRecommendation", "gate.expression",
                 "pipeline.run", "loop.run", "artifact.export", "notification.show",
-                "rows.reduce", "clipboard.copy"].contains(type)
+                "rows.reduce"].contains(type)
     }
 
     /// True if `lowered` contains an `eval(` call or `new Function`. `eval(` is matched only as a

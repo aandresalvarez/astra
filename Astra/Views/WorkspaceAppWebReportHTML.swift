@@ -187,7 +187,17 @@ enum WorkspaceAppWebReportHTML {
         * { box-sizing: border-box; }
         html, body { margin: 0; padding: 0; }
         body { font: 13px -apple-system, system-ui, sans-serif; background: transparent; }
-        </style></head><body>
+        </style>
+        <script>
+        // Defense in depth: block drag-and-drop INSIDE the document (capture phase, registered before
+        // the app's own content) so a dropped file can't be read by page JS. The native layer
+        // (unregisterDraggedTypes) and the no-network CSP are the other layers.
+        // Registered FIRST, capture phase, and stopImmediatePropagation so a later app handler can't
+        // run and read e.dataTransfer.files even if WebKit somehow still delivers the event.
+        window.addEventListener("dragover", function (e) { e.preventDefault(); e.stopImmediatePropagation(); }, true);
+        window.addEventListener("drop", function (e) { e.preventDefault(); e.stopImmediatePropagation(); }, true);
+        </script>
+        </head><body>
         \(innerHTML)
         </body></html>
         """

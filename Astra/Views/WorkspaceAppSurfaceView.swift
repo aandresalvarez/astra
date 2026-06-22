@@ -14,6 +14,10 @@ struct WorkspaceAppSurfaceView: View {
     let snapshot: WorkspaceAppDetailDataSnapshot
     let onRunAction: (WorkspaceAppActionSpec, WorkspaceAppManifest, WorkspaceAppActionInput) throws -> WorkspaceAppActionExecutionResult
     let onReload: () -> Void
+    /// Live, UNCAPPED check for a non-terminal workflow run — the bridge's durable runAction throttle.
+    /// Built by the published detail view from the model store (queried each call, not a snapshot);
+    /// nil on the preview surface (which has no persisted runs).
+    var isWorkflowRunPending: (@MainActor () -> Bool)?
 
     // Snapshot-derived presentations, computed ONCE in init. SwiftUI does NOT re-run init on
     // @State-driven body re-evaluations (typing in the inline record form mutates recordFormValues
@@ -24,6 +28,10 @@ struct WorkspaceAppSurfaceView: View {
     private let actionPresentations: [WorkspaceAppDetailActionPresentation]
     private let runHistory: WorkspaceAppRunHistoryPresentation
     private let rowActionsByTable: [String: WorkspaceAppStorageRowActionsPresentation]
+    /// Fail-closed gate: a dynamic HTML app renders + gets a bridge ONLY if its (on-disk) manifest
+    /// still passes validation. Re-validated here, not trusted from publish time, so a tampered or
+    /// stale manifest.json can't reach the WebView/bridge. Computed once per snapshot (not per body).
+    private let htmlManifestValid: Bool
 
     @State private var actionStatusMessage = ""
     @State private var activeRecordAction: WorkspaceAppDetailActionPresentation?
@@ -35,11 +43,13 @@ struct WorkspaceAppSurfaceView: View {
     init(
         snapshot: WorkspaceAppDetailDataSnapshot,
         onRunAction: @escaping (WorkspaceAppActionSpec, WorkspaceAppManifest, WorkspaceAppActionInput) throws -> WorkspaceAppActionExecutionResult,
-        onReload: @escaping () -> Void
+        onReload: @escaping () -> Void,
+        isWorkflowRunPending: (@MainActor () -> Bool)? = nil
     ) {
         self.snapshot = snapshot
         self.onRunAction = onRunAction
         self.onReload = onReload
+        self.isWorkflowRunPending = isWorkflowRunPending
         self.surface = WorkspaceAppNativeSurfaceBuilder.presentation(
             manifest: snapshot.manifest,
             storageTables: snapshot.storageTables
@@ -58,6 +68,13 @@ struct WorkspaceAppSurfaceView: View {
             },
             uniquingKeysWith: { first, _ in first }
         )
+        // Re-validate an HTML app's manifest at render time (fail closed). A native (html == nil)
+        // manifest doesn't take the HTML path, so it's vacuously fine here.
+        if let manifest = snapshot.manifest, manifest.html != nil {
+            self.htmlManifestValid = WorkspaceAppManifestValidator.validate(manifest).isValid
+        } else {
+            self.htmlManifestValid = true
+        }
     }
 
     var body: some View {
@@ -69,21 +86,32 @@ struct WorkspaceAppSurfaceView: View {
         // express). New data apps no longer take it. Same surface for the live preview + published view.
         if let html = snapshot.manifest?.html,
            !html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            WorkspaceAppWebReportView(
-                html: WorkspaceAppWebReportHTML.appDocument(innerHTML: html),
-                allowsJavaScript: true,
-                onBridgeRequest: bridgeHandlers()
-            )
-            // Bridge eligibility is part of the WebView's IDENTITY: if the app gains or loses its
-            // own storage OR its runnable workflow actions, recreate the WebView so the handler is
-            // installed/removed accordingly (updateNSView only refreshes a still-present handler,
-            // never adds/removes one). This closes the eligibility-flip staleness hole — a page can't
-            // keep calling astra.* against an app that no longer grants that surface.
-            .id(bridgeEligible)
-            .frame(maxWidth: .infinity)
-            .frame(minHeight: 600)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .accessibilityIdentifier("WorkspaceAppHTMLSurface")
+            if htmlManifestValid {
+                WorkspaceAppWebReportView(
+                    html: WorkspaceAppWebReportHTML.appDocument(innerHTML: html),
+                    allowsJavaScript: true,
+                    onBridgeRequest: bridgeHandlers()
+                )
+                // Bridge eligibility is part of the WebView's IDENTITY: if the app gains or loses its
+                // own storage OR its runnable workflow actions, recreate the WebView so the handler is
+                // installed/removed accordingly (updateNSView only refreshes a still-present handler,
+                // never adds/removes one). This closes the eligibility-flip staleness hole — a page can't
+                // keep calling astra.* against an app that no longer grants that surface.
+                .id(bridgeEligible)
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: 600)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .accessibilityIdentifier("WorkspaceAppHTMLSurface")
+            } else {
+                // Fail closed: an HTML app whose manifest no longer validates does NOT render its
+                // (untrusted) HTML and gets NO bridge — render a notice instead of the WebView.
+                WorkspaceAppDetailNotice(
+                    title: "App can't run",
+                    message: "This app's configuration didn't pass safety validation, so its interface won't load. Rebuild or re-publish it from App Studio.",
+                    systemImage: "exclamationmark.shield"
+                )
+                .accessibilityIdentifier("WorkspaceAppHTMLInvalid")
+            }
         } else {
             declarativeSurface
         }
@@ -110,7 +138,8 @@ struct WorkspaceAppSurfaceView: View {
             manifest: manifest,
             runs: snapshot.runs,
             onRunAction: onRunAction,
-            onReload: onReload
+            onReload: onReload,
+            isWorkflowRunPending: isWorkflowRunPending
         )
     }
 

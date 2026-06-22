@@ -51,7 +51,11 @@ struct WorkspaceAppWebReportView: NSViewRepresentable {
                 forMainFrameOnly: true
             ))
         }
-        let webView = WKWebView(frame: .zero, configuration: configuration)
+        let webView = WorkspaceAppNonDroppingWebView(frame: .zero, configuration: configuration)
+        // Refuse drag-and-drop so a dropped file can't reach page JS (FileReader → astra.insert).
+        // The CSP already blocks network egress, but this stops a dropped file from entering the
+        // app's own storage at all. Best-effort on top of the subclass overrides below.
+        webView.unregisterDraggedTypes()
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         context.coordinator.loadedHTML = html
@@ -89,6 +93,20 @@ struct WorkspaceAppWebReportView: NSViewRepresentable {
             let scheme = navigationAction.request.url?.scheme
             let isInMemoryLoad = scheme == nil || scheme == "about"
             decisionHandler(navigationAction.navigationType == .other && isInMemoryLoad ? .allow : .cancel)
+        }
+
+        // Defense in depth for drag/drop: WKWebView's internal content view can register itself as a
+        // drop destination after the page loads (the outer view's `unregisterDraggedTypes()` doesn't
+        // cover it). Recursively strip dragged types once loading finishes so a dropped file can't
+        // reach page JS (FileReader → astra.insert). The document-level guard in the HTML shell and
+        // the no-network CSP are the other layers.
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            Self.unregisterDragRecursively(webView)
+        }
+
+        static func unregisterDragRecursively(_ view: NSView) {
+            view.unregisterDraggedTypes()
+            for subview in view.subviews { unregisterDragRecursively(subview) }
         }
 
         // Deny `window.open` / target=_blank popups: returning nil means no child WebView is
@@ -143,6 +161,17 @@ struct WorkspaceAppWebReportView: NSViewRepresentable {
             completionHandler(nil)
         }
     }
+}
+
+/// A WKWebView that refuses ALL drag-and-drop. A sandboxed app surface has no legitimate need to
+/// accept dropped files, and a drop could otherwise hand a local file to page JS (FileReader →
+/// `astra.insert`). The drag NSView methods are overridden to reject, in addition to
+/// `unregisterDraggedTypes()` at construction.
+final class WorkspaceAppNonDroppingWebView: WKWebView {
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { [] }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { [] }
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { false }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool { false }
 }
 
 /// Card chrome around a sandboxed HTML report, matching the other native surface widgets.

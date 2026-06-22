@@ -305,6 +305,37 @@ app with the real executor — correct governance, asserted by the bridge test. 
 blocked by the host screen-capture failure; the bridge allowlist + suspend-on-gate path are
 unit-verified through the real runner.
 
+### Full security review hardening — codex DO NOT SHIP ×4 → SHIP
+
+A comprehensive adversarial review of the whole HTML/bridge subsystem (assume a hostile app author
+AND hostile page JS, not just the Phase 5 delta) surfaced issues beyond Phase 5. All fixed:
+- **HIGH — `clipboard.copy` wrote `NSPasteboard` from JS with no gesture** (effect `.read`): removed
+  from `runnableActionTypes` and `isHTMLAppActionAllowed`. HTML copy uses the browser's gesture-gated
+  `navigator.clipboard`.
+- **HIGH — the bridge trusted the on-disk manifest**: `WorkspaceAppSurfaceView` re-validates in init
+  (`htmlManifestValid`) and renders HTML + installs the bridge ONLY when valid; an invalid/tampered
+  manifest shows a notice and gets no WebView/bridge (fail closed). Both preview + published route
+  through this surface.
+- **BLOCKER — the workflow spam throttle was bypassable**: a volatile per-WebView flag seeded from the
+  8-row presentation snapshot (a hostile app could insert ≥8 storage records to age its waiting run
+  out of the history, then `astra.runs()` cleared the flag). Replaced with a LIVE, UNCAPPED store query
+  (`makeWorkflowPendingCheck` → `FetchDescriptor` on `appID` + waiting/running, fail-closed on error)
+  passed as `Handlers.isWorkflowRunPending` and checked INSIDE the runAction `Task` — atomic with the
+  SYNCHRONOUS `WorkspaceAppActionExecutor.execute` on the serial main actor, which also closes the
+  two-WebView TOCTOU without a reservation table.
+- **MEDIUM — DoS caps loosened**: field count 200→100, per-value 256KB→64KB, NEW total-record-byte cap
+  (256KB) in `strictRecord`, and the bridge query limit clamped to `maxQueryLimit` (1000).
+- **MEDIUM — drag/drop**: refused three ways — `WorkspaceAppNonDroppingWebView` subclass +
+  `unregisterDraggedTypes()` at creation + recursive post-load unregister + a capture-phase
+  `dragover`/`drop` `preventDefault()`+`stopImmediatePropagation()` injected first in the HTML shell.
+
+Codex final verdict: **SHIP** (no open findings). Confirmed still sound: no-network CSP, exact-(op,table)
+data allowlist, no delete, SQL identifier-quoting + value binding, audit-run-before-permission, no
+cross-app run leak (app-scoped query). **Accepted follow-ups (flagged, not blockers):**
+`WorkspaceAppService.createApp` doesn't enforce logical-ID uniqueness (callers dedupe today); no per-app
+CUMULATIVE agent-token budget (the throttle bounds concurrency to one in-flight run, not lifetime
+spend). Full suite green (**3255**).
+
 ## 2026-06-20 Update — Conversational App Studio (Lovable/Replit-style)
 
 App Studio is no longer a form. Creating an app is now a **conversation in the main

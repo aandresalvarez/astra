@@ -62,12 +62,24 @@ enum WorkspaceAppDataBridge {
         var runAction: (@MainActor (ActionRequest) -> Reply)?
         var runs: (@MainActor (Int?) -> Reply)?
         var listActions: (@MainActor () -> Reply)?
+        /// The DURABLE workflow throttle: a LIVE, UNCAPPED query (run each `runAction` call) that
+        /// returns true iff the app currently has a non-terminal (waiting/running) run. This is the
+        /// security authority — NOT a volatile flag or the capped display snapshot, both of which a
+        /// hostile page can defeat (reset on reload; push its waiting run out of an 8-row history with
+        /// storage writes, then poll to clear it). nil ⇒ no throttle (preview surface, no persisted runs).
+        var isWorkflowRunPending: (@MainActor () -> Bool)?
     }
 
     private static let allowedOps: Set<String> = ["query", "insert", "update"]
-    /// DoS caps: a hostile page can't flood the main actor with giant records.
-    private static let maxRecordFields = 200
-    private static let maxValueBytes = 256 * 1024
+    /// DoS caps: a hostile page can't flood the main actor with giant records. A single value is
+    /// bounded (`maxValueBytes`), the field count is bounded (`maxRecordFields`), AND the TOTAL record
+    /// size is bounded (`maxRecordBytes`) so 200 near-max fields can't combine into a multi-MB write.
+    private static let maxRecordFields = 100
+    private static let maxValueBytes = 64 * 1024
+    static let maxRecordBytes = 256 * 1024
+    /// The largest row count a bridge query may request, regardless of the page-supplied limit — well
+    /// below the storage service's own 10k ceiling so a page can't pull a huge reply per call.
+    static let maxQueryLimit = 1_000
 
     // MARK: - Parse (JS → native)
 
@@ -96,8 +108,12 @@ enum WorkspaceAppDataBridge {
     /// (nil) rather than silently storing nulls/garbage.
     static func strictRecord(from dict: [String: Any]) -> [String: WorkspaceAppStorageValue]? {
         var out: [String: WorkspaceAppStorageValue] = [:]
+        var totalBytes = 0
         for (key, raw) in dict {
             guard let value = scalarValue(from: raw) else { return nil }
+            totalBytes += key.utf8.count
+            if case .text(let string) = value { totalBytes += string.utf8.count } else { totalBytes += 8 }
+            guard totalBytes <= maxRecordBytes else { return nil }   // reject an oversized aggregate write
             out[key] = value
         }
         return out
@@ -148,7 +164,7 @@ enum WorkspaceAppDataBridge {
         let input = WorkspaceAppActionInput(
             table: request.table,
             record: request.record,
-            limit: request.limit ?? 100
+            limit: min(request.limit ?? 100, maxQueryLimit)   // clamp: a page can't request a huge reply
         )
         return (action, input)
     }
@@ -168,12 +184,16 @@ enum WorkspaceAppDataBridge {
     ///   INSIDE a gated pipeline, never as a direct JS verb (their effect classes would otherwise let
     ///   a page export/launch without the approval the pipeline gate provides). They reach native only
     ///   as a step of a `pipeline.run` the human approves.
+    /// - **`clipboard.copy`** — writes the SYSTEM pasteboard (`NSPasteboard.general`) and is classified
+    ///   `.read`, so neither the executor nor a user gesture gates it; a page must not silently
+    ///   overwrite the clipboard. HTML copy buttons use the browser's gesture-gated `navigator.clipboard`
+    ///   instead. (It is also not declarable in an HTML app — see `isHTMLAppActionAllowed`.)
     /// An action that is itself a STEP of some pipeline/loop is ALSO not directly runnable (see
     /// `isDirectlyRunnable`) — only its parent pipeline is, so the gate can't be skipped.
     static let runnableActionTypes: Set<String> = [
         "task.createDraft",
         "pipeline.run", "loop.run",
-        "notification.show", "rows.reduce", "clipboard.copy"
+        "notification.show", "rows.reduce"
     ]
 
     /// IDs referenced as a `steps` entry of any pipeline/loop action — internal, reachable ONLY
@@ -252,15 +272,6 @@ enum WorkspaceAppDataBridge {
             .map { ["id": $0.id, "type": $0.type, "label": $0.label ?? $0.id] }
     }
 
-    /// True if any run snapshot is still `waiting`/`running` — used to throttle `runAction` to one
-    /// pending workflow run per app surface (a hostile page can't queue unbounded agent tasks).
-    static func runsIndicatePending(_ items: [[String: Any]]) -> Bool {
-        items.contains {
-            let status = $0["status"] as? String
-            return status == WorkspaceAppRunStatus.waiting.rawValue || status == WorkspaceAppRunStatus.running.rawValue
-        }
-    }
-
     /// Build the host `Handlers` for a manifest. Kept as plain (non-SwiftUI) code so the nested
     /// `@MainActor` closures don't pressure the View body's type-checker. Returns nil for a pure-UI
     /// HTML app (no storage AND no runnable workflow action) so no bridge is registered. The workflow
@@ -271,7 +282,8 @@ enum WorkspaceAppDataBridge {
         manifest: WorkspaceAppManifest,
         runs: [WorkspaceAppRunSnapshot],
         onRunAction: @escaping (WorkspaceAppActionSpec, WorkspaceAppManifest, WorkspaceAppActionInput) throws -> WorkspaceAppActionExecutionResult,
-        onReload: @escaping () -> Void = {}
+        onReload: @escaping () -> Void = {},
+        isWorkflowRunPending: (@MainActor () -> Bool)? = nil
     ) -> Handlers? {
         // A directly-runnable action is a runnable type that is NOT an internal pipeline step.
         let hasStorage = manifest.storage?.tables.isEmpty == false
@@ -312,7 +324,10 @@ enum WorkspaceAppDataBridge {
             return .runs(runs.prefix(capped).map(jsRun))
         }
         let listActions: @MainActor () -> Reply = { .actions(jsActions(manifest)) }
-        return Handlers(storage: storage, runAction: runAction, runs: runsHandler, listActions: listActions)
+        return Handlers(
+            storage: storage, runAction: runAction, runs: runsHandler, listActions: listActions,
+            isWorkflowRunPending: isWorkflowRunPending
+        )
     }
 
     // MARK: - Reply (native → JS)
@@ -375,11 +390,6 @@ final class WorkspaceAppDataBridgeHandler: NSObject, WKScriptMessageHandlerWithR
     /// runs. Storage reads/writes are unaffected. Touched only on the main thread (WebKit delivers
     /// these callbacks on the main thread).
     private var runActionInFlight = false
-    /// Durable throttle (NOT just anti-concurrency): once a `runAction` leaves a `waiting`/`running`
-    /// run, further runAction calls are DENIED until it resolves — so a scripted `while(true) await
-    /// astra.runAction(...)` loop on a `preApproved` app can't queue unbounded agent tasks. Cleared
-    /// when an `astra.runs()` poll shows no pending run (the workflow template polls every 3s).
-    private var workflowRunPending = false
 
     init(handlers: WorkspaceAppDataBridge.Handlers) {
         self.handlers = handlers
@@ -398,32 +408,28 @@ final class WorkspaceAppDataBridgeHandler: NSObject, WKScriptMessageHandlerWithR
                 replyHandler(nil, "Invalid astra runAction request.")
                 return
             }
-            if runActionInFlight || workflowRunPending {
-                replyHandler(nil, runActionInFlight
-                    ? "Another action is already running."
-                    : "A workflow run is already pending — resolve it in the app before starting another.")
+            // Anti-concurrency pre-filter for the same WebView.
+            if runActionInFlight {
+                replyHandler(nil, "Another action is already running.")
                 return
             }
             runActionInFlight = true
             Task { @MainActor in
                 defer { self.runActionInFlight = false }
-                let reply = runAction(request)
-                // Hold the throttle if the run is still in progress / awaiting approval.
-                if case let .run(status, _, _, _) = reply {
-                    self.workflowRunPending = status == WorkspaceAppRunStatus.waiting.rawValue
-                        || status == WorkspaceAppRunStatus.running.rawValue
+                // The DURABLE throttle, checked HERE (not before scheduling) so it is ATOMIC with the
+                // synchronous executor on the serial main actor: a second WebView's task can't run
+                // between this check and the run insertion, so two surfaces for the same app can't both
+                // pass and double-launch. The query is live + uncapped and fails CLOSED on error.
+                if self.handlers.isWorkflowRunPending?() == true {
+                    replyHandler(nil, "A workflow run is already in progress — wait for it to finish or be approved.")
+                    return
                 }
-                Self.reply(reply, to: replyHandler)
+                Self.reply(runAction(request), to: replyHandler)
             }
         case "runs":
             guard let runs = handlers.runs else { replyHandler(nil, "Runs are unavailable."); return }
             let limit = (message.body as? [String: Any]).flatMap { ($0["limit"] as? Int) ?? ($0["limit"] as? NSNumber)?.intValue }
-            Task { @MainActor in
-                let reply = runs(limit)
-                // Refresh the throttle from the latest run state: clears once nothing is pending.
-                if case let .runs(items) = reply { self.workflowRunPending = WorkspaceAppDataBridge.runsIndicatePending(items) }
-                Self.reply(reply, to: replyHandler)
-            }
+            Task { @MainActor in Self.reply(runs(limit), to: replyHandler) }
         case "actions":
             guard let listActions = handlers.listActions else { replyHandler(nil, "Actions are unavailable."); return }
             Task { @MainActor in Self.reply(listActions(), to: replyHandler) }

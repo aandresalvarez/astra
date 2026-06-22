@@ -211,19 +211,63 @@ struct WorkspaceAppDataBridgeTests {
         #expect(runnable.contains("loop.run"))
         // artifact.export and task.createAndRun are NOT direct verbs — they may run only as a gated
         // pipeline step, never triggered straight from JS (their effects would otherwise skip approval).
+        // clipboard.copy is excluded too — it writes the system pasteboard with no gesture/approval.
         for forbidden in ["appStorage.delete", "appStorage.query", "capability.read", "capability.write",
                           "gate.humanApproval", "gate.agentRecommendation", "url.open",
-                          "artifact.export", "task.createAndRun"] {
+                          "artifact.export", "task.createAndRun", "clipboard.copy"] {
             #expect(!runnable.contains(forbidden), "\(forbidden) must NOT be a direct JS verb")
         }
     }
 
-    @Test("runsIndicatePending throttles only while a run is waiting/running")
-    func runsPendingPredicate() {
-        #expect(WorkspaceAppDataBridge.runsIndicatePending([["status": "waiting"]]))
-        #expect(WorkspaceAppDataBridge.runsIndicatePending([["status": "completed"], ["status": "running"]]))
-        #expect(!WorkspaceAppDataBridge.runsIndicatePending([["status": "completed"], ["status": "failed"]]))
-        #expect(!WorkspaceAppDataBridge.runsIndicatePending([]))
+    @Test("clipboard.copy can't be declared in an HTML app (no ungated system-pasteboard write)")
+    func clipboardCopyNotDeclarableInHTMLApp() {
+        var manifest = dataManifest(actions: ["query"])
+        manifest.actions.append(WorkspaceAppActionSpec(id: "copy", type: "clipboard.copy", label: "Copy"))
+        #expect(!WorkspaceAppManifestValidator.validate(manifest).isValid)
+    }
+
+    @Test("handlers carry the durable throttle as a LIVE check closure (not a snapshot/flag)")
+    @MainActor
+    func handlersCarryLivePendingCheck() {
+        let manifest = WorkspaceAppStudioRecipes.manifest(for: .pipeline, intent: "intake")
+        let runner = { (a: WorkspaceAppActionSpec, m: WorkspaceAppManifest, i: WorkspaceAppActionInput) throws -> WorkspaceAppActionExecutionResult in
+            try WorkspaceAppPreviewRunner(manifest: m).run(a, manifest: m, input: i)
+        }
+        // The throttle is a closure evaluated each runAction call — so it always reflects live,
+        // uncapped store state and a hostile page can't clear it by aging its run out of the snapshot.
+        let h = WorkspaceAppDataBridge.handlers(manifest: manifest, runs: [], onRunAction: runner, isWorkflowRunPending: { true })
+        #expect(h?.isWorkflowRunPending?() == true)
+        let idle = WorkspaceAppDataBridge.handlers(manifest: manifest, runs: [], onRunAction: runner, isWorkflowRunPending: { false })
+        #expect(idle?.isWorkflowRunPending?() == false)
+        // Default (preview) has no throttle.
+        let preview = WorkspaceAppDataBridge.handlers(manifest: manifest, runs: [], onRunAction: runner)
+        #expect(preview?.isWorkflowRunPending == nil)
+    }
+
+    // MARK: - DoS caps
+
+    @Test("parse rejects an oversized aggregate record (total bytes), not just per-value/field count")
+    func parseRejectsOversizedRecord() {
+        // A single huge value (> maxValueBytes) is rejected.
+        let bigValue = String(repeating: "x", count: WorkspaceAppDataBridge.maxRecordBytes + 1)
+        #expect(WorkspaceAppDataBridge.parse(["op": "insert", "table": "notes", "record": ["a": bigValue]]) == nil)
+        // Many medium values that individually pass but together exceed the TOTAL cap are rejected.
+        let chunk = String(repeating: "y", count: 40_000)
+        var record: [String: Any] = [:]
+        for i in 0..<20 { record["f\(i)"] = chunk }   // ~800 KB total > 256 KB cap
+        #expect(WorkspaceAppDataBridge.parse(["op": "insert", "table": "notes", "record": record]) == nil)
+        // A small record still parses.
+        #expect(WorkspaceAppDataBridge.parse(["op": "insert", "table": "notes", "record": ["a": "ok"]]) != nil)
+    }
+
+    @Test("resolve clamps a page-supplied query limit to the bridge ceiling")
+    func resolveClampsQueryLimit() {
+        let manifest = dataManifest(actions: ["query"])
+        let huge = WorkspaceAppDataBridge.resolve(.init(op: "query", table: "notes", record: [:], limit: 999_999), in: manifest)
+        #expect(huge?.input.limit == WorkspaceAppDataBridge.maxQueryLimit)
+        // A modest limit is preserved.
+        let modest = WorkspaceAppDataBridge.resolve(.init(op: "query", table: "notes", record: [:], limit: 50), in: manifest)
+        #expect(modest?.input.limit == 50)
     }
 
     @Test("parseAction validates the runAction body and applies record caps")

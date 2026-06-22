@@ -39,7 +39,8 @@ struct WorkspaceAppDetailView: View {
                     WorkspaceAppSurfaceView(
                         snapshot: dataSnapshot,
                         onRunAction: onRunAction,
-                        onReload: loadDataSnapshot
+                        onReload: loadDataSnapshot,
+                        isWorkflowRunPending: makeWorkflowPendingCheck()
                     )
                     versionsSection
                     metadataRows
@@ -286,6 +287,26 @@ struct WorkspaceAppDetailView: View {
 
     private var approvalWaitingRuns: [WorkspaceAppRun] {
         appRuns.filter { $0.appID == app.id && $0.status == .waiting && $0.pendingApprovalActionID != nil }
+    }
+
+    /// The HTML bridge's DURABLE runAction throttle: a closure that, each call, runs a LIVE, UNCAPPED
+    /// store query for any non-terminal run of this app. Captures the `ModelContext` (a class, so it
+    /// stays live) + the app id — never a snapshot, so a hostile page can't clear it by pushing its
+    /// waiting run out of the capped run history.
+    private func makeWorkflowPendingCheck() -> @MainActor () -> Bool {
+        let appID = app.id
+        let context = modelContext
+        return {
+            let waiting = WorkspaceAppRunStatus.waiting.rawValue
+            let running = WorkspaceAppRunStatus.running.rawValue
+            var descriptor = FetchDescriptor<WorkspaceAppRun>(
+                predicate: #Predicate { $0.appID == appID && ($0.statusRaw == waiting || $0.statusRaw == running) }
+            )
+            descriptor.fetchLimit = 1
+            // Fail CLOSED: if the store query errors, treat the app as pending (deny) rather than
+            // letting an unmeasurable state open the gate.
+            do { return try context.fetchCount(descriptor) > 0 } catch { return true }
+        }
     }
 
     private func approvalPrompt(for run: WorkspaceAppRun) -> String {
