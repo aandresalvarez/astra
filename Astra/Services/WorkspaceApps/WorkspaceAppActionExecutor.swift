@@ -22,6 +22,7 @@ enum WorkspaceAppActionExecutionError: LocalizedError, Equatable {
     case gateBlocked(String)
     case capabilityWriteUnavailable(String)
     case permissionDenied(String)
+    case appBudgetExceeded(String)
     case storageFailed(String)
 
     var errorDescription: String? {
@@ -63,6 +64,8 @@ enum WorkspaceAppActionExecutionError: LocalizedError, Equatable {
         case .capabilityWriteUnavailable(let actionID):
             "Workspace app capability write action '\(actionID)' does not have a deterministic write implementation."
         case .permissionDenied(let message):
+            message
+        case .appBudgetExceeded(let message):
             message
         case .storageFailed(let message):
             "Workspace app storage action failed: \(message)"
@@ -1493,6 +1496,7 @@ struct WorkspaceAppActionExecutor {
             // B2: await an async agent step — launch the task and suspend the run
             // until it completes (resumed via WorkspaceAppActionExecutor.resume).
             if step.type == "task.createAndRun" {
+                try enforceAppAgentBudget(app: app, run: run, modelContext: modelContext)
                 let task = try createTask(
                     action: step,
                     app: app,
@@ -1530,6 +1534,7 @@ struct WorkspaceAppActionExecutor {
                 }
                 let fanRows = stepInput.boundRows
                 if fanRows.isEmpty { continue }
+                try enforceAppAgentBudget(app: app, run: run, modelContext: modelContext)
                 var launchedIDs: [UUID] = []
                 for row in fanRows {
                     let task = try createTask(
@@ -2025,6 +2030,50 @@ struct WorkspaceAppActionExecutor {
         return "table=\(table); recordKeys=\(input.record.keys.sorted().joined(separator: ",")); limit=\(input.limit); exportFormat=\(exportFormat); taskGoal=\(taskGoal); confirmedDestructive=\(input.confirmedDestructive); confirmedApproval=\(input.confirmedApproval); agentRecommendationDecision=\(agentDecision)"
     }
 
+    /// Per-app CUMULATIVE agent-spend ceiling, enforced before launching a `task.createAndRun` /
+    /// `task.fanOut` step. Measures the app's token spend + agent-launching-run count in the trailing
+    /// window and throws `appBudgetExceeded` (→ the run is BLOCKED for review, not failed) when a
+    /// ceiling is reached, with an audit event. This complements the one-run token budget (B3) and the
+    /// bridge's one-pending-run concurrency throttle: together they stop a `preApproved` app's page
+    /// from serially triggering unbounded agent spend over time. Fails OPEN on a transient store-query
+    /// error — this is a coarse DoS ceiling, not an auth gate, so a rare query hiccup should not
+    /// permanently block an app's workflows (the concurrency throttle still bounds in-flight work).
+    private func enforceAppAgentBudget(
+        app: WorkspaceApp,
+        run: WorkspaceAppRun,
+        modelContext: ModelContext
+    ) throws {
+        let appID = app.id
+        let windowStart = Date().addingTimeInterval(-WorkspaceAppWorkflowBudget.appBudgetWindow)
+        let descriptor = FetchDescriptor<WorkspaceAppRun>(
+            predicate: #Predicate<WorkspaceAppRun> { $0.appID == appID && $0.startedAt >= windowStart }
+        )
+        let priorRuns = (try? modelContext.fetch(descriptor)) ?? []
+        let priorTokens = priorRuns.reduce(0) { $0 + $1.consumedTokens }
+        let priorAgentRuns = priorRuns.filter { $0.linkedTaskID != nil }.count
+        guard WorkspaceAppWorkflowBudget.exceedsAppAgentBudget(
+            priorTokens: priorTokens,
+            priorAgentRuns: priorAgentRuns
+        ) else {
+            return
+        }
+        recorder.recordEvent(
+            run: run,
+            type: "workspaceApp.appBudget.exceeded",
+            payload: [
+                "appID": .text(appID.uuidString),
+                "priorTokens": .integer(Int64(priorTokens)),
+                "priorAgentRuns": .integer(Int64(priorAgentRuns)),
+                "tokenCeiling": .integer(Int64(WorkspaceAppWorkflowBudget.appTokenCeiling)),
+                "agentRunCeiling": .integer(Int64(WorkspaceAppWorkflowBudget.appAgentRunCeiling))
+            ],
+            modelContext: modelContext
+        )
+        throw WorkspaceAppActionExecutionError.appBudgetExceeded(
+            "This app has reached its agent-activity budget (\(priorTokens) tokens / \(priorAgentRuns) agent runs in the last 24h). The run is held for review — try again later or raise the app's budget."
+        )
+    }
+
     private func isPermissionError(_ error: Error) -> Bool {
         if case WorkspaceAppActionExecutionError.permissionDenied = error {
             return true
@@ -2037,6 +2086,9 @@ struct WorkspaceAppActionExecutor {
         }
         if case WorkspaceAppActionExecutionError.gateBlocked = error {
             return true
+        }
+        if case WorkspaceAppActionExecutionError.appBudgetExceeded = error {
+            return true   // a budget overrun blocks the run (held for review), it isn't a hard failure
         }
         return false
     }

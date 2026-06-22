@@ -70,7 +70,18 @@ struct WorkspaceAppService {
             throw WorkspaceAppServiceError.emptyWorkspacePath
         }
 
-        let appID = manifest.app.id
+        // Guarantee a workspace-unique logical ID at the SERVICE boundary, not just in callers. The
+        // logical ID keys the app's storage directory + SQLite file (`WorkspaceFileLayout`), so two
+        // apps sharing one would share `.astra/apps/<id>/data/app.sqlite` — a cross-app data-isolation
+        // break. Auto-suffix a collision and keep `manifest.app.id` in lockstep so the persisted
+        // manifest matches its storage path. Callers that already dedupe pass a unique id, so this is
+        // a no-op for them; a caller that forgets can no longer collide two apps onto one database.
+        var manifest = manifest
+        let existing = try existingLogicalIDs(in: workspace, modelContext: modelContext)
+        let appID = uniqueLogicalID(base: manifest.app.id, existingLogicalIDs: existing)
+        if appID != manifest.app.id {
+            manifest.app.id = appID
+        }
         let dataDirectory = WorkspaceFileLayout.appDataDirectory(workspacePath: workspace.primaryPath, appID: appID)
         let manifestPath = WorkspaceFileLayout.appManifestFile(workspacePath: workspace.primaryPath, appID: appID)
         let databasePath = WorkspaceFileLayout.appDatabaseFile(workspacePath: workspace.primaryPath, appID: appID)

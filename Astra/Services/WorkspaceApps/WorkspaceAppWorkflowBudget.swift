@@ -28,4 +28,25 @@ enum WorkspaceAppWorkflowBudget {
         let budget = declaredTokenBudget(for: manifest, pipelineActionID: pipelineActionID)
         return budget > 0 && consumed > budget
     }
+
+    // MARK: - Per-app CUMULATIVE agent-spend ceiling
+    //
+    // `exceedsBudget` above caps ONE run. This is a separate, app-wide SAFETY ceiling on rolling
+    // agent spend: an app's HTML can serially trigger workflow runs over time (one at a time, bounded
+    // by the durable concurrency throttle), and on a `preApproved` app each run's agent task spends
+    // tokens with no per-action approval — so without a rolling cap the lifetime spend is unbounded.
+    // Enforced in the executor BEFORE launching a `task.createAndRun`/`task.fanOut` step: if the app's
+    // spend in the trailing window already meets a ceiling, the launch is denied and the run is blocked
+    // (held for review), with an audit event. These are coarse safety limits, not normal-usage quotas;
+    // they exist to stop runaway automation, so the defaults are generous.
+    static let appBudgetWindow: TimeInterval = 24 * 60 * 60
+    static let appTokenCeiling = 1_000_000
+    static let appAgentRunCeiling = 200
+
+    /// True if launching another agent task would breach the rolling per-app ceiling, given the tokens
+    /// the app has already consumed and the count of its agent-launching runs within the window. Pure
+    /// (the executor supplies the measured prior spend) so it is directly unit-testable.
+    static func exceedsAppAgentBudget(priorTokens: Int, priorAgentRuns: Int) -> Bool {
+        priorTokens >= appTokenCeiling || priorAgentRuns >= appAgentRunCeiling
+    }
 }

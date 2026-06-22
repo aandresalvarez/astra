@@ -881,6 +881,69 @@ struct WorkspaceAppActionExecutorTests {
         #expect(blocked.outputSummary.contains("budget exceeded"))
     }
 
+    @Test("per-app agent budget ceilings trip on either the token or the agent-run limit")
+    func appAgentBudgetCeilings() {
+        let tokenCap = WorkspaceAppWorkflowBudget.appTokenCeiling
+        let runCap = WorkspaceAppWorkflowBudget.appAgentRunCeiling
+        #expect(!WorkspaceAppWorkflowBudget.exceedsAppAgentBudget(priorTokens: 0, priorAgentRuns: 0))
+        #expect(!WorkspaceAppWorkflowBudget.exceedsAppAgentBudget(priorTokens: tokenCap - 1, priorAgentRuns: runCap - 1))
+        #expect(WorkspaceAppWorkflowBudget.exceedsAppAgentBudget(priorTokens: tokenCap, priorAgentRuns: 0))
+        #expect(WorkspaceAppWorkflowBudget.exceedsAppAgentBudget(priorTokens: 0, priorAgentRuns: runCap))
+    }
+
+    @MainActor
+    @Test("a preApproved app at its rolling per-app token ceiling can't launch another agent task")
+    func appAgentBudgetBlocksNewLaunch() throws {
+        let fixture = try Self.makePublishedApp(permissionMode: .preApproved)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        // Seed prior spend at the per-app token ceiling, within the rolling window. This stands in for
+        // a `preApproved` app whose page has already serially triggered enough agent work.
+        let prior = WorkspaceAppRun(
+            workspaceID: fixture.workspace.id,
+            appID: fixture.app.id,
+            appLogicalID: fixture.app.logicalID,
+            actionID: "seed-run",
+            trigger: .user,
+            inputSummary: ""
+        )
+        prior.consumedTokens = WorkspaceAppWorkflowBudget.appTokenCeiling
+        prior.status = .completed
+        fixture.context.insert(prior)
+        try fixture.context.save()
+
+        // budgetPipeline's first step is a task.createAndRun — the per-app gate fires BEFORE launching
+        // it, so the run is blocked (held for review) rather than spending more agent tokens.
+        #expect(throws: WorkspaceAppActionExecutionError.self) {
+            _ = try WorkspaceAppActionExecutor().execute(
+                actionID: "budgetPipeline",
+                app: fixture.app,
+                workspace: fixture.workspace,
+                manifest: fixture.manifest,
+                modelContext: fixture.context
+            )
+        }
+
+        // The blocked run was recorded, and a budget-exceeded audit event was emitted.
+        let runs = try fixture.context.fetch(FetchDescriptor<WorkspaceAppRun>())
+        let pipelineRun = runs.first { $0.actionID == "budgetPipeline" }
+        #expect(pipelineRun?.status == .blocked)
+        let events = try fixture.context.fetch(FetchDescriptor<WorkspaceAppRunEvent>())
+        #expect(events.contains { $0.type == "workspaceApp.appBudget.exceeded" })
+
+        // Sanity: with NO prior spend the same pipeline suspends normally (the gate doesn't fire).
+        let fresh = try Self.makePublishedApp(permissionMode: .preApproved)
+        defer { try? FileManager.default.removeItem(at: fresh.root) }
+        let suspended = try WorkspaceAppActionExecutor().execute(
+            actionID: "budgetPipeline",
+            app: fresh.app,
+            workspace: fresh.workspace,
+            manifest: fresh.manifest,
+            modelContext: fresh.context
+        )
+        #expect(suspended.run.status == .waiting)
+    }
+
     @MainActor
     @Test("task.fanOut launches N tasks, suspends on a barrier, resumes when all complete (C1)")
     func fanOutSuspendsOnBarrierAndResumesWhenAllComplete() throws {

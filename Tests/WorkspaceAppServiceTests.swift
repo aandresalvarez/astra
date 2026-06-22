@@ -473,6 +473,51 @@ struct WorkspaceAppServiceTests {
         #expect(try context.fetch(FetchDescriptor<WorkspaceAppRunEvent>()).isEmpty)
     }
 
+    @MainActor
+    @Test("createApp enforces workspace-unique logical IDs so two apps never share one SQLite file")
+    func serviceEnforcesUniqueLogicalIDAcrossApps() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("workspace-app-service-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let workspace = Workspace(name: "Apps", primaryPath: root.path)
+        context.insert(workspace)
+
+        // Two apps created with the SAME manifest.app.id in one workspace. Even though callers usually
+        // dedupe first, the SERVICE must guarantee isolation: the logical id keys the storage dir +
+        // SQLite file, so a collision would otherwise share `.astra/apps/<id>/data/app.sqlite`.
+        let manifest = Self.reconciliationManifest()
+        let service = WorkspaceAppService()
+        let first = try service.createApp(manifest: manifest, in: workspace, modelContext: context)
+        let second = try service.createApp(manifest: manifest, in: workspace, modelContext: context)
+
+        // The first keeps the declared id; the duplicate is auto-suffixed to a fresh, unique id.
+        #expect(first.app.logicalID == manifest.app.id)
+        #expect(second.app.logicalID != first.app.logicalID)
+
+        // The two apps therefore key DIFFERENT SQLite files, and both exist as separate databases.
+        let firstDB = WorkspaceFileLayout.appDatabaseFile(workspacePath: workspace.primaryPath, appID: first.app.logicalID)
+        let secondDB = WorkspaceFileLayout.appDatabaseFile(workspacePath: workspace.primaryPath, appID: second.app.logicalID)
+        #expect(firstDB != secondDB)
+        #expect(FileManager.default.fileExists(atPath: firstDB))
+        #expect(FileManager.default.fileExists(atPath: secondDB))
+
+        // The duplicate's PERSISTED manifest carries the suffixed id, so it matches its storage path.
+        let persisted = try JSONDecoder().decode(WorkspaceAppManifest.self, from: Data(contentsOf: second.manifestURL))
+        #expect(persisted.app.id == second.app.logicalID)
+
+        // Both apps are distinct rows in the index.
+        let logicalIDs = try context.fetch(FetchDescriptor<WorkspaceApp>()).map(\.logicalID)
+        #expect(Set(logicalIDs).count == 2)
+    }
+
     static func reconciliationManifest() -> WorkspaceAppManifest {
         WorkspaceAppManifest(
             app: WorkspaceAppManifestMetadata(
