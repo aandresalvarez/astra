@@ -62,7 +62,7 @@ enum StartupCredentialMigrationService {
             // into ASTRA's dedicated keychain. Idempotent; runs once at launch
             // (not on every Connector instantiation), enumerating by service
             // so it covers every credential/OAuth key without naming them.
-            KeychainService.migrateConnectorFromLoginKeychain(connectorID: connector.id)
+            KeychainService.migrateConnectorFromLoginKeychain(connector: connector)
         }
     }
 

@@ -738,14 +738,19 @@ struct CapabilityInstallerTests {
         let connector = try #require(try context.fetch(FetchDescriptor<Connector>(
             predicate: #Predicate { $0.isGlobal == true && $0.name == "Google Cloud" }
         )).first)
-        connector.saveCredential(key: "GCP_TOKEN", value: "secret")
+        let canAssertRealKeychain = AstraSecureKeychainTestSupport.isAvailable
+        if canAssertRealKeychain {
+            connector.saveCredential(key: "GCP_TOKEN", value: "secret")
+        }
         let connectorID = connector.id
         let skillID = skill.id
         defer {
-            KeychainService.deleteAll(connectorID: connectorID)
+            KeychainService.deleteAll(connector: connector)
             KeychainService.deleteAll(skillID: skillID)
         }
-        #expect(KeychainService.exists(key: "GCP_TOKEN", connectorID: connectorID))
+        if canAssertRealKeychain {
+            #expect(KeychainService.exists(key: "GCP_TOKEN", connector: connector))
+        }
         #expect(workspace.templates.map(\.name) == ["BQ Summary"])
 
         let result = try CapabilityUninstaller(library: library).remove(package, modelContext: context)
@@ -766,7 +771,9 @@ struct CapabilityInstallerTests {
         #expect(try context.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true })).isEmpty)
         #expect(try context.fetch(FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal == true })).isEmpty)
         #expect(try context.fetch(FetchDescriptor<LocalTool>(predicate: #Predicate { $0.isGlobal == true })).isEmpty)
-        #expect(!KeychainService.exists(key: "GCP_TOKEN", connectorID: connectorID))
+        if canAssertRealKeychain {
+            #expect(!KeychainService.exists(key: "GCP_TOKEN", connector: connector))
+        }
     }
 
     @Test("uninstall prefers origin metadata before legacy name matching")

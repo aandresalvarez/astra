@@ -566,6 +566,77 @@ struct LegacyCredentialTests {
         #expect(creds["API_KEY"] == "secure-value")
     }
 
+    @Test("Stable connector namespace normalizes equivalent base URLs")
+    func stableConnectorNamespaceNormalizesBaseURL() {
+        let first = KeychainSecretStore.stableConnectorEntityID(
+            serviceType: "jira",
+            baseURL: "https://StanfordMed.atlassian.net/"
+        )
+        let second = KeychainSecretStore.stableConnectorEntityID(
+            serviceType: "jira",
+            baseURL: "stanfordmed.atlassian.net"
+        )
+
+        #expect(first != nil)
+        #expect(first == second)
+    }
+
+    @Test("Stable connector namespace requires endpoint or package origin")
+    func stableConnectorNamespaceRequiresDurableIdentity() {
+        let entityID = KeychainSecretStore.stableConnectorEntityID(
+            serviceType: "custom",
+            baseURL: ""
+        )
+
+        #expect(entityID == nil)
+    }
+
+    @Test("Recreated connector reuses stable endpoint credentials")
+    func recreatedConnectorReusesStableEndpointCredentials() throws {
+        let store = MockSecretStore()
+        let original = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "basic"
+        )
+        original.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        let stableEntityID = try #require(KeychainSecretStore.stableConnectorEntityID(for: original))
+        store.save(key: "JIRA_EMAIL", value: "user@example.com", entityID: stableEntityID, label: nil)
+        store.save(key: "JIRA_API_TOKEN", value: "secret-token", entityID: stableEntityID, label: nil)
+
+        let recreated = Connector(
+            name: "Jira-new",
+            serviceType: "jira",
+            baseURL: "stanfordmed.atlassian.net/",
+            authMethod: "basic"
+        )
+        recreated.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+
+        let credentials = recreated.credentials(store: store)
+        #expect(credentials["JIRA_EMAIL"] == "user@example.com")
+        #expect(credentials["JIRA_API_TOKEN"] == "secret-token")
+        #expect(recreated.missingCredentialKeys(store: store).isEmpty)
+    }
+
+    @Test("Connector UUID namespace overrides stable endpoint credentials")
+    func uuidNamespaceOverridesStableEndpointCredentials() throws {
+        let store = MockSecretStore()
+        let connector = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "basic"
+        )
+        connector.credentialKeys = ["JIRA_API_TOKEN"]
+        let stableEntityID = try #require(KeychainSecretStore.stableConnectorEntityID(for: connector))
+        let uuidEntityID = KeychainSecretStore.connectorEntityID(for: connector.id)
+        store.save(key: "JIRA_API_TOKEN", value: "shared-token", entityID: stableEntityID, label: nil)
+        store.save(key: "JIRA_API_TOKEN", value: "specific-token", entityID: uuidEntityID, label: nil)
+
+        #expect(connector.credentials(store: store)["JIRA_API_TOKEN"] == "specific-token")
+    }
+
     @Test("Missing credential keys are detected before connector tests")
     func missingCredentialKeysDetected() {
         let store = MockSecretStore()

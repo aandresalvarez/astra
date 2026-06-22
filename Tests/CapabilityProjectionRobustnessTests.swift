@@ -67,6 +67,28 @@ struct ConnectorCredentialPresenceTests {
         let projection = ConnectorRuntimeProjection(connectors: [connector], secretStore: store)
         #expect(projection.missingCredentialKeysByConnector().isEmpty)
     }
+
+    @Test("Stable connector namespace is enough for runtime projection")
+    func stableNamespaceCountsAsConfigured() throws {
+        let container = try makeRobustnessContainer()
+        let store = MockSecretStore()
+        let connector = Connector(
+            name: "Jira", serviceType: "jira", icon: "j",
+            connectorDescription: "d", baseURL: "https://stanfordmed.atlassian.net", authMethod: "basic"
+        )
+        connector.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        container.mainContext.insert(connector)
+        let stableEntityID = try #require(KeychainSecretStore.stableConnectorEntityID(for: connector))
+        _ = store.save(key: "JIRA_EMAIL", value: "user@example.com", entityID: stableEntityID, label: nil)
+        _ = store.save(key: "JIRA_API_TOKEN", value: "secret-token", entityID: stableEntityID, label: nil)
+
+        let projection = ConnectorRuntimeProjection(connectors: [connector], secretStore: store)
+        let environment = projection.environmentVariables()
+
+        #expect(projection.missingCredentialKeysByConnector().isEmpty)
+        #expect(environment.values.contains("user@example.com"))
+        #expect(environment.values.contains("secret-token"))
+    }
 }
 
 @Suite("Legacy Env Fallback Boundaries")

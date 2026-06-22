@@ -68,6 +68,7 @@ struct CredentialKeyCaseTests {
     @Test("saveCredential uppercases key and deduplicates")
     func saveCredentialUppercaseDedup() {
         let connector = Connector(name: "Test")
+        defer { KeychainService.deleteAll(connector: connector) }
 
         // Add a credential with lowercase key
         connector.saveCredential(key: "api_token", value: "v1")
@@ -82,6 +83,7 @@ struct CredentialKeyCaseTests {
     @Test("saveCredential with mixed case finds existing uppercase entry")
     func saveCredentialMixedCase() {
         let connector = Connector(name: "Test")
+        defer { KeychainService.deleteAll(connector: connector) }
         connector.saveCredential(key: "MyToken", value: "v1")
         #expect(connector.credentialKeys == ["MYTOKEN"])
 

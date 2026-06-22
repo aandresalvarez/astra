@@ -363,11 +363,13 @@ enum CapabilityRuntimeIntegrityService {
         secretStore: SecretStore
     ) -> ConnectorCredentialRequirements {
         let declaredKeys = normalizedCredentialKeys(for: connector)
-        let entityID = KeychainSecretStore.connectorEntityID(for: connector.id)
+        let entityIDs = KeychainSecretStore.connectorEntityIDs(for: connector)
         let missingKeys = declaredKeys.filter { key in
-            let value = secretStore.load(key: key, entityID: entityID)?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            return value.isEmpty
+            !entityIDs.contains { entityID in
+                let value = secretStore.load(key: key, entityID: entityID)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return !value.isEmpty
+            }
         }
         return ConnectorCredentialRequirements(
             declaredKeys: declaredKeys,
