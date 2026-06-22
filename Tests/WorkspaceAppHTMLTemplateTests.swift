@@ -113,6 +113,46 @@ struct WorkspaceAppHTMLTemplateTests {
         #expect(report.blockers.contains { $0.message.contains("Table name may contain only") })
     }
 
+    @Test("Phase 5: the workflow HTML template uses the data + workflow bridge and is sandbox-safe")
+    func workflowTemplateUsesBridge() {
+        let cols = [
+            WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true),
+            WorkspaceAppStorageColumn(name: "title", type: "text"),
+            WorkspaceAppStorageColumn(name: "status", type: "text")
+        ]
+        let html = WorkspaceAppWorkflowHTMLTemplate.html(
+            title: "Tickets",
+            tables: [.init(name: "review_items", columns: cols, primaryKey: "id")],
+            actions: [.init(id: "run_review", label: "Run Review")],
+            chart: .init(table: "review_items", groupBy: "status", title: "By status")
+        )
+        // Uses both the data verbs and the workflow verbs; config fully substituted.
+        #expect(html.contains("astra.query") && html.contains("astra.insert") && html.contains("astra.update"))
+        #expect(html.contains("astra.runAction") && html.contains("astra.runs"))
+        #expect(!html.contains("__CONFIG__"))
+        #expect(html.contains("review_items") && html.contains("run_review"))
+        let low = html.lowercased()
+        for banned in ["eval(", "<iframe", "http://", "https://", "fetch(", "<link", "@import", "crypto.randomuuid"] {
+            #expect(!low.contains(banned), "workflow template must not contain \(banned)")
+        }
+    }
+
+    @Test("Phase 5: the workflow template is injection-safe (crafted identifiers can't break out)")
+    func workflowTemplateInjectionSafe() {
+        let nasty = "x</script><img src=x onerror=alert(1)>"
+        let cols = [WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true)]
+        let html = WorkspaceAppWorkflowHTMLTemplate.html(
+            title: nasty,
+            tables: [.init(name: nasty, columns: cols, primaryKey: "id")],
+            actions: [.init(id: nasty, label: nasty)],
+            chart: nil
+        )
+        // Every `<` in the injected CONFIG is neutralized, so the payload can't close the script.
+        #expect(!html.contains("</script><img"))
+        #expect(!html.contains("<img src=x"))
+        #expect(html.contains("\\u003c"))
+    }
+
     @Test("the htmlApp fallback manifest is a real interactive UI, not a placeholder or data shell")
     func scaffoldManifestIsRealInteractiveUI() {
         let manifest = WorkspaceAppStudioBuilder.htmlAppScaffoldManifest(intent: "a ui to manage open prs and comments")

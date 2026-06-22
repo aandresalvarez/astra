@@ -355,9 +355,24 @@ enum WorkspaceAppStudioGenerator {
         Generate the primary-key id client-side with a Math.random string (crypto.randomUUID is NOT \
         available). Handle a rejected `astra.*` promise with an inline error (never throw uncaught).
 
-        Use the DECLARATIVE (non-HTML) manifest ONLY for GOVERNED WORKFLOWS that need agent tasks, \
-        approval/agent gates, pipelines, connectors, scheduled automations, or artifact exports — \
-        features the HTML bridge does not expose. Everything else (tools, views, data/CRUD) → HTML.
+        (C) WORKFLOW HTML app — records that also drive a multi-step process (a pipeline, review \
+        queue, report export, or agent workflow). Emit `storage` + the `appStorage.*` CRUD actions \
+        as in (B), PLUS the workflow actions it needs — `gate.humanApproval` / `gate.agentRecommendation` \
+        (pipeline steps a human resolves), `task.createAndRun`, `artifact.export`, `notification.show`, \
+        and a `pipeline.run` whose `steps` chain them (gate any external write, e.g. export or an agent \
+        task, BEHIND a `gate.humanApproval` step). Set defaultMode "approvalRequired" when the pipeline \
+        runs an external write, else "draftOnly". Then an ASTRA_APP_HTML block whose JS uses the \
+        workflow bridge in ADDITION to astra.query/insert/update:
+          - `await astra.runAction(actionId)`   →  { run: { status, summary, runId, rows } }  (trigger a pipeline)
+          - `await astra.runs({ limit })`        →  { runs: [ { id, actionId, status, summary } ] }  (poll history)
+          - `await astra.actions()`              →  { actions: [ { id, type, label } ] }
+        A run that hits an approval gate returns status "waiting"; a HUMAN approves it in ASTRA's native \
+        attention queue shown around your surface (JS only TRIGGERS — it can never approve). Poll \
+        `astra.runs()` to reflect status. NEVER call a `gate.*` action directly from JS.
+
+        Use the DECLARATIVE (non-HTML) manifest ONLY for MONITOR apps that need scheduled (time-\
+        triggered) automations — the one feature the workflow bridge does not expose. Everything else \
+        (tools, views, data/CRUD, pipelines, reports, review queues, agent workflows) → HTML.
 
         SANDBOX (both kinds): the HTML block is INNER content only (markup + <style> + <script>; no \
         <!DOCTYPE>/<html>/<head>/<body> — ASTRA wraps it). NO eval()/new Function, NO <iframe>, NO \

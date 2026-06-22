@@ -210,8 +210,8 @@ struct WorkspaceAppStudioSessionTests {
         #expect(s.draft?.manifest.html == modelHTML.html)
     }
 
-    @Test("a governed-workflow intent (native, no html baseline) gets NO provisional draft")
-    func workflowIntentHasNoProvisional() async {
+    @Test("a monitor intent (native, no html baseline) gets NO provisional draft")
+    func monitorIntentHasNoProvisional() async {
         let ws = workspace()
         var sessionRef: WorkspaceAppStudioSession?
         var draftDuringGeneration: WorkspaceAppStudioDraft?
@@ -222,10 +222,11 @@ struct WorkspaceAppStudioSessionTests {
         let s = WorkspaceAppStudioSession(generate: stub)
         sessionRef = s
 
-        // A pipeline intent stays a native declarative app (no html baseline) → no instant provisional.
-        // (Data intents ARE now data-backed HTML and DO get a provisional — see firstTurnGenerates.)
+        // Monitor is the sole remaining native archetype (scheduled automations) → no html baseline →
+        // no instant provisional. (Data AND workflow intents are now HTML and DO get a provisional —
+        // see firstTurnGenerates / the Phase 5 archetype tests.)
         await s.submit(
-            "a multi-step intake approval pipeline", workspace: ws,
+            "monitor records and alert when a threshold is crossed", workspace: ws,
             runtimeID: TaskExecutionDefaults.runtime.rawValue,
             model: TaskExecutionDefaults.model, availableProviders: []
         )
@@ -298,9 +299,9 @@ struct WorkspaceAppStudioSessionTests {
         let s = WorkspaceAppStudioSession(generate: stub)
         session = s
 
-        // A native (no-provisional) intent so the assertion isolates the stale-result guard.
+        // A native monitor intent (no provisional) so the assertion isolates the stale-result guard.
         await s.submit(
-            "a multi-step intake approval pipeline", workspace: ws,
+            "monitor records and alert when a threshold is crossed", workspace: ws,
             runtimeID: TaskExecutionDefaults.runtime.rawValue,
             model: TaskExecutionDefaults.model, availableProviders: []
         )

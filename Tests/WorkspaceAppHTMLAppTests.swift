@@ -238,24 +238,137 @@ struct WorkspaceAppHTMLAppTests {
         #expect(WorkspaceAppManifestValidator.validate(manifest).isValid)
     }
 
-    @Test("an HTML app declaring connectors / native views / non-storage actions is rejected")
+    @Test("an HTML app declaring connectors / native views / a connector or url.open action is rejected")
     func htmlAppWithForbiddenFeaturesRejected() {
         // Native views: the HTML renders the UI, so declaring widgets is a governance blind spot.
         var withViews = htmlManifest()
         withViews.views = [WorkspaceAppViewSpec(id: "t", type: "table", title: "Rows", table: "rows")]
         #expect(!WorkspaceAppManifestValidator.validate(withViews).isValid)
 
-        // Connectors: Phase 2 is local-storage only — no network surface from an HTML app.
+        // Connectors: an HTML app is local-only — no networked surface.
         var withConnector = htmlManifest()
         withConnector.requirements = [
             WorkspaceAppRequirement(id: "r", contract: "tabularQuery.read", operations: ["runReadOnlyQuery"], optional: true, reason: "x")
         ]
         #expect(!WorkspaceAppManifestValidator.validate(withConnector).isValid)
 
-        // A non-appStorage action (e.g. a task) is not reachable by the bridge → forbidden.
-        var withTask = htmlManifest()
-        withTask.actions = [WorkspaceAppActionSpec(id: "t", type: "task.createDraft", taskTitle: "x", taskGoal: "y")]
-        #expect(!WorkspaceAppManifestValidator.validate(withTask).isValid)
+        // A connector WRITE action (networked) is not allowed — only local workflow actions are.
+        var withCapability = htmlManifest()
+        withCapability.actions = [WorkspaceAppActionSpec(id: "c", type: "capability.write", table: "rows")]
+        #expect(!WorkspaceAppManifestValidator.validate(withCapability).isValid)
+
+        // url.open (arbitrary navigation) is excluded from the workflow allowlist.
+        var withURL = htmlManifest()
+        withURL.actions = [WorkspaceAppActionSpec(id: "u", type: "url.open")]
+        #expect(!WorkspaceAppManifestValidator.validate(withURL).isValid)
+    }
+
+    @Test("Phase 5 gating: an HTML pipeline that exports WITHOUT a preceding human gate is rejected")
+    func htmlPipelineExportWithoutGateRejected() {
+        var manifest = htmlManifest()
+        manifest.storage = WorkspaceAppStorageSchema(tables: [
+            WorkspaceAppStorageTable(name: "items", columns: [
+                WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true)
+            ])
+        ])
+        manifest.permissions = WorkspaceAppPermissions(reads: ["appStorage.items"], writes: ["appStorage.items"], defaultMode: .approvalRequired)
+        manifest.actions = [
+            WorkspaceAppActionSpec(id: "list", type: "appStorage.query", table: "items"),
+            WorkspaceAppActionSpec(id: "export", type: "artifact.export", table: "items", exportFormat: "csv"),
+            // Ungated: export runs with no preceding gate.humanApproval → a JS trigger writes ungated.
+            WorkspaceAppActionSpec(id: "run", type: "pipeline.run", steps: ["list", "export"])
+        ]
+        let report = WorkspaceAppManifestValidator.validate(manifest)
+        #expect(!report.isValid)
+        #expect(report.blockers.contains { $0.message.contains("without a preceding gate.humanApproval") })
+
+        // Adding the gate before the export makes it valid.
+        manifest.actions = [
+            WorkspaceAppActionSpec(id: "list", type: "appStorage.query", table: "items"),
+            WorkspaceAppActionSpec(id: "approve", type: "gate.humanApproval", approvalPrompt: "ok?", approvalDecisions: ["approve", "reject"]),
+            WorkspaceAppActionSpec(id: "export", type: "artifact.export", table: "items", exportFormat: "csv"),
+            WorkspaceAppActionSpec(id: "run", type: "pipeline.run", steps: ["list", "approve", "export"])
+        ]
+        #expect(WorkspaceAppManifestValidator.validate(manifest).isValid)
+    }
+
+    @Test("Phase 5 gating: branch/fan-out primitives can't be declared (no indirect ungated export)")
+    func htmlAppBranchAndFanOutRejected() {
+        // gate.branch would let `pipeline.run -> gate.branch -> artifact.export` reach an ungated
+        // export past the flat gate check; it's excluded from the HTML action vocabulary entirely.
+        var withBranch = htmlManifest()
+        withBranch.actions = [WorkspaceAppActionSpec(id: "b", type: "gate.branch")]
+        #expect(!WorkspaceAppManifestValidator.validate(withBranch).isValid)
+        // task.fanOut (parallel agent children) is likewise excluded.
+        var withFanOut = htmlManifest()
+        withFanOut.actions = [WorkspaceAppActionSpec(id: "f", type: "task.fanOut")]
+        #expect(!WorkspaceAppManifestValidator.validate(withFanOut).isValid)
+    }
+
+    @Test("Phase 5 gating: a pipeline may not nest another pipeline as a step (flat-only)")
+    func htmlAppNestedPipelineStepRejected() {
+        var manifest = htmlManifest()
+        manifest.storage = WorkspaceAppStorageSchema(tables: [
+            WorkspaceAppStorageTable(name: "items", columns: [
+                WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true)
+            ])
+        ])
+        manifest.permissions = WorkspaceAppPermissions(reads: ["appStorage.items"], writes: ["appStorage.items"], defaultMode: .draftOnly)
+        manifest.actions = [
+            WorkspaceAppActionSpec(id: "list", type: "appStorage.query", table: "items"),
+            WorkspaceAppActionSpec(id: "inner", type: "pipeline.run", steps: ["list"]),
+            WorkspaceAppActionSpec(id: "outer", type: "pipeline.run", steps: ["inner"])
+        ]
+        let report = WorkspaceAppManifestValidator.validate(manifest)
+        #expect(!report.isValid)
+        #expect(report.blockers.contains { $0.message.contains("may not nest another") })
+    }
+
+    @Test("Phase 5 gating: an HTML loop running an agent task / export is rejected (inline, no gate)")
+    func htmlLoopWithExternalEffectRejected() {
+        var manifest = htmlManifest()
+        manifest.storage = WorkspaceAppStorageSchema(tables: [
+            WorkspaceAppStorageTable(name: "items", columns: [
+                WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true)
+            ])
+        ])
+        manifest.permissions = WorkspaceAppPermissions(reads: ["appStorage.items"], writes: ["appStorage.items"], defaultMode: .preApproved)
+        manifest.actions = [
+            WorkspaceAppActionSpec(id: "list", type: "appStorage.query", table: "items"),
+            WorkspaceAppActionSpec(id: "spawn", type: "task.createAndRun", taskTitle: "x", taskGoal: "y"),
+            WorkspaceAppActionSpec(
+                id: "loop", type: "loop.run",
+                gateField: "status", gateOperator: "equals", gateValue: .text("done"),
+                steps: ["list", "spawn"],
+                maxIterations: 5, timeoutSeconds: 30, delaySeconds: 0
+            )
+        ]
+        let report = WorkspaceAppManifestValidator.validate(manifest)
+        #expect(!report.isValid)
+        #expect(report.blockers.contains { $0.message.contains("must not run an external-effect step") })
+    }
+
+    @Test("Phase 5: an HTML app MAY declare governed workflow actions (task/gate/pipeline/export/notify)")
+    func htmlAppWithWorkflowActionsIsValid() {
+        var manifest = htmlManifest()
+        manifest.storage = WorkspaceAppStorageSchema(tables: [
+            WorkspaceAppStorageTable(name: "review_items", columns: [
+                WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true),
+                WorkspaceAppStorageColumn(name: "title", type: "text")
+            ])
+        ])
+        manifest.permissions = WorkspaceAppPermissions(
+            reads: ["appStorage.review_items"], writes: ["appStorage.review_items"], defaultMode: .approvalRequired
+        )
+        manifest.actions = [
+            WorkspaceAppActionSpec(id: "q", type: "appStorage.query", table: "review_items"),
+            WorkspaceAppActionSpec(id: "i", type: "appStorage.insert", table: "review_items"),
+            WorkspaceAppActionSpec(id: "g", type: "gate.humanApproval", approvalPrompt: "ok?", approvalDecisions: ["approve", "reject"]),
+            WorkspaceAppActionSpec(id: "x", type: "artifact.export", table: "review_items", exportFormat: "csv"),
+            WorkspaceAppActionSpec(id: "n", type: "notification.show", notificationTitle: "Done"),
+            WorkspaceAppActionSpec(id: "p", type: "pipeline.run", steps: ["q", "g", "x"])
+        ]
+        #expect(WorkspaceAppManifestValidator.validate(manifest).isValid)
     }
 
     @Test("network APIs (fetch/XHR/WebSocket/EventSource/sendBeacon/@import/import()) are rejected")

@@ -399,8 +399,11 @@ struct WorkspaceAppStudioGeneratorTests {
         #expect(lower.contains("pure-ui html app"))
         #expect(lower.contains("data-backed html app"))
         #expect(lower.contains("astra.query") && lower.contains("astra.insert"))
-        // Declarative manifest reserved for governed workflows only.
-        #expect(lower.contains("governed workflows"))
+        // Phase 5: workflow apps are HTML too, driven by the workflow bridge.
+        #expect(lower.contains("workflow html app"))
+        #expect(lower.contains("astra.runaction"))
+        // Declarative manifest now reserved for MONITOR (scheduled-automation) apps only.
+        #expect(lower.contains("monitor apps"))
     }
 
     @Test("the prompt tells the model which connectors the workspace has (capability-aware)")

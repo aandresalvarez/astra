@@ -901,6 +901,168 @@ enum WorkspaceAppStudioBuilder {
         )
     }
 
+    // MARK: - Phase 5: WORKFLOW / DASHBOARD HTML apps
+
+    /// Shared base for a WORKFLOW or DASHBOARD HTML app — a `review_items` table the user CRUDs
+    /// through the HTML, plus the `appStorage.{query,insert,update}` actions that form the data-bridge
+    /// allowlist. Workflow actions (gate/pipeline/export/task) are appended by the per-archetype
+    /// builders below. No native `views`/`sources` (the HTML renders the UI; reads go through the
+    /// astra bridge). `mode` is the permission mode: draftOnly for read/list+approve flows,
+    /// approvalRequired where a pipeline gates an external write (export, agent task).
+    private static func workflowHTMLBase(
+        intent: String,
+        icon: String,
+        archetypes: [String],
+        mode: WorkspaceAppPermissionMode,
+        extraWrites: [String] = []
+    ) -> WorkspaceAppManifest {
+        let name = title(from: intent)
+        let table = "review_items"
+        let columns = [
+            WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true),
+            WorkspaceAppStorageColumn(name: "title", type: "text", required: true),
+            WorkspaceAppStorageColumn(name: "status", type: "text"),
+            WorkspaceAppStorageColumn(name: "notes", type: "text")
+        ]
+        return WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(
+                id: slug(from: name),
+                name: name,
+                icon: icon,
+                description: "A dynamic local workflow app.",
+                tags: ["local-storage", "html-app"],
+                archetypes: archetypes
+            ),
+            storage: WorkspaceAppStorageSchema(tables: [WorkspaceAppStorageTable(name: table, columns: columns)]),
+            actions: [
+                WorkspaceAppActionSpec(id: "list_review_items", type: "appStorage.query", label: "List", table: table),
+                WorkspaceAppActionSpec(id: "add_review_item", type: "appStorage.insert", label: "Add", table: table),
+                WorkspaceAppActionSpec(id: "update_review_item", type: "appStorage.update", label: "Update", table: table)
+            ],
+            permissions: WorkspaceAppPermissions(
+                reads: ["appStorage.review_items"],
+                writes: ["appStorage.review_items"] + extraWrites,
+                defaultMode: mode
+            )
+        )
+    }
+
+    private static func htmlTableSpecs(_ manifest: WorkspaceAppManifest) -> [WorkspaceAppWorkflowHTMLTemplate.TableSpec] {
+        (manifest.storage?.tables ?? []).map { table in
+            let pk = table.columns.first(where: { $0.primaryKey })?.name ?? "id"
+            return WorkspaceAppWorkflowHTMLTemplate.TableSpec(name: table.name, columns: table.columns, primaryKey: pk)
+        }
+    }
+
+    /// Render the workflow HTML onto a manifest. `buttonIDs` are the actions shown as top-level "Run"
+    /// buttons (the pipelines/exports) — deliberately explicit, not every runnable action, so a
+    /// pipeline's internal task/gate steps don't each become a standalone button. (The bridge's
+    /// allowlist is the security boundary; this is just which buttons the UI offers.)
+    private static func applyWorkflowHTML(
+        _ manifest: inout WorkspaceAppManifest,
+        buttonIDs: [String],
+        chart: WorkspaceAppWorkflowHTMLTemplate.ChartSpec? = nil
+    ) {
+        let buttons = buttonIDs
+            .compactMap { id in manifest.actions.first { $0.id == id } }
+            .map { WorkspaceAppWorkflowHTMLTemplate.ActionSpec(id: $0.id, label: $0.label ?? $0.id) }
+        manifest.html = WorkspaceAppWorkflowHTMLTemplate.html(
+            title: manifest.app.name,
+            tables: htmlTableSpecs(manifest),
+            actions: buttons,
+            chart: chart
+        )
+    }
+
+    /// A dashboard data app rendered as HTML: records CRUD + count metrics + a by-status bar chart,
+    /// all client-side from `astra.query`. No workflow actions.
+    static func dashboardHTMLManifest(intent: String) -> WorkspaceAppManifest {
+        var manifest = workflowHTMLBase(intent: intent, icon: "chart.bar.xaxis", archetypes: ["Dashboard", "HTML App"], mode: .draftOnly)
+        applyWorkflowHTML(
+            &manifest,
+            buttonIDs: [],
+            chart: WorkspaceAppWorkflowHTMLTemplate.ChartSpec(table: "review_items", groupBy: "status", title: "Items by status")
+        )
+        return manifest
+    }
+
+    /// A review queue rendered as HTML: records CRUD + a triage pipeline (list → human approval).
+    /// Triggering the pipeline suspends at the approval gate, which a human resolves in the native
+    /// attention queue rendered around this surface.
+    static func reviewQueueHTMLManifest(intent: String) -> WorkspaceAppManifest {
+        var manifest = workflowHTMLBase(intent: intent, icon: "checklist", archetypes: ["Review Queue", "HTML App"], mode: .draftOnly)
+        manifest.actions.append(contentsOf: [
+            WorkspaceAppActionSpec(id: "approve_batch", type: "gate.humanApproval", label: "Approve Batch",
+                                   approvalPrompt: "Proceed with the reviewed items?", approvalDecisions: ["approve", "reject"]),
+            WorkspaceAppActionSpec(id: "run_review", type: "pipeline.run", label: "Run Review",
+                                   steps: ["list_review_items", "approve_batch"])
+        ])
+        applyWorkflowHTML(&manifest, buttonIDs: ["run_review"], chart: WorkspaceAppWorkflowHTMLTemplate.ChartSpec(table: "review_items", groupBy: "status", title: "Items by status"))
+        return manifest
+    }
+
+    /// A pipeline rendered as HTML: records CRUD + a multi-step pipeline (list → human approval →
+    /// notify). The gate suspends to the native approval queue; the notify step runs on resume.
+    static func pipelineHTMLManifest(intent: String) -> WorkspaceAppManifest {
+        var manifest = workflowHTMLBase(intent: intent, icon: "arrow.triangle.branch", archetypes: ["Pipeline", "HTML App"], mode: .draftOnly)
+        manifest.actions.append(contentsOf: [
+            WorkspaceAppActionSpec(id: "approve_batch", type: "gate.humanApproval", label: "Approve Batch",
+                                   approvalPrompt: "Proceed with the reviewed items?", approvalDecisions: ["approve", "reject"]),
+            WorkspaceAppActionSpec(id: "notify_done", type: "notification.show", label: "Notify",
+                                   notificationTitle: "Pipeline complete", notificationBody: "The review pipeline finished."),
+            WorkspaceAppActionSpec(id: "run_pipeline", type: "pipeline.run", label: "Run Pipeline",
+                                   steps: ["list_review_items", "approve_batch", "notify_done"])
+        ])
+        applyWorkflowHTML(&manifest, buttonIDs: ["run_pipeline"])
+        return manifest
+    }
+
+    /// A report generator rendered as HTML: records CRUD + a pipeline that gates a CSV export behind
+    /// human approval (list → approve → export). approvalRequired so the external-write export is
+    /// permitted only after the gate sets confirmedApproval on resume.
+    static func reportHTMLManifest(intent: String) -> WorkspaceAppManifest {
+        var manifest = workflowHTMLBase(intent: intent, icon: "doc.text", archetypes: ["Report Generator", "HTML App"], mode: .approvalRequired, extraWrites: ["artifact.exports"])
+        manifest.actions.append(contentsOf: [
+            WorkspaceAppActionSpec(id: "approve_export", type: "gate.humanApproval", label: "Approve Export",
+                                   approvalPrompt: "Export the current records as a report?", approvalDecisions: ["approve", "reject"]),
+            WorkspaceAppActionSpec(id: "export_report", type: "artifact.export", label: "Export Report",
+                                   table: "review_items", exportFormat: "csv"),
+            WorkspaceAppActionSpec(id: "run_report", type: "pipeline.run", label: "Generate Report",
+                                   steps: ["list_review_items", "approve_export", "export_report"])
+        ])
+        applyWorkflowHTML(&manifest, buttonIDs: ["run_report"])
+        return manifest
+    }
+
+    /// An agentic workflow rendered as HTML: records CRUD + a governed agent pipeline (analyze task →
+    /// agent recommendation gate → human approval gate → implement task), chained by a `pipeline.run`.
+    /// Triggering the pipeline suspends at the gates for the native queue; the agent tasks run only
+    /// after approval (approvalRequired keeps the external task writes gated).
+    static func agenticWorkflowHTMLManifest(intent: String) -> WorkspaceAppManifest {
+        var manifest = workflowHTMLBase(intent: intent, icon: "cpu", archetypes: ["Agentic Workflow", "HTML App"], mode: .approvalRequired, extraWrites: ["task.runs"])
+        manifest.actions.append(contentsOf: [
+            WorkspaceAppActionSpec(id: "analyze", type: "task.createAndRun", label: "Analyze",
+                                   taskTitle: "Analyze the records",
+                                   taskGoal: "Analyze the app's review items and produce findings the implementation step can act on.",
+                                   outputBinding: WorkspaceAppActionOutputBinding(field: "summary", capture: "text", table: nil)),
+            WorkspaceAppActionSpec(id: "agent_review", type: "gate.agentRecommendation", label: "Agent review",
+                                   agentPrompt: "Review the analysis and recommend whether to continue to implementation, revise, or stop.",
+                                   agentDecisions: ["continue", "revise", "stop"],
+                                   agentPolicyMode: "approvalRequired", agentTokenBudget: 20_000, agentRequiresApproval: true),
+            WorkspaceAppActionSpec(id: "human_approval", type: "gate.humanApproval", label: "Human approval",
+                                   approvalPrompt: "Approve the agent's recommendation before the workflow acts?",
+                                   approvalDecisions: ["approve", "reject"]),
+            WorkspaceAppActionSpec(id: "implement", type: "task.createAndRun", label: "Implement",
+                                   taskTitle: "Implement the approved plan",
+                                   taskGoal: "Implement the approved plan from the analysis and record the outcome.",
+                                   inputBinding: WorkspaceAppActionInputBinding(source: "boundRows", table: nil, label: "Analysis findings", limit: nil)),
+            WorkspaceAppActionSpec(id: "run_workflow", type: "pipeline.run", label: "Run Workflow",
+                                   steps: ["list_review_items", "analyze", "agent_review", "human_approval", "implement"])
+        ])
+        applyWorkflowHTML(&manifest, buttonIDs: ["run_workflow"])
+        return manifest
+    }
+
     static func operationalSurfaceManifest(intent: String) -> WorkspaceAppManifest {
         let name = title(from: intent)
         let id = slug(from: name)

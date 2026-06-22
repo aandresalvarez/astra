@@ -79,24 +79,28 @@ enum WorkspaceAppManifestValidator {
             issues.append(blocker("/html", "HTML app body is empty."))
             return
         }
-        // Phase 2 invariant: an HTML app's UI is the HTML itself, and its ONLY data access is its
-        // own storage via the vetted `astra.*` bridge. So it MAY declare its own `storage` +
-        // `appStorage.*` actions (that IS the bridge allowlist), but it must NOT declare connectors
-        // (`requirements`/`sources`), native `views`/widgets (the HTML renders the UI), `automations`,
-        // or any non-`appStorage` action (no networked/workflow surface from an HTML app yet). This
-        // keeps the permission surface honest while letting HTML apps be real data apps.
+        // Phase 2/5 invariant: an HTML app's UI is the HTML itself, and its capabilities reach native
+        // ONLY through the vetted `astra.*` bridge. So it MAY declare its own `storage` +
+        // `appStorage.*` actions (the data allowlist) AND governed WORKFLOW actions — `task.*`,
+        // `gate.*` (pipeline steps; a human still resolves them in the native approval queue),
+        // `pipeline.run`/`loop.run`, `artifact.export`, `notification.show`, `rows.reduce`,
+        // `clipboard.copy`. It must NOT declare connectors (`requirements`/`sources` /
+        // `capability.*` — networked, deferred), native `views`/widgets (the HTML renders the UI),
+        // `automations` (time-triggered, not a UI action), or `url.open` (arbitrary navigation).
         var forbidden: [String] = []
         if !manifest.requirements.isEmpty { forbidden.append("connector requirements") }
         if !manifest.sources.isEmpty { forbidden.append("sources") }
         if !manifest.views.isEmpty { forbidden.append("views") }
         if !manifest.automations.isEmpty { forbidden.append("automations") }
-        if manifest.actions.contains(where: { !$0.type.hasPrefix("appStorage.") }) {
-            forbidden.append("non-storage actions")
+        let badActions = manifest.actions.filter { !isHTMLAppActionAllowed($0.type) }
+        if !badActions.isEmpty {
+            let types = Set(badActions.map(\.type)).sorted().joined(separator: ", ")
+            forbidden.append("disallowed actions (\(types))")
         }
         if !forbidden.isEmpty {
             issues.append(blocker(
                 "/html",
-                "An HTML app may only declare its own storage + appStorage actions (reached via the astra bridge); it must not declare \(forbidden.joined(separator: ", ")). Move connector/workflow features to a declarative app."
+                "An HTML app may declare its own storage + appStorage actions and governed workflow actions (task/gate/pipeline/loop/export/notification/rows.reduce/clipboard) reached via the astra bridge; it must not declare \(forbidden.joined(separator: ", ")). Move connector features to a declarative app."
             ))
         }
         // Each appStorage action an HTML app declares is a data-bridge allowlist entry, so it must
@@ -106,6 +110,46 @@ enum WorkspaceAppManifestValidator {
                 issues.append(blocker(
                     "/actions/\(index)/table",
                     "An HTML app's appStorage action '\(action.id)' must name one of its declared tables (a table-less grant would expose the operation on every table)."
+                ))
+            }
+        }
+        // Workflow gating (Phase 5): the `astra.runAction` bridge can TRIGGER a declared
+        // pipeline/loop, so the MANIFEST must guarantee external effects in those runs are
+        // human-gated — the bridge relies on this admission check, not just on the deterministic
+        // builders, so a hand/model-authored HTML app can't ship an ungated write.
+        //  - A `pipeline.run` may include `artifact.export` only if a `gate.humanApproval` step
+        //    PRECEDES it. (Export does NOT suspend the pipeline — unlike `task.createAndRun`, which
+        //    suspends and is throttled — so without a prior gate a JS trigger would write a file
+        //    ungated; `artifact.export`'s effect is classified `.read` so the executor won't gate it.)
+        //  - A `loop.run` may not include ANY external-effect step (export / agent task / connector
+        //    write): loops execute steps inline with no suspend/approval, so a write would be
+        //    re-triggerable without limit.
+        let stepType: (String) -> String = { id in manifest.actions.first { $0.id == id }?.type ?? "" }
+        let externalEffectSteps: Set<String> = ["artifact.export", "task.createAndRun", "task.fanOut", "capability.write"]
+        for (index, action) in manifest.actions.enumerated() where action.type == "pipeline.run" || action.type == "loop.run" {
+            let stepTypes = action.steps.map(stepType)
+            // Steps must be LEAF actions — never another pipeline/loop — so the flat gate/export
+            // analysis below is complete (a nested composite, or a branch step, could otherwise route
+            // to an ungated `artifact.export` indirectly). `gate.branch`/`task.fanOut` can't be
+            // declared at all (see `isHTMLAppActionAllowed`); this also rejects a nested run.
+            if let nested = stepTypes.first(where: { $0 == "pipeline.run" || $0 == "loop.run" }) {
+                issues.append(blocker(
+                    "/actions/\(index)/steps",
+                    "An HTML app's '\(action.id)' may not nest another '\(nested)' as a step; keep workflow steps flat so external effects stay gated."
+                ))
+            }
+            if action.type == "loop.run" {
+                if let bad = stepTypes.first(where: { externalEffectSteps.contains($0) }) {
+                    issues.append(blocker(
+                        "/actions/\(index)/steps",
+                        "An HTML app's loop '\(action.id)' must not run an external-effect step ('\(bad)') — loops execute inline with no approval gate. Use a pipeline with a human-approval gate."
+                    ))
+                }
+            } else if let exportIdx = stepTypes.firstIndex(of: "artifact.export"),
+                      !stepTypes[..<exportIdx].contains("gate.humanApproval") {
+                issues.append(blocker(
+                    "/actions/\(index)/steps",
+                    "An HTML app's pipeline '\(action.id)' exports without a preceding gate.humanApproval step; a JS trigger could write ungated. Add a human-approval gate before the export."
                 ))
             }
         }
@@ -167,6 +211,21 @@ enum WorkspaceAppManifestValidator {
                 "HTML apps must be self-contained — no <link> elements. Inline all CSS; there is no network."
             ))
         }
+    }
+
+    /// Action types an HTML app may DECLARE. Storage (`appStorage.*`) is the data allowlist; the rest
+    /// are workflow primitives. Deliberately an EXPLICIT set, NOT a `task.`/`gate.` prefix: it EXCLUDES
+    /// the branching/fan-out primitives `gate.branch` and `task.fanOut` (and `task.open`), because
+    /// those introduce graph edges (branch targets, fan-out children) that would let an external
+    /// effect like `artifact.export` be reached indirectly — past the flat gate-before-export check in
+    /// `validateHTMLApp`. Keeping the HTML workflow vocabulary FLAT + branch-free makes that admission
+    /// analysis complete. Also excludes `capability.*` (networked) and `url.open` (navigation).
+    static func isHTMLAppActionAllowed(_ type: String) -> Bool {
+        if type.hasPrefix("appStorage.") { return true }
+        return ["task.createDraft", "task.createAndRun",
+                "gate.humanApproval", "gate.agentRecommendation", "gate.expression",
+                "pipeline.run", "loop.run", "artifact.export", "notification.show",
+                "rows.reduce", "clipboard.copy"].contains(type)
     }
 
     /// True if `lowered` contains an `eval(` call or `new Function`. `eval(` is matched only as a

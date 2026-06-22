@@ -24,11 +24,12 @@ struct WorkspaceAppWebReportView: NSViewRepresentable {
     /// JavaScript stays OFF by default. The vetted `chartInteractive` renderer and Phase 1 HTML
     /// apps opt in (locked CSP, no native bridge, no network — see the type doc).
     var allowsJavaScript = false
-    /// Phase 2 data bridge. When non-nil, an `astraAppBridge` message handler + the `astra.*` JS API
-    /// are registered so the page can read/write its OWN governed storage through this closure
-    /// (which routes to the existing action executor). Nil for charts/static reports and pure-UI
-    /// HTML apps — those keep the no-native-bridge posture. See `WorkspaceAppDataBridge`.
-    var onBridgeRequest: WorkspaceAppDataBridge.Run?
+    /// Phase 2/5 data + workflow bridge. When non-nil, an `astraAppBridge` message handler + the
+    /// `astra.*` JS API are registered so the page can read/write its OWN governed storage and
+    /// trigger its OWN declared workflow actions through these closures (which route to the existing
+    /// action executor). Nil for charts/static reports and pure-UI HTML apps — those keep the
+    /// no-native-bridge posture. See `WorkspaceAppDataBridge`.
+    var onBridgeRequest: WorkspaceAppDataBridge.Handlers?
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -37,9 +38,9 @@ struct WorkspaceAppWebReportView: NSViewRepresentable {
         configuration.websiteDataStore = .nonPersistent()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = allowsJavaScript
         if let onBridgeRequest {
-            // Vetted, allowlisted, local-only data channel (no network). The handler is retained by
-            // the userContentController; the injected script runs before the app's own JS.
-            let handler = WorkspaceAppDataBridgeHandler(run: onBridgeRequest)
+            // Vetted, allowlisted, local-only data + workflow channel (no network). The handler is
+            // retained by the userContentController; the injected script runs before the app's own JS.
+            let handler = WorkspaceAppDataBridgeHandler(handlers: onBridgeRequest)
             context.coordinator.bridgeHandler = handler
             configuration.userContentController.addScriptMessageHandler(
                 handler, contentWorld: .page, name: WorkspaceAppDataBridge.handlerName
@@ -59,11 +60,11 @@ struct WorkspaceAppWebReportView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
-        // Keep the bridge allowlist current: refresh the handler's closure (it captures the live
+        // Keep the bridge allowlist current: refresh the handler's closures (they capture the live
         // manifest) so an app refinement that changes storage/actions/permission takes effect even
         // when the HTML itself is unchanged.
         if let onBridgeRequest {
-            context.coordinator.bridgeHandler?.run = onBridgeRequest
+            context.coordinator.bridgeHandler?.handlers = onBridgeRequest
         }
         guard context.coordinator.loadedHTML != html else { return }
         context.coordinator.loadedHTML = html

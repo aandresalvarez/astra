@@ -72,14 +72,14 @@ struct WorkspaceAppSurfaceView: View {
             WorkspaceAppWebReportView(
                 html: WorkspaceAppWebReportHTML.appDocument(innerHTML: html),
                 allowsJavaScript: true,
-                onBridgeRequest: dataBridgeRun()
+                onBridgeRequest: bridgeHandlers()
             )
             // Bridge eligibility is part of the WebView's IDENTITY: if the app gains or loses its
-            // own storage, recreate the WebView so the handler is installed/removed accordingly
-            // (updateNSView only refreshes a still-present handler, never adds/removes one). This
-            // closes the eligibility-flip staleness hole — a page can't keep calling astra.* against
-            // an app that no longer grants storage.
-            .id(snapshot.manifest?.storage?.tables.isEmpty == false)
+            // own storage OR its runnable workflow actions, recreate the WebView so the handler is
+            // installed/removed accordingly (updateNSView only refreshes a still-present handler,
+            // never adds/removes one). This closes the eligibility-flip staleness hole — a page can't
+            // keep calling astra.* against an app that no longer grants that surface.
+            .id(bridgeEligible)
             .frame(maxWidth: .infinity)
             .frame(minHeight: 600)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -89,26 +89,29 @@ struct WorkspaceAppSurfaceView: View {
         }
     }
 
-    /// Phase 2 data bridge: the closure for a DATA-BACKED HTML app (one that declares its own
-    /// storage). It routes `astra.*` requests through the SAME governed `onRunAction` the native UI
-    /// uses, so permission enforcement + audit are preserved and preview (in-memory) / published
-    /// (SQLite) parity is automatic. Returns nil for a pure-UI HTML app (no storage) so no native
-    /// bridge is registered at all.
-    private func dataBridgeRun() -> WorkspaceAppDataBridge.Run? {
-        guard let manifest = snapshot.manifest,
-              manifest.storage?.tables.isEmpty == false else { return nil }
-        let onRunAction = self.onRunAction
-        return { request in
-            guard let resolved = WorkspaceAppDataBridge.resolve(request, in: manifest) else {
-                return .error("Operation '\(request.op)' on '\(request.table)' is not permitted by this app.")
-            }
-            do {
-                let result = try onRunAction(resolved.action, manifest, resolved.input)
-                return .rows(result.rows)
-            } catch {
-                return .error(String(describing: error))
-            }
-        }
+    /// True when the app declares its own storage OR a JS-runnable workflow action — i.e. when an
+    /// `astra.*` bridge should be registered for its HTML surface. Drives the WebView `.id` so the
+    /// handler is added/removed when eligibility flips.
+    private var bridgeEligible: Bool {
+        guard let manifest = snapshot.manifest else { return false }
+        if manifest.storage?.tables.isEmpty == false { return true }
+        return manifest.actions.contains { WorkspaceAppDataBridge.isDirectlyRunnable($0, in: manifest) }
+    }
+
+    /// Phase 2/5 bridge: the host closures for a DATA-BACKED or WORKFLOW HTML app. Every `astra.*`
+    /// call routes through the SAME governed `onRunAction` the native UI uses, so permission
+    /// enforcement + audit are preserved and preview (in-memory) / published (SQLite) parity is
+    /// automatic. Built outside the View (in `WorkspaceAppDataBridge.handlers`) so the closures don't
+    /// pressure the SwiftUI type-checker. Returns nil for a pure-UI HTML app (no storage, no runnable
+    /// actions) so no native bridge is registered at all.
+    private func bridgeHandlers() -> WorkspaceAppDataBridge.Handlers? {
+        guard let manifest = snapshot.manifest else { return nil }
+        return WorkspaceAppDataBridge.handlers(
+            manifest: manifest,
+            runs: snapshot.runs,
+            onRunAction: onRunAction,
+            onReload: onReload
+        )
     }
 
     private var declarativeSurface: some View {

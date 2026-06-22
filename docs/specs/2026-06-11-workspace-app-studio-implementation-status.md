@@ -228,6 +228,83 @@ Full suite green (**3235**, +3 tests). GUI live-verify of the data-app round-tri
 was blocked the prior session by a host screen-capture failure; the data path + allowlist are
 unit-verified through the real executor.
 
+### Phase 5 LANDED — governed WORKFLOW bridge; native is now monitor-only
+
+HTML apps can now drive their OWN declared workflow, so the workflow archetypes are HTML too. The
+`astraAppBridge` gained three verbs (same handler, dispatch-by-`op`):
+- `astra.runAction(actionId)` — trigger a DECLARED, JS-runnable workflow action.
+- `astra.runs({limit})` — read this app's recent run snapshots (poll status / show history).
+- `astra.actions()` — list the declared runnable actions.
+
+**Security model (the load-bearing part — hardened after a codex DO-NOT-SHIP, see below).** The
+direct JS verbs (`runnableActionTypes`) are only the self-gating/harmless ones: pipeline.run, loop.run,
+task.createDraft, notification.show, rows.reduce, clipboard.copy. EXCLUDED from direct JS:
+`capability.*` (networked connectors — still deferred), `gate.*` (a human resolves these in the native
+attention queue; JS may never mint a decision), `url.open` (arbitrary navigation), storage delete, AND
+`artifact.export` + `task.createAndRun` (write/agent effects that may run ONLY inside a gated pipeline,
+never as a direct verb). `resolveAction`/`jsActions` gate on `isDirectlyRunnable` = a runnable type
+that is NOT an internal `steps` entry of any pipeline/loop — so a page can't call a gated step (e.g.
+`export_report`) directly to skip its approval gate; only the top-level `run_*` pipeline is callable,
+and it suspends at its `gate.humanApproval` step. The bridge NEVER sets
+`confirmedApproval`/`confirmedDestructive`, so the gate is the sole authority. Everything routes through
+the same `onRunAction` → `WorkspaceAppActionExecutor` (permission + audit + app-scoped DB). Two
+throttles: `runActionInFlight` (no concurrent runAction) and `workflowRunPending` (deny a new runAction
+while a prior run is waiting/running — cleared when an `astra.runs()` poll shows nothing pending — so a
+scripted loop on a `preApproved` app can't queue unbounded agent tasks).
+
+**Why the gates still work for a full-HTML app.** `WorkspaceAppDetailView.body` renders the approval
+queue (`attentionSection`), `versionsSection`, and `automationSection` as native chrome AROUND the
+`WorkspaceAppSurfaceView`. So a workflow HTML app TRIGGERS a pipeline via `astra.runAction`; the
+pipeline suspends at its `gate.humanApproval` step; the human approves in the native queue shown above
+the HTML; the run resumes. JS only triggers — it never approves.
+
+**Builders + routing.** `workflowHTMLBase` + per-archetype builders (`pipelineHTMLManifest`,
+`reportHTMLManifest`, `reviewQueueHTMLManifest`, `agenticWorkflowHTMLManifest`, `dashboardHTMLManifest`
+in `WorkspaceAppStudio.swift`) wrap any external-write step behind a `gate.humanApproval` step inside
+the `pipeline.run`. One parameterized `WorkspaceAppWorkflowHTMLTemplate` (single injected `__CONFIG__`
+JSON, `<`-escaped = injection-safe) covers multi-table CRUD + metric/bar-chart (dashboard) + run
+buttons + a run-history poll. `validateHTMLApp` relaxed (`isHTMLAppActionAllowed`) to allow
+task./gate./pipeline.run/loop.run/export/notification/rows.reduce/clipboard; still forbids
+`capability.*`/`url.open`/requirements/sources/views/automations.
+
+**The honest remaining native set:** ONLY `monitor` (scheduled, time-triggered automations — not a
+UI-triggered action) plus the curated multi-table grocery REFERENCE (kept native by choice, not a
+capability gap — the workflow template supports multi-table). Connector-backed (live GitHub/Jira)
+HTML apps remain explicitly deferred (need a governed connector bridge; Phase 5 stays no-network).
+
+**Codex adversarial review (THREE rounds) → all findings fixed:**
+- **Round 1 (BLOCKER):** JS could call an internal pipeline step (`export_report`) directly to skip its
+  gate → dropped artifact.export/task.createAndRun from the direct-verb set and excluded any pipeline
+  step from direct invocation (`isDirectlyRunnable`). (HIGH) sequential task-spam → `workflowRunPending`
+  throttle. (LOW) stale `astra.runs()` → `onReload` after each runAction.
+- **Round 2 (STILL DO NOT SHIP):** the bypass wasn't fully closed — a top-level `pipeline.run` could
+  itself be UNGATED (export effect is `.read`, so the executor won't gate it), and `loop.run` runs
+  `task.createAndRun` INLINE (no suspend → the throttle never engages).
+- **Round 3 fix — admission gate in `validateHTMLApp`:** an HTML `pipeline.run` whose steps include
+  `artifact.export` MUST have a `gate.humanApproval` step BEFORE the export (export doesn't suspend; a
+  `task.createAndRun` step is fine because the pipeline SUSPENDS on it → throttled); an HTML `loop.run`
+  may not contain ANY external-effect step.
+- **Round 3 review (STILL DO NOT SHIP):** the gate check was NON-TRANSITIVE — a
+  `pipeline.run → gate.branch → artifact.export` (or a nested pipeline) reached an ungated export past
+  the direct-steps-only check.
+- **Round 4 fix — keep the HTML workflow vocabulary FLAT + branch-free so the analysis is complete:**
+  `isHTMLAppActionAllowed` is now an explicit allow-set that EXCLUDES `gate.branch`/`task.fanOut`/
+  `task.open` (un-declarable), and `validateHTMLApp` rejects any pipeline/loop step that resolves to
+  another `pipeline.run`/`loop.run` (no nesting). With branching/fan-out un-declarable and no nested
+  composites, the action graph reachable from a JS-runnable pipeline is depth-1 to LEAF actions, and no
+  leaf type references another action → the flat gate-before-export / no-external-effect-in-loop checks
+  are graph-complete. The native `artifact.export` `.read` effect was left unchanged (broad native
+  blast radius); the validator admission gate is the fix.
+
+Confirmed across the review rounds: no cross-app run leak, CSP/no-network intact,
+gates/connectors/url.open not JS-reachable, template injection-safe.
+
+Full suite green (**3252**, +17 tests). The in-memory PreviewRunner throws `approvalRequired` at a
+gate (it has no suspend machinery), so a workflow pipeline runs to completion only in the PUBLISHED
+app with the real executor — correct governance, asserted by the bridge test. GUI live-verify remains
+blocked by the host screen-capture failure; the bridge allowlist + suspend-on-gate path are
+unit-verified through the real runner.
+
 ## 2026-06-20 Update — Conversational App Studio (Lovable/Replit-style)
 
 App Studio is no longer a form. Creating an app is now a **conversation in the main

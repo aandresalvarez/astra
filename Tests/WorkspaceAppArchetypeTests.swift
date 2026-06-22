@@ -78,15 +78,35 @@ struct WorkspaceAppArchetypeTests {
         }
     }
 
-    @Test("Phase 3: governed-workflow + chart/queue archetypes stay native (declarative, no html)")
-    func workflowArchetypesStayNative() {
-        // pipeline/report/monitor/agenticWorkflow need tasks/gates/automations; dashboard (charts)
-        // and reviewQueue (triage + approval) need governed primitives the CRUD HTML can't express.
-        for archetype in [WorkspaceAppArchetype.pipeline, .reportGenerator, .monitor, .agenticWorkflow, .dashboard, .reviewQueue] {
+    @Test("Phase 5: workflow + dashboard archetypes are now HTML-backed (html + governed actions)")
+    func workflowArchetypesAreHTMLBacked() {
+        // pipeline/report/reviewQueue/agenticWorkflow render as WORKFLOW HTML apps (records CRUD via
+        // astra.* + a runnable pipeline whose gate suspends to the native queue); dashboard renders as
+        // a DATA + chart HTML app. All carry html, declare their own storage, and validate.
+        for archetype in [WorkspaceAppArchetype.pipeline, .reportGenerator, .reviewQueue, .agenticWorkflow, .dashboard] {
             let m = WorkspaceAppStudioRecipes.manifest(for: archetype, intent: "review and act on records")
-            #expect(m.html == nil, "\(archetype.label) needs governed primitives → stays native")
-            #expect(WorkspaceAppManifestValidator.validate(m).isValid)
+            #expect(m.html?.isEmpty == false, "\(archetype.label) should be HTML-backed")
+            #expect(m.storage?.tables.isEmpty == false, "\(archetype.label) should declare storage")
+            #expect(m.html?.contains("astra.query") == true, "\(archetype.label) UI should use the astra bridge")
+            #expect(WorkspaceAppManifestValidator.validate(m).isValid, "\(archetype.label) should validate")
         }
+    }
+
+    @Test("Phase 5: monitor stays native (scheduled automations the bridge can't express)")
+    func monitorStaysNative() {
+        let m = WorkspaceAppStudioRecipes.manifest(for: .monitor, intent: "watch for new records")
+        #expect(m.html == nil, "monitor needs time-triggered automations → stays native")
+        #expect(WorkspaceAppManifestValidator.validate(m).isValid)
+    }
+
+    @Test("Phase 5: a workflow HTML app's pipeline button is JS-runnable but its gates are not")
+    func workflowPipelineIsRunnableGatesAreNot() {
+        let m = WorkspaceAppStudioRecipes.manifest(for: .pipeline, intent: "process intake forms")
+        // The pipeline.run is exposed to JS via the bridge allowlist; the gate is a step a human
+        // resolves in the native queue, never directly JS-runnable.
+        #expect(m.actions.contains { $0.type == "pipeline.run" && WorkspaceAppDataBridge.runnableActionTypes.contains($0.type) })
+        #expect(m.actions.contains { $0.type == "gate.humanApproval" })
+        #expect(!WorkspaceAppDataBridge.runnableActionTypes.contains("gate.humanApproval"))
     }
 
     @Test("htmlApp recipe is the deterministic HTML fallback, not a data shell")
