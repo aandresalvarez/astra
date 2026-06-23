@@ -38,10 +38,19 @@ enum GitOperationIntentDetector {
             "pull from github",
             "pull from git hub",
             "pull latest",
+            "pull the latest",
+            "pull latest code",
+            "pull the latest code",
             "pull origin",
+            "pull from remote",
+            "pull remote",
             "fetch from github",
+            "fetch origin",
+            "fetch main",
             "sync with origin",
             "sync from github",
+            "sync from remote",
+            "sync main",
             "push to github",
             "clone from github",
             "clone from git hub",
@@ -51,7 +60,25 @@ enum GitOperationIntentDetector {
             "create pull request",
             "open pull request"
         ]
-        return naturalLanguageSignals.contains { haystack.contains($0) }
+        if naturalLanguageSignals.contains(where: { haystack.contains($0) }) {
+            return true
+        }
+
+        let orderedSignals = [
+            ["pull", "latest"],
+            ["pull", "code", "main"],
+            ["pull", "main"],
+            ["pull", "remote"],
+            ["pull", "origin"],
+            ["fetch", "main"],
+            ["fetch", "origin"],
+            ["sync", "main"],
+            ["sync", "origin"],
+            ["update", "from", "main"],
+            ["update", "with", "main"],
+            ["latest", "code", "main"]
+        ]
+        return orderedSignals.contains { containsOrderedWords($0, in: haystack) }
     }
 
     static func networkGitIntentText(prompt: String, task: AgentTask, contextText: String = "") -> String {
@@ -63,6 +90,23 @@ enum GitOperationIntentDetector {
         ]
             .joined(separator: "\n")
             .lowercased()
+    }
+
+    private static func containsOrderedWords(_ words: [String], in text: String) -> Bool {
+        guard !words.isEmpty else { return false }
+        var searchStart = text.startIndex
+        for word in words {
+            let pattern = #"\b"# + NSRegularExpression.escapedPattern(for: word) + #"\b"#
+            guard let range = text.range(
+                of: pattern,
+                options: [.regularExpression],
+                range: searchStart..<text.endIndex
+            ) else {
+                return false
+            }
+            searchStart = range.upperBound
+        }
+        return true
     }
 }
 

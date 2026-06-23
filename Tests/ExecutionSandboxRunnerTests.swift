@@ -81,7 +81,8 @@ struct ExecutionSandboxRunnerTests {
     private func makeContext(
         workspacePath: String,
         permissionPolicy: PermissionPolicy = .restricted,
-        executionPolicy: AgentRuntimeExecutionPolicy = .default
+        executionPolicy: AgentRuntimeExecutionPolicy = .default,
+        contextText: String = ""
     ) -> AgentRuntimeProcessLaunchContext {
         AgentRuntimeProcessLaunchContext(
             prompt: "p",
@@ -92,7 +93,8 @@ struct ExecutionSandboxRunnerTests {
             permissionPolicy: permissionPolicy,
             executionPolicy: executionPolicy,
             permissionManifest: nil,
-            timeoutSeconds: 1
+            timeoutSeconds: 1,
+            contextText: contextText
         )
     }
 
@@ -290,6 +292,39 @@ struct ExecutionSandboxRunnerTests {
             #expect(plan.commandPlannedFields["git_credential_readable_path_count"] == "2")
             #expect(plan.commandPlannedFields["git_credential_writable_path_count"] == "1")
             #expect(plan.commandPlannedFields["git_credential_transports"] == "ssh")
+        }
+    }
+
+    @Test("sandboxedPlan projects explicit attached files as read-only roots")
+    func sandboxedPlanAddsAttachmentReadablePaths() throws {
+        let fm = FileManager.default
+        let ws = fm.temporaryDirectory.appendingPathComponent("astra-runner-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: ws, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: ws) }
+
+        let attachment = ws.appendingPathComponent("DBT Unit Tests (1).md")
+        try "team dbt unit-test notes".write(to: attachment, atomically: true, encoding: .utf8)
+        let contextText = """
+        Please merge the attached testing document into the guidelines.
+
+        Attached files:
+        - \(attachment.path)
+        """
+
+        withStandardEnforcement(.off) {
+            let runner = AgentRuntimeProcessRunner()
+            let outcome = runner.sandboxedPlan(
+                adapter: FakeLaunchAdapter(currentDirectory: ws.path),
+                context: makeContext(workspacePath: ws.path, contextText: contextText)
+            )
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected .plan when disabled")
+                return
+            }
+
+            let expectedAttachmentPath = attachment.standardizedFileURL.path
+            #expect(plan.sandboxReadablePaths.contains(expectedAttachmentPath))
+            #expect(plan.commandPlannedFields["attachment_readable_path_count"] == "1")
         }
     }
 

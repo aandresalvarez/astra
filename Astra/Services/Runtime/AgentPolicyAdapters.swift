@@ -952,6 +952,7 @@ enum AgentPolicyManifestService {
         let manifestCredentialLabels = uniqueStrings(
             credentialLabels(for: task, contextText: contextText)
                 + dockerCredentialLabels(environment: executionEnvironment)
+                + gitCredentialLabels(task: task, contextText: contextText)
         )
         let runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: runtime)
         let providerPolicyAdapter = runtimeAdapter.policyAdapter(runtimeCapabilities: providerCapabilities)
@@ -965,7 +966,7 @@ enum AgentPolicyManifestService {
             requestedAllowedTools: requestedAllowedTools,
             localToolCommands: localToolCommands(for: task, contextText: contextText),
             environmentKeyNames: envKeys,
-            credentialLabels: credentialLabels(for: task, contextText: contextText),
+            credentialLabels: manifestCredentialLabels,
             providerFeatures: providerPolicyAdapter.supportedFeatures,
             providerConfigOwnership: configOwnership,
             existingProviderConfigSummary: runtimeAdapter.existingProviderConfigSummary(workspacePath: workspacePath)
@@ -981,6 +982,16 @@ enum AgentPolicyManifestService {
                 + runtimeSupportAllowedShellPatterns(environmentKeyNames: envKeys)
         )
         render.diagnostics = providerPolicyAdapter.validate(render: render, context: context)
+        if shouldProjectGitCredentials(task: task, contextText: contextText) {
+            render.diagnostics.append(PolicyDiagnostic(
+                id: "git.credential-projection",
+                severity: .info,
+                title: "Git credentials projected",
+                message: "Network Git intent was detected, so ASTRA will project Git config and credential files through the active sandbox for this run.",
+                affectedCapability: "git",
+                remediation: "Review the requested Git operation if this was unexpected."
+            ))
+        }
         // Reflect ASTRA's OS-level Seatbelt sandbox in the declared enforcement
         // tiers — but only when the run will both be wrapped (runtime in scope)
         // AND the sandbox would actually apply (enforcement on, usable workspace,
@@ -1133,6 +1144,22 @@ enum AgentPolicyManifestService {
         uniqueStrings(environment.effectiveCredentialProjections.map {
             "docker:\($0.displayName):\($0.access.rawValue):\($0.containerPath)"
         })
+    }
+
+    @MainActor
+    private static func gitCredentialLabels(task: AgentTask, contextText: String) -> [String] {
+        shouldProjectGitCredentials(task: task, contextText: contextText)
+            ? ["git:credential-context:read-only"]
+            : []
+    }
+
+    @MainActor
+    private static func shouldProjectGitCredentials(task: AgentTask, contextText: String) -> Bool {
+        GitOperationIntentDetector.detectsNetworkGitOperation(
+            prompt: "",
+            task: task,
+            contextText: contextText
+        )
     }
 
     @MainActor
@@ -1310,7 +1337,8 @@ enum AgentPolicyManifestService {
             return LogSanitizer.sanitize(event.payload, maxLength: 240)
         }
         let providerSandboxActions: [String] = events.compactMap(providerSandboxDeniedAction(from:))
-        return uniqueLimited(explicitActions + providerSandboxActions)
+        let osSandboxActions: [String] = events.compactMap(osSandboxDeniedAction(from:))
+        return uniqueLimited(explicitActions + providerSandboxActions + osSandboxActions)
     }
 
     private static func providerSandboxDeniedAction(from event: TaskEvent) -> String? {
@@ -1321,6 +1349,13 @@ enum AgentPolicyManifestService {
         guard lower.contains("sandbox") || lower.contains("outside") || lower.contains("workspace") else { return nil }
         guard let path = filesystemPaths(in: event.payload).first else { return nil }
         return "provider_sandbox_blocked_write path=\(path)"
+    }
+
+    private static func osSandboxDeniedAction(from event: TaskEvent) -> String? {
+        guard event.type == "tool.result" || event.type == "agent.response" || event.type == "agent.thinking" else {
+            return nil
+        }
+        return RuntimeSandboxDenialDiagnostics.fileDenial(in: event.payload)?.deniedActionValue
     }
 
     private static func filesystemPaths(in text: String) -> [String] {

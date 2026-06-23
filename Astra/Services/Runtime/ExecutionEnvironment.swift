@@ -120,6 +120,20 @@ struct ExecutionEnvironmentCredentialProjection: Codable, Equatable, Hashable, S
         )
     }
 
+    func sanitizedForRuntime() -> ExecutionEnvironmentCredentialProjection? {
+        switch kind {
+        case .gcpADC:
+            guard id == Self.gcpADCID,
+                  Self.isApprovedGCPADCHostPath(hostPath),
+                  !hostPath.isEmpty else {
+                return nil
+            }
+            return Self.gcpADC(hostPath: hostPath)
+        case .serviceAccountFile, .genericDirectory, .genericFile:
+            return nil
+        }
+    }
+
     var mount: ExecutionEnvironmentMount {
         ExecutionEnvironmentMount(
             hostPath: hostPath,
@@ -158,6 +172,24 @@ struct ExecutionEnvironmentCredentialProjection: Codable, Equatable, Hashable, S
             return ""
         }
         return trimmed
+    }
+
+    private static func isApprovedGCPADCHostPath(_ path: String) -> Bool {
+        let standardized = WorkspacePathPresentation.standardizedPath(path)
+        guard !standardized.isEmpty else { return false }
+        let nsPath = standardized as NSString
+        guard nsPath.lastPathComponent == "gcloud",
+              (nsPath.deletingLastPathComponent as NSString).lastPathComponent == ".config" else {
+            return false
+        }
+        if let canonical = ExecutionSandbox.canonicalize(standardized) {
+            guard !ExecutionSandbox.isForbiddenReadableRoot(canonical),
+                  !ExecutionSandbox.isForbiddenWritableRoot(canonical),
+                  !ExecutionSandbox.isOverlyBroadRoot(canonical) else {
+                return false
+            }
+        }
+        return true
     }
 }
 
@@ -319,8 +351,14 @@ struct WorkspaceExecutionEnvironment: Codable, Equatable, Sendable {
         _ projections: [ExecutionEnvironmentCredentialProjection]
     ) -> [ExecutionEnvironmentCredentialProjection]? {
         var byID: [String: ExecutionEnvironmentCredentialProjection] = [:]
-        for projection in projections where !projection.id.isEmpty && !projection.hostPath.isEmpty && !projection.containerPath.isEmpty {
-            byID[projection.id] = projection
+        for projection in projections {
+            guard let sanitized = projection.sanitizedForRuntime(),
+                  !sanitized.id.isEmpty,
+                  !sanitized.hostPath.isEmpty,
+                  !sanitized.containerPath.isEmpty else {
+                continue
+            }
+            byID[sanitized.id] = sanitized
         }
         let normalized = byID.values.sorted { $0.id < $1.id }
         return normalized.isEmpty ? nil : normalized
@@ -610,6 +648,7 @@ enum DockerExecutionPlanningError: LocalizedError, Equatable {
     case privilegedDenied
     case hostNetworkDenied
     case dockerSocketDenied
+    case invalidImageReference(String)
 
     var errorDescription: String? {
         switch self {
@@ -627,6 +666,8 @@ enum DockerExecutionPlanningError: LocalizedError, Equatable {
             return "Docker host networking is not allowed for ASTRA task execution."
         case .dockerSocketDenied:
             return "Mounting the Docker socket into task containers is not allowed."
+        case .invalidImageReference(let image):
+            return "Docker image reference is not safe to pass to docker run: \(image)."
         }
     }
 }
@@ -660,6 +701,9 @@ enum DockerExecutionPlanner {
         guard environment.networkMode != "host" else { return .failure(.hostNetworkDenied) }
         guard let image = environment.image, !image.isEmpty else {
             return .failure(.missingImage(environment.id))
+        }
+        guard isSafeDockerImageReference(image) else {
+            return .failure(.invalidImageReference(image))
         }
         let mounts = mountPlan(base: base, environment: environment, task: task)
         for mount in mounts {
@@ -715,6 +759,7 @@ enum DockerExecutionPlanner {
         for key in allowedEnv.keys.sorted() {
             dockerArgs += ["--env", key]
         }
+        dockerArgs.append("--")
         dockerArgs.append(image)
         dockerArgs.append(containerExecutable)
         dockerArgs.append(contentsOf: base.arguments)
@@ -760,6 +805,7 @@ enum DockerExecutionPlanner {
             parsesJSONLines: base.parsesJSONLines,
             directoriesToCreate: base.directoriesToCreate,
             sandboxReadablePaths: [],
+            sandboxHomeStateAccess: base.sandboxHomeStateAccess,
             sandboxProtectedWriteDenyPaths: [],
             providerDetectedFields: base.providerDetectedFields,
             commandPlannedFields: commandFields,
@@ -811,6 +857,7 @@ enum DockerExecutionPlanner {
             parsesJSONLines: base.parsesJSONLines,
             directoriesToCreate: base.directoriesToCreate,
             sandboxReadablePaths: base.sandboxReadablePaths,
+            sandboxHomeStateAccess: base.sandboxHomeStateAccess,
             sandboxProtectedWriteDenyPaths: base.sandboxProtectedWriteDenyPaths,
             providerDetectedFields: base.providerDetectedFields,
             commandPlannedFields: commandFields,
@@ -828,6 +875,27 @@ enum DockerExecutionPlanner {
                 || path == "/private/var/run/docker.sock"
                 || path.hasSuffix("/.docker/run/docker.sock")
         }
+    }
+
+    static func isSafeDockerImageReference(_ image: String) -> Bool {
+        let trimmed = image.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed == image,
+              !trimmed.isEmpty,
+              !trimmed.hasPrefix("-"),
+              trimmed.rangeOfCharacter(from: .whitespacesAndNewlines) == nil else {
+            return false
+        }
+        guard trimmed.range(of: #"^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$"#, options: .regularExpression) != nil else {
+            return false
+        }
+        guard !trimmed.contains("://"),
+              !trimmed.contains(".."),
+              !trimmed.contains("//"),
+              !trimmed.hasSuffix(":"),
+              !trimmed.hasSuffix("/") else {
+            return false
+        }
+        return true
     }
 
     static func mountPlan(

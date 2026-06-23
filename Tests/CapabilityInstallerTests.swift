@@ -132,7 +132,7 @@ struct CapabilityInstallerTests {
         let task = AgentTask(title: "Use GCP", goal: "List projects", workspace: workspace)
         task.skills = [skill]
         let resolver = TaskCapabilityResolver(task: task).resolver
-        #expect(resolver.resolvedEnvironmentVariables["GCP_PROJECT"] == "astra-dev")
+        #expect(resolver.resolvedEnvironmentVariables["GCP_PROJECT"] == "")
     }
 
     @Test("install records exact origin metadata on package resources")
@@ -234,8 +234,10 @@ struct CapabilityInstallerTests {
         let task = AgentTask(title: "Use Jira", goal: "List tickets", workspace: workspace)
         task.skills = [skill]
         let resolver = TaskCapabilityResolver(task: task).resolver
-        #expect(resolver.resolvedEnvironmentVariables["JIRA_BASE_URL"] == baseURL)
-        #expect(resolver.resolvedEnvironmentVariables["JIRA_PROJECTS"] == "ENG, OPS")
+        #expect(resolver.resolvedEnvironmentVariables["JIRA_JIRA_BASE_URL"] == baseURL)
+        #expect(resolver.resolvedEnvironmentVariables["JIRA_JIRA_PROJECTS"] == "ENG, OPS")
+        #expect(resolver.resolvedEnvironmentVariables["JIRA_BASE_URL"] == "")
+        #expect(resolver.resolvedEnvironmentVariables["JIRA_PROJECTS"] == nil)
     }
 
     @Test("configured source values stay scoped to their workspace")
@@ -294,10 +296,12 @@ struct CapabilityInstallerTests {
 
         let firstEnv = TaskCapabilityResolver(task: firstTask).resolver.resolvedEnvironmentVariables
         let secondEnv = TaskCapabilityResolver(task: secondTask).resolver.resolvedEnvironmentVariables
-        #expect(firstEnv["JIRA_BASE_URL"] == "https://first.atlassian.net")
-        #expect(firstEnv["JIRA_PROJECTS"] == "ONE")
-        #expect(secondEnv["JIRA_BASE_URL"] == "https://second.atlassian.net")
-        #expect(secondEnv["JIRA_PROJECTS"] == "TWO")
+        #expect(firstEnv["JIRA_JIRA_BASE_URL"] == "https://first.atlassian.net")
+        #expect(firstEnv["JIRA_JIRA_PROJECTS"] == "ONE")
+        #expect(secondEnv["JIRA_JIRA_BASE_URL"] == "https://second.atlassian.net")
+        #expect(secondEnv["JIRA_JIRA_PROJECTS"] == "TWO")
+        #expect(firstEnv["JIRA_PROJECTS"] == nil)
+        #expect(secondEnv["JIRA_PROJECTS"] == nil)
     }
 
     @Test("install once can enable the same shared capability in multiple workspaces")
@@ -601,7 +605,7 @@ struct CapabilityInstallerTests {
             try CapabilityInstaller(library: library).install(package, into: workspace, modelContext: context)
             Issue.record("Install should have failed")
         } catch let error as CapabilityInstaller.InstallationError {
-            #expect(error.localizedDescription.contains("unsafe default arguments"))
+            #expect(error.localizedDescription.contains("unsafe command or default arguments"))
             #expect(library.installedPackages().isEmpty)
             #expect(workspace.enabledCapabilityIDs.isEmpty)
         }
@@ -688,8 +692,8 @@ struct CapabilityInstallerTests {
                 id: "unsafe",
                 displayName: "Unsafe MCP",
                 transport: .stdio,
-                command: "npx",
-                arguments: ["server", ";", "rm"]
+                command: "python3",
+                arguments: ["-c", "print"]
             )
         ]
 
@@ -697,7 +701,8 @@ struct CapabilityInstallerTests {
             try CapabilityInstaller(library: library).install(package, into: workspace, modelContext: context)
             Issue.record("Install should have failed")
         } catch let error as CapabilityInstaller.InstallationError {
-            #expect(error.localizedDescription.contains("unsafe default arguments"))
+            #expect(error.localizedDescription.contains("unsafe command or default arguments"))
+            #expect(error.localizedDescription.contains("interpreter execution flag"))
             #expect(library.installedPackages().isEmpty)
             #expect(workspace.enabledCapabilityIDs.isEmpty)
         }

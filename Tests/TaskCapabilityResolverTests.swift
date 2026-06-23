@@ -317,8 +317,8 @@ struct TaskCapabilityResolverTests {
         #expect(prompt.contains("ASTRA_CONNECTORS"))
     }
 
-    @Test("Single same-service connector keeps legacy env vars during deprecation window")
-    func singleSameServiceConnectorKeepsLegacyEnvVarsDuringDeprecationWindow() throws {
+    @Test("Single same-service connector uses namespaced env vars by default")
+    func singleSameServiceConnectorUsesNamespacedEnvVarsByDefault() throws {
         let container = try makeTaskCapabilityResolverContainer()
         let context = container.mainContext
 
@@ -347,7 +347,7 @@ struct TaskCapabilityResolverTests {
 
         let env = TaskCapabilityResolver(task: task).resolver.resolvedEnvironmentVariables
         #expect(env["REDCAP_STUDY_A_SOURCE_API_URL"] == "https://redcap.example.edu/api/source")
-        #expect(env["REDCAP_API_URL"] == "https://redcap.example.edu/api/source")
+        #expect(env["REDCAP_API_URL"] == nil)
     }
 
     @Test("Projection namespaces duplicate connector credentials")
@@ -398,7 +398,7 @@ struct TaskCapabilityResolverTests {
         ).environmentVariables()
 
         #expect(env["JIRA_JIRA_EMAIL"] == "user@example.edu")
-        #expect(env["JIRA_EMAIL"] == "user@example.edu")
+        #expect(env["JIRA_EMAIL"] == nil)
         #expect(env["JIRA_JIRA_API_TOKEN"] == nil)
         #expect(env["JIRA_API_TOKEN"] == nil)
 
@@ -600,7 +600,7 @@ struct TaskCapabilityResolverTests {
         let env = ConnectorRuntimeProjection(connectors: [connector]).environmentVariables()
 
         #expect(env["JIRA_JIRA_BASE_URL"] == "https://jira.example.edu")
-        #expect(env["JIRA_BASE_URL"] == "https://jira.example.edu")
+        #expect(env["JIRA_BASE_URL"] == nil)
         #expect(env["JIRA_JIRA_PROJECTS"] == nil)
         #expect(env["JIRA_PROJECTS"] == nil)
         #expect(env["JIRA_JIRA_REGION"] == nil)
@@ -746,7 +746,8 @@ struct TaskCapabilityResolverTests {
 
         let env = scope.resolver.resolvedEnvironmentVariables
         #expect(env["JIRA_JIRA_NEW_BASE_URL"] == "https://stanfordmed.atlassian.net")
-        #expect(env["JIRA_PROJECTS"] == "SS")
+        #expect(env["JIRA_JIRA_NEW_PROJECTS"] == "SS")
+        #expect(env["JIRA_PROJECTS"] == nil)
         #expect(env["ASTRA_CONNECTORS"]?.contains(#""name":"Jira-new""#) == true)
 
         let prompt = AgentPromptBuilder.buildPrompt(for: task)

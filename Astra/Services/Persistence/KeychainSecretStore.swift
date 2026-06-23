@@ -66,10 +66,10 @@ struct KeychainSecretStore: SecretStore {
         let component = slug(originComponentID ?? "")
 
         let identity: String
-        if let base, !base.isEmpty {
+        if !package.isEmpty || !component.isEmpty {
+            identity = [service, package, component, base ?? ""].filter { !$0.isEmpty }.joined(separator: "-")
+        } else if let base, !base.isEmpty {
             identity = [service, base].filter { !$0.isEmpty }.joined(separator: "-")
-        } else if !package.isEmpty || !component.isEmpty {
-            identity = [service, package, component].filter { !$0.isEmpty }.joined(separator: "-")
         } else {
             return nil
         }

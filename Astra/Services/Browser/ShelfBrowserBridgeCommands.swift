@@ -7,6 +7,15 @@ enum ShelfBrowserCommandNormalization {
     }
 }
 
+enum BrowserDangerousActionApproval {
+    /// Browser bridge payloads are provider-controlled. A boolean in that
+    /// payload is not user consent, so it must never satisfy ASTRA's dangerous
+    /// action confirmation gate.
+    static func trustedProviderApproval(_ allowDangerous: Bool?) -> Bool {
+        false
+    }
+}
+
 struct NavigateCommand: Decodable {
     let url: String
 }

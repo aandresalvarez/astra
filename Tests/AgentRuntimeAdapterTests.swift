@@ -3,7 +3,7 @@ import Testing
 @testable import ASTRA
 import ASTRACore
 
-@Suite("Agent Runtime Adapters")
+@Suite("Agent Runtime Adapters", .serialized)
 struct AgentRuntimeAdapterTests {
     @Test("Every runtime has one registered adapter")
     func everyRuntimeHasOneRegisteredAdapter() {
@@ -152,6 +152,84 @@ struct AgentRuntimeAdapterTests {
         #expect(openCode.descriptor.defaultModels.first == "opencode/big-pickle")
         #expect(Set(AgentRuntimeAdapterRegistry.allAdapters.map(\.availableModelsStorageKey)).count == AgentRuntimeAdapterRegistry.allAdapters.count)
         #expect(Set(AgentRuntimeAdapterRegistry.allAdapters.map(\.modelsCheckedAtStorageKey)).count == AgentRuntimeAdapterRegistry.allAdapters.count)
+    }
+
+    @Test("Adapters own sandbox home-state contracts")
+    func adaptersOwnSandboxHomeStateContracts() throws {
+        let expectedInherited: [AgentRuntimeID: [String]] = [
+            .claudeCode: [".claude", ".claude.json", "Library/Application Support/Claude"],
+            .copilotCLI: [".copilot", "Library/Caches/copilot"],
+            .antigravityCLI: [".antigravity", ".gemini"],
+            .codexCLI: [".codex"],
+            .cursorCLI: [".cursor"],
+            .openCodeCLI: [".config/opencode", ".cache/opencode", ".local/share/opencode", ".local/state/opencode"]
+        ]
+
+        #expect(Set(expectedInherited.keys) == Set(AgentRuntimeAdapterRegistry.runtimeIDs))
+        for runtime in AgentRuntimeAdapterRegistry.runtimeIDs {
+            let access = AgentRuntimeAdapterRegistry.homeStateAccess(for: runtime)
+            let expected = try #require(expectedInherited[runtime])
+            #expect(access.inheritedHomeWritableRelativePaths == expected)
+            #expect(!access.isEmpty)
+            for relativePath in access.explicitHomeWritableRelativePaths + access.inheritedHomeWritableRelativePaths {
+                #expect(!relativePath.hasPrefix("/"))
+                #expect(!relativePath.contains("\n"))
+            }
+        }
+
+        let futureRuntime = try #require(AgentRuntimeID(rawValue: "future_cli"))
+        #expect(AgentRuntimeAdapterRegistry.homeStateAccess(for: futureRuntime).isEmpty)
+    }
+
+    @Test("Launch plan enrichments preserve execution environment metadata")
+    func launchPlanEnrichmentsPreserveExecutionEnvironmentMetadata() {
+        let mount = ExecutionEnvironmentMount(
+            hostPath: "/tmp/astra-workspace",
+            containerPath: "/workspace",
+            access: .readWrite,
+            role: .workspace
+        )
+        let mapper = ExecutionEnvironmentPathMapper(mounts: [mount])
+        let environment = WorkspaceExecutionEnvironment(
+            id: "test-docker-workspace",
+            kind: .dockerImage,
+            displayName: "Test Docker Workspace",
+            image: "astra-test:latest",
+            providerPlacement: .host,
+            mounts: [mount]
+        )
+        let plan = AgentRuntimeProcessLaunchPlan(
+            runtime: .codexCLI,
+            executablePath: "/opt/homebrew/bin/codex",
+            arguments: ["--skip-git-repo-check", "run"],
+            currentDirectory: "/tmp/astra-workspace",
+            environment: ["HOME": "/tmp/astra-home"],
+            browserShimDirectory: nil,
+            providerVersion: nil,
+            parsesJSONLines: true,
+            sandboxReadablePaths: ["/tmp/astra-readable"],
+            commandPlannedFields: ["supports_allow_all_paths": "true"],
+            pathMapper: mapper,
+            executionEnvironment: environment
+        )
+        let gitContext = GitCredentialSandboxContext(
+            readablePaths: ["/tmp/astra-gitconfig"],
+            writablePaths: ["/tmp/astra-external-gitdir"],
+            transports: [.ssh],
+            diagnostics: []
+        )
+
+        let enriched = plan.addingGitCredentialContext(gitContext)
+            .enablingProviderNativeGitCredentialReads(
+                for: gitContext,
+                permissionPolicy: .restricted
+            )
+
+        #expect(enriched.pathMapper == mapper)
+        #expect(enriched.executionEnvironment == environment)
+        #expect(enriched.sandboxHomeStateAccess == plan.sandboxHomeStateAccess)
+        #expect(enriched.sandboxReadablePaths.contains("/tmp/astra-gitconfig"))
+        #expect(enriched.arguments.contains("sandbox_permissions=[\"disk-full-read-access\"]"))
     }
 
     @Test("Registry rejects unregistered provider IDs without losing the raw value")
@@ -680,6 +758,68 @@ struct AgentRuntimeAdapterTests {
         #expect(openCodePlan.directoriesToCreate == [])
         #expect(openCodePlan.providerDetectedFields["runtime"] == AgentRuntimeID.openCodeCLI.rawValue)
         #expect(openCodePlan.commandPlannedFields["permission_policy"] == PermissionPolicy.restricted.rawValue)
+    }
+
+    @Test("Claude Vertex launch plan grants ADC readable roots")
+    @MainActor
+    func claudeVertexLaunchPlanGrantsADCReadableRoots() {
+        let defaults = UserDefaults.standard
+        let keys = [
+            AppStorageKeys.claudeProvider,
+            AppStorageKeys.claudeVertexProjectID,
+            AppStorageKeys.claudeVertexRegion,
+            AppStorageKeys.claudeVertexOpusModel,
+            AppStorageKeys.claudeVertexSonnetModel,
+            AppStorageKeys.claudeVertexHaikuModel
+        ]
+        let previous = keys.map { key in (key, defaults.object(forKey: key)) }
+        defer {
+            for (key, value) in previous {
+                if let value {
+                    defaults.set(value, forKey: key)
+                } else {
+                    defaults.removeObject(forKey: key)
+                }
+            }
+        }
+
+        defaults.set(ClaudeProvider.vertex.rawValue, forKey: AppStorageKeys.claudeProvider)
+        defaults.set("test-project", forKey: AppStorageKeys.claudeVertexProjectID)
+        defaults.set("us-east5", forKey: AppStorageKeys.claudeVertexRegion)
+        defaults.removeObject(forKey: AppStorageKeys.claudeVertexOpusModel)
+        defaults.removeObject(forKey: AppStorageKeys.claudeVertexSonnetModel)
+        defaults.removeObject(forKey: AppStorageKeys.claudeVertexHaikuModel)
+
+        let workspace = Workspace(name: "Adapter", primaryPath: "/tmp/astra-adapter")
+        let task = AgentTask(
+            title: "Claude",
+            goal: "Say hi",
+            workspace: workspace,
+            model: "claude-sonnet-4-6",
+            runtime: .claudeCode
+        )
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .claudeCode)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/claude",
+                providerHomeDirectory: "",
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30
+            ))
+        let gcloudConfig = ExecutionEnvironmentCredentialProjection.defaultGCPADCHostPath()
+        let adcFile = (gcloudConfig as NSString).appendingPathComponent(
+            ExecutionEnvironmentCredentialProjection.gcpADCFileName
+        )
+
+        #expect(plan.environment["CLAUDE_CODE_USE_VERTEX"] == "1")
+        #expect(plan.sandboxReadablePaths.contains(gcloudConfig))
+        #expect(plan.sandboxReadablePaths.contains(adcFile))
+        #expect(plan.commandPlannedFields["claude_vertex_adc_readable"] == "true")
     }
 
     @Test("Codex launch allows external read-only SSH config access for SSH workspaces")
@@ -1775,6 +1915,7 @@ struct AgentRuntimeAdapterTests {
             currentURL: nil,
             currentTitle: nil,
             taskID: task.id,
+            accessToken: "browser-token",
             isPresented: false,
             isEnabled: true
         )

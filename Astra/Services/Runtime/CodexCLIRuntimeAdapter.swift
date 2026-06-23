@@ -237,7 +237,8 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
             workspacePath: context.workspacePath,
             runID: context.runID,
             executionEnvironment: executionEnvironment,
-            contextText: context.contextText
+            contextText: context.contextText,
+            taskEnvironment: taskEnv
         )
         let launchTaskEnv = taskEnv.merging(mcpProjection.workspaceExecutorEnvironment) { current, _ in current }
         let plan = CodexCLIRuntime.buildCommand(

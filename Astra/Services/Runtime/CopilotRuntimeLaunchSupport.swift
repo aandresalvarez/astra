@@ -20,6 +20,7 @@ struct CopilotMCPLaunchProjection {
         runID: UUID?,
         executionEnvironment: WorkspaceExecutionEnvironment,
         contextText: String,
+        taskEnvironment: [String: String] = [:],
         capabilities: CopilotCLICapabilities
     ) -> CopilotMCPLaunchProjection {
         let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
@@ -48,15 +49,20 @@ struct CopilotMCPLaunchProjection {
             }
         }
 
-        let configURL = servers.isEmpty
-            ? nil
-            : MCPRuntimeProjection.writeClaudeConfig(servers: servers, taskID: task.id)
         let workspaceExecutorEnvironment = DockerWorkspaceMCPProjection.environmentVariables(
             task: task,
             environment: executionEnvironment,
             currentDirectory: workspacePath,
             runID: runID
         )
+        let explicitMCPEnvironment = taskEnvironment.merging(workspaceExecutorEnvironment) { current, _ in current }
+        let configURL = servers.isEmpty
+            ? nil
+            : MCPRuntimeProjection.writeClaudeConfig(
+                servers: servers,
+                taskID: task.id,
+                availableEnvironment: explicitMCPEnvironment
+            )
         let dockerWorkspaceExecutorSupported = !usesDockerWorkspaceExecutor
             || (capabilities.supportsAdditionalMCPConfig && configURL != nil)
         let unsupportedDetail = unsupportedDockerWorkspaceDetail(

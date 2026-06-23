@@ -1648,6 +1648,141 @@ struct RunPermissionManifestTests {
         #expect(deniedActions.contains { $0.contains("/Users/alvaro/Documents/Code/flujo/flujo/test.sh") })
     }
 
+    @MainActor
+    @Test("Preflight manifest declares Git credential projection for network Git intent")
+    func preflightManifestDeclaresGitCredentialProjection() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Git Projection", primaryPath: "/tmp/astra-git-projection")
+        let task = AgentTask(title: "Git Projection", goal: "Prepare branch", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .claudeCode,
+            model: "auto",
+            workspacePath: workspace.primaryPath,
+            phase: "resume",
+            permissionPolicy: .autonomous,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.autonomous.rawValue,
+            contextText: "ok lets pull the latest code from main, then create a new branch",
+            modelContext: context
+        )
+
+        #expect(manifest.credentialLabels.contains("git:credential-context:read-only"))
+        #expect(manifest.providerRender.diagnostics.contains { $0.id == "git.credential-projection" })
+    }
+
+    @MainActor
+    @Test("Post-run summary records OS sandbox read denials")
+    func postRunSummaryRecordsOSSandboxReadDenials() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "OS Sandbox Summary", primaryPath: "/Users/alvaro/Documents/Code/monorepo")
+        let task = AgentTask(title: "OS Sandbox Summary", goal: "Pull main", workspace: workspace)
+        task.runtimeID = AgentRuntimeID.claudeCode.rawValue
+        let run = TaskRun(task: task)
+        run.status = .failed
+        run.stopReason = "os_sandbox_file_read_denied"
+        run.completedAt = Date()
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        _ = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .claudeCode,
+            model: "auto",
+            workspacePath: workspace.primaryPath,
+            phase: "resume",
+            permissionPolicy: .autonomous,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.autonomous.rawValue,
+            contextText: "pull the latest code from main",
+            modelContext: context
+        )
+        context.insert(TaskEvent(
+            task: task,
+            type: "tool.result",
+            payload: "Exit code 128\nfatal: unable to access '/Users/alvaro1/.gitconfig': Operation not permitted",
+            run: run
+        ))
+        try context.save()
+
+        AgentPolicyManifestService.recordPostRunSummary(task: task, run: run, modelContext: context)
+        try context.save()
+
+        let summaryEvent = try #require(task.events.last { $0.type == AgentPolicyManifestService.summaryEventType })
+        let object = try #require(JSONSerialization.jsonObject(with: Data(summaryEvent.payload.utf8)) as? [String: Any])
+        let deniedActions = try #require(object["deniedActions"] as? [String])
+
+        #expect(object["deniedCount"] as? Int == 1)
+        #expect(deniedActions.contains { $0.contains("os_sandbox_blocked_read") })
+        #expect(deniedActions.contains { $0.contains("/Users/alvaro1/.gitconfig") })
+    }
+
+    @MainActor
+    @Test("Post-run summary ignores nonfatal Git sandbox warnings in successful output")
+    func postRunSummaryIgnoresNonfatalGitSandboxWarnings() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Git Sandbox", primaryPath: "/Users/alvaro1/Documents/Coral/Code/starr-data-lake")
+        let task = AgentTask(title: "Git Sandbox", goal: "Pull latest", workspace: workspace)
+        task.runtimeID = AgentRuntimeID.claudeCode.rawValue
+        let run = TaskRun(task: task)
+        run.status = .completed
+        run.completedAt = Date()
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        _ = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .claudeCode,
+            model: "auto",
+            workspacePath: workspace.primaryPath,
+            phase: "resume",
+            permissionPolicy: .autonomous,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.autonomous.rawValue,
+            contextText: "git fetch origin && git pull origin main",
+            modelContext: context
+        )
+        context.insert(TaskEvent(
+            task: task,
+            type: "tool.result",
+            payload: """
+            warning: unable to access '/Users/alvaro1/.config/git/ignore': Operation not permitted
+            From github.com:susom/starr-data-lake
+             * branch              main       -> FETCH_HEAD
+            warning: unable to access '/Users/alvaro1/.config/git/ignore': Operation not permitted
+            Updating ec0d2206..d5088969
+            Fast-forward
+             dbt/configs/omop_atropos_phi/common | 1 +
+             create mode 120000 dbt/configs/omop_atropos_phi/common
+            """,
+            run: run
+        ))
+        try context.save()
+
+        AgentPolicyManifestService.recordPostRunSummary(task: task, run: run, modelContext: context)
+        try context.save()
+
+        let summaryEvent = try #require(task.events.last { $0.type == AgentPolicyManifestService.summaryEventType })
+        let object = try #require(JSONSerialization.jsonObject(with: Data(summaryEvent.payload.utf8)) as? [String: Any])
+        let deniedActions = try #require(object["deniedActions"] as? [String])
+
+        #expect(object["deniedCount"] as? Int == 0)
+        #expect(deniedActions.isEmpty)
+    }
+
     @Test("Preflight manifest replays task-scoped broker grants through the active provider adapter")
     func preflightManifestReplaysTaskScopedBrokerGrantsThroughActiveProviderAdapter() throws {
         let container = try makeAgentPolicyContainer()

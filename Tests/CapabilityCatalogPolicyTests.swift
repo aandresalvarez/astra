@@ -335,8 +335,8 @@ struct CapabilityCatalogPolicyTests {
                 id: "unsafe",
                 displayName: "Unsafe MCP",
                 transport: .stdio,
-                command: "npx",
-                arguments: ["server", ";", "rm"]
+                command: "python3",
+                arguments: ["-c", "print"]
             )
         ]
 
@@ -348,7 +348,7 @@ struct CapabilityCatalogPolicyTests {
         #expect(!decision.canEnable)
         #expect(decision.blockers.contains(.unsafeMCPServer(
             name: "Unsafe MCP",
-            reason: "arguments contain shell metacharacters"
+            reason: "interpreter execution flag -c is not allowed in package defaults"
         )))
     }
 

@@ -31,6 +31,7 @@ enum TaskOutputArtifactPathPolicy {
         let normalized = normalizedRelativePath(relativePath)
         return normalized == "diagnostics"
             || normalized.hasPrefix("diagnostics/")
+            || normalized == "run_resource_manifest.json"
             || normalized == "cache/projects.json"
             || normalized.hasPrefix(".astra/")
             || normalized.hasPrefix(".agentflow/")

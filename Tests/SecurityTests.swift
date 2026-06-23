@@ -581,6 +581,56 @@ struct LegacyCredentialTests {
         #expect(first == second)
     }
 
+    @Test("Package-owned stable connector namespaces include package identity")
+    func packageOwnedStableConnectorNamespaceIncludesPackageIdentity() throws {
+        let first = KeychainSecretStore.stableConnectorEntityID(
+            serviceType: "jira",
+            baseURL: "https://stanfordmed.atlassian.net",
+            originPackageID: "package.a",
+            originComponentID: "connector:jira"
+        )
+        let second = KeychainSecretStore.stableConnectorEntityID(
+            serviceType: "jira",
+            baseURL: "https://stanfordmed.atlassian.net",
+            originPackageID: "package.b",
+            originComponentID: "connector:jira"
+        )
+        let endpointOnly = KeychainSecretStore.stableConnectorEntityID(
+            serviceType: "jira",
+            baseURL: "https://stanfordmed.atlassian.net"
+        )
+
+        #expect(first != nil)
+        #expect(second != nil)
+        #expect(endpointOnly != nil)
+        #expect(first != second)
+        #expect(first != endpointOnly)
+        #expect(second != endpointOnly)
+    }
+
+    @Test("Package connector does not claim endpoint-only stable secrets")
+    func packageConnectorDoesNotClaimEndpointOnlyStableSecrets() throws {
+        let store = MockSecretStore()
+        let endpointOnly = try #require(KeychainSecretStore.stableConnectorEntityID(
+            serviceType: "jira",
+            baseURL: "https://stanfordmed.atlassian.net"
+        ))
+        store.save(key: "JIRA_API_TOKEN", value: "endpoint-secret", entityID: endpointOnly, label: nil)
+
+        let connector = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "basic"
+        )
+        connector.originPackageID = "untrusted.package"
+        connector.originComponentID = "connector:jira"
+        connector.credentialKeys = ["JIRA_API_TOKEN"]
+
+        #expect(connector.credentials(store: store)["JIRA_API_TOKEN"] == nil)
+        #expect(connector.missingCredentialKeys(store: store) == ["JIRA_API_TOKEN"])
+    }
+
     @Test("Stable connector namespace requires endpoint or package origin")
     func stableConnectorNamespaceRequiresDurableIdentity() {
         let entityID = KeychainSecretStore.stableConnectorEntityID(
@@ -721,5 +771,47 @@ private final class RecordingConnectorHTTPTransport: ConnectorHTTPTransport {
             headerFields: nil
         )!
         return (Data(), response)
+    }
+}
+
+@Suite("Document Reader Security")
+struct DocumentReaderSecurityTests {
+    @Test("readfile treats Python metacharacters in document paths as data")
+    func readfileTreatsPythonMetacharactersInDocumentPathsAsData() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-readfile-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let basePath = root.appendingPathComponent("safe").path
+        try #"{"url":"https://docs.example.com/base"}"#.write(toFile: basePath, atomically: true, encoding: .utf8)
+        let markerName = "pwned"
+        let markerPath = root.appendingPathComponent(markerName).path
+        let injectedLeaf = "safe') as f:\n    pass\nopen('\(markerName)','w').write('pwned')\n# .gdoc"
+        let injectedURL = root.appendingPathComponent(injectedLeaf)
+        try #"{"url":"https://docs.example.com/safe"}"#.write(to: injectedURL, atomically: true, encoding: .utf8)
+
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let readfile = repoRoot.appendingPathComponent("Tools/readfile")
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [readfile.path, injectedURL.path]
+        process.currentDirectoryURL = root
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+        try process.run()
+        process.waitUntilExit()
+
+        let output = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let error = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        #expect(process.terminationStatus == 0, Comment(rawValue: error))
+        #expect(output.contains("https://docs.example.com/safe"))
+        #expect(!FileManager.default.fileExists(atPath: markerPath))
     }
 }

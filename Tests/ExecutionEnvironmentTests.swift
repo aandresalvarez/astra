@@ -154,6 +154,9 @@ struct ExecutionEnvironmentTests {
         #expect(plan.executablePath == "/usr/bin/env")
         #expect(plan.arguments.prefix(3) == ["docker", "run", "--rm"])
         #expect(plan.arguments.contains("astra/test:latest"))
+        let imageIndex = try #require(plan.arguments.firstIndex(of: "astra/test:latest"))
+        #expect(imageIndex > 0)
+        #expect(plan.arguments[imageIndex - 1] == "--")
         #expect(plan.arguments.contains("/usr/local/bin/claude"))
         #expect(plan.arguments.contains("--workdir"))
         #expect(plan.arguments.contains("/workspace"))
@@ -507,6 +510,80 @@ struct ExecutionEnvironmentTests {
             task: task,
             runID: nil
         ).failure == .dockerSocketDenied)
+
+        let optionImage = WorkspaceExecutionEnvironment(
+            id: "option-image",
+            kind: .dockerImage,
+            displayName: "Option Image",
+            image: "--privileged",
+            runtimeExecutablePath: "/bin/tool"
+        )
+        #expect(DockerExecutionPlanner.plan(
+            base: base,
+            environment: optionImage,
+            task: task,
+            runID: nil
+        ).failure == .invalidImageReference("--privileged"))
+
+        let spacedImage = WorkspaceExecutionEnvironment(
+            id: "spaced-image",
+            kind: .dockerImage,
+            displayName: "Spaced Image",
+            image: "alpine --privileged",
+            runtimeExecutablePath: "/bin/tool"
+        )
+        #expect(DockerExecutionPlanner.plan(
+            base: base,
+            environment: spacedImage,
+            task: task,
+            runID: nil
+        ).failure == .invalidImageReference("alpine --privileged"))
+    }
+
+    @Test("Imported credential projections are closed to ASTRA-owned GCP ADC")
+    func importedCredentialProjectionsAreSanitized() throws {
+        let root = try makeTempDir("docker-credential-sanitize")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let gcloudPath = (root as NSString).appendingPathComponent(".config/gcloud")
+        let imported = WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test Image",
+            image: "astra/test:latest",
+            credentialProjections: [
+                ExecutionEnvironmentCredentialProjection(
+                    id: ExecutionEnvironmentCredentialProjection.gcpADCID,
+                    kind: .gcpADC,
+                    displayName: "Tampered ADC",
+                    hostPath: gcloudPath,
+                    containerPath: "/tmp/not-gcloud",
+                    access: .readWrite,
+                    environment: ["LD_PRELOAD": "/evil.dylib"]
+                ),
+                ExecutionEnvironmentCredentialProjection(
+                    id: "host-root",
+                    kind: .genericDirectory,
+                    displayName: "Host Root",
+                    hostPath: "/",
+                    containerPath: "/host",
+                    access: .readWrite,
+                    environment: ["PATH": "/tmp/bin"]
+                )
+            ]
+        )
+
+        let projections = imported.effectiveCredentialProjections
+
+        #expect(projections.count == 1)
+        let projection = try #require(projections.first)
+        #expect(projection.id == ExecutionEnvironmentCredentialProjection.gcpADCID)
+        #expect(projection.hostPath == gcloudPath)
+        #expect(projection.containerPath == ExecutionEnvironmentCredentialProjection.gcpADCContainerPath)
+        #expect(projection.access == .readOnly)
+        #expect(projection.environment == [
+            "CLOUDSDK_CONFIG": ExecutionEnvironmentCredentialProjection.gcpADCContainerPath,
+            "GOOGLE_APPLICATION_CREDENTIALS": "\(ExecutionEnvironmentCredentialProjection.gcpADCContainerPath)/\(ExecutionEnvironmentCredentialProjection.gcpADCFileName)"
+        ])
     }
 
     @Test("Run file changes translate container paths into host paths")

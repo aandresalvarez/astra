@@ -1864,6 +1864,91 @@ struct RuntimePolicyGuardTests {
         #expect(monitor.policyViolation == false)
     }
 
+    @Test("OS sandbox read denial in a tool result stops the provider")
+    func osSandboxReadDenialStopsProvider() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Bash"],
+            usesBroadProviderPermissions: true
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let toolUseShouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": "git fetch origin main"]),
+            process: nil
+        )
+        let resultShouldKill = monitor.processEvent(
+            .toolResult(
+                toolId: "t1",
+                content: "fatal: unable to access '/Users/alvaro1/.gitconfig': Operation not permitted"
+            ),
+            process: nil
+        )
+
+        #expect(toolUseShouldKill == false)
+        #expect(resultShouldKill == true)
+        #expect(monitor.runtimeStopReason == "os_sandbox_file_read_denied")
+        #expect(monitor.runtimeStopMessage?.contains("/Users/alvaro1/.gitconfig") == true)
+        #expect(monitor.runtimeStopMessage?.contains("Auto mode") == true)
+        #expect(monitor.policyViolation == false)
+    }
+
+    @Test("Nonfatal Git sandbox warning does not stop a successful tool result")
+    func nonfatalGitSandboxWarningDoesNotStopSuccessfulToolResult() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Bash"],
+            usesBroadProviderPermissions: true
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+        let successfulPullOutput = """
+        warning: unable to access '/Users/alvaro1/.config/git/ignore': Operation not permitted
+        From github.com:susom/starr-data-lake
+         * branch            main       -> FETCH_HEAD
+        Updating ec0d2206..d5088969
+        Fast-forward
+         dbt/configs/omop_atropos_phi/common | 2 +-
+         create mode 120000 dbt/configs/omop_atropos_phi/common
+        """
+
+        let toolUseShouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": "git fetch origin && git pull origin main"]),
+            process: nil
+        )
+        let resultShouldKill = monitor.processEvent(
+            .toolResult(toolId: "t1", content: successfulPullOutput),
+            process: nil
+        )
+
+        #expect(RuntimeSandboxDenialDiagnostics.fileDenial(in: successfulPullOutput) == nil)
+        #expect(toolUseShouldKill == false)
+        #expect(resultShouldKill == false)
+        #expect(monitor.runtimeStopReason == nil)
+        #expect(monitor.policyViolation == false)
+    }
+
+    @Test("Fatal sandbox write denial is parsed from the offending line")
+    func fatalSandboxWriteDenialUsesOffendingLine() {
+        let output = """
+        From github.com:susom/starr-data-lake
+         * branch            main       -> FETCH_HEAD
+        fatal: Unable to create '/Users/alvaro1/Documents/Coral/Code/starr-data-lake/.git/index.lock': Operation not permitted
+         create mode 100644 /starr-data-lake/not-the-denied-path.txt
+        """
+
+        let denial = RuntimeSandboxDenialDiagnostics.fileDenial(in: output)
+
+        #expect(denial?.operation == .write)
+        #expect(denial?.path == "/Users/alvaro1/Documents/Coral/Code/starr-data-lake/.git/index.lock")
+        #expect(denial?.detail.contains("/starr-data-lake/not-the-denied-path.txt") == false)
+    }
+
     @Test("Approved shell path grant satisfies ask-first Bash across absolute workspace path")
     func approvedShellPathGrantSatisfiesAskFirstAcrossAbsoluteWorkspacePath() {
         let manifest = runtimePolicyManifest(

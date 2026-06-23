@@ -95,8 +95,8 @@ struct ConnectorCredentialPresenceTests {
 @MainActor
 struct LegacyEnvFallbackTests {
 
-    @Test("Single connector per service exposes bare legacy names; duplicates do not")
-    func bareNamesOnlyForSingleConnectorServices() throws {
+    @Test("Single connector per service omits bare legacy names unless explicitly requested")
+    func bareNamesRequireExplicitLegacyOptIn() throws {
         let container = try makeRobustnessContainer()
         let store = MockSecretStore()
 
@@ -119,7 +119,12 @@ struct LegacyEnvFallbackTests {
         let solo = jiraConnector(name: "Solo Jira", host: "https://solo.example.com")
         let single = ConnectorRuntimeProjection(connectors: [solo], secretStore: store)
             .environmentVariables()
-        #expect(single["JIRA_API_TOKEN"] == "tok-Solo Jira")
+        #expect(single["JIRA_API_TOKEN"] == nil)
+        #expect(single.keys.contains { $0.hasSuffix("_JIRA_API_TOKEN") })
+
+        let legacySingle = ConnectorRuntimeProjection(connectors: [solo], secretStore: store)
+            .environmentVariables(includeLegacySingleConnectorFallback: true)
+        #expect(legacySingle["JIRA_API_TOKEN"] == "tok-Solo Jira")
 
         let second = jiraConnector(name: "Second Jira", host: "https://second.example.com")
         let dual = ConnectorRuntimeProjection(connectors: [solo, second], secretStore: store)

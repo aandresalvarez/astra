@@ -617,6 +617,17 @@ final class AgentRuntimeWorker {
         run.executionEnvironmentSnapshotJSON = executionEnvironmentJSON
 
         let prompt = promptOverride ?? buildPrompt(for: task)
+        let launchResourcePlan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: run.id,
+            runtime: selectedRuntime,
+            phase: auditPhase,
+            prompt: prompt,
+            contextText: providerLaunchContextText,
+            workspacePath: executionPath,
+            executionEnvironment: executionEnvironment
+        )
+        TaskLaunchResourceManifestStore.persist(launchResourcePlan, task: task)
         logContextPromptDiagnostics(for: task, prompt: prompt, phase: auditPhase)
         let budgetEnforcementMode = currentBudgetEnforcementMode
         guard AgentRuntimeBudgetPolicy.enforcePromptBudgetIfNeeded(
@@ -746,6 +757,7 @@ final class AgentRuntimeWorker {
             contextText: providerLaunchContextText,
             nativeContinuationSessionID: nativeContinuationSessionID,
             runID: run.id,
+            launchResourcePlan: launchResourcePlan,
             liveApprovalsEnabled: liveApprovalsEnabled,
             noSemanticProgressTimeoutSeconds: semanticProgressTimeout,
             onInteractiveAsk: Self.interactiveAskHandler(

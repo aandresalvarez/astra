@@ -6,8 +6,8 @@ import Testing
 @Suite("Browser Tool Shim")
 @MainActor
 struct BrowserToolShimTests {
-    @Test("Task-local astra-browser shim injects bridge endpoint token and required engine")
-    func taskLocalShimInjectsEndpointTokenAndRequiredEngine() throws {
+    @Test("Task-local astra-browser shim injects bridge endpoint and leaves token in process env")
+    func taskLocalShimInjectsEndpointAndLeavesTokenInProcessEnv() throws {
         let schema = ASTRASchema.current
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(
@@ -53,6 +53,9 @@ struct BrowserToolShimTests {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: shimPath)
+        process.environment = [
+            "ASTRA_BROWSER_TOKEN": "ASTRA_TEST_BROWSER_TOKEN"
+        ]
         let output = Pipe()
         process.standardOutput = output
         try process.run()
@@ -60,7 +63,10 @@ struct BrowserToolShimTests {
 
         let data = output.fileHandleForReading.readDataToEndOfFile()
         let text = String(data: data, encoding: .utf8) ?? ""
+        let script = try String(contentsOfFile: shimPath, encoding: .utf8)
         #expect(process.terminationStatus == 0)
         #expect(text == "\(endpoint)|ASTRA_TEST_BROWSER_TOKEN|controlled-cdp")
+        #expect(!script.contains("ASTRA_TEST_BROWSER_TOKEN"))
+        #expect(!script.contains("ASTRA_BROWSER_TOKEN"))
     }
 }

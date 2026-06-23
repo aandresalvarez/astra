@@ -218,6 +218,14 @@ struct GitCredentialContextResolverTests {
             prompt: "please clone the repo from GitHub",
             task: AgentTask(title: "Other", goal: "Other")
         ))
+        #expect(GitOperationIntentDetector.detectsNetworkGitOperation(
+            prompt: "ok lets pull the latest code from main, then create a new branch",
+            task: AgentTask(title: "Other", goal: "Other")
+        ))
+        #expect(GitOperationIntentDetector.detectsNetworkGitOperation(
+            prompt: "update from main before editing STAR-12262",
+            task: AgentTask(title: "Other", goal: "Other")
+        ))
         #expect(!GitOperationIntentDetector.detectsNetworkGitOperation(
             prompt: "inspect the local diff",
             task: AgentTask(title: "Review", goal: "No network")

@@ -96,8 +96,24 @@ final class AgentRuntimeProcessRunner {
         context: AgentRuntimeProcessLaunchContext
     ) -> SandboxedPlanOutcome {
         var plan = adapter.makeProcessLaunchPlan(context: context)
-        let gitCredentialContext = gitCredentialContextProvider(context)
+        let launchResourcePlan = context.launchResourcePlan ?? TaskLaunchResourceResolver.resolve(
+            task: context.task,
+            runID: context.runID,
+            runtime: plan.runtime,
+            phase: context.phase,
+            prompt: context.prompt,
+            contextText: context.contextText,
+            workspacePath: context.workspacePath,
+            gitCredentialContextProvider: { [gitCredentialContextProvider] _, _, _, _ in
+                gitCredentialContextProvider(context)
+            }
+        )
+        let gitCredentialContext = launchResourcePlan.gitCredentialSandboxContext
         let effectivePermissionPolicy = context.executionPolicy.permissionPolicyOverride ?? context.permissionPolicy
+        plan = plan.addingSandboxReadablePaths(
+            launchResourcePlan.hostReadablePaths,
+            plannedFields: launchResourcePlan.commandPlannedFields
+        )
         if !gitCredentialContext.isEmpty {
             plan = plan.addingGitCredentialContext(gitCredentialContext)
                 .enablingProviderNativeGitCredentialReads(
@@ -181,7 +197,7 @@ final class AgentRuntimeProcessRunner {
         let decision = ExecutionSandbox.decide(
             plan: plan,
             providerHomeDirectory: context.providerHomeDirectory,
-            additionalWritablePaths: Self.runtimeAdditionalPaths(for: context.task) + gitCredentialContext.writablePaths,
+            additionalWritablePaths: Self.runtimeAdditionalPaths(for: context.task) + launchResourcePlan.hostWritablePaths,
             settings: settings
         )
         let taskID = context.task.id
@@ -193,6 +209,10 @@ final class AgentRuntimeProcessRunner {
                 "read_scope": settings.readScope.rawValue,
                 "read_scope_audit": String(settings.readScope == .audit),
                 "writable_root_count": String(writableRoots.count),
+                "attachment_readable_path_count": plan.commandPlannedFields["attachment_readable_path_count"] ?? "0",
+                "launch_resource_host_readable_count": plan.commandPlannedFields["launch_resource_host_readable_count"] ?? "0",
+                "launch_resource_host_writable_count": plan.commandPlannedFields["launch_resource_host_writable_count"] ?? "0",
+                "launch_resource_credential_label_count": plan.commandPlannedFields["launch_resource_credential_label_count"] ?? "0",
                 "git_credential_readable_path_count": String(gitCredentialContext.readablePaths.count),
                 "git_credential_writable_path_count": String(gitCredentialContext.writablePaths.count),
                 "allow_network": String(settings.allowNetwork)
@@ -236,6 +256,7 @@ final class AgentRuntimeProcessRunner {
         contextText: String = "",
         nativeContinuationSessionID: String? = nil,
         runID: UUID? = nil,
+        launchResourcePlan: TaskLaunchResourcePlan? = nil,
         liveApprovalsEnabled: Bool = false,
         noSemanticProgressTimeoutSeconds: TimeInterval? = nil,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
@@ -255,7 +276,8 @@ final class AgentRuntimeProcessRunner {
             contextText: contextText,
             nativeContinuationSessionID: nativeContinuationSessionID,
             runID: runID,
-            liveApprovalsEnabled: liveApprovalsEnabled && onInteractiveAsk != nil
+            liveApprovalsEnabled: liveApprovalsEnabled && onInteractiveAsk != nil,
+            launchResourcePlan: launchResourcePlan
         )
         if let sharedStateKey = adapter.sharedLaunchStateKey(context: launchContext) {
             do {
@@ -722,15 +744,12 @@ final class AgentRuntimeProcessRunner {
 
         let shimDirectory = (TaskWorkspaceAccess(task: task).taskFolder as NSString).appendingPathComponent(".runtime-bin")
         let shimPath = (shimDirectory as NSString).appendingPathComponent("astra-browser")
-        let tokenExport = browserToken?.isEmpty == false
-            ? "\nexport ASTRA_BROWSER_TOKEN=\(shellSingleQuoted(browserToken!))"
-            : ""
         let requiredEngineExport = requiredEngine?.isEmpty == false
             ? "\nexport \(BrowserAutomationEngineRequirement.environmentKey)=\(shellSingleQuoted(requiredEngine!))"
             : ""
         let script = """
         #!/bin/sh
-        export ASTRA_BROWSER_URL=\(shellSingleQuoted(endpoint))\(tokenExport)\(requiredEngineExport)
+        export ASTRA_BROWSER_URL=\(shellSingleQuoted(endpoint))\(requiredEngineExport)
         exec \(shellSingleQuoted(realToolPath)) "$@"
         """
 

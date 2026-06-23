@@ -84,6 +84,7 @@ enum AuditEvent: String, CaseIterable {
     case runtimeFailureDiagnostic = "runtime.failure_diagnostic"
     case runtimePersistenceSummary = "runtime.persistence_summary"
     case runtimeProgressState = "runtime.progress_state"
+    case runtimeResourcesPlanned = "runtime.resources_planned"
     case runtimeStreamDebug = "runtime.stream_debug"
     case runtimeStreamDebugSample = "runtime.stream_debug_sample"
     case remoteWorkspacePreflight = "remote_workspace.preflight"

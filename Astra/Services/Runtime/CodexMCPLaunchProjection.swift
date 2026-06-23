@@ -14,7 +14,8 @@ struct CodexMCPLaunchProjection {
         workspacePath: String,
         runID: UUID?,
         executionEnvironment: WorkspaceExecutionEnvironment,
-        contextText: String
+        contextText: String,
+        taskEnvironment: [String: String] = [:]
     ) -> CodexMCPLaunchProjection {
         let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
         var browserServerProjected = false
@@ -39,12 +40,16 @@ struct CodexMCPLaunchProjection {
             browserServerProjected = true
         }
 
-        let configArguments = CodexMCPConfigRenderer.configArguments(servers: servers)
         let workspaceExecutorEnvironment = DockerWorkspaceMCPProjection.environmentVariables(
             task: task,
             environment: executionEnvironment,
             currentDirectory: workspacePath,
             runID: runID
+        )
+        let explicitMCPEnvironment = taskEnvironment.merging(workspaceExecutorEnvironment) { current, _ in current }
+        let configArguments = CodexMCPConfigRenderer.configArguments(
+            servers: servers,
+            availableEnvironment: explicitMCPEnvironment
         )
         let dockerWorkspaceExecutorSupported = !usesDockerWorkspaceExecutor
             || configArguments.containsMCPServerConfig(for: DockerWorkspaceMCPProjection.serverID)
@@ -77,14 +82,18 @@ struct CodexMCPLaunchProjection {
 }
 
 enum CodexMCPConfigRenderer {
-    static func configArguments(servers: [MCPRuntimeProjection.ResolvedServer]) -> [String] {
-        let entries = servers.compactMap(configEntry)
+    static func configArguments(
+        servers: [MCPRuntimeProjection.ResolvedServer],
+        availableEnvironment: [String: String] = [:]
+    ) -> [String] {
+        let entries = servers.compactMap { configEntry(for: $0, availableEnvironment: availableEnvironment) }
         guard !entries.isEmpty else { return [] }
         return ["-c", "mcp_servers={\(entries.joined(separator: ","))}"]
     }
 
     private static func configEntry(
-        for resolved: MCPRuntimeProjection.ResolvedServer
+        for resolved: MCPRuntimeProjection.ResolvedServer,
+        availableEnvironment: [String: String]
     ) -> String? {
         let server = resolved.server
         guard MCPEnvironmentKeyPolicy.isValidPermissionName(server.id) else {
@@ -115,6 +124,7 @@ enum CodexMCPConfigRenderer {
             .filter { resolved.permittedEnvironmentKeys.contains($0) }
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter(isSafeEnvironmentKey)
+            .filter { availableEnvironment[$0]?.isEmpty == false }
             .sorted()
         if !envVars.isEmpty {
             fields.append("env_vars=\(tomlArray(envVars))")

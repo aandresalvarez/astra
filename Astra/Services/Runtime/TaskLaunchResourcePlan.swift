@@ -1,0 +1,229 @@
+import Foundation
+
+enum TaskLaunchResourceAccess: String, Codable, Sendable {
+    case read
+    case write
+    case readWrite = "read_write"
+}
+
+enum TaskLaunchResourceSource: String, Codable, Sendable {
+    case userAttachment = "user_attachment"
+    case taskInput = "task_input"
+    case workspace
+    case gitCredential = "git_credential"
+    case dockerEnvironment = "docker_environment"
+    case dockerCredential = "docker_credential"
+    case connector
+    case browser
+    case provider
+}
+
+enum TaskLaunchResourceSensitivity: String, Codable, Sendable {
+    case normal
+    case credential
+    case token
+    case keychain
+    case cloudAuth = "cloud_auth"
+}
+
+enum TaskLaunchResourceLifetime: String, Codable, Sendable {
+    case run
+    case task
+    case workspace
+}
+
+struct RuntimePathGrant: Codable, Equatable, Sendable {
+    var path: String
+    var access: TaskLaunchResourceAccess
+    var source: TaskLaunchResourceSource
+    var reason: String
+    var sensitivity: TaskLaunchResourceSensitivity
+    var lifetime: TaskLaunchResourceLifetime
+    var exists: Bool
+}
+
+struct RuntimeEnvironmentGrant: Codable, Equatable, Sendable {
+    var key: String
+    var source: TaskLaunchResourceSource
+    var reason: String
+    var sensitivity: TaskLaunchResourceSensitivity
+    var valueProjected: Bool
+}
+
+struct RuntimeCredentialGrant: Codable, Equatable, Sendable {
+    var label: String
+    var source: TaskLaunchResourceSource
+    var reason: String
+    var projectedAsEnvironment: Bool
+    var projectedAsFile: Bool
+}
+
+struct RuntimeContainerMountGrant: Codable, Equatable, Sendable {
+    var hostPath: String
+    var containerPath: String
+    var access: String
+    var role: String
+}
+
+struct RuntimeProviderRequirement: Codable, Equatable, Sendable {
+    var capability: String
+    var source: TaskLaunchResourceSource
+    var reason: String
+    var required: Bool
+}
+
+struct RuntimeResourceDiagnostic: Codable, Equatable, Sendable {
+    enum Severity: String, Codable, Sendable {
+        case info
+        case warning
+        case error
+    }
+
+    var severity: Severity
+    var code: String
+    var message: String
+    var repairAction: String?
+}
+
+struct RuntimeGitCredentialResource: Codable, Equatable, Sendable {
+    var readablePaths: [String]
+    var writablePaths: [String]
+    var transports: [String]
+    var diagnostics: [String]
+
+    var sandboxContext: GitCredentialSandboxContext {
+        GitCredentialSandboxContext(
+            readablePaths: readablePaths,
+            writablePaths: writablePaths,
+            transports: transports.compactMap(GitCredentialContextResolver.RemoteTransport.init(rawValue:)),
+            diagnostics: diagnostics
+        )
+    }
+}
+
+struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
+    static let currentVersion = 1
+
+    var version: Int
+    var taskID: UUID
+    var runID: UUID?
+    var runtime: String
+    var phase: String
+    var workspacePath: String
+    var executionEnvironmentID: String
+    var executionEnvironmentKind: String
+    var providerPlacement: String
+    var generatedAt: Date
+    var hostPathGrants: [RuntimePathGrant]
+    var containerMounts: [RuntimeContainerMountGrant]
+    var environmentGrants: [RuntimeEnvironmentGrant]
+    var credentialGrants: [RuntimeCredentialGrant]
+    var providerRequirements: [RuntimeProviderRequirement]
+    var diagnostics: [RuntimeResourceDiagnostic]
+    var gitCredential: RuntimeGitCredentialResource?
+
+    init(
+        version: Int = TaskLaunchResourcePlan.currentVersion,
+        taskID: UUID,
+        runID: UUID?,
+        runtime: String,
+        phase: String,
+        workspacePath: String,
+        executionEnvironmentID: String,
+        executionEnvironmentKind: String,
+        providerPlacement: String,
+        generatedAt: Date = Date(),
+        hostPathGrants: [RuntimePathGrant] = [],
+        containerMounts: [RuntimeContainerMountGrant] = [],
+        environmentGrants: [RuntimeEnvironmentGrant] = [],
+        credentialGrants: [RuntimeCredentialGrant] = [],
+        providerRequirements: [RuntimeProviderRequirement] = [],
+        diagnostics: [RuntimeResourceDiagnostic] = [],
+        gitCredential: RuntimeGitCredentialResource? = nil
+    ) {
+        self.version = version
+        self.taskID = taskID
+        self.runID = runID
+        self.runtime = runtime
+        self.phase = phase
+        self.workspacePath = workspacePath
+        self.executionEnvironmentID = executionEnvironmentID
+        self.executionEnvironmentKind = executionEnvironmentKind
+        self.providerPlacement = providerPlacement
+        self.generatedAt = generatedAt
+        self.hostPathGrants = hostPathGrants
+        self.containerMounts = containerMounts
+        self.environmentGrants = environmentGrants
+        self.credentialGrants = credentialGrants
+        self.providerRequirements = providerRequirements
+        self.diagnostics = diagnostics
+        self.gitCredential = gitCredential
+    }
+
+    var hostReadablePaths: [String] {
+        uniquePaths(hostPathGrants.compactMap { grant in
+            switch grant.access {
+            case .read, .readWrite:
+                grant.path
+            case .write:
+                nil
+            }
+        })
+    }
+
+    var hostWritablePaths: [String] {
+        uniquePaths(hostPathGrants.compactMap { grant in
+            switch grant.access {
+            case .write, .readWrite:
+                grant.path
+            case .read:
+                nil
+            }
+        })
+    }
+
+    var gitCredentialSandboxContext: GitCredentialSandboxContext {
+        gitCredential?.sandboxContext ?? .empty
+    }
+
+    var commandPlannedFields: [String: String] {
+        var fields: [String: String] = [
+            "launch_resource_manifest": "true",
+            "launch_resource_host_readable_count": String(hostReadablePaths.count),
+            "launch_resource_host_writable_count": String(hostWritablePaths.count),
+            "launch_resource_container_mount_count": String(containerMounts.count),
+            "launch_resource_environment_key_count": String(environmentGrants.count),
+            "launch_resource_credential_label_count": String(credentialGrants.count),
+            "launch_resource_provider_requirement_count": String(providerRequirements.count),
+            "launch_resource_diagnostic_count": String(diagnostics.count),
+            "execution_environment": executionEnvironmentKind,
+            "provider_placement": providerPlacement
+        ]
+
+        fields["attachment_readable_path_count"] = String(uniquePaths(hostPathGrants.compactMap { grant in
+            grant.source == .userAttachment || grant.source == .taskInput ? grant.path : nil
+        }).count)
+        if let gitCredential {
+            fields["git_credential_context"] = "true"
+            fields["git_credential_readable_path_count"] = String(gitCredential.readablePaths.count)
+            fields["git_credential_writable_path_count"] = String(gitCredential.writablePaths.count)
+            fields["git_credential_transports"] = gitCredential.transports.joined(separator: ",")
+            if !gitCredential.diagnostics.isEmpty {
+                fields["git_credential_diagnostics"] = gitCredential.diagnostics.joined(separator: ",")
+            }
+        }
+        if diagnostics.contains(where: { $0.severity == .error }) {
+            fields["launch_resource_has_errors"] = "true"
+        }
+        return fields
+    }
+
+    private func uniquePaths(_ paths: [String]) -> [String] {
+        var seen: Set<String> = []
+        return paths.filter { path in
+            let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return false }
+            return seen.insert(trimmed).inserted
+        }
+    }
+}
