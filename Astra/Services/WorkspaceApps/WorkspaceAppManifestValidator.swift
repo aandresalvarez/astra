@@ -58,6 +58,7 @@ enum WorkspaceAppManifestValidator {
         )
         validatePermissions(manifest.permissions, issues: &issues)
         validatePermissionCoverage(manifest, issues: &issues)
+        validatePermissionConsistency(manifest, issues: &issues)
         validateSubmitBlock(manifest, issues: &issues)
         validateUsability(manifest, issues: &issues)
         validateHTMLApp(manifest, issues: &issues)
@@ -330,6 +331,35 @@ enum WorkspaceAppManifestValidator {
             issues.append(blocker(
                 "/submitBlockedReasons",
                 "Submit is blocked pending review (\(reasons.count) issue(s)); the form must be read-only or draft-only until resolved: \(reasons.joined(separator: "; "))"
+            ))
+        }
+    }
+
+    /// An HTML app's UI is the HTML itself: its buttons call write actions directly through the
+    /// `astra.*` bridge, with NO governance UI around them. So a read-only HTML app that declares a
+    /// write/destructive action — e.g. an `appStorage.insert` "Add" button — has DEAD buttons: the
+    /// write is permission-denied at runtime (`WorkspaceAppActionExecutor`/`WorkspaceAppPreviewRunner`
+    /// gate local writes on mode) and the user just sees nothing happen. This is exactly the model
+    /// emitting `defaultMode: readOnly` for a data app that needs to save. Blocking it lets the repair
+    /// loop self-correct to a writable mode (grounded verification also catches it post-build, but
+    /// blocking is cheaper + upstream).
+    ///
+    /// Scoped to HTML apps on purpose: for a DECLARATIVE governed app, read-only + write actions is a
+    /// SUPPORTED posture — the runtime blocks the write and records a blocked run for audit (a view
+    /// with gated, deliberately-inert write actions). That pattern is tested and must stay valid.
+    private static func validatePermissionConsistency(
+        _ manifest: WorkspaceAppManifest,
+        issues: inout [WorkspaceAppManifestValidationReport.Issue]
+    ) {
+        guard manifest.html != nil, manifest.permissions.defaultMode == .readOnly else { return }
+        for (index, action) in manifest.actions.enumerated()
+        where WorkspaceAppActionEffect.effect(for: action.type) != .read {
+            issues.append(blocker(
+                "/actions/\(index)",
+                "Action '\(action.id)' (\(action.type)) writes data, but permissions.defaultMode is "
+                    + "\"readOnly\" — its button would be denied at runtime and do nothing. An HTML app "
+                    + "that adds, edits, or deletes its own records must set permissions.defaultMode to "
+                    + "\"draftOnly\"."
             ))
         }
     }

@@ -74,6 +74,16 @@ preview sandbox instead of trusting the model's "Fixed it" summary — the execu
   Full suite 3310 green + 41 fitness. Codex review: 2 BLOCKER + 1 HIGH + 2 MEDIUM found and FIXED, re-review
   confirmed all closed, no new BLOCKER/HIGH/MEDIUM.
 
+**First real catch (live).** Grounded verification immediately paid off: a generated "Simple Notes"
+app (GPT-5.5) declared `add_note` (appStorage.insert) but `defaultMode: readOnly`, so the Add button
+was permission-denied at runtime — the app couldn't save. Verification surfaced it honestly instead of
+"ready to publish". Root fix: a validator invariant (`validatePermissionConsistency`) — a read-only
+HTML app that declares a write/destructive action is a BLOCKER (its bridge-driven buttons go dead), so
+the repair loop self-corrects the mode to `draftOnly`. SCOPED to HTML apps: a declarative governed app
+keeps read-only + gated write actions (the runtime blocks the write + records a blocked run — a
+supported, tested posture). Generation prompt also reinforced ("NEVER readOnly for a data app"). +4
+tests; full suite 3314 green.
+
 **Not yet (fast-follow):** the delete product decision — expose a governed `astra.delete`
 (native-confirmed) vs. a soft-delete column. Optionally record the verification verdict on the per-turn
 `StudioGenerationEvent` for durable audit (today it's surfaced in chat only).

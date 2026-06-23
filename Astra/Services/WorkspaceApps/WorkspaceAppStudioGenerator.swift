@@ -402,7 +402,9 @@ enum WorkspaceAppStudioGenerator {
         log, a list/database of X, simple CRUD, notes, inventory). Emit: `storage` with your table(s) \
         + columns (one column with `primaryKey: true`); an `actions` array of `appStorage.query`, \
         `appStorage.insert`, `appStorage.update`, EACH with `table` set to your table (this is the \
-        data allowlist); permissions reads/writes `["appStorage.records"]`, defaultMode "draftOnly"; \
+        data allowlist); permissions reads/writes `["appStorage.records"]`, defaultMode "draftOnly" \
+        (NEVER "readOnly" — a read-only app's own Add/Save/Edit actions are denied at runtime and the \
+        app is REJECTED; any app that stores records must be "draftOnly"); \
         NO `views`, NO non-appStorage actions, NO connectors. Then an ASTRA_APP_HTML block whose JS \
         uses the injected `astra` bridge to read/write that storage (REAL persistence, no network):
           - `await astra.query(table, { limit })`  →  { rows: [ {col: value, ...}, ... ] }

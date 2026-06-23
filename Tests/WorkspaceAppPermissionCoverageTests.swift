@@ -118,4 +118,47 @@ struct WorkspaceAppPermissionCoverageTests {
         )
         #expect(!report.warnings.contains { $0.path.hasPrefix("/sources/") || $0.path.hasPrefix("/actions/") })
     }
+
+    // MARK: - Read-only consistency (an HTML app can't run its own writes under read-only)
+
+    private func addNote() -> WorkspaceAppActionSpec {
+        WorkspaceAppActionSpec(id: "add_note", type: "appStorage.insert", label: "Add Note", table: "notes")
+    }
+
+    private func htmlManifest(actions: [WorkspaceAppActionSpec], mode: WorkspaceAppPermissionMode) -> WorkspaceAppManifest {
+        var m = manifest(actions: actions, mode: mode)
+        m.html = "<main><button onclick=\"add()\">Add</button></main>"
+        return m
+    }
+
+    @Test("a read-only HTML app that declares a write action is BLOCKED — its Add button would be dead")
+    func readOnlyHTMLWithWriteActionBlocks() {
+        // The exact shape of the broken Simple Notes app: an appStorage.insert under readOnly is
+        // permission-denied at runtime, so the Add button does nothing. Block it so repair fixes the mode.
+        let report = WorkspaceAppManifestValidator.validate(htmlManifest(actions: [addNote()], mode: .readOnly))
+        #expect(report.blockers.contains {
+            $0.path == "/actions/0" && $0.message.contains("readOnly") && $0.message.contains("draftOnly")
+        })
+    }
+
+    @Test("the same HTML write action under draftOnly raises NO read-only consistency blocker")
+    func draftOnlyHTMLWithWriteActionOK() {
+        let report = WorkspaceAppManifestValidator.validate(htmlManifest(actions: [addNote()], mode: .draftOnly))
+        #expect(!report.blockers.contains { $0.message.contains("permissions.defaultMode is \"readOnly\"") })
+    }
+
+    @Test("a read-only HTML app with only READ actions is fine (a viewer is legitimately read-only)")
+    func readOnlyHTMLWithReadActionsOK() {
+        let viewer = WorkspaceAppActionSpec(id: "list_notes", type: "appStorage.query", label: "List", table: "notes")
+        let report = WorkspaceAppManifestValidator.validate(htmlManifest(actions: [viewer], mode: .readOnly))
+        #expect(!report.blockers.contains { $0.message.contains("its button would be denied") })
+    }
+
+    @Test("a DECLARATIVE read-only app keeps its gated write actions (governed posture, not an HTML app)")
+    func declarativeReadOnlyWithWriteActionStaysValid() {
+        // No html ⇒ the governed pattern: the runtime blocks the write + records a blocked run. The
+        // consistency invariant must NOT fire here (it's scoped to HTML apps whose buttons go dead).
+        let report = WorkspaceAppManifestValidator.validate(manifest(actions: [addNote()], mode: .readOnly))
+        #expect(!report.blockers.contains { $0.message.contains("its button would be denied") })
+    }
 }
