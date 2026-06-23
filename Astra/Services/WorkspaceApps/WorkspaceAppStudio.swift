@@ -138,6 +138,24 @@ struct WorkspaceAppStudioPatchResult: Sendable, Equatable {
     }
 }
 
+/// One surgical edit to an HTML app's UI body: replace a VERBATIM, uniquely-occurring snippet
+/// (`find`) of the current HTML with `replace`. The blob analogue of a manifest patch op — it lets
+/// the model change one handler/button without re-emitting (and risking regressing) the whole UI,
+/// so edits compound turn over turn. The unique-occurrence rule is the safety contract: an anchor
+/// that matches zero or many times is rejected, never applied to the wrong place.
+struct WorkspaceAppStudioHTMLEdit: Codable, Sendable, Equatable {
+    var find: String
+    var replace: String
+}
+
+/// Outcome of applying a list of `WorkspaceAppStudioHTMLEdit`s to an HTML body.
+enum WorkspaceAppStudioHTMLEditResult: Equatable {
+    case applied(String)
+    /// A repair-actionable message naming WHY the edit could not be applied (anchor missing,
+    /// ambiguous, or a no-op), so the repair loop and the user get something to act on.
+    case failure(String)
+}
+
 enum WorkspaceAppStudioStructuredOutputKind: String, Sendable, Equatable {
     case manifest
     case patch
@@ -222,6 +240,58 @@ enum WorkspaceAppStudioBuilder {
         copy.app.id = "\(baseID)-\(suffix)"
         copy.app.name = "\(manifest.app.name) \(suffix)"
         return copy
+    }
+
+    /// Apply surgical `{find, replace}` edits to an HTML body, in order. Each `find` must occur
+    /// EXACTLY ONCE in the running text (0 ⇒ "anchor not found", >1 ⇒ "ambiguous") so an edit can
+    /// never land in the wrong place; edits compound (a later `find` sees earlier `replace`s). The
+    /// whole batch is atomic in effect — the first bad anchor fails the turn with a precise message
+    /// and nothing is kept. A batch that leaves the HTML byte-identical is rejected as a no-op so a
+    /// "fix it" turn can't silently change nothing.
+    /// The most edits one turn may carry — a real refinement is a handful; a flood is pathological
+    /// input. Each `find`/`replace` is also length-capped, and the running body is bounded by the
+    /// validator's HTML size limit so a batch can't burn CPU/memory before validation runs.
+    static let maxHTMLEdits = 100
+    static let maxHTMLEditFieldBytes = 64 * 1024
+    /// Mirrors `WorkspaceAppManifestValidator`'s HTML-body cap; the validator stays authoritative,
+    /// this is just the early-bail guard so we never grow a multi-MB string only to reject it.
+    static let maxHTMLEditBodyBytes = 256 * 1024
+
+    static func applyHTMLEdits(
+        _ edits: [WorkspaceAppStudioHTMLEdit],
+        to html: String
+    ) -> WorkspaceAppStudioHTMLEditResult {
+        guard !edits.isEmpty else {
+            return .failure("ASTRA_APP_HTML_EDIT had no edits — send at least one { \"find\", \"replace\" } edit, or a full ASTRA_APP_HTML block for a rewrite.")
+        }
+        guard edits.count <= maxHTMLEdits else {
+            return .failure("ASTRA_APP_HTML_EDIT had \(edits.count) edits — at most \(maxHTMLEdits) per turn. Make a focused change or send a full ASTRA_APP_HTML block for a rewrite.")
+        }
+        var current = html
+        for (index, edit) in edits.enumerated() {
+            guard !edit.find.isEmpty else {
+                return .failure("edit[\(index)] has an empty \"find\" — it must be a snippet copied verbatim from the current HTML that occurs exactly once.")
+            }
+            guard edit.find.utf8.count <= maxHTMLEditFieldBytes, edit.replace.utf8.count <= maxHTMLEditFieldBytes else {
+                return .failure("edit[\(index)] is too large — \"find\" and \"replace\" are each capped at \(maxHTMLEditFieldBytes / 1024) KB. Use a smaller, targeted snippet.")
+            }
+            let occurrences = current.components(separatedBy: edit.find).count - 1
+            if occurrences == 0 {
+                return .failure("edit[\(index)] anchor not found — \"find\" must match the current HTML EXACTLY (including whitespace and quotes). Copy a unique snippet verbatim from the CURRENT_HTML shown to you.")
+            }
+            if occurrences > 1 {
+                return .failure("edit[\(index)] anchor is ambiguous — \"find\" appears \(occurrences) times. Extend it with surrounding context so it matches exactly once.")
+            }
+            // Exactly one occurrence (verified above), so this replaces that single match.
+            current = current.replacingOccurrences(of: edit.find, with: edit.replace)
+            guard current.utf8.count <= maxHTMLEditBodyBytes else {
+                return .failure("edit[\(index)] grew the HTML past the \(maxHTMLEditBodyBytes / 1024) KB limit. Keep the UI small and focused.")
+            }
+        }
+        guard current != html else {
+            return .failure("the edits left the HTML unchanged — \"find\" and \"replace\" were identical. Make the actual change the request asked for.")
+        }
+        return .applied(current)
     }
 
     static func applyPatch(
@@ -311,6 +381,32 @@ enum WorkspaceAppStudioBuilder {
                 path: "/structuredOutput/ASTRA_APP_HTML",
                 message: message
             )
+        }
+
+        // Progressive HTML refinement: surgical {find,replace} edits to the EXISTING UI body — the
+        // delta analogue of ASTRA_APP_PATCH for the blob that can't be field-patched. Handled before
+        // the manifest/patch matrix: it composes with a manifest patch but is mutually exclusive with
+        // a full manifest or a full HTML re-emission (those replace what the edits would target).
+        let htmlEditBlock = structuredBlock(named: "ASTRA_APP_HTML_EDIT", in: output)
+        switch htmlEditBlock {
+        case .failure(let message):
+            return structuredOutputFailure(
+                preserving: manifest,
+                path: "/structuredOutput/ASTRA_APP_HTML_EDIT",
+                message: message
+            )
+        case .success(let editPayload):
+            let manifestPresent: Bool
+            if case .notFound = manifestBlock { manifestPresent = false } else { manifestPresent = true }
+            return applyHTMLEditPayload(
+                editPayload,
+                patchBlock: patchBlock,
+                fullHTMLPresent: html != nil,
+                manifestPresent: manifestPresent,
+                to: manifest
+            )
+        case .notFound:
+            break
         }
 
         switch (manifestBlock, patchBlock) {
@@ -449,6 +545,95 @@ enum WorkspaceAppStudioBuilder {
                 message: "Could not decode app patch block: \(decodeFailureMessage(error))"
             )
         }
+    }
+
+    /// Apply an `ASTRA_APP_HTML_EDIT` block: surgical edits to the current app's HTML body, plus an
+    /// OPTIONAL `ASTRA_APP_PATCH` that rides alongside (e.g. rename the app + tweak its UI in one
+    /// turn). Rejected when paired with a full manifest or a full HTML block (ambiguous intent), or
+    /// when the app has no HTML body to edit. The resulting HTML flows through the same `applyPatch`
+    /// validation path as every other channel, so HTML-app sandbox rules still gate it.
+    private static func applyHTMLEditPayload(
+        _ payload: String,
+        patchBlock: WorkspaceAppStudioStructuredBlock,
+        fullHTMLPresent: Bool,
+        manifestPresent: Bool,
+        to manifest: WorkspaceAppManifest
+    ) -> WorkspaceAppStudioStructuredOutputResult {
+        if manifestPresent {
+            return structuredOutputFailure(
+                preserving: manifest,
+                path: "/structuredOutput",
+                message: "ASTRA_APP_HTML_EDIT makes surgical edits to the CURRENT app — it can't be combined with a full ASTRA_APP_MANIFEST. Send edits, or a full manifest, not both."
+            )
+        }
+        if fullHTMLPresent {
+            return structuredOutputFailure(
+                preserving: manifest,
+                path: "/structuredOutput",
+                message: "Send either ASTRA_APP_HTML_EDIT (surgical edits) or ASTRA_APP_HTML (full UI replacement), not both."
+            )
+        }
+        guard let currentHTML = manifest.html else {
+            return structuredOutputFailure(
+                preserving: manifest,
+                path: "/structuredOutput/ASTRA_APP_HTML_EDIT",
+                message: "This app has no HTML body to edit. Send a full ASTRA_APP_MANIFEST with an ASTRA_APP_HTML block instead."
+            )
+        }
+        let edits: [WorkspaceAppStudioHTMLEdit]
+        do {
+            edits = try JSONDecoder().decode([WorkspaceAppStudioHTMLEdit].self, from: Data(payload.utf8))
+        } catch {
+            return structuredOutputFailure(
+                preserving: manifest,
+                path: "/structuredOutput/ASTRA_APP_HTML_EDIT",
+                message: "Could not decode app HTML edits: \(decodeFailureMessage(error))"
+            )
+        }
+        let newHTML: String
+        switch applyHTMLEdits(edits, to: currentHTML) {
+        case .applied(let updated):
+            newHTML = updated
+        case .failure(let message):
+            return structuredOutputFailure(
+                preserving: manifest,
+                path: "/structuredOutput/ASTRA_APP_HTML_EDIT",
+                message: message
+            )
+        }
+        // An optional manifest patch may accompany the UI edit. Absent ⇒ a pure UI change.
+        let operations: [WorkspaceAppStudioManifestPatchOperation]
+        switch patchBlock {
+        case .success(let patchPayload):
+            do {
+                operations = try JSONDecoder().decode(
+                    [WorkspaceAppStudioManifestPatchOperation].self,
+                    from: Data(patchPayload.utf8)
+                )
+            } catch {
+                return structuredOutputFailure(
+                    preserving: manifest,
+                    path: "/structuredOutput/ASTRA_APP_PATCH",
+                    message: "Could not decode app patch block: \(decodeFailureMessage(error))"
+                )
+            }
+        case .notFound:
+            operations = []
+        case .failure(let message):
+            return structuredOutputFailure(
+                preserving: manifest,
+                path: "/structuredOutput/ASTRA_APP_PATCH",
+                message: message
+            )
+        }
+        let patchResult = applyPatch(operations, html: newHTML, to: manifest)
+        return WorkspaceAppStudioStructuredOutputResult(
+            kind: .patch,
+            manifest: patchResult.manifest,
+            rejectedManifest: patchResult.rejectedManifest,
+            validationReport: patchResult.validationReport,
+            accepted: patchResult.accepted
+        )
     }
 
     /// Turn a `DecodingError` into a precise, repair-actionable message.

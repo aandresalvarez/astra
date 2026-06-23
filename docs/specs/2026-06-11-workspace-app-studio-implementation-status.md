@@ -1,7 +1,7 @@
 # Workspace App Studio Implementation Status
 
 **Originally:** 2026-06-11 (branch `alvaro/workspace-app-studio-spec`, susom PR #122)
-**Last updated:** 2026-06-21 (branch `claude/loving-rhodes-87e735`)
+**Last updated:** 2026-06-23 (branch `claude/loving-rhodes-87e735`)
 **Parent spec:** `docs/specs/2026-06-05-workspace-app-studio-spec.md`
 
 This document tracks implementation status against the Workspace App Studio
@@ -13,6 +13,70 @@ product direction is true.
 > **Read the 2026-06-21 update first.** It supersedes the per-area "Pending"
 > lists below where they conflict. The 2026-06-20 and original 2026-06-11
 > snapshots are kept underneath for history.
+
+## 2026-06-23 Update — Dynamic editing over time (surgical HTML edits + honest no-op detection)
+
+**Problem.** Editing a published HTML app turn over turn didn't compound. The manifest had a
+progressive patch channel (`ASTRA_APP_PATCH`), but the UI/logic blob did not — every UI edit forced
+the model to re-emit the WHOLE `manifest.html`. That made edits silently no-op (omit the block →
+`applyPatch` keeps the old HTML, still `accepted: true`), regress untouched UI (full-blob rewrites
+drop/alter unrelated parts), and the model's "Fixed it / ready to publish" claim was structural-only
+(`WorkspaceAppManifestValidator` checks size/CSP/eval, never behavior). Reported symptom: "fix the
+delete buttons" → model says fixed, buttons still dead. (Root-caused: the data bridge has no
+`astra.delete` verb at all — `WorkspaceAppDataBridge.swift:73` allows query/insert/update only — so a
+data-backed HTML delete is impossible to author; the prompts now say so.)
+
+**Landed (keystone for "keep editing apps over time"):**
+- **`ASTRA_APP_HTML_EDIT` surgical edit channel** (`WorkspaceAppStudio.swift` `applyHTMLEdits` +
+  `applyHTMLEditPayload`). A JSON array of `{find, replace}` anchored edits applied to the current
+  `manifest.html`, the blob analogue of a manifest patch. UNIQUE-occurrence contract: 0 matches →
+  "anchor not found", >1 → "ambiguous", identical result → "unchanged" no-op rejected. Edits compound
+  (a later `find` sees earlier `replace`s). Composes with an optional `ASTRA_APP_PATCH`; mutually
+  exclusive with a full `ASTRA_APP_MANIFEST`/`ASTRA_APP_HTML`; requires `manifest.html != nil`. The
+  result flows through the SAME `applyPatch` → validator path (so HTML-app sandbox rules still gate
+  it) and `WorkspaceAppSurfaceView` re-validates before render. DoS caps: ≤100 edits/turn, ≤64 KB per
+  find/replace, ≤256 KB running body (mirrors the validator cap, early-bail).
+- **No-op detection** (`WorkspaceAppStudioGenerator.vetEditAware`): an accepted EDIT whose canonical
+  manifest digest equals the current app is demoted to a non-publishable blocker that feeds the repair
+  loop; on exhaustion it falls back to the unchanged app. Closes "model says Fixed but nothing changed".
+- **Honest messaging** (`StudioTurnSummary.line`): an edit that didn't land no longer claims "valid and
+  ready to publish" — it says the app is unchanged and asks for a more specific instruction.
+- **Prompts** (`refinementPrompt` + `repairPrompt`): present the current UI once in a clean
+  `CURRENT_HTML` section (stripped from the manifest JSON), teach `ASTRA_APP_HTML_EDIT` as the preferred
+  channel with full `ASTRA_APP_HTML` as the rewrite fallback, and state there is no `astra.delete`
+  (model a removal as an archived/status column via `astra.update`). Repair prompt no longer echoes the
+  oversized rejected HTML blob.
+
+Tests: +~17 (`WorkspaceAppHTMLAppTests`, `WorkspaceAppStudioGeneratorTests`, `WorkspaceAppStudioSessionTests`)
+covering unique-anchor/compound/no-op/cap, dispatch + mutual exclusion, non-HTML rejection, sandbox-escape
+rejection, no-op demotion, prompt guidance, honest fallback. Full suite 3296 green + 41 fitness. Codex
+adversarial review: no BLOCKER/HIGH; MEDIUM DoS-cap + repair-prompt-amplification items fixed.
+
+**Grounded verification LANDED (same update).** After a turn produces an app, ASTRA now RUNS it in the
+preview sandbox instead of trusting the model's "Fixed it" summary — the execution-backed version of a
+"did the edit land?" check (an LLM judge would share the generator's blind spot).
+- `WorkspaceAppStudioVerifier.verify` (new): Tier-1 `WorkspaceAppSelfCheck.autoExercise` (free,
+  deterministic — every declared action once; a throw is the strongest negative) + Tier-3
+  `WorkspaceAppScenarioCheckGenerator` (the model AUTHORS an acceptance check from the user's intent,
+  ASTRA RUNS it for real). `combine()` folds them → `verified`/`failed`/`inconclusive`/`notApplicable`,
+  never a false verified (a step-less or `.warn` check is inconclusive, not verified).
+- `WorkspaceAppStudioSession`: injected `verify` seam (tests stub it), `@Published isVerifying`,
+  `verifyTurn()` after the result is shown. NON-BLOCKING — never alters the draft, never gates publish;
+  only appends an honest verdict message. Gated on `result.accepted && canPublish && !actions.isEmpty`
+  (a no-op/fallback turn is NOT verified, so it can't contradict the honest "unchanged" message). Token-
+  guarded so a stale check can't post into a newer turn; publish bumps the token (`cancelGeneration()`)
+  so a late verdict can't persist to the source app's journal. Chat shows a "Checking your change in a
+  sandbox…" indicator.
+- Scope/honesty: verifies the GOVERNED data/action layer (what a data-backed HTML app drives through the
+  `astra.*` bridge), not the HTML UI pixels; pure-UI apps with no actions are `notApplicable`.
+- Tests: +13 (`WorkspaceAppStudioVerifierTests` verdict-folding incl. empty-steps/warn → inconclusive +
+  two grounded end-to-end sandbox runs; session tests for surfacing/skip/non-blocking/non-accepted-skip).
+  Full suite 3310 green + 41 fitness. Codex review: 2 BLOCKER + 1 HIGH + 2 MEDIUM found and FIXED, re-review
+  confirmed all closed, no new BLOCKER/HIGH/MEDIUM.
+
+**Not yet (fast-follow):** the delete product decision — expose a governed `astra.delete`
+(native-confirmed) vs. a soft-delete column. Optionally record the verification verdict on the per-turn
+`StudioGenerationEvent` for durable audit (today it's surfaced in chat only).
 
 ## 2026-06-21 Update — Dynamic HTML/CSS/JS apps (Phase 1)
 

@@ -127,6 +127,8 @@ struct WorkspaceAppStudioChatView: View {
                     }
                     if session.isGenerating {
                         generatingIndicator.id("studio.generating")
+                    } else if session.isVerifying {
+                        verifyingIndicator.id("studio.verifying")
                     }
                 }
                 .padding(20)
@@ -135,6 +137,7 @@ struct WorkspaceAppStudioChatView: View {
             .frame(maxHeight: .infinity)
             .onChange(of: session.messages.count) { _, _ in scrollToBottom(proxy) }
             .onChange(of: session.isGenerating) { _, _ in scrollToBottom(proxy) }
+            .onChange(of: session.isVerifying) { _, _ in scrollToBottom(proxy) }
         }
     }
 
@@ -175,6 +178,16 @@ struct WorkspaceAppStudioChatView: View {
         HStack(spacing: 8) {
             ProgressView().controlSize(.small)
             Text("Building your app…")
+                .font(Stanford.caption(12))
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 40)
+        }
+    }
+
+    private var verifyingIndicator: some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text("Checking your change in a sandbox…")
                 .font(Stanford.caption(12))
                 .foregroundStyle(.secondary)
             Spacer(minLength: 40)

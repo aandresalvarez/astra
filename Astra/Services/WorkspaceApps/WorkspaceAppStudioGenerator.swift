@@ -135,10 +135,12 @@ enum WorkspaceAppStudioGenerator {
         }
 
         var attempts = 1
-        var vetted = vet(
+        var vetted = vetEditAware(
             WorkspaceAppStudioBuilder.applyStructuredOutput(firstResult.output, to: base),
             rawOutput: firstResult.output,
-            contractFamilies: contractFamilies
+            contractFamilies: contractFamilies,
+            base: base,
+            isEditing: existingManifest != nil
         )
         trace(phase: "initial", attempt: attempts, result: firstResult, vetted: vetted)
         if vetted.publishable {
@@ -171,10 +173,12 @@ enum WorkspaceAppStudioGenerator {
                 trace(phase: "repair", attempt: attempts, result: result, vetted: nil)
                 return fallback(attempts: attempts, providerFailure: result.failureDetail)
             }
-            vetted = vet(
+            vetted = vetEditAware(
                 WorkspaceAppStudioBuilder.applyStructuredOutput(result.output, to: base),
                 rawOutput: result.output,
-                contractFamilies: contractFamilies
+                contractFamilies: contractFamilies,
+                base: base,
+                isEditing: existingManifest != nil
             )
             trace(phase: "repair", attempt: attempts, result: result, vetted: vetted)
             if vetted.publishable {
@@ -241,6 +245,43 @@ enum WorkspaceAppStudioGenerator {
         // validation; on a decode error it is nil and the raw output is the feedback.
         return Vetted(publishable: false, manifest: applied.manifest,
                       report: applied.validationReport, decoded: applied.rejectedManifest, rawOutput: rawOutput)
+    }
+
+    /// Vet a parsed attempt AND, when editing, reject a structurally-valid result that didn't
+    /// actually change the app. This closes the "model says Fixed but nothing changed" gap: a
+    /// no-op edit can otherwise pass the structural validator and be reported as ready to publish.
+    private static func vetEditAware(
+        _ applied: WorkspaceAppStudioStructuredOutputResult,
+        rawOutput: String,
+        contractFamilies: [WorkspaceAppContractFamily],
+        base: WorkspaceAppManifest,
+        isEditing: Bool
+    ) -> Vetted {
+        let vetted = vet(applied, rawOutput: rawOutput, contractFamilies: contractFamilies)
+        guard isEditing, vetted.publishable, isNoChange(vetted.manifest, from: base) else { return vetted }
+        let issue = WorkspaceAppManifestValidationReport.Issue(
+            severity: .blocker,
+            path: "/structuredOutput",
+            message: "The edit produced NO change — the result is byte-identical to the current app. "
+                + "Apply the ACTUAL change the request asked for (for an HTML app, send "
+                + "ASTRA_APP_HTML_EDIT with the real edit). Do not return an empty or unchanged result."
+        )
+        return Vetted(
+            publishable: false,
+            manifest: vetted.manifest,
+            report: WorkspaceAppManifestValidationReport(issues: [issue]),
+            decoded: vetted.decoded,
+            rawOutput: rawOutput
+        )
+    }
+
+    /// True when `manifest` is byte-identical (by canonical digest) to `base` — i.e. no new app
+    /// version would be produced. Same encoder/digest the version index uses, so "no change here"
+    /// means exactly "no new version".
+    private static func isNoChange(_ manifest: WorkspaceAppManifest, from base: WorkspaceAppManifest) -> Bool {
+        guard let lhs = try? WorkspaceAppService.encodeManifest(manifest),
+              let rhs = try? WorkspaceAppService.encodeManifest(base) else { return false }
+        return WorkspaceAppService.digest(for: lhs) == WorkspaceAppService.digest(for: rhs)
     }
 
     /// Blocker issues for requirements that reference a contract family — or an
@@ -416,19 +457,34 @@ enum WorkspaceAppStudioGenerator {
         contractFamilies: [WorkspaceAppContractFamily],
         availableProviders: Set<String> = []
     ) -> String {
-        let htmlGuidance = current.html != nil ? """
+        // The UI body is shown ONCE, cleanly, in its own CURRENT_HTML section (below) rather than
+        // JSON-escaped inside the manifest — so the model can copy verbatim anchors for surgical
+        // edits. Strip it from the manifest JSON to avoid showing the (large) blob twice.
+        var manifestForPrompt = current
+        manifestForPrompt.html = nil
+        let htmlGuidance = current.html.map { body in """
 
-        This is a DYNAMIC HTML app — its UI lives in the HTML body, which CANNOT be patched \
-        piecewise. If the change affects the UI, re-send the FULL updated UI as an ASTRA_APP_HTML \
-        block after the patch. If ONLY the UI changes, still send ASTRA_APP_PATCH with an empty \
-        array `[]`, then the HTML block. Sandbox rules are unchanged: inner content only (markup + \
-        <style> + <script>), strict CSP, NO network/eval/iframe/external resources; JS reaches \
-        storage only through the injected `astra.*` bridge.
+        This is a DYNAMIC HTML app — its UI and logic live in the HTML body shown in CURRENT_HTML \
+        below. PREFER surgical edits: send an ASTRA_APP_HTML_EDIT block — a JSON array of \
+        { "find", "replace" } edits. Each "find" MUST be a snippet copied VERBATIM from CURRENT_HTML \
+        that occurs EXACTLY ONCE (extend it with surrounding context if a short snippet repeats); \
+        "replace" is the new text. Edits apply top-to-bottom and compound. This is far more reliable \
+        than re-sending the whole UI — it changes only what you target and can't regress the rest. \
+        For a UI-only change, send ONLY the edit block (no patch needed). Reserve a full ASTRA_APP_HTML \
+        block for a near-total rewrite. Sandbox rules are unchanged either way: inner content only \
+        (markup + <style> + <script>), strict CSP, NO network/eval/iframe/external resources; JS \
+        reaches storage only through the injected `astra.*` bridge — `query`/`insert`/`update` only \
+        (there is NO `astra.delete`; model a removal as an archived/status column updated via \
+        `astra.update` and filtered out of the view).
 
-        ASTRA_APP_HTML
-        ...full updated inner HTML (only when the UI changes)...
-        END_ASTRA_APP_HTML
-        """ : ""
+        ASTRA_APP_HTML_EDIT
+        [ { "find": "<verbatim snippet from CURRENT_HTML>", "replace": "<the new text>" } ]
+        END_ASTRA_APP_HTML_EDIT
+
+        CURRENT_HTML
+        \(body)
+        END_CURRENT_HTML
+        """ } ?? ""
 
         return """
         You are ASTRA App Studio's manifest editor. The user wants to CHANGE an existing app in the \
@@ -445,10 +501,12 @@ enum WorkspaceAppStudioGenerator {
         Here is the app's CURRENT manifest. Patch paths address THIS structure; array indexes are \
         0-based against the arrays below:
 
-        \(encode(current))
+        \(encode(manifestForPrompt))
 
-        Reply with a one-line summary, then a PATCH block listing ONLY what changes — a JSON array \
-        of operations. Each marker on its own line, NO markdown fences, NO backticks:
+        Reply with a one-line summary, then — for a manifest change — a PATCH block listing ONLY what \
+        changes (a JSON array of operations). For a DYNAMIC HTML app whose change is UI-only, send the \
+        ASTRA_APP_HTML_EDIT block instead and omit the patch. Each marker on its own line, NO markdown \
+        fences, NO backticks:
 
         ASTRA_APP_SUMMARY: <one friendly sentence describing the change>
         ASTRA_APP_PATCH
@@ -496,13 +554,40 @@ enum WorkspaceAppStudioGenerator {
         // When editing an existing app, a non-parsing attempt (e.g. a malformed patch) leaves the
         // model with no view of the app to re-send. Show the current manifest so the full-manifest
         // recovery can reconstruct it WITH the change, instead of guessing from the raw text.
-        let currentAppContext = currentManifest.map {
-            "\n\nThe app's CURRENT manifest — re-send it IN FULL with the requested change applied, "
-                + "preserving everything else:\n\(encode($0))"
+        let currentAppContext = currentManifest.map { manifest -> String in
+            var stripped = manifest
+            stripped.html = nil  // shown once in CURRENT_HTML below, not JSON-escaped here
+            return "\n\nThe app's CURRENT manifest — re-send it IN FULL with the requested change applied, "
+                + "preserving everything else:\n\(encode(stripped))"
         } ?? ""
+        // For an HTML app, offer the surgical edit channel (preferred for the actual behavior fix)
+        // and show the current UI body once so the model can anchor verbatim edits on it.
+        let currentHTML = currentManifest?.html ?? rejected?.html
+        let htmlRepairGuidance = currentHTML.map { body in """
+
+        This is a DYNAMIC HTML app — its UI and logic live in the HTML body in CURRENT_HTML below. To \
+        make the actual change, PREFER a surgical ASTRA_APP_HTML_EDIT block (a JSON array of \
+        { "find", "replace" }; each "find" copied VERBATIM from CURRENT_HTML and occurring EXACTLY \
+        ONCE). It targets only what you change and won't regress the rest. Send it INSTEAD of a \
+        manifest block when the fix is UI-only. (Only if you must re-send a full ASTRA_APP_MANIFEST \
+        for a structural blocker, include a full ASTRA_APP_HTML block with it — never drop the UI.)
+
+        ASTRA_APP_HTML_EDIT
+        [ { "find": "<verbatim snippet from CURRENT_HTML>", "replace": "<the new text>" } ]
+        END_ASTRA_APP_HTML_EDIT
+
+        CURRENT_HTML
+        \(body)
+        END_CURRENT_HTML
+        """ } ?? ""
         let priorAttempt: String
         if let rejected {
-            priorAttempt = "The manifest you produced (JSON):\n\(encode(rejected))"
+            // Strip the (possibly oversized/invalid) HTML body before echoing the rejected manifest:
+            // a bad edit could otherwise balloon the repair prompt with the whole blob. The validator
+            // issues name what's wrong, and the valid CURRENT_HTML above is what the model edits.
+            var rejectedForPrompt = rejected
+            rejectedForPrompt.html = nil
+            priorAttempt = "The manifest you produced (JSON):\n\(encode(rejectedForPrompt))"
         } else if let rawOutput, !rawOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             priorAttempt = "Your previous response (which did not parse):\n\(String(rawOutput.prefix(2000)))\(currentAppContext)"
         } else {
@@ -529,12 +614,13 @@ enum WorkspaceAppStudioGenerator {
         { ...the corrected manifest JSON... }
         END_ASTRA_APP_MANIFEST
 
-        If this is a dynamic HTML app, you MUST also re-send the UI block (do not drop it). The HTML \
-        is inner content only (markup + <style> + <script>); it runs under a strict CSP with NO \
-        network, NO external resources, and NO eval()/new Function — compute directly:
+        If you re-send a full manifest for a dynamic HTML app, you MUST also re-send the UI block (do \
+        not drop it). The HTML is inner content only (markup + <style> + <script>); it runs under a \
+        strict CSP with NO network, NO external resources, and NO eval()/new Function — compute directly:
         ASTRA_APP_HTML
         ...corrected inner HTML...
         END_ASTRA_APP_HTML
+        \(htmlRepairGuidance)
 
         You may ONLY reference these capability contracts (exact ids/operations):
         \(contractCatalog(contractFamilies))

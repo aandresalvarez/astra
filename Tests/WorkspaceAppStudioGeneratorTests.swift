@@ -214,14 +214,18 @@ struct WorkspaceAppStudioGeneratorTests {
     @Test("a broken first patch recovers via the full-manifest repair, which shows the current app")
     func brokenPatchRecoversWithCurrentAppContext() async {
         let current = Self.validManifest
+        // The repair must actually CHANGE the app — re-emitting it unchanged is now (correctly) a
+        // no-op, so the recovery reconstructs the app WITH the requested change.
+        var recovered = current
+        recovered.app.name = "Recovered App"
         let runner = ScriptedRunner([
             // Attempt 1: a patch to an unsupported path → apply fails.
             Self.patchBlock(#"[{"op":"replace","path":"/nope","value":"x"}]"#),
-            // Attempt 2 (repair): a valid full manifest.
-            Self.manifestBlock(Self.json(current))
+            // Attempt 2 (repair): a valid full manifest carrying the change.
+            Self.manifestBlock(Self.json(recovered))
         ])
         let result = await WorkspaceAppStudioGenerator.generate(
-            intent: "tweak something",
+            intent: "rename it to Recovered App",
             workspaceName: "Demo",
             workspacePath: "/tmp/demo",
             existingManifest: current,
@@ -230,8 +234,77 @@ struct WorkspaceAppStudioGeneratorTests {
         #expect(result.accepted)
         #expect(result.origin == .modelRepaired)
         #expect(result.attemptCount == 2)
+        #expect(result.manifest.app.name == "Recovered App")
         // The repair turn carried the current app so a non-parsing edit can be reconstructed.
         #expect(runner.calls[1].prompt.contains("CURRENT manifest"))
+    }
+
+    // MARK: - Progressive HTML editing + no-op detection
+
+    private static func htmlEditBlock(_ json: String) -> AgentUtilityRunResult {
+        ok("ASTRA_APP_HTML_EDIT\n\(json)\nEND_ASTRA_APP_HTML_EDIT")
+    }
+
+    private static func htmlManifest(_ html: String) -> WorkspaceAppManifest {
+        WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(id: "notes", name: "Notes", description: "A note taker."),
+            permissions: WorkspaceAppPermissions(defaultMode: .draftOnly),
+            html: html
+        )
+    }
+
+    @Test("an edit that changes nothing is NOT accepted — it's demoted and falls back unchanged")
+    func noOpEditIsDemoted() async {
+        let current = Self.validManifest
+        // Every turn returns an empty patch — structurally valid, but it changes nothing.
+        let runner = ScriptedRunner([Self.patchBlock("[]")])
+        let result = await WorkspaceAppStudioGenerator.generate(
+            intent: "make the delete button work",
+            workspaceName: "Demo",
+            workspacePath: "/tmp/demo",
+            existingManifest: current,
+            runner: runner.runner
+        )
+        #expect(!result.accepted)
+        #expect(result.origin == .deterministicFallback)
+        #expect(result.manifest == current)   // the user's app is preserved, not clobbered
+        #expect(result.providerFailure?.contains("NO change") == true)
+    }
+
+    @Test("a surgical HTML edit on an existing HTML app is accepted and changes the UI body")
+    func surgicalHTMLEditAccepted() async {
+        let current = Self.htmlManifest("<main><button onclick=\"go()\">Go</button></main>")
+        let runner = ScriptedRunner([
+            Self.htmlEditBlock(#"[{"find":"onclick=\"go()\">Go","replace":"onclick=\"stop()\">Stop"}]"#)
+        ])
+        let result = await WorkspaceAppStudioGenerator.generate(
+            intent: "rename the button to Stop and call stop()",
+            workspaceName: "Demo",
+            workspacePath: "/tmp/demo",
+            existingManifest: current,
+            runner: runner.runner
+        )
+        #expect(result.accepted)
+        #expect(result.manifest.html == "<main><button onclick=\"stop()\">Stop</button></main>")
+    }
+
+    @Test("editing an HTML app teaches the surgical edit channel and shows the current HTML")
+    func refinementPromptTeachesHTMLEdit() async {
+        let current = Self.htmlManifest("<main id=\"anchor-marker\">x</main>")
+        let runner = ScriptedRunner([
+            Self.htmlEditBlock(#"[{"find":"id=\"anchor-marker\"","replace":"id=\"renamed\""}]"#)
+        ])
+        _ = await WorkspaceAppStudioGenerator.generate(
+            intent: "rename the id",
+            workspaceName: "Demo",
+            workspacePath: "/tmp/demo",
+            existingManifest: current,
+            runner: runner.runner
+        )
+        let prompt = runner.calls[0].prompt
+        #expect(prompt.contains("ASTRA_APP_HTML_EDIT"))
+        #expect(prompt.contains("CURRENT_HTML"))
+        #expect(prompt.contains("anchor-marker"))   // the current UI body is shown verbatim to anchor on
     }
 
     // MARK: - Degradation

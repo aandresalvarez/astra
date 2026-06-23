@@ -59,9 +59,15 @@ struct WorkspaceAppStudioSessionTests {
         Workspace(name: "Demo", primaryPath: "/tmp/demo")
     }
 
+    /// A no-op verify seam: keeps existing turn tests hermetic (no provider CLI, no extra message).
+    /// `notApplicable` ⇒ `verifyTurn` returns before appending anything or persisting.
+    static let noVerify: WorkspaceAppStudioVerify = { _, _, _, _ in
+        WorkspaceAppStudioVerification(status: .notApplicable, headline: "", detail: "", autoExercise: nil, scenario: nil)
+    }
+
     private func session(_ results: [WorkspaceAppStudioGenerationResult]) -> (WorkspaceAppStudioSession, StubGenerator) {
         let stub = StubGenerator(results)
-        return (WorkspaceAppStudioSession(generate: stub.generate), stub)
+        return (WorkspaceAppStudioSession(generate: stub.generate, verify: Self.noVerify), stub)
     }
 
     private func submit(_ session: WorkspaceAppStudioSession, _ text: String, _ workspace: Workspace) async {
@@ -116,6 +122,96 @@ struct WorkspaceAppStudioSessionTests {
         // Turn 1: provisional (data-backed HTML) + model result = 2 revisions; turn 2: result only
         // (no provisional once a draft exists) = 3.
         #expect(session.draftRevision == 3)
+    }
+
+    @Test("an edit that couldn't be applied is reported honestly — not 'ready to publish'")
+    func unappliedEditReportsHonestly() async {
+        // Turn 1 establishes a real app; turn 2 fails to change it (the generator's no-op/fallback path).
+        let (session, _) = session([
+            Self.result(Self.validManifest),
+            Self.result(Self.validManifest, origin: .deterministicFallback,
+                        providerFailure: "The edit produced NO change")
+        ])
+        let ws = workspace()
+        await submit(session, "track groceries", ws)
+        await submit(session, "make the delete button work", ws)
+
+        let last = session.messages.last
+        #expect(last?.role == .assistant)
+        #expect(last?.text.contains("unchanged") == true)
+        #expect(last?.text.contains("ready to publish") == false)   // no false success claim
+    }
+
+    // MARK: - Grounded post-turn verification
+
+    private func submitTurn(_ s: WorkspaceAppStudioSession, _ text: String, _ ws: Workspace) async {
+        await s.submit(text, workspace: ws,
+                       runtimeID: TaskExecutionDefaults.runtime.rawValue,
+                       model: TaskExecutionDefaults.model, availableProviders: [])
+    }
+
+    @Test("an accepted, action-bearing turn runs verification and surfaces the verdict")
+    func acceptedTurnVerifies() async {
+        let ws = workspace()
+        let verifyStub: WorkspaceAppStudioVerify = { _, _, _, _ in
+            WorkspaceAppStudioVerification(status: .verified, headline: "Verified — I ran your change.",
+                                           detail: "items has 1 row.", autoExercise: nil, scenario: nil)
+        }
+        let s = WorkspaceAppStudioSession(generate: { _, _, _, _, _, _ in Self.result(Self.validManifest) }, verify: verifyStub)
+        await submitTurn(s, "track groceries", ws)
+        #expect(s.isVerifying == false)                                  // cleared when done
+        #expect(s.messages.last?.text.contains("Verified") == true)     // verdict surfaced
+        #expect(s.messages.last?.kind == .summary)
+    }
+
+    @Test("a pure-UI app (no runnable actions) skips verification entirely")
+    func pureUITurnSkipsVerification() async {
+        let ws = workspace()
+        var verifyCalled = false
+        let verifyStub: WorkspaceAppStudioVerify = { _, _, _, _ in
+            verifyCalled = true
+            return WorkspaceAppStudioVerification(status: .verified, headline: "x", detail: "", autoExercise: nil, scenario: nil)
+        }
+        let pureUI = WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(id: "calc", name: "Calculator"),
+            permissions: WorkspaceAppPermissions(defaultMode: .draftOnly),
+            html: "<main>1+1</main>"
+        )
+        let s = WorkspaceAppStudioSession(generate: { _, _, _, _, _, _ in Self.result(pureUI) }, verify: verifyStub)
+        await submitTurn(s, "a calculator", ws)
+        #expect(verifyCalled == false)   // the guard short-circuits before the verify seam
+    }
+
+    @Test("a failed verification is informational — it never blocks publish")
+    func failedVerificationIsNonBlocking() async {
+        let ws = workspace()
+        let verifyStub: WorkspaceAppStudioVerify = { _, _, _, _ in
+            WorkspaceAppStudioVerification(status: .failed, headline: "I ran the app and an action failed.",
+                                           detail: "Delete: boom", autoExercise: nil, scenario: nil)
+        }
+        let s = WorkspaceAppStudioSession(generate: { _, _, _, _, _, _ in Self.result(Self.validManifest) }, verify: verifyStub)
+        await submitTurn(s, "track groceries", ws)
+        #expect(s.messages.last?.text.contains("tell me what to fix") == true)
+        #expect(s.canPublish == true)   // the validator passed; verification is not a publish gate
+    }
+
+    @Test("a non-accepted (fallback) turn is NOT verified — no 'verified' against the unchanged app")
+    func nonAcceptedTurnSkipsVerification() async {
+        let ws = workspace()
+        var verifyCount = 0
+        let verifyStub: WorkspaceAppStudioVerify = { _, _, _, _ in
+            verifyCount += 1
+            return WorkspaceAppStudioVerification(status: .notApplicable, headline: "", detail: "", autoExercise: nil, scenario: nil)
+        }
+        // Turn 1 is an accepted change (verified); turn 2 is a no-op fallback (accepted == false).
+        let gen = StubGenerator([
+            Self.result(Self.validManifest),
+            Self.result(Self.validManifest, origin: .deterministicFallback, providerFailure: "no change")
+        ])
+        let s = WorkspaceAppStudioSession(generate: gen.generate, verify: verifyStub)
+        await submitTurn(s, "track groceries", ws)
+        await submitTurn(s, "make a change", ws)
+        #expect(verifyCount == 1)   // only the accepted turn was verified; the fallback turn skipped
     }
 
     // MARK: - Refinement chips (pure, no model call)
@@ -194,7 +290,7 @@ struct WorkspaceAppStudioSessionTests {
             draftDuringGeneration = sessionRef?.draft
             return Self.result(modelHTML)
         }
-        let s = WorkspaceAppStudioSession(generate: stub)
+        let s = WorkspaceAppStudioSession(generate: stub, verify: Self.noVerify)
         sessionRef = s
 
         await s.submit(
@@ -219,7 +315,7 @@ struct WorkspaceAppStudioSessionTests {
             draftDuringGeneration = sessionRef?.draft
             return Self.result(Self.validManifest)
         }
-        let s = WorkspaceAppStudioSession(generate: stub)
+        let s = WorkspaceAppStudioSession(generate: stub, verify: Self.noVerify)
         sessionRef = s
 
         // Monitor is the sole remaining native archetype (scheduled automations) → no html baseline →
@@ -249,7 +345,7 @@ struct WorkspaceAppStudioSessionTests {
             else { buildingDuringRefine = sessionRef?.isBuildingFirstDraft ?? false }
             return Self.result(Self.validManifest)
         }
-        let s = WorkspaceAppStudioSession(generate: stub)
+        let s = WorkspaceAppStudioSession(generate: stub, verify: Self.noVerify)
         sessionRef = s
         #expect(s.isBuildingFirstDraft == false) // nothing in flight yet
 
@@ -302,7 +398,7 @@ struct WorkspaceAppStudioSessionTests {
                                            accepted: true, blockerCount: 0, manifestDigest: "d1")]
         )
         let s = WorkspaceAppStudioSession(generate: { _, _, _, _, _, _ in Self.result(Self.validManifest) },
-                                          journalStore: spy)
+                                          verify: Self.noVerify, journalStore: spy)
         s.reset(for: ws, existingManifest: Self.validManifest)
         #expect(s.messages.count == 2)
         #expect(s.messages.first?.text == "earlier turn")          // history, not the greeting
@@ -315,7 +411,7 @@ struct WorkspaceAppStudioSessionTests {
         let ws = workspace()
         let spy = JournalStoreSpy()
         let s = WorkspaceAppStudioSession(generate: { _, _, _, _, _, _ in Self.result(Self.validManifest) },
-                                          journalStore: spy)
+                                          verify: Self.noVerify, journalStore: spy)
         s.reset(for: ws, existingManifest: Self.validManifest)     // empty journal → greeting, target set
         await s.submit("add an owner field", workspace: ws,
                        runtimeID: TaskExecutionDefaults.runtime.rawValue,
@@ -334,7 +430,7 @@ struct WorkspaceAppStudioSessionTests {
         let ws = workspace()
         let spy = JournalStoreSpy()
         let s = WorkspaceAppStudioSession(generate: { _, _, _, _, _, _ in Self.result(Self.validManifest) },
-                                          journalStore: spy)
+                                          verify: Self.noVerify, journalStore: spy)
         s.reset(for: ws)   // new app → no on-disk target
         await s.submit("track lab samples", workspace: ws,
                        runtimeID: TaskExecutionDefaults.runtime.rawValue,
@@ -350,7 +446,7 @@ struct WorkspaceAppStudioSessionTests {
         let ws = workspace()
         let spy = JournalStoreSpy()
         let s = WorkspaceAppStudioSession(generate: { _, _, _, _, _, _ in Self.result(Self.validManifest) },
-                                          journalStore: spy)
+                                          verify: Self.noVerify, journalStore: spy)
         await s.submit("track groceries", workspace: ws,
                        runtimeID: TaskExecutionDefaults.runtime.rawValue,
                        model: TaskExecutionDefaults.model, availableProviders: [])
@@ -423,7 +519,7 @@ struct WorkspaceAppStudioSessionTests {
             session?.cancelGeneration()
             return Self.result(Self.validManifest)
         }
-        let s = WorkspaceAppStudioSession(generate: stub)
+        let s = WorkspaceAppStudioSession(generate: stub, verify: Self.noVerify)
         session = s
 
         // A native monitor intent (no provisional) so the assertion isolates the stale-result guard.
@@ -446,7 +542,7 @@ struct WorkspaceAppStudioSessionTests {
             session?.reset(for: ws)  // a brand-new conversation started mid-flight
             return Self.result(Self.validManifest)
         }
-        let s = WorkspaceAppStudioSession(generate: stub)
+        let s = WorkspaceAppStudioSession(generate: stub, verify: Self.noVerify)
         session = s
 
         await s.submit(

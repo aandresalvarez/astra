@@ -46,6 +46,15 @@ typealias WorkspaceAppStudioGenerate = (
     _ availableProviders: Set<String>
 ) async -> WorkspaceAppStudioGenerationResult
 
+/// Grounded post-turn verification: run the produced app in the sandbox and report whether the
+/// change behaves as asked. Injected (like `generate`) so tests verify turns without a provider CLI.
+typealias WorkspaceAppStudioVerify = (
+    _ intent: String,
+    _ manifest: WorkspaceAppManifest,
+    _ workspacePath: String,
+    _ configuration: AgentUtilityRuntimeConfiguration
+) async -> WorkspaceAppStudioVerification
+
 @MainActor
 final class WorkspaceAppStudioSession: ObservableObject {
     @Published private(set) var messages: [StudioMessage] = []
@@ -65,9 +74,14 @@ final class WorkspaceAppStudioSession: ObservableObject {
     /// generate/refine turn: origin, attempts, validation, the resulting manifest digest). Persisted
     /// alongside `messages` so a published app's build history is durable and auditable.
     @Published private(set) var generationEvents: [StudioGenerationEvent] = []
+    /// True while a turn's grounded verification is running in the sandbox (after the result is shown,
+    /// before the verdict lands). The view shows a subtle "checking your change…" indicator; the user
+    /// can already see and act on the app — verification is informational, never a publish gate.
+    @Published private(set) var isVerifying = false
 
     private(set) var workspaceID: UUID?
     private let generate: WorkspaceAppStudioGenerate
+    private let verify: WorkspaceAppStudioVerify
     private let journalStore: WorkspaceAppStudioJournalStoring
     /// Set on Edit of an existing app: each turn persists to that app's on-disk journal so the
     /// conversation + events survive across Studio sessions. nil for a not-yet-published app (no app
@@ -87,12 +101,17 @@ final class WorkspaceAppStudioSession: ObservableObject {
     /// the safety net for the occasional larger UI: 240s. (codex utility runs at low reasoning, so
     /// this is headroom, not a hang ceiling, and `cancelGeneration()` lets the user bail early.)
     private static let generationTimeoutSeconds: TimeInterval = 240
+    /// Verification authors + runs a tiny acceptance check — a fraction of a generation. A shorter
+    /// ceiling keeps the post-turn verdict snappy and bails fast if the provider stalls.
+    private static let verificationTimeoutSeconds: TimeInterval = 90
 
     init(
         generate: @escaping WorkspaceAppStudioGenerate = WorkspaceAppStudioSession.defaultGenerate,
+        verify: @escaping WorkspaceAppStudioVerify = WorkspaceAppStudioSession.defaultVerify,
         journalStore: WorkspaceAppStudioJournalStoring = WorkspaceAppStudioJournalService()
     ) {
         self.generate = generate
+        self.verify = verify
         self.journalStore = journalStore
     }
 
@@ -124,6 +143,7 @@ final class WorkspaceAppStudioSession: ObservableObject {
         workspaceID = workspace.id
         isGenerating = false
         isBuildingFirstDraft = false
+        isVerifying = false
         generationToken &+= 1  // invalidate any in-flight generation from a prior session
         generationEvents = []
         persistenceTarget = nil
@@ -165,6 +185,7 @@ final class WorkspaceAppStudioSession: ObservableObject {
         generationToken &+= 1
         isGenerating = false
         isBuildingFirstDraft = false
+        isVerifying = false
     }
 
     // MARK: - Turns
@@ -196,6 +217,10 @@ final class WorkspaceAppStudioSession: ObservableObject {
         }
 
         isGenerating = true
+        // Clear any leftover verification indicator from a prior turn whose check is still in flight:
+        // that stale verifier sees the bumped token and bows out without touching `isVerifying`, so
+        // this is the single owner that resets it per turn (no stuck "checking…" across turns).
+        isVerifying = false
         generationToken &+= 1
         let token = generationToken
         let existing = draft?.manifest
@@ -245,7 +270,44 @@ final class WorkspaceAppStudioSession: ObservableObject {
             blockerCount: result.validationReport.blockers.count, providerFailure: result.providerFailure,
             manifest: result.manifest, runtimeID: runtimeID, model: model
         )
+        // The turn's app is in and the user can act on it — verification is informational.
         isGenerating = false
+        await verifyTurn(intent: text, result: result, workspacePath: workspace.primaryPath,
+                         runtimeID: runtimeID, model: model, token: token)
+    }
+
+    /// Grounded post-turn verification: run the produced app in the sandbox and surface an honest
+    /// verdict. Best-effort and NON-BLOCKING — it never gates publish and never alters the draft; it
+    /// only appends a chat message. Skipped when the result wasn't usable or has no runnable action
+    /// to exercise (a pure-UI app). Token-guarded so a slow check can't post into a newer turn.
+    private func verifyTurn(
+        intent: String,
+        result: WorkspaceAppStudioGenerationResult,
+        workspacePath: String,
+        runtimeID: String,
+        model: String,
+        token: Int
+    ) async {
+        // Only an ACCEPTED change is worth verifying. A no-op/fallback turn (accepted == false) keeps
+        // the user's UNCHANGED app — verifying it would run the OLD app and contradict the honest
+        // "your app is unchanged" message with a "Verified" against the wrong thing. `canPublish`
+        // alone isn't enough: the unchanged app is still valid, so it must be gated on `accepted`.
+        guard result.accepted, result.canPublish, !result.manifest.actions.isEmpty else { return }
+        isVerifying = true
+        let configuration = AgentUtilityRuntimeConfiguration(
+            runtime: AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID),
+            model: model,
+            timeoutSeconds: Self.verificationTimeoutSeconds
+        )
+        let verification = await verify(intent, result.manifest, workspacePath, configuration)
+        // The user may have moved on while the check ran (new turn / reset / publish bumped the token).
+        // Leave `isVerifying` to whoever owns the current token — clobbering it here could clear a
+        // NEWER turn's indicator. submit() resets it at the start of every turn, so it never sticks.
+        guard token == generationToken else { return }
+        isVerifying = false
+        guard verification.status != .notApplicable, !verification.chatLine.isEmpty else { return }
+        messages.append(StudioMessage(role: .assistant, kind: .summary, text: verification.chatLine))
+        persistJournal()
     }
 
     /// Apply a refinement chip — a pure, instant manifest transform (no model call). Shown in
@@ -324,6 +386,17 @@ final class WorkspaceAppStudioSession: ObservableObject {
             availableProviders: providers
         )
     }
+
+    /// Real verification: run the produced app in the sandbox (Tier-1 auto-exercise + an intent-
+    /// authored Tier-3 scenario), read-only tool mode via the scenario author's default runner.
+    static let defaultVerify: WorkspaceAppStudioVerify = { intent, manifest, path, configuration in
+        await WorkspaceAppStudioVerifier.verify(
+            intent: intent,
+            manifest: manifest,
+            workspacePath: path,
+            configuration: configuration
+        )
+    }
 }
 
 /// Deterministic, conversational summaries of a generation/refinement turn. No second model
@@ -351,9 +424,14 @@ enum StudioTurnSummary {
                 }
                 return "I couldn't finish that from the model, so I started you from an interactive HTML starting point\(why). It's a sample UI you can refine by chatting (it can't sync live data yet). " + validationLine(result.validationReport)
             }
-            // Editing: the fallback is the user's unchanged app, not a template.
-            let degraded = isEditing ? "kept your current app unchanged" : "started you from a template"
-            return "I couldn't build that from the model, so I \(degraded)\(why). " + validationLine(result.validationReport)
+            // Editing: the fallback is the user's UNCHANGED app. Don't append the "ready to publish"
+            // validation line — the app was already valid; the point is the edit didn't land. Invite
+            // a more specific instruction so the next turn can actually change something.
+            if isEditing {
+                return "I wasn't able to apply that change\(why) — your app is unchanged. Tell me more "
+                    + "specifically what to change (which button, field, or text) and I'll edit it."
+            }
+            return "I couldn't build that from the model, so I started you from a template\(why). " + validationLine(result.validationReport)
         }
     }
 

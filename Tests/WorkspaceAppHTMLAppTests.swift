@@ -293,6 +293,149 @@ struct WorkspaceAppHTMLAppTests {
         #expect(result.manifest.html == base.html)           // UI preserved across a data-only edit
     }
 
+    // MARK: - Progressive HTML editing: surgical ASTRA_APP_HTML_EDIT (the delta channel for the UI body)
+
+    @Test("applyHTMLEdits replaces a unique anchor and leaves the rest byte-identical")
+    func htmlEditsReplaceUniqueAnchor() {
+        let html = "<main><button onclick=\"a()\">A</button><button onclick=\"b()\">B</button></main>"
+        let edit = WorkspaceAppStudioHTMLEdit(find: "onclick=\"a()\">A", replace: "onclick=\"a2()\">A2")
+        guard case let .applied(out) = WorkspaceAppStudioBuilder.applyHTMLEdits([edit], to: html) else {
+            Issue.record("expected the edit to apply"); return
+        }
+        #expect(out == "<main><button onclick=\"a2()\">A2</button><button onclick=\"b()\">B</button></main>")
+    }
+
+    @Test("a sequence of edits compounds (a later find sees an earlier replace)")
+    func htmlEditsCompound() {
+        let html = "<p>one</p>"
+        let edits = [
+            WorkspaceAppStudioHTMLEdit(find: "one", replace: "two"),
+            WorkspaceAppStudioHTMLEdit(find: "<p>two</p>", replace: "<p>two</p><p>three</p>")
+        ]
+        guard case let .applied(out) = WorkspaceAppStudioBuilder.applyHTMLEdits(edits, to: html) else {
+            Issue.record("expected the edits to apply"); return
+        }
+        #expect(out == "<p>two</p><p>three</p>")
+    }
+
+    @Test("an anchor that does not appear is rejected, not applied to the wrong place")
+    func htmlEditAnchorNotFound() {
+        let result = WorkspaceAppStudioBuilder.applyHTMLEdits(
+            [WorkspaceAppStudioHTMLEdit(find: "no-such-text", replace: "x")],
+            to: "<main>hello</main>"
+        )
+        guard case let .failure(message) = result else { Issue.record("expected failure"); return }
+        #expect(message.contains("anchor not found"))
+    }
+
+    @Test("an ambiguous anchor (matches more than once) is rejected")
+    func htmlEditAnchorAmbiguous() {
+        let result = WorkspaceAppStudioBuilder.applyHTMLEdits(
+            [WorkspaceAppStudioHTMLEdit(find: "<li>", replace: "<li class=x>")],
+            to: "<ul><li>a</li><li>b</li></ul>"
+        )
+        guard case let .failure(message) = result else { Issue.record("expected failure"); return }
+        #expect(message.contains("ambiguous"))
+    }
+
+    @Test("a no-op edit (find == replace) is rejected so 'fix it' can't change nothing")
+    func htmlEditNoOpRejected() {
+        let result = WorkspaceAppStudioBuilder.applyHTMLEdits(
+            [WorkspaceAppStudioHTMLEdit(find: "hello", replace: "hello")],
+            to: "<main>hello</main>"
+        )
+        guard case let .failure(message) = result else { Issue.record("expected failure"); return }
+        #expect(message.contains("unchanged"))
+    }
+
+    private func htmlEditOutput(_ editsJSON: String, patchJSON: String? = nil) -> String {
+        var output = "ASTRA_APP_SUMMARY: Surgical UI edit.\n"
+        if let patchJSON {
+            output += "ASTRA_APP_PATCH\n\(patchJSON)\nEND_ASTRA_APP_PATCH\n"
+        }
+        output += "ASTRA_APP_HTML_EDIT\n\(editsJSON)\nEND_ASTRA_APP_HTML_EDIT"
+        return output
+    }
+
+    @Test("ASTRA_APP_HTML_EDIT alone patches the UI body in place, manifest untouched")
+    func structuredOutputAppliesHTMLEdit() {
+        let base = htmlManifest(html: "<main><button onclick=\"go()\">Go</button></main>")
+        let edits = #"[{"find":"onclick=\"go()\">Go","replace":"onclick=\"stop()\">Stop"}]"#
+        let result = WorkspaceAppStudioBuilder.applyStructuredOutput(htmlEditOutput(edits), to: base)
+        #expect(result.accepted)
+        #expect(result.manifest.html == "<main><button onclick=\"stop()\">Stop</button></main>")
+        #expect(result.manifest.app.name == base.app.name)   // manifest unchanged
+    }
+
+    @Test("ASTRA_APP_HTML_EDIT + a manifest patch apply together")
+    func structuredOutputAppliesHTMLEditAndPatch() {
+        let base = htmlManifest(html: "<main><h1>Old</h1></main>")
+        let edits = #"[{"find":"<h1>Old</h1>","replace":"<h1>New</h1>"}]"#
+        let patch = #"[{"op":"replace","path":"/app/name","value":"Renamed"}]"#
+        let result = WorkspaceAppStudioBuilder.applyStructuredOutput(htmlEditOutput(edits, patchJSON: patch), to: base)
+        #expect(result.accepted)
+        #expect(result.manifest.html == "<main><h1>New</h1></main>")
+        #expect(result.manifest.app.name == "Renamed")
+    }
+
+    @Test("a failed anchor routes to a non-accepted result with a repair-actionable message")
+    func structuredOutputHTMLEditFailureSurfaces() {
+        let base = htmlManifest(html: "<main>hello</main>")
+        let edits = #"[{"find":"absent-snippet","replace":"x"}]"#
+        let result = WorkspaceAppStudioBuilder.applyStructuredOutput(htmlEditOutput(edits), to: base)
+        #expect(!result.accepted)
+        #expect(result.validationReport.issues.first?.message.contains("anchor not found") == true)
+        #expect(result.manifest.html == base.html)   // original preserved on failure
+    }
+
+    @Test("ASTRA_APP_HTML_EDIT on a declarative (non-HTML) app is rejected, app preserved")
+    func structuredOutputHTMLEditOnNonHTMLApp() {
+        let declarative = WorkspaceAppStudioBuilder.localDatabaseManifest(intent: "groceries")
+        let edits = #"[{"find":"x","replace":"y"}]"#
+        let result = WorkspaceAppStudioBuilder.applyStructuredOutput(htmlEditOutput(edits), to: declarative)
+        #expect(!result.accepted)
+        #expect(result.validationReport.issues.first?.message.contains("no HTML body") == true)
+    }
+
+    @Test("ASTRA_APP_HTML_EDIT plus a full ASTRA_APP_HTML block is rejected (ambiguous intent)")
+    func structuredOutputHTMLEditExclusiveWithFullHTML() {
+        let base = htmlManifest(html: "<main>x</main>")
+        let output = """
+        ASTRA_APP_HTML_EDIT
+        [{"find":"x","replace":"y"}]
+        END_ASTRA_APP_HTML_EDIT
+        ASTRA_APP_HTML
+        <main>full replacement</main>
+        END_ASTRA_APP_HTML
+        """
+        let result = WorkspaceAppStudioBuilder.applyStructuredOutput(output, to: base)
+        #expect(!result.accepted)
+        #expect(result.manifest.html == base.html)
+    }
+
+    @Test("a surgical edit that injects sandbox-forbidden content is rejected, original preserved")
+    func htmlEditCannotEscapeTheSandbox() {
+        // The edited HTML still flows through the HTML-app validator — a unique, well-formed anchor
+        // can't smuggle an iframe / external script / network call past the CSP rules.
+        let base = htmlManifest(html: "<main><p>safe</p></main>")
+        for injected in ["<iframe src=\"x\"></iframe>", "<script src=\"https://evil/x.js\"></script>", "<p onclick=\"fetch('https://evil')\">x</p>"] {
+            let edits = "[{\"find\":\"<p>safe</p>\",\"replace\":\"\(injected.replacingOccurrences(of: "\"", with: "\\\""))\"}]"
+            let result = WorkspaceAppStudioBuilder.applyStructuredOutput(htmlEditOutput(edits), to: base)
+            #expect(!result.accepted, "injection should be rejected: \(injected)")
+            #expect(result.manifest.html == base.html)   // original preserved
+        }
+    }
+
+    @Test("an over-cap edit batch is rejected before it can burn CPU")
+    func htmlEditBatchCapEnforced() {
+        let edit = WorkspaceAppStudioHTMLEdit(find: "x", replace: "y")
+        let tooMany = Array(repeating: edit, count: WorkspaceAppStudioBuilder.maxHTMLEdits + 1)
+        guard case let .failure(message) = WorkspaceAppStudioBuilder.applyHTMLEdits(tooMany, to: "<main>x</main>") else {
+            Issue.record("expected the over-cap batch to be rejected"); return
+        }
+        #expect(message.contains("at most"))
+    }
+
     // MARK: - Validator: self-containment + usability skip
 
     @Test("a valid HTML app passes validation")

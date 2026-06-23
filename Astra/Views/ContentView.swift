@@ -700,6 +700,7 @@ struct ContentView: View {
         // Flush the build journal onto the new app (publish mints a new id), then snapshot the
         // manifest as a version — both best-effort, logged on failure, never blocking the publish.
         WorkspaceAppStudioJournalService().save(workspaceAppStudioSession.journal, appID: result.app.logicalID, workspacePath: workspace.primaryPath)
+        workspaceAppStudioSession.cancelGeneration()   // invalidate in-flight verification so a late verdict can't persist to the source journal after publish
         do {
             let publishedData = try WorkspaceAppService.encodeManifest(result.manifest)
             try WorkspaceAppVersionService().recordPublish(
@@ -712,9 +713,7 @@ struct ContentView: View {
         } catch {
             AppLogger.error("Workspace app published but version snapshot failed: \(error)", category: "WorkspaceApps")
         }
-        if seedSampleData {
-            WorkspaceAppSampleSeeder.seed(manifest: manifest, workspacePath: workspace.primaryPath, appID: result.app.logicalID)
-        }
+        if seedSampleData { WorkspaceAppSampleSeeder.seed(manifest: manifest, workspacePath: workspace.primaryPath, appID: result.app.logicalID) }
         isComposingWorkspaceApp = false
         setSelectedWorkspaceApp(result.app)
     }
