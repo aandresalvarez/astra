@@ -54,6 +54,43 @@ struct TaskLaunchResourcePlanTests {
         #expect(plan.credentialGrants.contains { $0.source == .gitCredential })
     }
 
+    @Test("Resource resolver records local Git config projection without credential grant")
+    func resolverRecordsLocalGitConfigProjection() throws {
+        let fm = FileManager.default
+        let workspaceRoot = try makeTempDir("resource-plan-local-git")
+        defer { try? fm.removeItem(atPath: workspaceRoot.path) }
+
+        let gitConfig = workspaceRoot.appendingPathComponent("home.gitconfig")
+        try "[diff]\nstatGraphWidth = 80\n".write(to: gitConfig, atomically: true, encoding: .utf8)
+
+        let workspace = Workspace(name: "Local Git", primaryPath: workspaceRoot.path)
+        let task = AgentTask(title: "Review local diff", goal: "Verify no unrelated files", workspace: workspace)
+
+        let plan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: UUID(),
+            runtime: .copilotCLI,
+            phase: "run",
+            prompt: "git diff --stat",
+            contextText: "Before handoff, run git diff --stat.",
+            workspacePath: workspaceRoot.path,
+            gitCredentialContextProvider: { _, _, _, _ in
+                GitCredentialSandboxContext(
+                    readablePaths: [gitConfig.path],
+                    writablePaths: [],
+                    transports: [],
+                    diagnostics: ["local_git_config"]
+                )
+            }
+        )
+
+        #expect(plan.hostReadablePaths.contains(gitConfig.standardizedFileURL.path))
+        #expect(plan.gitCredentialSandboxContext.transports.isEmpty)
+        #expect(plan.commandPlannedFields["git_credential_context"] == "true")
+        #expect(plan.commandPlannedFields["git_credential_transports"] == "")
+        #expect(!plan.credentialGrants.contains { $0.source == .gitCredential })
+    }
+
     @Test("Resource resolver records Docker credential projection shape without secret values")
     func resolverRecordsDockerCredentialProjection() throws {
         let workspaceRoot = try makeTempDir("resource-plan-docker")

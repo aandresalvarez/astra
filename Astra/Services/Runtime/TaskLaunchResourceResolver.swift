@@ -92,20 +92,11 @@ enum TaskLaunchResourceResolver {
         contextText: String,
         workspacePath: String
     ) -> GitCredentialSandboxContext {
-        guard GitOperationIntentDetector.detectsNetworkGitOperation(
+        GitCredentialContextResolver.runtimeSandboxContext(
             prompt: prompt,
             task: task,
-            contextText: contextText
-        ) else {
-            return .empty
-        }
-        return GitCredentialContextResolver.sandboxContext(
+            contextText: contextText,
             repositoryPath: workspacePath,
-            intentText: GitOperationIntentDetector.networkGitIntentText(
-                prompt: prompt,
-                task: task,
-                contextText: contextText
-            )
         )
     }
 
@@ -200,7 +191,7 @@ enum TaskLaunchResourceResolver {
                 path: normalizedPath(path),
                 access: .read,
                 source: .gitCredential,
-                reason: "Git network operation requires external Git, SSH, or cloud credential context.",
+                reason: "Git operation requires external Git config or credential context.",
                 sensitivity: .credential,
                 lifetime: .run,
                 exists: true
@@ -211,7 +202,7 @@ enum TaskLaunchResourceResolver {
                 path: normalizedPath(path),
                 access: .readWrite,
                 source: .gitCredential,
-                reason: "Git network operation requires a writable external Git metadata path.",
+                reason: "Git operation requires a writable external Git metadata path.",
                 sensitivity: .credential,
                 lifetime: .run,
                 exists: true

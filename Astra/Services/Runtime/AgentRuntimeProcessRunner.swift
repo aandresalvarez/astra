@@ -25,20 +25,11 @@ final class AgentRuntimeProcessRunner {
     init(sandboxSettingsProvider: @escaping SandboxSettingsProvider = { permissionPolicy in
         ExecutionSandboxSettings.current(permissionPolicy: permissionPolicy)
     }, gitCredentialContextProvider: @escaping GitCredentialContextProvider = { context in
-        guard GitOperationIntentDetector.detectsNetworkGitOperation(
+        GitCredentialContextResolver.runtimeSandboxContext(
             prompt: context.prompt,
             task: context.task,
-            contextText: context.contextText
-        ) else {
-            return .empty
-        }
-        return GitCredentialContextResolver.sandboxContext(
+            contextText: context.contextText,
             repositoryPath: context.workspacePath,
-            intentText: GitOperationIntentDetector.networkGitIntentText(
-                prompt: context.prompt,
-                task: context.task,
-                contextText: context.contextText
-            )
         )
     }) {
         self.sandboxSettingsProvider = sandboxSettingsProvider
