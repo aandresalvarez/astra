@@ -400,7 +400,10 @@ enum WorkspaceAppStudioGenerator {
 
         (B) DATA-BACKED HTML app — the user STORES/tracks their own records over time (a tracker, \
         log, a list/database of X, simple CRUD, notes, inventory). Emit: `storage` with your table(s) \
-        + columns (one column with `primaryKey: true`); an `actions` array of `appStorage.query`, \
+        + columns (one column with `primaryKey: true`). Each column `type` MUST be one of: text, \
+        integer, double, bool, date, datetime, uuid, json — exact strings only (a count/PR number → \
+        integer, an amount → double, a flag → bool; NEVER "number", "string", or "float"). Then an \
+        `actions` array of `appStorage.query`, \
         `appStorage.insert`, `appStorage.update`, EACH with `table` set to your table (this is the \
         data allowlist); permissions reads/writes `["appStorage.records"]`, defaultMode "draftOnly" \
         (NEVER "readOnly" — a read-only app's own Add/Save/Edit actions are denied at runtime and the \

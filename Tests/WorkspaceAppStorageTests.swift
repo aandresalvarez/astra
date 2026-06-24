@@ -76,6 +76,77 @@ struct WorkspaceAppStorageTests {
         #expect(after.contains { $0["pinned"] == .integer(1) })
     }
 
+    @Test("applySchema accepts common type aliases models emit (number/string/boolean), rows round-trip")
+    func applySchemaAcceptsCommonTypeAliases() throws {
+        // The PR Review Board bug: the model emitted a "number" column, which used to throw
+        // unsupportedColumnType at publish. These aliases must now map to a SQLite type and work.
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("workspace-app-aliases-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let databaseURL = root.appendingPathComponent("app.sqlite")
+        let schema = WorkspaceAppStorageSchema(tables: [
+            WorkspaceAppStorageTable(name: "prs", columns: [
+                WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true),
+                WorkspaceAppStorageColumn(name: "number", type: "number"),
+                WorkspaceAppStorageColumn(name: "title", type: "string"),
+                WorkspaceAppStorageColumn(name: "failing", type: "boolean")
+            ])
+        ])
+        try WorkspaceAppStorageService().applySchema(schema, databaseURL: databaseURL)
+        try WorkspaceAppStorageService().insertRecord(
+            ["id": .text("pr-1"), "number": .integer(42), "title": .text("Fix bug"), "failing": .bool(true)],
+            into: "prs", databaseURL: databaseURL
+        )
+        let rows = try WorkspaceAppStorageService().records(in: "prs", databaseURL: databaseURL)
+        #expect(rows.count == 1)
+        #expect(rows[0]["title"] == .text("Fix bug"))
+    }
+
+    @Test("every supportedColumnType is actually accepted by applySchema (no validate-but-throw drift)")
+    func supportedColumnTypesAllApplyCleanly() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("workspace-app-types-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        // Each declared supported type (incl. an uppercase variant) must create a column without
+        // throwing — otherwise a type validates but crashes applySchema at publish.
+        for type in Array(WorkspaceAppStorageService.supportedColumnTypes) + ["NUMBER", "Text"] {
+            let databaseURL = root.appendingPathComponent("t-\(type).sqlite")
+            let schema = WorkspaceAppStorageSchema(tables: [
+                WorkspaceAppStorageTable(name: "t", columns: [
+                    WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true),
+                    WorkspaceAppStorageColumn(name: "v", type: type)
+                ])
+            ])
+            #expect(throws: Never.self) { try WorkspaceAppStorageService().applySchema(schema, databaseURL: databaseURL) }
+        }
+    }
+
+    @Test("validator blocks a truly unsupported column type so publish can't crash on it")
+    func validatorBlocksUnsupportedColumnType() {
+        func manifest(columnType: String) -> WorkspaceAppManifest {
+            WorkspaceAppManifest(
+                app: WorkspaceAppManifestMetadata(id: "tracker", name: "Tracker"),
+                storage: WorkspaceAppStorageSchema(tables: [
+                    WorkspaceAppStorageTable(name: "items", columns: [
+                        WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true),
+                        WorkspaceAppStorageColumn(name: "value", type: columnType)
+                    ])
+                ]),
+                permissions: WorkspaceAppPermissions(reads: ["appStorage.records"], writes: ["appStorage.records"], defaultMode: .draftOnly),
+                html: "<main>x</main>"
+            )
+        }
+        // A bogus type is a clear blocker (caught at generation, not a publish-time crash)...
+        let bad = WorkspaceAppManifestValidator.validate(manifest(columnType: "geopoint"))
+        #expect(bad.blockers.contains { $0.path.hasSuffix("/type") && $0.message.contains("Unsupported column type 'geopoint'") })
+        // ...while a "number" alias is now accepted (no type blocker).
+        let ok = WorkspaceAppManifestValidator.validate(manifest(columnType: "number"))
+        #expect(!ok.blockers.contains { $0.message.contains("Unsupported column type") })
+    }
+
     @Test("publish seed writes the preview's sample rows into a fresh app database")
     func seedSampleRowsRoundTrips() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())

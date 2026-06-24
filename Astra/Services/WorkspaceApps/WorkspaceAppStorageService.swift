@@ -390,16 +390,25 @@ struct WorkspaceAppStorageService {
         return "CREATE TABLE IF NOT EXISTS \(tableName) (\(columns.joined(separator: ", ")));"
     }
 
+    /// Column types the storage engine understands — the canonical names PLUS the common aliases
+    /// models reach for ("number", "string", "boolean", "float", "int", "timestamp"). The validator
+    /// checks `column.type` against this set so an unsupported type is a clear blocker at generation
+    /// time (the repair loop fixes it) instead of an `unsupportedColumnType` crash at publish.
+    static let supportedColumnTypes: Set<String> = [
+        "bool", "boolean", "text", "string", "uuid", "integer", "int",
+        "double", "real", "float", "number", "date", "datetime", "timestamp", "json"
+    ]
+
     private func sqliteType(for type: String) throws -> String {
-        switch type {
-        case "bool":
-            "INTEGER"
-        case "date", "datetime", "json", "text", "uuid":
-            "TEXT"
-        case "integer":
-            "INTEGER"
-        case "double", "real":
-            "REAL"
+        switch type.lowercased() {
+        case "bool", "boolean":
+            return "INTEGER"
+        case "date", "datetime", "timestamp", "json", "text", "string", "uuid":
+            return "TEXT"
+        case "integer", "int":
+            return "INTEGER"
+        case "double", "real", "float", "number":
+            return "REAL"
         default:
             throw WorkspaceAppStorageError.unsupportedColumnType(type)
         }

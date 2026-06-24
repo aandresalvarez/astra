@@ -142,6 +142,15 @@ struct WorkspaceAppStudioSessionTests {
         #expect(last?.text.contains("ready to publish") == false)   // no false success claim
     }
 
+    @Test("a failed publish surfaces in the chat instead of a silent dead button")
+    func publishFailureSurfaces() {
+        let (session, _) = session([Self.result(Self.validManifest)])
+        session.notePublishFailure("Unsupported column type 'number'.")
+        #expect(session.messages.last?.role == .assistant)
+        #expect(session.messages.last?.text.contains("couldn't publish") == true)
+        #expect(session.messages.last?.text.contains("number") == true)
+    }
+
     @Test("editingAppLogicalID tracks the source app on Edit, nil for a new build")
     func editingAppLogicalIDTracksSource() {
         let (session, _) = session([Self.result(Self.validManifest)])

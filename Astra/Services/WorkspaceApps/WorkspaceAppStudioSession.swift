@@ -338,6 +338,16 @@ final class WorkspaceAppStudioSession: ObservableObject {
         )
     }
 
+    /// Surface a failed publish in the conversation. Without this a thrown publish is a silent dead
+    /// button — the error only reaches the log. Shown as an assistant turn so the user sees WHY.
+    func notePublishFailure(_ detail: String) {
+        messages.append(StudioMessage(
+            role: .assistant,
+            kind: .summary,
+            text: "I couldn't publish this app: \(detail) Tell me what to change and I'll fix it."
+        ))
+    }
+
     // MARK: - Journal (durable conversation + event log)
 
     /// Append a turn to the event log and persist the journal (when editing an app with an on-disk

@@ -14,6 +14,55 @@ product direction is true.
 > lists below where they conflict. The 2026-06-20 and original 2026-06-11
 > snapshots are kept underneath for history.
 
+## 2026-06-23 Update — Edit-publish regression: wrong-workspace lookup (version-in-place)
+
+**Symptom (live):** editing a published app then publishing failed with "The app you were editing no
+longer exists. Use Save as a Copy…" (the AV1 stale-edit guard). Log confirmed the app
+(`open-pr-comment-queue`) DID exist in workspace `95DFEB3A`. Root cause: `effectiveWorkspace =
+selectedTask?.workspace ?? selectedWorkspace` tracks the selected WORKSPACE, and opening/editing an
+app never aligns `selectedWorkspace` to the app's workspace. So `publishWorkspaceApp` filtered
+`allApps` by the wrong `effectiveWorkspace` and `updateApp(in: effectiveWorkspace)` targeted it — the
+app wasn't found → guard threw. (Pre-AV1 this silently created a sibling in the wrong workspace;
+AV1's guard turned the latent bug into a hard failure.)
+
+**Fixed:** `publishWorkspaceApp` now, for an edit, resolves the app by logical id across ALL workspaces
+(preferring the session's `workspaceID`) and updates it IN ITS OWN workspace — independent of the
+currently-selected one. The journal flush, version snapshot, and seed all use the app's own workspace
+path (`target`), not `effectiveWorkspace`. New-app publish is unchanged (creates in the selected
+workspace). Full suite 3321 + 41 fitness green.
+
+## 2026-06-23 Update — Publish bug: unsupported storage column type (the dead Publish button)
+
+**Symptom (live, from `~/Library/Logs/AstraDev/astra.log`):** a generated "PR Review Board" wouldn't
+publish; the button looked dead. Log showed `App Studio publish failed:
+storageFailed("unsupportedColumnType(\"number\")")` (×7). Root cause: the model emitted a storage
+column typed `"number"`; `validateStorage` only checked `column.type` was a valid IDENTIFIER, never
+that the engine SUPPORTS it, so the manifest validated (`publishable=true`, button enabled) and then
+`applySchema` threw at publish — and `publishWorkspaceAppFromStudio`'s catch only logged it.
+
+**Fixed:**
+- `WorkspaceAppStorageService.sqliteType` now lowercases + accepts the aliases models reach for
+  (number/float→REAL, string→TEXT, boolean→INTEGER, int→INTEGER, timestamp→TEXT); exposes
+  `supportedColumnTypes`.
+- `WorkspaceAppManifestValidator.validateStorage` blocks a `column.type` not in `supportedColumnTypes`
+  — so a bogus type is a clean blocker caught at generation (repair loop) and the Publish button is
+  correctly gated, instead of a publish-time crash.
+- The data + workflow HTML templates' `inputType()` normalize case + accept the same aliases (a
+  `boolean` column renders as a checkbox, not a text field).
+- `WorkspaceAppStudioSession.notePublishFailure` surfaces a failed publish in the chat (was log-only).
+- Generation prompt now enumerates the allowed column types (a count → integer, an amount → double;
+  never "number"/"string").
+- Tests: alias round-trip, validator blocks a bogus type + accepts aliases, every supportedColumnType
+  applies cleanly (drift guard), publish-failure surfacing. Full suite 3321 + 41 fitness green. Codex
+  review: no BLOCKER/HIGH; MEDIUM (template case) + LOW (drift test) fixed.
+
+**Separate, NOT a bug — "preview doesn't show my real PRs":** App Studio HTML apps run in a no-network
+sandbox and the `astra.*` bridge exposes only the app's own local storage + the governed workflow
+bridge — NOT connectors. So an app cannot pull live GitHub/Jira data; connector-backed HTML apps are
+explicitly deferred (see Out of scope). The model disclosed this, then under pressure built a board
+with a dead "Import real Git PRs" button. Honest fix (model behavior) + the connector bridge are
+future work; logged here as the #1 requested capability gap.
+
 ## 2026-06-23 Update — App identity + versioning UX (edit versions in place, no more forked siblings)
 
 **Problem.** "Edit in Studio → Publish" FORKED a suffixed sibling every time — `Home Notes` → `Home Notes 2`

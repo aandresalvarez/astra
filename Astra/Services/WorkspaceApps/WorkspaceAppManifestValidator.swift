@@ -424,6 +424,17 @@ enum WorkspaceAppManifestValidator {
                     issues: &issues
                 )
                 validateIdentifier(column.type, path: "\(columnPath)/type", label: "Column type", issues: &issues)
+                // The type must be one the storage engine can map to SQLite — otherwise the manifest
+                // validates but `applySchema` throws `unsupportedColumnType` at PUBLISH (the button
+                // looks enabled, then silently fails). Block it here so the repair loop corrects it.
+                if !column.type.isEmpty,
+                   !WorkspaceAppStorageService.supportedColumnTypes.contains(column.type.lowercased()) {
+                    issues.append(blocker(
+                        "\(columnPath)/type",
+                        "Unsupported column type '\(column.type)'. Use one of: text, integer, double, "
+                            + "bool, date, datetime, uuid, json."
+                    ))
+                }
             }
             tables[table.name] = columnNames
         }

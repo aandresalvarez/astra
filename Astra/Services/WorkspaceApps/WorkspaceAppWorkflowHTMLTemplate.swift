@@ -156,9 +156,10 @@ enum WorkspaceAppWorkflowHTMLTemplate {
     function genId() { idCounter += 1; return "id-" + Math.random().toString(36).slice(2) + "-" + idCounter; }
     function errText(err) { return (err && err.message) ? err.message : String(err); }
     function inputType(t) {
-      if (t === "number" || t === "int" || t === "integer" || t === "double" || t === "real") return "number";
-      if (t === "date" || t === "datetime") return "date";
-      if (t === "bool") return "checkbox";
+      t = (t || "").toLowerCase();
+      if (t === "number" || t === "int" || t === "integer" || t === "double" || t === "real" || t === "float") return "number";
+      if (t === "date" || t === "datetime" || t === "timestamp") return "date";
+      if (t === "bool" || t === "boolean") return "checkbox";
       return "text";
     }
     function coerce(col, raw) {

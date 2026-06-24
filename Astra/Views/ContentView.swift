@@ -643,6 +643,7 @@ struct ContentView: View {
             try publishWorkspaceApp(draft, seedSampleData: seedSampleData, workspace: workspace)
         } catch {
             AppLogger.error("App Studio publish failed: \(error)", category: "WorkspaceApps")
+            workspaceAppStudioSession.notePublishFailure((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
         }
     }
 
@@ -682,39 +683,38 @@ struct ContentView: View {
     }
 
     private func publishWorkspaceApp(_ draft: WorkspaceAppStudioDraft, seedSampleData: Bool = false, workspace: Workspace) throws {
-        let allApps = ((try? modelContext.fetch(FetchDescriptor<WorkspaceApp>())) ?? []).filter { $0.workspaceID == workspace.id }
+        let allApps = (try? modelContext.fetch(FetchDescriptor<WorkspaceApp>())) ?? []
         let service = WorkspaceAppService()
         let result: WorkspaceAppCreationResult
         let isNewApp: Bool
-        // Version in place: when editing an existing app, UPDATE it (same logicalID + SQLite DB) and
-        // snapshot a new version below — no forked "App 2" sibling. Otherwise create a fresh app,
-        // deduping the logical id so two apps from the same intent never collide onto one database.
+        let target: Workspace   // the workspace the published app actually lives in
         if let editingID = workspaceAppStudioSession.editingAppLogicalID {
-            // The edited app must still exist; if deleted mid-edit, fail loudly (don't recreate it empty).
-            guard let existing = allApps.first(where: { $0.logicalID == editingID }) else {
+            // Editing: update the app IN ITS OWN workspace (found by logical id, preferring the
+            // session's workspace) — NOT the currently-selected one, which may differ. Version in place,
+            // no forked sibling. If it's truly gone, fail loudly rather than recreating it empty.
+            let sessionWS = workspaceAppStudioSession.workspaceID
+            guard let existing = allApps.first(where: { $0.logicalID == editingID && $0.workspaceID == sessionWS }) ?? allApps.first(where: { $0.logicalID == editingID }),
+                  let appWorkspace = ((try? modelContext.fetch(FetchDescriptor<Workspace>())) ?? []).first(where: { $0.id == existing.workspaceID }) else {
                 throw WorkspaceAppServiceError.fileOperationFailed("The app you were editing no longer exists. Use Save as a Copy to keep your changes.")
             }
-            result = try service.updateApp(existing, manifest: draft.manifest, in: workspace, modelContext: modelContext, status: .published)
+            target = appWorkspace
+            result = try service.updateApp(existing, manifest: draft.manifest, in: appWorkspace, modelContext: modelContext, status: .published)
             isNewApp = false
         } else {
-            let manifest = WorkspaceAppStudioBuilder.manifestForPublishing(draft.manifest, existingLogicalIDs: Set(allApps.map(\.logicalID)))
+            // New app: create in the selected workspace, deduping the logical id within it.
+            target = workspace
+            let manifest = WorkspaceAppStudioBuilder.manifestForPublishing(draft.manifest, existingLogicalIDs: Set(allApps.filter { $0.workspaceID == workspace.id }.map(\.logicalID)))
             result = try service.createApp(manifest: manifest, in: workspace, modelContext: modelContext, status: .published)
             isNewApp = true
         }
-        // Flush the build journal onto the app, then snapshot the manifest as a version — both
-        // best-effort, logged on failure, never blocking the publish.
-        WorkspaceAppStudioJournalService().save(workspaceAppStudioSession.journal, appID: result.app.logicalID, workspacePath: workspace.primaryPath)
-        workspaceAppStudioSession.cancelGeneration()   // invalidate in-flight verification so a late verdict can't persist after publish
+        // Flush the build journal + snapshot the version (best-effort) into the app's OWN workspace.
+        WorkspaceAppStudioJournalService().save(workspaceAppStudioSession.journal, appID: result.app.logicalID, workspacePath: target.primaryPath)
+        workspaceAppStudioSession.cancelGeneration()
         do {
             let publishedData = try WorkspaceAppService.encodeManifest(result.manifest)
-            try WorkspaceAppVersionService().recordPublish(
-                app: result.app, manifestData: publishedData, validated: true,
-                workspacePath: workspace.primaryPath, modelContext: modelContext
-            )
-        } catch {
-            AppLogger.error("Workspace app published but version snapshot failed: \(error)", category: "WorkspaceApps")
-        }
-        if seedSampleData, isNewApp { WorkspaceAppSampleSeeder.seed(manifest: result.manifest, workspacePath: workspace.primaryPath, appID: result.app.logicalID) }
+            try WorkspaceAppVersionService().recordPublish(app: result.app, manifestData: publishedData, validated: true, workspacePath: target.primaryPath, modelContext: modelContext)
+        } catch { AppLogger.error("Workspace app published but version snapshot failed: \(error)", category: "WorkspaceApps") }
+        if seedSampleData, isNewApp { WorkspaceAppSampleSeeder.seed(manifest: result.manifest, workspacePath: target.primaryPath, appID: result.app.logicalID) }
         isComposingWorkspaceApp = false
         setSelectedWorkspaceApp(result.app)
     }
