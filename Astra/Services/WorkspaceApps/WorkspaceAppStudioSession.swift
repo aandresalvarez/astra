@@ -43,7 +43,8 @@ typealias WorkspaceAppStudioGenerate = (
     _ workspacePath: String,
     _ existingManifest: WorkspaceAppManifest?,
     _ configuration: AgentUtilityRuntimeConfiguration,
-    _ availableProviders: Set<String>
+    _ availableProviders: Set<String>,
+    _ capabilityFamilies: [WorkspaceAppContractFamily]
 ) async -> WorkspaceAppStudioGenerationResult
 
 /// Grounded post-turn verification: run the produced app in the sandbox and report whether the
@@ -252,7 +253,12 @@ final class WorkspaceAppStudioSession: ObservableObject {
             model: model,
             timeoutSeconds: Self.generationTimeoutSeconds
         )
-        let result = await generate(text, workspace.name, workspace.primaryPath, existing, configuration, availableProviders)
+        // Capability-aware generation: the workspace's ENABLED capabilities contribute contract families
+        // (their app-read CLI tools) so the model knows it may declare a `capability.<x>.read` requirement
+        // + source + capability.read action + astra.read. Without this the model can't author an app that
+        // uses a capability the user just enabled.
+        let capabilityFamilies = WorkspaceAppCapabilityContractDeriver.derived(for: workspace).families
+        let result = await generate(text, workspace.name, workspace.primaryPath, existing, configuration, availableProviders, capabilityFamilies)
         // Stale-completion guard: if the user reset, cancelled, switched workspaces, or started
         // a newer turn while this was in flight, drop the result instead of clobbering newer state.
         guard token == generationToken else { return }
@@ -391,14 +397,17 @@ final class WorkspaceAppStudioSession: ObservableObject {
 
     // MARK: - Default generator
 
-    /// Real generation: the existing model-backed generator, read-only tool mode.
-    static let defaultGenerate: WorkspaceAppStudioGenerate = { intent, name, path, existing, configuration, providers in
+    /// Real generation: the existing model-backed generator, read-only tool mode. The contract catalog is
+    /// the built-ins PLUS the workspace's enabled-capability contract families, so the model can declare a
+    /// `capability.<x>.read` against a capability the user just enabled (and the contract vet accepts it).
+    static let defaultGenerate: WorkspaceAppStudioGenerate = { intent, name, path, existing, configuration, providers, capabilityFamilies in
         await WorkspaceAppStudioGenerator.generate(
             intent: intent,
             workspaceName: name,
             workspacePath: path,
             existingManifest: existing,
             configuration: configuration,
+            contractFamilies: WorkspaceAppContractRegistry().families + capabilityFamilies,
             availableProviders: providers
         )
     }

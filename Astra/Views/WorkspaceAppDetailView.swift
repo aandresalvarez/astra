@@ -44,7 +44,8 @@ struct WorkspaceAppDetailView: View {
                         snapshot: dataSnapshot,
                         onRunAction: onRunAction,
                         onReload: loadDataSnapshot,
-                        isWorkflowRunPending: makeWorkflowPendingCheck()
+                        isWorkflowRunPending: makeWorkflowPendingCheck(),
+                        onCapabilityRead: makeCapabilityReadRunner()
                     )
                     versionsSection
                     metadataRows
@@ -329,6 +330,25 @@ struct WorkspaceAppDetailView: View {
             // Fail CLOSED: if the store query errors, treat the app as pending (deny) rather than
             // letting an unmeasurable state open the gate.
             do { return try context.fetchCount(descriptor) > 0 } catch { return true }
+        }
+    }
+
+    /// Builds the ASYNC executor closure the bridge uses for `astra.read`. Captures this app + its own
+    /// (appID-scoped) dependency bindings, then routes through `executeAsync` — the only path bound to
+    /// the live native source client. nil with no workspace (a connector read needs one). Re-derived on
+    /// each body eval, so a freshly-mapped binding propagates to the WebView on the next `updateNSView`.
+    private func makeCapabilityReadRunner()
+    -> ((WorkspaceAppActionSpec, WorkspaceAppManifest, WorkspaceAppActionInput) async throws -> WorkspaceAppActionExecutionResult)? {
+        guard let workspace else { return nil }
+        let app = self.app
+        let context = modelContext
+        let appID = app.id
+        let bindings = dependencyBindings.filter { $0.appID == appID }
+        return { action, manifest, input in
+            try await WorkspaceAppActionExecutor().executeAsync(
+                actionID: action.id, app: app, workspace: workspace, manifest: manifest,
+                dependencyBindings: bindings, input: input, modelContext: context
+            )
         }
     }
 

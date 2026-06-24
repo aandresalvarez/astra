@@ -58,15 +58,26 @@ enum WorkspaceAppStudioScope {
         "rest api", "google sheets", "airtable",
     ]
 
-    /// A non-blocking notice for an intent that needs live/external data a sandboxed app can't
-    /// reach. UNLIKE `outOfScopeNotice` (which blocks a marketing-site build), this is additive:
-    /// the interactive UI IS buildable with sample data, so the caller surfaces the limitation and
-    /// then proceeds. Returns nil when no connector/live-data signal is present.
+    /// GitHub pull-request signals — these ARE supported live (read-only, through the user's `gh` CLI
+    /// via the `pullRequest.read` connector), so the notice is POSITIVE, not a limitation.
+    private static let githubPRTokens = [
+        "github", "pull request", "pull requests", "open pr", "open prs", "my prs", "my pull requests",
+    ]
+
+    /// A non-blocking notice for an intent that touches live/external data. UNLIKE `outOfScopeNotice`
+    /// (which blocks a marketing-site build), this is additive: the caller surfaces it and then
+    /// proceeds. For GitHub PRs the notice is POSITIVE (we wire real data); for connectors we don't yet
+    /// bridge, it honestly says sample data only. Returns nil when no connector signal is present.
     static func needsConnectorNotice(for intent: String) -> String? {
         let text = intent.lowercased()
+        if githubPRTokens.contains(where: { text.contains($0) }) {
+            return "I can wire this to your REAL GitHub pull requests (read-only) through your `gh` CLI "
+                + "sign-in \u{2014} no sample data. Other GitHub data (issues, commits) and any writes "
+                + "aren\u{2019}t bridged yet."
+        }
         guard connectorTokens.contains(where: { text.contains($0) }) else { return nil }
         return "Heads up: apps built here run in a locked sandbox with no internet access, so this "
-            + "one can\u{2019}t pull live data (GitHub, Jira, etc.) yet. I\u{2019}ll build the "
+            + "one can\u{2019}t pull live data (Jira, Slack, etc.) yet. I\u{2019}ll build the "
             + "interactive UI with sample data \u{2014} live connector sync is planned for a later "
             + "release."
     }

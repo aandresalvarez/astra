@@ -16,11 +16,16 @@ import WebKit
 /// - **Workflow (Phase 5):** `astra.runAction(id)` triggers a DECLARED action whose type is in
 ///   `runnableActionTypes` (task.*, pipeline.run, loop.run, artifact.export, notification.show,
 ///   rows.reduce, clipboard.copy); `astra.runs()` reads this app's recent run snapshots;
-///   `astra.actions()` lists the runnable actions. EXCLUDED: `capability.*` (networked connectors —
-///   deferred), `gate.*` (a human resolves these in the native approval queue; JS may not mint a
-///   decision), `url.open` (arbitrary navigation), and storage delete. The bridge NEVER sets
-///   `confirmedApproval`/`confirmedDestructive`, so an approval-required external write triggered
-///   from JS SUSPENDS to the native attention queue rather than auto-running.
+///   `astra.actions()` lists the runnable actions.
+/// - **Connector reads:** `astra.read(sourceId, {params})` runs a DECLARED `capability.read` against a
+///   live connector (the app's real GitHub PRs, a BigQuery table, …) and replies with the resolved
+///   SCALAR rows only — credentials NEVER cross back. Read-only by construction: `capability.WRITE` is
+///   still EXCLUDED from JS (an external write must go through a gated native path), and the page can
+///   read only a source it declares both in `sources` and as a `capability.read` action's `sourceRef`.
+///   EXCLUDED: `capability.write` (networked external writes), `gate.*` (a human resolves these in the
+///   native approval queue; JS may not mint a decision), `url.open` (arbitrary navigation), and storage
+///   delete. The bridge NEVER sets `confirmedApproval`/`confirmedDestructive`, so an approval-required
+///   external write triggered from JS SUSPENDS to the native attention queue rather than auto-running.
 /// The document CSP (`default-src 'none'`) is unchanged; `postMessage` to native is orthogonal to
 /// CSP, so there is still NO network egress.
 enum WorkspaceAppDataBridge {
@@ -59,6 +64,11 @@ enum WorkspaceAppDataBridge {
     /// JS-runnable workflow actions, so a plain data app exposes no `runAction` surface at all.
     struct Handlers {
         var storage: Run
+        /// (Connector read bridge) Runs a DECLARED `capability.read` against a live connector and
+        /// replies with the resolved SCALAR rows. ASYNC because a connector read is real network I/O the
+        /// synchronous storage path can't await; nil unless the app declares a `capability.read` action
+        /// AND the host supplies the async executor (published surface only — preview has no bindings).
+        var read: (@MainActor (ReadRequest) async -> Reply)?
         var runAction: (@MainActor (ActionRequest) -> Reply)?
         var runs: (@MainActor (Int?) -> Reply)?
         var listActions: (@MainActor () -> Reply)?
@@ -68,6 +78,15 @@ enum WorkspaceAppDataBridge {
         /// hostile page can defeat (reset on reload; push its waiting run out of an 8-row history with
         /// storage writes, then poll to clear it). nil ⇒ no throttle (preview surface, no persisted runs).
         var isWorkflowRunPending: (@MainActor () -> Bool)?
+    }
+
+    /// A fail-closed `Handlers` whose every verb refuses. Installed on a REUSED WebView whose app no
+    /// longer grants a bridge (belt-and-suspenders behind the WebView-identity recreation), so a stale
+    /// `astra.*` call can never reach the prior app's closures. `read`/`runAction`/… stay nil, so those
+    /// verbs reply "unavailable"; `storage` (the one required closure) refuses.
+    @MainActor
+    static var denyAll: Handlers {
+        Handlers(storage: { _ in .error("This app has no data bridge.") })
     }
 
     private static let allowedOps: Set<String> = ["query", "insert", "update"]
@@ -80,6 +99,11 @@ enum WorkspaceAppDataBridge {
     /// The largest row count a bridge query may request, regardless of the page-supplied limit — well
     /// below the storage service's own 10k ceiling so a page can't pull a huge reply per call.
     static let maxQueryLimit = 1_000
+    /// Connector-read (`astra.read`) row caps — tighter than storage, since each read is a live network
+    /// fetch (a `gh` spawn), not a local SQLite query. The page may request fewer; it can never exceed
+    /// the max, and an unspecified limit gets the small default.
+    static let maxConnectorReadLimit = 100
+    static let defaultConnectorReadLimit = 30
 
     // MARK: - Parse (JS → native)
 
@@ -249,6 +273,66 @@ enum WorkspaceAppDataBridge {
         return (action, WorkspaceAppActionInput(table: action.table, record: request.record))
     }
 
+    // MARK: - Connector read bridge (capability.read)
+
+    /// A parsed `astra.read` request: the SOURCE id the page wants to read + an optional scalar
+    /// parameter record (a filter the source's provider understands, e.g. `{state:"open"}`). Read-only:
+    /// there is nothing to persist and the bridge never mints a confirmation, since `capability.read`
+    /// is a `.read` effect the executor permits under every permission mode.
+    struct ReadRequest: Equatable {
+        var sourceId: String
+        var record: [String: WorkspaceAppStorageValue]
+        var limit: Int?
+    }
+
+    /// Parse a `read` message body, applying the same DoS caps as a storage record. nil ⇒ malformed.
+    static func parseRead(_ body: Any) -> ReadRequest? {
+        guard let dict = body as? [String: Any],
+              (dict["op"] as? String) == "read",
+              let sourceId = dict["sourceId"] as? String, !sourceId.isEmpty else {
+            return nil
+        }
+        let record: [String: WorkspaceAppStorageValue]
+        if let raw = dict["record"] as? [String: Any] {
+            guard raw.count <= maxRecordFields, let strict = strictRecord(from: raw) else { return nil }
+            record = strict
+        } else {
+            record = [:]
+        }
+        let limit = (dict["limit"] as? Int) ?? (dict["limit"] as? NSNumber)?.intValue
+        return ReadRequest(sourceId: sourceId, record: record, limit: limit)
+    }
+
+    /// Resolve a `read` to a DECLARED `capability.read` action + input, or nil. The page may read ONLY a
+    /// source the app declares BOTH as a `sources` entry AND as the EXACT, non-empty `sourceRef` of a
+    /// `capability.read` action — so a page can't read an undeclared source, can't make a `sourceRef`-less
+    /// action read an arbitrary source (the executor's `normalized` precedence would otherwise let
+    /// `input.table` pick the source), and an app with no connector reads exposes no read surface at all.
+    /// The input carries the page's scalar params; it NEVER sets `confirmedApproval`/`confirmedDestructive`
+    /// (a read needs neither). The executor's dependency binding (appID-scoped, status==.mapped) remains
+    /// the sole credential/availability authority — credentials never cross back to JS, only scalar rows.
+    static func resolveRead(
+        _ request: ReadRequest,
+        in manifest: WorkspaceAppManifest
+    ) -> (action: WorkspaceAppActionSpec, input: WorkspaceAppActionInput)? {
+        // The named source must be a CONNECTOR source (requirementRef set) — never a storage-shadowing
+        // source whose id matches an app table. That keeps `astra.read` strictly on the connector path
+        // (which the dependency binding gates); app storage is reached only through `astra.query`.
+        guard let source = manifest.sources.first(where: { $0.id == request.sourceId }),
+              let reqRef = source.requirementRef?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !reqRef.isEmpty else {
+            return nil
+        }
+        guard let action = manifest.actions.first(where: {
+            $0.type == "capability.read" && ($0.sourceRef ?? "") == request.sourceId
+        }) else { return nil }
+        let limit = min(max(1, request.limit ?? defaultConnectorReadLimit), maxConnectorReadLimit)
+        let input = WorkspaceAppActionInput(
+            table: request.sourceId, record: request.record, limit: limit
+        )
+        return (action, input)
+    }
+
     /// Serialize a run snapshot to a JS dictionary for `astra.runs()`. Dates become epoch seconds
     /// (a plain number) so the bridge never hands a native `Date` across the boundary.
     static func jsRun(_ run: WorkspaceAppRunSnapshot) -> [String: Any] {
@@ -277,18 +361,33 @@ enum WorkspaceAppDataBridge {
     /// HTML app (no storage AND no runnable workflow action) so no bridge is registered. The workflow
     /// closures are nil unless the app declares at least one `runnableActionTypes` action. Every
     /// closure routes through the SAME governed `onRunAction` (permission + audit + app-scoped DB).
+    /// The canonical "should this app's HTML surface get an `astra.*` bridge?" predicate — true iff the
+    /// app declares its own storage, a `capability.read` connector read, OR a JS-runnable workflow
+    /// action. `handlers()` returns non-nil for EXACTLY these manifests, and the SwiftUI surface keys
+    /// the WebView's identity on it, so bridge presence and WebView lifetime stay in lockstep. Both
+    /// callers MUST use this one definition: when they drifted (the View omitted `capability.read`), a
+    /// read app and a bridge-less app shared a WebView and the stale read handler leaked across apps.
+    static func isBridgeEligible(_ manifest: WorkspaceAppManifest) -> Bool {
+        if manifest.storage?.tables.isEmpty == false { return true }
+        if manifest.actions.contains(where: { $0.type == "capability.read" }) { return true }
+        return manifest.actions.contains { isDirectlyRunnable($0, in: manifest) }
+    }
+
     @MainActor
     static func handlers(
         manifest: WorkspaceAppManifest,
         runs: [WorkspaceAppRunSnapshot],
         onRunAction: @escaping (WorkspaceAppActionSpec, WorkspaceAppManifest, WorkspaceAppActionInput) throws -> WorkspaceAppActionExecutionResult,
         onReload: @escaping () -> Void = {},
-        isWorkflowRunPending: (@MainActor () -> Bool)? = nil
+        isWorkflowRunPending: (@MainActor () -> Bool)? = nil,
+        onCapabilityRead: (@MainActor (WorkspaceAppActionSpec, WorkspaceAppManifest, WorkspaceAppActionInput) async throws -> WorkspaceAppActionExecutionResult)? = nil
     ) -> Handlers? {
+        // Eligibility (storage / capability.read / runnable workflow action) is the SAME predicate the
+        // surface keys the WebView on — single-sourced in `isBridgeEligible` so they can't drift.
+        guard isBridgeEligible(manifest) else { return nil }
         // A directly-runnable action is a runnable type that is NOT an internal pipeline step.
-        let hasStorage = manifest.storage?.tables.isEmpty == false
         let hasRunnable = manifest.actions.contains { isDirectlyRunnable($0, in: manifest) }
-        guard hasStorage || hasRunnable else { return nil }
+        let hasReadable = manifest.actions.contains { $0.type == "capability.read" }
 
         let storage: Run = { request in
             guard let resolved = resolve(request, in: manifest) else {
@@ -298,8 +397,22 @@ enum WorkspaceAppDataBridge {
             catch { return .error(String(describing: error)) }
         }
 
+        // The connector-read closure: routes a DECLARED `capability.read` through the ASYNC executor
+        // (the only path bound to the live native client). nil unless the app declares a read AND the
+        // host supplied the async executor — so a preview surface (no `onCapabilityRead`) exposes no
+        // read bridge and `astra.read` replies "not available" there.
+        let read: (@MainActor (ReadRequest) async -> Reply)? = (hasReadable ? onCapabilityRead : nil).map { execute in
+            { request in
+                guard let resolved = resolveRead(request, in: manifest) else {
+                    return .error("Source '\(request.sourceId)' is not readable by this app.")
+                }
+                do { return .rows(try await execute(resolved.action, manifest, resolved.input).rows) }
+                catch { return .error(String(describing: error)) }
+            }
+        }
+
         guard hasRunnable else {
-            return Handlers(storage: storage, runAction: nil, runs: nil, listActions: nil)
+            return Handlers(storage: storage, read: read, runAction: nil, runs: nil, listActions: nil)
         }
 
         let runAction: @MainActor (ActionRequest) -> Reply = { request in
@@ -325,7 +438,7 @@ enum WorkspaceAppDataBridge {
         }
         let listActions: @MainActor () -> Reply = { .actions(jsActions(manifest)) }
         return Handlers(
-            storage: storage, runAction: runAction, runs: runsHandler, listActions: listActions,
+            storage: storage, read: read, runAction: runAction, runs: runsHandler, listActions: listActions,
             isWorkflowRunPending: isWorkflowRunPending
         )
     }
@@ -368,6 +481,7 @@ enum WorkspaceAppDataBridge {
         query: function (table, opts) { return call("query", { table: table, limit: (opts && opts.limit) || 100 }); },
         insert: function (table, record) { return call("insert", { table: table, record: record || {} }); },
         update: function (table, record) { return call("update", { table: table, record: record || {} }); },
+        read: function (sourceId, opts) { return call("read", { sourceId: sourceId, record: (opts && opts.params) || {}, limit: (opts && opts.limit) }); },
         runAction: function (actionId, opts) { return call("runAction", { actionId: actionId, record: (opts && opts.record) || {} }); },
         runs: function (opts) { return call("runs", { limit: (opts && opts.limit) || 50 }); },
         actions: function () { return call("actions", {}); }
@@ -390,6 +504,16 @@ final class WorkspaceAppDataBridgeHandler: NSObject, WKScriptMessageHandlerWithR
     /// runs. Storage reads/writes are unaffected. Touched only on the main thread (WebKit delivers
     /// these callbacks on the main thread).
     private var runActionInFlight = false
+    /// Serializes `read` (a live connector read — network I/O, like `runAction`): one in-flight per
+    /// WebView so a hostile page can't flood the executor with concurrent connector fetches. Storage
+    /// reads/writes are unaffected. Touched only on the main thread.
+    private var readInFlight = false
+    /// Start time of the last accepted `read`, for the min-interval throttle below. Main-thread only.
+    private var lastReadStartedAt: Date?
+    /// Minimum gap between connector reads on one WebView. On top of the one-in-flight serialization,
+    /// this bounds how fast a looping page can spawn live fetches (`gh` processes) and audit runs, so a
+    /// `setInterval`-style poll can't grow the run log or hammer the connector without limit.
+    private static let minReadInterval: TimeInterval = 0.5
 
     init(handlers: WorkspaceAppDataBridge.Handlers) {
         self.handlers = handlers
@@ -425,6 +549,29 @@ final class WorkspaceAppDataBridgeHandler: NSObject, WKScriptMessageHandlerWithR
                     return
                 }
                 Self.reply(runAction(request), to: replyHandler)
+            }
+        case "read":
+            guard let read = handlers.read,
+                  let request = WorkspaceAppDataBridge.parseRead(message.body) else {
+                replyHandler(nil, "Invalid astra read request.")
+                return
+            }
+            // Anti-concurrency pre-filter: one live connector read in flight per WebView.
+            if readInFlight {
+                replyHandler(nil, "Another read is already in progress.")
+                return
+            }
+            // Min-interval throttle: bound how fast a looping page can spawn live fetches + audit runs.
+            let now = Date()
+            if let last = lastReadStartedAt, now.timeIntervalSince(last) < Self.minReadInterval {
+                replyHandler(nil, "Reads are rate-limited; try again shortly.")
+                return
+            }
+            lastReadStartedAt = now
+            readInFlight = true
+            Task { @MainActor in
+                defer { self.readInFlight = false }
+                Self.reply(await read(request), to: replyHandler)
             }
         case "runs":
             guard let runs = handlers.runs else { replyHandler(nil, "Runs are unavailable."); return }

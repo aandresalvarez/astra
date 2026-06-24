@@ -80,17 +80,17 @@ enum WorkspaceAppManifestValidator {
             issues.append(blocker("/html", "HTML app body is empty."))
             return
         }
-        // Phase 2/5 invariant: an HTML app's UI is the HTML itself, and its capabilities reach native
-        // ONLY through the vetted `astra.*` bridge. So it MAY declare its own `storage` +
-        // `appStorage.*` actions (the data allowlist) AND governed WORKFLOW actions — `task.*`,
-        // `gate.*` (pipeline steps; a human still resolves them in the native approval queue),
-        // `pipeline.run`/`loop.run`, `artifact.export`, `notification.show`, `rows.reduce`,
-        // `clipboard.copy`. It must NOT declare connectors (`requirements`/`sources` /
-        // `capability.*` — networked, deferred), native `views`/widgets (the HTML renders the UI),
-        // `automations` (time-triggered, not a UI action), or `url.open` (arbitrary navigation).
+        // Phase 2/5/connector-read invariant: an HTML app's UI is the HTML itself, and its capabilities
+        // reach native ONLY through the vetted `astra.*` bridge. So it MAY declare its own `storage` +
+        // `appStorage.*` actions (the data allowlist), governed WORKFLOW actions — `task.*`, `gate.*`
+        // (pipeline steps; a human still resolves them in the native approval queue), `pipeline.run`/
+        // `loop.run`, `artifact.export`, `notification.show`, `rows.reduce` — AND READ-ONLY connectors:
+        // `requirements` + read-mode `sources` + `capability.read` actions (the page reads live connector
+        // data via `astra.read`, getting back scalar rows only, credentials never crossing back). It must
+        // NOT declare `capability.WRITE` (an external write must go through a gated native path, never
+        // JS), native `views`/widgets (the HTML renders the UI), `automations` (time-triggered, not a UI
+        // action), or `url.open` (arbitrary navigation).
         var forbidden: [String] = []
-        if !manifest.requirements.isEmpty { forbidden.append("connector requirements") }
-        if !manifest.sources.isEmpty { forbidden.append("sources") }
         if !manifest.views.isEmpty { forbidden.append("views") }
         if !manifest.automations.isEmpty { forbidden.append("automations") }
         let badActions = manifest.actions.filter { !isHTMLAppActionAllowed($0.type) }
@@ -101,8 +101,69 @@ enum WorkspaceAppManifestValidator {
         if !forbidden.isEmpty {
             issues.append(blocker(
                 "/html",
-                "An HTML app may declare its own storage + appStorage actions and governed workflow actions (task/gate/pipeline/loop/export/notification/rows.reduce/clipboard) reached via the astra bridge; it must not declare \(forbidden.joined(separator: ", ")). Move connector features to a declarative app."
+                "An HTML app may declare its own storage + appStorage actions, governed workflow actions (task/gate/pipeline/loop/export/notification/rows.reduce), and READ-ONLY connectors (requirements + read sources + capability.read) reached via the astra bridge; it must not declare \(forbidden.joined(separator: ", ")). Connector WRITES must use a declarative app."
             ))
+        }
+        // Connector reads must be READ-ONLY and well-formed. (a) An HTML app may declare a source only
+        // in read mode — a write-mode source has no place in a read-only HTML app (capability.write is
+        // blocked, so no action could use it). (b) Every `capability.read` action must name a DECLARED
+        // source via a non-empty `sourceRef`: the `astra.read` bridge resolves a source ONLY through a
+        // matching sourceRef (so the page can't fabricate one), and the executor's dependency binding
+        // then supplies credentials.
+        for (index, source) in manifest.sources.enumerated() where source.mode != "read" {
+            issues.append(blocker(
+                "/sources/\(index)/mode",
+                "An HTML app may declare connector sources only in read mode (source '\(source.id)' is '\(source.mode)'). HTML apps cannot write to connectors."
+            ))
+        }
+        let requirementsByID = Dictionary(manifest.requirements.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for (index, action) in manifest.actions.enumerated() where action.type == "capability.read" {
+            let ref = action.sourceRef?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !ref.isEmpty,
+                  let sourceIndex = manifest.sources.firstIndex(where: { $0.id == ref }) else {
+                issues.append(blocker(
+                    "/actions/\(index)/sourceRef",
+                    "An HTML app's capability.read action '\(action.id)' must name a declared source via sourceRef so the astra.read bridge can resolve it."
+                ))
+                continue
+            }
+            let source = manifest.sources[sourceIndex]
+            // The read must go through a CONNECTOR (a requirement-bound source), never an app-storage
+            // table: `astra.read` is for connectors; storage is reached through `appStorage.query`. A
+            // source whose id/tableRef shadows a storage table would otherwise resolve from storage with
+            // no dependency binding, bypassing the connector-read contract.
+            let reqRef = source.requirementRef?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard let requirement = requirementsByID[reqRef] else {
+                issues.append(blocker(
+                    "/sources/\(sourceIndex)/requirementRef",
+                    "An HTML app's capability.read source '\(source.id)' must reference a connector requirement via requirementRef (astra.read reads connectors, not app storage)."
+                ))
+                continue
+            }
+            // The source operation must be one the REQUIREMENT declares — a manifest can't declare a
+            // narrow op for review/mapping but run a broader op at read time.
+            if let op = source.operation?.trimmingCharacters(in: .whitespacesAndNewlines), !op.isEmpty,
+               !requirement.operations.contains(op) {
+                issues.append(blocker(
+                    "/sources/\(sourceIndex)/operation",
+                    "An HTML app's capability.read source '\(source.id)' uses operation '\(op)' that its requirement '\(requirement.id)' does not declare."
+                ))
+            }
+            // A capability.read source must NOT shadow an app-storage table. The source resolver matches
+            // a source to storage by [tableRef, sourceRef, id] (storage-FIRST), so a connector source
+            // whose id/tableRef/sourceRef equals a storage table name would read app storage with NO
+            // dependency binding — reachable from JS via a capability.read pipeline/loop STEP run through
+            // `astra.runAction` (the sync executor path), bypassing the connector binding. Rejecting it
+            // here (enforced at render via fail-closed re-validation) closes that path; the connector-only
+            // async resolver closes the direct `astra.read` path.
+            let storageTableNames = Set((manifest.storage?.tables ?? []).map(\.name))
+            let shadowRefs = [source.id, source.tableRef, source.sourceRef].compactMap { $0 }
+            if let shadow = shadowRefs.first(where: { storageTableNames.contains($0) }) {
+                issues.append(blocker(
+                    "/sources/\(sourceIndex)/id",
+                    "An HTML app's capability.read source '\(source.id)' must not share an id/tableRef/sourceRef ('\(shadow)') with a storage table — that would shadow app storage. Rename the connector source."
+                ))
+            }
         }
         // Each appStorage action an HTML app declares is a data-bridge allowlist entry, so it must
         // name a specific declared table — a table-less grant would expose the op on EVERY table.
@@ -220,7 +281,9 @@ enum WorkspaceAppManifestValidator {
     /// those introduce graph edges (branch targets, fan-out children) that would let an external
     /// effect like `artifact.export` be reached indirectly — past the flat gate-before-export check in
     /// `validateHTMLApp`. Keeping the HTML workflow vocabulary FLAT + branch-free makes that admission
-    /// analysis complete. Also excludes `capability.*` (networked) and `url.open` (navigation).
+    /// analysis complete. `capability.read` IS allowed (a READ-ONLY connector fetch via `astra.read`,
+    /// scalar rows only); `capability.WRITE` stays EXCLUDED (an external write must go through a gated
+    /// native path, never JS). Also excludes `url.open` (navigation).
     static func isHTMLAppActionAllowed(_ type: String) -> Bool {
         if type.hasPrefix("appStorage.") { return true }
         // NOTE: `clipboard.copy` is intentionally excluded — it writes the system pasteboard with no
@@ -228,7 +291,7 @@ enum WorkspaceAppManifestValidator {
         return ["task.createDraft", "task.createAndRun",
                 "gate.humanApproval", "gate.agentRecommendation", "gate.expression",
                 "pipeline.run", "loop.run", "artifact.export", "notification.show",
-                "rows.reduce"].contains(type)
+                "rows.reduce", "capability.read"].contains(type)
     }
 
     /// True if `lowered` contains an `eval(` call or `new Function`. `eval(` is matched only as a

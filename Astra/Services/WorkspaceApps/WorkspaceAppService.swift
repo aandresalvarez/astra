@@ -130,7 +130,8 @@ struct WorkspaceAppService {
             workspaceID: workspace.id,
             appID: app.id,
             appLogicalID: appID,
-            now: now
+            now: now,
+            registry: registry(for: workspace)
         )
         let automations = automationStates(
             for: manifest.automations,
@@ -257,7 +258,7 @@ struct WorkspaceAppService {
                 reconciledBindings.append(prior)   // unchanged → keep the user's mapping
             } else {
                 if let prior = bindingByReq[requirement.id] { modelContext.delete(prior) }   // changed → replace
-                if let fresh = dependencyBindings(for: [requirement], workspaceID: workspace.id, appID: app.id, appLogicalID: app.logicalID, now: now).first {
+                if let fresh = dependencyBindings(for: [requirement], workspaceID: workspace.id, appID: app.id, appLogicalID: app.logicalID, now: now, registry: registry(for: workspace)).first {
                     modelContext.insert(fresh)
                     reconciledBindings.append(fresh)
                 }
@@ -309,14 +310,24 @@ struct WorkspaceAppService {
         return WorkspaceAppCreationResult(app: app, manifestURL: URL(fileURLWithPath: manifestPath), manifest: manifest)
     }
 
+    /// The contract registry for a workspace: the built-ins PLUS the contract families + implementations
+    /// contributed by the workspace's ENABLED capabilities (their app-read CLI tools). Used at publish so
+    /// an app's requirement on a capability-contributed contract auto-maps to a `.mapped` binding — the
+    /// "enable a capability → apps can use it" path, with no per-connector Swift.
+    func registry(for workspace: Workspace) -> WorkspaceAppContractRegistry {
+        let derived = WorkspaceAppCapabilityContractDeriver.derived(for: workspace)
+        return contractRegistry.including(capabilityFamilies: derived.families, implementations: derived.implementations)
+    }
+
     private func dependencyBindings(
         for requirements: [WorkspaceAppRequirement],
         workspaceID: UUID,
         appID: UUID,
         appLogicalID: String,
-        now: Date
+        now: Date,
+        registry: WorkspaceAppContractRegistry? = nil
     ) -> [WorkspaceAppDependencyBinding] {
-        contractRegistry.resolveAll(requirements).map { resolution in
+        (registry ?? contractRegistry).resolveAll(requirements).map { resolution in
             let selected = resolution.selectedImplementation
             return WorkspaceAppDependencyBinding(
                 workspaceID: workspaceID,
@@ -488,7 +499,8 @@ struct WorkspaceAppService {
                 workspaceID: workspace.id,
                 appID: duplicate.id,
                 appLogicalID: logicalID,
-                now: now
+                now: now,
+                registry: registry(for: workspace)
             )
             let automations = automationStates(
                 for: manifest.automations,

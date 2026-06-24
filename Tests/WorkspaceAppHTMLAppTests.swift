@@ -492,21 +492,20 @@ struct WorkspaceAppHTMLAppTests {
         #expect(WorkspaceAppManifestValidator.validate(manifest).isValid)
     }
 
-    @Test("an HTML app declaring connectors / native views / a connector or url.open action is rejected")
+    @Test("an HTML app declaring native views / a connector WRITE / write-mode source / url.open is rejected")
     func htmlAppWithForbiddenFeaturesRejected() {
         // Native views: the HTML renders the UI, so declaring widgets is a governance blind spot.
         var withViews = htmlManifest()
         withViews.views = [WorkspaceAppViewSpec(id: "t", type: "table", title: "Rows", table: "rows")]
         #expect(!WorkspaceAppManifestValidator.validate(withViews).isValid)
 
-        // Connectors: an HTML app is local-only — no networked surface.
-        var withConnector = htmlManifest()
-        withConnector.requirements = [
-            WorkspaceAppRequirement(id: "r", contract: "tabularQuery.read", operations: ["runReadOnlyQuery"], optional: true, reason: "x")
-        ]
-        #expect(!WorkspaceAppManifestValidator.validate(withConnector).isValid)
+        // A WRITE-mode connector source is rejected — HTML apps read connectors (capability.read),
+        // never write them. (A read-only connector is now ALLOWED; see WorkspaceAppConnectorReadTests.)
+        var withWriteSource = htmlManifest()
+        withWriteSource.sources = [WorkspaceAppSource(id: "s", mode: "write")]
+        #expect(!WorkspaceAppManifestValidator.validate(withWriteSource).isValid)
 
-        // A connector WRITE action (networked) is not allowed — only local workflow actions are.
+        // A connector WRITE action (networked, side-effectful) is not allowed — only reads are bridged.
         var withCapability = htmlManifest()
         withCapability.actions = [WorkspaceAppActionSpec(id: "c", type: "capability.write", table: "rows")]
         #expect(!WorkspaceAppManifestValidator.validate(withCapability).isValid)

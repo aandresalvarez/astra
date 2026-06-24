@@ -710,6 +710,16 @@ struct WorkspaceAppActionExecutor {
         modelContext: ModelContext
     ) async throws -> WorkspaceAppActionExecutionResult {
         let action = try actionSpec(actionID: actionID, manifest: manifest)
+        // capability.read ALSO needs the async path: a live connector read is network I/O the
+        // synchronous `execute` can't await (its default sync resolver hits the Unavailable client and
+        // throws). Route reads through `resolveAsync`/`asyncCapabilityClient`, the only path bound to
+        // the real native client. Every other type stays on the proven synchronous keystone.
+        if action.type == "capability.read" {
+            return try await executeAsyncCapabilityRead(
+                action: action, app: app, workspace: workspace, manifest: manifest,
+                dependencyBindings: dependencyBindings, input: input, trigger: trigger, modelContext: modelContext
+            )
+        }
         guard action.type == "capability.write" else {
             return try execute(
                 actionID: actionID, app: app, workspace: workspace, manifest: manifest,
@@ -1339,6 +1349,56 @@ struct WorkspaceAppActionExecutor {
         return ([], "Agent recommendation gate '\(action.id)' accepted '\(decision)'.", nil, nil)
     }
 
+    /// Async `capability.read` — a live connector read (network I/O) via `resolveAsync`. Mirrors the
+    /// capability.write async path: own run lifecycle, `enforcePermission` first, the same
+    /// `workspaceApp.capability.read` audit event the sync path records. The page/bridge reaches this
+    /// (read-only); credentials never cross back — only the resolved scalar rows.
+    @MainActor
+    private func executeAsyncCapabilityRead(
+        action: WorkspaceAppActionSpec,
+        app: WorkspaceApp,
+        workspace: Workspace,
+        manifest: WorkspaceAppManifest,
+        dependencyBindings: [WorkspaceAppDependencyBinding],
+        input: WorkspaceAppActionInput,
+        trigger: WorkspaceAppRunTrigger,
+        modelContext: ModelContext
+    ) async throws -> WorkspaceAppActionExecutionResult {
+        let run = recorder.startRun(
+            app: app, actionID: action.id, trigger: trigger, inputSummary: inputSummary(input), modelContext: modelContext
+        )
+        do {
+            try enforcePermission(for: action, app: app, input: input)
+            let sourceID = normalized(action.sourceRef, input.table, action.table, fallback: "")
+            guard !sourceID.isEmpty else { throw WorkspaceAppActionExecutionError.missingSource }
+            // Connector-ONLY resolution: a capability.read must go through its dependency binding, never
+            // fall through to app storage even if the source id shadows a storage table name.
+            let resolved = try await sourceResolver.resolveCapabilityReadAsync(
+                sourceID: sourceID, app: app, workspace: workspace, manifest: manifest,
+                dependencyBindings: dependencyBindings,
+                input: WorkspaceAppSourceResolutionInput(limit: input.limit, parameters: input.record)
+            )
+            var payload: [String: WorkspaceAppStorageValue] = [
+                "sourceID": .text(resolved.sourceID),
+                "rowCount": .integer(Int64(resolved.rows.count)),
+                "async": .bool(true)
+            ]
+            if let requirementID = resolved.requirementID { payload["requirementID"] = .text(requirementID) }
+            if let implementationID = resolved.implementationID { payload["implementationID"] = .text(implementationID) }
+            if let provider = resolved.provider { payload["provider"] = .text(provider) }
+            recorder.recordEvent(run: run, type: "workspaceApp.capability.read", payload: payload, modelContext: modelContext)
+            recorder.completeRun(run, outputSummary: resolved.outputSummary, modelContext: modelContext)
+            app.lastRunAt = Date()
+            app.updatedAt = Date()
+            try? modelContext.save()
+            return WorkspaceAppActionExecutionResult(run: run, rows: resolved.rows, outputSummary: resolved.outputSummary)
+        } catch {
+            recorder.failRun(run, error: error, blocked: isPermissionError(error), modelContext: modelContext)
+            try? modelContext.save()
+            throw error
+        }
+    }
+
     private func executeCapabilityRead(
         action: WorkspaceAppActionSpec,
         app: WorkspaceApp,
@@ -1358,7 +1418,9 @@ struct WorkspaceAppActionExecutor {
         guard !sourceID.isEmpty else {
             throw WorkspaceAppActionExecutionError.missingSource
         }
-        let resolved = try sourceResolver.resolve(
+        // Connector-ONLY resolution (also used by a capability.read pipeline/loop step reachable from JS
+        // via astra.runAction): never falls through to app storage even if the source id shadows a table.
+        let resolved = try sourceResolver.resolveCapabilityRead(
             sourceID: sourceID,
             app: app,
             workspace: workspace,

@@ -697,7 +697,7 @@ in-scope capability rather than guarded scaffolding.
 ### Success-criteria snapshot (2026-06-19)
 
 - #1 local DB app from prompt — **DONE** (generate + preview + publish + sortable/filterable tables + validated forms + seed).
-- #2 connector-backed app — **mostly** (capability-aware generation lands; live connector read still needed end-to-end).
+- #2 connector-backed app — **DONE for reads** (live GitHub PRs via the `astra.read` connector-read bridge; connector writes still gated/native-only). See "Connector Read Bridge" below.
 - #3 REDCap data-entry/reconciliation with governance — **mostly** (metadata→form bridge done; live submit connector-gated).
 - #4 conversation/process → reusable app — **partial** (deep conversation-context ideation still future).
 - #5 metrics/charts/diagrams/tables/forms/controls — **DONE** (rich native renderer + sandboxed htmlReport/chartComposite).
@@ -707,6 +707,118 @@ in-scope capability rather than guarded scaffolding.
 - #9 packages declare contract ops — **partial** (HTTP/CLI/MCP execution intentionally later).
 - #10 Swift trusted runtime — **DONE** (invariant).
 - #11 WebView sandboxed presentation — **partial** (host pending; see reframed §24.8).
+
+## Connector Read Bridge (CB0–CB5, 2026-06-24)
+
+A sandboxed HTML app can now read LIVE connector data through a vetted, read-only `astra.read` verb —
+shipping the first end-to-end "connector-backed app": the user's real GitHub pull requests. The page
+stays CSP-locked with no network of its own; the read rides the existing governed path.
+
+- **CB0 — async executor path.** `WorkspaceAppActionExecutor.executeAsync` now routes `capability.read`
+  through `resolveAsync` (a live connector read is network I/O the sync resolver can't await; its sync
+  client is the Unavailable stub). Own run lifecycle, `enforcePermission` first, same
+  `workspaceApp.capability.read` audit event the sync path records.
+- **CB1 — `astra.read(sourceId, {params})`.** A new bridge verb (`WorkspaceAppDataBridge`): `parseRead`
+  + `resolveRead` (the read allowlist — the page's `sourceId` must be a declared `sources` entry AND the
+  exact non-empty `sourceRef` of a declared `capability.read` action), an async `read` closure routed to
+  the async executor, a serialized `read` dispatch (`readInFlight`, one live read per WebView), and the
+  injected `astra.read`. Reply is SCALAR rows only; never sets `confirmedApproval`/`confirmedDestructive`.
+  Wired through `WorkspaceAppSurfaceView.onCapabilityRead` (built in `WorkspaceAppDetailView` from the
+  app's appID-scoped bindings); nil on the preview surface (no bindings → reads resolve only when
+  published).
+- **CB2 — validator.** `validateHTMLApp` now allows `requirements` + read-mode `sources` +
+  `capability.read`, but STILL blocks `capability.write`, write-mode sources, and a `capability.read`
+  with a blank/undeclared `sourceRef`.
+- **CB3 — generation.** The prompt teaches a CONNECTOR-READ HTML app recipe + that `pullRequest.read`
+  (github) is always available via the `gh` CLI; the scope notice is positive for GitHub-PR intents.
+- **CB4 — GitHub backend.** New `pullRequest.read` contract family + `github-pr-read-native`
+  implementation (auto-`.mapped` on publish, no manual binding). `WorkspaceAppGitHubPRReadClient` →
+  `GitService.workspaceAppPullRequestJSON` runs a FIXED `gh search prs --author=@me` / `gh pr list --repo`
+  argv (the user's own gh auth; no token returned). Page influences only `state` (validated) + `limit`;
+  the repo comes from the manifest (`source.projectRef`), not the page. A deterministic
+  `githubPullRequestsHTMLManifest` builder + `isGitHubPullRequestIntent` route a "show my PRs" intent to
+  a guaranteed-valid app even when the model is unavailable.
+- **CB5 — verification.** `Tests/WorkspaceAppConnectorReadTests.swift` (18 tests) pins the read
+  allowlist, validator invariants, gh argv/decoder, registry auto-mapping, deterministic builder, scope
+  notice, and the CB6 hardening; full suite + fitness green; codex adversarial security review.
+- **CB6 — security fixes (codex adversarial review).** Closed four findings:
+  - **BLOCKER** — `bridgeEligible` (the WebView `.id`) omitted `capability.read`, so a read app and a
+    bridge-less app shared a WebView and the stale `astra.read` handler survived an app switch (cross-app
+    leak). Fixed by single-sourcing the predicate as `WorkspaceAppDataBridge.isBridgeEligible` (used by
+    both the surface `.id` and `handlers()`), plus a fail-closed `denyAll` handler installed when a reused
+    WebView loses its bridge.
+  - **HIGH** — a manifest could declare a narrow requirement op for review but a broader `source.operation`
+    at read time (op-broadening). Fixed: the GitHub client guards `operation ∈ requirement.operations`,
+    and the validator rejects a capability.read source whose operation its requirement doesn't declare.
+  - **MEDIUM** — `astra.read` could read app storage by shadowing a table id (the resolver checks
+    storage BEFORE the binding); a re-review also found the same leak via a `capability.read` STEP of a
+    `pipeline.run`/`loop.run` triggered by `astra.runAction` (the SYNC executor path). Fixed in three
+    layers: (1) `resolveRead` + the validator require a capability.read source to be connector-bound
+    (`requirementRef`) AND reject any source whose id/tableRef/sourceRef shadows a storage table
+    (enforced at render by fail-closed re-validation, closing the pipeline-step path); (2) a connector-ONLY
+    ASYNC resolver path (`resolveCapabilityReadAsync`, used by `executeAsyncCapabilityRead`) for direct
+    `astra.read`; (3) a connector-ONLY SYNC resolver path (`resolveCapabilityRead`, used by the sync
+    `executeCapabilityRead`) for the pipeline/loop-step path — neither ever falls through to storage, so a
+    capability.read always resolves through its dependency binding.
+  - **MEDIUM** — read DoS over time + caller `limit` unparsed/unforwarded. Fixed: `parseRead` parses +
+    `resolveRead` clamps `limit` to a small connector-read cap (default 30 / max 100), the injected
+    `astra.read` now forwards `opts.limit`, and a 0.5s min-interval throttle bounds read frequency per
+    WebView (on top of one-in-flight serialization). **Follow-up (documented, low residual):** a
+    *durable, app-scoped* connector-read rate budget + audit-run retention/coalescing across multiple
+    surfaces — the current per-WebView throttle + serialization + clamp bound a single surface, but a
+    long-lived multi-surface poller can still accrue run records over time.
+
+## Generic Capability Read (GEN1–GEN4, 2026-06-24)
+
+Closes the deferred success-criterion #9 ("packages declare contract ops; HTTP/CLI/MCP execution") for
+the CLI transport: **"enable a capability → apps can read it, with NO per-connector Swift."** The
+built-in BigQuery/REDCap/GitHub native clients stay as fast paths; an arbitrary ENABLED capability now
+flows through a generic, transport-driven executor. Closed three gaps the design map found:
+
+- **GEN2 — execution spec.** `WorkspaceAppContractImplementation` gained an optional `readExecution`
+  (`WorkspaceAppCapabilityReadExecution`: transport + per-operation argv-template command + rowsPath).
+  `WorkspaceAppCapabilityContractDeriver` maps each ENABLED capability `localTool` whose `toolType` is the
+  opt-in sentinel `workspaceAppRead` to a contract family `capability.<pkg>.<tool>-<hash>.read` + an
+  implementation carrying that spec (no ASTRACore persistence change — reuses the existing localTool
+  `command`/`arguments`).
+- **GEN1 — registry blind at publish.** `WorkspaceAppService.registry(for:workspace)` now extends the
+  registry (`including(capabilityFamilies:implementations:)`) with the workspace's enabled-capability
+  contracts, so `createApp`/`updateApp`/duplicate auto-map the requirement to a `.mapped` binding.
+- **GEN3 — generic executor.** `WorkspaceAppSourceResolver` looks up the binding's implementation among
+  the workspace's enabled capabilities; if it has a `readExecution`, it runs `WorkspaceAppGenericCLIReadClient`
+  (else the native client). The CLI client is hardened like the `gh` path: author-controlled command
+  template, page fills only WHOLE-TOKEN `{placeholder}` argv elements (charset/length/leading-dash
+  validated, no shell), executable must be absolute or a bare PATH name (relative rejected), cwd pinned to
+  the workspace, stdout byte-capped, rows/fields/value-size capped, SIGTERM→SIGKILL timeout, and
+  **fail-closed** on non-zero exit / unparseable / non-array output.
+- **GEN4 — verification.** `Tests/WorkspaceAppGenericCapabilityReadTests.swift` proves the chain end to
+  end (enable → derive → registry → publish-binding → resolve → generic executor → scalar rows) with a
+  fake runner, plus a **real-process** test that actually spawns `/bin/cat` and decodes, plus the executor
+  security boundary; full suite green; two codex adversarial rounds (the second confirmed the hardening).
+
+**Per-app least-privilege is unchanged:** an app still DECLAREs the requirement + gets an appID-scoped
+`.mapped` binding; "enabled" makes a capability *bindable*, not auto-granted to every app. Only a
+`toolType == "workspaceAppRead"` tool is exposed (agent tools are not).
+
+Two codex security rounds hardened the executor: round 1 found cwd-inheritance, id-collision, output
+bounds, fail-open, and timeout issues (all fixed); round 2 confirmed those closed and flagged a residual
+cwd-inherit-when-empty path — now fail-closed (the read refuses without a real workspace directory, in
+both the client and the runner). 64-bit derived-id fingerprints.
+
+**Documented follow-ups (not yet built):** (a) page-param VALUE constraints (per-param enum/regex/page-
+fillable schema). Codex's verdict: the current charset/length/no-leading-dash validation prevents argv/
+shell/flag injection and the deferral is reasonable **under the trusted-author model** (the user creates +
+enables the capability) — but it is a must-fix before exposing generic reads to UNTRUSTED/imported
+capabilities; until then authors pin sensitive params (repo/account) as literal args. (b) the `http`/`mcp`
+transports (accepted in the schema, fail-closed until implemented). (c) process-GROUP kill on timeout (today SIGTERM→SIGKILL covers
+the direct child; a forking CLI's grandchildren aren't reaped — read-only CLIs like `gh` don't fork).
+
+**Generation-awareness (DONE).** `WorkspaceAppStudioSession.submit` derives the workspace's enabled-
+capability contract families and threads them into the generator's contract catalog (`contractFamilies =
+built-ins + capabilityFamilies`), so the model KNOWS it may declare a `capability.<x>.read` against a
+capability the user just enabled (and the contract vet accepts it). This is the last link making "create a
+capability → enable it → ask the chat to build an app that uses it" work without hand-authoring the
+manifest.
 
 ## Current State Summary
 

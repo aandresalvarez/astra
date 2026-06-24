@@ -9,6 +9,10 @@ extension DatabaseQueryService: WorkspaceAppDatabaseQueryRunning {}
 struct WorkspaceAppNativeAsyncCapabilitySourceClient: WorkspaceAppAsyncCapabilitySourceClient {
     var queryRunner: any WorkspaceAppDatabaseQueryRunning = DatabaseQueryService()
     var redcapReader: any WorkspaceAppREDCapReading = WorkspaceAppUnavailableREDCapTransport()
+    /// GitHub reads use the user's OWN ambient `gh` auth (no per-binding secret to wire), so unlike the
+    /// REDCap reader this defaults to the REAL transport — a published `pullRequest.read` app shows live
+    /// PRs out of the box. Tests inject a fake reader so the suite never shells out.
+    var gitHubReader: any WorkspaceAppGitHubPRReading = WorkspaceAppGitHubCLIPRReader()
 
     func read(
         source: WorkspaceAppSource,
@@ -24,6 +28,11 @@ struct WorkspaceAppNativeAsyncCapabilitySourceClient: WorkspaceAppAsyncCapabilit
         if (requirement.contract == "recordProject.read" || requirement.contract == "formSchema.read"),
            (binding.provider == "redcap" || requirement.providerHint == "redcap") {
             return try await WorkspaceAppREDCapReadClient(reader: redcapReader)
+                .read(source: source, requirement: requirement, binding: binding, input: input)
+        }
+        if requirement.contract == "pullRequest.read",
+           (binding.provider == "github" || requirement.providerHint == "github") {
+            return try await WorkspaceAppGitHubPRReadClient(reader: gitHubReader)
                 .read(source: source, requirement: requirement, binding: binding, input: input)
         }
         throw WorkspaceAppSourceResolutionError.capabilityReadUnavailable(source.id)

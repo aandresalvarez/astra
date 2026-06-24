@@ -327,6 +327,70 @@ struct WorkspaceAppSourceResolverTests {
         }
     }
 
+    @Test("capability.read resolution never falls through to app storage (storage-shadow source needs its binding)")
+    func capabilityReadDoesNotShadowStorage() async throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = Workspace(name: "Shadow", primaryPath: root.path)
+        // A source whose id matches a storage table name AND references a connector requirement. The
+        // generic resolveAsync would read the storage table; the connector-only path must NOT.
+        let manifest = WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(id: "shadow-app", name: "Shadow"),
+            requirements: [
+                WorkspaceAppRequirement(id: "github", contract: "pullRequest.read",
+                                        operations: ["listMyPullRequests"], providerHint: "github")
+            ],
+            storage: WorkspaceAppStorageSchema(tables: [
+                WorkspaceAppStorageTable(name: "shadow", columns: [
+                    WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true)
+                ])
+            ]),
+            sources: [
+                WorkspaceAppSource(id: "shadow", requirementRef: "github",
+                                   operation: "listMyPullRequests", mode: "read")
+            ]
+        )
+        let app = Self.app(for: manifest, workspace: workspace)
+        // No mapped binding → the connector path refuses (missingMappedBinding) instead of returning
+        // app-storage rows. This is the resolver-side half of the storage-shadow defense.
+        await #expect(throws: WorkspaceAppSourceResolutionError.missingMappedBinding("github")) {
+            _ = try await WorkspaceAppSourceResolver().resolveCapabilityReadAsync(
+                sourceID: "shadow", app: app, workspace: workspace, manifest: manifest, dependencyBindings: []
+            )
+        }
+    }
+
+    @Test("sync capability.read resolution also never falls through to app storage (pipeline-step path)")
+    func syncCapabilityReadDoesNotShadowStorage() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = Workspace(name: "Shadow", primaryPath: root.path)
+        let manifest = WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(id: "shadow-sync", name: "Shadow"),
+            requirements: [
+                WorkspaceAppRequirement(id: "github", contract: "pullRequest.read",
+                                        operations: ["listMyPullRequests"], providerHint: "github")
+            ],
+            storage: WorkspaceAppStorageSchema(tables: [
+                WorkspaceAppStorageTable(name: "shadow", columns: [
+                    WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true)
+                ])
+            ]),
+            sources: [
+                WorkspaceAppSource(id: "shadow", requirementRef: "github",
+                                   operation: "listMyPullRequests", mode: "read")
+            ]
+        )
+        let app = Self.app(for: manifest, workspace: workspace)
+        // The sync connector-only path (used by a capability.read pipeline/loop step) refuses without a
+        // mapped binding instead of reading the shadow storage table.
+        #expect(throws: WorkspaceAppSourceResolutionError.missingMappedBinding("github")) {
+            _ = try WorkspaceAppSourceResolver().resolveCapabilityRead(
+                sourceID: "shadow", app: app, workspace: workspace, manifest: manifest, dependencyBindings: []
+            )
+        }
+    }
+
     static func temporaryRoot() throws -> URL {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("workspace-app-source-resolver-\(UUID().uuidString)", isDirectory: true)

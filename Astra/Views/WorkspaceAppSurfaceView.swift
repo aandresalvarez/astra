@@ -13,6 +13,10 @@ import SwiftUI
 struct WorkspaceAppSurfaceView: View {
     let snapshot: WorkspaceAppDetailDataSnapshot
     let onRunAction: (WorkspaceAppActionSpec, WorkspaceAppManifest, WorkspaceAppActionInput) throws -> WorkspaceAppActionExecutionResult
+    /// The ASYNC executor path the bridge uses for `astra.read` (a live connector read is network I/O
+    /// `onRunAction` can't await). nil on the preview surface — preview has no real dependency bindings,
+    /// so connector reads resolve only on a PUBLISHED app.
+    let onCapabilityRead: ((WorkspaceAppActionSpec, WorkspaceAppManifest, WorkspaceAppActionInput) async throws -> WorkspaceAppActionExecutionResult)?
     let onReload: () -> Void
     /// Live, UNCAPPED check for a non-terminal workflow run — the bridge's durable runAction throttle.
     /// Built by the published detail view from the model store (queried each call, not a snapshot);
@@ -44,10 +48,12 @@ struct WorkspaceAppSurfaceView: View {
         snapshot: WorkspaceAppDetailDataSnapshot,
         onRunAction: @escaping (WorkspaceAppActionSpec, WorkspaceAppManifest, WorkspaceAppActionInput) throws -> WorkspaceAppActionExecutionResult,
         onReload: @escaping () -> Void,
-        isWorkflowRunPending: (@MainActor () -> Bool)? = nil
+        isWorkflowRunPending: (@MainActor () -> Bool)? = nil,
+        onCapabilityRead: ((WorkspaceAppActionSpec, WorkspaceAppManifest, WorkspaceAppActionInput) async throws -> WorkspaceAppActionExecutionResult)? = nil
     ) {
         self.snapshot = snapshot
         self.onRunAction = onRunAction
+        self.onCapabilityRead = onCapabilityRead
         self.onReload = onReload
         self.isWorkflowRunPending = isWorkflowRunPending
         self.surface = WorkspaceAppNativeSurfaceBuilder.presentation(
@@ -117,13 +123,15 @@ struct WorkspaceAppSurfaceView: View {
         }
     }
 
-    /// True when the app declares its own storage OR a JS-runnable workflow action — i.e. when an
-    /// `astra.*` bridge should be registered for its HTML surface. Drives the WebView `.id` so the
-    /// handler is added/removed when eligibility flips.
+    /// Whether an `astra.*` bridge should be registered for this app's HTML surface (storage /
+    /// `capability.read` / runnable workflow action). Single-sourced with `handlers()` via
+    /// `WorkspaceAppDataBridge.isBridgeEligible`, and used as the WebView `.id`: when bridge presence
+    /// flips (e.g. a read-only connector app is refined/republished into a pure-UI app with no grants),
+    /// the WebView is RECREATED so the stale handler + injected `astra.read` script are torn down,
+    /// instead of leaving the prior app's read handler callable against its old manifest/bindings.
     private var bridgeEligible: Bool {
         guard let manifest = snapshot.manifest else { return false }
-        if manifest.storage?.tables.isEmpty == false { return true }
-        return manifest.actions.contains { WorkspaceAppDataBridge.isDirectlyRunnable($0, in: manifest) }
+        return WorkspaceAppDataBridge.isBridgeEligible(manifest)
     }
 
     /// Phase 2/5 bridge: the host closures for a DATA-BACKED or WORKFLOW HTML app. Every `astra.*`
@@ -139,7 +147,8 @@ struct WorkspaceAppSurfaceView: View {
             runs: snapshot.runs,
             onRunAction: onRunAction,
             onReload: onReload,
-            isWorkflowRunPending: isWorkflowRunPending
+            isWorkflowRunPending: isWorkflowRunPending,
+            onCapabilityRead: onCapabilityRead
         )
     }
 

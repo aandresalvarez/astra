@@ -431,6 +431,22 @@ enum WorkspaceAppStudioGenerator {
         attention queue shown around your surface (JS only TRIGGERS — it can never approve). Poll \
         `astra.runs()` to reflect status. NEVER call a `gate.*` action directly from JS.
 
+        (D) CONNECTOR-READ HTML app — show READ-ONLY live data from an external connector. Supported \
+        today: the user's real GitHub pull requests (`pullRequest.read`, always available). Emit: a \
+        `requirements` entry { id (e.g. "github"), contract: "pullRequest.read", operations: \
+        ["listMyPullRequests"] (or ["listRepoPullRequests"]), optional: false, reason }; a `sources` entry \
+        { id (e.g. "myPRs"), requirementRef: <that requirement id>, mode: "read", operation: \
+        "listMyPullRequests", projectRef: "owner/name" ONLY for listRepoPullRequests }; and an `actions` \
+        entry { id, type: "capability.read", sourceRef: <the source id> }. The source `id`, the source it \
+        names, and the action `sourceRef` MUST match exactly — that pairing is the read allowlist. \
+        permissions reads ["pullRequest.read"], defaultMode "draftOnly". You MAY combine this with \
+        storage (B) to cache or annotate PRs locally. Then an ASTRA_APP_HTML block whose JS reads live rows:
+          - `await astra.read(sourceId, { params: { state: "open" } })`  →  { rows: [ { number, title, \
+        url, state, isDraft, repository, author, updatedAt }, ... ] }   (state ∈ open|closed|merged|all)
+        Render the rows into your UI and handle a rejected promise with an inline message (gh not \
+        installed / not signed in). Only `capability.read` is bridged — NEVER attempt a connector WRITE \
+        from HTML.
+
         Use the DECLARATIVE (non-HTML) manifest ONLY for MONITOR apps that need scheduled (time-\
         triggered) automations — the one feature the workflow bridge does not expose. Everything else \
         (tools, views, data/CRUD, pipelines, reports, review queues, agent workflows) → HTML.
@@ -668,12 +684,16 @@ enum WorkspaceAppStudioGenerator {
         let available = list.isEmpty ? "none" : list
         return """
         Connectors available in THIS workspace: \(available).
-        - External-provider contracts (e.g. `tabularQuery.read` → bigQuery, `recordProject.*` / \
+        - The GitHub pull-request reader (`pullRequest.read` → provider github) is ALWAYS available — it \
+        uses your `gh` CLI sign-in, needs no workspace connector — so you MAY build a read-only GitHub PR \
+        app even when the list above is "none". Operations: `listMyPullRequests` (the signed-in user's PRs \
+        across repos) and `listRepoPullRequests` (one repo declared in the source `projectRef`).
+        - Other external-provider contracts (e.g. `tabularQuery.read` → bigQuery, `recordProject.*` / \
         `formSchema.read` → redcap) require a matching connector. ONLY add a `requirement` for an \
         external provider that is available above. If a provider is NOT available, build the app \
         around local contracts (`appStorage.records`, `task.*`, `artifact.*`) rather than inventing \
-        an absent connector flow. Any external requirement you DO include must set `optional: true` \
-        with a `reason`, so the app still installs and the connector can be added later.
+        an absent connector flow. Any external requirement you DO include (other than github) must set \
+        `optional: true` with a `reason`, so the app still installs and the connector can be added later.
         """
     }
 

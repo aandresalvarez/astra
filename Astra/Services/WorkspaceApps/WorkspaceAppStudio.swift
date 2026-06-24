@@ -446,9 +446,15 @@ enum WorkspaceAppStudioBuilder {
     }
 
     private static func manifest(for intent: String) -> WorkspaceAppManifest {
+        // A "show my GitHub PRs" intent routes to the deterministic connector-read app (live data via
+        // astra.read) — it's not expressible by any archetype recipe, and a reliable floor matters since
+        // the model can time out. Everything else goes through the archetype classifier.
+        if isGitHubPullRequestIntent(intent) {
+            return githubPullRequestsHTMLManifest(intent: intent)
+        }
         // Route free-text intent to the best-fitting archetype recipe instead of collapsing
         // every non-"database" intent into a read-only operational surface.
-        WorkspaceAppStudioRecipes.manifest(for: WorkspaceAppArchetype.classify(intent), intent: intent)
+        return WorkspaceAppStudioRecipes.manifest(for: WorkspaceAppArchetype.classify(intent), intent: intent)
     }
 
     /// The deterministic template manifest for a free-text intent.
@@ -1135,6 +1141,68 @@ enum WorkspaceAppStudioBuilder {
             ),
             html: WorkspaceAppDataHTMLTemplate.html(title: name, table: table, columns: columns, primaryKey: "id")
         )
+    }
+
+    /// Connector-read recipe: a CONNECTOR-READ HTML app over the user's REAL GitHub pull requests
+    /// (`pullRequest.read`, always available via gh). Declares the requirement + read source + the
+    /// `capability.read` action whose `sourceRef` matches the source id (the bridge's read allowlist),
+    /// and an HTML UI that reads live rows through `astra.read`. The binding auto-maps to
+    /// `github-pr-read-native` on publish, so a published app shows live PRs with no manual setup.
+    static func githubPullRequestsHTMLManifest(intent: String) -> WorkspaceAppManifest {
+        let titled = title(from: intent)
+        let name = titled == "Workspace App" ? "My Pull Requests" : titled
+        let sourceID = "myPullRequests"
+        return WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(
+                id: slug(from: name),
+                name: name,
+                icon: "arrow.triangle.pull",
+                description: "Your live GitHub pull requests (read-only, via your gh sign-in).",
+                tags: ["github", "html-app", "connector-read"],
+                archetypes: ["HTML App"]
+            ),
+            requirements: [
+                WorkspaceAppRequirement(
+                    id: "github",
+                    contract: "pullRequest.read",
+                    operations: ["listMyPullRequests"],
+                    providerHint: "github",
+                    optional: false,
+                    reason: "Read the signed-in user's GitHub pull requests."
+                )
+            ],
+            sources: [
+                WorkspaceAppSource(
+                    id: sourceID,
+                    requirementRef: "github",
+                    operation: "listMyPullRequests",
+                    mode: "read"
+                )
+            ],
+            actions: [
+                WorkspaceAppActionSpec(
+                    id: "read_my_prs", type: "capability.read",
+                    label: "My Pull Requests", sourceRef: sourceID
+                )
+            ],
+            permissions: WorkspaceAppPermissions(reads: ["pullRequest.read"], defaultMode: .draftOnly),
+            html: WorkspaceAppGitHubPRTemplate.html(title: name, sourceId: sourceID)
+        )
+    }
+
+    /// True when the intent reads as "show my GitHub pull requests" — routes to the deterministic
+    /// connector-read builder so a PR intent reliably produces a working live-data app (rather than a
+    /// generic data shell) even when the model is unavailable. Tight: requires a github/PR signal AND
+    /// not an unrelated data verb that happens to mention github (e.g. "log github issues locally").
+    static func isGitHubPullRequestIntent(_ intent: String) -> Bool {
+        let text = intent.lowercased()
+        let prSignals = ["pull request", "pull-request", "open pr", "open prs", " prs", "my prs",
+                         "pullrequest"]
+        let hasPR = prSignals.contains(where: { text.contains($0) })
+        let hasGitHub = text.contains("github") || text.contains("gh ")
+        // "my pull requests" alone (no provider named) still means GitHub here — it's the only PR
+        // provider we read. Require either an explicit github mention or a PR phrase.
+        return hasPR || (hasGitHub && text.contains("pr"))
     }
 
     // MARK: - Phase 5: WORKFLOW / DASHBOARD HTML apps

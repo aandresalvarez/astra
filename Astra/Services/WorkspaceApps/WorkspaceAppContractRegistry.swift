@@ -53,6 +53,11 @@ struct WorkspaceAppContractImplementation: Codable, Sendable, Equatable {
     var operations: [String]
     var dataAccess: [String]
     var externalEffects: [String]
+    /// How to run a READ for this implementation GENERICALLY (no per-provider Swift). nil for the
+    /// built-in native clients (BigQuery/REDCap/GitHub keep their hand-written fast paths); set for an
+    /// implementation derived from an ENABLED capability's CLI tool. Optional ⇒ auto-synth Codable
+    /// decodes absent JSON as nil, so this is backward-compatible with existing persisted implementations.
+    var readExecution: WorkspaceAppCapabilityReadExecution?
 
     init(
         id: String,
@@ -61,7 +66,8 @@ struct WorkspaceAppContractImplementation: Codable, Sendable, Equatable {
         transport: WorkspaceAppContractTransport,
         operations: [String],
         dataAccess: [String] = [],
-        externalEffects: [String] = []
+        externalEffects: [String] = [],
+        readExecution: WorkspaceAppCapabilityReadExecution? = nil
     ) {
         self.id = id
         self.familyID = familyID
@@ -70,6 +76,7 @@ struct WorkspaceAppContractImplementation: Codable, Sendable, Equatable {
         self.operations = operations
         self.dataAccess = dataAccess
         self.externalEffects = externalEffects
+        self.readExecution = readExecution
     }
 }
 
@@ -138,6 +145,24 @@ struct WorkspaceAppContractRegistry: Equatable {
         return WorkspaceAppContractRegistry(
             families: families,
             implementations: implementations + additions
+        )
+    }
+
+    /// Extend the registry with BOTH families and implementations contributed by ENABLED capabilities
+    /// (see `WorkspaceAppCapabilityContractDeriver`). Families are needed so the contract CATALOG +
+    /// validator accept the derived contract; implementations are needed so a published app's requirement
+    /// auto-maps to a `.mapped` binding. Existing ids win (built-ins are never shadowed by a capability).
+    func including(
+        capabilityFamilies: [WorkspaceAppContractFamily],
+        implementations newImplementations: [WorkspaceAppContractImplementation]
+    ) -> WorkspaceAppContractRegistry {
+        let existingFamilyIDs = Set(families.map(\.id))
+        let familyAdditions = capabilityFamilies.filter { !existingFamilyIDs.contains($0.id) }.sorted { $0.id < $1.id }
+        let existingImplIDs = Set(implementations.map(\.id))
+        let implAdditions = newImplementations.filter { !existingImplIDs.contains($0.id) }.sorted { $0.id < $1.id }
+        return WorkspaceAppContractRegistry(
+            families: families + familyAdditions,
+            implementations: implementations + implAdditions
         )
     }
 
@@ -265,6 +290,14 @@ struct WorkspaceAppContractRegistry: Equatable {
                 WorkspaceAppContractOperation(name: "createIssue", effect: .externalWrite, requiresApproval: true),
                 WorkspaceAppContractOperation(name: "updateIssue", effect: .externalWrite, requiresApproval: true)
             ]
+        ),
+        WorkspaceAppContractFamily(
+            id: "pullRequest.read",
+            displayName: "Pull Request Read",
+            operations: [
+                WorkspaceAppContractOperation(name: "listMyPullRequests", effect: .read),
+                WorkspaceAppContractOperation(name: "listRepoPullRequests", effect: .read)
+            ]
         )
     ]
 
@@ -375,6 +408,15 @@ struct WorkspaceAppContractRegistry: Equatable {
             transport: .taskBacked,
             operations: ["describeForms", "describeFields", "describeBranchingRules"],
             dataAccess: ["clinicalData", "externalService"],
+            externalEffects: ["readOnly"]
+        ),
+        WorkspaceAppContractImplementation(
+            id: "github-pr-read-native",
+            familyID: "pullRequest.read",
+            provider: "github",
+            transport: .native,
+            operations: ["listMyPullRequests", "listRepoPullRequests"],
+            dataAccess: ["externalService"],
             externalEffects: ["readOnly"]
         )
     ]

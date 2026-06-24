@@ -66,9 +66,12 @@ struct WorkspaceAppWebReportView: NSViewRepresentable {
     func updateNSView(_ webView: WKWebView, context: Context) {
         // Keep the bridge allowlist current: refresh the handler's closures (they capture the live
         // manifest) so an app refinement that changes storage/actions/permission takes effect even
-        // when the HTML itself is unchanged.
-        if let onBridgeRequest {
-            context.coordinator.bridgeHandler?.handlers = onBridgeRequest
+        // when the HTML itself is unchanged. If a still-present handler's app no longer grants a bridge
+        // (onBridgeRequest now nil on a reused WebView), install the fail-closed deny-all handlers so a
+        // stale `astra.*` call can't reach the prior app — defense in depth behind `.id(bridgeEligible)`,
+        // which already recreates the WebView when bridge presence flips.
+        if let bridgeHandler = context.coordinator.bridgeHandler {
+            bridgeHandler.handlers = onBridgeRequest ?? WorkspaceAppDataBridge.denyAll
         }
         guard context.coordinator.loadedHTML != html else { return }
         context.coordinator.loadedHTML = html

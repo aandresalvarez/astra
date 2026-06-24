@@ -92,6 +92,13 @@ struct WorkspaceAppSourceResolver {
     var storageService = WorkspaceAppStorageService()
     var capabilityClient: any WorkspaceAppCapabilitySourceClient = WorkspaceAppUnavailableCapabilitySourceClient()
     var asyncCapabilityClient: any WorkspaceAppAsyncCapabilitySourceClient = WorkspaceAppNativeAsyncCapabilitySourceClient()
+    /// Runs a capability-contributed GENERIC read (a `.cli` `readExecution` spec) — no per-provider Swift.
+    var genericCLIReadClient = WorkspaceAppGenericCLIReadClient()
+    /// Implementations contributed by the workspace's ENABLED capabilities. Default derives them from the
+    /// capability library; tests inject a fixed list so the suite never touches the filesystem.
+    var capabilityImplementations: (Workspace) -> [WorkspaceAppContractImplementation] = { workspace in
+        WorkspaceAppCapabilityContractDeriver.derived(for: workspace).implementations
+    }
 
     func resolve(
         sourceID: String,
@@ -153,6 +160,67 @@ struct WorkspaceAppSourceResolver {
             source,
             requirementID: requirementID,
             app: app,
+            workspace: workspace,
+            manifest: manifest,
+            dependencyBindings: dependencyBindings,
+            input: input
+        )
+    }
+
+    /// Connector-only SYNC resolution for a `capability.read` action (native button OR a pipeline/loop
+    /// step run through `astra.runAction`). Like its async sibling, it NEVER falls through to app storage:
+    /// a `capability.read` is a connector read by definition, so a source whose id/tableRef shadows a
+    /// storage table must still resolve through its dependency binding, not the app's SQLite. Requires a
+    /// connector requirement (`requirementRef`); throws `unsupportedSource` otherwise.
+    func resolveCapabilityRead(
+        sourceID: String,
+        app: WorkspaceApp,
+        workspace: Workspace,
+        manifest: WorkspaceAppManifest,
+        dependencyBindings: [WorkspaceAppDependencyBinding] = [],
+        input: WorkspaceAppSourceResolutionInput = WorkspaceAppSourceResolutionInput()
+    ) throws -> WorkspaceAppResolvedSource {
+        guard let source = manifest.sources.first(where: { $0.id == sourceID }) else {
+            throw WorkspaceAppSourceResolutionError.missingSource(sourceID)
+        }
+        guard let requirementID = source.requirementRef else {
+            throw WorkspaceAppSourceResolutionError.unsupportedSource(source.id)
+        }
+        return try resolveCapabilitySource(
+            source,
+            requirementID: requirementID,
+            app: app,
+            manifest: manifest,
+            dependencyBindings: dependencyBindings,
+            input: input
+        )
+    }
+
+    /// Connector-only async resolution for `capability.read` (the `astra.read` bridge path). Unlike
+    /// `resolveAsync`, it NEVER falls through to app storage: a `capability.read` source whose id /
+    /// tableRef / sourceRef happens to match a storage table must STILL resolve through its dependency
+    /// binding (the connector authority), not silently read the app's own SQLite. Requires a connector
+    /// requirement (`requirementRef`); throws `unsupportedSource` otherwise. This is the resolver-side
+    /// half of the storage-shadow defense (the bridge's `resolveRead` requirementRef check is the other).
+    func resolveCapabilityReadAsync(
+        sourceID: String,
+        app: WorkspaceApp,
+        workspace: Workspace,
+        manifest: WorkspaceAppManifest,
+        dependencyBindings: [WorkspaceAppDependencyBinding] = [],
+        input: WorkspaceAppSourceResolutionInput = WorkspaceAppSourceResolutionInput()
+    ) async throws -> WorkspaceAppResolvedSource {
+        guard let source = manifest.sources.first(where: { $0.id == sourceID }) else {
+            throw WorkspaceAppSourceResolutionError.missingSource(sourceID)
+        }
+        guard let requirementID = source.requirementRef else {
+            throw WorkspaceAppSourceResolutionError.unsupportedSource(source.id)
+        }
+        return try await resolveCapabilitySourceAsync(
+            source,
+            requirementID: requirementID,
+            app: app,
+            workspace: workspace,
             manifest: manifest,
             dependencyBindings: dependencyBindings,
             input: input
@@ -231,6 +299,7 @@ struct WorkspaceAppSourceResolver {
         _ source: WorkspaceAppSource,
         requirementID: String,
         app: WorkspaceApp,
+        workspace: Workspace,
         manifest: WorkspaceAppManifest,
         dependencyBindings: [WorkspaceAppDependencyBinding],
         input: WorkspaceAppSourceResolutionInput
@@ -242,6 +311,27 @@ struct WorkspaceAppSourceResolver {
             $0.appID == app.id && $0.requirementID == requirementID && $0.status == .mapped
         }) else {
             throw WorkspaceAppSourceResolutionError.missingMappedBinding(requirementID)
+        }
+        // If the mapped implementation is one an ENABLED capability contributed (it carries a generic
+        // `readExecution` spec), run it through the generic client — NO per-provider Swift. Otherwise use
+        // the built-in native client (BigQuery/REDCap/GitHub). The binding is still the appID-scoped,
+        // `.mapped` authority; this only chooses HOW to execute, never WHETHER.
+        if let implementationID = binding.implementationID,
+           let implementation = capabilityImplementations(workspace).first(where: { $0.id == implementationID }),
+           let execution = implementation.readExecution {
+            let operation = source.operation ?? requirement.operations.first ?? WorkspaceAppCapabilityContractDeriver.defaultOperation
+            let rows = try await genericCLIReadClient.read(
+                execution: execution, operation: operation, sourceID: source.id,
+                workspacePath: workspace.primaryPath, input: input
+            )
+            return WorkspaceAppResolvedSource(
+                sourceID: source.id,
+                rows: rows,
+                outputSummary: "Resolved source '\(source.id)' through \(binding.contract) using \(implementationID) (generic \(execution.transport.rawValue)) with \(rows.count) rows.",
+                requirementID: requirementID,
+                implementationID: implementationID,
+                provider: binding.provider
+            )
         }
         let rows = try await asyncCapabilityClient.read(
             source: source,
