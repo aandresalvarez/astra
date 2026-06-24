@@ -292,9 +292,20 @@ enum ExecutionSandbox {
         "/usr/local",
         "/opt/homebrew",
         "/opt/local",
+        "/Library/Frameworks",
         "/Library/Developer",
         "/Library/Apple",
+        // Network-capable host CLIs (gcloud, ssh helpers, provider CLIs) consult
+        // system DNS, proxy, and managed-preference state while resolving hosts.
+        // These are system configuration roots, not user document locations.
+        "/Library/Managed Preferences",
+        "/Library/Preferences",
+        "/Applications/Xcode.app",
         "/private/etc",
+        // macOS resolves `/bin/sh` through this selector on some systems.
+        // Shell-script CLIs such as `gcloud` can fail before their own code runs
+        // if Seatbelt cannot read the selector symlink.
+        "/private/var/select",
         // /var/run holds host runtime state — the mDNSResponder name-resolution
         // socket, other system daemon sockets, lock/pid files — that network-
         // capable provider CLIs reach (e.g. to resolve hostnames). Read-only
@@ -311,6 +322,7 @@ enum ExecutionSandbox {
         plan: AgentRuntimeProcessLaunchPlan,
         providerHomeDirectory: String,
         additionalWritablePaths: [String] = [],
+        additionalReadablePaths: [String]? = nil,
         settings: ExecutionSandboxSettings,
         fileManager: FileManager = .default
     ) -> ExecutionSandboxDecision {
@@ -353,9 +365,10 @@ enum ExecutionSandbox {
             return unavailable("no_writable_roots")
         }
 
+        let readAdditionalPaths = additionalReadablePaths ?? additionalWritablePaths
         let explicitReadRoots = explicitlyGrantedReadableRoots(
             plan: plan,
-            additionalReadablePaths: additionalWritablePaths,
+            additionalReadablePaths: readAdditionalPaths,
             canonicalWorkspace: workspace
         )
         let readableRoots = settings.readScope == .open
@@ -363,7 +376,7 @@ enum ExecutionSandbox {
             : readableRoots(
                 plan: plan,
                 providerHomeDirectory: providerHomeDirectory,
-                additionalReadablePaths: additionalWritablePaths,
+                additionalReadablePaths: readAdditionalPaths,
                 canonicalWorkspace: workspace
             )
         let readableMetadataRoots = settings.readScope == .open

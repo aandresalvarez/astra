@@ -3,6 +3,7 @@ import ASTRACore
 
 enum TaskLaunchResourceResolver {
     typealias GitCredentialContextProvider = (String, AgentTask, String, String) -> GitCredentialSandboxContext
+    typealias GCloudExecutablePathProvider = (FileManager) -> String?
 
     static func resolve(
         task: AgentTask,
@@ -13,7 +14,9 @@ enum TaskLaunchResourceResolver {
         contextText: String,
         workspacePath: String,
         executionEnvironment: WorkspaceExecutionEnvironment? = nil,
+        homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
         fileManager: FileManager = .default,
+        gcloudExecutablePathProvider: GCloudExecutablePathProvider = defaultGCloudExecutablePath,
         gitCredentialContextProvider: GitCredentialContextProvider = defaultGitCredentialContext
     ) -> TaskLaunchResourcePlan {
         let environment = executionEnvironment ?? DockerExecutionPlanner.resolveEnvironment(for: task)
@@ -49,6 +52,15 @@ enum TaskLaunchResourceResolver {
             hostPathGrants: &hostPathGrants,
             credentialGrants: &credentialGrants
         )
+        appendRemoteWorkspaceGrants(
+            task: task,
+            homeDirectoryPath: homeDirectoryPath,
+            fileManager: fileManager,
+            hostPathGrants: &hostPathGrants,
+            credentialGrants: &credentialGrants,
+            providerRequirements: &providerRequirements,
+            diagnostics: &diagnostics
+        )
 
         appendExecutionEnvironmentGrants(
             environment,
@@ -66,9 +78,15 @@ enum TaskLaunchResourceResolver {
         appendCapabilityGrants(
             task: task,
             contextText: contextText,
+            executionEnvironment: environment,
+            homeDirectoryPath: homeDirectoryPath,
+            fileManager: fileManager,
+            gcloudExecutablePathProvider: gcloudExecutablePathProvider,
+            hostPathGrants: &hostPathGrants,
             providerRequirements: &providerRequirements,
             environmentGrants: &environmentGrants,
-            credentialGrants: &credentialGrants
+            credentialGrants: &credentialGrants,
+            diagnostics: &diagnostics
         )
 
         return TaskLaunchResourcePlan(
@@ -225,6 +243,86 @@ enum TaskLaunchResourceResolver {
         }
     }
 
+    private static func appendRemoteWorkspaceGrants(
+        task: AgentTask,
+        homeDirectoryPath: String,
+        fileManager: FileManager,
+        hostPathGrants: inout [RuntimePathGrant],
+        credentialGrants: inout [RuntimeCredentialGrant],
+        providerRequirements: inout [RuntimeProviderRequirement],
+        diagnostics: inout [RuntimeResourceDiagnostic]
+    ) {
+        guard let workspace = task.workspace else { return }
+        let connections = SSHConnectionManager.load(workspacePath: workspace.primaryPath)
+        guard !connections.isEmpty else { return }
+
+        providerRequirements.append(RuntimeProviderRequirement(
+            capability: "remote_workspace_ssh",
+            source: .remoteWorkspace,
+            reason: "Workspace has a configured remote SSH connection.",
+            required: true
+        ))
+
+        let aliasConnections = connections.filter {
+            !$0.configAlias.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        if !aliasConnections.isEmpty {
+            appendExistingRemoteWorkspacePathGrant(
+                "~/.ssh/config",
+                access: .read,
+                reason: "Configured remote workspace SSH aliases require the user's SSH config.",
+                homeDirectoryPath: homeDirectoryPath,
+                fileManager: fileManager,
+                hostPathGrants: &hostPathGrants,
+                diagnostics: &diagnostics,
+                missingCode: "ssh_config_missing"
+            )
+        }
+
+        let keyPaths = uniqueRawPaths(connections.map(\.keyPath).filter {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        })
+        for keyPath in keyPaths {
+            appendExistingRemoteWorkspacePathGrant(
+                keyPath,
+                access: .read,
+                reason: "Configured remote workspace SSH connection declares this identity file.",
+                homeDirectoryPath: homeDirectoryPath,
+                fileManager: fileManager,
+                hostPathGrants: &hostPathGrants,
+                diagnostics: &diagnostics,
+                missingCode: "ssh_identity_file_missing"
+            )
+        }
+
+        for knownHosts in ["~/.ssh/known_hosts", "~/.ssh/known_hosts2"] {
+            appendOptionalRemoteWorkspacePathGrant(
+                knownHosts,
+                access: .readWrite,
+                reason: "OpenSSH may atomically update known-host entries for the configured remote workspace.",
+                homeDirectoryPath: homeDirectoryPath,
+                fileManager: fileManager,
+                hostPathGrants: &hostPathGrants
+            )
+        }
+        appendOptionalRemoteWorkspacePathGrant(
+            "~/.ssh",
+            access: .write,
+            reason: "OpenSSH replaces known-host files through temporary files in the parent SSH directory.",
+            homeDirectoryPath: homeDirectoryPath,
+            fileManager: fileManager,
+            hostPathGrants: &hostPathGrants
+        )
+
+        credentialGrants.append(RuntimeCredentialGrant(
+            label: "Remote workspace SSH",
+            source: .remoteWorkspace,
+            reason: "Remote workspace commands use SSH config, identity files, and known-host metadata.",
+            projectedAsEnvironment: false,
+            projectedAsFile: true
+        ))
+    }
+
     private static func appendExecutionEnvironmentGrants(
         _ environment: WorkspaceExecutionEnvironment,
         task: AgentTask,
@@ -322,9 +420,15 @@ enum TaskLaunchResourceResolver {
     private static func appendCapabilityGrants(
         task: AgentTask,
         contextText: String,
+        executionEnvironment: WorkspaceExecutionEnvironment,
+        homeDirectoryPath: String,
+        fileManager: FileManager,
+        gcloudExecutablePathProvider: GCloudExecutablePathProvider,
+        hostPathGrants: inout [RuntimePathGrant],
         providerRequirements: inout [RuntimeProviderRequirement],
         environmentGrants: inout [RuntimeEnvironmentGrant],
-        credentialGrants: inout [RuntimeCredentialGrant]
+        credentialGrants: inout [RuntimeCredentialGrant],
+        diagnostics: inout [RuntimeResourceDiagnostic]
     ) {
         if TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) {
             providerRequirements.append(RuntimeProviderRequirement(
@@ -336,6 +440,26 @@ enum TaskLaunchResourceResolver {
         }
 
         let scope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
+        let hasGCloudConnector = scope.connectors.contains { connector in
+            let normalized = connector.serviceType
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            return normalized == "gcloud" ||
+                normalized == "google_cloud" ||
+                normalized == "googlecloud" ||
+                normalized == "gcp"
+        }
+        if hasGCloudConnector, !executionEnvironment.isContainerized {
+            appendHostGCloudCredentialGrant(
+                homeDirectoryPath: homeDirectoryPath,
+                fileManager: fileManager,
+                executablePath: gcloudExecutablePathProvider(fileManager),
+                hostPathGrants: &hostPathGrants,
+                credentialGrants: &credentialGrants,
+                diagnostics: &diagnostics
+            )
+        }
+
         for connector in scope.connectors {
             providerRequirements.append(RuntimeProviderRequirement(
                 capability: "connector:\(connector.serviceType)",
@@ -375,21 +499,201 @@ enum TaskLaunchResourceResolver {
         }
     }
 
-    private static func existingPath(_ rawPath: String, fileManager: FileManager) -> String? {
-        let expanded = (rawPath as NSString).expandingTildeInPath
+    private static func appendHostGCloudCredentialGrant(
+        homeDirectoryPath: String,
+        fileManager: FileManager,
+        executablePath: String?,
+        hostPathGrants: inout [RuntimePathGrant],
+        credentialGrants: inout [RuntimeCredentialGrant],
+        diagnostics: inout [RuntimeResourceDiagnostic]
+    ) {
+        let gcloudDirectory = ExecutionEnvironmentCredentialProjection
+            .defaultGCPADCHostPath(homeDirectory: homeDirectoryPath)
+        guard existingPath(gcloudDirectory, homeDirectoryPath: homeDirectoryPath, fileManager: fileManager) != nil else {
+            diagnostics.append(RuntimeResourceDiagnostic(
+                severity: .warning,
+                code: "gcloud_config_missing",
+                message: "Google Cloud connector is enabled, but ASTRA could not find the local gcloud config directory.",
+                repairAction: "Run `gcloud auth login` and retry the task."
+            ))
+            return
+        }
+
+        hostPathGrants.append(RuntimePathGrant(
+            path: normalizedPath(gcloudDirectory, homeDirectoryPath: homeDirectoryPath),
+            access: .readWrite,
+            source: .connector,
+            reason: "Google Cloud connector uses local gcloud authentication and may refresh tokens during CLI calls.",
+            sensitivity: .cloudAuth,
+            lifetime: .run,
+            exists: true
+        ))
+        credentialGrants.append(RuntimeCredentialGrant(
+            label: "Google Cloud local gcloud config",
+            source: .connector,
+            reason: "Host-side gcloud commands require access to local gcloud authentication state.",
+            projectedAsEnvironment: false,
+            projectedAsFile: true
+        ))
+
+        for supportPath in gcloudExecutableSupportPaths(
+            executablePath: executablePath,
+            fileManager: fileManager
+        ) {
+            hostPathGrants.append(RuntimePathGrant(
+                path: normalizedPath(supportPath),
+                access: .read,
+                source: .connector,
+                reason: "Google Cloud connector uses the local gcloud CLI installation.",
+                sensitivity: .normal,
+                lifetime: .run,
+                exists: true
+            ))
+        }
+    }
+
+    private static func defaultGCloudExecutablePath(fileManager: FileManager) -> String? {
+        let candidates = [
+            "/usr/local/bin/gcloud",
+            "/opt/homebrew/bin/gcloud",
+            "/usr/bin/gcloud"
+        ]
+        return candidates.first { path in
+            fileManager.fileExists(atPath: path)
+        }
+    }
+
+    private static func gcloudExecutableSupportPaths(
+        executablePath: String?,
+        fileManager: FileManager
+    ) -> [String] {
+        guard let executablePath,
+              let executable = existingPath(executablePath, fileManager: fileManager) else {
+            return []
+        }
+        var paths = [(executable as NSString).deletingLastPathComponent]
+
+        if let target = resolvedSymlinkTarget(for: executable, fileManager: fileManager),
+           let resolvedTarget = existingPath(target, fileManager: fileManager) {
+            paths.append((resolvedTarget as NSString).deletingLastPathComponent)
+            if let sdkRoot = googleCloudSDKRoot(for: resolvedTarget) {
+                paths.append(sdkRoot)
+            }
+        }
+        if let sdkRoot = googleCloudSDKRoot(for: executable) {
+            paths.append(sdkRoot)
+        }
+        return uniquePaths(paths)
+    }
+
+    private static func resolvedSymlinkTarget(for path: String, fileManager: FileManager) -> String? {
+        guard let target = try? fileManager.destinationOfSymbolicLink(atPath: path),
+              !target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        if target.hasPrefix("/") { return target }
+        let base = (path as NSString).deletingLastPathComponent
+        return (base as NSString).appendingPathComponent(target)
+    }
+
+    private static func googleCloudSDKRoot(for path: String) -> String? {
+        let marker = "/google-cloud-sdk/"
+        guard let range = path.range(of: marker) else { return nil }
+        return String(path[..<path.index(before: range.upperBound)])
+    }
+
+    private static func appendExistingRemoteWorkspacePathGrant(
+        _ rawPath: String,
+        access: TaskLaunchResourceAccess,
+        reason: String,
+        homeDirectoryPath: String,
+        fileManager: FileManager,
+        hostPathGrants: inout [RuntimePathGrant],
+        diagnostics: inout [RuntimeResourceDiagnostic],
+        missingCode: String
+    ) {
+        guard let normalized = existingPath(rawPath, homeDirectoryPath: homeDirectoryPath, fileManager: fileManager) else {
+            diagnostics.append(RuntimeResourceDiagnostic(
+                severity: .warning,
+                code: missingCode,
+                message: "ASTRA could not project remote workspace SSH path because it does not exist: \(rawPath)",
+                repairAction: "Review the workspace SSH connection settings or create the missing SSH file."
+            ))
+            return
+        }
+        hostPathGrants.append(RuntimePathGrant(
+            path: normalized,
+            access: access,
+            source: .remoteWorkspace,
+            reason: reason,
+            sensitivity: .credential,
+            lifetime: .run,
+            exists: true
+        ))
+    }
+
+    private static func appendOptionalRemoteWorkspacePathGrant(
+        _ rawPath: String,
+        access: TaskLaunchResourceAccess,
+        reason: String,
+        homeDirectoryPath: String,
+        fileManager: FileManager,
+        hostPathGrants: inout [RuntimePathGrant]
+    ) {
+        guard let normalized = existingPath(rawPath, homeDirectoryPath: homeDirectoryPath, fileManager: fileManager) else {
+            return
+        }
+        hostPathGrants.append(RuntimePathGrant(
+            path: normalized,
+            access: access,
+            source: .remoteWorkspace,
+            reason: reason,
+            sensitivity: .credential,
+            lifetime: .run,
+            exists: true
+        ))
+    }
+
+    private static func existingPath(
+        _ rawPath: String,
+        homeDirectoryPath: String? = nil,
+        fileManager: FileManager
+    ) -> String? {
+        let expanded = expandPath(rawPath, homeDirectoryPath: homeDirectoryPath)
         guard expanded.hasPrefix("/") else { return nil }
         var isDirectory = ObjCBool(false)
         guard fileManager.fileExists(atPath: expanded, isDirectory: &isDirectory) else { return nil }
         return URL(fileURLWithPath: expanded, isDirectory: isDirectory.boolValue).standardizedFileURL.path
     }
 
-    private static func normalizedPath(_ path: String) -> String {
-        URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL.path
+    private static func normalizedPath(_ path: String, homeDirectoryPath: String? = nil) -> String {
+        URL(fileURLWithPath: expandPath(path, homeDirectoryPath: homeDirectoryPath)).standardizedFileURL.path
+    }
+
+    private static func expandPath(_ path: String, homeDirectoryPath: String?) -> String {
+        guard let homeDirectoryPath else {
+            return (path as NSString).expandingTildeInPath
+        }
+        if path == "~" { return homeDirectoryPath }
+        if path.hasPrefix("~/") {
+            return (homeDirectoryPath as NSString)
+                .appendingPathComponent(String(path.dropFirst(2)))
+        }
+        return (path as NSString).expandingTildeInPath
     }
 
     private static func uniquePaths(_ paths: [String]) -> [String] {
         var seen: Set<String> = []
-        return paths.map(normalizedPath).filter { seen.insert($0).inserted }
+        return paths.map { normalizedPath($0) }.filter { seen.insert($0).inserted }
+    }
+
+    private static func uniqueRawPaths(_ paths: [String]) -> [String] {
+        var seen: Set<String> = []
+        return paths.filter { path in
+            let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return false }
+            return seen.insert(trimmed).inserted
+        }
     }
 
     private static func uniqueHostPathGrants(_ grants: [RuntimePathGrant]) -> [RuntimePathGrant] {

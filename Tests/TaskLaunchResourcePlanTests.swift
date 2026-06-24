@@ -1,7 +1,14 @@
 import Foundation
+import SwiftData
 import Testing
 @testable import ASTRA
 import ASTRACore
+
+private func makeTaskLaunchResourcePlanContainer() throws -> ModelContainer {
+    let schema = ASTRASchema.current
+    let config = ModelConfiguration(isStoredInMemoryOnly: true)
+    return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
+}
 
 @MainActor
 struct TaskLaunchResourcePlanTests {
@@ -89,6 +96,193 @@ struct TaskLaunchResourcePlanTests {
         #expect(plan.commandPlannedFields["git_credential_context"] == "true")
         #expect(plan.commandPlannedFields["git_credential_transports"] == "")
         #expect(!plan.credentialGrants.contains { $0.source == .gitCredential })
+    }
+
+    @Test("Resource resolver projects remote workspace SSH resources")
+    func resolverProjectsRemoteWorkspaceSSHResources() throws {
+        let fm = FileManager.default
+        let root = try makeTempDir("resource-plan-remote-ssh")
+        defer { try? fm.removeItem(atPath: root.path) }
+        let workspaceRoot = root.appendingPathComponent("workspace", isDirectory: true)
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        let sshDir = home.appendingPathComponent(".ssh", isDirectory: true)
+        try fm.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        try fm.createDirectory(at: sshDir, withIntermediateDirectories: true)
+
+        let sshConfig = sshDir.appendingPathComponent("config")
+        let identityFile = sshDir.appendingPathComponent("google_compute_engine")
+        let knownHosts = sshDir.appendingPathComponent("known_hosts")
+        try """
+        Host deid-jsn-workbench
+          HostName deid-as-service-jsn
+          User alvaro1_stanford_edu
+          ProxyCommand gcloud compute start-iap-tunnel %h %p --listen-on-stdin
+        """.write(to: sshConfig, atomically: true, encoding: .utf8)
+        try "private-key-placeholder".write(to: identityFile, atomically: true, encoding: .utf8)
+        try "deid-jsn-workbench ssh-ed25519 AAAA\n".write(to: knownHosts, atomically: true, encoding: .utf8)
+
+        SSHConnectionManager.save([
+            SSHConnection(
+                name: "deid-jsn-workbench",
+                host: "deid-as-service-jsn",
+                user: "alvaro1_stanford_edu",
+                keyPath: "~/.ssh/google_compute_engine",
+                configAlias: "deid-jsn-workbench"
+            )
+        ], workspacePath: workspaceRoot.path)
+
+        let workspace = Workspace(name: "JSL", primaryPath: workspaceRoot.path)
+        let task = AgentTask(
+            title: "Stop remote server via gcloud",
+            goal: "use gcloud to stop the remote server",
+            workspace: workspace,
+            runtime: .claudeCode
+        )
+
+        let plan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: UUID(),
+            runtime: .claudeCode,
+            phase: "run",
+            prompt: AgentPromptBuilder.buildPrompt(for: task),
+            contextText: task.goal,
+            workspacePath: workspaceRoot.path,
+            homeDirectoryPath: home.path,
+            gitCredentialContextProvider: { _, _, _, _ in .empty }
+        )
+
+        #expect(plan.hostPathGrants.contains {
+            $0.source == .remoteWorkspace &&
+                $0.access == .read &&
+                $0.path == sshConfig.standardizedFileURL.path
+        })
+        #expect(plan.hostPathGrants.contains {
+            $0.source == .remoteWorkspace &&
+                $0.access == .read &&
+                $0.path == identityFile.standardizedFileURL.path
+        })
+        #expect(plan.hostPathGrants.contains {
+            $0.source == .remoteWorkspace &&
+                $0.access == .readWrite &&
+                $0.path == knownHosts.standardizedFileURL.path
+        })
+        #expect(plan.hostPathGrants.contains {
+            $0.source == .remoteWorkspace &&
+                $0.access == .write &&
+                $0.path == sshDir.standardizedFileURL.path
+        })
+        #expect(plan.hostProtectedWriteDenyPaths.contains(sshConfig.standardizedFileURL.path))
+        #expect(plan.hostProtectedWriteDenyPaths.contains(identityFile.standardizedFileURL.path))
+        #expect(!plan.hostProtectedWriteDenyPaths.contains(knownHosts.standardizedFileURL.path))
+        #expect(plan.providerRequirements.contains {
+            $0.source == .remoteWorkspace && $0.capability == "remote_workspace_ssh"
+        })
+        #expect(plan.credentialGrants.contains {
+            $0.source == .remoteWorkspace && $0.label == "Remote workspace SSH"
+        })
+        #expect(plan.commandPlannedFields["remote_workspace_readable_path_count"] == "3")
+    }
+
+    @Test("Resource resolver projects host gcloud config for Google Cloud connector")
+    func resolverProjectsHostGCloudConfigForGoogleCloudConnector() throws {
+        let fm = FileManager.default
+        let root = try makeTempDir("resource-plan-gcloud")
+        defer { try? fm.removeItem(atPath: root.path) }
+        let workspaceRoot = root.appendingPathComponent("workspace", isDirectory: true)
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        let gcloudConfig = home.appendingPathComponent(".config/gcloud", isDirectory: true)
+        let fakeBin = root.appendingPathComponent("usr-local-bin", isDirectory: true)
+        let sdkRoot = home.appendingPathComponent("google-cloud-sdk", isDirectory: true)
+        let sdkBin = sdkRoot.appendingPathComponent("bin", isDirectory: true)
+        let sdkGCloud = sdkBin.appendingPathComponent("gcloud")
+        let gcloudShim = fakeBin.appendingPathComponent("gcloud")
+        try fm.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        try fm.createDirectory(at: gcloudConfig, withIntermediateDirectories: true)
+        try fm.createDirectory(at: fakeBin, withIntermediateDirectories: true)
+        try fm.createDirectory(at: sdkBin, withIntermediateDirectories: true)
+        try "{}".write(
+            to: gcloudConfig.appendingPathComponent("application_default_credentials.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "#!/bin/sh\nexec python3 \"$0\"\n".write(to: sdkGCloud, atomically: true, encoding: .utf8)
+        try fm.createSymbolicLink(atPath: gcloudShim.path, withDestinationPath: sdkGCloud.path)
+
+        let container = try makeTaskLaunchResourcePlanContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "JSL", primaryPath: workspaceRoot.path)
+        context.insert(workspace)
+
+        let gcloudSkill = Skill(
+            name: "GCloud Agent",
+            skillDescription: "Inspect Google Cloud projects",
+            allowedTools: ["Bash"],
+            behaviorInstructions: "Use gcloud for cloud inventory."
+        )
+        gcloudSkill.isGlobal = true
+        context.insert(gcloudSkill)
+
+        let gcloudConnector = Connector(
+            name: "Google Cloud",
+            serviceType: "gcloud",
+            connectorDescription: "Google Cloud API",
+            baseURL: "https://cloud.google.com",
+            authMethod: "none"
+        )
+        gcloudConnector.isGlobal = true
+        gcloudConnector.skill = gcloudSkill
+        gcloudConnector.configKeys = ["GCP_PROJECT", "GCP_REGION"]
+        gcloudConnector.configValues = ["som-rit-phi-starr-dev", "us-central1"]
+        context.insert(gcloudConnector)
+        workspace.enabledGlobalConnectorIDs = [gcloudConnector.id.uuidString]
+
+        let task = AgentTask(
+            title: "Stop remote server via gcloud",
+            goal: "use gcloud to stop the remote server",
+            workspace: workspace,
+            runtime: .claudeCode
+        )
+        context.insert(task)
+        try context.save()
+
+        let plan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: UUID(),
+            runtime: .claudeCode,
+            phase: "run",
+            prompt: "use gcloud to stop the remote server",
+            contextText: task.goal,
+            workspacePath: workspaceRoot.path,
+            homeDirectoryPath: home.path,
+            gcloudExecutablePathProvider: { _ in gcloudShim.path },
+            gitCredentialContextProvider: { _, _, _, _ in .empty }
+        )
+
+        #expect(plan.providerRequirements.contains {
+            $0.source == .connector && $0.capability == "connector:gcloud"
+        })
+        #expect(plan.hostPathGrants.contains {
+            $0.source == .connector &&
+                $0.sensitivity == .cloudAuth &&
+                $0.access == .readWrite &&
+                $0.path == gcloudConfig.standardizedFileURL.path
+        })
+        #expect(plan.hostPathGrants.contains {
+            $0.source == .connector &&
+                $0.sensitivity == .normal &&
+                $0.access == .read &&
+                $0.path == fakeBin.standardizedFileURL.path
+        })
+        #expect(plan.hostPathGrants.contains {
+            $0.source == .connector &&
+                $0.sensitivity == .normal &&
+                $0.access == .read &&
+                $0.path == sdkRoot.standardizedFileURL.path
+        })
+        #expect(plan.credentialGrants.contains {
+            $0.source == .connector && $0.label == "Google Cloud local gcloud config"
+        })
+        #expect(plan.commandPlannedFields["connector_readable_path_count"] == "4")
     }
 
     @Test("Resource resolver records Docker credential projection shape without secret values")

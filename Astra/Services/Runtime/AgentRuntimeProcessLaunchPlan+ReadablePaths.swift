@@ -34,6 +34,31 @@ extension AgentRuntimeProcessLaunchPlan {
         )
     }
 
+    func addingSandboxProtectedWriteDenyPaths(_ paths: [String]) -> AgentRuntimeProcessLaunchPlan {
+        let protected = Self.uniqueNonEmpty(sandboxProtectedWriteDenyPaths + paths)
+        guard protected != sandboxProtectedWriteDenyPaths else { return self }
+
+        return AgentRuntimeProcessLaunchPlan(
+            runtime: runtime,
+            executablePath: executablePath,
+            arguments: arguments,
+            currentDirectory: currentDirectory,
+            environment: environment,
+            browserShimDirectory: browserShimDirectory,
+            providerVersion: providerVersion,
+            parsesJSONLines: parsesJSONLines,
+            directoriesToCreate: directoriesToCreate,
+            sandboxReadablePaths: sandboxReadablePaths,
+            sandboxHomeStateAccess: sandboxHomeStateAccess,
+            sandboxProtectedWriteDenyPaths: protected,
+            providerDetectedFields: providerDetectedFields,
+            commandPlannedFields: commandPlannedFields,
+            interactiveAsk: interactiveAsk,
+            pathMapper: pathMapper,
+            executionEnvironment: executionEnvironment
+        )
+    }
+
     private static func uniqueNonEmpty(_ values: [String]) -> [String] {
         var seen: Set<String> = []
         return values.filter { value in

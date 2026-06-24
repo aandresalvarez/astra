@@ -105,6 +105,7 @@ final class AgentRuntimeProcessRunner {
             launchResourcePlan.hostReadablePaths,
             plannedFields: launchResourcePlan.commandPlannedFields
         )
+        plan = plan.addingSandboxProtectedWriteDenyPaths(launchResourcePlan.hostProtectedWriteDenyPaths)
         if !gitCredentialContext.isEmpty {
             plan = plan.addingGitCredentialContext(gitCredentialContext)
                 .enablingProviderNativeGitCredentialReads(
@@ -185,10 +186,12 @@ final class AgentRuntimeProcessRunner {
         // paths + input dirs (same set passed to providers via `--add-dir` and
         // honored by the in-band policy guard), so include them in the sandbox's
         // writable allowlist or the kernel would block legitimate writes.
+        let runtimeAdditionalPaths = Self.runtimeAdditionalPaths(for: context.task)
         let decision = ExecutionSandbox.decide(
             plan: plan,
             providerHomeDirectory: context.providerHomeDirectory,
-            additionalWritablePaths: Self.runtimeAdditionalPaths(for: context.task) + launchResourcePlan.hostWritablePaths,
+            additionalWritablePaths: runtimeAdditionalPaths + launchResourcePlan.hostWritablePaths,
+            additionalReadablePaths: runtimeAdditionalPaths + launchResourcePlan.hostReadablePaths,
             settings: settings
         )
         let taskID = context.task.id
@@ -690,10 +693,14 @@ final class AgentRuntimeProcessRunner {
 
     @MainActor
     static func pathPrefix(for task: AgentTask, taskEnv: [String: String]) -> [String] {
-        guard let browserShimDirectory = prepareBrowserToolShimIfNeeded(task: task, taskEnv: taskEnv) else {
-            return []
+        var paths: [String] = []
+        if let browserShimDirectory = prepareBrowserToolShimIfNeeded(task: task, taskEnv: taskEnv) {
+            paths.append(browserShimDirectory)
         }
-        return [browserShimDirectory]
+        if let sshShimDirectory = prepareSSHShimIfNeeded(task: task) {
+            paths.append(sshShimDirectory)
+        }
+        return Array(Set(paths)).sorted()
     }
 
     @MainActor
@@ -768,6 +775,69 @@ final class AgentRuntimeProcessRunner {
             AppLogger.audit(.shelfBrowserAction, category: "Browser", taskID: task.id, fields: [
                 "action": "browser_tool_shim",
                 "result": "failed",
+                "error": error.localizedDescription
+            ], level: .warning)
+            return nil
+        }
+    }
+
+    @MainActor
+    static func prepareSSHShimIfNeeded(
+        task: AgentTask,
+        fileManager: FileManager = .default,
+        realSSHPath: String = "/usr/bin/ssh",
+        hostKnownHostsPath: String = "\(NSHomeDirectory())/.ssh/known_hosts"
+    ) -> String? {
+        guard hasWorkspaceSSHConnections(for: task),
+              fileManager.isExecutableFile(atPath: realSSHPath),
+              realSSHPath.rangeOfCharacter(from: .newlines) == nil else {
+            return nil
+        }
+        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
+        guard !taskFolder.isEmpty else { return nil }
+
+        let shimDirectory = (taskFolder as NSString).appendingPathComponent(".runtime-bin")
+        let stateDirectory = (taskFolder as NSString).appendingPathComponent(".runtime-ssh")
+        let shimPath = (shimDirectory as NSString).appendingPathComponent("ssh")
+        let knownHostsPath = (stateDirectory as NSString).appendingPathComponent("known_hosts")
+        let script = """
+        #!/bin/sh
+        exec \(shellSingleQuoted(realSSHPath)) -o UserKnownHostsFile=\(shellSingleQuoted(knownHostsPath)) -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o CheckHostIP=no "$@"
+        """
+
+        do {
+            try fileManager.createDirectory(atPath: shimDirectory, withIntermediateDirectories: true)
+            try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: shimDirectory)
+            try fileManager.createDirectory(atPath: stateDirectory, withIntermediateDirectories: true)
+            try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: stateDirectory)
+            if !fileManager.fileExists(atPath: knownHostsPath) {
+                if fileManager.fileExists(atPath: hostKnownHostsPath) {
+                    try fileManager.copyItem(atPath: hostKnownHostsPath, toPath: knownHostsPath)
+                } else {
+                    try "".write(toFile: knownHostsPath, atomically: true, encoding: .utf8)
+                }
+                try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: knownHostsPath)
+            }
+
+            let existing = try? HostFileAccessBroker(fileManager: fileManager).readString(
+                at: URL(fileURLWithPath: shimPath),
+                encoding: .utf8,
+                intent: .astraManagedStorage(root: URL(fileURLWithPath: taskFolder, isDirectory: true))
+            )
+            if existing != script {
+                try script.write(toFile: shimPath, atomically: true, encoding: .utf8)
+            }
+            try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: shimPath)
+            AppLogger.audit(.workerEnvironmentInjected, category: "Worker", taskID: task.id, fields: [
+                "source": "remote_workspace_ssh",
+                "result": "ssh_shim_ready",
+                "known_hosts": "task_scoped"
+            ], level: .debug)
+            return shimDirectory
+        } catch {
+            AppLogger.audit(.workerEnvironmentInjected, category: "Worker", taskID: task.id, fields: [
+                "source": "remote_workspace_ssh",
+                "result": "ssh_shim_failed",
                 "error": error.localizedDescription
             ], level: .warning)
             return nil

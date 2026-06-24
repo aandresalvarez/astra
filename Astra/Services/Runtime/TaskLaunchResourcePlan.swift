@@ -10,6 +10,7 @@ enum TaskLaunchResourceSource: String, Codable, Sendable {
     case userAttachment = "user_attachment"
     case taskInput = "task_input"
     case workspace
+    case remoteWorkspace = "remote_workspace"
     case gitCredential = "git_credential"
     case dockerEnvironment = "docker_environment"
     case dockerCredential = "docker_credential"
@@ -196,6 +197,17 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
         })
     }
 
+    var hostProtectedWriteDenyPaths: [String] {
+        uniquePaths(hostPathGrants.compactMap { grant in
+            guard grant.source == .remoteWorkspace,
+                  grant.access == .read,
+                  grant.path.contains("/.ssh/") else {
+                return nil
+            }
+            return grant.path
+        })
+    }
+
     var gitCredentialSandboxContext: GitCredentialSandboxContext {
         gitCredential?.sandboxContext ?? .empty
     }
@@ -218,6 +230,24 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
 
         fields["attachment_readable_path_count"] = String(uniquePaths(hostPathGrants.compactMap { grant in
             grant.source == .userAttachment || grant.source == .taskInput ? grant.path : nil
+        }).count)
+        fields["remote_workspace_readable_path_count"] = String(uniquePaths(hostPathGrants.compactMap { grant in
+            guard grant.source == .remoteWorkspace else { return nil }
+            switch grant.access {
+            case .read, .readWrite:
+                return grant.path
+            case .write:
+                return nil
+            }
+        }).count)
+        fields["connector_readable_path_count"] = String(uniquePaths(hostPathGrants.compactMap { grant in
+            guard grant.source == .connector else { return nil }
+            switch grant.access {
+            case .read, .readWrite:
+                return grant.path
+            case .write:
+                return nil
+            }
         }).count)
         if let gitCredential {
             fields["git_credential_context"] = "true"

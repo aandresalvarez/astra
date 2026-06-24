@@ -459,6 +459,12 @@ struct ExecutionSandboxTests {
         #expect(roots.contains("/System"))
         #expect(roots.contains("/usr"))
         #expect(roots.contains("/opt/homebrew"))
+        #expect(roots.contains("/Library/Frameworks"))
+        #expect(roots.contains("/Library/Managed Preferences"))
+        #expect(roots.contains("/Library/Preferences"))
+        #expect(roots.contains("/Applications/Xcode.app"))
+        #expect(roots.contains("/private/var/select"))
+        #expect(roots.contains("/var/select"))
         #expect(!roots.contains("/Applications"))
         #expect(roots.count == Set(roots).count)
     }
@@ -475,6 +481,53 @@ struct ExecutionSandboxTests {
         #expect(roots.contains("/opt/homebrew/bin"))
         #expect(!roots.contains("/"))
         #expect(roots.count == Set(roots).count)
+    }
+
+    @Test("Readable metadata roots include visible var spelling for private var runtime roots")
+    func readableMetadataRootsIncludeVisibleVarSpellingForPrivateVarRuntimeRoots() {
+        let roots = ExecutionSandbox.readableMetadataRoots(for: ["/private/var/run"])
+
+        #expect(roots.contains("/private/var/run"))
+        #expect(roots.contains("/private/var"))
+        #expect(roots.contains("/var/run"))
+        #expect(roots.contains("/var"))
+        #expect(roots.count == Set(roots).count)
+    }
+
+    @Test("Write-only SSH parent does not become a readable root")
+    func writeOnlySSHParentDoesNotBecomeReadableRoot() {
+        let workspace = "/tmp/astra-workspace"
+        let sshDirectory = "/tmp/astra-home/.ssh"
+        let sshConfig = "\(sshDirectory)/config"
+        let identityFile = "\(sshDirectory)/google_compute_engine"
+        let knownHosts = "\(sshDirectory)/known_hosts"
+        let plan = makePlan(
+            runtime: .claudeCode,
+            executablePath: "/bin/sh",
+            currentDirectory: workspace,
+            sandboxReadablePaths: [sshConfig, identityFile, knownHosts]
+        )
+        let canonicalWorkspace = ExecutionSandbox.canonicalize(workspace)!
+
+        let readable = ExecutionSandbox.readableRoots(
+            plan: plan,
+            providerHomeDirectory: "",
+            additionalReadablePaths: [sshConfig, identityFile, knownHosts],
+            canonicalWorkspace: canonicalWorkspace
+        )
+        let writable = ExecutionSandbox.writableRoots(
+            plan: plan,
+            providerHomeDirectory: "",
+            additionalWritablePaths: [sshDirectory, knownHosts],
+            canonicalWorkspace: canonicalWorkspace
+        )
+
+        #expect(writable.contains("/private/tmp/astra-home/.ssh"))
+        #expect(writable.contains("/private/tmp/astra-home/.ssh/known_hosts"))
+        #expect(readable.contains("/private/tmp/astra-home/.ssh/config"))
+        #expect(readable.contains("/private/tmp/astra-home/.ssh/google_compute_engine"))
+        #expect(readable.contains("/private/tmp/astra-home/.ssh/known_hosts"))
+        #expect(!readable.contains("/private/tmp/astra-home/.ssh"))
     }
 
     @Test("Strict read-scope starts the Homebrew Copilot CLI under sandbox")
