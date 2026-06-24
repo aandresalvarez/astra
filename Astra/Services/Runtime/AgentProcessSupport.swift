@@ -533,6 +533,33 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         let summary: String?
     }
 
+    private struct ManagedWorkspaceJobContext {
+        let id: String
+        var status: String
+        var heartbeatPath: String?
+        var resultPath: String?
+        var lastObservedAt: Date
+        var lastHeartbeatAt: Date?
+
+        var isTerminal: Bool {
+            Self.isTerminal(status: status)
+        }
+
+        static func isTerminal(status: String) -> Bool {
+            switch status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "succeeded", "failed", "cancelled", "timed_out", "timedout":
+                return true
+            default:
+                return false
+            }
+        }
+    }
+
+    private struct ManagedWorkspaceJobFileState {
+        var status: String?
+        var timestamp: Date?
+    }
+
     enum RuntimeProgressKind: String {
         case lifecycleMetadata = "lifecycle_metadata"
         case providerLiveness = "provider_liveness"
@@ -549,6 +576,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     let maxRepetitions: Int
     let idleTimeoutSeconds: TimeInterval
     let noSemanticProgressTimeoutSeconds: TimeInterval
+    let activeToolIdleTimeoutSeconds: TimeInterval
+    let managedWorkspaceJobIdleTimeoutSeconds: TimeInterval
     let terminalProgressExitGraceSeconds: TimeInterval
     let taskID: UUID
     let policyGuard: AgentRuntimePolicyGuard?
@@ -580,6 +609,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
 
     private var browserToolUseIDs: Set<String> = []
     private var browserShellIDs: Set<String> = []
+    private var activeToolUseIDs: Set<String> = []
+    private var activeManagedWorkspaceJobs: [String: ManagedWorkspaceJobContext] = [:]
     private var toolUseContextsByID: [String: ToolUseContext] = [:]
     /// Insertion order for `toolUseContextsByID`, used to evict the oldest
     /// entries so the keyed map can't grow unbounded across a long run.
@@ -626,6 +657,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         maxRepetitions: Int = 8,
         idleTimeoutSeconds: TimeInterval = 600,
         noSemanticProgressTimeoutSeconds: TimeInterval? = nil,
+        activeToolIdleTimeoutSeconds: TimeInterval? = nil,
+        managedWorkspaceJobIdleTimeoutSeconds: TimeInterval? = nil,
         terminalProgressExitGraceSeconds: TimeInterval? = nil,
         taskID: UUID = UUID(),
         policyGuard: AgentRuntimePolicyGuard? = nil,
@@ -637,6 +670,9 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         self.maxRepetitions = maxRepetitions
         self.idleTimeoutSeconds = idleTimeoutSeconds
         self.noSemanticProgressTimeoutSeconds = noSemanticProgressTimeoutSeconds ?? min(idleTimeoutSeconds, 180)
+        let resolvedActiveToolIdleTimeoutSeconds = activeToolIdleTimeoutSeconds ?? max(idleTimeoutSeconds, 3600)
+        self.activeToolIdleTimeoutSeconds = resolvedActiveToolIdleTimeoutSeconds
+        self.managedWorkspaceJobIdleTimeoutSeconds = managedWorkspaceJobIdleTimeoutSeconds ?? max(resolvedActiveToolIdleTimeoutSeconds, 6 * 3600)
         self.terminalProgressExitGraceSeconds = terminalProgressExitGraceSeconds ?? min(self.noSemanticProgressTimeoutSeconds, 30)
         self.taskID = taskID
         self.policyGuard = policyGuard
@@ -678,6 +714,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         if case .toolUse(let name, let id, let input) = parsed {
             rememberToolUse(name: name, id: id, input: input)
             if !id.isEmpty {
+                activeToolUseIDs.insert(id)
                 let isBrowserTool = Self.isBrowserToolUse(name: name, input: input)
                 let isBrowserShellContinuation = Self.browserShellIDs(fromToolInput: input).contains { browserShellIDs.contains($0) }
                 if isBrowserTool || isBrowserShellContinuation {
@@ -711,6 +748,16 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         }
 
         if case .toolResult(let toolID, let content) = parsed {
+            if !toolID.isEmpty {
+                activeToolUseIDs.remove(toolID)
+            }
+            if let jobContext = Self.managedWorkspaceJobContext(fromToolResult: content, observedAt: now) {
+                if jobContext.isTerminal {
+                    activeManagedWorkspaceJobs.removeValue(forKey: jobContext.id)
+                } else {
+                    activeManagedWorkspaceJobs[jobContext.id] = jobContext
+                }
+            }
             if Self.isProviderPermissionDenial(content) {
                 return recordProviderPermissionDenial(
                     toolID: toolID,
@@ -951,6 +998,67 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             return context
         }
         return recentToolUseContexts.last
+    }
+
+    private static func managedWorkspaceJobContext(fromToolResult content: String, observedAt: Date) -> ManagedWorkspaceJobContext? {
+        let fields = managedWorkspaceJobFields(in: content)
+        guard let jobID = fields["job_id"],
+              let status = fields["status"] else {
+            return nil
+        }
+        let heartbeatPath = usableManagedWorkspaceJobPath(fields["heartbeat"])
+        let resultPath = usableManagedWorkspaceJobPath(fields["result"])
+        let heartbeatTimestamp = fields["last_heartbeat_at"].flatMap(parseISO8601Date)
+        return ManagedWorkspaceJobContext(
+            id: jobID,
+            status: status,
+            heartbeatPath: heartbeatPath,
+            resultPath: resultPath,
+            lastObservedAt: heartbeatTimestamp ?? observedAt,
+            lastHeartbeatAt: heartbeatTimestamp
+        )
+    }
+
+    private static func managedWorkspaceJobFields(in content: String) -> [String: String] {
+        var fields: [String: String] = [:]
+        for line in content.split(separator: "\n", omittingEmptySubsequences: false) {
+            guard let separatorIndex = line.firstIndex(of: ":") else { continue }
+            let key = String(line[..<separatorIndex])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            let value = String(line[line.index(after: separatorIndex)...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty, !value.isEmpty else { continue }
+            fields[key] = value
+        }
+        return fields
+    }
+
+    private static func usableManagedWorkspaceJobPath(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty, trimmed != "<unavailable>" else { return nil }
+        return trimmed
+    }
+
+    private static func managedWorkspaceJobFileState(atPath path: String) -> ManagedWorkspaceJobFileState? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path, isDirectory: false)),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        let status = object["status"] as? String
+        let timestampString = (object["timestamp"] as? String) ?? (object["completedAt"] as? String)
+        return ManagedWorkspaceJobFileState(
+            status: status,
+            timestamp: timestampString.flatMap(parseISO8601Date)
+        )
+    }
+
+    private static func fileModificationDate(atPath path: String) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate]) as? Date
+    }
+
+    private static func parseISO8601Date(_ value: String) -> Date? {
+        ISO8601DateFormatter().date(from: value.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     private static func isBrowserToolUse(name: String, input: [String: Any]?) -> Bool {
@@ -1599,13 +1707,18 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         let idleDuration = now.timeIntervalSince(lastActivityTime)
         let anyIdleDuration = now.timeIntervalSince(lastAnyActivityTime)
         let terminalIdleDuration = lastTerminalProgressTime.map { now.timeIntervalSince($0) }
+        let stalledManagedWorkspaceJob = refreshManagedWorkspaceJobs(now: now)
         let hasMetadataOnlyActivity = hasSeenAnyActivity
             && !hasSeenProviderLivenessActivity
             && !hasSeenProgressActivity
         let hasProviderLivenessOnlyActivity = hasSeenProviderLivenessActivity
             && !hasSeenProgressActivity
+        let hasActiveToolUse = !activeToolUseIDs.isEmpty
+        let hasActiveManagedWorkspaceJob = !activeManagedWorkspaceJobs.isEmpty
+        let hasActiveRuntimeWork = hasActiveToolUse || hasActiveManagedWorkspaceJob
         let hasStalledAfterProgress = hasSeenProgressActivity
             && terminalIdleDuration == nil
+            && !hasActiveRuntimeWork
             && anyIdleDuration < idleTimeoutSeconds
             && idleDuration >= noSemanticProgressTimeoutSeconds
         lock.unlock()
@@ -1619,7 +1732,52 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             return true
         }
 
-        if hasMetadataOnlyActivity && idleDuration >= noSemanticProgressTimeoutSeconds {
+        if let stalledManagedWorkspaceJob {
+            let reason = "provider_workspace_job_stalled"
+            let lastObservedAge = max(0, Int(now.timeIntervalSince(stalledManagedWorkspaceJob.lastObservedAt)))
+            let message = """
+            ASTRA stopped the provider because managed workspace job \(stalledManagedWorkspaceJob.id) stopped producing a fresh heartbeat for \(lastObservedAge) seconds.
+            Long-running Docker workspace commands can run for hours, but ASTRA requires the managed job heartbeat or result file to keep changing so hangs remain detectable.
+            """
+            AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: [
+                "reason": reason,
+                "job_id": stalledManagedWorkspaceJob.id,
+                "job_status": stalledManagedWorkspaceJob.status,
+                "last_observed_age_seconds": String(lastObservedAge),
+                "limit_seconds": String(Int(managedWorkspaceJobIdleTimeoutSeconds))
+            ], level: .error)
+            lock.lock()
+            if _runtimeStopReason == nil {
+                _runtimeStopReason = reason
+                _runtimeStopMessage = message
+            }
+            lock.unlock()
+            terminate()
+            return true
+        }
+
+        if hasActiveToolUse && anyIdleDuration >= activeToolIdleTimeoutSeconds {
+            let reason = "provider_active_tool_stalled"
+            let message = """
+            ASTRA stopped the provider because a tool call was still running but produced no provider event or tool output for \(Int(anyIdleDuration)) seconds.
+            Long-running commands should stream periodic output or finish within \(Int(activeToolIdleTimeoutSeconds)) seconds.
+            """
+            AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: [
+                "reason": reason,
+                "active_tool_idle_seconds": String(Int(anyIdleDuration)),
+                "limit_seconds": String(Int(activeToolIdleTimeoutSeconds))
+            ], level: .error)
+            lock.lock()
+            if _runtimeStopReason == nil {
+                _runtimeStopReason = reason
+                _runtimeStopMessage = message
+            }
+            lock.unlock()
+            terminate()
+            return true
+        }
+
+        if !hasActiveRuntimeWork && hasMetadataOnlyActivity && idleDuration >= noSemanticProgressTimeoutSeconds {
             let reason = "provider_no_semantic_progress"
             let message = """
             ASTRA stopped the provider because it emitted startup or lifecycle metadata but never produced semantic progress such as text, tool use, tool output, usage, or a result.
@@ -1641,7 +1799,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             return true
         }
 
-        if hasProviderLivenessOnlyActivity && idleDuration >= noSemanticProgressTimeoutSeconds {
+        if !hasActiveRuntimeWork && hasProviderLivenessOnlyActivity && idleDuration >= noSemanticProgressTimeoutSeconds {
             let reason = "provider_no_actionable_progress"
             let message = """
             ASTRA stopped the provider because it streamed provider-side liveness such as partial thinking or accounting, but never produced visible text, tool use, tool output, a file change, or a result.
@@ -1685,7 +1843,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             return true
         }
 
-        if anyIdleDuration >= idleTimeoutSeconds {
+        if !hasActiveRuntimeWork && anyIdleDuration >= idleTimeoutSeconds {
             AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: [
                 "idle_seconds": String(Int(anyIdleDuration)),
                 "semantic_idle_seconds": String(Int(idleDuration)),
@@ -1699,6 +1857,49 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         }
 
         return false
+    }
+
+    private func refreshManagedWorkspaceJobs(now: Date) -> ManagedWorkspaceJobContext? {
+        var stalledJob: ManagedWorkspaceJobContext?
+        for (jobID, var job) in activeManagedWorkspaceJobs {
+            if let resultPath = job.resultPath,
+               let result = Self.managedWorkspaceJobFileState(atPath: resultPath),
+               let status = result.status {
+                job.status = status
+                if let timestamp = result.timestamp, timestamp > job.lastObservedAt {
+                    job.lastObservedAt = timestamp
+                }
+                if job.isTerminal {
+                    activeManagedWorkspaceJobs.removeValue(forKey: jobID)
+                    continue
+                }
+            }
+
+            if let heartbeatPath = job.heartbeatPath,
+               let heartbeat = Self.managedWorkspaceJobFileState(atPath: heartbeatPath) {
+                if let status = heartbeat.status {
+                    job.status = status
+                }
+                if let timestamp = heartbeat.timestamp {
+                    job.lastHeartbeatAt = timestamp
+                    job.lastObservedAt = timestamp
+                } else if let modificationDate = Self.fileModificationDate(atPath: heartbeatPath),
+                          modificationDate > job.lastObservedAt {
+                    job.lastObservedAt = modificationDate
+                }
+                if job.isTerminal {
+                    activeManagedWorkspaceJobs.removeValue(forKey: jobID)
+                    continue
+                }
+            }
+
+            activeManagedWorkspaceJobs[jobID] = job
+            if now.timeIntervalSince(job.lastObservedAt) >= managedWorkspaceJobIdleTimeoutSeconds {
+                stalledJob = job
+                break
+            }
+        }
+        return stalledJob
     }
 
     static func progressKind(for parsed: ParsedEvent) -> RuntimeProgressKind {

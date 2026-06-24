@@ -58,8 +58,9 @@ enum CapabilityRuntimeIntegrityService {
         // invoke it under the permission gate — so it must not be reported as
         // "missing", which previously hard-failed the launch
         // (capability_runtime_resources_missing). Genuinely absent instances and
-        // host problems (executable/auth/policy) below still surface. The pruned
-        // scope is kept only for the relevance gate (shouldCheckEnabledPackage).
+        // host problems (executable/auth/policy) below still surface only when
+        // their package has a concrete runtime resource in the provider launch
+        // scope.
         let reachableSkills = resolver.allBehaviorSkills
         let reachableConnectors = resolver.allConnectors
         let reachableTools = resolver.allLocalTools
@@ -562,18 +563,14 @@ enum CapabilityRuntimeIntegrityService {
         task: AgentTask,
         contextText: String
     ) -> Bool {
-        let taskText = normalizedSearchText([
-            task.title,
-            task.goal,
-            task.inputs.joined(separator: " "),
-            task.constraints.joined(separator: " "),
-            task.acceptanceCriteria.joined(separator: " "),
-            contextText
-        ].joined(separator: " "))
+        let taskText = TaskContextStateManager.capabilitySearchText(
+            for: task,
+            contextText: contextText
+        )
         let taskTokens = searchTokens(taskText)
         guard !taskTokens.isEmpty else { return false }
 
-        let packageText = normalizedSearchText([
+        let packageText = [
             package.id,
             package.name,
             package.description,
@@ -584,16 +581,11 @@ enum CapabilityRuntimeIntegrityService {
             package.localTools.map { "\($0.name) \($0.command) \($0.description)" }.joined(separator: " "),
             package.mcpServers.map { "\($0.id) \($0.displayName) \($0.command ?? "") \($0.url?.absoluteString ?? "")" }.joined(separator: " "),
             package.browserAdapters.joined(separator: " ")
-        ].joined(separator: " "))
+        ].joined(separator: " ")
         let packageTokens = searchTokens(packageText)
         guard !packageTokens.isEmpty else { return false }
 
-        if !taskTokens.isDisjoint(with: packageTokens) {
-            return true
-        }
-        return packageTokens.contains { token in
-            token.count >= 4 && taskText.contains(token)
-        }
+        return !taskTokens.isDisjoint(with: packageTokens)
     }
 
     private static func searchTokens(_ text: String) -> Set<String> {
@@ -658,6 +650,7 @@ enum CapabilityRuntimeIntegrityService {
         "page",
         "plugin",
         "prototype",
+        "query",
         "resource",
         "resources",
         "service",

@@ -161,8 +161,10 @@ struct TaskCapabilityResolverTests {
     func providerLaunchConnectorScopeFollowsActiveObjective() throws {
         let container = try makeTaskCapabilityResolverContainer()
         let context = container.mainContext
+        let jiraPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
 
         let workspace = Workspace(name: "Starr Data Lake", primaryPath: "/tmp/starr-data-lake")
+        workspace.enabledCapabilityIDs = [jiraPackage.id]
         context.insert(workspace)
 
         let jiraSkill = Skill(
@@ -229,8 +231,30 @@ struct TaskCapabilityResolverTests {
             contextText: "Continue Phase 5 from plan.md: run dbt tests against BigQuery in Docker."
         )
 
+        #expect(scope.behaviorSkills.map(\.name).contains("Jira Agent") == false)
         #expect(scope.connectors.map(\.name) == ["Google Cloud"])
         #expect(scope.resolver.resolvedEnvironmentVariables.keys.contains { $0.contains("JIRA") } == false)
+
+        let providerLaunchIssues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [jiraPackage],
+            checkExecutables: false,
+            scope: .providerLaunch(contextText: "Continue Phase 5 from plan.md: run dbt tests against BigQuery in Docker."),
+            secretStore: MockSecretStore()
+        )
+        #expect(providerLaunchIssues.isEmpty)
+
+        let fullInventoryIssues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [jiraPackage],
+            checkExecutables: false,
+            scope: .fullInventory,
+            secretStore: MockSecretStore()
+        )
+        #expect(fullInventoryIssues.contains {
+            $0.resourceKind == .credential &&
+                $0.message.contains("Jira-new is missing Keychain value")
+        })
     }
 
     @Test("Multiple same-service connectors project namespaced env vars without legacy collision")

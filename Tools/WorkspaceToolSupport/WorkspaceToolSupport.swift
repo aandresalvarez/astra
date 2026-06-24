@@ -24,6 +24,9 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
     public var runID: String
     public var mounts: [WorkspaceDockerMount]
     public var containerEnvironment: [String: String]
+    public var jobRootHostPath: String
+    public var jobRootContainerPath: String
+    public var dockerClientConfigPath: String
 
     public init(
         dockerExecutable: String,
@@ -34,7 +37,10 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         taskID: String,
         runID: String,
         mounts: [WorkspaceDockerMount],
-        containerEnvironment: [String: String] = [:]
+        containerEnvironment: [String: String] = [:],
+        jobRootHostPath: String? = nil,
+        jobRootContainerPath: String? = nil,
+        dockerClientConfigPath: String? = nil
     ) {
         self.dockerExecutable = dockerExecutable
         self.image = image
@@ -49,6 +55,10 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
             normalizedEnvironment["PATH"] = Self.defaultContainerPATH(mounts: mounts)
         }
         self.containerEnvironment = normalizedEnvironment
+        self.jobRootHostPath = Self.clean(jobRootHostPath) ?? Self.defaultJobRootHostPath(taskID: taskID, mounts: mounts)
+        self.jobRootContainerPath = Self.clean(jobRootContainerPath) ?? Self.defaultJobRootContainerPath(taskID: taskID, mounts: mounts)
+        self.dockerClientConfigPath = Self.clean(dockerClientConfigPath)
+            ?? Self.defaultDockerClientConfigPath(jobRootHostPath: self.jobRootHostPath, runID: runID)
     }
 
     public static func fromEnvironment(_ env: [String: String] = ProcessInfo.processInfo.environment) throws -> WorkspaceToolConfiguration {
@@ -81,7 +91,10 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
             taskID: taskID,
             runID: runID,
             mounts: mounts,
-            containerEnvironment: decodedContainerEnvironment
+            containerEnvironment: decodedContainerEnvironment,
+            jobRootHostPath: clean(env["ASTRA_WORKSPACE_JOB_ROOT_HOST"]),
+            jobRootContainerPath: clean(env["ASTRA_WORKSPACE_JOB_ROOT_CONTAINER"]),
+            dockerClientConfigPath: clean(env["DOCKER_CONFIG"])
         )
     }
 
@@ -147,6 +160,30 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         })
     }
 
+    private static func defaultJobRootHostPath(taskID: String, mounts: [WorkspaceDockerMount]) -> String {
+        let workspace = mounts.first { $0.role == "workspace" }?.hostPath ?? FileManager.default.temporaryDirectory.path
+        return (workspace as NSString).appendingPathComponent(".astra/tasks/\(taskPrefix(taskID))/jobs")
+    }
+
+    private static func defaultJobRootContainerPath(taskID: String, mounts: [WorkspaceDockerMount]) -> String {
+        let workspace = mounts.first { $0.role == "workspace" }?.containerPath ?? "/workspace"
+        return (workspace as NSString).appendingPathComponent(".astra/tasks/\(taskPrefix(taskID))/jobs")
+    }
+
+    private static func defaultDockerClientConfigPath(jobRootHostPath: String, runID: String) -> String {
+        URL(fileURLWithPath: jobRootHostPath, isDirectory: true)
+            .deletingLastPathComponent()
+            .appendingPathComponent(".runtime/docker-client/\(taskPrefix(runID))", isDirectory: true)
+            .standardizedFileURL.path
+    }
+
+    private static func taskPrefix(_ taskID: String) -> String {
+        let cleaned = taskID
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .filter { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
+        return String((cleaned.isEmpty ? "unknown" : cleaned).prefix(8))
+    }
+
     private static func deduplicated(_ values: [String]) -> [String] {
         var seen: Set<String> = []
         return values.filter { seen.insert($0).inserted }
@@ -187,7 +224,7 @@ public final class DockerWorkspaceCommandExecutor: WorkspaceCommandExecutor {
         guard !trimmed.isEmpty else {
             return WorkspaceCommandResult(command: command, exitCode: 2, stdout: "", stderr: "workspace_shell requires a non-empty command")
         }
-        let start = ensureContainer()
+        let start = ensureContainerStarted()
         guard start.exitCode == 0 else {
             return WorkspaceCommandResult(
                 command: command,
@@ -197,8 +234,8 @@ public final class DockerWorkspaceCommandExecutor: WorkspaceCommandExecutor {
                 timedOut: start.timedOut
             )
         }
-        return runDocker(
-            ["exec", "-i", "--workdir", configuration.workdir, configuration.containerName, "sh", "-c", trimmed],
+        return runDockerCommand(
+            arguments: ["exec", "-i", "--workdir", configuration.workdir, configuration.containerName, "sh", "-c", trimmed],
             commandLabel: command,
             timeoutSeconds: timeoutSeconds
         )
@@ -206,15 +243,15 @@ public final class DockerWorkspaceCommandExecutor: WorkspaceCommandExecutor {
 
     public func cleanup() {
         guard containerStarted else { return }
-        _ = runDocker(["stop", configuration.containerName], commandLabel: "docker stop", timeoutSeconds: 10)
+        _ = runDockerCommand(arguments: ["stop", configuration.containerName], commandLabel: "docker stop", timeoutSeconds: 10)
         containerStarted = false
     }
 
-    private func ensureContainer() -> WorkspaceCommandResult {
+    public func ensureContainerStarted() -> WorkspaceCommandResult {
         if containerStarted { return WorkspaceCommandResult(command: "docker inspect", exitCode: 0, stdout: "", stderr: "") }
 
-        let inspect = runDocker(
-            ["inspect", "-f", "{{.State.Running}}", configuration.containerName],
+        let inspect = runDockerCommand(
+            arguments: ["inspect", "-f", "{{.State.Running}}", configuration.containerName],
             commandLabel: "docker inspect",
             timeoutSeconds: 5
         )
@@ -224,7 +261,7 @@ public final class DockerWorkspaceCommandExecutor: WorkspaceCommandExecutor {
             return inspect
         }
 
-        _ = runDocker(["rm", "-f", configuration.containerName], commandLabel: "docker rm", timeoutSeconds: 10)
+        _ = runDockerCommand(arguments: ["rm", "-f", configuration.containerName], commandLabel: "docker rm", timeoutSeconds: 10)
 
         var args = [
             "run", "--rm", "-d",
@@ -247,8 +284,8 @@ public final class DockerWorkspaceCommandExecutor: WorkspaceCommandExecutor {
         }
         args += [configuration.image, "sh", "-c", "while :; do sleep 3600; done"]
 
-        let result = runDocker(
-            args,
+        let result = runDockerCommand(
+            arguments: args,
             commandLabel: "docker run",
             timeoutSeconds: 30,
             environment: dockerClientEnvironment(configuration.containerEnvironment)
@@ -259,8 +296,8 @@ public final class DockerWorkspaceCommandExecutor: WorkspaceCommandExecutor {
         return result
     }
 
-    private func runDocker(
-        _ arguments: [String],
+    public func runDockerCommand(
+        arguments: [String],
         commandLabel: String,
         timeoutSeconds: TimeInterval,
         environment: [String: String] = [:]
@@ -271,7 +308,7 @@ public final class DockerWorkspaceCommandExecutor: WorkspaceCommandExecutor {
             arguments: invocation.arguments,
             commandLabel: commandLabel,
             timeoutSeconds: timeoutSeconds,
-            environment: environment
+            environment: dockerClientEnvironment(environment)
         )
     }
 
@@ -283,15 +320,36 @@ public final class DockerWorkspaceCommandExecutor: WorkspaceCommandExecutor {
     }
 
     private func dockerClientEnvironment(_ environment: [String: String]) -> [String: String] {
-        environment.filter { key, _ in key != "PATH" }
+        var dockerEnvironment = environment.filter { key, _ in key != "PATH" }
+        prepareDockerClientConfigDirectory()
+        dockerEnvironment["DOCKER_CONFIG"] = configuration.dockerClientConfigPath
+        return dockerEnvironment
+    }
+
+    private func prepareDockerClientConfigDirectory() {
+        let directory = URL(fileURLWithPath: configuration.dockerClientConfigPath, isDirectory: true)
+        let config = directory.appendingPathComponent("config.json", isDirectory: false)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            if !FileManager.default.fileExists(atPath: config.path) {
+                try #"{"auths":{}}"#
+                    .appending("\n")
+                    .write(to: config, atomically: true, encoding: .utf8)
+            }
+        } catch {
+            // Keep the MCP helper non-throwing. Docker will still surface a
+            // usable error if it cannot read the prepared client config.
+        }
     }
 }
 
 public final class WorkspaceMCPServer {
     private let executor: WorkspaceCommandExecutor
+    private let jobManager: WorkspaceJobManaging?
 
-    public init(executor: WorkspaceCommandExecutor) {
+    public init(executor: WorkspaceCommandExecutor, jobManager: WorkspaceJobManaging? = nil) {
         self.executor = executor
+        self.jobManager = jobManager
     }
 
     public func handleLine(_ line: String) -> String? {
@@ -316,25 +374,7 @@ public final class WorkspaceMCPServer {
             ])
         case "tools/list":
             return encodeResult(id: id, result: [
-                "tools": [[
-                    "name": "workspace_shell",
-                    "description": "Run a shell command inside the ASTRA-managed Docker workspace container using the image environment. Check tools by name from the container PATH and avoid host-created virtual environments from bind-mounted workspaces.",
-                    "inputSchema": [
-                        "type": "object",
-                        "properties": [
-                            "command": [
-                                "type": "string",
-                                "description": "Shell command to run from the container workspace directory."
-                            ],
-                            "timeout_seconds": [
-                                "type": "number",
-                                "description": "Optional command timeout. Defaults to 120 seconds."
-                            ]
-                        ],
-                        "required": ["command"],
-                        "additionalProperties": false
-                    ]
-                ]]
+                "tools": toolSchemas()
             ])
         case "tools/call":
             return handleToolCall(id: id, object: object)
@@ -349,10 +389,29 @@ public final class WorkspaceMCPServer {
 
     private func handleToolCall(id: Any?, object: [String: Any]) -> String? {
         guard let params = object["params"] as? [String: Any],
-              params["name"] as? String == "workspace_shell" else {
+              let toolName = params["name"] as? String else {
             return encodeError(id: id, code: -32602, message: "Unsupported tool")
         }
         let arguments = params["arguments"] as? [String: Any] ?? [:]
+        switch toolName {
+        case "workspace_shell":
+            return handleWorkspaceShell(id: id, arguments: arguments)
+        case "workspace_job_start":
+            return handleWorkspaceJobStart(id: id, arguments: arguments)
+        case "workspace_job_status":
+            return handleWorkspaceJobStatus(id: id, arguments: arguments)
+        case "workspace_job_tail":
+            return handleWorkspaceJobTail(id: id, arguments: arguments)
+        case "workspace_job_cancel":
+            return handleWorkspaceJobCancel(id: id, arguments: arguments)
+        case "workspace_job_wait":
+            return handleWorkspaceJobWait(id: id, arguments: arguments)
+        default:
+            return encodeError(id: id, code: -32602, message: "Unsupported tool")
+        }
+    }
+
+    private func handleWorkspaceShell(id: Any?, arguments: [String: Any]) -> String? {
         guard let command = arguments["command"] as? String,
               !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return encodeError(id: id, code: -32602, message: "workspace_shell requires command")
@@ -368,6 +427,73 @@ public final class WorkspaceMCPServer {
         ])
     }
 
+    private func handleWorkspaceJobStart(id: Any?, arguments: [String: Any]) -> String? {
+        guard let jobManager else {
+            return encodeError(id: id, code: -32001, message: "workspace_job_start is unavailable")
+        }
+        guard let command = arguments["command"] as? String,
+              !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return encodeError(id: id, code: -32602, message: "workspace_job_start requires command")
+        }
+        let job = jobManager.start(
+            command: command,
+            timeoutSeconds: timeoutSeconds(from: arguments["timeout_seconds"]),
+            label: clean(arguments["label"] as? String),
+            progressProbe: clean(arguments["progress_probe"] as? String)
+        )
+        return encodeJobResult(id: id, job: job)
+    }
+
+    private func handleWorkspaceJobStatus(id: Any?, arguments: [String: Any]) -> String? {
+        guard let jobManager else {
+            return encodeError(id: id, code: -32001, message: "workspace_job_status is unavailable")
+        }
+        guard let jobID = clean(arguments["job_id"] as? String) else {
+            return encodeError(id: id, code: -32602, message: "workspace_job_status requires job_id")
+        }
+        return encodeJobResult(id: id, job: jobManager.status(jobID: jobID))
+    }
+
+    private func handleWorkspaceJobTail(id: Any?, arguments: [String: Any]) -> String? {
+        guard let jobManager else {
+            return encodeError(id: id, code: -32001, message: "workspace_job_tail is unavailable")
+        }
+        guard let jobID = clean(arguments["job_id"] as? String) else {
+            return encodeError(id: id, code: -32602, message: "workspace_job_tail requires job_id")
+        }
+        let stream = clean(arguments["stream"] as? String) ?? "stdout"
+        let lines = intValue(from: arguments["lines"]) ?? 120
+        let tail = jobManager.tail(jobID: jobID, stream: stream, lines: lines)
+        return encodeResult(id: id, result: [
+            "content": [[
+                "type": "text",
+                "text": formatted(tail)
+            ]],
+            "isError": false
+        ])
+    }
+
+    private func handleWorkspaceJobCancel(id: Any?, arguments: [String: Any]) -> String? {
+        guard let jobManager else {
+            return encodeError(id: id, code: -32001, message: "workspace_job_cancel is unavailable")
+        }
+        guard let jobID = clean(arguments["job_id"] as? String) else {
+            return encodeError(id: id, code: -32602, message: "workspace_job_cancel requires job_id")
+        }
+        return encodeJobResult(id: id, job: jobManager.cancel(jobID: jobID))
+    }
+
+    private func handleWorkspaceJobWait(id: Any?, arguments: [String: Any]) -> String? {
+        guard let jobManager else {
+            return encodeError(id: id, code: -32001, message: "workspace_job_wait is unavailable")
+        }
+        guard let jobID = clean(arguments["job_id"] as? String) else {
+            return encodeError(id: id, code: -32602, message: "workspace_job_wait requires job_id")
+        }
+        let timeout = timeoutSeconds(from: arguments["max_wait_seconds"]) ?? 30
+        return encodeJobResult(id: id, job: jobManager.wait(jobID: jobID, timeoutSeconds: timeout))
+    }
+
     private func timeoutSeconds(from value: Any?) -> TimeInterval? {
         switch value {
         case let number as NSNumber:
@@ -377,6 +503,32 @@ public final class WorkspaceMCPServer {
         default:
             return nil
         }
+    }
+
+    private func intValue(from value: Any?) -> Int? {
+        switch value {
+        case let number as NSNumber:
+            return max(1, number.intValue)
+        case let value as String:
+            return Int(value).map { max(1, $0) }
+        default:
+            return nil
+        }
+    }
+
+    private func clean(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func encodeJobResult(id: Any?, job: WorkspaceManagedJobRecord) -> String? {
+        encodeResult(id: id, result: [
+            "content": [[
+                "type": "text",
+                "text": formatted(job)
+            ]],
+            "isError": job.status == .failed || job.status == .timedOut
+        ])
     }
 
     private func formatted(_ result: WorkspaceCommandResult) -> String {
@@ -394,6 +546,169 @@ public final class WorkspaceMCPServer {
             result.stderr.isEmpty ? "<empty>" : result.stderr
         ]
         return lines.joined(separator: "\n")
+    }
+
+    private func formatted(_ job: WorkspaceManagedJobRecord) -> String {
+        var lines = [
+            "job_id: \(job.jobID)",
+            "status: \(job.status.rawValue)",
+            "runtime: \(job.runtime)",
+            "command: \(job.command)"
+        ]
+        if let label = job.label {
+            lines.append("label: \(label)")
+        }
+        if let progressProbe = job.progressProbe {
+            lines.append("progress_probe: \(progressProbe)")
+        }
+        if let exitCode = job.exitCode {
+            lines.append("exit_code: \(exitCode)")
+        }
+        if let lastHeartbeatAt = job.lastHeartbeatAt {
+            lines.append("last_heartbeat_at: \(iso8601(lastHeartbeatAt))")
+        }
+        if let lastOutputAt = job.lastOutputAt {
+            lines.append("last_output_at: \(iso8601(lastOutputAt))")
+        }
+        if let completedAt = job.completedAt {
+            lines.append("completed_at: \(iso8601(completedAt))")
+        }
+        if let message = job.message {
+            lines.append("message: \(message)")
+        }
+        lines += [
+            "stdout_log: \(job.stdoutLogPath.isEmpty ? "<unavailable>" : job.stdoutLogPath)",
+            "stderr_log: \(job.stderrLogPath.isEmpty ? "<unavailable>" : job.stderrLogPath)",
+            "heartbeat: \(job.heartbeatPath.isEmpty ? "<unavailable>" : job.heartbeatPath)",
+            "result: \(job.resultPath.isEmpty ? "<unavailable>" : job.resultPath)"
+        ]
+        return lines.joined(separator: "\n")
+    }
+
+    private func formatted(_ tail: WorkspaceManagedJobTail) -> String {
+        [
+            "job_id: \(tail.jobID)",
+            "stream: \(tail.stream)",
+            tail.text.isEmpty ? "<empty>" : tail.text
+        ].joined(separator: "\n")
+    }
+
+    private func iso8601(_ date: Date) -> String {
+        ISO8601DateFormatter().string(from: date)
+    }
+
+    private func toolSchemas() -> [[String: Any]] {
+        [
+            workspaceShellSchema(),
+            workspaceJobStartSchema(),
+            workspaceJobStatusSchema(),
+            workspaceJobTailSchema(),
+            workspaceJobCancelSchema(),
+            workspaceJobWaitSchema()
+        ]
+    }
+
+    private func workspaceShellSchema() -> [String: Any] {
+        [
+            "name": "workspace_shell",
+            "description": "Run a short shell command inside the ASTRA-managed Docker workspace container using the image environment. Use workspace_job_start for long-running commands.",
+            "inputSchema": [
+                "type": "object",
+                "properties": [
+                    "command": [
+                        "type": "string",
+                        "description": "Shell command to run from the container workspace directory."
+                    ],
+                    "timeout_seconds": [
+                        "type": "number",
+                        "description": "Optional command timeout. Defaults to 120 seconds."
+                    ]
+                ],
+                "required": ["command"],
+                "additionalProperties": false
+            ]
+        ]
+    }
+
+    private func workspaceJobStartSchema() -> [String: Any] {
+        [
+            "name": "workspace_job_start",
+            "description": "Start a durable long-running workspace command inside the ASTRA-managed Docker container and return immediately with a job id.",
+            "inputSchema": [
+                "type": "object",
+                "properties": [
+                    "command": ["type": "string", "description": "Shell command to run inside the workspace container."],
+                    "timeout_seconds": ["type": "number", "description": "Optional job timeout hint recorded with the job."],
+                    "label": ["type": "string", "description": "Optional short human-readable job label."],
+                    "progress_probe": ["type": "string", "description": "Optional progress probe name such as dbt, pytest, docker-build, or generic-log."]
+                ],
+                "required": ["command"],
+                "additionalProperties": false
+            ]
+        ]
+    }
+
+    private func workspaceJobStatusSchema() -> [String: Any] {
+        [
+            "name": "workspace_job_status",
+            "description": "Read the durable status and heartbeat for a workspace job.",
+            "inputSchema": [
+                "type": "object",
+                "properties": [
+                    "job_id": ["type": "string", "description": "Job id returned by workspace_job_start."]
+                ],
+                "required": ["job_id"],
+                "additionalProperties": false
+            ]
+        ]
+    }
+
+    private func workspaceJobTailSchema() -> [String: Any] {
+        [
+            "name": "workspace_job_tail",
+            "description": "Read recent stdout or stderr lines for a workspace job.",
+            "inputSchema": [
+                "type": "object",
+                "properties": [
+                    "job_id": ["type": "string", "description": "Job id returned by workspace_job_start."],
+                    "stream": ["type": "string", "description": "stdout or stderr. Defaults to stdout."],
+                    "lines": ["type": "number", "description": "Maximum recent lines to return. Defaults to 120."]
+                ],
+                "required": ["job_id"],
+                "additionalProperties": false
+            ]
+        ]
+    }
+
+    private func workspaceJobCancelSchema() -> [String: Any] {
+        [
+            "name": "workspace_job_cancel",
+            "description": "Ask ASTRA to terminate a running workspace job.",
+            "inputSchema": [
+                "type": "object",
+                "properties": [
+                    "job_id": ["type": "string", "description": "Job id returned by workspace_job_start."]
+                ],
+                "required": ["job_id"],
+                "additionalProperties": false
+            ]
+        ]
+    }
+
+    private func workspaceJobWaitSchema() -> [String: Any] {
+        [
+            "name": "workspace_job_wait",
+            "description": "Wait briefly for a workspace job to reach a terminal state, without holding the provider for the full job duration.",
+            "inputSchema": [
+                "type": "object",
+                "properties": [
+                    "job_id": ["type": "string", "description": "Job id returned by workspace_job_start."],
+                    "max_wait_seconds": ["type": "number", "description": "Maximum wait time for this polling call. Defaults to 30 seconds."]
+                ],
+                "required": ["job_id"],
+                "additionalProperties": false
+            ]
+        ]
     }
 
     private func encodeResult(id: Any?, result: [String: Any]) -> String? {
@@ -431,7 +746,8 @@ public enum AstraWorkspaceToolMain {
         do {
             let configuration = try WorkspaceToolConfiguration.fromEnvironment()
             let executor = DockerWorkspaceCommandExecutor(configuration: configuration)
-            let server = WorkspaceMCPServer(executor: executor)
+            let jobManager = DockerWorkspaceJobManager(configuration: configuration, executor: executor)
+            let server = WorkspaceMCPServer(executor: executor, jobManager: jobManager)
             defer { server.cleanup() }
             while let line = readLine() {
                 if let response = server.handleLine(line) {

@@ -26,6 +26,8 @@ struct TaskRunStopReasonTests {
         #expect(TaskRunStopReason.permissionApprovalRequired.rawValue == "permission_approval_required")
         #expect(TaskRunStopReason.policyViolation.rawValue == "policy_violation")
         #expect(TaskRunStopReason.repetitionDetected.rawValue == "repetition_detected")
+        #expect(TaskRunStopReason.providerActiveToolStalled.rawValue == "provider_active_tool_stalled")
+        #expect(TaskRunStopReason.providerWorkspaceJobStalled.rawValue == "provider_workspace_job_stalled")
     }
 
     @Test("TaskRun typed stop reason preserves raw storage compatibility")

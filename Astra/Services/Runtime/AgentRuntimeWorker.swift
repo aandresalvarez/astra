@@ -1979,7 +1979,9 @@ final class AgentRuntimeWorker {
             .providerPermissionUnresumable,
             .providerNoActionableProgress,
             .providerNoSemanticProgress,
-            .providerSemanticProgressStalled
+            .providerSemanticProgressStalled,
+            .providerActiveToolStalled,
+            .providerWorkspaceJobStalled
         ].contains(stopReason)
     }
 

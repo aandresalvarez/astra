@@ -1103,11 +1103,11 @@ enum AgentPolicyManifestService {
         updated.askFirstTools = DockerWorkspaceMCPProjection.removingNativeShellTools(updated.askFirstTools)
         updated.deniedTools = uniqueStrings(updated.deniedTools + ["Bash", "shell"])
 
-        if let descriptor = DockerWorkspaceMCPProjection.runtimeSupportToolDescriptor(for: runtime),
-           !updated.runtimeSupportTools.contains(where: { $0.name == descriptor.name }) {
+        for descriptor in DockerWorkspaceMCPProjection.runtimeSupportToolDescriptors(for: runtime)
+            where !updated.runtimeSupportTools.contains(where: { $0.name == descriptor.name }) {
             updated.runtimeSupportTools.append(descriptor)
-            updated.runtimeSupportTools.sort { $0.name < $1.name }
         }
+        updated.runtimeSupportTools.sort { $0.name < $1.name }
         return updated
     }
 

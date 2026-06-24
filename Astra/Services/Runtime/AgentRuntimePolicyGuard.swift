@@ -306,13 +306,18 @@ struct AgentRuntimePolicyGuard: Sendable {
 
     private func runtimeSupportToolDescriptor(for toolName: String) -> ProviderRuntimeSupportToolDescriptor? {
         let normalized = Self.normalizedToolName(toolName)
+        if let canonicalWorkspaceTool = DockerWorkspaceMCPProjection.canonicalToolName(
+            fromObservedToolName: toolName,
+            runtime: manifest.providerID
+        ) {
+            let permission = DockerWorkspaceMCPProjection.providerToolPermission(for: canonicalWorkspaceTool)
+            return manifest.providerRender.runtimeSupportTools.first { descriptor in
+                Self.normalizedToolName(descriptor.name) == Self.normalizedToolName(permission)
+            }
+        }
         return manifest.providerRender.runtimeSupportTools.first { descriptor in
             Self.normalizedToolName(descriptor.name) == normalized
                 || descriptor.providerNativePermission.map(Self.normalizedToolName) == normalized
-                || (
-                    descriptor.name == DockerWorkspaceMCPProjection.providerToolPermission
-                        && DockerWorkspaceMCPProjection.isObservedWorkspaceTool(toolName, runtime: manifest.providerID)
-                )
         }
     }
 

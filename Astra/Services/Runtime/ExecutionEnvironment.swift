@@ -1211,45 +1211,64 @@ enum DockerWorkspaceMCPProjection {
     static let providerToolPermission = "mcp__\(serverID)__\(toolName)"
     static let copilotObservedToolName = "\(serverID)-\(toolName)"
     static let copilotPermissionPattern = "\(serverID)(\(toolName))"
+    static let managedJobToolNames = [
+        "workspace_job_start",
+        "workspace_job_status",
+        "workspace_job_tail",
+        "workspace_job_cancel",
+        "workspace_job_wait"
+    ]
+    static let toolNames = [toolName] + managedJobToolNames
 
     static func isEnabled(for environment: WorkspaceExecutionEnvironment) -> Bool {
         environment.workspaceCommandsRunInsideContainer
     }
 
     static func supportsHostProviderWorkspaceExecutor(runtime: AgentRuntimeID) -> Bool {
-        runtime == .claudeCode || runtime == .copilotCLI || runtime == .codexCLI
+        AgentRuntimeAdapterRegistry.descriptor(for: runtime).supportsMCPServers
     }
 
     static func runtimeSupportToolDescriptor(for runtime: AgentRuntimeID) -> ProviderRuntimeSupportToolDescriptor? {
-        guard supportsHostProviderWorkspaceExecutor(runtime: runtime) else { return nil }
-        return ProviderRuntimeSupportToolDescriptor(
-            name: providerToolPermission,
-            purpose: "Run project shell commands inside ASTRA's selected Docker workspace container.",
-            allowedInputKeys: ["command", "timeout_seconds"],
-            deniedInputKeys: ProviderRuntimeSupportToolDescriptor.defaultDeniedActionInputKeys.filter {
-                $0 != "command" && $0 != "cmd"
-            },
-            maxSummaryLength: 2_000
-        )
+        runtimeSupportToolDescriptors(for: runtime).first
+    }
+
+    static func runtimeSupportToolDescriptors(for runtime: AgentRuntimeID) -> [ProviderRuntimeSupportToolDescriptor] {
+        guard supportsHostProviderWorkspaceExecutor(runtime: runtime) else { return [] }
+        return toolNames.map { tool in
+            ProviderRuntimeSupportToolDescriptor(
+                name: providerToolPermission(for: tool),
+                purpose: runtimeSupportPurpose(for: tool),
+                allowedInputKeys: allowedInputKeys(for: tool),
+                deniedInputKeys: deniedInputKeys(for: tool),
+                maxSummaryLength: 2_000
+            )
+        }
     }
 
     static func isObservedWorkspaceTool(_ observedToolName: String, runtime: AgentRuntimeID) -> Bool {
+        canonicalToolName(fromObservedToolName: observedToolName, runtime: runtime) != nil
+    }
+
+    static func canonicalToolName(fromObservedToolName observedToolName: String, runtime: AgentRuntimeID) -> String? {
         let normalized = observedToolName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !normalized.isEmpty else { return false }
-        let commonNames: Set<String> = [
-            providerToolPermission.lowercased(),
-            "\(serverID).\(toolName)".lowercased(),
-            "\(serverID)/\(toolName)".lowercased(),
-            toolName.lowercased()
-        ]
-        if commonNames.contains(normalized) {
-            return true
+        guard !normalized.isEmpty else { return nil }
+        for tool in toolNames {
+            let commonNames: Set<String> = [
+                providerToolPermission(for: tool).lowercased(),
+                "\(serverID).\(tool)".lowercased(),
+                "\(serverID)/\(tool)".lowercased(),
+                tool.lowercased()
+            ]
+            if commonNames.contains(normalized) {
+                return tool
+            }
+            if runtime == .copilotCLI,
+               normalized == copilotObservedToolName(for: tool).lowercased()
+                    || normalized == copilotPermissionPattern(for: tool).lowercased() {
+                return tool
+            }
         }
-        if runtime == .copilotCLI {
-            return normalized == copilotObservedToolName.lowercased()
-                || normalized == copilotPermissionPattern.lowercased()
-        }
-        return false
+        return nil
     }
 
     static func manifestServer() -> RunPermissionManifest.MCPServer {
@@ -1258,7 +1277,7 @@ enum DockerWorkspaceMCPProjection {
             packageID: "astra-builtin",
             displayName: "ASTRA Workspace Shell",
             transport: PluginMCPServer.Transport.stdio.rawValue,
-            allowedTools: [toolName],
+            allowedTools: toolNames,
             excludedTools: [],
             resourcesEnabled: false,
             promptsEnabled: false,
@@ -1282,7 +1301,7 @@ enum DockerWorkspaceMCPProjection {
                 command: astraWorkspaceToolPath(),
                 arguments: [],
                 environmentKeys: environmentKeys,
-                allowedTools: [toolName],
+                allowedTools: toolNames,
                 trustLevel: .high
             ),
             permittedEnvironmentKeys: Set(environmentKeys)
@@ -1309,6 +1328,9 @@ enum DockerWorkspaceMCPProjection {
         let workdir = mapper.containerPath(forHostPath: currentDirectory) ?? environment.containerWorkingDirectory
         let containerName = containerName(taskID: task.id, runID: runID)
         let containerEnv = DockerExecutionPlanner.credentialProjectionEnvironment(environment: environment)
+        let jobRootHost = jobRootHostPath(task: task)
+        let jobRootContainer = mapper.containerPath(forHostPath: jobRootHost)
+            ?? (workdir as NSString).appendingPathComponent(".astra/tasks/\(String(task.id.uuidString.prefix(8)))/jobs")
         var variables = [
             "ASTRA_WORKSPACE_DOCKER_EXECUTABLE": "docker",
             "ASTRA_WORKSPACE_DOCKER_IMAGE": image,
@@ -1318,7 +1340,9 @@ enum DockerWorkspaceMCPProjection {
             "ASTRA_WORKSPACE_DOCKER_MOUNTS": mountsJSON(mounts),
             "ASTRA_WORKSPACE_DOCKER_ENV": containerEnvironmentJSON(containerEnv),
             "ASTRA_WORKSPACE_TASK_ID": task.id.uuidString,
-            "ASTRA_WORKSPACE_RUN_ID": runID?.uuidString ?? "run"
+            "ASTRA_WORKSPACE_RUN_ID": runID?.uuidString ?? "run",
+            "ASTRA_WORKSPACE_JOB_ROOT_HOST": jobRootHost,
+            "ASTRA_WORKSPACE_JOB_ROOT_CONTAINER": jobRootContainer
         ]
         if let dockerConfigDirectory = taskScopedDockerConfigDirectory(task: task, runID: runID) {
             variables["DOCKER_CONFIG"] = dockerConfigDirectory
@@ -1334,6 +1358,67 @@ enum DockerWorkspaceMCPProjection {
         "astra-\(taskID.uuidString.prefix(8).lowercased())-\((runID?.uuidString.prefix(8).lowercased()) ?? "run")"
     }
 
+    static func providerToolPermission(for tool: String) -> String {
+        "mcp__\(serverID)__\(tool)"
+    }
+
+    static func copilotObservedToolName(for tool: String) -> String {
+        "\(serverID)-\(tool)"
+    }
+
+    static func copilotPermissionPattern(for tool: String) -> String {
+        "\(serverID)(\(tool))"
+    }
+
+    private static func runtimeSupportPurpose(for tool: String) -> String {
+        switch tool {
+        case "workspace_shell":
+            return "Run short project shell commands inside ASTRA's selected Docker workspace container."
+        case "workspace_job_start":
+            return "Start durable long-running project commands inside ASTRA's selected Docker workspace container."
+        case "workspace_job_status":
+            return "Read status for durable ASTRA-managed Docker workspace jobs."
+        case "workspace_job_tail":
+            return "Read stdout or stderr logs for durable ASTRA-managed Docker workspace jobs."
+        case "workspace_job_cancel":
+            return "Cancel durable ASTRA-managed Docker workspace jobs."
+        case "workspace_job_wait":
+            return "Briefly wait for durable ASTRA-managed Docker workspace jobs without owning their full runtime."
+        default:
+            return "Use ASTRA's Docker workspace executor."
+        }
+    }
+
+    private static func allowedInputKeys(for tool: String) -> [String] {
+        switch tool {
+        case "workspace_shell":
+            return ["command", "timeout_seconds"]
+        case "workspace_job_start":
+            return ["command", "timeout_seconds", "label", "progress_probe"]
+        case "workspace_job_status", "workspace_job_cancel":
+            return ["job_id"]
+        case "workspace_job_tail":
+            return ["job_id", "stream", "lines"]
+        case "workspace_job_wait":
+            return ["job_id", "max_wait_seconds"]
+        default:
+            return []
+        }
+    }
+
+    private static func deniedInputKeys(for tool: String) -> [String] {
+        let allowed = Set(allowedInputKeys(for: tool) + ["cmd"])
+        return ProviderRuntimeSupportToolDescriptor.defaultDeniedActionInputKeys.filter {
+            !allowed.contains($0)
+        }
+    }
+
+    private static func jobRootHostPath(task: AgentTask) -> String {
+        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !taskFolder.isEmpty else { return "" }
+        return (taskFolder as NSString).appendingPathComponent("jobs")
+    }
+
     private static let environmentKeys = [
         "ASTRA_WORKSPACE_DOCKER_EXECUTABLE",
         "ASTRA_WORKSPACE_DOCKER_IMAGE",
@@ -1344,6 +1429,8 @@ enum DockerWorkspaceMCPProjection {
         "ASTRA_WORKSPACE_DOCKER_ENV",
         "ASTRA_WORKSPACE_TASK_ID",
         "ASTRA_WORKSPACE_RUN_ID",
+        "ASTRA_WORKSPACE_JOB_ROOT_HOST",
+        "ASTRA_WORKSPACE_JOB_ROOT_CONTAINER",
         "DOCKER_CONFIG"
     ]
 

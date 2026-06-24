@@ -21,7 +21,8 @@ struct WorkspaceToolSupportTests {
             "ASTRA_WORKSPACE_DOCKER_MOUNTS": mountsJSON,
             "ASTRA_WORKSPACE_DOCKER_ENV": containerEnvironmentJSON,
             "ASTRA_WORKSPACE_TASK_ID": "task-1",
-            "ASTRA_WORKSPACE_RUN_ID": "run-1"
+            "ASTRA_WORKSPACE_RUN_ID": "run-1",
+            "DOCKER_CONFIG": "/tmp/workspace/.astra/tasks/task-1/.runtime/docker-client/run-1"
         ])
 
         #expect(configuration.dockerExecutable == "docker")
@@ -32,6 +33,9 @@ struct WorkspaceToolSupportTests {
         ])
         #expect(configuration.containerEnvironment["CLOUDSDK_CONFIG"] == "/root/.config/gcloud")
         #expect(configuration.containerEnvironment["GOOGLE_APPLICATION_CREDENTIALS"] == "/root/.config/gcloud/application_default_credentials.json")
+        #expect(configuration.jobRootHostPath == "/tmp/workspace/.astra/tasks/task-1/jobs")
+        #expect(configuration.jobRootContainerPath == "/workspace/.astra/tasks/task-1/jobs")
+        #expect(configuration.dockerClientConfigPath == "/tmp/workspace/.astra/tasks/task-1/.runtime/docker-client/run-1")
         let path = try #require(configuration.containerEnvironment["PATH"])
         let pathComponents = path.split(separator: ":").map(String.init)
         #expect(pathComponents.contains("/opt/workspace/.venv/bin"))
@@ -57,10 +61,18 @@ struct WorkspaceToolSupportTests {
         let listResult = try #require(list["result"] as? [String: Any])
         let tools = try #require(listResult["tools"] as? [[String: Any]])
         #expect(tools.first?["name"] as? String == "workspace_shell")
+        let toolNames = Set(tools.compactMap { $0["name"] as? String })
+        #expect(toolNames.isSuperset(of: [
+            "workspace_shell",
+            "workspace_job_start",
+            "workspace_job_status",
+            "workspace_job_tail",
+            "workspace_job_cancel",
+            "workspace_job_wait"
+        ]))
         let description = try #require(tools.first?["description"] as? String)
         #expect(description.contains("using the image environment"))
-        #expect(description.contains("container PATH"))
-        #expect(description.contains("avoid host-created virtual environments"))
+        #expect(description.contains("workspace_job_start"))
 
         let call = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"workspace_shell","arguments":{"command":"pwd","timeout_seconds":7}}}"#)))
         let callResult = try #require(call["result"] as? [String: Any])
@@ -85,13 +97,15 @@ struct WorkspaceToolSupportTests {
 
         let docker = root.appendingPathComponent("docker")
         let log = root.appendingPathComponent("docker.log")
+        let quotedLogPath = log.path.replacingOccurrences(of: "'", with: "'\\''")
         try """
         #!/bin/sh
-        printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+        LOG='\(quotedLogPath)'
+        printf '%s\\n' "$*" >> "$LOG"
         case "$1" in
           inspect) exit 1 ;;
           rm) exit 0 ;;
-          run) printf 'env CLOUDSDK_CONFIG=%s\\n' "$CLOUDSDK_CONFIG" >> "$FAKE_DOCKER_LOG"; printf 'env DOCKER_CONFIG=%s\\n' "$DOCKER_CONFIG" >> "$FAKE_DOCKER_LOG"; printf 'env PATH=%s\\n' "$PATH" >> "$FAKE_DOCKER_LOG"; echo container-id; exit 0 ;;
+          run) printf 'env CLOUDSDK_CONFIG=%s\\n' "$CLOUDSDK_CONFIG" >> "$LOG"; printf 'env DOCKER_CONFIG=%s\\n' "$DOCKER_CONFIG" >> "$LOG"; printf 'env PATH=%s\\n' "$PATH" >> "$LOG"; echo container-id; exit 0 ;;
           exec) echo workspace-output; echo workspace-error >&2; exit 0 ;;
           stop) exit 0 ;;
           *) exit 99 ;;
@@ -100,12 +114,6 @@ struct WorkspaceToolSupportTests {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
         let dockerConfig = root.appendingPathComponent("docker-client", isDirectory: true)
         try FileManager.default.createDirectory(at: dockerConfig, withIntermediateDirectories: true)
-        setenv("FAKE_DOCKER_LOG", log.path, 1)
-        setenv("DOCKER_CONFIG", dockerConfig.path, 1)
-        defer {
-            unsetenv("FAKE_DOCKER_LOG")
-            unsetenv("DOCKER_CONFIG")
-        }
 
         let configuration = WorkspaceToolConfiguration(
             dockerExecutable: docker.path,
@@ -122,7 +130,8 @@ struct WorkspaceToolSupportTests {
             containerEnvironment: [
                 "CLOUDSDK_CONFIG": "/root/.config/gcloud",
                 "GOOGLE_APPLICATION_CREDENTIALS": "/root/.config/gcloud/application_default_credentials.json"
-            ]
+            ],
+            dockerClientConfigPath: dockerConfig.path
         )
         let executor = DockerWorkspaceCommandExecutor(configuration: configuration)
 
@@ -150,14 +159,124 @@ struct WorkspaceToolSupportTests {
         #expect(!pathLine.contains("/opt/\(root.lastPathComponent)/.venv/bin"))
         #expect(!pathLine.contains("/workspace/.venv/bin"))
         #expect(logLines.contains { $0.contains("DOCKER_CONFIG=\(dockerConfig.path)") })
+        #expect(FileManager.default.fileExists(atPath: dockerConfig.appendingPathComponent("config.json").path))
         #expect(logLines.contains("exec -i --workdir /workspace astra-test sh -c echo ok"))
         #expect(!logLines.contains { $0.contains(" sh -lc ") })
         #expect(logLines.contains("stop astra-test"))
     }
 
+    @Test("Workspace MCP server exposes durable job tools")
+    func workspaceMCPServerExposesDurableJobTools() throws {
+        let executor = RecordingWorkspaceCommandExecutor(result: WorkspaceCommandResult(
+            command: "pwd",
+            exitCode: 0,
+            stdout: "/workspace\n",
+            stderr: ""
+        ))
+        let jobManager = RecordingWorkspaceJobManager()
+        let server = WorkspaceMCPServer(executor: executor, jobManager: jobManager)
+
+        let start = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"workspace_job_start","arguments":{"command":"dbt build --select +death","timeout_seconds":3600,"label":"dbt death","progress_probe":"dbt"}}}"#)))
+        let startText = try resultText(start)
+        #expect(startText.contains("job_id: job-1"))
+        #expect(startText.contains("status: running"))
+        #expect(jobManager.startedCommands == ["dbt build --select +death"])
+        #expect(jobManager.startedLabels == ["dbt death"])
+        #expect(jobManager.startedProgressProbes == ["dbt"])
+
+        let status = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"workspace_job_status","arguments":{"job_id":"job-1"}}}"#)))
+        #expect(try resultText(status).contains("status: running"))
+
+        let tail = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"workspace_job_tail","arguments":{"job_id":"job-1","stream":"stderr","lines":20}}}"#)))
+        #expect(try resultText(tail).contains("stream: stderr"))
+
+        let wait = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"workspace_job_wait","arguments":{"job_id":"job-1","max_wait_seconds":1}}}"#)))
+        #expect(try resultText(wait).contains("status: running"))
+
+        let cancel = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"workspace_job_cancel","arguments":{"job_id":"job-1"}}}"#)))
+        #expect(try resultText(cancel).contains("status: cancelled"))
+    }
+
+    @Test("Docker workspace job manager starts detached durable job")
+    func dockerWorkspaceJobManagerStartsDetachedDurableJob() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let docker = root.appendingPathComponent("docker")
+        let log = root.appendingPathComponent("docker.log")
+        try """
+        #!/bin/sh
+        printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+        case "$1" in
+          inspect) exit 1 ;;
+          rm) exit 0 ;;
+          run) echo container-id; exit 0 ;;
+          exec) exit 0 ;;
+          stop) exit 0 ;;
+          *) exit 99 ;;
+        esac
+        """.write(to: docker, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
+        setenv("FAKE_DOCKER_LOG", log.path, 1)
+        defer { unsetenv("FAKE_DOCKER_LOG") }
+
+        let jobRoot = root.appendingPathComponent("jobs", isDirectory: true)
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: docker.path,
+            image: "astra/workspace:latest",
+            containerName: "astra-test-job",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-2",
+            runID: "run-2",
+            mounts: [
+                WorkspaceDockerMount(hostPath: root.path, containerPath: "/workspace", access: "rw", role: "workspace")
+            ],
+            jobRootHostPath: jobRoot.path,
+            jobRootContainerPath: "/workspace/jobs"
+        )
+        let executor = DockerWorkspaceCommandExecutor(configuration: configuration)
+        let manager = DockerWorkspaceJobManager(configuration: configuration, executor: executor)
+
+        let job = manager.start(
+            command: "printf started && sleep 60",
+            timeoutSeconds: 7200,
+            label: "long validation",
+            progressProbe: "generic-log"
+        )
+        executor.cleanup()
+
+        #expect(job.status == .running)
+        let jobDirectory = jobRoot.appendingPathComponent(job.jobID, isDirectory: true)
+        #expect(FileManager.default.fileExists(atPath: jobDirectory.appendingPathComponent("job.json").path))
+        #expect(FileManager.default.fileExists(atPath: jobDirectory.appendingPathComponent("command.sh").path))
+        #expect(try String(contentsOf: jobDirectory.appendingPathComponent("command.sh"), encoding: .utf8).contains("sleep 60"))
+        let logLines = try String(contentsOf: log, encoding: .utf8)
+        #expect(logLines.contains("exec -d --workdir /workspace astra-test-job sh -c"))
+        #expect(logLines.contains("/workspace/jobs/\(job.jobID)"))
+        #expect(logLines.contains("timeout_seconds=7200"))
+        #expect(logLines.contains("status=timed_out; code=124"))
+
+        try #"{"status":"succeeded","exitCode":0,"completedAt":"2026-06-24T12:00:00Z"}"#
+            .write(to: jobDirectory.appendingPathComponent("result.json"), atomically: true, encoding: .utf8)
+        try "ok\n".write(to: jobDirectory.appendingPathComponent("stdout.log"), atomically: true, encoding: .utf8)
+        let completed = manager.status(jobID: job.jobID)
+        #expect(completed.status == .succeeded)
+        #expect(completed.exitCode == 0)
+        #expect(manager.tail(jobID: job.jobID, stream: "stdout", lines: 10).text.contains("ok"))
+    }
+
     private func parseJSON(_ line: String) throws -> [String: Any] {
         let data = try #require(line.data(using: .utf8))
         return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    private func resultText(_ object: [String: Any]) throws -> String {
+        let result = try #require(object["result"] as? [String: Any])
+        let content = try #require(result["content"] as? [[String: Any]])
+        return try #require(content.first?["text"] as? String)
     }
 }
 
@@ -179,5 +298,60 @@ private final class RecordingWorkspaceCommandExecutor: WorkspaceCommandExecutor 
 
     func cleanup() {
         cleanedUp = true
+    }
+}
+
+private final class RecordingWorkspaceJobManager: WorkspaceJobManaging {
+    private(set) var startedCommands: [String] = []
+    private(set) var startedLabels: [String?] = []
+    private(set) var startedProgressProbes: [String?] = []
+    private var cancelled = false
+
+    func start(
+        command: String,
+        timeoutSeconds _: TimeInterval?,
+        label: String?,
+        progressProbe: String?
+    ) -> WorkspaceManagedJobRecord {
+        startedCommands.append(command)
+        startedLabels.append(label)
+        startedProgressProbes.append(progressProbe)
+        return record(status: .running)
+    }
+
+    func status(jobID _: String) -> WorkspaceManagedJobRecord {
+        record(status: cancelled ? .cancelled : .running)
+    }
+
+    func tail(jobID: String, stream: String, lines _: Int) -> WorkspaceManagedJobTail {
+        WorkspaceManagedJobTail(jobID: jobID, stream: stream, text: "job output")
+    }
+
+    func cancel(jobID _: String) -> WorkspaceManagedJobRecord {
+        cancelled = true
+        return record(status: .cancelled)
+    }
+
+    func wait(jobID _: String, timeoutSeconds _: TimeInterval) -> WorkspaceManagedJobRecord {
+        record(status: cancelled ? .cancelled : .running)
+    }
+
+    private func record(status: WorkspaceManagedJobStatus) -> WorkspaceManagedJobRecord {
+        let now = Date(timeIntervalSince1970: 1_782_300_000)
+        return WorkspaceManagedJobRecord(
+            jobID: "job-1",
+            command: "dbt build --select +death",
+            label: "dbt death",
+            progressProbe: "dbt",
+            runtime: "docker",
+            status: status,
+            createdAt: now,
+            startedAt: now,
+            updatedAt: now,
+            stdoutLogPath: "/tmp/job/stdout.log",
+            stderrLogPath: "/tmp/job/stderr.log",
+            heartbeatPath: "/tmp/job/heartbeat.json",
+            resultPath: "/tmp/job/result.json"
+        )
     }
 }

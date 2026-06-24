@@ -872,7 +872,10 @@ struct RuntimeReadinessProbeContext {
         executable: String?,
         args: [String],
         missingDetail: String,
-        installHint: String
+        installHint: String,
+        timeout overrideTimeout: TimeInterval? = nil,
+        timedOutState: RuntimeReadinessState = .blocked,
+        timedOutRemediation: String? = nil
     ) async -> RuntimeExecutableCheckResult {
         guard let executable, !executable.isEmpty, isExecutable(executable) else {
             return RuntimeExecutableCheckResult(
@@ -887,14 +890,27 @@ struct RuntimeReadinessProbeContext {
             )
         }
 
-        let result = await runner.run(path: executable, args: args, timeout: timeout, environment: processEnvironment)
+        let effectiveTimeout = overrideTimeout ?? timeout
+        let result = await runner.run(path: executable, args: args, timeout: effectiveTimeout, environment: processEnvironment)
+        if case .timedOut = result.outcome {
+            return RuntimeExecutableCheckResult(
+                executable: executable,
+                check: RuntimeReadinessCheck(
+                    id: id,
+                    title: title,
+                    detail: processFailureDetail(result, timeout: effectiveTimeout),
+                    state: timedOutState,
+                    remediation: timedOutRemediation ?? "Verify the configured path: \(executable)"
+                )
+            )
+        }
         guard result.isSuccess else {
             return RuntimeExecutableCheckResult(
                 executable: executable,
                 check: RuntimeReadinessCheck(
                     id: id,
                     title: title,
-                    detail: processFailureDetail(result),
+                    detail: processFailureDetail(result, timeout: effectiveTimeout),
                     state: .blocked,
                     remediation: "Verify the configured path: \(executable)"
                 )
@@ -920,7 +936,7 @@ struct RuntimeReadinessProbeContext {
         return detected.isEmpty ? nil : detected
     }
 
-    private func processFailureDetail(_ result: RunResult) -> String {
+    private func processFailureDetail(_ result: RunResult, timeout: TimeInterval) -> String {
         switch result.outcome {
         case .launchFailed(let reason):
             return "Could not launch: \(RuntimeReadinessRedactor.redacted(reason))"
@@ -1106,10 +1122,13 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
                 executable: probes.resolvedExecutable(configuredPath: "", binary: "gcloud"),
                 args: ["--version"],
                 missingDetail: "gcloud was not found on PATH.",
-                installHint: CommonCLIPrerequisites.gcloud.installHint
+                installHint: CommonCLIPrerequisites.gcloud.installHint,
+                timeout: 20,
+                timedOutState: .warning,
+                timedOutRemediation: "gcloud responded slowly. ASTRA will continue and validate Application Default Credentials separately."
             )
             checks.append(gcloud.check)
-            if gcloud.isReady, let executable = gcloud.executable {
+            if gcloud.check.state != .blocked, let executable = gcloud.executable {
                 checks.append(await checkVertexADC(gcloudPath: executable, probes: probes))
             }
         }

@@ -1446,11 +1446,20 @@ struct RunPermissionManifestTests {
             #expect(manifest.mcpServers.contains { server in
                 server.packageID == "astra-builtin"
                     && server.id == DockerWorkspaceMCPProjection.serverID
-                    && server.allowedTools == [DockerWorkspaceMCPProjection.toolName]
+                    && server.allowedTools == DockerWorkspaceMCPProjection.toolNames
             })
             #expect(manifest.providerRender.runtimeSupportTools.contains { descriptor in
                 descriptor.name == DockerWorkspaceMCPProjection.providerToolPermission
                     && descriptor.allowedInputKeys.contains("command")
+            })
+            #expect(manifest.providerRender.runtimeSupportTools.contains { descriptor in
+                descriptor.name == DockerWorkspaceMCPProjection.providerToolPermission(for: "workspace_job_start")
+                    && descriptor.allowedInputKeys.contains("command")
+                    && descriptor.allowedInputKeys.contains("progress_probe")
+            })
+            #expect(manifest.providerRender.runtimeSupportTools.contains { descriptor in
+                descriptor.name == DockerWorkspaceMCPProjection.providerToolPermission(for: "workspace_job_status")
+                    && descriptor.allowedInputKeys == ["job_id"]
             })
             #expect(!manifest.providerRender.allowedTools.contains { tool in
                 let lower = tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()

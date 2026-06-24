@@ -1695,7 +1695,9 @@ struct AgentRuntimeAdapterTests {
         #expect(mcpConfig.contains("\"astra_workspace\"={"))
         #expect(mcpConfig.contains("command=\"\((RuntimePathResolver.astraToolsPath as NSString).appendingPathComponent("astra-workspace"))\""))
         #expect(mcpConfig.contains("args=[]"))
-        #expect(mcpConfig.contains("enabled_tools=[\"workspace_shell\"]"))
+        for toolName in DockerWorkspaceMCPProjection.toolNames {
+            #expect(mcpConfig.contains("\"\(toolName)\""))
+        }
         #expect(mcpConfig.contains("default_tools_enabled=false"))
         #expect(mcpConfig.contains("default_tools_approval_mode=\"approve\""))
         let envVars = mcpConfig
@@ -1703,6 +1705,16 @@ struct AgentRuntimeAdapterTests {
         #expect(envVars.contains("ASTRA_WORKSPACE_DOCKER_ENV"))
         #expect(envVars.contains("ASTRA_WORKSPACE_TASK_ID"))
         #expect(envVars.contains("DOCKER_CONFIG"))
+    }
+
+    @Test("Docker workspace executor support follows MCP runtime capability")
+    func dockerWorkspaceExecutorSupportFollowsMCPRuntimeCapability() {
+        for descriptor in AgentRuntimeAdapterRegistry.descriptors {
+            #expect(
+                DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: descriptor.id)
+                    == descriptor.supportsMCPServers
+            )
+        }
     }
 
     @Test("Copilot Docker workspace mode avoids broad native shell in Auto policy")
