@@ -1102,6 +1102,14 @@ enum AgentPolicyManifestService {
         updated.allowedTools = DockerWorkspaceMCPProjection.removingNativeShellTools(updated.allowedTools)
         updated.askFirstTools = DockerWorkspaceMCPProjection.removingNativeShellTools(updated.askFirstTools)
         updated.deniedTools = uniqueStrings(updated.deniedTools + ["Bash", "shell"])
+        updated.diagnostics.append(PolicyDiagnostic(
+            id: "container.host-control-plane-routing",
+            severity: .info,
+            title: "Host control plane routed through ASTRA",
+            message: "Project shell commands run in Docker through ASTRA's workspace MCP tools. Host services such as GitHub, Jira, Google Cloud, SSH, browser, and Keychain access must use enabled ASTRA capabilities rather than native provider Bash or Docker workspace shell.",
+            affectedCapability: "control_plane",
+            remediation: "Enable or repair the relevant capability before asking the provider to use host credentials or host services."
+        ))
 
         for descriptor in DockerWorkspaceMCPProjection.runtimeSupportToolDescriptors(for: runtime)
             where !updated.runtimeSupportTools.contains(where: { $0.name == descriptor.name }) {

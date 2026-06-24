@@ -14,6 +14,7 @@ enum TaskLaunchResourceSource: String, Codable, Sendable {
     case gitCredential = "git_credential"
     case dockerEnvironment = "docker_environment"
     case dockerCredential = "docker_credential"
+    case controlPlane = "control_plane"
     case connector
     case browser
     case provider
@@ -73,6 +74,23 @@ struct RuntimeProviderRequirement: Codable, Equatable, Sendable {
     var required: Bool
 }
 
+struct RuntimeControlPlaneResource: Codable, Equatable, Sendable {
+    enum Readiness: String, Codable, Sendable {
+        case ready
+        case missing
+        case unavailable
+        case configured
+    }
+
+    var capability: String
+    var source: TaskLaunchResourceSource
+    var placement: String
+    var readiness: Readiness
+    var reason: String
+    var failureText: String?
+    var repairAction: String?
+}
+
 struct RuntimeResourceDiagnostic: Codable, Equatable, Sendable {
     enum Severity: String, Codable, Sendable {
         case info
@@ -103,7 +121,7 @@ struct RuntimeGitCredentialResource: Codable, Equatable, Sendable {
 }
 
 struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
-    static let currentVersion = 2
+    static let currentVersion = 4
 
     var version: Int
     var taskID: UUID
@@ -115,6 +133,7 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
     var executionEnvironmentKind: String
     var providerPlacement: String
     var workspaceCommandPlacement: String
+    var controlPlaneToolPlacement: String
     var shellRoute: String
     var generatedAt: Date
     var hostPathGrants: [RuntimePathGrant]
@@ -122,6 +141,7 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
     var environmentGrants: [RuntimeEnvironmentGrant]
     var credentialGrants: [RuntimeCredentialGrant]
     var providerRequirements: [RuntimeProviderRequirement]
+    var controlPlaneResources: [RuntimeControlPlaneResource]
     var diagnostics: [RuntimeResourceDiagnostic]
     var gitCredential: RuntimeGitCredentialResource?
 
@@ -136,6 +156,7 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
         executionEnvironmentKind: String,
         providerPlacement: String,
         workspaceCommandPlacement: String? = nil,
+        controlPlaneToolPlacement: String? = nil,
         shellRoute: String? = nil,
         generatedAt: Date = Date(),
         hostPathGrants: [RuntimePathGrant] = [],
@@ -143,6 +164,7 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
         environmentGrants: [RuntimeEnvironmentGrant] = [],
         credentialGrants: [RuntimeCredentialGrant] = [],
         providerRequirements: [RuntimeProviderRequirement] = [],
+        controlPlaneResources: [RuntimeControlPlaneResource] = [],
         diagnostics: [RuntimeResourceDiagnostic] = [],
         gitCredential: RuntimeGitCredentialResource? = nil
     ) {
@@ -159,6 +181,11 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
             ?? Self.defaultWorkspaceCommandPlacement(
                 executionEnvironmentKind: executionEnvironmentKind
             )
+        self.controlPlaneToolPlacement = controlPlaneToolPlacement
+            ?? Self.defaultControlPlaneToolPlacement(
+                executionEnvironmentKind: executionEnvironmentKind,
+                providerPlacement: providerPlacement
+            )
         self.shellRoute = shellRoute
             ?? Self.defaultShellRoute(
                 executionEnvironmentKind: executionEnvironmentKind,
@@ -171,6 +198,7 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
         self.environmentGrants = environmentGrants
         self.credentialGrants = credentialGrants
         self.providerRequirements = providerRequirements
+        self.controlPlaneResources = controlPlaneResources
         self.diagnostics = diagnostics
         self.gitCredential = gitCredential
     }
@@ -221,10 +249,12 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
             "launch_resource_environment_key_count": String(environmentGrants.count),
             "launch_resource_credential_label_count": String(credentialGrants.count),
             "launch_resource_provider_requirement_count": String(providerRequirements.count),
+            "launch_resource_control_plane_count": String(controlPlaneResources.count),
             "launch_resource_diagnostic_count": String(diagnostics.count),
             "execution_environment": executionEnvironmentKind,
             "provider_placement": providerPlacement,
             "workspace_command_placement": workspaceCommandPlacement,
+            "control_plane_tool_placement": controlPlaneToolPlacement,
             "shell_route": shellRoute
         ]
 
@@ -275,6 +305,7 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
         case executionEnvironmentKind
         case providerPlacement
         case workspaceCommandPlacement
+        case controlPlaneToolPlacement
         case shellRoute
         case generatedAt
         case hostPathGrants
@@ -282,6 +313,7 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
         case environmentGrants
         case credentialGrants
         case providerRequirements
+        case controlPlaneResources
         case diagnostics
         case gitCredential
     }
@@ -303,6 +335,13 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
         ) ?? Self.defaultWorkspaceCommandPlacement(
             executionEnvironmentKind: executionEnvironmentKind
         )
+        controlPlaneToolPlacement = try container.decodeIfPresent(
+            String.self,
+            forKey: .controlPlaneToolPlacement
+        ) ?? Self.defaultControlPlaneToolPlacement(
+            executionEnvironmentKind: executionEnvironmentKind,
+            providerPlacement: providerPlacement
+        )
         shellRoute = try container.decodeIfPresent(String.self, forKey: .shellRoute)
             ?? Self.defaultShellRoute(
                 executionEnvironmentKind: executionEnvironmentKind,
@@ -315,6 +354,7 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
         environmentGrants = try container.decodeIfPresent([RuntimeEnvironmentGrant].self, forKey: .environmentGrants) ?? []
         credentialGrants = try container.decodeIfPresent([RuntimeCredentialGrant].self, forKey: .credentialGrants) ?? []
         providerRequirements = try container.decodeIfPresent([RuntimeProviderRequirement].self, forKey: .providerRequirements) ?? []
+        controlPlaneResources = try container.decodeIfPresent([RuntimeControlPlaneResource].self, forKey: .controlPlaneResources) ?? []
         diagnostics = try container.decodeIfPresent([RuntimeResourceDiagnostic].self, forKey: .diagnostics) ?? []
         gitCredential = try container.decodeIfPresent(RuntimeGitCredentialResource.self, forKey: .gitCredential)
     }
@@ -334,6 +374,18 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
         return providerPlacement == ExecutionEnvironmentProviderPlacement.host.rawValue
             ? "astra_workspace_mcp"
             : "provider_inside_container"
+    }
+
+    private static func defaultControlPlaneToolPlacement(
+        executionEnvironmentKind: String,
+        providerPlacement: String
+    ) -> String {
+        guard executionEnvironmentKind != ExecutionEnvironmentKind.host.rawValue else {
+            return "host"
+        }
+        return providerPlacement == ExecutionEnvironmentProviderPlacement.host.rawValue
+            ? "host_capabilities"
+            : "container"
     }
 
     private func uniquePaths(_ paths: [String]) -> [String] {

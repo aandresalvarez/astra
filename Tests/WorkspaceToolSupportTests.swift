@@ -22,7 +22,9 @@ struct WorkspaceToolSupportTests {
             "ASTRA_WORKSPACE_DOCKER_ENV": containerEnvironmentJSON,
             "ASTRA_WORKSPACE_TASK_ID": "task-1",
             "ASTRA_WORKSPACE_RUN_ID": "run-1",
-            "DOCKER_CONFIG": "/tmp/workspace/.astra/tasks/task-1/.runtime/docker-client/run-1"
+            "DOCKER_CONFIG": "/tmp/workspace/.astra/tasks/task-1/.runtime/docker-client/run-1",
+            "ASTRA_WORKSPACE_DIAGNOSTICS_HOST": "/tmp/workspace/.astra/tasks/task-1/diagnostics",
+            "ASTRA_WORKSPACE_SUBAGENT_PARENT_ID": "parent-task"
         ])
 
         #expect(configuration.dockerExecutable == "docker")
@@ -36,10 +38,207 @@ struct WorkspaceToolSupportTests {
         #expect(configuration.jobRootHostPath == "/tmp/workspace/.astra/tasks/task-1/jobs")
         #expect(configuration.jobRootContainerPath == "/workspace/.astra/tasks/task-1/jobs")
         #expect(configuration.dockerClientConfigPath == "/tmp/workspace/.astra/tasks/task-1/.runtime/docker-client/run-1")
+        #expect(configuration.diagnosticsHostPath == "/tmp/workspace/.astra/tasks/task-1/diagnostics")
+        #expect(configuration.subagentParentID == "parent-task")
         let path = try #require(configuration.containerEnvironment["PATH"])
         let pathComponents = path.split(separator: ":").map(String.init)
         #expect(pathComponents.contains("/opt/workspace/.venv/bin"))
         #expect(!pathComponents.contains("/workspace/.venv/bin"))
+    }
+
+    @Test("Workspace command path mapper rejects ambiguous mounted host paths")
+    func workspaceCommandPathMapperRejectsAmbiguousMountedHostPaths() throws {
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: "docker",
+            image: "astra/workspace:latest",
+            containerName: "astra-test",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-1",
+            runID: "run-1",
+            mounts: [
+                WorkspaceDockerMount(
+                    hostPath: "/Users/alvaro1/Documents/Coral/Code/starr-data-lake",
+                    containerPath: "/workspace",
+                    access: "rw",
+                    role: "workspace"
+                ),
+                WorkspaceDockerMount(
+                    hostPath: "/Users/alvaro1/Documents/Coral/Code/starr-data-lake",
+                    containerPath: "/project",
+                    access: "rw",
+                    role: "workspace"
+                )
+            ]
+        )
+
+        let resolution = configuration.containerCommand(
+            for: "cat /Users/alvaro1/Documents/Coral/Code/starr-data-lake/dbt_project.yml"
+        )
+
+        #expect(resolution.command.contains("/Users/alvaro1/Documents/Coral/Code/starr-data-lake"))
+        #expect(resolution.errorMessage?.contains("maps to more than one Docker container path") == true)
+        #expect(resolution.errorMessage?.contains("/workspace") == true)
+        #expect(resolution.errorMessage?.contains("/project") == true)
+    }
+
+    @Test("Workspace command path mapper rewrites mounted host paths")
+    func workspaceCommandPathMapperRewritesMountedHostPaths() throws {
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: "docker",
+            image: "astra/workspace:latest",
+            containerName: "astra-test",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-1",
+            runID: "run-1",
+            mounts: [
+                WorkspaceDockerMount(
+                    hostPath: "/Users/alvaro1/Documents/Coral/Code/starr-data-lake",
+                    containerPath: "/workspace",
+                    access: "rw",
+                    role: "workspace"
+                )
+            ]
+        )
+
+        let resolution = configuration.containerCommand(
+            for: "cd /Users/alvaro1/Documents/Coral/Code/starr-data-lake && cat dbt_project.yml"
+        )
+
+        #expect(resolution.command == "cd /workspace && cat dbt_project.yml")
+        #expect(resolution.errorMessage == nil)
+        #expect(resolution.mappedPaths == [
+            WorkspaceCommandPathMapping(
+                hostPath: "/Users/alvaro1/Documents/Coral/Code/starr-data-lake",
+                containerPath: "/workspace"
+            )
+        ])
+
+        let nestedResolution = configuration.containerCommand(
+            for: "cat /Users/alvaro1/Documents/Coral/Code/starr-data-lake/dbt_project.yml"
+        )
+        #expect(nestedResolution.command == "cat /workspace/dbt_project.yml")
+        #expect(nestedResolution.errorMessage == nil)
+    }
+
+    @Test("Workspace command path mapper does not rewrite mount path substrings")
+    func workspaceCommandPathMapperDoesNotRewriteMountPathSubstrings() throws {
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: "docker",
+            image: "astra/workspace:latest",
+            containerName: "astra-test",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-1",
+            runID: "run-1",
+            mounts: [
+                WorkspaceDockerMount(
+                    hostPath: "/Users/alvaro1/Documents/Coral/Code/starr-data-lake",
+                    containerPath: "/workspace",
+                    access: "rw",
+                    role: "workspace"
+                )
+            ]
+        )
+
+        let resolution = configuration.containerCommand(
+            for: "cat /Users/alvaro1/Documents/Coral/Code/starr-data-lake-copy/dbt_project.yml"
+        )
+
+        #expect(resolution.command == "cat /Users/alvaro1/Documents/Coral/Code/starr-data-lake-copy/dbt_project.yml")
+        #expect(resolution.errorMessage?.contains("host filesystem path") == true)
+        #expect(resolution.errorMessage?.contains("starr-data-lake-copy") == true)
+    }
+
+    @Test("Workspace command path mapper rejects unmapped host paths")
+    func workspaceCommandPathMapperRejectsUnmappedHostPaths() throws {
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: "docker",
+            image: "astra/workspace:latest",
+            containerName: "astra-test",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-1",
+            runID: "run-1",
+            mounts: [
+                WorkspaceDockerMount(hostPath: "/tmp/workspace", containerPath: "/workspace", access: "rw", role: "workspace")
+            ]
+        )
+
+        let resolution = configuration.containerCommand(for: "cat /Users/alvaro1/.ssh/config")
+
+        #expect(resolution.command == "cat /Users/alvaro1/.ssh/config")
+        #expect(resolution.errorMessage?.contains("host filesystem path") == true)
+        #expect(resolution.errorMessage?.contains("/Users/alvaro1/.ssh/config") == true)
+        #expect(resolution.errorMessage?.contains("/tmp/workspace -> /workspace") == true)
+    }
+
+    @Test("Workspace command path mapper rejects macOS system paths inside Docker")
+    func workspaceCommandPathMapperRejectsMacOSSystemPathsInsideDocker() throws {
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: "docker",
+            image: "astra/workspace:latest",
+            containerName: "astra-test",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-1",
+            runID: "run-1",
+            mounts: [
+                WorkspaceDockerMount(hostPath: "/tmp/workspace", containerPath: "/workspace", access: "rw", role: "workspace")
+            ]
+        )
+
+        let libraryResolution = configuration.containerCommand(
+            for: "/Library/Developer/CommandLineTools/usr/bin/python3 --version"
+        )
+        #expect(libraryResolution.errorMessage?.contains("host filesystem path") == true)
+        #expect(libraryResolution.errorMessage?.contains("/Library/Developer/CommandLineTools/usr/bin/python3") == true)
+
+        let privateVarResolution = configuration.containerCommand(for: "sh /private/var/select/sh")
+        #expect(privateVarResolution.errorMessage?.contains("host filesystem path") == true)
+        #expect(privateVarResolution.errorMessage?.contains("/private/var/select/sh") == true)
+    }
+
+    @Test("Workspace command path mapper rejects host control-plane commands in Docker")
+    func workspaceCommandPathMapperRejectsHostControlPlaneCommands() throws {
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: "docker",
+            image: "astra/workspace:latest",
+            containerName: "astra-test",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-1",
+            runID: "run-1",
+            mounts: [
+                WorkspaceDockerMount(
+                    hostPath: "/Users/alvaro1/Documents/Coral/Code/starr-data-lake",
+                    containerPath: "/workspace",
+                    access: "rw",
+                    role: "workspace"
+                )
+            ]
+        )
+
+        let resolution = configuration.containerCommand(
+            for: "cd /Users/alvaro1/Documents/Coral/Code/starr-data-lake && gh pr view 987 --comments"
+        )
+
+        #expect(resolution.command == "cd /workspace && gh pr view 987 --comments")
+        #expect(resolution.errorMessage?.contains("host control-plane CLI 'gh'") == true)
+        #expect(resolution.errorMessage?.contains("GitHub capability") == true)
+        #expect(resolution.mappedPaths == [
+            WorkspaceCommandPathMapping(
+                hostPath: "/Users/alvaro1/Documents/Coral/Code/starr-data-lake",
+                containerPath: "/workspace"
+            )
+        ])
+
+        let gcloud = configuration.containerCommand(for: "gcloud compute instances list")
+        #expect(gcloud.errorMessage?.contains("host control-plane CLI 'gcloud'") == true)
+
+        let ssh = configuration.containerCommand(for: "ssh deid-jsn-workbench 'hostname'")
+        #expect(ssh.errorMessage?.contains("host control-plane CLI 'ssh'") == true)
     }
 
     @Test("Workspace MCP server exposes and runs workspace_shell")
@@ -86,6 +285,56 @@ struct WorkspaceToolSupportTests {
 
         server.cleanup()
         #expect(executor.cleanedUp)
+    }
+
+    @Test("Workspace MCP server persists shell diagnostics")
+    func workspaceMCPServerPersistsShellDiagnostics() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-diagnostics-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let diagnostics = root.appendingPathComponent("diagnostics", isDirectory: true)
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: "docker",
+            image: "astra/workspace:latest",
+            containerName: "astra-test",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-1",
+            runID: "run-1",
+            mounts: [
+                WorkspaceDockerMount(hostPath: root.path, containerPath: "/workspace", access: "rw", role: "workspace")
+            ],
+            diagnosticsHostPath: diagnostics.path,
+            subagentParentID: "parent-1"
+        )
+        let executor = RecordingWorkspaceCommandExecutor(result: WorkspaceCommandResult(
+            command: "cat \(root.path)/README.md",
+            exitCode: 2,
+            stdout: "",
+            stderr: "workspace command used a host filesystem path",
+            routedCommand: "cat /workspace/README.md",
+            workingDirectory: "/workspace"
+        ))
+        let server = WorkspaceMCPServer(
+            executor: executor,
+            diagnosticsRecorder: WorkspaceToolDiagnosticsRecorder(configuration: configuration)
+        )
+
+        _ = server.handleLine(#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"workspace_shell","arguments":{"command":"cat /tmp/repo/README.md","timeout_seconds":7}}}"#)
+
+        let log = diagnostics.appendingPathComponent("workspace_tool_activity.jsonl", isDirectory: false)
+        let line = try #require(try String(contentsOf: log, encoding: .utf8).split(separator: "\n").last)
+        let data = Data(line.utf8)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object["toolName"] as? String == "workspace_shell")
+        #expect(object["route"] as? String == "docker_workspace_mcp")
+        #expect(object["mappedCommand"] as? String == "cat /workspace/README.md")
+        #expect(object["workingDirectory"] as? String == "/workspace")
+        #expect(object["exitCode"] as? Int == 2)
+        #expect(object["stderrTail"] as? String == "workspace command used a host filesystem path")
+        #expect(object["subagentParentID"] as? String == "parent-1")
     }
 
     @Test("Docker workspace executor starts container and execs workspace command through Docker")
@@ -165,6 +414,214 @@ struct WorkspaceToolSupportTests {
         #expect(logLines.contains("stop astra-test"))
     }
 
+    @Test("Docker workspace executor maps host workspace path before exec")
+    func dockerWorkspaceExecutorMapsHostWorkspacePathBeforeExec() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-path-map-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let hostWorkspace = root.appendingPathComponent("repo", isDirectory: true)
+        try FileManager.default.createDirectory(at: hostWorkspace, withIntermediateDirectories: true)
+        let docker = root.appendingPathComponent("docker")
+        let log = root.appendingPathComponent("docker.log")
+        let quotedLogPath = log.path.replacingOccurrences(of: "'", with: "'\\''")
+        try """
+        #!/bin/sh
+        LOG='\(quotedLogPath)'
+        printf '%s\\n' "$*" >> "$LOG"
+        case "$1" in
+          inspect) exit 1 ;;
+          rm) exit 0 ;;
+          run) echo container-id; exit 0 ;;
+          exec) echo mapped; exit 0 ;;
+          stop) exit 0 ;;
+          *) exit 99 ;;
+        esac
+        """.write(to: docker, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
+
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: docker.path,
+            image: "astra/workspace:latest",
+            containerName: "astra-test-map",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-1",
+            runID: "run-1",
+            mounts: [
+                WorkspaceDockerMount(hostPath: hostWorkspace.path, containerPath: "/workspace", access: "rw", role: "workspace")
+            ]
+        )
+        let executor = DockerWorkspaceCommandExecutor(configuration: configuration)
+
+        let result = executor.run(command: "cd \(hostWorkspace.path) && pwd", timeoutSeconds: 5)
+        executor.cleanup()
+
+        #expect(result.exitCode == 0)
+        let logText = try String(contentsOf: log, encoding: .utf8)
+        #expect(logText.contains("exec -i --workdir /workspace astra-test-map sh -c cd /workspace && pwd"))
+        #expect(!logText.contains("cd \(hostWorkspace.path)"))
+    }
+
+    @Test("Docker workspace executor rejects unmapped host path before starting container")
+    func dockerWorkspaceExecutorRejectsUnmappedHostPathBeforeStartingContainer() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-path-reject-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let docker = root.appendingPathComponent("docker")
+        let log = root.appendingPathComponent("docker.log")
+        let quotedLogPath = log.path.replacingOccurrences(of: "'", with: "'\\''")
+        try """
+        #!/bin/sh
+        printf '%s\\n' "$*" >> '\(quotedLogPath)'
+        exit 99
+        """.write(to: docker, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
+
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: docker.path,
+            image: "astra/workspace:latest",
+            containerName: "astra-test-reject",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-1",
+            runID: "run-1",
+            mounts: [
+                WorkspaceDockerMount(hostPath: root.path, containerPath: "/workspace", access: "rw", role: "workspace")
+            ]
+        )
+        let executor = DockerWorkspaceCommandExecutor(configuration: configuration)
+
+        let result = executor.run(command: "cat /Users/alvaro1/.ssh/config", timeoutSeconds: 5)
+
+        #expect(result.exitCode == 2)
+        #expect(result.stderr.contains("not valid inside the Docker workspace"))
+        #expect(!FileManager.default.fileExists(atPath: log.path))
+    }
+
+    @Test("Docker workspace executor rejects host control-plane command before starting container")
+    func dockerWorkspaceExecutorRejectsHostControlPlaneCommandBeforeStartingContainer() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-plane-reject-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let docker = root.appendingPathComponent("docker")
+        let log = root.appendingPathComponent("docker.log")
+        let quotedLogPath = log.path.replacingOccurrences(of: "'", with: "'\\''")
+        try """
+        #!/bin/sh
+        printf '%s\\n' "$*" >> '\(quotedLogPath)'
+        exit 99
+        """.write(to: docker, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
+
+        let hostWorkspace = root.appendingPathComponent("repo", isDirectory: true)
+        try FileManager.default.createDirectory(at: hostWorkspace, withIntermediateDirectories: true)
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: docker.path,
+            image: "astra/workspace:latest",
+            containerName: "astra-test-plane-reject",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-1",
+            runID: "run-1",
+            mounts: [
+                WorkspaceDockerMount(hostPath: hostWorkspace.path, containerPath: "/workspace", access: "rw", role: "workspace")
+            ]
+        )
+        let executor = DockerWorkspaceCommandExecutor(configuration: configuration)
+
+        let result = executor.run(command: "cd \(hostWorkspace.path) && gh pr view 987 --comments", timeoutSeconds: 5)
+
+        #expect(result.exitCode == 2)
+        #expect(result.stderr.contains("host control-plane CLI 'gh'"))
+        #expect(result.stderr.contains("GitHub capability"))
+        #expect(!FileManager.default.fileExists(atPath: log.path))
+    }
+
+    @Test("Docker workspace shell rejects long-running project commands before starting container")
+    func dockerWorkspaceShellRejectsLongRunningProjectCommandsBeforeStartingContainer() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-long-reject-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let docker = root.appendingPathComponent("docker")
+        let log = root.appendingPathComponent("docker.log")
+        let quotedLogPath = log.path.replacingOccurrences(of: "'", with: "'\\''")
+        try """
+        #!/bin/sh
+        printf '%s\\n' "$*" >> '\(quotedLogPath)'
+        exit 99
+        """.write(to: docker, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
+
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: docker.path,
+            image: "astra/workspace:latest",
+            containerName: "astra-test-long-reject",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-1",
+            runID: "run-1",
+            mounts: [
+                WorkspaceDockerMount(hostPath: root.path, containerPath: "/workspace", access: "rw", role: "workspace")
+            ]
+        )
+        let executor = DockerWorkspaceCommandExecutor(configuration: configuration)
+
+        let result = executor.run(command: "dbt build --select +death --full-refresh", timeoutSeconds: 120)
+
+        #expect(result.exitCode == 2)
+        #expect(result.stderr.contains("workspace_shell received a long-running project command"))
+        #expect(result.stderr.contains("workspace_job_start"))
+        #expect(!FileManager.default.fileExists(atPath: log.path))
+    }
+
+    @Test("Docker workspace shell rejects overly long synchronous timeout before starting container")
+    func dockerWorkspaceShellRejectsLongSynchronousTimeoutBeforeStartingContainer() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-timeout-reject-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let docker = root.appendingPathComponent("docker")
+        let log = root.appendingPathComponent("docker.log")
+        try """
+        #!/bin/sh
+        printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+        exit 99
+        """.write(to: docker, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
+        setenv("FAKE_DOCKER_LOG", log.path, 1)
+        defer { unsetenv("FAKE_DOCKER_LOG") }
+
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: docker.path,
+            image: "astra/workspace:latest",
+            containerName: "astra-test-timeout-reject",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-1",
+            runID: "run-1",
+            mounts: [
+                WorkspaceDockerMount(hostPath: root.path, containerPath: "/workspace", access: "rw", role: "workspace")
+            ]
+        )
+        let executor = DockerWorkspaceCommandExecutor(configuration: configuration)
+
+        let result = executor.run(command: "python - <<'PY'\nprint('ok')\nPY", timeoutSeconds: 600)
+
+        #expect(result.exitCode == 2)
+        #expect(result.stderr.contains("workspace_shell is limited to short checks"))
+        #expect(result.stderr.contains("workspace_job_start"))
+        #expect(!FileManager.default.fileExists(atPath: log.path))
+    }
+
     @Test("Workspace MCP server exposes durable job tools")
     func workspaceMCPServerExposesDurableJobTools() throws {
         let executor = RecordingWorkspaceCommandExecutor(result: WorkspaceCommandResult(
@@ -192,9 +649,27 @@ struct WorkspaceToolSupportTests {
 
         let wait = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"workspace_job_wait","arguments":{"job_id":"job-1","max_wait_seconds":1}}}"#)))
         #expect(try resultText(wait).contains("status: running"))
+        #expect(jobManager.waitTimeouts == [1])
 
         let cancel = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"workspace_job_cancel","arguments":{"job_id":"job-1"}}}"#)))
         #expect(try resultText(cancel).contains("status: cancelled"))
+    }
+
+    @Test("Workspace job wait caps provider wait windows")
+    func workspaceJobWaitCapsProviderWaitWindows() throws {
+        let executor = RecordingWorkspaceCommandExecutor(result: WorkspaceCommandResult(
+            command: "pwd",
+            exitCode: 0,
+            stdout: "/workspace\n",
+            stderr: ""
+        ))
+        let jobManager = RecordingWorkspaceJobManager()
+        let server = WorkspaceMCPServer(executor: executor, jobManager: jobManager)
+
+        let wait = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"workspace_job_wait","arguments":{"job_id":"job-1","max_wait_seconds":3600}}}"#)))
+
+        #expect(try resultText(wait).contains("status: running"))
+        #expect(jobManager.waitTimeouts == [30])
     }
 
     @Test("Docker workspace job manager starts detached durable job")
@@ -268,6 +743,157 @@ struct WorkspaceToolSupportTests {
         #expect(manager.tail(jobID: job.jobID, stream: "stdout", lines: 10).text.contains("ok"))
     }
 
+    @Test("Docker workspace job manager maps host workspace path before persisting command")
+    func dockerWorkspaceJobManagerMapsHostWorkspacePathBeforePersistingCommand() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-map-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let hostWorkspace = root.appendingPathComponent("repo", isDirectory: true)
+        try FileManager.default.createDirectory(at: hostWorkspace, withIntermediateDirectories: true)
+        let docker = root.appendingPathComponent("docker")
+        let log = root.appendingPathComponent("docker.log")
+        try """
+        #!/bin/sh
+        printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+        case "$1" in
+          inspect) exit 1 ;;
+          rm) exit 0 ;;
+          run) echo container-id; exit 0 ;;
+          exec) exit 0 ;;
+          stop) exit 0 ;;
+          *) exit 99 ;;
+        esac
+        """.write(to: docker, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
+        setenv("FAKE_DOCKER_LOG", log.path, 1)
+        defer { unsetenv("FAKE_DOCKER_LOG") }
+
+        let jobRoot = root.appendingPathComponent("jobs", isDirectory: true)
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: docker.path,
+            image: "astra/workspace:latest",
+            containerName: "astra-test-job-map",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-3",
+            runID: "run-3",
+            mounts: [
+                WorkspaceDockerMount(hostPath: hostWorkspace.path, containerPath: "/workspace", access: "rw", role: "workspace")
+            ],
+            jobRootHostPath: jobRoot.path,
+            jobRootContainerPath: "/workspace/jobs"
+        )
+        let executor = DockerWorkspaceCommandExecutor(configuration: configuration)
+        let manager = DockerWorkspaceJobManager(configuration: configuration, executor: executor)
+
+        let job = manager.start(
+            command: "cd \(hostWorkspace.path) && dbt build",
+            timeoutSeconds: 3600,
+            label: "dbt",
+            progressProbe: "dbt"
+        )
+        executor.cleanup()
+
+        #expect(job.status == .running)
+        #expect(job.command == "cd /workspace && dbt build")
+        let commandPath = jobRoot
+            .appendingPathComponent(job.jobID, isDirectory: true)
+            .appendingPathComponent("command.sh", isDirectory: false)
+            .path
+        let commandText = try String(contentsOfFile: commandPath, encoding: .utf8)
+        #expect(commandText.contains("cd /workspace && dbt build"))
+        #expect(!commandText.contains(hostWorkspace.path))
+    }
+
+    @Test("Workspace MCP mixed Docker workflow runs shell then starts durable job")
+    func workspaceMCPMixedDockerWorkflowRunsShellThenStartsDurableJob() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-mixed-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let docker = root.appendingPathComponent("docker")
+        let log = root.appendingPathComponent("docker.log")
+        try """
+        #!/bin/sh
+        printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+        case "$1" in
+          inspect) exit 1 ;;
+          rm) exit 0 ;;
+          run) echo container-id; exit 0 ;;
+          exec)
+            if [ "$2" = "-d" ]; then exit 0; fi
+            echo /usr/local/bin/sqlfmt
+            echo sqlfmt 0.1.0
+            exit 0
+            ;;
+          stop) exit 0 ;;
+          *) exit 99 ;;
+        esac
+        """.write(to: docker, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
+        setenv("FAKE_DOCKER_LOG", log.path, 1)
+        defer { unsetenv("FAKE_DOCKER_LOG") }
+
+        let jobRoot = root.appendingPathComponent(".astra/tasks/task-4/jobs", isDirectory: true)
+        let diagnostics = root.appendingPathComponent(".astra/tasks/task-4/diagnostics", isDirectory: true)
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: docker.path,
+            image: "astra/workspace:latest",
+            containerName: "astra-test-mixed",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-4",
+            runID: "run-4",
+            mounts: [
+                WorkspaceDockerMount(hostPath: root.path, containerPath: "/workspace", access: "rw", role: "workspace")
+            ],
+            jobRootHostPath: jobRoot.path,
+            jobRootContainerPath: "/workspace/.astra/tasks/task-4/jobs",
+            diagnosticsHostPath: diagnostics.path
+        )
+        let executor = DockerWorkspaceCommandExecutor(configuration: configuration)
+        let manager = DockerWorkspaceJobManager(configuration: configuration, executor: executor)
+        let server = WorkspaceMCPServer(
+            executor: executor,
+            jobManager: manager,
+            diagnosticsRecorder: WorkspaceToolDiagnosticsRecorder(configuration: configuration)
+        )
+
+        let shell = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workspace_shell","arguments":{"command":"command -v sqlfmt && sqlfmt --version","timeout_seconds":10}}}"#)))
+        #expect(try resultText(shell).contains("sqlfmt 0.1.0"))
+
+        let startLine = """
+        {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"workspace_job_start","arguments":{"command":"cd \(root.path) && dbt build --select +death","timeout_seconds":7200,"label":"dbt death","progress_probe":"dbt"}}}
+        """
+        let start = try parseJSON(try #require(server.handleLine(startLine)))
+        let startText = try resultText(start)
+        #expect(startText.contains("status: running"))
+        #expect(startText.contains("command: cd /workspace && dbt build --select +death"))
+        executor.cleanup()
+
+        let logText = try String(contentsOf: log, encoding: .utf8)
+        #expect(logText.contains("exec -i --workdir /workspace astra-test-mixed sh -c command -v sqlfmt && sqlfmt --version"))
+        #expect(logText.contains("exec -d --workdir /workspace astra-test-mixed sh -c"))
+
+        let activity = try String(
+            contentsOf: diagnostics.appendingPathComponent("workspace_tool_activity.jsonl", isDirectory: false),
+            encoding: .utf8
+        )
+        let records = try activity
+            .split(separator: "\n")
+            .map { line -> [String: Any] in
+                try #require(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
+            }
+        #expect(records.contains { $0["toolName"] as? String == "workspace_shell" })
+        #expect(records.contains {
+            $0["toolName"] as? String == "workspace_job_start" &&
+                $0["mappedCommand"] as? String == "cd /workspace && dbt build --select +death"
+        })
+    }
+
     private func parseJSON(_ line: String) throws -> [String: Any] {
         let data = try #require(line.data(using: .utf8))
         return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -305,6 +931,7 @@ private final class RecordingWorkspaceJobManager: WorkspaceJobManaging {
     private(set) var startedCommands: [String] = []
     private(set) var startedLabels: [String?] = []
     private(set) var startedProgressProbes: [String?] = []
+    private(set) var waitTimeouts: [TimeInterval] = []
     private var cancelled = false
 
     func start(
@@ -332,8 +959,9 @@ private final class RecordingWorkspaceJobManager: WorkspaceJobManaging {
         return record(status: .cancelled)
     }
 
-    func wait(jobID _: String, timeoutSeconds _: TimeInterval) -> WorkspaceManagedJobRecord {
-        record(status: cancelled ? .cancelled : .running)
+    func wait(jobID _: String, timeoutSeconds: TimeInterval) -> WorkspaceManagedJobRecord {
+        waitTimeouts.append(timeoutSeconds)
+        return record(status: cancelled ? .cancelled : .running)
     }
 
     private func record(status: WorkspaceManagedJobStatus) -> WorkspaceManagedJobRecord {

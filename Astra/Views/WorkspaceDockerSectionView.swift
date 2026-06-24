@@ -31,6 +31,13 @@ struct WorkspaceDockerSectionView: View {
 
             environmentPickerRow
 
+            if !viewModel.runtimeContractRows.isEmpty {
+                ForEach(viewModel.runtimeContractRows) { row in
+                    rowDivider
+                    runtimeContractRow(row)
+                }
+            }
+
             if viewModel.canSwitchPinnedTaskToWorkspaceEnvironment && !viewModel.canUseEnvironmentPicker {
                 rowDivider
                 pinnedTaskEnvironmentActionRow
@@ -180,6 +187,26 @@ struct WorkspaceDockerSectionView: View {
         .buttonStyle(.plain)
         .disabled(!viewModel.credentialProjectionIsEnabled)
         .help(viewModel.credentialProjectionHelp)
+    }
+
+    private func runtimeContractRow(_ contract: DockerRuntimeContractRow) -> some View {
+        HStack(spacing: Self.rowIconSpacing) {
+            rowIcon(contract.iconSystemName, color: .secondary)
+
+            VStack(alignment: .leading, spacing: CapabilityRailLayout.titleSubtitleSpacing) {
+                rowTitle(contract.title)
+                Text(contract.subtitle)
+                    .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+            }
+            .layoutPriority(1)
+
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, minHeight: CapabilityRailLayout.setupRowMinHeight, alignment: .leading)
+        .help(contract.help)
     }
 
     private var pinnedTaskEnvironmentActionRow: some View {

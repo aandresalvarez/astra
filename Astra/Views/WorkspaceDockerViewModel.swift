@@ -12,6 +12,14 @@ struct DockerEnvironmentOption: Identifiable, Equatable, Sendable {
     var environment: WorkspaceExecutionEnvironment
 }
 
+struct DockerRuntimeContractRow: Identifiable, Equatable, Sendable {
+    var id: String
+    var title: String
+    var subtitle: String
+    var iconSystemName: String
+    var help: String
+}
+
 @MainActor
 final class WorkspaceDockerViewModel: ObservableObject {
     @Published var candidates: [DockerWorkspaceCandidate] = []
@@ -256,6 +264,62 @@ final class WorkspaceDockerViewModel: ObservableObject {
             : "Changing this sets only this draft task. The workspace default is unchanged."
         let effect = selectedEnvironmentEffect(for: selectedEnvironment)
         return "\(scope) \(effect)"
+    }
+
+    var runtimeContractRows: [DockerRuntimeContractRow] {
+        if selectedEnvironment.isHost {
+            return [
+                DockerRuntimeContractRow(
+                    id: "provider",
+                    title: "Provider: Host",
+                    subtitle: "AI provider CLI runs on macOS.",
+                    iconSystemName: "cpu",
+                    help: "ASTRA launches the selected AI provider directly on this Mac."
+                ),
+                DockerRuntimeContractRow(
+                    id: "workspace-commands",
+                    title: "Workspace commands: Host",
+                    subtitle: "Project shell commands run on macOS.",
+                    iconSystemName: "terminal",
+                    help: "Provider shell tools execute against the host workspace and ASTRA's macOS sandbox grants."
+                )
+            ]
+        }
+
+        let image = selectedEnvironment.image ?? selectedEnvironment.displayName
+        var rows = [
+            DockerRuntimeContractRow(
+                id: "provider",
+                title: "Provider: Host",
+                subtitle: "AI provider stays on macOS.",
+                iconSystemName: "cpu",
+                help: "ASTRA keeps provider CLIs on the host so provider authentication, browser bridges, and control-plane capabilities are managed by ASTRA instead of being baked into the image."
+            ),
+            DockerRuntimeContractRow(
+                id: "workspace-commands",
+                title: "Workspace commands: Docker image",
+                subtitle: "Project shell runs in \(image).",
+                iconSystemName: "shippingbox.fill",
+                help: "workspace_shell and workspace_job_start execute inside the selected Docker image using mounted workspace paths such as /workspace."
+            ),
+            DockerRuntimeContractRow(
+                id: "host-capabilities",
+                title: "Host capabilities: ASTRA managed",
+                subtitle: "GitHub, Jira, GCloud, SSH, browser, and Keychain stay outside workspace_shell.",
+                iconSystemName: "link.circle",
+                help: "Control-plane work must use enabled ASTRA capabilities. The Docker workspace shell is only for project commands inside the image."
+            )
+        ]
+        if shouldShowCredentialProjectionRow {
+            rows.append(DockerRuntimeContractRow(
+                id: "gcp-credentials",
+                title: credentialProjectionTitle,
+                subtitle: credentialProjectionSubtitle,
+                iconSystemName: "key.fill",
+                help: credentialProjectionHelp
+            ))
+        }
+        return rows
     }
 
     var dockerIssueTitle: String? {

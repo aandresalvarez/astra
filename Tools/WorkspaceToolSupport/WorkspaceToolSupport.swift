@@ -27,6 +27,8 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
     public var jobRootHostPath: String
     public var jobRootContainerPath: String
     public var dockerClientConfigPath: String
+    public var diagnosticsHostPath: String
+    public var subagentParentID: String?
 
     public init(
         dockerExecutable: String,
@@ -40,7 +42,9 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         containerEnvironment: [String: String] = [:],
         jobRootHostPath: String? = nil,
         jobRootContainerPath: String? = nil,
-        dockerClientConfigPath: String? = nil
+        dockerClientConfigPath: String? = nil,
+        diagnosticsHostPath: String? = nil,
+        subagentParentID: String? = nil
     ) {
         self.dockerExecutable = dockerExecutable
         self.image = image
@@ -59,6 +63,9 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         self.jobRootContainerPath = Self.clean(jobRootContainerPath) ?? Self.defaultJobRootContainerPath(taskID: taskID, mounts: mounts)
         self.dockerClientConfigPath = Self.clean(dockerClientConfigPath)
             ?? Self.defaultDockerClientConfigPath(jobRootHostPath: self.jobRootHostPath, runID: runID)
+        self.diagnosticsHostPath = Self.clean(diagnosticsHostPath)
+            ?? Self.defaultDiagnosticsHostPath(jobRootHostPath: self.jobRootHostPath)
+        self.subagentParentID = Self.clean(subagentParentID)
     }
 
     public static func fromEnvironment(_ env: [String: String] = ProcessInfo.processInfo.environment) throws -> WorkspaceToolConfiguration {
@@ -94,8 +101,57 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
             containerEnvironment: decodedContainerEnvironment,
             jobRootHostPath: clean(env["ASTRA_WORKSPACE_JOB_ROOT_HOST"]),
             jobRootContainerPath: clean(env["ASTRA_WORKSPACE_JOB_ROOT_CONTAINER"]),
-            dockerClientConfigPath: clean(env["DOCKER_CONFIG"])
+            dockerClientConfigPath: clean(env["DOCKER_CONFIG"]),
+            diagnosticsHostPath: clean(env["ASTRA_WORKSPACE_DIAGNOSTICS_HOST"]),
+            subagentParentID: clean(env["ASTRA_WORKSPACE_SUBAGENT_PARENT_ID"])
+                ?? clean(env["ASTRA_SUBAGENT_PARENT_ID"])
         )
+    }
+
+    public func containerCommand(for rawCommand: String) -> WorkspaceCommandPathResolution {
+        var command = rawCommand
+        var mapped: [WorkspaceCommandPathMapping] = []
+        if let ambiguity = firstAmbiguousHostMount(in: command) {
+            return WorkspaceCommandPathResolution(
+                command: rawCommand,
+                mappedPaths: [],
+                errorMessage: ambiguousHostMountMessage(ambiguity)
+            )
+        }
+        for mount in mounts.sorted(by: { $0.hostPath.count > $1.hostPath.count }) {
+            let hostPath = normalizedMountPath(mount.hostPath)
+            let containerPath = normalizedMountPath(mount.containerPath)
+            guard hostPath.count > 1, !containerPath.isEmpty, command.contains(hostPath) else {
+                continue
+            }
+            let replacement = replacingMountedHostPath(
+                in: command,
+                hostPath: hostPath,
+                containerPath: containerPath
+            )
+            command = replacement.command
+            if replacement.replaced {
+                mapped.append(WorkspaceCommandPathMapping(hostPath: hostPath, containerPath: containerPath))
+            }
+        }
+
+        if let hostPath = firstUnmappedHostPath(in: command) {
+            return WorkspaceCommandPathResolution(
+                command: rawCommand,
+                mappedPaths: mapped,
+                errorMessage: unmappedHostPathMessage(hostPath)
+            )
+        }
+
+        if let controlPlaneCommand = firstHostControlPlaneCommand(in: command) {
+            return WorkspaceCommandPathResolution(
+                command: command,
+                mappedPaths: mapped,
+                errorMessage: hostControlPlaneCommandMessage(controlPlaneCommand)
+            )
+        }
+
+        return WorkspaceCommandPathResolution(command: command, mappedPaths: mapped, errorMessage: nil)
     }
 
     private static func clean(_ value: String?) -> String? {
@@ -177,6 +233,13 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
             .standardizedFileURL.path
     }
 
+    private static func defaultDiagnosticsHostPath(jobRootHostPath: String) -> String {
+        URL(fileURLWithPath: jobRootHostPath, isDirectory: true)
+            .deletingLastPathComponent()
+            .appendingPathComponent("diagnostics", isDirectory: true)
+            .standardizedFileURL.path
+    }
+
     private static func taskPrefix(_ taskID: String) -> String {
         let cleaned = taskID
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -188,17 +251,226 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         var seen: Set<String> = []
         return values.filter { seen.insert($0).inserted }
     }
+
+    private func normalizedMountPath(_ path: String) -> String {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > 1 else { return trimmed }
+        return trimmed.hasSuffix("/") ? String(trimmed.dropLast()) : trimmed
+    }
+
+    private func replacingMountedHostPath(
+        in command: String,
+        hostPath: String,
+        containerPath: String
+    ) -> (command: String, replaced: Bool) {
+        let escapedHostPath = NSRegularExpression.escapedPattern(for: hostPath)
+        let pattern = "(^|[\\s'\"`=:(])(\(escapedHostPath))(?=$|[\\s'\"`;&|),]|/)"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return (command, false)
+        }
+
+        var result = command
+        let range = NSRange(command.startIndex..<command.endIndex, in: command)
+        let matches = regex.matches(in: command, range: range)
+        for match in matches.reversed() where match.numberOfRanges > 2 {
+            guard let pathRange = Range(match.range(at: 2), in: result) else {
+                continue
+            }
+            result.replaceSubrange(pathRange, with: containerPath)
+        }
+        return (result, !matches.isEmpty)
+    }
+
+    private func firstAmbiguousHostMount(in command: String) -> WorkspaceAmbiguousMount? {
+        let grouped = Dictionary(grouping: mounts) { normalizedMountPath($0.hostPath) }
+        for (hostPath, groupedMounts) in grouped where hostPath.count > 1 {
+            let containerPaths = Array(Set(groupedMounts.map { normalizedMountPath($0.containerPath) })).sorted()
+            guard containerPaths.count > 1,
+                  commandContainsMountedHostPath(command, hostPath: hostPath) else {
+                continue
+            }
+            return WorkspaceAmbiguousMount(hostPath: hostPath, containerPaths: containerPaths)
+        }
+        return nil
+    }
+
+    private func commandContainsMountedHostPath(_ command: String, hostPath: String) -> Bool {
+        let escapedHostPath = NSRegularExpression.escapedPattern(for: hostPath)
+        let pattern = "(^|[\\s'\"`=:(])(\(escapedHostPath))(?=$|[\\s'\"`;&|),]|/)"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return false
+        }
+        let range = NSRange(command.startIndex..<command.endIndex, in: command)
+        return regex.firstMatch(in: command, range: range) != nil
+    }
+
+    private func firstUnmappedHostPath(in command: String) -> String? {
+        let pattern = #"(?:^|[\s'"`=:(])(/(?:Users|Volumes|Library|Applications|private/var|var/folders)/[^\s'"`;&|)]*)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(command.startIndex..<command.endIndex, in: command)
+        guard let match = regex.firstMatch(in: command, range: range),
+              match.numberOfRanges > 1,
+              let pathRange = Range(match.range(at: 1), in: command) else {
+            return nil
+        }
+        return String(command[pathRange])
+    }
+
+    private func firstHostControlPlaneCommand(in command: String) -> WorkspaceControlPlaneCommand? {
+        let commands = [
+            WorkspaceControlPlaneCommand(
+                tool: "gh",
+                capability: "GitHub",
+                pattern: #"(^|[;&|]\s*)gh\s+(api|auth|issue|pr|repo|search)\b"#
+            ),
+            WorkspaceControlPlaneCommand(
+                tool: "jira",
+                capability: "Jira",
+                pattern: #"(^|[;&|]\s*)jira\s+"#
+            ),
+            WorkspaceControlPlaneCommand(
+                tool: "gcloud",
+                capability: "Google Cloud",
+                pattern: #"(^|[;&|]\s*)gcloud\s+"#
+            ),
+            WorkspaceControlPlaneCommand(
+                tool: "bq",
+                capability: "BigQuery",
+                pattern: #"(^|[;&|]\s*)bq\s+"#
+            ),
+            WorkspaceControlPlaneCommand(
+                tool: "ssh",
+                capability: "SSH",
+                pattern: #"(^|[;&|]\s*)ssh\s+"#
+            )
+        ]
+        let range = NSRange(command.startIndex..<command.endIndex, in: command)
+        return commands.first { candidate in
+            guard let regex = try? NSRegularExpression(pattern: candidate.pattern) else {
+                return false
+            }
+            return regex.firstMatch(in: command, range: range) != nil
+        }
+    }
+
+    private func hostControlPlaneCommandMessage(_ command: WorkspaceControlPlaneCommand) -> String {
+        [
+            "workspace command tried to run the host control-plane CLI '\(command.tool)' inside the Docker workspace.",
+            "\(command.capability) metadata and credentials must be handled through ASTRA's host capability layer, not through workspace_shell.",
+            "Use workspace_shell only for project commands that belong inside the container image. Enable or repair the \(command.capability) capability if this task needs \(command.capability) access."
+        ].joined(separator: "\n")
+    }
+
+    private func unmappedHostPathMessage(_ path: String) -> String {
+        let mappings = mounts
+            .map { "\($0.hostPath) -> \($0.containerPath)" }
+            .joined(separator: "; ")
+        return [
+            "workspace command used a host filesystem path that is not valid inside the Docker workspace: \(path)",
+            "Use the container path for mounted workspace files instead.",
+            mappings.isEmpty ? nil : "Mounted path mappings: \(mappings)"
+        ]
+            .compactMap { $0 }
+            .joined(separator: "\n")
+    }
+
+    private func ambiguousHostMountMessage(_ mount: WorkspaceAmbiguousMount) -> String {
+        [
+            "workspace command used a host path that maps to more than one Docker container path: \(mount.hostPath)",
+            "Use the intended container path explicitly instead of the host path.",
+            "Available container paths: \(mount.containerPaths.joined(separator: ", "))"
+        ].joined(separator: "\n")
+    }
+}
+
+private struct WorkspaceControlPlaneCommand {
+    var tool: String
+    var capability: String
+    var pattern: String
+}
+
+private struct WorkspaceAmbiguousMount {
+    var hostPath: String
+    var containerPaths: [String]
+}
+
+private enum WorkspaceCommandRoutingPolicy {
+    static let maxShortShellSeconds: TimeInterval = 120
+    static let maxJobWaitSeconds: TimeInterval = 30
+
+    static func shortShellRejectionMessage(command: String, timeoutSeconds: TimeInterval) -> String? {
+        if timeoutSeconds > maxShortShellSeconds {
+            return [
+                "workspace_shell is limited to short checks of \(Int(maxShortShellSeconds)) seconds or less.",
+                "Start long-running workspace work with workspace_job_start, then poll with workspace_job_status, workspace_job_tail, or short workspace_job_wait calls."
+            ].joined(separator: "\n")
+        }
+
+        if let command = firstLongRunningCommand(in: command) {
+            return [
+                "workspace_shell received a long-running project command: \(command.displayName).",
+                "Use workspace_job_start for builds, tests, dbt runs, migrations, installs, and other commands that may run while the provider is quiet.",
+                "Then inspect progress with workspace_job_status and workspace_job_tail."
+            ].joined(separator: "\n")
+        }
+        return nil
+    }
+
+    private static func firstLongRunningCommand(in command: String) -> LongRunningCommand? {
+        let commands = [
+            LongRunningCommand(displayName: "dbt build/run/test/compile", pattern: #"(^|[;&|]\s*)dbt\s+(build|run|test|compile|seed|snapshot)\b"#),
+            LongRunningCommand(displayName: "docker build", pattern: #"(^|[;&|]\s*)docker\s+build\b"#),
+            LongRunningCommand(displayName: "test suite", pattern: #"(^|[;&|]\s*)(pytest|swift\s+test|xcodebuild\s+test|npm\s+test|pnpm\s+test|yarn\s+test)\b"#),
+            LongRunningCommand(displayName: "dependency install", pattern: #"(^|[;&|]\s*)(npm|pnpm|yarn)\s+(install|ci)\b"#),
+            LongRunningCommand(displayName: "migration or deployment", pattern: #"(^|[;&|]\s*)(alembic|rails|django-admin|python\s+manage\.py)\s+(upgrade|migrate|migration|deploy)\b"#)
+        ]
+        let range = NSRange(command.startIndex..<command.endIndex, in: command)
+        return commands.first { candidate in
+            guard let regex = try? NSRegularExpression(pattern: candidate.pattern, options: [.caseInsensitive]) else {
+                return false
+            }
+            return regex.firstMatch(in: command, range: range) != nil
+        }
+    }
+
+    private struct LongRunningCommand {
+        var displayName: String
+        var pattern: String
+    }
+}
+
+public struct WorkspaceCommandPathMapping: Equatable, Sendable {
+    public var hostPath: String
+    public var containerPath: String
+}
+
+public struct WorkspaceCommandPathResolution: Equatable, Sendable {
+    public var command: String
+    public var mappedPaths: [WorkspaceCommandPathMapping]
+    public var errorMessage: String?
 }
 
 public struct WorkspaceCommandResult: Equatable, Sendable {
     public var command: String
+    public var routedCommand: String?
+    public var workingDirectory: String?
     public var exitCode: Int32
     public var stdout: String
     public var stderr: String
     public var timedOut: Bool
 
-    public init(command: String, exitCode: Int32, stdout: String, stderr: String, timedOut: Bool = false) {
+    public init(
+        command: String,
+        exitCode: Int32,
+        stdout: String,
+        stderr: String,
+        timedOut: Bool = false,
+        routedCommand: String? = nil,
+        workingDirectory: String? = nil
+    ) {
         self.command = command
+        self.routedCommand = routedCommand
+        self.workingDirectory = workingDirectory
         self.exitCode = exitCode
         self.stdout = stdout
         self.stderr = stderr
@@ -222,7 +494,36 @@ public final class DockerWorkspaceCommandExecutor: WorkspaceCommandExecutor {
     public func run(command: String, timeoutSeconds: TimeInterval) -> WorkspaceCommandResult {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            return WorkspaceCommandResult(command: command, exitCode: 2, stdout: "", stderr: "workspace_shell requires a non-empty command")
+            return WorkspaceCommandResult(
+                command: command,
+                exitCode: 2,
+                stdout: "",
+                stderr: "workspace_shell requires a non-empty command",
+                workingDirectory: configuration.workdir
+            )
+        }
+        if let message = WorkspaceCommandRoutingPolicy.shortShellRejectionMessage(
+            command: trimmed,
+            timeoutSeconds: timeoutSeconds
+        ) {
+            return WorkspaceCommandResult(
+                command: command,
+                exitCode: 2,
+                stdout: "",
+                stderr: message,
+                workingDirectory: configuration.workdir
+            )
+        }
+        let pathResolution = configuration.containerCommand(for: trimmed)
+        if let errorMessage = pathResolution.errorMessage {
+            return WorkspaceCommandResult(
+                command: command,
+                exitCode: 2,
+                stdout: "",
+                stderr: errorMessage,
+                routedCommand: pathResolution.command,
+                workingDirectory: configuration.workdir
+            )
         }
         let start = ensureContainerStarted()
         guard start.exitCode == 0 else {
@@ -231,14 +532,19 @@ public final class DockerWorkspaceCommandExecutor: WorkspaceCommandExecutor {
                 exitCode: start.exitCode,
                 stdout: start.stdout,
                 stderr: start.stderr.isEmpty ? "Failed to start Docker workspace container" : start.stderr,
-                timedOut: start.timedOut
+                timedOut: start.timedOut,
+                routedCommand: pathResolution.command,
+                workingDirectory: configuration.workdir
             )
         }
-        return runDockerCommand(
-            arguments: ["exec", "-i", "--workdir", configuration.workdir, configuration.containerName, "sh", "-c", trimmed],
+        var result = runDockerCommand(
+            arguments: ["exec", "-i", "--workdir", configuration.workdir, configuration.containerName, "sh", "-c", pathResolution.command],
             commandLabel: command,
             timeoutSeconds: timeoutSeconds
         )
+        result.routedCommand = pathResolution.command
+        result.workingDirectory = configuration.workdir
+        return result
     }
 
     public func cleanup() {
@@ -343,13 +649,166 @@ public final class DockerWorkspaceCommandExecutor: WorkspaceCommandExecutor {
     }
 }
 
+public final class WorkspaceToolDiagnosticsRecorder: @unchecked Sendable {
+    private let diagnosticsDirectory: URL
+    private let fileURL: URL
+    private let taskID: String
+    private let runID: String
+    private let route: String
+    private let subagentParentID: String?
+    private let fileManager: FileManager
+    private let lock = NSLock()
+
+    public init(configuration: WorkspaceToolConfiguration, fileManager: FileManager = .default) {
+        self.diagnosticsDirectory = URL(fileURLWithPath: configuration.diagnosticsHostPath, isDirectory: true)
+        self.fileURL = diagnosticsDirectory.appendingPathComponent("workspace_tool_activity.jsonl", isDirectory: false)
+        self.taskID = configuration.taskID
+        self.runID = configuration.runID
+        self.route = "docker_workspace_mcp"
+        self.subagentParentID = configuration.subagentParentID
+        self.fileManager = fileManager
+    }
+
+    func recordShell(
+        toolName: String,
+        command: String,
+        mappedCommand: String?,
+        workingDirectory: String?,
+        timeoutSeconds: TimeInterval,
+        result: WorkspaceCommandResult
+    ) {
+        write(WorkspaceToolDiagnosticRecord(
+            timestamp: Self.timestamp(),
+            taskID: taskID,
+            runID: runID,
+            route: route,
+            toolName: toolName,
+            command: command,
+            mappedCommand: mappedCommand,
+            workingDirectory: workingDirectory,
+            timeoutSeconds: timeoutSeconds,
+            exitCode: result.exitCode,
+            timedOut: result.timedOut,
+            stderrTail: Self.tail(result.stderr),
+            jobID: nil,
+            jobStatus: nil,
+            heartbeatPath: nil,
+            subagentParentID: subagentParentID
+        ))
+    }
+
+    func recordJob(
+        toolName: String,
+        command: String?,
+        job: WorkspaceManagedJobRecord,
+        timeoutSeconds: TimeInterval? = nil
+    ) {
+        write(WorkspaceToolDiagnosticRecord(
+            timestamp: Self.timestamp(),
+            taskID: taskID,
+            runID: runID,
+            route: route,
+            toolName: toolName,
+            command: command,
+            mappedCommand: job.command,
+            workingDirectory: nil,
+            timeoutSeconds: timeoutSeconds ?? job.timeoutSeconds,
+            exitCode: job.exitCode,
+            timedOut: job.status == .timedOut,
+            stderrTail: Self.tail(job.message ?? ""),
+            jobID: job.jobID,
+            jobStatus: job.status.rawValue,
+            heartbeatPath: job.heartbeatPath.isEmpty ? nil : job.heartbeatPath,
+            subagentParentID: subagentParentID
+        ))
+    }
+
+    func recordTail(toolName: String, jobID: String, stream: String, lines: Int) {
+        write(WorkspaceToolDiagnosticRecord(
+            timestamp: Self.timestamp(),
+            taskID: taskID,
+            runID: runID,
+            route: route,
+            toolName: toolName,
+            command: nil,
+            mappedCommand: nil,
+            workingDirectory: nil,
+            timeoutSeconds: nil,
+            exitCode: nil,
+            timedOut: false,
+            stderrTail: nil,
+            jobID: jobID,
+            jobStatus: "tail:\(stream):\(lines)",
+            heartbeatPath: nil,
+            subagentParentID: subagentParentID
+        ))
+    }
+
+    private func write(_ record: WorkspaceToolDiagnosticRecord) {
+        guard let data = try? JSONEncoder().encode(record),
+              let line = String(data: data, encoding: .utf8)?.appending("\n").data(using: .utf8) else {
+            return
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        do {
+            try fileManager.createDirectory(at: diagnosticsDirectory, withIntermediateDirectories: true)
+            if !fileManager.fileExists(atPath: fileURL.path) {
+                fileManager.createFile(atPath: fileURL.path, contents: nil)
+            }
+            let handle = try FileHandle(forWritingTo: fileURL)
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            try handle.write(contentsOf: line)
+        } catch {
+            // Diagnostics should never make the workspace tool fail. The
+            // provider-facing command result remains the source of truth.
+        }
+    }
+
+    private static func timestamp() -> String {
+        ISO8601DateFormatter().string(from: Date())
+    }
+
+    private static func tail(_ value: String, limit: Int = 2_000) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return String(trimmed.suffix(limit))
+    }
+}
+
+private struct WorkspaceToolDiagnosticRecord: Codable {
+    var timestamp: String
+    var taskID: String
+    var runID: String
+    var route: String
+    var toolName: String
+    var command: String?
+    var mappedCommand: String?
+    var workingDirectory: String?
+    var timeoutSeconds: TimeInterval?
+    var exitCode: Int32?
+    var timedOut: Bool
+    var stderrTail: String?
+    var jobID: String?
+    var jobStatus: String?
+    var heartbeatPath: String?
+    var subagentParentID: String?
+}
+
 public final class WorkspaceMCPServer {
     private let executor: WorkspaceCommandExecutor
     private let jobManager: WorkspaceJobManaging?
+    private let diagnosticsRecorder: WorkspaceToolDiagnosticsRecorder?
 
-    public init(executor: WorkspaceCommandExecutor, jobManager: WorkspaceJobManaging? = nil) {
+    public init(
+        executor: WorkspaceCommandExecutor,
+        jobManager: WorkspaceJobManaging? = nil,
+        diagnosticsRecorder: WorkspaceToolDiagnosticsRecorder? = nil
+    ) {
         self.executor = executor
         self.jobManager = jobManager
+        self.diagnosticsRecorder = diagnosticsRecorder
     }
 
     public func handleLine(_ line: String) -> String? {
@@ -418,6 +877,14 @@ public final class WorkspaceMCPServer {
         }
         let timeout = timeoutSeconds(from: arguments["timeout_seconds"]) ?? 120
         let result = executor.run(command: command, timeoutSeconds: timeout)
+        diagnosticsRecorder?.recordShell(
+            toolName: "workspace_shell",
+            command: command,
+            mappedCommand: result.routedCommand,
+            workingDirectory: result.workingDirectory,
+            timeoutSeconds: timeout,
+            result: result
+        )
         return encodeResult(id: id, result: [
             "content": [[
                 "type": "text",
@@ -441,6 +908,7 @@ public final class WorkspaceMCPServer {
             label: clean(arguments["label"] as? String),
             progressProbe: clean(arguments["progress_probe"] as? String)
         )
+        diagnosticsRecorder?.recordJob(toolName: "workspace_job_start", command: command, job: job)
         return encodeJobResult(id: id, job: job)
     }
 
@@ -451,7 +919,9 @@ public final class WorkspaceMCPServer {
         guard let jobID = clean(arguments["job_id"] as? String) else {
             return encodeError(id: id, code: -32602, message: "workspace_job_status requires job_id")
         }
-        return encodeJobResult(id: id, job: jobManager.status(jobID: jobID))
+        let job = jobManager.status(jobID: jobID)
+        diagnosticsRecorder?.recordJob(toolName: "workspace_job_status", command: nil, job: job)
+        return encodeJobResult(id: id, job: job)
     }
 
     private func handleWorkspaceJobTail(id: Any?, arguments: [String: Any]) -> String? {
@@ -464,6 +934,7 @@ public final class WorkspaceMCPServer {
         let stream = clean(arguments["stream"] as? String) ?? "stdout"
         let lines = intValue(from: arguments["lines"]) ?? 120
         let tail = jobManager.tail(jobID: jobID, stream: stream, lines: lines)
+        diagnosticsRecorder?.recordTail(toolName: "workspace_job_tail", jobID: jobID, stream: stream, lines: lines)
         return encodeResult(id: id, result: [
             "content": [[
                 "type": "text",
@@ -480,7 +951,9 @@ public final class WorkspaceMCPServer {
         guard let jobID = clean(arguments["job_id"] as? String) else {
             return encodeError(id: id, code: -32602, message: "workspace_job_cancel requires job_id")
         }
-        return encodeJobResult(id: id, job: jobManager.cancel(jobID: jobID))
+        let job = jobManager.cancel(jobID: jobID)
+        diagnosticsRecorder?.recordJob(toolName: "workspace_job_cancel", command: nil, job: job)
+        return encodeJobResult(id: id, job: job)
     }
 
     private func handleWorkspaceJobWait(id: Any?, arguments: [String: Any]) -> String? {
@@ -490,8 +963,10 @@ public final class WorkspaceMCPServer {
         guard let jobID = clean(arguments["job_id"] as? String) else {
             return encodeError(id: id, code: -32602, message: "workspace_job_wait requires job_id")
         }
-        let timeout = timeoutSeconds(from: arguments["max_wait_seconds"]) ?? 30
-        return encodeJobResult(id: id, job: jobManager.wait(jobID: jobID, timeoutSeconds: timeout))
+        let timeout = min(timeoutSeconds(from: arguments["max_wait_seconds"]) ?? 30, WorkspaceCommandRoutingPolicy.maxJobWaitSeconds)
+        let job = jobManager.wait(jobID: jobID, timeoutSeconds: timeout)
+        diagnosticsRecorder?.recordJob(toolName: "workspace_job_wait", command: nil, job: job, timeoutSeconds: timeout)
+        return encodeJobResult(id: id, job: job)
     }
 
     private func timeoutSeconds(from value: Any?) -> TimeInterval? {
@@ -747,7 +1222,12 @@ public enum AstraWorkspaceToolMain {
             let configuration = try WorkspaceToolConfiguration.fromEnvironment()
             let executor = DockerWorkspaceCommandExecutor(configuration: configuration)
             let jobManager = DockerWorkspaceJobManager(configuration: configuration, executor: executor)
-            let server = WorkspaceMCPServer(executor: executor, jobManager: jobManager)
+            let recorder = WorkspaceToolDiagnosticsRecorder(configuration: configuration)
+            let server = WorkspaceMCPServer(
+                executor: executor,
+                jobManager: jobManager,
+                diagnosticsRecorder: recorder
+            )
             defer { server.cleanup() }
             while let line = readLine() {
                 if let response = server.handleLine(line) {

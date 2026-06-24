@@ -283,6 +283,10 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
         guard !trimmed.isEmpty else {
             return failedSynthetic(command: command, message: "workspace_job_start requires a non-empty command")
         }
+        let pathResolution = configuration.containerCommand(for: trimmed)
+        if let errorMessage = pathResolution.errorMessage {
+            return failedSynthetic(command: command, message: errorMessage)
+        }
         let container = executor.ensureContainerStarted()
         guard container.exitCode == 0 else {
             return failedSynthetic(
@@ -293,7 +297,7 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
 
         do {
             var record = try store.create(
-                command: trimmed,
+                command: pathResolution.command,
                 timeoutSeconds: timeoutSeconds,
                 label: label,
                 progressProbe: progressProbe,

@@ -25,6 +25,7 @@ enum TaskLaunchResourceResolver {
         var environmentGrants: [RuntimeEnvironmentGrant] = []
         var credentialGrants: [RuntimeCredentialGrant] = []
         var providerRequirements: [RuntimeProviderRequirement] = []
+        var controlPlaneResources: [RuntimeControlPlaneResource] = []
         var diagnostics: [RuntimeResourceDiagnostic] = []
 
         appendWorkspacePathGrants(
@@ -59,6 +60,7 @@ enum TaskLaunchResourceResolver {
             hostPathGrants: &hostPathGrants,
             credentialGrants: &credentialGrants,
             providerRequirements: &providerRequirements,
+            controlPlaneResources: &controlPlaneResources,
             diagnostics: &diagnostics
         )
 
@@ -72,6 +74,7 @@ enum TaskLaunchResourceResolver {
             environmentGrants: &environmentGrants,
             credentialGrants: &credentialGrants,
             providerRequirements: &providerRequirements,
+            controlPlaneResources: &controlPlaneResources,
             diagnostics: &diagnostics
         )
 
@@ -86,6 +89,7 @@ enum TaskLaunchResourceResolver {
             providerRequirements: &providerRequirements,
             environmentGrants: &environmentGrants,
             credentialGrants: &credentialGrants,
+            controlPlaneResources: &controlPlaneResources,
             diagnostics: &diagnostics
         )
 
@@ -105,6 +109,7 @@ enum TaskLaunchResourceResolver {
             environmentGrants: uniqueEnvironmentGrants(environmentGrants),
             credentialGrants: uniqueCredentialGrants(credentialGrants),
             providerRequirements: uniqueProviderRequirements(providerRequirements),
+            controlPlaneResources: uniqueControlPlaneResources(controlPlaneResources),
             diagnostics: diagnostics,
             gitCredential: gitResource
         )
@@ -250,6 +255,7 @@ enum TaskLaunchResourceResolver {
         hostPathGrants: inout [RuntimePathGrant],
         credentialGrants: inout [RuntimeCredentialGrant],
         providerRequirements: inout [RuntimeProviderRequirement],
+        controlPlaneResources: inout [RuntimeControlPlaneResource],
         diagnostics: inout [RuntimeResourceDiagnostic]
     ) {
         guard let workspace = task.workspace else { return }
@@ -261,6 +267,15 @@ enum TaskLaunchResourceResolver {
             source: .remoteWorkspace,
             reason: "Workspace has a configured remote SSH connection.",
             required: true
+        ))
+        controlPlaneResources.append(RuntimeControlPlaneResource(
+            capability: "ssh",
+            source: .remoteWorkspace,
+            placement: "host_capability",
+            readiness: .configured,
+            reason: "Remote workspace commands use host SSH config, known_hosts, and identity files through ASTRA's launch-resource projection.",
+            failureText: "Remote SSH is configured, but required host SSH resources may be missing.",
+            repairAction: "Review the workspace SSH connection settings and local ~/.ssh files."
         ))
 
         let aliasConnections = connections.filter {
@@ -333,6 +348,7 @@ enum TaskLaunchResourceResolver {
         environmentGrants: inout [RuntimeEnvironmentGrant],
         credentialGrants: inout [RuntimeCredentialGrant],
         providerRequirements: inout [RuntimeProviderRequirement],
+        controlPlaneResources: inout [RuntimeControlPlaneResource],
         diagnostics: inout [RuntimeResourceDiagnostic]
     ) {
         guard environment.isContainerized else { return }
@@ -342,6 +358,45 @@ enum TaskLaunchResourceResolver {
             reason: "Task is pinned to a Docker execution environment.",
             required: true
         ))
+        if environment.workspaceCommandsRunInsideContainer,
+           environment.effectiveProviderPlacement == .host {
+            providerRequirements.append(RuntimeProviderRequirement(
+                capability: "host_control_plane_capabilities",
+                source: .controlPlane,
+                reason: "Provider stays host-managed while project shell commands run inside the Docker workspace executor.",
+                required: true
+            ))
+            diagnostics.append(RuntimeResourceDiagnostic(
+                severity: .info,
+                code: "mixed_runtime_routing",
+                message: "Workspace commands are routed to Docker; host control-plane actions must use ASTRA-exposed capabilities instead of native provider Bash.",
+                repairAction: "Enable the relevant capability, such as GitHub, Jira, Google Cloud, SSH, or Browser, when this task needs host credentials or host services."
+            ))
+            controlPlaneResources.append(RuntimeControlPlaneResource(
+                capability: "host_control_plane",
+                source: .controlPlane,
+                placement: "host_capabilities",
+                readiness: .configured,
+                reason: "Provider reasoning stays on host while project shell commands run in Docker.",
+                failureText: "A host control-plane action was requested but no matching ASTRA capability was connected.",
+                repairAction: "Enable or repair the specific GitHub, Jira, Google Cloud, SSH, Browser, or Keychain capability required by the task."
+            ))
+        }
+        if environment.workspaceCommandsRunInsideContainer {
+            controlPlaneResources.append(RuntimeControlPlaneResource(
+                capability: "docker_workspace_shell",
+                source: .dockerEnvironment,
+                placement: "docker_workspace_mcp",
+                readiness: DockerWorkspaceMCPProjection.isEnabled(for: environment) ? .ready : .unavailable,
+                reason: "Project shell commands for this task are routed through ASTRA's Docker workspace MCP tools.",
+                failureText: DockerWorkspaceMCPProjection.isEnabled(for: environment)
+                    ? nil
+                    : "The selected runtime cannot route workspace shell commands through ASTRA's Docker executor.",
+                repairAction: DockerWorkspaceMCPProjection.isEnabled(for: environment)
+                    ? nil
+                    : "Switch this task to a runtime that supports ASTRA workspace MCP tools or run project commands on Host."
+            ))
+        }
 
         if DockerWorkspaceMCPProjection.isEnabled(for: environment),
            let dockerConfigDirectory = DockerWorkspaceMCPProjection.taskScopedDockerConfigDirectory(
@@ -428,6 +483,7 @@ enum TaskLaunchResourceResolver {
         providerRequirements: inout [RuntimeProviderRequirement],
         environmentGrants: inout [RuntimeEnvironmentGrant],
         credentialGrants: inout [RuntimeCredentialGrant],
+        controlPlaneResources: inout [RuntimeControlPlaneResource],
         diagnostics: inout [RuntimeResourceDiagnostic]
     ) {
         if TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) {
@@ -436,6 +492,15 @@ enum TaskLaunchResourceResolver {
                 source: .browser,
                 reason: "Task context requires access to ASTRA's browser bridge.",
                 required: true
+            ))
+            controlPlaneResources.append(RuntimeControlPlaneResource(
+                capability: "browser_bridge",
+                source: .browser,
+                placement: "host_capability",
+                readiness: .configured,
+                reason: "Browser tasks use ASTRA's host browser bridge instead of provider-native shell.",
+                failureText: "Browser access was requested but the browser bridge is not available to this runtime.",
+                repairAction: "Enable the Browser capability or choose a provider runtime with browser bridge support."
             ))
         }
 
@@ -449,6 +514,14 @@ enum TaskLaunchResourceResolver {
                 normalized == "googlecloud" ||
                 normalized == "gcp"
         }
+        if hasGCloudConnector {
+            appendGoogleCloudControlPlaneResource(
+                executionEnvironment: executionEnvironment,
+                homeDirectoryPath: homeDirectoryPath,
+                fileManager: fileManager,
+                controlPlaneResources: &controlPlaneResources
+            )
+        }
         if hasGCloudConnector, !executionEnvironment.isContainerized {
             appendHostGCloudCredentialGrant(
                 homeDirectoryPath: homeDirectoryPath,
@@ -461,6 +534,10 @@ enum TaskLaunchResourceResolver {
         }
 
         for connector in scope.connectors {
+            appendConnectorControlPlaneResource(
+                connector,
+                controlPlaneResources: &controlPlaneResources
+            )
             providerRequirements.append(RuntimeProviderRequirement(
                 capability: "connector:\(connector.serviceType)",
                 source: .connector,
@@ -496,6 +573,120 @@ enum TaskLaunchResourceResolver {
                     valueProjected: false
                 ))
             }
+        }
+        appendSkillControlPlaneResources(
+            skills: scope.behaviorSkills,
+            localTools: scope.localTools,
+            controlPlaneResources: &controlPlaneResources
+        )
+    }
+
+    private static func appendGoogleCloudControlPlaneResource(
+        executionEnvironment: WorkspaceExecutionEnvironment,
+        homeDirectoryPath: String,
+        fileManager: FileManager,
+        controlPlaneResources: inout [RuntimeControlPlaneResource]
+    ) {
+        let hostADCPath = ExecutionEnvironmentCredentialProjection
+            .defaultGCPADCHostPath(homeDirectory: homeDirectoryPath)
+        let hostCredentialExists = existingPath(hostADCPath, homeDirectoryPath: homeDirectoryPath, fileManager: fileManager) != nil
+        let hasDockerProjection = executionEnvironment
+            .effectiveCredentialProjections
+            .contains { $0.id == ExecutionEnvironmentCredentialProjection.gcpADCID }
+        let readiness: RuntimeControlPlaneResource.Readiness
+        let failureText: String?
+        let repairAction: String?
+        if executionEnvironment.isContainerized {
+            readiness = hasDockerProjection && hostCredentialExists ? .ready : .missing
+            failureText = readiness == .ready
+                ? nil
+                : "Google Cloud is required, but local Application Default Credentials are not connected to this Docker environment."
+            repairAction = readiness == .ready
+                ? nil
+                : "Connect GCP credentials in the Container panel before retrying the task."
+        } else {
+            readiness = hostCredentialExists ? .ready : .missing
+            failureText = readiness == .ready
+                ? nil
+                : "Google Cloud is required, but local gcloud Application Default Credentials were not found."
+            repairAction = readiness == .ready
+                ? nil
+                : "Run gcloud auth application-default login, then retry the task."
+        }
+        controlPlaneResources.append(RuntimeControlPlaneResource(
+            capability: "google_cloud",
+            source: .connector,
+            placement: executionEnvironment.isContainerized ? "docker_credential_projection" : "host_capability",
+            readiness: readiness,
+            reason: "Google Cloud tasks use ASTRA-managed gcloud/ADC resources instead of provider-improvised host Bash.",
+            failureText: failureText,
+            repairAction: repairAction
+        ))
+    }
+
+    private static func appendConnectorControlPlaneResource(
+        _ connector: Connector,
+        controlPlaneResources: inout [RuntimeControlPlaneResource]
+    ) {
+        let service = normalizedServiceType(connector.serviceType)
+        let capability: String
+        switch service {
+        case "jira":
+            capability = "jira"
+        case "github", "gh":
+            capability = "github"
+        case "gcloud", "google_cloud", "googlecloud", "gcp":
+            capability = "google_cloud"
+        default:
+            capability = "connector:\(service.isEmpty ? connector.name : service)"
+        }
+        let declaredCredentials = connector.credentialKeys
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        controlPlaneResources.append(RuntimeControlPlaneResource(
+            capability: capability,
+            source: .connector,
+            placement: "host_capability",
+            readiness: .configured,
+            reason: "Connector \(connector.name) is exposed through ASTRA's host capability layer.",
+            failureText: nil,
+            repairAction: declaredCredentials.isEmpty
+                ? nil
+                : "ASTRA validates Keychain values for \(declaredCredentials.joined(separator: ", ")) during launch preflight; repair them in Manage Capabilities if preflight reports them missing."
+        ))
+    }
+
+    private static func appendSkillControlPlaneResources(
+        skills: [Skill],
+        localTools: [LocalTool],
+        controlPlaneResources: inout [RuntimeControlPlaneResource]
+    ) {
+        let searchable = (skills.map { "\($0.name) \($0.skillDescription)" }
+            + localTools.map { "\($0.name) \($0.command) \($0.toolDescription)" })
+            .joined(separator: " ")
+            .lowercased()
+
+        if searchable.contains("github") || searchable.contains(" gh ") {
+            controlPlaneResources.append(RuntimeControlPlaneResource(
+                capability: "github",
+                source: .controlPlane,
+                placement: "host_capability",
+                readiness: .configured,
+                reason: "GitHub metadata should flow through an ASTRA-enabled host capability, not Docker workspace shell.",
+                failureText: "GitHub access was requested but no GitHub host capability was available to the provider.",
+                repairAction: "Enable or repair the GitHub capability."
+            ))
+        }
+        if searchable.contains("jira") {
+            controlPlaneResources.append(RuntimeControlPlaneResource(
+                capability: "jira",
+                source: .controlPlane,
+                placement: "host_capability",
+                readiness: .configured,
+                reason: "Jira metadata should flow through an ASTRA-enabled host capability, not Docker workspace shell.",
+                failureText: "Jira access was requested but no Jira host capability was available to the provider.",
+                repairAction: "Enable or repair the Jira capability."
+            ))
         }
     }
 
@@ -600,6 +791,14 @@ enum TaskLaunchResourceResolver {
         let marker = "/google-cloud-sdk/"
         guard let range = path.range(of: marker) else { return nil }
         return String(path[..<path.index(before: range.upperBound)])
+    }
+
+    private static func normalizedServiceType(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
     }
 
     private static func appendExistingRemoteWorkspacePathGrant(
@@ -728,6 +927,13 @@ enum TaskLaunchResourceResolver {
         var seen: Set<String> = []
         return grants.filter { grant in
             seen.insert("\(grant.source.rawValue)|\(grant.capability)").inserted
+        }
+    }
+
+    private static func uniqueControlPlaneResources(_ resources: [RuntimeControlPlaneResource]) -> [RuntimeControlPlaneResource] {
+        var seen: Set<String> = []
+        return resources.filter { resource in
+            seen.insert("\(resource.source.rawValue)|\(resource.capability)|\(resource.placement)").inserted
         }
     }
 }

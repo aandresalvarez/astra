@@ -151,7 +151,14 @@ struct ExecutionEnvironmentTests {
         #expect(section.text.contains("mcp__astra_workspace__workspace_shell"))
         #expect(section.text.contains("astra_workspace-workspace_shell"))
         #expect(section.text.contains("Claude-style and Codex runtimes"))
+        #expect(section.text.contains("synchronous shell calls are intentionally bounded"))
+        #expect(section.text.contains("short `workspace_job_wait` polling windows"))
         #expect(section.text.contains("Do not use native host Bash"))
+        #expect(section.text.contains("Routing contract: provider reasoning runs on host macOS"))
+        #expect(section.text.contains("host control-plane actions such as GitHub PR metadata, Jira, Google Cloud, SSH, browser, and Keychain access"))
+        #expect(section.text.contains("Do not ask a subagent to \"run locally\""))
+        #expect(section.text.contains("Path mapping: inside workspace MCP tools"))
+        #expect(section.text.contains("Do not run `cd /Users/...`"))
         #expect(section.text.contains("Prefer tools installed in the image environment"))
         #expect(section.text.contains("command -v dbt && dbt --version"))
         #expect(section.text.contains("verify credential readiness from inside the container"))
@@ -841,6 +848,37 @@ struct ExecutionEnvironmentTests {
         #expect(viewModel.environmentPickerHelp.contains("route project shell commands through Docker image \(repository):latest"))
         #expect(viewModel.environmentOptions.map(\.isSelected) == [false, true])
         #expect(AgentTask(title: "Task", goal: "Run", workspace: workspace).executionEnvironmentSnapshotJSON == workspace.activeExecutionEnvironmentJSON)
+    }
+
+    @MainActor
+    @Test("Docker view model exposes explicit runtime routing contract")
+    func dockerViewModelExposesRuntimeRoutingContract() async throws {
+        let root = try makeTempDir("docker-contract")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let repository = DockerWorkspaceDiscoveryService.generatedImageName(for: root)
+        let workspace = Workspace(name: "Docker", primaryPath: root)
+        let viewModel = WorkspaceDockerViewModel(imageInventory: FakeDockerImageInventory(result: .success([
+            DockerImageReference(repository: repository, tag: "latest", imageID: "sha256:abc")
+        ])))
+        viewModel.setWorkspaceForTesting(workspace)
+
+        await viewModel.refresh()
+        #expect(viewModel.runtimeContractRows.map(\.title) == [
+            "Provider: Host",
+            "Workspace commands: Host"
+        ])
+
+        viewModel.selectEnvironmentOption("image:\(repository):latest")
+
+        #expect(viewModel.runtimeContractRows.map(\.title).contains("Provider: Host"))
+        #expect(viewModel.runtimeContractRows.map(\.title).contains("Workspace commands: Docker image"))
+        #expect(viewModel.runtimeContractRows.map(\.title).contains("Host capabilities: ASTRA managed"))
+        #expect(viewModel.runtimeContractRows.contains {
+            $0.subtitle.contains("Project shell runs in \(repository):latest")
+        })
+        #expect(viewModel.runtimeContractRows.contains {
+            $0.subtitle.contains("GitHub, Jira, GCloud, SSH, browser, and Keychain")
+        })
     }
 
     @MainActor

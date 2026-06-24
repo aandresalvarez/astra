@@ -177,6 +177,11 @@ struct TaskLaunchResourcePlanTests {
         #expect(plan.providerRequirements.contains {
             $0.source == .remoteWorkspace && $0.capability == "remote_workspace_ssh"
         })
+        #expect(plan.controlPlaneResources.contains {
+            $0.capability == "ssh" &&
+                $0.placement == "host_capability" &&
+                $0.readiness == .configured
+        })
         #expect(plan.credentialGrants.contains {
             $0.source == .remoteWorkspace && $0.label == "Remote workspace SSH"
         })
@@ -261,6 +266,11 @@ struct TaskLaunchResourcePlanTests {
         #expect(plan.providerRequirements.contains {
             $0.source == .connector && $0.capability == "connector:gcloud"
         })
+        #expect(plan.controlPlaneResources.contains {
+            $0.capability == "google_cloud" &&
+                $0.placement == "host_capability" &&
+                $0.readiness == .ready
+        })
         #expect(plan.hostPathGrants.contains {
             $0.source == .connector &&
                 $0.sensitivity == .cloudAuth &&
@@ -326,14 +336,27 @@ struct TaskLaunchResourcePlanTests {
         #expect(plan.executionEnvironmentKind == "docker_image")
         #expect(plan.providerPlacement == "host")
         #expect(plan.workspaceCommandPlacement == "docker")
+        #expect(plan.controlPlaneToolPlacement == "host_capabilities")
         #expect(plan.shellRoute == "astra_workspace_mcp")
         #expect(plan.commandPlannedFields["workspace_command_placement"] == "docker")
+        #expect(plan.commandPlannedFields["control_plane_tool_placement"] == "host_capabilities")
         #expect(plan.commandPlannedFields["shell_route"] == "astra_workspace_mcp")
         #expect(plan.containerMounts.contains { $0.role == "credential" && $0.containerPath == "/root/.config/gcloud" })
         #expect(plan.environmentGrants.contains { $0.key == "GOOGLE_APPLICATION_CREDENTIALS" && $0.sensitivity == .cloudAuth })
         #expect(plan.environmentGrants.contains { $0.key == "DOCKER_CONFIG" && $0.source == .dockerEnvironment })
         #expect(plan.credentialGrants.contains { $0.label == "GCP Application Default Credentials" && $0.projectedAsFile })
         #expect(plan.providerRequirements.contains { $0.capability == "docker_workspace_executor" })
+        #expect(plan.providerRequirements.contains { $0.capability == "host_control_plane_capabilities" })
+        #expect(plan.controlPlaneResources.contains {
+            $0.capability == "host_control_plane" &&
+                $0.placement == "host_capabilities"
+        })
+        #expect(plan.controlPlaneResources.contains {
+            $0.capability == "docker_workspace_shell" &&
+                $0.placement == "docker_workspace_mcp" &&
+                $0.readiness == .ready
+        })
+        #expect(plan.diagnostics.contains { $0.code == "mixed_runtime_routing" })
         let dockerConfigDirectory = try #require(DockerWorkspaceMCPProjection.taskScopedDockerConfigDirectory(
             task: task,
             runID: runID
@@ -345,6 +368,80 @@ struct TaskLaunchResourcePlanTests {
         #expect(plan.diagnostics.contains { $0.code == "docker_client_config_task_scoped" })
         #expect(!plan.hostReadablePaths.contains { $0.hasSuffix("/.docker/config.json") })
         #expect(!String(describing: plan).contains("application_default_credentials.json\":"))
+    }
+
+    @Test("Resource resolver records Jira as host control-plane resource for Docker task")
+    func resolverRecordsJiraHostCapabilityForDockerTask() throws {
+        let workspaceRoot = try makeTempDir("resource-plan-jira-docker")
+        defer { try? FileManager.default.removeItem(atPath: workspaceRoot.path) }
+        let container = try makeTaskLaunchResourcePlanContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Docker", primaryPath: workspaceRoot.path)
+        context.insert(workspace)
+
+        let jiraSkill = Skill(
+            name: "Jira Agent",
+            skillDescription: "Query and update Jira tickets",
+            allowedTools: [],
+            behaviorInstructions: "Use Jira for sprint work."
+        )
+        jiraSkill.isGlobal = true
+        context.insert(jiraSkill)
+
+        let jiraConnector = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            connectorDescription: "Jira Cloud",
+            baseURL: "https://example.atlassian.net",
+            authMethod: "basic"
+        )
+        jiraConnector.isGlobal = true
+        jiraConnector.skill = jiraSkill
+        jiraConnector.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        context.insert(jiraConnector)
+        workspace.enabledGlobalConnectorIDs = [jiraConnector.id.uuidString]
+
+        let task = AgentTask(title: "Sprint", goal: "Fetch Jira comments then run dbt in Docker", workspace: workspace)
+        context.insert(task)
+        try context.save()
+
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:workspace",
+            kind: .dockerImage,
+            displayName: "Workspace Image",
+            image: "astra/workspace:latest",
+            mounts: [
+                ExecutionEnvironmentMount(
+                    hostPath: workspaceRoot.path,
+                    containerPath: "/workspace",
+                    access: .readWrite,
+                    role: .workspace
+                )
+            ]
+        )
+
+        let plan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: UUID(),
+            runtime: .claudeCode,
+            phase: "run",
+            prompt: "Fetch Jira context, then run dbt in Docker",
+            contextText: "Use Jira ticket details before running dbt.",
+            workspacePath: workspaceRoot.path,
+            executionEnvironment: environment,
+            gitCredentialContextProvider: { _, _, _, _ in .empty }
+        )
+
+        #expect(plan.workspaceCommandPlacement == "docker")
+        #expect(plan.controlPlaneToolPlacement == "host_capabilities")
+        #expect(plan.providerRequirements.contains { $0.capability == "connector:jira" })
+        let jiraResource = try #require(plan.controlPlaneResources.first { $0.capability == "jira" })
+        #expect(jiraResource.placement == "host_capability")
+        #expect(jiraResource.readiness == .configured)
+        #expect(jiraResource.repairAction?.contains("JIRA_EMAIL") == true)
+        #expect(jiraResource.repairAction?.contains("JIRA_API_TOKEN") == true)
+        #expect(plan.credentialGrants.contains { $0.label == "Jira:JIRA_EMAIL" })
+        #expect(plan.credentialGrants.contains { $0.label == "Jira:JIRA_API_TOKEN" })
     }
 
     @Test("Resource manifest store persists latest and run-scoped manifests")
@@ -365,6 +462,7 @@ struct TaskLaunchResourcePlanTests {
             executionEnvironmentKind: "host",
             providerPlacement: "host",
             workspaceCommandPlacement: "host",
+            controlPlaneToolPlacement: "host",
             shellRoute: "native_host",
             hostPathGrants: [
                 RuntimePathGrant(
@@ -426,8 +524,10 @@ struct TaskLaunchResourcePlanTests {
         let plan = try decoder.decode(TaskLaunchResourcePlan.self, from: json)
 
         #expect(plan.workspaceCommandPlacement == "docker")
+        #expect(plan.controlPlaneToolPlacement == "host_capabilities")
         #expect(plan.shellRoute == "astra_workspace_mcp")
         #expect(plan.commandPlannedFields["workspace_command_placement"] == "docker")
+        #expect(plan.commandPlannedFields["control_plane_tool_placement"] == "host_capabilities")
         #expect(plan.commandPlannedFields["shell_route"] == "astra_workspace_mcp")
     }
 

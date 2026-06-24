@@ -1399,7 +1399,33 @@ struct RunPermissionManifestTests {
             defer { try? FileManager.default.removeItem(at: root) }
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
+            let package = PluginPackage(
+                id: "host-control-plane",
+                name: "Host Control Plane",
+                icon: "server.rack",
+                description: "Host capability server",
+                author: "Tests",
+                category: "Tests",
+                tags: [],
+                version: "1.0.0",
+                skills: [],
+                connectors: [],
+                localTools: [],
+                mcpServers: [
+                    PluginMCPServer(
+                        id: "github",
+                        displayName: "GitHub MCP",
+                        transport: .stdio,
+                        command: "github-mcp-server",
+                        allowedTools: ["pull_requests.read"],
+                        trustLevel: .high
+                    )
+                ],
+                templates: [],
+                governance: .builtInApproved(riskLevel: .high)
+            )
             let workspace = Workspace(name: "Docker Manifest", primaryPath: root.path)
+            workspace.enabledCapabilityIDs = [package.id]
             let task = AgentTask(
                 title: "Docker",
                 goal: "Check dbt inside Docker",
@@ -1437,6 +1463,7 @@ struct RunPermissionManifestTests {
                 permissionPolicy: .restricted,
                 executionPolicy: .default,
                 defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+                capabilityPackages: [package],
                 modelContext: context
             )
 
@@ -1447,6 +1474,11 @@ struct RunPermissionManifestTests {
                 server.packageID == "astra-builtin"
                     && server.id == DockerWorkspaceMCPProjection.serverID
                     && server.allowedTools == DockerWorkspaceMCPProjection.toolNames
+            })
+            #expect(manifest.mcpServers.contains { server in
+                server.packageID == package.id
+                    && server.id == "github"
+                    && server.allowedTools == ["pull_requests.read"]
             })
             #expect(manifest.providerRender.runtimeSupportTools.contains { descriptor in
                 descriptor.name == DockerWorkspaceMCPProjection.providerToolPermission
@@ -1460,6 +1492,11 @@ struct RunPermissionManifestTests {
             #expect(manifest.providerRender.runtimeSupportTools.contains { descriptor in
                 descriptor.name == DockerWorkspaceMCPProjection.providerToolPermission(for: "workspace_job_status")
                     && descriptor.allowedInputKeys == ["job_id"]
+            })
+            #expect(manifest.providerRender.diagnostics.contains { diagnostic in
+                diagnostic.id == "container.host-control-plane-routing"
+                    && diagnostic.message.contains("Host services such as GitHub, Jira, Google Cloud, SSH, browser, and Keychain")
+                    && diagnostic.remediation?.contains("Enable or repair the relevant capability") == true
             })
             #expect(!manifest.providerRender.allowedTools.contains { tool in
                 let lower = tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
