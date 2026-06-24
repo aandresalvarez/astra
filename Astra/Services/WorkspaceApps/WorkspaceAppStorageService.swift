@@ -134,8 +134,36 @@ struct WorkspaceAppStorageService {
             """, database: database)
             for table in schema.tables {
                 try execute(try createTableSQL(for: table), database: database)
+                // Additive migration for an EXISTING table (version-in-place edits): add any manifest
+                // column the live table lacks. ADD COLUMN is nullable + no PK (SQLite can't add either
+                // via ALTER) so it always succeeds even with existing rows — required-ness/PK are
+                // enforced at the manifest/validator layer, not the raw column. A freshly created
+                // table already has every column, so this is a no-op on create.
+                let live = try existingColumnNames(of: table.name, database: database)
+                for column in table.columns where !live.contains(column.name) {
+                    let sql = "ALTER TABLE \(try quotedIdentifier(table.name)) "
+                        + "ADD COLUMN \(try quotedIdentifier(column.name)) \(try sqliteType(for: column.type));"
+                    try execute(sql, database: database)
+                }
             }
         }
+    }
+
+    /// The column names of a live table via `PRAGMA table_info` (empty if the table doesn't exist).
+    private func existingColumnNames(of table: String, database: OpaquePointer) throws -> Set<String> {
+        let sql = "PRAGMA table_info(\(try quotedIdentifier(table)));"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            throw WorkspaceAppStorageError.prepareFailed(lastError(database))
+        }
+        defer { sqlite3_finalize(statement) }
+        var names: Set<String> = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if let cString = sqlite3_column_text(statement, 1) {   // column 1 = name
+                names.insert(String(cString: cString))
+            }
+        }
+        return names
     }
 
     func insertRecord(

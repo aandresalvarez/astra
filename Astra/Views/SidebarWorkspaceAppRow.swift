@@ -28,6 +28,22 @@ enum SidebarWorkspaceAppFilter {
     }
 }
 
+/// A tiny group divider inside a workspace drawer ("Apps" / "Tasks"), shown only when both groups
+/// are present so durable apps read as distinct from conversational task runs. Lives here (not in
+/// `TaskSidebarView`) to keep that file within its architecture-fitness line budget.
+struct SidebarGroupLabel: View {
+    let text: String
+    var body: some View {
+        Text(text)
+            .font(Stanford.caption(11))
+            .foregroundStyle(.tertiary)
+            .padding(.leading, SidebarLeanPresentation.childTaskContentLeadingPadding)
+            .padding(.top, 4)
+            .padding(.bottom, 1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 /// A workspace app rendered inline in the sidebar, directly under its workspace and
 /// alongside that workspace's chats. It deliberately reuses the chat row's chrome
 /// (`SidebarThreadRowLayout` metrics, selection/hover fill, row height) but swaps the
@@ -80,6 +96,19 @@ struct SidebarWorkspaceAppRow: View {
                 }
 
                 Spacer(minLength: 6)
+
+                // Version badge: a published app shows its current version (v1, v2, …) so its
+                // history is legible at a glance — editing-in-place bumps this rather than minting
+                // a "Home Notes 2" sibling. The full history lives in the app detail view.
+                if app.latestVersionNumber >= 1 {
+                    Text("v\(app.latestVersionNumber)")
+                        .font(Stanford.caption(10))
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(Color.primary.opacity(0.05)))
+                        .accessibilityLabel("Version \(app.latestVersionNumber)")
+                }
             }
             .padding(.horizontal, SidebarThreadRowLayout.rowHorizontalPadding)
             .padding(.vertical, 5)

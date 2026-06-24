@@ -142,6 +142,18 @@ struct WorkspaceAppStudioSessionTests {
         #expect(last?.text.contains("ready to publish") == false)   // no false success claim
     }
 
+    @Test("editingAppLogicalID tracks the source app on Edit, nil for a new build")
+    func editingAppLogicalIDTracksSource() {
+        let (session, _) = session([Self.result(Self.validManifest)])
+        let ws = workspace()
+        // New build: no source app to update in place.
+        session.reset(for: ws)
+        #expect(session.editingAppLogicalID == nil)
+        // Edit in Studio: the source app's logical id is carried so publish updates it in place.
+        session.reset(for: ws, existingManifest: Self.validManifest)
+        #expect(session.editingAppLogicalID == Self.validManifest.app.id)
+    }
+
     // MARK: - Grounded post-turn verification
 
     private func submitTurn(_ s: WorkspaceAppStudioSession, _ text: String, _ ws: Workspace) async {

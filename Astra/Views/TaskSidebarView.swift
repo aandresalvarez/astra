@@ -1074,15 +1074,15 @@ struct TaskSidebarView: View {
             visibleTasks: visibleTasks.count
         )
         let workspaceAppRows = appsForWorkspace(workspace)
+        let showGroupLabels = !workspaceAppRows.isEmpty && hasTasks  // label groups only when both exist
 
         VStack(spacing: 0) {
             workspaceRow(for: workspace, using: taskIndex)
 
             if isExpanded {
                 VStack(alignment: .leading, spacing: 2) {
-                    // Apps sit at the top of the drawer, above the (churning, collapsible)
-                    // chat list, so these durable surfaces stay visible and never hide
-                    // behind "Show more".
+                    // Apps sit atop the drawer, above the collapsible chat list, so they never hide behind "Show more".
+                    if showGroupLabels { SidebarGroupLabel(text: "Apps") }
                     ForEach(workspaceAppRows) { app in
                         SidebarWorkspaceAppRow(
                             app: app,
@@ -1094,6 +1094,7 @@ struct TaskSidebarView: View {
                     if !hasTasks && !hasAny && workspaceAppRows.isEmpty {
                         emptyWorkspaceRow(for: workspace)
                     } else if hasTasks {
+                        if showGroupLabels { SidebarGroupLabel(text: "Tasks") }
                         ForEach(visibleTasks) { task in
                             compactTaskRow(
                                 for: task,

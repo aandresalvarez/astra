@@ -135,6 +135,51 @@ struct WorkspaceAppServiceTests {
     }
 
     @MainActor
+    @Test("updateApp versions in place — same logicalID + record, name updated, no forked sibling")
+    func updateAppVersionsInPlace() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("workspace-app-update-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let workspace = Workspace(name: "Apps", primaryPath: root.path)
+        context.insert(workspace)
+
+        let service = WorkspaceAppService()
+        let manifest = WorkspaceAppStudioBuilder.localDatabaseManifest(intent: "groceries")
+        let created = try service.createApp(manifest: manifest, in: workspace, modelContext: context)
+        let logicalID = created.app.logicalID
+        let recordID = created.app.id
+        let originalDigest = created.app.manifestDigest
+
+        // Edit it (rename) and publish-in-place. The logical id is kept by the service even if the
+        // caller passes the source manifest verbatim.
+        var edited = created.manifest
+        edited.app.name = "Groceries Renamed"
+        let updated = try service.updateApp(created.app, manifest: edited, in: workspace, modelContext: context)
+
+        #expect(updated.app.logicalID == logicalID)   // identity preserved — NOT "groceries-2"
+        #expect(updated.app.id == recordID)            // same @Model record, not a new sibling
+        #expect(updated.app.name == "Groceries Renamed")
+        #expect(updated.app.manifestDigest != originalDigest)   // the rename changed the manifest
+        #expect(try context.fetch(FetchDescriptor<WorkspaceApp>()).count == 1)   // no forked sibling
+
+        // The on-disk manifest at the SAME path reflects the edit.
+        let onDisk = try JSONDecoder().decode(
+            WorkspaceAppManifest.self,
+            from: Data(contentsOf: URL(fileURLWithPath: WorkspaceFileLayout.appManifestFile(workspacePath: workspace.primaryPath, appID: logicalID)))
+        )
+        #expect(onDisk.app.name == "Groceries Renamed")
+        #expect(onDisk.app.id == logicalID)
+    }
+
+    @MainActor
     @Test("service marks apps missing required dependencies when no compatible contract implementation exists")
     func serviceMarksAppsMissingRequiredDependencies() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())

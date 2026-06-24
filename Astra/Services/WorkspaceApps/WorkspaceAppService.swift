@@ -161,6 +161,154 @@ struct WorkspaceAppService {
         return WorkspaceAppCreationResult(app: app, manifestURL: URL(fileURLWithPath: manifestPath), manifest: manifest)
     }
 
+    /// Version-in-place: rewrite an EXISTING app's manifest + storage, keeping the SAME logicalID and
+    /// SQLite database. This is what "Edit in Studio → Publish" uses so editing an app UPDATES it (the
+    /// caller then snapshots a new version) instead of forking a suffixed sibling. Storage schema is
+    /// applied additively (the existing rows are preserved); dependency bindings are reconciled to the
+    /// new requirements; automation states are reconciled while PRESERVING each surviving automation's
+    /// enabled state. The logical id is forced to the app's — an edit never changes identity.
+    @MainActor
+    @discardableResult
+    func updateApp(
+        _ app: WorkspaceApp,
+        manifest rawManifest: WorkspaceAppManifest,
+        in workspace: Workspace,
+        modelContext: ModelContext,
+        status: WorkspaceAppLifecycleStatus = .published,
+        now: Date = Date()
+    ) throws -> WorkspaceAppCreationResult {
+        guard !workspace.primaryPath.isEmpty else { throw WorkspaceAppServiceError.emptyWorkspacePath }
+        guard app.workspaceID == workspace.id else {
+            throw WorkspaceAppServiceError.fileOperationFailed(
+                "App '\(app.logicalID)' does not belong to workspace '\(workspace.id.uuidString)'."
+            )
+        }
+        var manifest = rawManifest
+        manifest.app.id = app.logicalID   // identity is fixed — an edit never changes the logical id
+
+        // Validate the forced manifest before any write (mirrors createApp) — an edit can't publish a
+        // structurally invalid app over a working one.
+        let report = WorkspaceAppManifestValidator.validate(manifest)
+        guard report.isValid else { throw WorkspaceAppServiceError.invalidManifest(report.blockers) }
+
+        let manifestPath = WorkspaceFileLayout.appManifestFile(workspacePath: workspace.primaryPath, appID: app.logicalID)
+        let databasePath = WorkspaceFileLayout.appDatabaseFile(workspacePath: workspace.primaryPath, appID: app.logicalID)
+        let manifestData: Data
+        do {
+            manifestData = try Self.encodeManifest(manifest)
+        } catch {
+            throw WorkspaceAppServiceError.encodeFailed(String(describing: error))
+        }
+        try fileManager.createDirectory(
+            atPath: WorkspaceFileLayout.appDataDirectory(workspacePath: workspace.primaryPath, appID: app.logicalID),
+            withIntermediateDirectories: true
+        )
+        // Migrate the DB FIRST (additive: new tables + ADD COLUMN), THEN write the manifest — so a
+        // failed migration never leaves manifest.json describing a schema the database lacks.
+        if let storage = manifest.storage {
+            // Block a DESTRUCTIVE/ambiguous in-place schema change (drop table/column, change a type or
+            // primary key, tighten a required constraint) — applySchema is additive-only, so accepting
+            // one would silently drift manifest.json from the SQLite file. Additive adds proceed; the
+            // user forks via Save as a Copy for a structural change.
+            let currentStorage = (try? JSONDecoder().decode(
+                WorkspaceAppManifest.self, from: Data(contentsOf: URL(fileURLWithPath: manifestPath))
+            ))?.storage
+            let blockedKinds: Set<WorkspaceAppStorageMigrationStep.Kind> =
+                [.dropTable, .dropColumn, .changeColumnType, .changePrimaryKey, .changeRequiredConstraint]
+            if let blocked = storageService.planMigration(from: currentStorage, to: storage)
+                .steps.first(where: { blockedKinds.contains($0.kind) }) {
+                throw WorkspaceAppServiceError.storageFailed(
+                    "This change can't be applied to the existing data in place: \(blocked.summary) Use Save as a Copy to start a new app with the new schema."
+                )
+            }
+            do {
+                try storageService.applySchema(storage, databaseURL: URL(fileURLWithPath: databasePath))
+            } catch {
+                throw WorkspaceAppServiceError.storageFailed(String(describing: error))
+            }
+        }
+        try manifestData.write(to: URL(fileURLWithPath: manifestPath), options: [.atomic])
+
+        app.name = manifest.app.name
+        app.icon = manifest.app.icon
+        app.appDescription = manifest.app.description
+        app.permissionMode = manifest.permissions.defaultMode
+        app.lifecycleStatus = status
+        app.manifestDigest = Self.digest(for: manifestData)
+        app.updatedAt = now
+
+        let appPK = app.id
+
+        // Reconcile dependency bindings by requirementID: PRESERVE an unchanged requirement's binding
+        // (keeping the user-selected implementation from remapDependencyBinding), drop bindings for
+        // removed requirements, and (re)create only new or contract-changed ones.
+        let existingBindings = try modelContext.fetch(FetchDescriptor<WorkspaceAppDependencyBinding>(
+            predicate: #Predicate<WorkspaceAppDependencyBinding> { $0.appID == appPK }
+        ))
+        let bindingByReq = Dictionary(existingBindings.map { ($0.requirementID, $0) }, uniquingKeysWith: { first, _ in first })
+        let newRequirementIDs = Set(manifest.requirements.map(\.id))
+        for binding in existingBindings where !newRequirementIDs.contains(binding.requirementID) {
+            modelContext.delete(binding)
+        }
+        var reconciledBindings: [WorkspaceAppDependencyBinding] = []
+        for requirement in manifest.requirements {
+            if let prior = bindingByReq[requirement.id], prior.contract == requirement.contract,
+               prior.operations == requirement.operations, prior.optional == requirement.optional {
+                reconciledBindings.append(prior)   // unchanged → keep the user's mapping
+            } else {
+                if let prior = bindingByReq[requirement.id] { modelContext.delete(prior) }   // changed → replace
+                if let fresh = dependencyBindings(for: [requirement], workspaceID: workspace.id, appID: app.id, appLogicalID: app.logicalID, now: now).first {
+                    modelContext.insert(fresh)
+                    reconciledBindings.append(fresh)
+                }
+            }
+        }
+        app.dependencyStatus = dependencyStatus(for: reconciledBindings)
+
+        // Reconcile automations by id: keep a surviving automation, but if its type/action MATERIALLY
+        // changed, force it back to disabled (an enabled schedule must not silently run a different
+        // action); drop removed ones; add new ones disabled.
+        let existingAutomations = try modelContext.fetch(FetchDescriptor<WorkspaceAppAutomationState>(
+            predicate: #Predicate<WorkspaceAppAutomationState> { $0.appID == appPK }
+        ))
+        var automationByID = Dictionary(existingAutomations.map { ($0.automationID, $0) }, uniquingKeysWith: { first, _ in first })
+        let newAutomationIDs = Set(manifest.automations.map(\.id))
+        for automation in existingAutomations where !newAutomationIDs.contains(automation.automationID) {
+            modelContext.delete(automation)
+            automationByID[automation.automationID] = nil
+        }
+        for spec in manifest.automations {
+            if let surviving = automationByID[spec.id] {
+                if surviving.automationType != spec.type || surviving.actionID != spec.action {
+                    surviving.automationType = spec.type
+                    surviving.actionID = spec.action
+                    surviving.isEnabled = false
+                    surviving.status = .disabled
+                }
+                surviving.updatedAt = now
+            } else {
+                modelContext.insert(WorkspaceAppAutomationState(
+                    workspaceID: workspace.id, appID: app.id, appLogicalID: app.logicalID,
+                    automationID: spec.id, automationType: spec.type, actionID: spec.action,
+                    isEnabled: false, status: .disabled, createdAt: now, updatedAt: now
+                ))
+            }
+        }
+
+        workspace.updatedAt = now
+        try modelContext.save()
+
+        AppLogger.audit(.workspaceStoreMigrated, category: "WorkspaceApps", fields: [
+            "resource": "workspace_app_manifest",
+            "result": "updated",
+            "workspace_id": workspace.id.uuidString,
+            "app_id": app.logicalID,
+            "manifest": URL(fileURLWithPath: manifestPath).lastPathComponent
+        ])
+
+        return WorkspaceAppCreationResult(app: app, manifestURL: URL(fileURLWithPath: manifestPath), manifest: manifest)
+    }
+
     private func dependencyBindings(
         for requirements: [WorkspaceAppRequirement],
         workspaceID: UUID,

@@ -126,6 +126,11 @@ final class WorkspaceAppStudioSession: ObservableObject {
     /// App name for the chat header / shelf title.
     var appName: String? { draft?.manifest.app.name }
 
+    /// The logical id of the EXISTING app this session is editing (set on "Edit in Studio"), or nil
+    /// when building a brand-new app. Publish uses this to UPDATE that app in place + snapshot a new
+    /// version, instead of forking a suffixed sibling — the fix for the "Home Notes 2 2 2" pile.
+    var editingAppLogicalID: String? { persistenceTarget?.appID }
+
     /// Publish is gated on the validator (blockers only — warnings never block).
     var canPublish: Bool { draft?.canPublish ?? false }
 
@@ -163,10 +168,11 @@ final class WorkspaceAppStudioSession: ObservableObject {
                 }
             }
             if !resumed {
-                // Honest about scope: publishing saves a new app, so don't promise "I'll update it".
+                // Editing updates THIS app in place and saves a new version on publish (no more forked
+                // "App 2" siblings). "Save as a copy" is the explicit way to branch into a new app.
                 messages = [StudioMessage(
                     role: .assistant,
-                    text: "Starting from \(existingManifest.app.name). Tell me what to change — add a field, a chart, an approval step — and I'll rebuild it. Publishing saves it as a new app."
+                    text: "Editing \(existingManifest.app.name). Tell me what to change — add a field, a chart, an approval step — and I'll update it. Publishing saves a new version of this app (use Save as a copy to branch a new one)."
                 )]
             }
         } else {

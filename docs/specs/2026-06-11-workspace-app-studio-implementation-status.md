@@ -14,6 +14,35 @@ product direction is true.
 > lists below where they conflict. The 2026-06-20 and original 2026-06-11
 > snapshots are kept underneath for history.
 
+## 2026-06-23 Update — App identity + versioning UX (edit versions in place, no more forked siblings)
+
+**Problem.** "Edit in Studio → Publish" FORKED a suffixed sibling every time — `Home Notes` → `Home Notes 2`
+→ `Home Notes 2 2` → `2 2 2` → `Home Notes 3`, each a separate `WorkspaceApp` with its own SQLite DB —
+because publish always called `createApp` and the source `logicalID` collided (`manifestForPublishing`
+suffixes). The per-app versioning system (`versions/index.json` + `recordPublish` bumping
+`latestVersionNumber`) existed but was bypassed, so lineage lived in sibling names. The sidebar also
+name-interleaved apps with task runs.
+
+**Landed (version in place + clearer IA):**
+- **`WorkspaceAppService.updateApp`** — edit-and-publish now UPDATES the source app (same `logicalID` +
+  SQLite DB) and snapshots a new version, instead of forking. Forces `manifest.app.id = app.logicalID`
+  (identity is fixed), rewrites the manifest at the same path, applies storage schema additively
+  (rows preserved), reconciles dependency bindings + automations (preserving each surviving
+  automation's enabled state). `WorkspaceAppStudioSession.editingAppLogicalID` carries the source id;
+  `ContentView.publishWorkspaceApp` routes update-vs-create on it. Studio greeting updated.
+- **Explicit "Save as a Copy"** in the app detail menu (reuses `duplicateApp`) — forking is now a
+  deliberate action, not the silent default.
+- **Version badge** on each sidebar app row (`v{N}` from `latestVersionNumber`) so an app's history is
+  legible at a glance; full history stays in the app detail view. (`SidebarWorkspaceAppRow`.)
+- **Apps/Tasks group labels** in the workspace drawer (`SidebarGroupLabel`, shown only when both exist)
+  so durable apps read as distinct from conversational task runs.
+- Tests: `updateAppVersionsInPlace` (no forked sibling, identity preserved, manifest rewritten) +
+  `editingAppLogicalIDTracksSource`. Full suite 3316 + 41 fitness green.
+- **Deliberately NOT done — auto-merging existing siblings.** The pre-existing `Home Notes 2/2 2/…`
+  are separate apps with separate SQLite DBs; auto-merging them into one version history risks data
+  loss (which DB wins?). The new model stops the pile going forward; old duplicates are removed via
+  the existing Delete App. A future "merge into history" is possible but explicitly deferred.
+
 ## 2026-06-23 Update — Dynamic editing over time (surgical HTML edits + honest no-op detection)
 
 **Problem.** Editing a published HTML app turn over turn didn't compound. The manifest had a

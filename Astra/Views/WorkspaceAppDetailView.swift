@@ -110,6 +110,9 @@ struct WorkspaceAppDetailView: View {
             .help("Open in App Studio")
 
             Menu {
+                Button(action: performDuplicate) {
+                    Label("Save as a Copy", systemImage: "plus.square.on.square")
+                }
                 Button(action: exportPackage) {
                     Label("Export ASTRA App Package", systemImage: "square.and.arrow.up")
                 }
@@ -454,6 +457,18 @@ struct WorkspaceAppDetailView: View {
             onDeleted()
         } catch {
             packageStatusMessage = "Couldn't delete the app: \(error.localizedDescription)"
+        }
+    }
+
+    /// Explicit fork: branch this app into a separate new app (its own logicalID + database). The
+    /// deliberate counterpart to editing-in-place, which now versions THIS app rather than forking.
+    private func performDuplicate() {
+        guard let workspace else { return }
+        do {
+            let copy = try WorkspaceAppService().duplicateApp(app, in: workspace, modelContext: modelContext)
+            packageStatusMessage = "Saved a copy: “\(copy.app.name)”."
+        } catch {
+            packageStatusMessage = "Couldn't save a copy: \(error.localizedDescription)"
         }
     }
 }

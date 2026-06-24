@@ -36,6 +36,46 @@ struct WorkspaceAppStorageTests {
         #expect(rows[0]["purchased"] == .integer(0))
     }
 
+    @Test("re-applying a schema with a new column ALTERs the existing table and preserves rows")
+    func applySchemaAddsColumnPreservingRows() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("workspace-app-migrate-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let databaseURL = root.appendingPathComponent("app.sqlite")
+        let service = WorkspaceAppStorageService()
+        // v1: notes(id, text). Seed a row.
+        let v1 = WorkspaceAppStorageSchema(tables: [
+            WorkspaceAppStorageTable(name: "notes", columns: [
+                WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true),
+                WorkspaceAppStorageColumn(name: "text", type: "text")
+            ])
+        ])
+        try service.applySchema(v1, databaseURL: databaseURL)
+        try service.insertRecord(["id": .text("n1"), "text": .text("hello")], into: "notes", databaseURL: databaseURL)
+
+        // v2 (a version-in-place edit) adds a column. Re-applying must ADD COLUMN, not no-op.
+        let v2 = WorkspaceAppStorageSchema(tables: [
+            WorkspaceAppStorageTable(name: "notes", columns: [
+                WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true),
+                WorkspaceAppStorageColumn(name: "text", type: "text"),
+                WorkspaceAppStorageColumn(name: "pinned", type: "bool")
+            ])
+        ])
+        try service.applySchema(v2, databaseURL: databaseURL)
+
+        // The existing row survived the migration...
+        let preserved = try service.records(in: "notes", databaseURL: databaseURL)
+        #expect(preserved.count == 1)
+        #expect(preserved[0]["id"] == .text("n1"))
+        // ...and the new column now exists (an insert that uses it succeeds, proving the ALTER ran).
+        try service.insertRecord(["id": .text("n2"), "text": .text("world"), "pinned": .bool(true)], into: "notes", databaseURL: databaseURL)
+        let after = try service.records(in: "notes", databaseURL: databaseURL)
+        #expect(after.count == 2)
+        #expect(after.contains { $0["pinned"] == .integer(1) })
+    }
+
     @Test("publish seed writes the preview's sample rows into a fresh app database")
     func seedSampleRowsRoundTrips() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
