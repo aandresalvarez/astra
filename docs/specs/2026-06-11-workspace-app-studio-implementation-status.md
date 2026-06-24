@@ -763,10 +763,9 @@ stays CSP-locked with no network of its own; the read rides the existing governe
   - **MEDIUM** — read DoS over time + caller `limit` unparsed/unforwarded. Fixed: `parseRead` parses +
     `resolveRead` clamps `limit` to a small connector-read cap (default 30 / max 100), the injected
     `astra.read` now forwards `opts.limit`, and a 0.5s min-interval throttle bounds read frequency per
-    WebView (on top of one-in-flight serialization). **Follow-up (documented, low residual):** a
-    *durable, app-scoped* connector-read rate budget + audit-run retention/coalescing across multiple
-    surfaces — the current per-WebView throttle + serialization + clamp bound a single surface, but a
-    long-lived multi-surface poller can still accrue run records over time.
+    WebView (on top of one-in-flight serialization). The *durable, app-scoped* connector-read rate budget
+    across multiple surfaces was later added as FU3 (see Generic Capability Read) — `WorkspaceAppConnector
+    ReadRateLimiter` caps reads per app over a sliding window, enforced before the run record.
 
 ## Generic Capability Read (GEN1–GEN4, 2026-06-24)
 
@@ -805,13 +804,35 @@ bounds, fail-open, and timeout issues (all fixed); round 2 confirmed those close
 cwd-inherit-when-empty path — now fail-closed (the read refuses without a real workspace directory, in
 both the client and the runner). 64-bit derived-id fingerprints.
 
-**Documented follow-ups (not yet built):** (a) page-param VALUE constraints (per-param enum/regex/page-
-fillable schema). Codex's verdict: the current charset/length/no-leading-dash validation prevents argv/
-shell/flag injection and the deferral is reasonable **under the trusted-author model** (the user creates +
-enables the capability) — but it is a must-fix before exposing generic reads to UNTRUSTED/imported
-capabilities; until then authors pin sensitive params (repo/account) as literal args. (b) the `http`/`mcp`
-transports (accepted in the schema, fail-closed until implemented). (c) process-GROUP kill on timeout (today SIGTERM→SIGKILL covers
-the direct child; a forking CLI's grandchildren aren't reaped — read-only CLIs like `gh` don't fork).
+**Hardening follow-ups landed (FU1–FU3):**
+- **FU1 — per-param value schema (DONE).** A capability author constrains each `{placeholder}` inline in
+  the localTool args: `{name:fixed=V}` (page can't influence it), `{name:enum=a,b,c}`, `{name:re=PATTERN}`
+  (whole-value regex). The deriver parses these to bare `{name}` + a `ParamConstraint` map; the generic
+  client enforces fixed/allowed/pattern on top of the charset/length/no-leading-dash guard — so generic
+  reads are safe for UNTRUSTED/imported capabilities, not just author-trusted (closes the codex HIGH).
+- **FU2 — process-GROUP kill on timeout (DONE).** The read child is put in its own process group
+  (`setpgid`) and group ownership is captured WHILE the child is provably alive (`ownsGroup =
+  getpgid(pid)==pid`). On timeout, when `ownsGroup`, the WHOLE group is signalled SIGTERM→SIGKILL
+  **independent of the leader's own liveness** — so a worker a wrapper forks and orphans (parent exits on
+  SIGTERM) is still reaped; `ownsGroup` was true so `-pid` can NEVER be ASTRA's group. Falls back to a
+  single-process kill if the `setpgid` exec-race is lost. _Residual:_ the race itself (child may exec
+  before the parent's `setpgid` lands) means group creation isn't atomic; a fully-deterministic reap needs
+  `posix_spawn`+`POSIX_SPAWN_SETPGROUP` — documented follow-up, not built (realistic read CLIs don't fork
+  orphan workers).
+- **FU3 — durable app-scoped rate budget (DONE).** `WorkspaceAppConnectorReadRateLimiter` (process-wide,
+  sliding 60s window, 60 reads/app) enforced at BOTH connector-read entry points — the async direct
+  `astra.read` path (`executeAsyncCapabilityRead`, before the run record, so a rejected read leaves no
+  audit row) AND the sync `executeCapabilityRead` path that a `capability.read` pipeline STEP reaches via
+  `astra.runAction` (closes the codex bypass where a page looped a pipeline to dodge the budget). Native
+  user-click reads share the budget; 60/min is far above any human click rate.
+- **FU1 regex bound (codex LOW).** `matchesWholeValue` rejects an author pattern over
+  `maxPatternLength` (256) before compilation — cheap ReDoS insurance on top of the 256-byte page-value
+  cap. The pattern is author-pinned (never page-injectable); the complete fix (a non-backtracking
+  mini-schema in place of arbitrary regex) stays a deferral.
+
+**Remaining follow-ups (not yet built):** the `http`/`mcp` transports (accepted in the schema, fail-closed
+until implemented); atomic process-group creation via `posix_spawn` (FU2 residual above); a
+non-backtracking value mini-schema replacing arbitrary author regex (FU1 residual above).
 
 **Generation-awareness (DONE).** `WorkspaceAppStudioSession.submit` derives the workspace's enabled-
 capability contract families and threads them into the generator's contract catalog (`contractFamilies =

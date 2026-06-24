@@ -1364,6 +1364,12 @@ struct WorkspaceAppActionExecutor {
         trigger: WorkspaceAppRunTrigger,
         modelContext: ModelContext
     ) async throws -> WorkspaceAppActionExecutionResult {
+        // App-scoped rate budget across ALL surfaces — checked BEFORE the run record so a runaway poller
+        // can't grow the audit log or hammer the connector (the per-WebView throttle only bounds one
+        // surface). A rejected read leaves no run row.
+        guard WorkspaceAppConnectorReadRateLimiter.shared.admit(appID: app.id) else {
+            throw WorkspaceAppSourceResolutionError.capabilityReadUnavailable("\(action.id): connector reads are rate-limited; try again shortly")
+        }
         let run = recorder.startRun(
             app: app, actionID: action.id, trigger: trigger, inputSummary: inputSummary(input), modelContext: modelContext
         )
@@ -1414,6 +1420,13 @@ struct WorkspaceAppActionExecutor {
         linkedTaskID: UUID?,
         linkedArtifactPath: String?
     ) {
+        // Same app-scoped rate budget as the async direct path — this sync path is ALSO reachable from a
+        // page via `astra.runAction` → `pipeline.run` → a `capability.read` STEP, so the limiter must
+        // bound it too (else the budget is bypassable). Native user-click reads share the budget; 60/min is
+        // far above any human click rate.
+        guard WorkspaceAppConnectorReadRateLimiter.shared.admit(appID: app.id) else {
+            throw WorkspaceAppSourceResolutionError.capabilityReadUnavailable("\(action.id): connector reads are rate-limited; try again shortly")
+        }
         let sourceID = normalized(action.sourceRef, input.table, action.table, fallback: "")
         guard !sourceID.isEmpty else {
             throw WorkspaceAppActionExecutionError.missingSource

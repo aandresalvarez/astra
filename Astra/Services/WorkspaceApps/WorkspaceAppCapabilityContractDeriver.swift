@@ -37,7 +37,10 @@ enum WorkspaceAppCapabilityContractDeriver {
                 let fingerprint = hash("\(package.id)\u{0}\(tool.name)")
                 let familyID = "capability." + slug("\(package.id)-\(tool.name)") + "-" + fingerprint + ".read"
                 let implID = familyID + ".cli"
-                let argv = [command] + splitArguments(tool.arguments)
+                // Parse inline per-param constraints out of the arg template so the command keeps bare
+                // `{name}` tokens and the constraints ride alongside (the generic client enforces them).
+                let (argTokens, params) = parseCommandTokens(splitArguments(tool.arguments))
+                let argv = [command] + argTokens
                 families[familyID] = WorkspaceAppContractFamily(
                     id: familyID,
                     displayName: tool.name.isEmpty ? "Capability Read" : tool.name,
@@ -55,12 +58,48 @@ enum WorkspaceAppCapabilityContractDeriver {
                         transport: .cli,
                         // rowsPath nil ⇒ the CLI must output a top-level JSON array (e.g. `gh ... --json`).
                         // A nested-output convention can be added later (would need a localTool field).
-                        operations: [defaultOperation: WorkspaceAppCapabilityReadExecution.Operation(command: argv, rowsPath: nil)]
+                        operations: [defaultOperation: WorkspaceAppCapabilityReadExecution.Operation(command: argv, rowsPath: nil, params: params)]
                     )
                 )
             }
         }
         return (Array(families.values), Array(implementations.values))
+    }
+
+    /// Parse arg tokens, extracting inline per-param constraints. A token may be:
+    /// - a literal (`--state`) — kept as-is;
+    /// - a bare placeholder `{name}` — page-fillable, base guard only;
+    /// - a constrained placeholder `{name:fixed=V}` / `{name:enum=a,b,c}` / `{name:re=PATTERN}` — rewritten
+    ///   to the bare `{name}` (so the generic client substitutes it) with the constraint recorded in
+    ///   `params`. Constraint values are whitespace-free (args are whitespace-split).
+    static func parseCommandTokens(_ tokens: [String]) -> (command: [String], params: [String: WorkspaceAppCapabilityReadExecution.ParamConstraint]) {
+        var command: [String] = []
+        var params: [String: WorkspaceAppCapabilityReadExecution.ParamConstraint] = [:]
+        for token in tokens {
+            guard token.hasPrefix("{"), token.hasSuffix("}"), token.count > 2 else {
+                command.append(token); continue
+            }
+            let inner = String(token.dropFirst().dropLast())
+            guard let colon = inner.firstIndex(of: ":") else {
+                command.append(token); continue   // bare {name}
+            }
+            let name = String(inner[..<colon])
+            let spec = String(inner[inner.index(after: colon)...])
+            guard let eq = spec.firstIndex(of: "="), !name.isEmpty,
+                  name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }) else {
+                command.append(token); continue   // malformed → leave for the client to reject
+            }
+            let kind = String(spec[..<eq])
+            let value = String(spec[spec.index(after: eq)...])
+            switch kind {
+            case "fixed": params[name] = .init(fixed: value)
+            case "enum": params[name] = .init(allowed: value.split(separator: ",").map(String.init))
+            case "re": params[name] = .init(pattern: value)
+            default: command.append(token); continue   // unknown kind → leave intact (client rejects)
+            }
+            command.append("{\(name)}")
+        }
+        return (command, params)
     }
 
     /// Split a localTool's `arguments` string into argv tokens. Whitespace-separated; the deriver does NOT

@@ -25,5 +25,32 @@ struct WorkspaceAppCapabilityReadExecution: Codable, Sendable, Equatable {
         /// Dot path into the JSON stdout to the ARRAY of row objects (e.g. "data.items"); nil ⇒ stdout is
         /// already a top-level array. Each row object's scalar fields become a row; nested values are dropped.
         var rowsPath: String?
+        /// Per-placeholder VALUE constraints, keyed by param name. A placeholder with NO entry is page-
+        /// fillable subject only to the charset/length/no-leading-dash guard. With an entry, the author
+        /// narrows what the page may supply — so a generic read is safe even for an UNTRUSTED/imported
+        /// capability, not just an author-trusted one (closes the codex param-value HIGH).
+        var params: [String: ParamConstraint]
+
+        init(command: [String], rowsPath: String? = nil, params: [String: ParamConstraint] = [:]) {
+            self.command = command
+            self.rowsPath = rowsPath
+            self.params = params
+        }
+    }
+
+    /// What a page may supply for one `{placeholder}`. `fixed` pins a constant (the page can't influence
+    /// it at all). Otherwise the value is page-fillable but must be in `allowed` (an enum, if set) AND
+    /// match `pattern` (a regex anchored over the whole value, if set) — on top of the always-on charset/
+    /// length/no-leading-dash guard. All optional ⇒ page-fillable with only the base guard.
+    struct ParamConstraint: Codable, Sendable, Equatable {
+        var fixed: String?
+        var allowed: [String]?
+        var pattern: String?
+
+        init(fixed: String? = nil, allowed: [String]? = nil, pattern: String? = nil) {
+            self.fixed = fixed
+            self.allowed = allowed
+            self.pattern = pattern
+        }
     }
 }

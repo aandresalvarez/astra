@@ -224,6 +224,70 @@ struct WorkspaceAppGenericCapabilityReadTests {
         #expect(resolved.provider == "cli")
     }
 
+    // MARK: - FU1: per-param value schema (enum / regex / fixed)
+
+    @Test("the deriver parses inline param constraints into bare {name} tokens + a constraint map")
+    func deriverParsesParamConstraints() {
+        let (cmd, params) = WorkspaceAppCapabilityContractDeriver.parseCommandTokens(
+            ["--state", "{state:enum=open,closed,all}", "--repo", "{repo:fixed=owner/x}", "--n", "{n:re=^[0-9]+$}", "{plain}"])
+        #expect(cmd == ["--state", "{state}", "--repo", "{repo}", "--n", "{n}", "{plain}"])
+        #expect(params["state"]?.allowed == ["open", "closed", "all"])
+        #expect(params["repo"]?.fixed == "owner/x")
+        #expect(params["n"]?.pattern == "^[0-9]+$")
+        #expect(params["plain"] == nil)   // bare placeholder ⇒ base guard only
+    }
+
+    @Test("the client enforces fixed/enum/regex param constraints (the page can't override a fixed value)")
+    func paramConstraintsEnforced() throws {
+        let constraints: [String: WorkspaceAppCapabilityReadExecution.ParamConstraint] = [
+            "repo": .init(fixed: "owner/x"),
+            "state": .init(allowed: ["open", "closed"]),
+            "n": .init(pattern: "^[0-9]+$"),
+        ]
+        let command = ["gh", "--repo", "{repo}", "--state", "{state}", "--n", "{n}"]
+        // fixed: the page's value for {repo} is IGNORED — the author's pinned value wins.
+        let argv = try WorkspaceAppGenericCLIReadClient.resolveArgv(
+            command, params: ["repo": "attacker/evil", "state": "open", "n": "42"], constraints: constraints, sourceID: "s")
+        #expect(argv == ["gh", "--repo", "owner/x", "--state", "open", "--n", "42"])
+        // enum: a value outside the allowed set is rejected.
+        #expect(throws: (any Error).self) {
+            _ = try WorkspaceAppGenericCLIReadClient.resolveArgv(
+                command, params: ["state": "merged", "n": "42"], constraints: constraints, sourceID: "s")
+        }
+        // regex: a value that doesn't match the whole pattern is rejected.
+        #expect(throws: (any Error).self) {
+            _ = try WorkspaceAppGenericCLIReadClient.resolveArgv(
+                command, params: ["state": "open", "n": "4a2"], constraints: constraints, sourceID: "s")
+        }
+    }
+
+    @Test("matchesWholeValue anchors over the whole value and fails closed on an over-long author pattern")
+    func patternMatchingIsWholeValueAndLengthBounded() {
+        // whole-extent: a pattern that only matches a PREFIX is not a match.
+        #expect(WorkspaceAppGenericCLIReadClient.matchesWholeValue("12345", pattern: "^[0-9]+$"))
+        #expect(!WorkspaceAppGenericCLIReadClient.matchesWholeValue("123x", pattern: "^[0-9]+$"))
+        #expect(!WorkspaceAppGenericCLIReadClient.matchesWholeValue("x", pattern: "(["))   // invalid → false
+        // FU1 LOW: an over-long author pattern is rejected before compilation (cheap ReDoS insurance).
+        let huge = "(a|b)" + String(repeating: "?", count: WorkspaceAppGenericCLIReadClient.maxPatternLength)
+        #expect(!WorkspaceAppGenericCLIReadClient.matchesWholeValue("a", pattern: huge))
+    }
+
+    // MARK: - FU3: app-scoped connector-read rate budget
+
+    @Test("the rate limiter bounds reads per app over a sliding window, per-app and time-expiring")
+    func rateLimiterBoundsReads() {
+        let limiter = WorkspaceAppConnectorReadRateLimiter(maxPerWindow: 2, window: 60)
+        let app = UUID()
+        let t0 = Date(timeIntervalSince1970: 1000)
+        #expect(limiter.admit(appID: app, now: t0))
+        #expect(limiter.admit(appID: app, now: t0.addingTimeInterval(1)))
+        #expect(!limiter.admit(appID: app, now: t0.addingTimeInterval(2)))   // over budget in-window
+        // After the window slides past the early reads, the app is admitted again.
+        #expect(limiter.admit(appID: app, now: t0.addingTimeInterval(62)))
+        // A different app has its own independent budget.
+        #expect(limiter.admit(appID: UUID(), now: t0.addingTimeInterval(2)))
+    }
+
     // MARK: - Real process (gated): proves the hardened runner actually spawns + decodes
 
     @Test("the REAL hardened runner spawns a process and decodes its JSON output",

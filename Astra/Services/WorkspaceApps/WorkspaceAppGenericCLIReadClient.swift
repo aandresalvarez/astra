@@ -67,7 +67,7 @@ struct WorkspaceAppGenericCLIReadClient {
               FileManager.default.fileExists(atPath: workspacePath, isDirectory: &isDir), isDir.boolValue else {
             throw WorkspaceAppSourceResolutionError.capabilityReadUnavailable("\(sourceID): no workspace directory to run in")
         }
-        let argv = try Self.resolveArgv(op.command, params: params, sourceID: sourceID)
+        let argv = try Self.resolveArgv(op.command, params: params, constraints: op.params, sourceID: sourceID)
         guard let exe = Self.resolveExecutable(argv[0]) else {
             throw WorkspaceAppSourceResolutionError.capabilityReadUnavailable("\(sourceID): executable '\(argv[0])' not found")
         }
@@ -105,7 +105,12 @@ struct WorkspaceAppGenericCLIReadClient {
     /// EXACTLY one whole-token placeholder `{name}`; a partial placeholder is a malformed spec and is
     /// rejected, so substitution is unambiguous and the flag-injection guard is clean. A substituted value
     /// is validated and may not start with `-`.
-    static func resolveArgv(_ command: [String], params: [String: String], sourceID: String) throws -> [String] {
+    static func resolveArgv(
+        _ command: [String],
+        params: [String: String],
+        constraints: [String: WorkspaceAppCapabilityReadExecution.ParamConstraint] = [:],
+        sourceID: String
+    ) throws -> [String] {
         var argv: [String] = []
         for (index, token) in command.enumerated() {
             guard token.contains("{") || token.contains("}") else {
@@ -121,11 +126,25 @@ struct WorkspaceAppGenericCLIReadClient {
                 throw WorkspaceAppSourceResolutionError.unsupportedSource("\(sourceID): malformed command placeholder '\(token)'")
             }
             let name = String(token.dropFirst().dropLast())
-            guard let value = params[name] else {
+            let constraint = constraints[name]
+            // A `fixed` param is AUTHOR-pinned — the page can't influence it at all. Otherwise the value
+            // is page-supplied and must pass the author's enum/regex (if any) on top of the base guard.
+            let value: String
+            if let fixed = constraint?.fixed {
+                value = fixed
+            } else if let pageValue = params[name] {
+                value = pageValue
+            } else {
                 throw WorkspaceAppSourceResolutionError.unsupportedSource("\(sourceID): missing parameter '\(name)'")
             }
             guard isSafeValue(value) else {
                 throw WorkspaceAppSourceResolutionError.unsupportedSource("\(sourceID): parameter '\(name)' has an unsafe value")
+            }
+            if let allowed = constraint?.allowed, !allowed.contains(value) {
+                throw WorkspaceAppSourceResolutionError.unsupportedSource("\(sourceID): parameter '\(name)' is not one of the allowed values")
+            }
+            if let pattern = constraint?.pattern, !matchesWholeValue(value, pattern: pattern) {
+                throw WorkspaceAppSourceResolutionError.unsupportedSource("\(sourceID): parameter '\(name)' does not match the allowed pattern")
             }
             argv.append(value)
         }
@@ -133,6 +152,20 @@ struct WorkspaceAppGenericCLIReadClient {
             throw WorkspaceAppSourceResolutionError.unsupportedSource("\(sourceID): empty command")
         }
         return argv
+    }
+
+    /// True iff `value` matches `pattern` over its WHOLE extent. An invalid pattern → false (fail-closed).
+    /// The pattern is AUTHOR-pinned (never page-injectable), but an imported capability author is only
+    /// semi-trusted, so bound the pattern length as cheap insurance against an obvious ReDoS payload (the
+    /// page value is already capped at `maxValueBytes`). The complete fix — a safe non-backtracking
+    /// mini-schema in place of arbitrary regex — is a documented deferral.
+    static let maxPatternLength = 256
+    static func matchesWholeValue(_ value: String, pattern: String) -> Bool {
+        guard pattern.utf8.count <= maxPatternLength else { return false }
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return false }
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        guard let match = regex.firstMatch(in: value, options: [], range: range) else { return false }
+        return match.range == range
     }
 
     /// A page-supplied value is safe to pass as an argv element iff it is within the length cap, drawn
@@ -254,12 +287,33 @@ struct WorkspaceAppHardenedCLIRunner: WorkspaceAppCLIReadRunning {
             group.addTask {
                 try process.run()
                 let pid = process.processIdentifier
+                // Put the child in its OWN process group (best-effort). setpgid from the parent loses the
+                // race iff the child already exec'd (macOS rejects it with EACCES), leaving the child in
+                // ASTRA's group. Capture ownership NOW, while the child is provably alive: at timeout the
+                // group LEADER may already have exited (a wrapper that forks a worker and exits on SIGTERM),
+                // which would make a re-query of getpgid() return ESRCH/-1 and wrongly skip the group reap.
+                setpgid(pid, pid)
+                let ownsGroup = (getpgid(pid) == pid)
                 let deadline = Date().addingTimeInterval(timeout)
                 while process.isRunning {
                     if Date() > deadline {
-                        process.terminate()                                   // SIGTERM
-                        try? await Task.sleep(nanoseconds: 1_500_000_000)
-                        if process.isRunning { kill(pid, SIGKILL) }           // escalate
+                        if ownsGroup {
+                            // Signal the WHOLE group, independent of the leader's own liveness, so a worker
+                            // the wrapper forked and orphaned is still reaped: SIGTERM to let a forking CLI
+                            // clean up, then SIGKILL after a grace period. `getpgid(pid) == pid` held, so
+                            // `-pid` can NEVER be ASTRA's group. ESRCH (group already empty) is the success
+                            // case and is intentionally ignored.
+                            kill(-pid, SIGTERM)
+                            try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            kill(-pid, SIGKILL)
+                        } else {
+                            // setpgid lost the exec race; the child shares ASTRA's group, so we may only
+                            // ever target it directly (a fully-atomic group needs posix_spawn — documented
+                            // follow-up). A grandchild it forked can survive; realistic read CLIs don't.
+                            process.terminate()                               // SIGTERM (direct child)
+                            try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            if process.isRunning { kill(pid, SIGKILL) }
+                        }
                         outPipe.fileHandleForReading.readabilityHandler = nil
                         errPipe.fileHandleForReading.readabilityHandler = nil
                         throw WorkspaceAppSourceResolutionError.capabilityReadUnavailable("cli: timed out")
