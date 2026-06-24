@@ -716,6 +716,10 @@ enum AgentRuntimeLaunchPreflight {
         let runtime = AgentRuntimeID(rawValue: task.runtimeID ?? "") ?? TaskExecutionDefaults.runtime
         let mcpIssues: [MCPRuntimeProjection.PreflightIssue]
         if AgentRuntimeAdapterRegistry.descriptor(for: runtime).supportsMCPServers {
+            let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
+                for: task,
+                contextText: contextText
+            )
             var mcpServers = MCPRuntimeProjection.enabledServers(
                 for: task.workspace,
                 packages: CapabilityRuntimeResourceMatcher.packageDefinitions(),
@@ -729,6 +733,15 @@ enum AgentRuntimeLaunchPreflight {
                 runID: run.id
             ) {
                 mcpServers.append(workspaceServer)
+            }
+            if let hostControlServer = HostControlPlaneMCPProjection.resolvedServer(
+                task: task,
+                environment: executionEnvironment,
+                currentDirectory: TaskWorkspaceAccess(task: task).effectiveWorkspacePath,
+                runID: run.id,
+                taskEnvironment: taskEnv
+            ) {
+                mcpServers.append(hostControlServer)
             }
             if let browserServer = BrowserBridgeMCPProjection.resolvedServer(
                 for: task,

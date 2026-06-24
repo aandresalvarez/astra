@@ -1237,6 +1237,22 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         ) {
             mcpServers.append(workspaceServer)
         }
+        let hostControlEnvironment = HostControlPlaneMCPProjection.environmentVariables(
+            task: context.task,
+            environment: executionEnvironment,
+            currentDirectory: context.workspacePath,
+            runID: context.runID,
+            taskEnvironment: taskEnv
+        )
+        if let hostControlServer = HostControlPlaneMCPProjection.resolvedServer(
+            task: context.task,
+            environment: executionEnvironment,
+            currentDirectory: context.workspacePath,
+            runID: context.runID,
+            taskEnvironment: taskEnv.merging(hostControlEnvironment) { current, _ in current }
+        ) {
+            mcpServers.append(hostControlServer)
+        }
         if let browserServer = BrowserBridgeMCPProjection.resolvedServer(
             for: context.task,
             contextText: context.contextText
@@ -1249,7 +1265,9 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             currentDirectory: context.workspacePath,
             runID: context.runID
         )
-        let explicitMCPEnvironment = taskEnv.merging(workspaceExecutorEnvironment) { current, _ in current }
+        let explicitMCPEnvironment = taskEnv
+            .merging(workspaceExecutorEnvironment) { current, _ in current }
+            .merging(hostControlEnvironment) { current, _ in current }
         // allowEmpty: strict mode must apply even with zero governed servers,
         // or a repository's own .mcp.json loads ungoverned on those runs.
         let mcpConfigURL = MCPRuntimeProjection.writeClaudeConfig(
@@ -1299,6 +1317,9 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             includeClaudeTeamFlag: true
         )
         for (key, value) in workspaceExecutorEnvironment {
+            processEnvironment[key] = value
+        }
+        for (key, value) in hostControlEnvironment {
             processEnvironment[key] = value
         }
         let vertexADCReadablePaths = ClaudeCodeRuntime.vertexADCReadablePaths(
@@ -1380,6 +1401,9 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
                 "docker_workspace_executor": String(usesDockerWorkspaceExecutor),
                 "docker_workspace_tool": usesDockerWorkspaceExecutor ? DockerWorkspaceMCPProjection.providerToolPermission : "none",
                 "docker_workspace_mcp_env_key_count": String(workspaceExecutorEnvironment.count),
+                "host_control_plane_tool_count": String(HostControlPlaneMCPProjection.toolNames.count),
+                "host_control_plane_supported": String(!usesDockerWorkspaceExecutor || mcpAllowedTools.contains(HostControlPlaneMCPProjection.providerToolPermission(for: "gcloud"))),
+                "host_control_plane_mcp_env_key_count": String(hostControlEnvironment.count),
                 "docker_workspace_container_env_key_count": String(
                     DockerExecutionPlanner.credentialProjectionEnvironment(environment: executionEnvironment).count
                 ),
@@ -1868,6 +1892,9 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let providerLaunchAllowed = Array(Set(providerAllowed + artifactBootstrapTools + mcpProjection.allowedTools)).sorted()
         var launchTaskEnv = taskEnv
         for (key, value) in mcpProjection.workspaceExecutorEnvironment {
+            launchTaskEnv[key] = value
+        }
+        for (key, value) in mcpProjection.hostControlEnvironment {
             launchTaskEnv[key] = value
         }
         let plan = CopilotCLIRuntime.buildCommand(

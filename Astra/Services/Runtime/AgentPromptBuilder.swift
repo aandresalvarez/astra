@@ -428,10 +428,15 @@ enum AgentPromptBuilder {
         }
     }
 
-    private static func appendConnectorContext(from capabilityScope: TaskCapabilityPromptScope, to sections: inout [PromptContextSection]) {
+    private static func appendConnectorContext(
+        from capabilityScope: TaskCapabilityPromptScope,
+        task: AgentTask,
+        to sections: inout [PromptContextSection]
+    ) {
         let projection = ConnectorRuntimeProjection(connectors: capabilityScope.connectors)
         let aliasesByID = projection.aliasesByConnectorID
         let bindingsByConnectorID = Dictionary(grouping: projection.environmentBindings(), by: \.connectorID)
+        let dockerRouted = DockerWorkspaceMCPProjection.isEnabled(for: DockerExecutionPlanner.resolveEnvironment(for: task))
 
         let connectorDescriptions = capabilityScope.connectors.map { conn in
             let alias = aliasesByID[conn.id] ?? ConnectorRuntimeProjection.alias(for: conn)
@@ -492,9 +497,20 @@ enum AgentPromptBuilder {
 
         The connector env vars listed above and the ASTRA_CONNECTORS JSON manifest are authoritative for this run. When more than one connector of the same service is available, use the connector name or alias to pick the right env vars. If behavioral instructions mention bare legacy env names, use those names only when they are explicitly listed above or in ASTRA_CONNECTORS. If the user request is ambiguous, ask which connector to use before calling external APIs.
 
+        \(connectorAPIGuidance(dockerRouted: dockerRouted))
+        """, kind: .tools, to: &sections, sourcePointers: connectorSourcePointers(capabilityScope.connectors))
+    }
+
+    private static func connectorAPIGuidance(dockerRouted: Bool) -> String {
+        if dockerRouted {
+            return """
+            IMPORTANT: This task is routed through a Docker workspace executor. Do not use native host Bash or Docker workspace_shell for host connector APIs. For Jira, use `mcp__astra_host__jira` (or Copilot's `astra_host-jira`) with the projected ASTRA_CONNECTORS credentials. For Google Cloud or BigQuery host CLI operations, use `mcp__astra_host__gcloud` or `mcp__astra_host__bq`. Use workspace_shell only for project commands that belong inside the container image. WebFetch cannot handle SSO, session cookies, or token-based auth headers.
+            """
+        }
+        return """
         IMPORTANT: To call authenticated APIs, use Bash with curl/python and the env var tokens — NOT WebFetch. \
         WebFetch cannot handle SSO, session cookies, or token-based auth headers. Prefer the per-connector runtime examples above, or in Python use os.environ["ENV_KEY_LISTED_ABOVE"] to read the credential.
-        """, kind: .tools, to: &sections, sourcePointers: connectorSourcePointers(capabilityScope.connectors))
+        """
     }
 
     private static func connectorRuntimeExample(
@@ -1229,7 +1245,7 @@ enum AgentPromptBuilder {
                 }
                 appendSkillInstructions(from: context.capabilityScope, to: &sections)
             }
-            appendConnectorContext(from: context.capabilityScope, to: &sections)
+            appendConnectorContext(from: context.capabilityScope, task: context.task, to: &sections)
             if context.mode == .initialRun {
                 appendToolContext(from: context.capabilityScope, to: &sections)
             }

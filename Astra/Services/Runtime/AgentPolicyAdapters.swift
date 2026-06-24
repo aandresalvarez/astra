@@ -1115,6 +1115,10 @@ enum AgentPolicyManifestService {
             where !updated.runtimeSupportTools.contains(where: { $0.name == descriptor.name }) {
             updated.runtimeSupportTools.append(descriptor)
         }
+        for descriptor in HostControlPlaneMCPProjection.runtimeSupportToolDescriptors(for: runtime)
+            where !updated.runtimeSupportTools.contains(where: { $0.name == descriptor.name }) {
+            updated.runtimeSupportTools.append(descriptor)
+        }
         updated.runtimeSupportTools.sort { $0.name < $1.name }
         return updated
     }
@@ -1128,7 +1132,10 @@ enum AgentPolicyManifestService {
               DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: runtime) else {
             return base
         }
-        return uniqueMCPServers(base + [DockerWorkspaceMCPProjection.manifestServer()])
+        return uniqueMCPServers(base + [
+            DockerWorkspaceMCPProjection.manifestServer(),
+            HostControlPlaneMCPProjection.manifestServer()
+        ])
     }
 
     private static func uniqueMCPServers(

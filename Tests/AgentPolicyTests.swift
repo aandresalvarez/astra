@@ -1476,6 +1476,11 @@ struct RunPermissionManifestTests {
                     && server.allowedTools == DockerWorkspaceMCPProjection.toolNames
             })
             #expect(manifest.mcpServers.contains { server in
+                server.packageID == "astra-builtin"
+                    && server.id == HostControlPlaneMCPProjection.serverID
+                    && server.allowedTools == HostControlPlaneMCPProjection.toolNames
+            })
+            #expect(manifest.mcpServers.contains { server in
                 server.packageID == package.id
                     && server.id == "github"
                     && server.allowedTools == ["pull_requests.read"]
@@ -1492,6 +1497,15 @@ struct RunPermissionManifestTests {
             #expect(manifest.providerRender.runtimeSupportTools.contains { descriptor in
                 descriptor.name == DockerWorkspaceMCPProjection.providerToolPermission(for: "workspace_job_status")
                     && descriptor.allowedInputKeys == ["job_id"]
+            })
+            #expect(manifest.providerRender.runtimeSupportTools.contains { descriptor in
+                descriptor.name == HostControlPlaneMCPProjection.providerToolPermission(for: "gcloud")
+                    && descriptor.allowedInputKeys == ["arguments", "timeout_seconds"]
+            })
+            #expect(manifest.providerRender.runtimeSupportTools.contains { descriptor in
+                descriptor.name == HostControlPlaneMCPProjection.providerToolPermission(for: "jira")
+                    && descriptor.allowedInputKeys.contains("operation")
+                    && descriptor.allowedInputKeys.contains("path")
             })
             #expect(manifest.providerRender.diagnostics.contains { diagnostic in
                 diagnostic.id == "container.host-control-plane-routing"

@@ -315,6 +315,15 @@ struct AgentRuntimePolicyGuard: Sendable {
                 Self.normalizedToolName(descriptor.name) == Self.normalizedToolName(permission)
             }
         }
+        if let canonicalHostTool = HostControlPlaneMCPProjection.canonicalToolName(
+            fromObservedToolName: toolName,
+            runtime: manifest.providerID
+        ) {
+            let permission = HostControlPlaneMCPProjection.providerToolPermission(for: canonicalHostTool)
+            return manifest.providerRender.runtimeSupportTools.first { descriptor in
+                Self.normalizedToolName(descriptor.name) == Self.normalizedToolName(permission)
+            }
+        }
         return manifest.providerRender.runtimeSupportTools.first { descriptor in
             Self.normalizedToolName(descriptor.name) == normalized
                 || descriptor.providerNativePermission.map(Self.normalizedToolName) == normalized

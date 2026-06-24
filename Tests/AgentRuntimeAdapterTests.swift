@@ -1515,6 +1515,9 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.commandPlannedFields["docker_workspace_tool"] == DockerWorkspaceMCPProjection.providerToolPermission)
         #expect(plan.commandPlannedFields["docker_workspace_credential_projection_count"] == "1")
         #expect(plan.commandPlannedFields["native_shell_removed_for_workspace_executor"] == "true")
+        #expect(plan.commandPlannedFields["host_control_plane_supported"] == "true")
+        #expect(plan.environment["ASTRA_HOST_CONTROL_GCLOUD_EXECUTABLE"]?.isEmpty == false)
+        #expect(plan.environment["ASTRA_HOST_CONTROL_DIAGNOSTICS_HOST"]?.contains("/.astra/tasks/") == true)
 
         let visibleToolsIndex = try #require(plan.arguments.firstIndex(of: "--tools"))
         let visibleTools = Set(plan.arguments[visibleToolsIndex + 1].split(separator: ",").map(String.init))
@@ -1523,6 +1526,8 @@ struct AgentRuntimeAdapterTests {
 
         let allowedTools = Self.argumentValues(after: "--allowedTools", in: plan.arguments)
         #expect(allowedTools.contains(DockerWorkspaceMCPProjection.providerToolPermission))
+        #expect(allowedTools.contains(HostControlPlaneMCPProjection.providerToolPermission(for: "gcloud")))
+        #expect(allowedTools.contains(HostControlPlaneMCPProjection.providerToolPermission(for: "ssh")))
         #expect(allowedTools.contains("Read"))
         #expect(!allowedTools.contains("Bash"))
 
@@ -1540,6 +1545,11 @@ struct AgentRuntimeAdapterTests {
         #expect(env["ASTRA_WORKSPACE_DOCKER_IMAGE"] == "${ASTRA_WORKSPACE_DOCKER_IMAGE}")
         #expect(env["ASTRA_WORKSPACE_DOCKER_ENV"] == "${ASTRA_WORKSPACE_DOCKER_ENV}")
         #expect(env["DOCKER_CONFIG"] == "${DOCKER_CONFIG}")
+        let hostServer = try #require(servers[HostControlPlaneMCPProjection.serverID] as? [String: Any])
+        #expect(hostServer["command"] as? String == (RuntimePathResolver.astraToolsPath as NSString).appendingPathComponent("astra-host-control"))
+        let hostEnv = try #require(hostServer["env"] as? [String: String])
+        #expect(hostEnv["ASTRA_HOST_CONTROL_GCLOUD_EXECUTABLE"] == "${ASTRA_HOST_CONTROL_GCLOUD_EXECUTABLE}")
+        #expect(hostEnv["ASTRA_HOST_CONTROL_DIAGNOSTICS_HOST"] == "${ASTRA_HOST_CONTROL_DIAGNOSTICS_HOST}")
     }
 
     @Test("Copilot Docker workspace mode routes native shell through ASTRA MCP helper")
@@ -1603,6 +1613,8 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.commandPlannedFields["docker_workspace_executor_supported"] == "true")
         #expect(plan.commandPlannedFields["docker_workspace_tool"] == DockerWorkspaceMCPProjection.providerToolPermission)
         #expect(plan.commandPlannedFields["docker_workspace_credential_projection_count"] == "1")
+        #expect(plan.commandPlannedFields["host_control_plane_supported"] == "true")
+        #expect(plan.environment["ASTRA_HOST_CONTROL_GCLOUD_EXECUTABLE"]?.isEmpty == false)
         #expect(plan.commandPlannedFields["uses_additional_mcp_config"] == "true")
 
         let configIndex = try #require(plan.arguments.firstIndex(of: "--additional-mcp-config"))
@@ -1619,13 +1631,19 @@ struct AgentRuntimeAdapterTests {
         #expect(env["ASTRA_WORKSPACE_DOCKER_IMAGE"] == "${ASTRA_WORKSPACE_DOCKER_IMAGE}")
         #expect(env["ASTRA_WORKSPACE_DOCKER_ENV"] == "${ASTRA_WORKSPACE_DOCKER_ENV}")
         #expect(env["DOCKER_CONFIG"] == "${DOCKER_CONFIG}")
+        let hostServer = try #require(servers[HostControlPlaneMCPProjection.serverID] as? [String: Any])
+        #expect(hostServer["command"] as? String == (RuntimePathResolver.astraToolsPath as NSString).appendingPathComponent("astra-host-control"))
+        let hostEnv = try #require(hostServer["env"] as? [String: String])
+        #expect(hostEnv["ASTRA_HOST_CONTROL_GCLOUD_EXECUTABLE"] == "${ASTRA_HOST_CONTROL_GCLOUD_EXECUTABLE}")
 
         let allowTools = Self.argumentValues(after: "--allow-tool", in: plan.arguments)
         #expect(allowTools.contains("astra_workspace(workspace_shell)"))
+        #expect(allowTools.contains("astra_host(gcloud)"))
         #expect(!allowTools.contains(DockerWorkspaceMCPProjection.providerToolPermission))
         #expect(!allowTools.contains { $0.contains("shell(") })
         let availableTools = Self.argumentValues(after: "--available-tools", in: plan.arguments)
         #expect(availableTools.contains("astra_workspace-workspace_shell"))
+        #expect(availableTools.contains("astra_host-gcloud"))
         #expect(!availableTools.contains(DockerWorkspaceMCPProjection.providerToolPermission))
         #expect(!availableTools.contains("bash"))
     }
@@ -1687,15 +1705,23 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.commandPlannedFields["docker_workspace_executor_supported"] == "true")
         #expect(plan.commandPlannedFields["docker_workspace_tool"] == DockerWorkspaceMCPProjection.providerToolPermission)
         #expect(plan.commandPlannedFields["docker_workspace_credential_projection_count"] == "1")
+        #expect(plan.commandPlannedFields["host_control_plane_supported"] == "true")
         #expect(plan.commandPlannedFields["uses_mcp_config_overrides"] == "true")
         #expect(plan.commandPlannedFields["mcp_server_ids"]?.contains(DockerWorkspaceMCPProjection.serverID) == true)
+        #expect(plan.commandPlannedFields["mcp_server_ids"]?.contains(HostControlPlaneMCPProjection.serverID) == true)
+        #expect(plan.environment["ASTRA_HOST_CONTROL_GCLOUD_EXECUTABLE"]?.isEmpty == false)
 
         let configValues = Self.argumentValues(after: "-c", in: plan.arguments)
         let mcpConfig = try #require(configValues.first { $0.hasPrefix("mcp_servers=") })
         #expect(mcpConfig.contains("\"astra_workspace\"={"))
         #expect(mcpConfig.contains("command=\"\((RuntimePathResolver.astraToolsPath as NSString).appendingPathComponent("astra-workspace"))\""))
+        #expect(mcpConfig.contains("\"astra_host\"={"))
+        #expect(mcpConfig.contains("command=\"\((RuntimePathResolver.astraToolsPath as NSString).appendingPathComponent("astra-host-control"))\""))
         #expect(mcpConfig.contains("args=[]"))
         for toolName in DockerWorkspaceMCPProjection.toolNames {
+            #expect(mcpConfig.contains("\"\(toolName)\""))
+        }
+        for toolName in HostControlPlaneMCPProjection.toolNames {
             #expect(mcpConfig.contains("\"\(toolName)\""))
         }
         #expect(mcpConfig.contains("default_tools_enabled=false"))
@@ -1704,6 +1730,7 @@ struct AgentRuntimeAdapterTests {
         #expect(envVars.contains("ASTRA_WORKSPACE_DOCKER_IMAGE"))
         #expect(envVars.contains("ASTRA_WORKSPACE_DOCKER_ENV"))
         #expect(envVars.contains("ASTRA_WORKSPACE_TASK_ID"))
+        #expect(envVars.contains("ASTRA_HOST_CONTROL_GCLOUD_EXECUTABLE"))
         #expect(envVars.contains("DOCKER_CONFIG"))
     }
 
@@ -1712,6 +1739,10 @@ struct AgentRuntimeAdapterTests {
         for descriptor in AgentRuntimeAdapterRegistry.descriptors {
             #expect(
                 DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: descriptor.id)
+                    == descriptor.supportsMCPServers
+            )
+            #expect(
+                HostControlPlaneMCPProjection.supportsHostControlPlane(runtime: descriptor.id)
                     == descriptor.supportsMCPServers
             )
         }

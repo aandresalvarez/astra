@@ -5,8 +5,10 @@ struct CodexMCPLaunchProjection {
     let servers: [MCPRuntimeProjection.ResolvedServer]
     let configArguments: [String]
     let workspaceExecutorEnvironment: [String: String]
+    let hostControlEnvironment: [String: String]
     let dockerWorkspaceExecutorSupported: Bool
     let dockerWorkspaceUnsupportedDetail: String
+    let hostControlPlaneSupported: Bool
     let browserBridgeMCPToolSupported: Bool
 
     static func resolve(
@@ -32,6 +34,22 @@ struct CodexMCPLaunchProjection {
         ) {
             servers.append(workspaceServer)
         }
+        let hostControlEnvironment = HostControlPlaneMCPProjection.environmentVariables(
+            task: task,
+            environment: executionEnvironment,
+            currentDirectory: workspacePath,
+            runID: runID,
+            taskEnvironment: taskEnvironment
+        )
+        if let hostControlServer = HostControlPlaneMCPProjection.resolvedServer(
+            task: task,
+            environment: executionEnvironment,
+            currentDirectory: workspacePath,
+            runID: runID,
+            taskEnvironment: taskEnvironment.merging(hostControlEnvironment) { current, _ in current }
+        ) {
+            servers.append(hostControlServer)
+        }
         if let browserServer = BrowserBridgeMCPProjection.resolvedServer(
             for: task,
             contextText: contextText
@@ -46,7 +64,9 @@ struct CodexMCPLaunchProjection {
             currentDirectory: workspacePath,
             runID: runID
         )
-        let explicitMCPEnvironment = taskEnvironment.merging(workspaceExecutorEnvironment) { current, _ in current }
+        let explicitMCPEnvironment = taskEnvironment
+            .merging(workspaceExecutorEnvironment) { current, _ in current }
+            .merging(hostControlEnvironment) { current, _ in current }
         let configArguments = CodexMCPConfigRenderer.configArguments(
             servers: servers,
             availableEnvironment: explicitMCPEnvironment
@@ -57,13 +77,17 @@ struct CodexMCPLaunchProjection {
             usesDockerWorkspaceExecutor: usesDockerWorkspaceExecutor,
             configArguments: configArguments
         )
+        let hostControlPlaneSupported = !usesDockerWorkspaceExecutor
+            || configArguments.containsMCPServerConfig(for: HostControlPlaneMCPProjection.serverID)
 
         return CodexMCPLaunchProjection(
             servers: servers,
             configArguments: configArguments,
             workspaceExecutorEnvironment: workspaceExecutorEnvironment,
+            hostControlEnvironment: hostControlEnvironment,
             dockerWorkspaceExecutorSupported: dockerWorkspaceExecutorSupported,
             dockerWorkspaceUnsupportedDetail: unsupportedDetail,
+            hostControlPlaneSupported: hostControlPlaneSupported,
             browserBridgeMCPToolSupported: browserServerProjected
                 && configArguments.containsMCPServerConfig(for: BrowserBridgeMCPProjection.serverID)
         )
