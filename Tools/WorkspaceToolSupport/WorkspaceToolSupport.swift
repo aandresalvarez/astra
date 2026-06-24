@@ -44,7 +44,11 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         self.taskID = taskID
         self.runID = runID
         self.mounts = mounts
-        self.containerEnvironment = Self.normalizedContainerEnvironment(containerEnvironment)
+        var normalizedEnvironment = Self.normalizedContainerEnvironment(containerEnvironment)
+        if normalizedEnvironment["PATH"] == nil {
+            normalizedEnvironment["PATH"] = Self.defaultContainerPATH(mounts: mounts)
+        }
+        self.containerEnvironment = normalizedEnvironment
     }
 
     public static func fromEnvironment(_ env: [String: String] = ProcessInfo.processInfo.environment) throws -> WorkspaceToolConfiguration {
@@ -103,6 +107,49 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
             return ""
         }
         return trimmed
+    }
+
+    private static func defaultContainerPATH(mounts: [WorkspaceDockerMount]) -> String {
+        var parts: [String] = []
+        for workspaceName in workspacePathNames(mounts: mounts) {
+            parts += [
+                "/opt/\(workspaceName)/.venv/bin",
+                "/opt/\(workspaceName)/venv/bin",
+                "/opt/\(workspaceName)/node_modules/.bin"
+            ]
+        }
+        parts += [
+            "/opt/project/.venv/bin",
+            "/opt/project/venv/bin",
+            "/app/.venv/bin",
+            "/app/venv/bin",
+            "/usr/local/sbin",
+            "/usr/local/bin",
+            "/usr/sbin",
+            "/usr/bin",
+            "/sbin",
+            "/bin"
+        ]
+        return deduplicated(parts).joined(separator: ":")
+    }
+
+    private static func workspacePathNames(mounts: [WorkspaceDockerMount]) -> [String] {
+        deduplicated(mounts.compactMap { mount in
+            guard mount.role == "workspace" else { return nil }
+            let name = URL(fileURLWithPath: mount.hostPath).lastPathComponent
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty,
+                  name != ".",
+                  name.range(of: #"^[A-Za-z0-9._-]+$"#, options: .regularExpression) != nil else {
+                return nil
+            }
+            return name
+        })
+    }
+
+    private static func deduplicated(_ values: [String]) -> [String] {
+        var seen: Set<String> = []
+        return values.filter { seen.insert($0).inserted }
     }
 }
 
@@ -192,7 +239,11 @@ public final class DockerWorkspaceCommandExecutor: WorkspaceCommandExecutor {
             args += ["--volume", "\(mount.hostPath):\(mount.containerPath):\(mount.access)"]
         }
         for key in configuration.containerEnvironment.keys.sorted() {
-            args += ["--env", key]
+            if key == "PATH", let value = configuration.containerEnvironment[key] {
+                args += ["--env", "\(key)=\(value)"]
+            } else {
+                args += ["--env", key]
+            }
         }
         args += [configuration.image, "sh", "-c", "while :; do sleep 3600; done"]
 
@@ -200,7 +251,7 @@ public final class DockerWorkspaceCommandExecutor: WorkspaceCommandExecutor {
             args,
             commandLabel: "docker run",
             timeoutSeconds: 30,
-            environment: configuration.containerEnvironment
+            environment: dockerClientEnvironment(configuration.containerEnvironment)
         )
         if result.exitCode == 0 {
             containerStarted = true
@@ -229,6 +280,10 @@ public final class DockerWorkspaceCommandExecutor: WorkspaceCommandExecutor {
             return (configuration.dockerExecutable, arguments)
         }
         return ("/usr/bin/env", [configuration.dockerExecutable] + arguments)
+    }
+
+    private func dockerClientEnvironment(_ environment: [String: String]) -> [String: String] {
+        environment.filter { key, _ in key != "PATH" }
     }
 }
 

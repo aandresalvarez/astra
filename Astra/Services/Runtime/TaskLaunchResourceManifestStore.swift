@@ -36,7 +36,10 @@ enum TaskLaunchResourceManifestStore {
                 "host_writable_count": String(plan.hostWritablePaths.count),
                 "container_mount_count": String(plan.containerMounts.count),
                 "credential_label_count": String(plan.credentialGrants.count),
-                "diagnostic_count": String(plan.diagnostics.count)
+                "diagnostic_count": String(plan.diagnostics.count),
+                "provider_placement": plan.providerPlacement,
+                "workspace_command_placement": plan.workspaceCommandPlacement,
+                "shell_route": plan.shellRoute
             ], level: .debug, fieldMaxLength: 240)
             return latestURL.path
         } catch {

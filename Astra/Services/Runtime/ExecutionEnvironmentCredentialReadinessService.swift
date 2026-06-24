@@ -125,7 +125,7 @@ enum ExecutionEnvironmentCredentialReadinessService {
                 projectedEnvironmentKeys: [],
                 isTaskSnapshotStale: true,
                 detail: "This task is pinned to an older Docker environment snapshot without GCP Application Default Credentials, even though the workspace default now has GCP credentials connected.",
-                remediation: "Fork this task or start a new task so ASTRA can capture the current Docker credential projection."
+                remediation: "Use the Container panel action “Update task credentials”, then retry this task. ASTRA will update only the task's next retry snapshot."
             )
         }
 
@@ -137,7 +137,7 @@ enum ExecutionEnvironmentCredentialReadinessService {
                 ? "This Docker workspace appears to use BigQuery/dbt, and local GCP Application Default Credentials exist, but they are not connected to the selected Docker environment."
                 : "This Docker workspace appears to use BigQuery/dbt, but no local GCP Application Default Credentials file was found at \(adcFile)."
             let remediation = hostADCExists
-                ? "Use the Container panel action “Connect GCP credentials”, then retry with a new or forked task snapshot."
+                ? "Use the Container panel action “Connect GCP credentials”, then retry this task. ASTRA will update only the selected task or workspace snapshot."
                 : "Run `gcloud auth application-default login` on this Mac, then connect GCP credentials in the Container panel."
             return gcpReport(
                 state: state,

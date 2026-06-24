@@ -19,6 +19,7 @@ struct TaskRunStopReasonTests {
         #expect(TaskRunStopReason.inferredValidationFailed.rawValue == "inferred_validation_failed")
         #expect(TaskRunStopReason.dockerProviderExecutableMissing.rawValue == "docker_provider_executable_missing")
         #expect(TaskRunStopReason.dockerDaemonUnavailable.rawValue == "docker_daemon_unavailable")
+        #expect(TaskRunStopReason.dockerContextUnapproved.rawValue == "docker_context_unapproved")
         #expect(TaskRunStopReason.dockerImageUnavailable.rawValue == "docker_image_unavailable")
         #expect(TaskRunStopReason.dockerMountFailed.rawValue == "docker_mount_failed")
         #expect(TaskRunStopReason.dockerLaunchFailed.rawValue == "docker_launch_failed")
@@ -57,6 +58,7 @@ struct TaskRunStopReasonTests {
     func dockerRuntimeStopReasonsAreGroupedForTerminalFailures() {
         #expect(TaskRunStopReason.dockerProviderExecutableMissing.isDockerRuntimeBlocked)
         #expect(TaskRunStopReason.dockerDaemonUnavailable.isDockerRuntimeBlocked)
+        #expect(TaskRunStopReason.dockerContextUnapproved.isDockerRuntimeBlocked)
         #expect(!TaskRunStopReason.noUsableResult.isDockerRuntimeBlocked)
     }
 

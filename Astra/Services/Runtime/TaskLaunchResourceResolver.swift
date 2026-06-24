@@ -52,6 +52,10 @@ enum TaskLaunchResourceResolver {
 
         appendExecutionEnvironmentGrants(
             environment,
+            task: task,
+            runID: runID,
+            fileManager: fileManager,
+            hostPathGrants: &hostPathGrants,
             containerMounts: &containerMounts,
             environmentGrants: &environmentGrants,
             credentialGrants: &credentialGrants,
@@ -76,6 +80,8 @@ enum TaskLaunchResourceResolver {
             executionEnvironmentID: environment.id,
             executionEnvironmentKind: environment.kind.rawValue,
             providerPlacement: environment.effectiveProviderPlacement.rawValue,
+            workspaceCommandPlacement: environment.workspaceCommandPlacement,
+            shellRoute: environment.workspaceShellRoute,
             hostPathGrants: uniqueHostPathGrants(hostPathGrants),
             containerMounts: uniqueContainerMounts(containerMounts),
             environmentGrants: uniqueEnvironmentGrants(environmentGrants),
@@ -221,6 +227,10 @@ enum TaskLaunchResourceResolver {
 
     private static func appendExecutionEnvironmentGrants(
         _ environment: WorkspaceExecutionEnvironment,
+        task: AgentTask,
+        runID: UUID?,
+        fileManager: FileManager,
+        hostPathGrants: inout [RuntimePathGrant],
         containerMounts: inout [RuntimeContainerMountGrant],
         environmentGrants: inout [RuntimeEnvironmentGrant],
         credentialGrants: inout [RuntimeCredentialGrant],
@@ -234,6 +244,36 @@ enum TaskLaunchResourceResolver {
             reason: "Task is pinned to a Docker execution environment.",
             required: true
         ))
+
+        if DockerWorkspaceMCPProjection.isEnabled(for: environment),
+           let dockerConfigDirectory = DockerWorkspaceMCPProjection.taskScopedDockerConfigDirectory(
+                task: task,
+                runID: runID,
+                fileManager: fileManager
+           ) {
+            hostPathGrants.append(RuntimePathGrant(
+                path: normalizedPath(dockerConfigDirectory),
+                access: .readWrite,
+                source: .dockerEnvironment,
+                reason: "Docker workspace MCP helper uses an ASTRA-managed Docker client config instead of the user's ~/.docker/config.json.",
+                sensitivity: .normal,
+                lifetime: .run,
+                exists: true
+            ))
+            environmentGrants.append(RuntimeEnvironmentGrant(
+                key: "DOCKER_CONFIG",
+                source: .dockerEnvironment,
+                reason: "Docker workspace MCP helper points Docker CLI at ASTRA's task-scoped client config.",
+                sensitivity: .normal,
+                valueProjected: true
+            ))
+            diagnostics.append(RuntimeResourceDiagnostic(
+                severity: .info,
+                code: "docker_client_config_task_scoped",
+                message: "Docker workspace commands use an ASTRA-managed Docker client config; the real ~/.docker/config.json is not projected to the provider sandbox.",
+                repairAction: nil
+            ))
+        }
 
         for mount in environment.mounts {
             containerMounts.append(RuntimeContainerMountGrant(

@@ -157,6 +157,82 @@ struct TaskCapabilityResolverTests {
         #expect(prompt.contains("[Jira Agent]:"))
     }
 
+    @Test("Provider launch connector scope follows active objective instead of stale task goal")
+    func providerLaunchConnectorScopeFollowsActiveObjective() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Starr Data Lake", primaryPath: "/tmp/starr-data-lake")
+        context.insert(workspace)
+
+        let jiraSkill = Skill(
+            name: "Jira Agent",
+            allowedTools: ["Bash"],
+            behaviorInstructions: "Use Jira only for sprint story work."
+        )
+        jiraSkill.isGlobal = true
+        context.insert(jiraSkill)
+
+        let jiraConnector = Connector(
+            name: "Jira-new",
+            serviceType: "jira",
+            connectorDescription: "Jira sprint story connector",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "basic"
+        )
+        jiraConnector.isGlobal = true
+        jiraConnector.skill = jiraSkill
+        jiraConnector.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        context.insert(jiraConnector)
+
+        let gcpConnector = Connector(
+            name: "Google Cloud",
+            serviceType: "gcp",
+            connectorDescription: "Google Cloud BigQuery credentials for dbt regression tests",
+            baseURL: "https://bigquery.googleapis.com",
+            authMethod: "adc"
+        )
+        gcpConnector.isGlobal = true
+        gcpConnector.credentialKeys = ["GOOGLE_APPLICATION_CREDENTIALS"]
+        context.insert(gcpConnector)
+
+        workspace.enabledGlobalConnectorIDs = [
+            jiraConnector.id.uuidString,
+            gcpConnector.id.uuidString
+        ]
+
+        let task = AgentTask(
+            title: "List active sprint stories",
+            goal: "List my stories for the active sprint in the STAR Jira project",
+            workspace: workspace
+        )
+        context.insert(task)
+
+        let first = TaskEvent(
+            task: task,
+            type: "user.message",
+            payload: "List my stories for the active sprint in the STAR Jira project"
+        )
+        first.timestamp = Date(timeIntervalSince1970: 1)
+        context.insert(first)
+
+        let correction = TaskEvent(
+            task: task,
+            type: "user.message",
+            payload: "no your goal is to complete the plan.md document"
+        )
+        correction.timestamp = Date(timeIntervalSince1970: 2)
+        context.insert(correction)
+        try context.save()
+
+        let scope = TaskCapabilityResolver(task: task).promptScope(
+            contextText: "Continue Phase 5 from plan.md: run dbt tests against BigQuery in Docker."
+        )
+
+        #expect(scope.connectors.map(\.name) == ["Google Cloud"])
+        #expect(scope.resolver.resolvedEnvironmentVariables.keys.contains { $0.contains("JIRA") } == false)
+    }
+
     @Test("Multiple same-service connectors project namespaced env vars without legacy collision")
     func multipleSameServiceConnectorsProjectNamespacedEnvVarsWithoutLegacyCollision() throws {
         let container = try makeTaskCapabilityResolverContainer()

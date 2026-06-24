@@ -31,6 +31,11 @@ struct WorkspaceDockerSectionView: View {
 
             environmentPickerRow
 
+            if viewModel.canSwitchPinnedTaskToWorkspaceEnvironment && !viewModel.canUseEnvironmentPicker {
+                rowDivider
+                pinnedTaskEnvironmentActionRow
+            }
+
             if viewModel.shouldShowCredentialProjectionRow {
                 rowDivider
                 credentialProjectionRow
@@ -62,6 +67,7 @@ struct WorkspaceDockerSectionView: View {
             workspace.id.uuidString,
             selectedTask?.id.uuidString ?? "none",
             selectedTask?.status.rawValue ?? "none",
+            selectedTask?.executionEnvironmentSnapshotJSON ?? "task-environment-none",
             workspace.primaryPath,
             workspace.additionalPaths.joined(separator: "\u{1F}"),
             workspace.activeExecutionEnvironmentJSON ?? "none"
@@ -136,13 +142,13 @@ struct WorkspaceDockerSectionView: View {
                 RailCountBadge(viewModel.activeScopeLabel)
                 Image(systemName: "chevron.up.chevron.down")
                     .font(Stanford.ui(CapabilityRailLayout.rowChevronFontSize, weight: .semibold))
-                    .foregroundStyle(viewModel.canChangeActiveEnvironment ? Stanford.lagunita : .secondary)
+                    .foregroundStyle(viewModel.canUseEnvironmentPicker ? Stanford.lagunita : .secondary)
             }
             .frame(maxWidth: .infinity, minHeight: CapabilityRailLayout.summaryRowMinHeight, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(!viewModel.canChangeActiveEnvironment)
+        .disabled(!viewModel.canUseEnvironmentPicker)
         .help(viewModel.environmentPickerHelp)
     }
 
@@ -174,6 +180,36 @@ struct WorkspaceDockerSectionView: View {
         .buttonStyle(.plain)
         .disabled(!viewModel.credentialProjectionIsEnabled)
         .help(viewModel.credentialProjectionHelp)
+    }
+
+    private var pinnedTaskEnvironmentActionRow: some View {
+        Button {
+            viewModel.switchPinnedTaskToWorkspaceEnvironment()
+        } label: {
+            HStack(spacing: Self.rowIconSpacing) {
+                rowIcon("arrow.triangle.2.circlepath.circle.fill", color: Stanford.lagunita)
+
+                VStack(alignment: .leading, spacing: CapabilityRailLayout.titleSubtitleSpacing) {
+                    rowTitle(viewModel.pinnedTaskEnvironmentActionTitle)
+                    Text(viewModel.pinnedTaskEnvironmentActionSubtitle)
+                        .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                }
+                .layoutPriority(1)
+
+                Spacer(minLength: 8)
+
+                Image(systemName: "play.circle.fill")
+                    .font(Stanford.ui(CapabilityRailLayout.rowChevronFontSize + 2, weight: .semibold))
+                    .foregroundStyle(Stanford.lagunita)
+            }
+            .frame(maxWidth: .infinity, minHeight: CapabilityRailLayout.setupRowMinHeight, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(viewModel.pinnedTaskEnvironmentActionHelp)
     }
 
     private var buildActionRow: some View {

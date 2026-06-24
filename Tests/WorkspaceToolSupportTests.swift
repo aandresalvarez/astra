@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import WorkspaceToolSupport
 
-@Suite("Workspace Tool Support")
+@Suite("Workspace Tool Support", .serialized)
 struct WorkspaceToolSupportTests {
     @Test("Workspace tool configuration decodes Docker mounts from environment")
     func workspaceToolConfigurationDecodesEnvironment() throws {
@@ -30,10 +30,12 @@ struct WorkspaceToolSupportTests {
         #expect(configuration.mounts == [
             WorkspaceDockerMount(hostPath: "/tmp/workspace", containerPath: "/workspace", access: "rw", role: "workspace")
         ])
-        #expect(configuration.containerEnvironment == [
-            "CLOUDSDK_CONFIG": "/root/.config/gcloud",
-            "GOOGLE_APPLICATION_CREDENTIALS": "/root/.config/gcloud/application_default_credentials.json"
-        ])
+        #expect(configuration.containerEnvironment["CLOUDSDK_CONFIG"] == "/root/.config/gcloud")
+        #expect(configuration.containerEnvironment["GOOGLE_APPLICATION_CREDENTIALS"] == "/root/.config/gcloud/application_default_credentials.json")
+        let path = try #require(configuration.containerEnvironment["PATH"])
+        let pathComponents = path.split(separator: ":").map(String.init)
+        #expect(pathComponents.contains("/opt/workspace/.venv/bin"))
+        #expect(!pathComponents.contains("/workspace/.venv/bin"))
     }
 
     @Test("Workspace MCP server exposes and runs workspace_shell")
@@ -89,15 +91,21 @@ struct WorkspaceToolSupportTests {
         case "$1" in
           inspect) exit 1 ;;
           rm) exit 0 ;;
-          run) printf 'env CLOUDSDK_CONFIG=%s\\n' "$CLOUDSDK_CONFIG" >> "$FAKE_DOCKER_LOG"; echo container-id; exit 0 ;;
+          run) printf 'env CLOUDSDK_CONFIG=%s\\n' "$CLOUDSDK_CONFIG" >> "$FAKE_DOCKER_LOG"; printf 'env DOCKER_CONFIG=%s\\n' "$DOCKER_CONFIG" >> "$FAKE_DOCKER_LOG"; printf 'env PATH=%s\\n' "$PATH" >> "$FAKE_DOCKER_LOG"; echo container-id; exit 0 ;;
           exec) echo workspace-output; echo workspace-error >&2; exit 0 ;;
           stop) exit 0 ;;
           *) exit 99 ;;
         esac
         """.write(to: docker, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
+        let dockerConfig = root.appendingPathComponent("docker-client", isDirectory: true)
+        try FileManager.default.createDirectory(at: dockerConfig, withIntermediateDirectories: true)
         setenv("FAKE_DOCKER_LOG", log.path, 1)
-        defer { unsetenv("FAKE_DOCKER_LOG") }
+        setenv("DOCKER_CONFIG", dockerConfig.path, 1)
+        defer {
+            unsetenv("FAKE_DOCKER_LOG")
+            unsetenv("DOCKER_CONFIG")
+        }
 
         let configuration = WorkspaceToolConfiguration(
             dockerExecutable: docker.path,
@@ -135,8 +143,13 @@ struct WorkspaceToolSupportTests {
         #expect(logLines.contains { $0.contains("--volume \(root.appendingPathComponent("gcloud").path):/root/.config/gcloud:ro") })
         #expect(runLine.contains("--env CLOUDSDK_CONFIG"))
         #expect(runLine.contains("--env GOOGLE_APPLICATION_CREDENTIALS"))
+        #expect(runLine.contains("--env PATH=/opt/\(root.lastPathComponent)/.venv/bin"))
         #expect(!runLine.contains("GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json"))
         #expect(logLines.contains("env CLOUDSDK_CONFIG=/root/.config/gcloud"))
+        let pathLine = try #require(logLines.first { $0.hasPrefix("env PATH=") })
+        #expect(!pathLine.contains("/opt/\(root.lastPathComponent)/.venv/bin"))
+        #expect(!pathLine.contains("/workspace/.venv/bin"))
+        #expect(logLines.contains { $0.contains("DOCKER_CONFIG=\(dockerConfig.path)") })
         #expect(logLines.contains("exec -i --workdir /workspace astra-test sh -c echo ok"))
         #expect(!logLines.contains { $0.contains(" sh -lc ") })
         #expect(logLines.contains("stop astra-test"))

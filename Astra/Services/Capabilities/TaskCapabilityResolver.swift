@@ -115,7 +115,7 @@ struct TaskCapabilityResolver {
             .filter(ConnectorSecurityPolicy.isRuntimeSafe)
         return ConnectorPreflightService.preferredRuntimeConnectors(
             from: unique,
-            contextText: [task.title, task.goal].joined(separator: "\n")
+            contextText: TaskContextStateManager.capabilitySearchText(for: task, contextText: "")
         )
     }
 
@@ -672,14 +672,7 @@ struct TaskCapabilityResolver {
     }
 
     private static func searchableTaskText(task: AgentTask, contextText: String) -> String {
-        normalizedSearchText([
-            task.title,
-            task.goal,
-            task.inputs.joined(separator: " "),
-            task.constraints.joined(separator: " "),
-            task.acceptanceCriteria.joined(separator: " "),
-            contextText
-        ].joined(separator: " "))
+        normalizedSearchText(TaskContextStateManager.capabilitySearchText(for: task, contextText: contextText))
     }
 
     private static func normalizedSearchText(_ text: String) -> String {

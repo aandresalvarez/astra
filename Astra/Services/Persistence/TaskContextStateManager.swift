@@ -258,6 +258,7 @@ enum TaskContextStateManager {
     static let markdownFileName = "current_state.md"
 
     static let schemaVersion = 2
+
     private static let maxTurns = 12
     private static let maxListItems = 20
     private static let maxPromptTurns = 4
@@ -644,21 +645,18 @@ enum TaskContextStateManager {
             state.startingRequest,
             task.goal
         )
-        // Only adopt the plan goal as the objective when reconciled (plan approved/
-        // executing/completed, or goals match); otherwise keep task.goal and note it.
-        let trimmedPlanGoal = (planState.plan?.goal ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let planGoalReconciled = trimmedPlanGoal.isEmpty
-            || [.approved, .executing, .completed].contains(planState.lifecycleStatus)
-            || trimmedPlanGoal.caseInsensitiveCompare(task.goal.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame
-        state.currentObjective = firstNonEmpty(
-            planGoalReconciled ? planState.plan?.goal : nil,
-            state.approvedGoal,
-            task.goal,
-            state.startingRequest
+        let activeObjective = activeObjectiveResolution(
+            for: task,
+            planState: planState,
+            startingRequest: state.startingRequest,
+            approvedGoal: state.approvedGoal
         )
-        state.objectiveDivergenceNote = (!trimmedPlanGoal.isEmpty && !planGoalReconciled)
-            ? "Draft plan goal differs from the task goal; using the task goal as the objective until reconciled. Draft plan goal: \(boundedInline(trimmedPlanGoal, maxCharacters: 240))"
-            : nil
+        state.currentObjective = activeObjective.objective
+        state.objectiveDivergenceNote = objectiveDivergenceNote(
+            task: task,
+            planState: planState,
+            activeObjective: activeObjective
+        )
 
         if let plan = planState.plan {
             switch planState.lifecycleStatus {
@@ -939,11 +937,18 @@ enum TaskContextStateManager {
         if let plan = planState.plan {
             sources.append(sourcePointer(kind: "plan", id: plan.planID.uuidString, summary: "Task plan goal"))
         }
+        let activeObjective = activeObjectiveResolution(
+            for: task,
+            planState: planState,
+            startingRequest: state.startingRequest,
+            approvedGoal: state.approvedGoal
+        )
+        sources += activeObjective.sourcePointers
         return TaskContextState.Objective(
             startingRequest: state.startingRequest,
             currentObjective: state.currentObjective,
             approvedGoal: state.approvedGoal,
-            sourcePointers: sources
+            sourcePointers: dedupeSourcePointers(sources)
         )
     }
 
@@ -1550,17 +1555,12 @@ enum TaskContextStateManager {
 
     @MainActor
     private static func firstConversationRequest(for task: AgentTask) -> String? {
-        firstConversationEvent(for: task)?
-            .payload
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        firstConversationRequestValue(for: task)
     }
 
     @MainActor
     private static func firstConversationEvent(for task: AgentTask) -> TaskEvent? {
-        task.events
-            .filter { $0.type == "user.message" || $0.type == TaskPlanConversationEventTypes.userMessage }
-            .sorted { $0.timestamp < $1.timestamp }
-            .first
+        firstConversationEventValue(for: task)
     }
 
     @MainActor
@@ -1589,7 +1589,7 @@ enum TaskContextStateManager {
         for event in userMessages.dropFirst().reversed() {
             // Bound once (built directly, not via contextFact, to avoid double-bounding).
             let text = boundedInline(event.payload, maxCharacters: standingInstructionCharacterLimit)
-            guard !text.isEmpty, !isLowSignalAcknowledgement(text) else { continue }
+            guard !text.isEmpty, !isLowSignalAcknowledgement(text), !isGeneratedResumeInstruction(text) else { continue }
             guard seen.insert(text.lowercased()).inserted else { continue }
             facts.append(TaskContextState.ContextFact(
                 text: text,

@@ -267,6 +267,61 @@ struct ExecutionSandboxRunnerTests {
         }
     }
 
+    @Test("sandboxedPlan projects task-scoped Docker client config before sandboxing")
+    func sandboxedPlanProjectsTaskScopedDockerClientConfig() throws {
+        let fm = FileManager.default
+        let ws = fm.temporaryDirectory.appendingPathComponent("astra-runner-docker-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: ws, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: ws) }
+
+        let workspace = Workspace(name: "Docker Workspace", primaryPath: ws.path)
+        let task = AgentTask(title: "Docker", goal: "Run commands", workspace: workspace, runtime: .codexCLI)
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:workspace",
+            kind: .dockerImage,
+            displayName: "Workspace Image",
+            image: "astra/workspace:latest"
+        ))
+        let runID = UUID()
+        let context = AgentRuntimeProcessLaunchContext(
+            prompt: "run pwd through the workspace shell",
+            task: task,
+            workspacePath: ws.path,
+            executablePath: "/bin/codex",
+            providerHomeDirectory: "",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            permissionManifest: nil,
+            timeoutSeconds: 1,
+            runID: runID
+        )
+
+        withStandardEnforcement(.off) {
+            let runner = AgentRuntimeProcessRunner()
+            let outcome = runner.sandboxedPlan(
+                adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: ws.path),
+                context: context
+            )
+
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected Docker workspace execution to proceed to a launch plan")
+                return
+            }
+            guard let dockerConfigDirectory = DockerWorkspaceMCPProjection.taskScopedDockerConfigDirectory(
+                task: task,
+                runID: runID
+            ) else {
+                Issue.record("Expected task-scoped Docker client config directory")
+                return
+            }
+            #expect(plan.sandboxReadablePaths.contains(dockerConfigDirectory))
+            #expect(plan.commandPlannedFields["launch_resource_host_readable_count"] != "0")
+            #expect(plan.commandPlannedFields["launch_resource_diagnostic_count"] != "0")
+            #expect(!plan.sandboxReadablePaths.contains { $0.hasSuffix("/.docker/config.json") })
+            #expect(FileManager.default.fileExists(atPath: (dockerConfigDirectory as NSString).appendingPathComponent("config.json")))
+        }
+    }
+
     @Test("sandboxedPlan attaches Git credential readable roots before sandboxing")
     func sandboxedPlanAddsGitCredentialContext() {
         withStandardEnforcement(.off) {

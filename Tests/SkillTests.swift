@@ -529,17 +529,17 @@ struct EnvironmentVariableTests {
         let task = AgentTask(title: "Test", goal: "test")
         let skill1 = Skill(
             name: "Skill A",
-            environmentVariables: ["API_KEY": "key-from-a", "SHARED": "from-a"]
+            environmentVariables: ["API_URL": "https://api.example.invalid", "SHARED": "from-a"]
         )
         let skill2 = Skill(
             name: "Skill B",
-            environmentVariables: ["SECRET": "b-secret", "SHARED": "from-b"]
+            environmentVariables: ["SERVICE_MODE": "batch", "SHARED": "from-b"]
         )
         task.skills = [skill1, skill2]
 
         let env = TaskCapabilityResolver(task: task).resolver.resolvedEnvironmentVariables
-        #expect(env["API_KEY"] == "key-from-a")
-        #expect(env["SECRET"] == "b-secret")
+        #expect(env["API_URL"] == "https://api.example.invalid")
+        #expect(env["SERVICE_MODE"] == "batch")
         // Later skill overrides
         #expect(env["SHARED"] == "from-b")
     }
@@ -564,19 +564,19 @@ struct EnvironmentVariableTests {
         let skill = Skill(name: "Test")
         skill.environmentVariables = ["TOKEN": "abc123"]
         #expect(skill.environmentKeys == ["TOKEN"])
-        #expect(skill.environmentValues == [""])
+        #expect(skill.exportableEnvironmentValues == [""])
         #expect(skill.environmentVariables["TOKEN"] == "abc123")
     }
 
     @Test("Empty env var skill doesn't affect resolution")
     func emptyEnvSkill() {
         let task = AgentTask(title: "Test", goal: "test")
-        let skill1 = Skill(name: "A", environmentVariables: ["KEY": "val"])
+        let skill1 = Skill(name: "A", environmentVariables: ["MODE": "val"])
         let skill2 = Skill(name: "B")
         task.skills = [skill1, skill2]
 
         let env = TaskCapabilityResolver(task: task).resolver.resolvedEnvironmentVariables
-        #expect(env["KEY"] == "val")
+        #expect(env["MODE"] == "val")
         #expect(env.count == 1)
     }
 }

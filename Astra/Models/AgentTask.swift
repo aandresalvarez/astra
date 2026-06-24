@@ -130,7 +130,9 @@ final class AgentTask {
         // it always runs in the same checkout/repository, even if the workspace
         // later switches its default.
         self.executionRootPath = workspace?.isUsingWorktree == true ? workspace?.activeWorkingPath : nil
-        self.executionEnvironmentSnapshotJSON = workspace?.activeExecutionEnvironmentJSON
+        self.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(
+            ExecutionEnvironmentStore.decode(workspace?.activeExecutionEnvironmentJSON)
+        )
         self.createdAt = Date()
         self.updatedAt = Date()
     }

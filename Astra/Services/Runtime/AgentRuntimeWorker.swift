@@ -564,6 +564,16 @@ final class AgentRuntimeWorker {
             return
         }
 
+        guard await AgentRuntimeLaunchPreflight.preflightDockerImageBeforeLaunch(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: auditPhase
+        ) else {
+            isRunning = false
+            return
+        }
+
         guard AgentRuntimeLaunchPreflight.preflightCredentialProjectionBeforeLaunch(
             task: task,
             run: run,
@@ -612,7 +622,7 @@ final class AgentRuntimeWorker {
             task: task,
             currentDirectory: executionPath
         )
-        let executionEnvironmentJSON = ExecutionEnvironmentStore.encode(executionEnvironment)
+        let executionEnvironmentJSON = ExecutionEnvironmentStore.encodeSnapshot(executionEnvironment)
         task.executionEnvironmentSnapshotJSON = executionEnvironmentJSON
         run.executionEnvironmentSnapshotJSON = executionEnvironmentJSON
 

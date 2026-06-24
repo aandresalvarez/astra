@@ -102,7 +102,7 @@ struct RuntimeGitCredentialResource: Codable, Equatable, Sendable {
 }
 
 struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
-    static let currentVersion = 1
+    static let currentVersion = 2
 
     var version: Int
     var taskID: UUID
@@ -113,6 +113,8 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
     var executionEnvironmentID: String
     var executionEnvironmentKind: String
     var providerPlacement: String
+    var workspaceCommandPlacement: String
+    var shellRoute: String
     var generatedAt: Date
     var hostPathGrants: [RuntimePathGrant]
     var containerMounts: [RuntimeContainerMountGrant]
@@ -132,6 +134,8 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
         executionEnvironmentID: String,
         executionEnvironmentKind: String,
         providerPlacement: String,
+        workspaceCommandPlacement: String? = nil,
+        shellRoute: String? = nil,
         generatedAt: Date = Date(),
         hostPathGrants: [RuntimePathGrant] = [],
         containerMounts: [RuntimeContainerMountGrant] = [],
@@ -150,6 +154,16 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
         self.executionEnvironmentID = executionEnvironmentID
         self.executionEnvironmentKind = executionEnvironmentKind
         self.providerPlacement = providerPlacement
+        self.workspaceCommandPlacement = workspaceCommandPlacement
+            ?? Self.defaultWorkspaceCommandPlacement(
+                executionEnvironmentKind: executionEnvironmentKind
+            )
+        self.shellRoute = shellRoute
+            ?? Self.defaultShellRoute(
+                executionEnvironmentKind: executionEnvironmentKind,
+                providerPlacement: providerPlacement,
+                workspaceCommandPlacement: self.workspaceCommandPlacement
+            )
         self.generatedAt = generatedAt
         self.hostPathGrants = hostPathGrants
         self.containerMounts = containerMounts
@@ -197,7 +211,9 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
             "launch_resource_provider_requirement_count": String(providerRequirements.count),
             "launch_resource_diagnostic_count": String(diagnostics.count),
             "execution_environment": executionEnvironmentKind,
-            "provider_placement": providerPlacement
+            "provider_placement": providerPlacement,
+            "workspace_command_placement": workspaceCommandPlacement,
+            "shell_route": shellRoute
         ]
 
         fields["attachment_readable_path_count"] = String(uniquePaths(hostPathGrants.compactMap { grant in
@@ -216,6 +232,78 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
             fields["launch_resource_has_errors"] = "true"
         }
         return fields
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case taskID
+        case runID
+        case runtime
+        case phase
+        case workspacePath
+        case executionEnvironmentID
+        case executionEnvironmentKind
+        case providerPlacement
+        case workspaceCommandPlacement
+        case shellRoute
+        case generatedAt
+        case hostPathGrants
+        case containerMounts
+        case environmentGrants
+        case credentialGrants
+        case providerRequirements
+        case diagnostics
+        case gitCredential
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        taskID = try container.decode(UUID.self, forKey: .taskID)
+        runID = try container.decodeIfPresent(UUID.self, forKey: .runID)
+        runtime = try container.decode(String.self, forKey: .runtime)
+        phase = try container.decode(String.self, forKey: .phase)
+        workspacePath = try container.decode(String.self, forKey: .workspacePath)
+        executionEnvironmentID = try container.decode(String.self, forKey: .executionEnvironmentID)
+        executionEnvironmentKind = try container.decode(String.self, forKey: .executionEnvironmentKind)
+        providerPlacement = try container.decode(String.self, forKey: .providerPlacement)
+        workspaceCommandPlacement = try container.decodeIfPresent(
+            String.self,
+            forKey: .workspaceCommandPlacement
+        ) ?? Self.defaultWorkspaceCommandPlacement(
+            executionEnvironmentKind: executionEnvironmentKind
+        )
+        shellRoute = try container.decodeIfPresent(String.self, forKey: .shellRoute)
+            ?? Self.defaultShellRoute(
+                executionEnvironmentKind: executionEnvironmentKind,
+                providerPlacement: providerPlacement,
+                workspaceCommandPlacement: workspaceCommandPlacement
+            )
+        generatedAt = try container.decode(Date.self, forKey: .generatedAt)
+        hostPathGrants = try container.decodeIfPresent([RuntimePathGrant].self, forKey: .hostPathGrants) ?? []
+        containerMounts = try container.decodeIfPresent([RuntimeContainerMountGrant].self, forKey: .containerMounts) ?? []
+        environmentGrants = try container.decodeIfPresent([RuntimeEnvironmentGrant].self, forKey: .environmentGrants) ?? []
+        credentialGrants = try container.decodeIfPresent([RuntimeCredentialGrant].self, forKey: .credentialGrants) ?? []
+        providerRequirements = try container.decodeIfPresent([RuntimeProviderRequirement].self, forKey: .providerRequirements) ?? []
+        diagnostics = try container.decodeIfPresent([RuntimeResourceDiagnostic].self, forKey: .diagnostics) ?? []
+        gitCredential = try container.decodeIfPresent(RuntimeGitCredentialResource.self, forKey: .gitCredential)
+    }
+
+    private static func defaultWorkspaceCommandPlacement(
+        executionEnvironmentKind: String
+    ) -> String {
+        executionEnvironmentKind == ExecutionEnvironmentKind.host.rawValue ? "host" : "docker"
+    }
+
+    private static func defaultShellRoute(
+        executionEnvironmentKind: String,
+        providerPlacement: String,
+        workspaceCommandPlacement: String
+    ) -> String {
+        guard workspaceCommandPlacement == "docker" else { return "native_host" }
+        return providerPlacement == ExecutionEnvironmentProviderPlacement.host.rawValue
+            ? "astra_workspace_mcp"
+            : "provider_inside_container"
     }
 
     private func uniquePaths(_ paths: [String]) -> [String] {

@@ -136,11 +136,11 @@ struct SchemaVersionTests {
         let task = AgentTask(title: "Test Task", goal: "Do something", workspace: workspace)
         task.skills = [skill]
         #expect(task.executionRootPath == nil)
-        #expect(task.executionEnvironmentSnapshotJSON == nil)
+        #expect(ExecutionEnvironmentStore.decode(task.executionEnvironmentSnapshotJSON).isHost)
         context.insert(task)
 
         let run = TaskRun(task: task)
-        #expect(run.executionEnvironmentSnapshotJSON == nil)
+        #expect(ExecutionEnvironmentStore.decode(run.executionEnvironmentSnapshotJSON).isHost)
         context.insert(run)
 
         let event = TaskEvent(task: task, type: "test", run: run)

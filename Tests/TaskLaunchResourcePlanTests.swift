@@ -98,6 +98,7 @@ struct TaskLaunchResourcePlanTests {
 
         let workspace = Workspace(name: "Docker", primaryPath: workspaceRoot.path)
         let task = AgentTask(title: "Check dbt", goal: "Run dbt against BigQuery", workspace: workspace)
+        let runID = UUID()
         let environment = WorkspaceExecutionEnvironment(
             id: "image:workspace",
             kind: .dockerImage,
@@ -118,7 +119,7 @@ struct TaskLaunchResourcePlanTests {
 
         let plan = TaskLaunchResourceResolver.resolve(
             task: task,
-            runID: UUID(),
+            runID: runID,
             runtime: .codexCLI,
             phase: "run",
             prompt: "is dbt installed and working?",
@@ -129,10 +130,26 @@ struct TaskLaunchResourcePlanTests {
         )
 
         #expect(plan.executionEnvironmentKind == "docker_image")
+        #expect(plan.providerPlacement == "host")
+        #expect(plan.workspaceCommandPlacement == "docker")
+        #expect(plan.shellRoute == "astra_workspace_mcp")
+        #expect(plan.commandPlannedFields["workspace_command_placement"] == "docker")
+        #expect(plan.commandPlannedFields["shell_route"] == "astra_workspace_mcp")
         #expect(plan.containerMounts.contains { $0.role == "credential" && $0.containerPath == "/root/.config/gcloud" })
         #expect(plan.environmentGrants.contains { $0.key == "GOOGLE_APPLICATION_CREDENTIALS" && $0.sensitivity == .cloudAuth })
+        #expect(plan.environmentGrants.contains { $0.key == "DOCKER_CONFIG" && $0.source == .dockerEnvironment })
         #expect(plan.credentialGrants.contains { $0.label == "GCP Application Default Credentials" && $0.projectedAsFile })
         #expect(plan.providerRequirements.contains { $0.capability == "docker_workspace_executor" })
+        let dockerConfigDirectory = try #require(DockerWorkspaceMCPProjection.taskScopedDockerConfigDirectory(
+            task: task,
+            runID: runID
+        ))
+        let dockerConfigFile = (dockerConfigDirectory as NSString).appendingPathComponent("config.json")
+        #expect(FileManager.default.fileExists(atPath: dockerConfigFile))
+        #expect(plan.hostReadablePaths.contains(dockerConfigDirectory))
+        #expect(plan.hostWritablePaths.contains(dockerConfigDirectory))
+        #expect(plan.diagnostics.contains { $0.code == "docker_client_config_task_scoped" })
+        #expect(!plan.hostReadablePaths.contains { $0.hasSuffix("/.docker/config.json") })
         #expect(!String(describing: plan).contains("application_default_credentials.json\":"))
     }
 
@@ -153,6 +170,8 @@ struct TaskLaunchResourcePlanTests {
             executionEnvironmentID: "host",
             executionEnvironmentKind: "host",
             providerPlacement: "host",
+            workspaceCommandPlacement: "host",
+            shellRoute: "native_host",
             hostPathGrants: [
                 RuntimePathGrant(
                     path: workspaceRoot.path,
@@ -181,6 +200,41 @@ struct TaskLaunchResourcePlanTests {
         #expect(TaskLaunchResourceManifestStore.loadLatest(task: task)?.runID == runID)
         #expect(!TaskOutputDiscovery.files(for: task).contains { $0.relativePath == "run_resource_manifest.json" })
         #expect(!TaskOutputDiscovery.files(for: task).contains { $0.relativePath.hasPrefix("diagnostics/") })
+    }
+
+    @Test("Resource manifest decodes legacy placement fields")
+    func resourceManifestDecodesLegacyPlacementFields() throws {
+        let taskID = UUID()
+        let runID = UUID()
+        let json = """
+        {
+          "version": 1,
+          "taskID": "\(taskID.uuidString)",
+          "runID": "\(runID.uuidString)",
+          "runtime": "claude_code",
+          "phase": "run",
+          "workspacePath": "/tmp/workspace",
+          "executionEnvironmentID": "image:test",
+          "executionEnvironmentKind": "docker_image",
+          "providerPlacement": "host",
+          "generatedAt": "2026-06-23T00:00:00Z",
+          "hostPathGrants": [],
+          "containerMounts": [],
+          "environmentGrants": [],
+          "credentialGrants": [],
+          "providerRequirements": [],
+          "diagnostics": []
+        }
+        """.data(using: .utf8)!
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let plan = try decoder.decode(TaskLaunchResourcePlan.self, from: json)
+
+        #expect(plan.workspaceCommandPlacement == "docker")
+        #expect(plan.shellRoute == "astra_workspace_mcp")
+        #expect(plan.commandPlannedFields["workspace_command_placement"] == "docker")
+        #expect(plan.commandPlannedFields["shell_route"] == "astra_workspace_mcp")
     }
 
     private func makeTempDir(_ name: String) throws -> URL {

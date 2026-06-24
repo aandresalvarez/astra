@@ -352,6 +352,59 @@ struct TaskContextStateTests {
         #expect(prompt.contains("Output must be CSV not JSON"))
     }
 
+    @Test("explicit follow-up objective supersedes stale original task goal")
+    func explicitFollowUpObjectiveSupersedesOriginalGoal() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Objective Pivot", primaryPath: root)
+        let task = AgentTask(
+            title: "List active sprint stories",
+            goal: "List my stories for the active sprint in the STAR Jira project",
+            workspace: workspace
+        )
+        context.insert(workspace)
+        context.insert(task)
+
+        let first = TaskEvent(
+            task: task,
+            type: "user.message",
+            payload: "List my stories for the active sprint in the STAR Jira project"
+        )
+        first.timestamp = Date(timeIntervalSince1970: 1)
+        context.insert(first)
+
+        let resumeBoilerplate = TaskEvent(
+            task: task,
+            type: "user.message",
+            payload: "Continue where you left off. Complete the original goal."
+        )
+        resumeBoilerplate.timestamp = Date(timeIntervalSince1970: 2)
+        context.insert(resumeBoilerplate)
+
+        let correction = TaskEvent(
+            task: task,
+            type: "user.message",
+            payload: "no your goal is to complete the plan.md document"
+        )
+        correction.timestamp = Date(timeIntervalSince1970: 3)
+        context.insert(correction)
+
+        TaskContextStateManager.refresh(task: task)
+
+        let state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        #expect(state.startingRequest == "List my stories for the active sprint in the STAR Jira project")
+        #expect(state.currentObjective == "complete the plan.md document")
+        #expect(state.objective.currentObjective == "complete the plan.md document")
+        #expect(state.objectiveDivergenceNote?.contains("supersedes the original task goal") == true)
+        #expect((state.standingInstructions ?? []).map(\.text).contains("Continue where you left off. Complete the original goal.") == false)
+
+        let prompt = try #require(TaskContextStateManager.promptContext(for: task))
+        #expect(prompt.contains("Starting request: List my stories for the active sprint"))
+        #expect(prompt.contains("Current objective: complete the plan.md document"))
+    }
+
     @Test("approved plans refresh state with explicit planning mode and approved goal")
     func planApprovalRecordsApprovedGoal() throws {
         let root = try temporaryRoot()
