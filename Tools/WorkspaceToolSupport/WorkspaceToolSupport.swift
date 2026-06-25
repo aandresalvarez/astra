@@ -554,8 +554,6 @@ public final class DockerWorkspaceCommandExecutor: WorkspaceCommandExecutor {
     }
 
     public func ensureContainerStarted() -> WorkspaceCommandResult {
-        if containerStarted { return WorkspaceCommandResult(command: "docker inspect", exitCode: 0, stdout: "", stderr: "") }
-
         let inspect = runDockerCommand(
             arguments: ["inspect", "-f", "{{.State.Running}}", configuration.containerName],
             commandLabel: "docker inspect",
@@ -566,6 +564,7 @@ public final class DockerWorkspaceCommandExecutor: WorkspaceCommandExecutor {
             containerStarted = true
             return inspect
         }
+        containerStarted = false
 
         _ = runDockerCommand(arguments: ["rm", "-f", configuration.containerName], commandLabel: "docker rm", timeoutSeconds: 10)
 
@@ -618,13 +617,27 @@ public final class DockerWorkspaceCommandExecutor: WorkspaceCommandExecutor {
         )
     }
 
-    private func dockerInvocation(_ arguments: [String]) -> (executablePath: String, arguments: [String]) {
-        if configuration.dockerExecutable.contains("/") {
-            return (configuration.dockerExecutable, arguments)
-        }
-        return ("/usr/bin/env", [configuration.dockerExecutable] + arguments)
+    private func dockerInvocation(_ arguments: [String]) -> DockerProcessInvocation {
+        DockerProcessInvocation.resolve(
+            dockerExecutable: configuration.dockerExecutable,
+            arguments: arguments
+        )
     }
+}
 
+struct DockerProcessInvocation: Equatable, Sendable {
+    var executablePath: String
+    var arguments: [String]
+
+    static func resolve(dockerExecutable: String, arguments: [String]) -> DockerProcessInvocation {
+        if dockerExecutable.hasPrefix("/") {
+            return DockerProcessInvocation(executablePath: dockerExecutable, arguments: arguments)
+        }
+        return DockerProcessInvocation(executablePath: "/usr/bin/env", arguments: [dockerExecutable] + arguments)
+    }
+}
+
+extension DockerWorkspaceCommandExecutor {
     private func dockerClientEnvironment(_ environment: [String: String]) -> [String: String] {
         var dockerEnvironment = environment.filter { key, _ in key != "PATH" }
         prepareDockerClientConfigDirectory()

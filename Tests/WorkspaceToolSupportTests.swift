@@ -894,6 +894,90 @@ struct WorkspaceToolSupportTests {
         })
     }
 
+    @Test("Docker workspace executor revalidates a started container before each command")
+    func dockerWorkspaceExecutorRevalidatesStartedContainer() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-tool-revalidate-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let docker = root.appendingPathComponent("docker")
+        let log = root.appendingPathComponent("docker.log")
+        let inspectCount = root.appendingPathComponent("inspect.count")
+        try """
+        #!/bin/sh
+        log_path="\(log.path)"
+        count_path="\(inspectCount.path)"
+        printf '%s\\n' "$*" >> "$log_path"
+        case "$1" in
+          inspect)
+            count=0
+            if [ -f "$count_path" ]; then count="$(cat "$count_path")"; fi
+            count=$((count + 1))
+            printf '%s' "$count" > "$count_path"
+            if [ "$count" -eq 1 ]; then exit 1; fi
+            printf 'false\\n'
+            exit 0
+            ;;
+          rm) exit 0 ;;
+          run) echo container-id; exit 0 ;;
+          exec) echo workspace-output; exit 0 ;;
+          stop) exit 0 ;;
+          *) exit 99 ;;
+        esac
+        """.write(to: docker, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
+
+        let executor = DockerWorkspaceCommandExecutor(configuration: dockerConfiguration(docker: docker, root: root))
+
+        let first = executor.run(command: "echo one", timeoutSeconds: 5)
+        let second = executor.run(command: "echo two", timeoutSeconds: 5)
+        executor.cleanup()
+
+        #expect(first.exitCode == 0)
+        #expect(second.exitCode == 0)
+        let logLines = try String(contentsOf: log, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+        #expect(logLines.filter { $0 == "inspect -f {{.State.Running}} astra-test" }.count == 2)
+        #expect(logLines.filter { $0 == "rm -f astra-test" }.count == 2)
+        #expect(logLines.filter { $0.hasPrefix("run --rm -d --name astra-test") }.count == 2)
+        #expect(logLines.contains("exec -i --workdir /workspace astra-test sh -c echo one"))
+        #expect(logLines.contains("exec -i --workdir /workspace astra-test sh -c echo two"))
+    }
+
+    @Test("Docker invocation uses direct executable paths only for absolute paths")
+    func dockerInvocationUsesDirectExecutablePathsOnlyForAbsolutePaths() {
+        #expect(DockerProcessInvocation.resolve(
+            dockerExecutable: "/usr/local/bin/docker",
+            arguments: ["inspect"]
+        ) == DockerProcessInvocation(
+            executablePath: "/usr/local/bin/docker",
+            arguments: ["inspect"]
+        ))
+        #expect(DockerProcessInvocation.resolve(
+            dockerExecutable: "docker",
+            arguments: ["inspect"]
+        ) == DockerProcessInvocation(
+            executablePath: "/usr/bin/env",
+            arguments: ["docker", "inspect"]
+        ))
+        #expect(DockerProcessInvocation.resolve(
+            dockerExecutable: "./docker",
+            arguments: ["inspect"]
+        ) == DockerProcessInvocation(
+            executablePath: "/usr/bin/env",
+            arguments: ["./docker", "inspect"]
+        ))
+        #expect(DockerProcessInvocation.resolve(
+            dockerExecutable: "usr/local/bin/docker",
+            arguments: ["inspect"]
+        ) == DockerProcessInvocation(
+            executablePath: "/usr/bin/env",
+            arguments: ["usr/local/bin/docker", "inspect"]
+        ))
+    }
+
     private func parseJSON(_ line: String) throws -> [String: Any] {
         let data = try #require(line.data(using: .utf8))
         return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -903,6 +987,21 @@ struct WorkspaceToolSupportTests {
         let result = try #require(object["result"] as? [String: Any])
         let content = try #require(result["content"] as? [[String: Any]])
         return try #require(content.first?["text"] as? String)
+    }
+
+    private func dockerConfiguration(docker: URL, root: URL) -> WorkspaceToolConfiguration {
+        WorkspaceToolConfiguration(
+            dockerExecutable: docker.path,
+            image: "astra/workspace:latest",
+            containerName: "astra-test",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-1",
+            runID: "run-1",
+            mounts: [
+                WorkspaceDockerMount(hostPath: root.path, containerPath: "/workspace", access: "rw", role: "workspace")
+            ]
+        )
     }
 }
 

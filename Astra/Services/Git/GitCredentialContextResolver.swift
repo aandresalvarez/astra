@@ -645,8 +645,14 @@ enum GitCredentialContextResolver {
         } else {
             resolved = "**/" + trimmed
         }
-        let suffix = resolved.hasSuffix("/") ? "**" : ""
-        return canonicalPath(resolved, fileManager: fileManager) + suffix
+        let canonical = canonicalPath(resolved, fileManager: fileManager)
+        return resolved.hasSuffix("/") ? appendingDescendantGlob(to: canonical) : canonical
+    }
+
+    private static func appendingDescendantGlob(to canonicalDirectoryPattern: String) -> String {
+        canonicalDirectoryPattern.hasSuffix("/")
+            ? canonicalDirectoryPattern + "**"
+            : canonicalDirectoryPattern + "/**"
     }
 
     private static func wildcardPatternMatches(
@@ -793,7 +799,7 @@ enum GitCredentialContextResolver {
             return []
         }
 
-        var activePatterns: [String] = []
+        var activePatterns: [String] = ["*"]
         var identities: [String] = []
         var knownHostFiles: [String] = []
         for rawLine in raw.components(separatedBy: .newlines) {

@@ -241,7 +241,7 @@ struct TaskContextStateTests {
 
         let run = TaskRun(task: task)
         run.status = .failed
-        run.stopReason = "provider_missing_browser_shell_tool"
+        run.stopReason = "provider_missing_browser_control_tool"
         run.output = "ASTRA blocked this browser task before launch because Copilot CLI cannot execute astra-browser."
         run.completedAt = Date()
         context.insert(run)
@@ -250,7 +250,7 @@ struct TaskContextStateTests {
         let state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
         #expect(state.mode == .blocked)
         #expect(state.verification.status == "failed")
-        #expect(state.verification.summary == "provider_missing_browser_shell_tool")
+        #expect(state.verification.summary == "provider_missing_browser_control_tool")
         #expect(state.verification.completionVerified == false)
         #expect(state.verification.status != "manual_completion")
     }
