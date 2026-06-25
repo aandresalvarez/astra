@@ -23,12 +23,16 @@ struct ExecutionSandboxRunnerTests {
         let descriptor: AgentRuntimeDescriptor
         let planCurrentDirectory: String
         let planExecutablePath: String
+        let planArguments: [String]
+        let planCommandPlannedFields: [String: String]
         let sharedKey: AgentRuntimeSharedStateKey?
 
         init(
             runtime: AgentRuntimeID = .claudeCode,
             currentDirectory: String,
             executablePath: String = "/bin/sh",
+            arguments: [String] = ["-c", "true"],
+            commandPlannedFields: [String: String] = [:],
             sharedKey: AgentRuntimeSharedStateKey? = nil
         ) {
             self.id = runtime
@@ -43,6 +47,8 @@ struct ExecutionSandboxRunnerTests {
             )
             self.planCurrentDirectory = currentDirectory
             self.planExecutablePath = executablePath
+            self.planArguments = arguments
+            self.planCommandPlannedFields = commandPlannedFields
             self.sharedKey = sharedKey
         }
 
@@ -54,7 +60,7 @@ struct ExecutionSandboxRunnerTests {
             AgentRuntimeProcessLaunchPlan(
                 runtime: id,
                 executablePath: planExecutablePath,
-                arguments: ["-c", "true"],
+                arguments: planArguments,
                 currentDirectory: planCurrentDirectory,
                 environment: ["HOME": NSTemporaryDirectory()],
                 browserShimDirectory: nil,
@@ -62,7 +68,7 @@ struct ExecutionSandboxRunnerTests {
                 parsesJSONLines: false,
                 directoriesToCreate: [],
                 providerDetectedFields: [:],
-                commandPlannedFields: [:]
+                commandPlannedFields: planCommandPlannedFields
             )
         }
 
@@ -184,6 +190,118 @@ struct ExecutionSandboxRunnerTests {
         }
     }
 
+    @Test("sandboxedPlan attaches Git credential readable roots before sandboxing")
+    func sandboxedPlanAddsGitCredentialContext() {
+        withStandardEnforcement(.off) {
+            let runner = AgentRuntimeProcessRunner(gitCredentialContextProvider: { _ in
+                GitCredentialSandboxContext(
+                    readablePaths: ["/tmp/astra-gitconfig", "/tmp/astra-known-hosts"],
+                    writablePaths: ["/tmp/astra-external-gitdir"],
+                    transports: [.ssh],
+                    diagnostics: ["ssh_default_identities"]
+                )
+            })
+            let outcome = runner.sandboxedPlan(
+                adapter: FakeLaunchAdapter(currentDirectory: "/tmp/whatever"),
+                context: makeContext(workspacePath: "/tmp/whatever")
+            )
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected .plan when disabled")
+                return
+            }
+            #expect(plan.sandboxReadablePaths.contains("/tmp/astra-gitconfig"))
+            #expect(plan.sandboxReadablePaths.contains("/tmp/astra-known-hosts"))
+            #expect(plan.commandPlannedFields["git_credential_context"] == "true")
+            #expect(plan.commandPlannedFields["git_credential_readable_path_count"] == "2")
+            #expect(plan.commandPlannedFields["git_credential_writable_path_count"] == "1")
+            #expect(plan.commandPlannedFields["git_credential_transports"] == "ssh")
+        }
+    }
+
+    @Test("sandboxedPlan enables Codex native read access for Git credential context")
+    func sandboxedPlanEnablesCodexGitCredentialAccess() {
+        withStandardEnforcement(.off) {
+            let runner = AgentRuntimeProcessRunner(gitCredentialContextProvider: { _ in
+                GitCredentialSandboxContext(
+                    readablePaths: ["/tmp/astra-gitconfig"],
+                    writablePaths: [],
+                    transports: [.ssh],
+                    diagnostics: []
+                )
+            })
+            let outcome = runner.sandboxedPlan(
+                adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: "/tmp/whatever"),
+                context: makeContext(workspacePath: "/tmp/whatever", permissionPolicy: .restricted)
+            )
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected .plan when disabled")
+                return
+            }
+            #expect(plan.arguments.contains("--config"))
+            #expect(plan.arguments.contains("sandbox_permissions=[\"disk-full-read-access\"]"))
+            #expect(plan.commandPlannedFields["git_provider_native_read_access"] == "codex_disk_full_read")
+        }
+    }
+
+    @Test("sandboxedPlan inserts Codex Git credential config before positional prompt")
+    func sandboxedPlanPlacesCodexGitCredentialConfigBeforePrompt() {
+        withStandardEnforcement(.off) {
+            let runner = AgentRuntimeProcessRunner(gitCredentialContextProvider: { _ in
+                GitCredentialSandboxContext(
+                    readablePaths: ["/tmp/astra-gitconfig"],
+                    writablePaths: [],
+                    transports: [.ssh],
+                    diagnostics: []
+                )
+            })
+            let outcome = runner.sandboxedPlan(
+                adapter: FakeLaunchAdapter(
+                    runtime: .codexCLI,
+                    currentDirectory: "/tmp/whatever",
+                    arguments: ["exec", "resume", "--json", "--skip-git-repo-check", "session-id", "git pull origin main"]
+                ),
+                context: makeContext(workspacePath: "/tmp/whatever", permissionPolicy: .restricted)
+            )
+            guard case .plan(let plan) = outcome,
+                  let configFlagIndex = plan.arguments.firstIndex(of: "--config"),
+                  let skipIndex = plan.arguments.firstIndex(of: "--skip-git-repo-check") else {
+                Issue.record("Expected Codex plan with --config and --skip-git-repo-check")
+                return
+            }
+            #expect(configFlagIndex < skipIndex)
+            #expect(plan.arguments[configFlagIndex + 1] == "sandbox_permissions=[\"disk-full-read-access\"]")
+        }
+    }
+
+    @Test("sandboxedPlan enables Copilot native path access for Git credential context")
+    func sandboxedPlanEnablesCopilotGitCredentialAccess() {
+        withStandardEnforcement(.off) {
+            let runner = AgentRuntimeProcessRunner(gitCredentialContextProvider: { _ in
+                GitCredentialSandboxContext(
+                    readablePaths: ["/tmp/astra-gitconfig"],
+                    writablePaths: [],
+                    transports: [.ssh],
+                    diagnostics: []
+                )
+            })
+            let outcome = runner.sandboxedPlan(
+                adapter: FakeLaunchAdapter(
+                    runtime: .copilotCLI,
+                    currentDirectory: "/tmp/whatever",
+                    arguments: ["--prompt", "git pull origin main"],
+                    commandPlannedFields: ["supports_allow_all_paths": "true"]
+                ),
+                context: makeContext(workspacePath: "/tmp/whatever", permissionPolicy: .restricted)
+            )
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected .plan when disabled")
+                return
+            }
+            #expect(plan.arguments.contains("--allow-all-paths"))
+            #expect(plan.commandPlannedFields["git_provider_native_read_access"] == "copilot_allow_all_paths")
+        }
+    }
+
     @Test("sandboxedPlan blocks runtimes without Docker workspace command support")
     func sandboxedPlanBlocksRuntimeWithoutDockerWorkspaceSupport() {
         withStandardEnforcement(.off) {
@@ -257,6 +375,102 @@ struct ExecutionSandboxRunnerTests {
             #expect(plan.commandPlannedFields["workspace_executor_mode"] == "host_provider_container_workspace")
             #expect(plan.commandPlannedFields["workspace_executor"] == "docker")
         }
+    }
+
+    @Test("sandboxedPlan composes Git credential context with Docker workspace execution")
+    func sandboxedPlanComposesGitCredentialContextWithDockerWorkspaceExecution() {
+        withStandardEnforcement(.off) {
+            let task = AgentTask(title: "Docker Git", goal: "Pull latest changes", runtime: .codexCLI)
+            task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+                id: "image:workspace",
+                kind: .dockerImage,
+                displayName: "Workspace Image",
+                image: "astra/workspace:latest"
+            ))
+            let context = AgentRuntimeProcessLaunchContext(
+                prompt: "git pull origin main",
+                task: task,
+                workspacePath: "/tmp/whatever",
+                executablePath: "/bin/codex",
+                providerHomeDirectory: "",
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 1
+            )
+
+            let runner = AgentRuntimeProcessRunner(gitCredentialContextProvider: { _ in
+                GitCredentialSandboxContext(
+                    readablePaths: ["/tmp/astra-gitconfig"],
+                    writablePaths: ["/tmp/astra-external-gitdir"],
+                    transports: [.ssh],
+                    diagnostics: []
+                )
+            })
+            let outcome = runner.sandboxedPlan(
+                adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: "/tmp/whatever"),
+                context: context
+            )
+
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected Git credential preflight and Docker workspace execution to share one plan")
+                return
+            }
+            #expect(plan.commandPlannedFields["git_credential_context"] == "true")
+            #expect(plan.commandPlannedFields["git_provider_native_read_access"] == "codex_disk_full_read")
+            #expect(plan.commandPlannedFields["workspace_executor_mode"] == "host_provider_container_workspace")
+            #expect(plan.commandPlannedFields["workspace_executor"] == "docker")
+            #expect(plan.sandboxReadablePaths.contains("/tmp/astra-gitconfig"))
+            #expect(plan.executionEnvironment.workspaceCommandsRunInsideContainer)
+            #expect(plan.pathMapper?.containerPath(forHostPath: "/tmp/whatever") == "/workspace")
+        }
+    }
+
+    @Test("Git credential plan helpers preserve Docker execution metadata")
+    func gitCredentialPlanHelpersPreserveDockerExecutionMetadata() {
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:workspace",
+            kind: .dockerImage,
+            displayName: "Workspace Image",
+            image: "astra/workspace:latest"
+        )
+        let mapper = ExecutionEnvironmentPathMapper(mounts: [
+            ExecutionEnvironmentMount(
+                hostPath: "/tmp/whatever",
+                containerPath: "/workspace",
+                access: .readWrite,
+                role: .workspace
+            )
+        ])
+        let base = AgentRuntimeProcessLaunchPlan(
+            runtime: .codexCLI,
+            executablePath: "/bin/codex",
+            arguments: ["exec", "git pull origin main"],
+            currentDirectory: "/tmp/whatever",
+            environment: [:],
+            browserShimDirectory: nil,
+            providerVersion: nil,
+            parsesJSONLines: false,
+            commandPlannedFields: [:],
+            pathMapper: mapper,
+            executionEnvironment: environment
+        )
+        let context = GitCredentialSandboxContext(
+            readablePaths: ["/tmp/astra-gitconfig"],
+            writablePaths: ["/tmp/astra-external-gitdir"],
+            transports: [.ssh],
+            diagnostics: []
+        )
+
+        let plan = base.addingGitCredentialContext(context)
+            .enablingProviderNativeGitCredentialReads(
+                for: context,
+                permissionPolicy: .restricted
+            )
+
+        #expect(plan.executionEnvironment.id == "image:workspace")
+        #expect(plan.pathMapper?.containerPath(forHostPath: "/tmp/whatever") == "/workspace")
+        #expect(plan.commandPlannedFields["git_credential_context"] == "true")
     }
 
     @Test("sandboxedPlan honors the execution-policy permissionPolicy override (autonomous escalates to strict)")

@@ -16,14 +16,33 @@ struct AgentRuntimeBudgetProfile: Sendable, Equatable {
 
 final class AgentRuntimeProcessRunner {
     typealias SandboxSettingsProvider = @MainActor (PermissionPolicy) -> ExecutionSandboxSettings
+    typealias GitCredentialContextProvider = @MainActor (AgentRuntimeProcessLaunchContext) -> GitCredentialSandboxContext
 
     private var currentProcess: AgentRuntimeProcessControl?
     private let sandboxSettingsProvider: SandboxSettingsProvider
+    private let gitCredentialContextProvider: GitCredentialContextProvider
 
     init(sandboxSettingsProvider: @escaping SandboxSettingsProvider = { permissionPolicy in
         ExecutionSandboxSettings.current(permissionPolicy: permissionPolicy)
+    }, gitCredentialContextProvider: @escaping GitCredentialContextProvider = { context in
+        guard GitOperationIntentDetector.detectsNetworkGitOperation(
+            prompt: context.prompt,
+            task: context.task,
+            contextText: context.contextText
+        ) else {
+            return .empty
+        }
+        return GitCredentialContextResolver.sandboxContext(
+            repositoryPath: context.workspacePath,
+            intentText: GitOperationIntentDetector.networkGitIntentText(
+                prompt: context.prompt,
+                task: context.task,
+                contextText: context.contextText
+            )
+        )
     }) {
         self.sandboxSettingsProvider = sandboxSettingsProvider
+        self.gitCredentialContextProvider = gitCredentialContextProvider
     }
 
     func cancel() {
@@ -78,6 +97,15 @@ final class AgentRuntimeProcessRunner {
     ) -> SandboxedPlanOutcome {
         var plan = adapter.makeProcessLaunchPlan(context: context)
         let environment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
+        let gitCredentialContext = gitCredentialContextProvider(context)
+        let effectivePermissionPolicy = context.executionPolicy.permissionPolicyOverride ?? context.permissionPolicy
+        if !gitCredentialContext.isEmpty {
+            plan = plan.addingGitCredentialContext(gitCredentialContext)
+                .enablingProviderNativeGitCredentialReads(
+                    for: gitCredentialContext,
+                    permissionPolicy: effectivePermissionPolicy
+                )
+        }
         if environment.workspaceCommandsRunInsideContainer,
            (!DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: plan.runtime)
             || plan.commandPlannedFields["docker_workspace_executor_supported"] == "false") {
@@ -136,7 +164,6 @@ final class AgentRuntimeProcessRunner {
         // wins over the base policy) so best-effort correctly escalates to strict
         // for override-autonomous runs — matching how the preflight manifest
         // resolves the sandbox tier.
-        let effectivePermissionPolicy = context.executionPolicy.permissionPolicyOverride ?? context.permissionPolicy
         let settings = sandboxSettingsProvider(effectivePermissionPolicy)
         if plan.executionEnvironment.providerRunsInsideContainer {
             AppLogger.audit(.sandboxSkipped, category: "Worker", taskID: context.task.id, fields: [
@@ -154,7 +181,7 @@ final class AgentRuntimeProcessRunner {
         let decision = ExecutionSandbox.decide(
             plan: plan,
             providerHomeDirectory: context.providerHomeDirectory,
-            additionalWritablePaths: Self.runtimeAdditionalPaths(for: context.task),
+            additionalWritablePaths: Self.runtimeAdditionalPaths(for: context.task) + gitCredentialContext.writablePaths,
             settings: settings
         )
         let taskID = context.task.id
@@ -166,6 +193,8 @@ final class AgentRuntimeProcessRunner {
                 "read_scope": settings.readScope.rawValue,
                 "read_scope_audit": String(settings.readScope == .audit),
                 "writable_root_count": String(writableRoots.count),
+                "git_credential_readable_path_count": String(gitCredentialContext.readablePaths.count),
+                "git_credential_writable_path_count": String(gitCredentialContext.writablePaths.count),
                 "allow_network": String(settings.allowNetwork)
             ], level: .debug)
         case .skipped(let reason):
