@@ -105,8 +105,9 @@ struct MCPServersFactValueTests {
 
     @Test("Servers on a non-supporting runtime read as skipped, never active")
     func nonSupportingRuntimeSkips() {
+        #expect(!AgentRuntimeAdapterRegistry.descriptor(for: .cursorCLI).supportsMCPServers)
         let value = PolicySummaryPresentation.mcpServersFactValue(
-            manifest(providerID: .codexCLI, servers: [server(id: "files"), server(id: "db")])
+            manifest(providerID: .cursorCLI, servers: [server(id: "files"), server(id: "db")])
         )
         #expect(value.contains("2 skipped"))
         #expect(value.contains("doesn't support MCP"))

@@ -126,7 +126,7 @@ final class AgentRuntimeProcessRunner {
         if let block = BrowserBridgeRuntimeLaunchGuard.launchBlock(for: plan) {
             AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.task.id, fields: [
                 "runtime": plan.runtime.rawValue,
-                "reason": block.runtimeStopReason ?? BrowserBridgeRuntimeLaunchGuard.missingShellToolReason,
+                "reason": block.runtimeStopReason ?? BrowserBridgeRuntimeLaunchGuard.missingBrowserControlToolReason,
                 "source": "runtime_launch_preflight",
                 "has_browser_bridge": "true"
             ], level: .error)

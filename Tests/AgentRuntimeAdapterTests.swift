@@ -1742,7 +1742,7 @@ struct AgentRuntimeAdapterTests {
 
         #expect(plan.environment["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
         #expect(plan.commandPlannedFields["browser_bridge_shell_tool_supported"] == "false")
-        #expect(plan.commandPlannedFields["browser_bridge_launch_block_reason"] == "provider_missing_browser_shell_tool")
+        #expect(plan.commandPlannedFields["browser_bridge_launch_block_reason"] == "provider_missing_browser_control_tool")
     }
 
     @Test("Copilot browser bridge launch plan uses ASTRA browser MCP tool when supported")

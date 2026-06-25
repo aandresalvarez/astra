@@ -157,7 +157,7 @@ struct ProcessMonitorTests {
         #expect(shouldKill == true)
         #expect(process.didTerminate == true)
         #expect(monitor.runtimeStopped == true)
-        #expect(monitor.runtimeStopReason == "provider_missing_browser_shell_tool")
+        #expect(monitor.runtimeStopReason == "provider_missing_browser_control_tool")
         #expect(monitor.budgetExceeded == false)
         #expect(monitor.policyViolation == false)
     }
