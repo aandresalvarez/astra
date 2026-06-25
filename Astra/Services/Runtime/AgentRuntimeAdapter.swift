@@ -688,7 +688,6 @@ struct AgentRuntimePostProcessContext {
     let recordingState: AgentEventRecordingState
     let onEvent: (ParsedEvent) -> Void
 }
-
 struct AgentRuntimeProcessLaunchPlan: Equatable {
     let runtime: AgentRuntimeID
     let executablePath: String
@@ -706,6 +705,8 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
     let providerDetectedFields: [String: String]
     let commandPlannedFields: [String: String]
     var interactiveAsk: AgentRuntimeInteractiveAskPlan?
+    var pathMapper: ExecutionEnvironmentPathMapper?
+    var executionEnvironment: WorkspaceExecutionEnvironment
 
     init(
         runtime: AgentRuntimeID,
@@ -721,7 +722,9 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
         sandboxProtectedWriteDenyPaths: [String] = [],
         providerDetectedFields: [String: String] = [:],
         commandPlannedFields: [String: String] = [:],
-        interactiveAsk: AgentRuntimeInteractiveAskPlan? = nil
+        interactiveAsk: AgentRuntimeInteractiveAskPlan? = nil,
+        pathMapper: ExecutionEnvironmentPathMapper? = nil,
+        executionEnvironment: WorkspaceExecutionEnvironment = .host
     ) {
         self.runtime = runtime
         self.executablePath = executablePath
@@ -737,6 +740,8 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
         self.providerDetectedFields = providerDetectedFields
         self.commandPlannedFields = commandPlannedFields
         self.interactiveAsk = interactiveAsk
+        self.pathMapper = pathMapper
+        self.executionEnvironment = executionEnvironment
     }
 
     func addingGitCredentialContext(_ context: GitCredentialSandboxContext) -> AgentRuntimeProcessLaunchPlan {
@@ -768,7 +773,9 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
             sandboxProtectedWriteDenyPaths: sandboxProtectedWriteDenyPaths,
             providerDetectedFields: providerDetectedFields,
             commandPlannedFields: plannedFields,
-            interactiveAsk: interactiveAsk
+            interactiveAsk: interactiveAsk,
+            pathMapper: pathMapper,
+            executionEnvironment: executionEnvironment
         )
     }
 
@@ -816,7 +823,9 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
             sandboxProtectedWriteDenyPaths: sandboxProtectedWriteDenyPaths,
             providerDetectedFields: providerDetectedFields,
             commandPlannedFields: plannedFields,
-            interactiveAsk: interactiveAsk
+            interactiveAsk: interactiveAsk,
+            pathMapper: pathMapper,
+            executionEnvironment: executionEnvironment
         )
     }
 
@@ -1251,19 +1260,27 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         let allowed = context.executionPolicy.allowedTools(
             default: capabilityScope.resolver.resolvedProviderAllowedTools
         )
-        let providerAllowed = AgentRuntimeProcessRunner.providerAllowedTools(
+        let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
+        let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
+        let baseProviderAllowed = AgentRuntimeProcessRunner.providerAllowedTools(
             for: id,
             baseAllowedTools: allowed,
             permissionManifest: context.permissionManifest
         )
+        let providerAllowed = usesDockerWorkspaceExecutor
+            ? DockerWorkspaceMCPProjection.removingNativeShellTools(baseProviderAllowed)
+            : baseProviderAllowed
         let runtimeSupportTools = AgentRuntimeProcessRunner.providerRuntimeSupportToolPermissions(
             for: id,
             permissionManifest: context.permissionManifest
         )
-        let askFirstToolPermissions = AgentRuntimeProcessRunner.providerAskFirstToolPermissions(
+        let baseAskFirstToolPermissions = AgentRuntimeProcessRunner.providerAskFirstToolPermissions(
             for: id,
             permissionManifest: context.permissionManifest
         )
+        let askFirstToolPermissions = usesDockerWorkspaceExecutor
+            ? DockerWorkspaceMCPProjection.removingNativeShellTools(baseAskFirstToolPermissions)
+            : baseAskFirstToolPermissions
         let artifactBootstrapTools = ProviderArtifactBootstrapPolicy.launchTools(
             task: context.task,
             permissionPolicy: effectivePermissionPolicy,
@@ -1273,11 +1290,25 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         // Capability-package MCP servers: render the per-launch config and
         // grant the projected tool names. Secrets stay out of the file via
         // ${KEY} env indirection (the CLI expands from the task environment).
-        let mcpServers = MCPRuntimeProjection.enabledServers(
+        var mcpServers = MCPRuntimeProjection.enabledServers(
             for: context.task.workspace,
             packages: CapabilityRuntimeResourceMatcher.packageDefinitions(),
             approvalRecords: CapabilityApprovalStore().records()
         )
+        if let workspaceServer = DockerWorkspaceMCPProjection.resolvedServer(
+            task: context.task,
+            environment: executionEnvironment,
+            currentDirectory: context.workspacePath,
+            runID: context.runID
+        ) {
+            mcpServers.append(workspaceServer)
+        }
+        if let browserServer = BrowserBridgeMCPProjection.resolvedServer(
+            for: context.task,
+            contextText: context.contextText
+        ) {
+            mcpServers.append(browserServer)
+        }
         // allowEmpty: strict mode must apply even with zero governed servers,
         // or a repository's own .mcp.json loads ungoverned on those runs.
         let mcpConfigURL = MCPRuntimeProjection.writeClaudeConfig(servers: mcpServers, taskID: context.task.id, allowEmpty: true)
@@ -1285,6 +1316,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         let sandboxReadablePaths = mcpConfigReadablePaths + ClaudeCodeRuntime.authReadablePaths()
         let mcpAllowedTools = mcpConfigURL == nil ? [] : MCPRuntimeProjection.allowedToolPermissions(servers: mcpServers)
         let mcpDeniedTools = mcpConfigURL == nil ? [] : MCPRuntimeProjection.deniedToolPermissions(servers: mcpServers)
+        let nativeDeniedTools = Array(Set(mcpDeniedTools + (usesDockerWorkspaceExecutor ? ["Bash"] : []))).sorted()
         // Live approvals use the stdio control protocol (stream-json input, so
         // the prompt travels over stdin). Resolved before the allow-list so it
         // can decide whether ask-first tools are gated at the provider prompt.
@@ -1309,11 +1341,26 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         let visibleToolSource = usesArtifactBootstrapProfile
             ? Array(Set(providerAllowed + runtimeSupportTools + artifactBootstrapTools + askFirstToolPermissions + mcpAllowedTools)).sorted()
             : Array(Set(nativeAllowedTools + askFirstToolPermissions)).sorted()
-        let visibleTools = Self.visibleProviderTools(
+        let visibleTools = ClaudeVisibleToolProjection.visibleProviderTools(
             from: visibleToolSource,
             task: context.task,
             permissionPolicy: effectivePermissionPolicy
         )
+        let workspaceExecutorEnvironment = DockerWorkspaceMCPProjection.environmentVariables(
+            task: context.task,
+            environment: executionEnvironment,
+            currentDirectory: context.workspacePath,
+            runID: context.runID
+        )
+        var processEnvironment = AgentRuntimeProcessRunner.environment(
+            phase: context.phase,
+            task: context.task,
+            taskEnv: taskEnv,
+            includeClaudeTeamFlag: true
+        )
+        for (key, value) in workspaceExecutorEnvironment {
+            processEnvironment[key] = value
+        }
         let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
         var args = interactiveAsk == nil ? ["-p", context.prompt] : ["-p"]
         if let sessionID = context.nativeContinuationSessionID,
@@ -1355,20 +1402,15 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         if let mcpConfigURL {
             args += ["--mcp-config", mcpConfigURL.path]
         }
-        if !mcpDeniedTools.isEmpty {
-            args += ["--disallowedTools"] + mcpDeniedTools
+        if !nativeDeniedTools.isEmpty {
+            args += ["--disallowedTools"] + nativeDeniedTools
         }
         return AgentRuntimeProcessLaunchPlan(
             runtime: id,
             executablePath: context.executablePath,
             arguments: args,
             currentDirectory: context.workspacePath,
-            environment: AgentRuntimeProcessRunner.environment(
-                phase: context.phase,
-                task: context.task,
-                taskEnv: taskEnv,
-                includeClaudeTeamFlag: true
-            ),
+            environment: processEnvironment,
             browserShimDirectory: browserShimDirectory,
             providerVersion: nil,
             parsesJSONLines: true,
@@ -1390,6 +1432,15 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
                 "artifact_bootstrap_profile": String(usesArtifactBootstrapProfile),
                 "launch_effort": usesArtifactBootstrapProfile ? "low" : "default",
                 "allowed_tools_count": String(providerAllowed.count),
+                "base_allowed_tools_count": String(baseProviderAllowed.count),
+                "docker_workspace_executor": String(usesDockerWorkspaceExecutor),
+                "docker_workspace_tool": usesDockerWorkspaceExecutor ? DockerWorkspaceMCPProjection.providerToolPermission : "none",
+                "docker_workspace_mcp_env_key_count": String(workspaceExecutorEnvironment.count),
+                "docker_workspace_container_env_key_count": String(
+                    DockerExecutionPlanner.credentialProjectionEnvironment(environment: executionEnvironment).count
+                ),
+                "docker_workspace_credential_projection_count": String(executionEnvironment.effectiveCredentialProjections.count),
+                "native_shell_removed_for_workspace_executor": String(usesDockerWorkspaceExecutor),
                 "provider_launch_allowed_tool_count": String(nativeAllowedTools.count),
                 "runtime_support_tool_count": String(runtimeSupportTools.count),
                 "runtime_support_tool_names": runtimeSupportTools.joined(separator: ","),
@@ -1408,77 +1459,12 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
                 "native_session_prefix": context.nativeContinuationSessionID.map { String($0.prefix(8)) } ?? "none",
                 "uses_live_approvals": String(interactiveAsk != nil),
                 "mcp_server_count": String(mcpConfigURL == nil ? 0 : mcpServers.count),
-                "mcp_config_rendered": String(mcpConfigURL != nil)
+                "mcp_config_rendered": String(mcpConfigURL != nil),
+                "native_denied_tool_count": String(nativeDeniedTools.count),
+                "native_denied_tool_names": nativeDeniedTools.joined(separator: ",")
             ],
             interactiveAsk: interactiveAsk
         )
-    }
-
-    private static func visibleProviderTools(
-        from nativeAllowedTools: [String],
-        task: AgentTask,
-        permissionPolicy: PermissionPolicy
-    ) -> [String] {
-        guard permissionPolicy != .autonomous else { return [] }
-
-        var visible = Set<String>()
-        for tool in nativeAllowedTools {
-            if let normalized = visibleProviderToolName(for: tool) {
-                visible.insert(normalized)
-            }
-        }
-
-        if task.useAgentTeam {
-            visible.formUnion([
-                "Task",
-                "TeamCreate",
-                "TeamDelete",
-                "TaskCreate",
-                "TaskGet",
-                "TaskList",
-                "TaskOutput",
-                "TaskStop",
-                "TaskUpdate"
-            ])
-        }
-
-        return visible.sorted()
-    }
-
-    private static func visibleProviderToolName(for rawTool: String) -> String? {
-        let trimmed = rawTool.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-
-        let baseName = trimmed
-            .split(separator: "(", maxSplits: 1, omittingEmptySubsequences: true)
-            .first
-            .map(String.init) ?? trimmed
-        let normalized = baseName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-
-        switch normalized {
-        case "bash", "shell":
-            return "Bash"
-        case "edit":
-            return "Edit"
-        case "glob":
-            return "Glob"
-        case "grep":
-            return "Grep"
-        case "multiedit":
-            return "MultiEdit"
-        case "notebookedit":
-            return "NotebookEdit"
-        case "read":
-            return "Read"
-        case "webfetch":
-            return "WebFetch"
-        case "websearch":
-            return "WebSearch"
-        case "write":
-            return "Write"
-        default:
-            return nil
-        }
     }
 
     func parseProcessEvents(line: String, parsesJSONLines _: Bool) -> [ParsedEvent] {
@@ -1771,7 +1757,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         prerequisite: CommonCLIPrerequisites.copilot,
         defaultModel: CopilotCLIRuntime.defaultModel,
         defaultModels: CopilotCLIRuntime.defaultModels,
-        supportsAstraRunProtocol: true
+        supportsAstraRunProtocol: true,
+        supportsMCPServers: true
     )
     let readinessCheckID = "copilot-cli"
     let availableModelsStorageKey = AppStorageKeys.copilotAvailableModels
@@ -1879,48 +1866,75 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let allowed = context.executionPolicy.allowedTools(
             default: capabilityScope.resolver.resolvedProviderAllowedTools
         )
-        let providerAllowed = AgentRuntimeProcessRunner.providerAllowedTools(
+        let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
+        let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
+        let providerLaunchPermissionPolicy = usesDockerWorkspaceExecutor && effectivePermissionPolicy == .autonomous
+            ? PermissionPolicy.restricted
+            : effectivePermissionPolicy
+        let baseProviderAllowed = AgentRuntimeProcessRunner.providerAllowedTools(
             for: id,
             baseAllowedTools: allowed,
             permissionManifest: context.permissionManifest
         )
+        let providerAllowed = usesDockerWorkspaceExecutor
+            ? DockerWorkspaceMCPProjection.removingNativeShellTools(baseProviderAllowed)
+            : baseProviderAllowed
         let runtimeSupportTools = AgentRuntimeProcessRunner.providerRuntimeSupportToolPermissions(
             for: id,
             permissionManifest: context.permissionManifest
         )
-        let askFirstTools = context.permissionManifest?.providerRender.askFirstTools ?? []
+        let baseAskFirstTools = context.permissionManifest?.providerRender.askFirstTools ?? []
+        let askFirstTools = usesDockerWorkspaceExecutor
+            ? DockerWorkspaceMCPProjection.removingNativeShellTools(baseAskFirstTools)
+            : baseAskFirstTools
         let artifactBootstrapTools = ProviderArtifactBootstrapPolicy.launchTools(
             task: context.task,
-            permissionPolicy: effectivePermissionPolicy,
+            permissionPolicy: providerLaunchPermissionPolicy,
             providerAllowedTools: providerAllowed,
             askFirstTools: askFirstTools
         )
-        let providerLaunchAllowed = Array(Set(providerAllowed + artifactBootstrapTools)).sorted()
         let pathPrefix = AgentRuntimeProcessRunner.pathPrefix(for: context.task, taskEnv: taskEnv)
         let executable = context.executablePath.isEmpty ? CopilotCLIRuntime.detectPath() : context.executablePath
         let providerVersion = CopilotCLIRuntime.versionSummary(executablePath: executable)
         let capabilities = CopilotCLIRuntime.capabilities(executablePath: executable)
         let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
         let additionalPaths = AgentRuntimeProcessRunner.copilotAdditionalPaths(for: context.task)
-        let browserBridgeMetadata = BrowserBridgeRuntimeLaunchGuard.planMetadata(runtime: id, environment: taskEnv)
         let userHome = FileManager.default.homeDirectoryForCurrentUser.path
         let copilotStateHome = CopilotCLIRuntime.defaultHome(userHome: userHome)
+        let mcpProjection = CopilotMCPLaunchProjection.resolve(
+            task: context.task,
+            workspacePath: context.workspacePath,
+            runID: context.runID,
+            executionEnvironment: executionEnvironment,
+            contextText: context.contextText,
+            capabilities: capabilities
+        )
+        let browserBridgeMetadata = BrowserBridgeRuntimeLaunchGuard.planMetadata(
+            runtime: id,
+            environment: taskEnv,
+            mcpToolSupported: mcpProjection.browserBridgeMCPToolSupported
+        )
         var localToolCommands = AgentRuntimeProcessRunner.copilotLocalToolCommands(for: context.task, contextText: context.contextText)
-        if browserBridgeMetadata.isAttached {
+        if browserBridgeMetadata.isAttached && !mcpProjection.browserBridgeMCPToolSupported {
             localToolCommands.append("astra-browser")
         }
         let surfacedAskFirstTools = askFirstTools
+        let providerLaunchAllowed = Array(Set(providerAllowed + artifactBootstrapTools + mcpProjection.allowedTools)).sorted()
+        var launchTaskEnv = taskEnv
+        for (key, value) in mcpProjection.workspaceExecutorEnvironment {
+            launchTaskEnv[key] = value
+        }
         let plan = CopilotCLIRuntime.buildCommand(
             executablePath: executable,
             prompt: context.prompt,
             model: model,
             workspacePath: context.workspacePath,
             additionalPaths: additionalPaths,
-            permissionPolicy: effectivePermissionPolicy,
+            permissionPolicy: providerLaunchPermissionPolicy,
             allowedTools: providerLaunchAllowed,
             timeoutSeconds: context.timeoutSeconds,
             capabilities: capabilities,
-            taskEnvironment: taskEnv,
+            taskEnvironment: launchTaskEnv,
             copilotHome: context.providerHomeDirectory,
             copilotStateHome: copilotStateHome,
             userHome: userHome,
@@ -1930,8 +1944,48 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             localToolCommands: localToolCommands,
             runtimeSupportTools: runtimeSupportTools,
             askFirstTools: surfacedAskFirstTools,
+            additionalMCPConfigPaths: mcpProjection.configURL.map { [$0.path] } ?? [],
             reasoningEffort: artifactBootstrapTools.isEmpty ? nil : "none",
             allowAllPathsForSSHConnections: AgentRuntimeProcessRunner.hasWorkspaceSSHConnections(for: context.task)
+        )
+        let directoriesToCreate = CopilotCLIRuntime.directoriesToCreate(
+            copilotHome: context.providerHomeDirectory,
+            copilotStateHome: copilotStateHome,
+            userHome: userHome
+        )
+        let sandboxReadablePaths = CopilotCLIRuntime.authReadablePaths(userHome: userHome) + mcpProjection.readablePaths
+        let providerDetectedFields = CopilotLaunchDiagnostics.providerDetectedFields(
+            id: id,
+            providerVersion: providerVersion,
+            executable: executable,
+            executableConfigured: !context.executablePath.isEmpty
+        )
+        let dockerContainerEnvCount = DockerExecutionPlanner
+            .credentialProjectionEnvironment(environment: executionEnvironment)
+            .count
+        let commandPlannedFields = CopilotLaunchDiagnostics.commandPlannedFields(
+            id: id,
+            phase: context.phase,
+            model: model,
+            plan: plan,
+            capabilities: capabilities,
+            effectivePermissionPolicy: providerLaunchPermissionPolicy,
+            providerAllowed: providerAllowed,
+            baseProviderAllowed: baseProviderAllowed,
+            providerLaunchAllowed: providerLaunchAllowed,
+            runtimeSupportTools: runtimeSupportTools,
+            baseAskFirstTools: baseAskFirstTools,
+            surfacedAskFirstTools: surfacedAskFirstTools,
+            artifactBootstrapTools: artifactBootstrapTools,
+            allowedToolsOverride: context.executionPolicy.allowedToolsOverride != nil,
+            localToolCommands: localToolCommands,
+            additionalPaths: additionalPaths,
+            taskEnv: launchTaskEnv,
+            usesDockerWorkspaceExecutor: usesDockerWorkspaceExecutor,
+            mcpProjection: mcpProjection,
+            dockerContainerEnvCount: dockerContainerEnvCount,
+            dockerCredentialProjectionCount: executionEnvironment.effectiveCredentialProjections.count,
+            browserBridgeMetadata: browserBridgeMetadata
         )
 
         return AgentRuntimeProcessLaunchPlan(
@@ -1943,70 +1997,11 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             browserShimDirectory: browserShimDirectory,
             providerVersion: providerVersion,
             parsesJSONLines: plan.parsesJSONLines,
-            directoriesToCreate: CopilotCLIRuntime.directoriesToCreate(
-                copilotHome: context.providerHomeDirectory,
-                copilotStateHome: copilotStateHome,
-                userHome: userHome
-            ),
-            sandboxReadablePaths: CopilotCLIRuntime.authReadablePaths(userHome: userHome),
+            directoriesToCreate: directoriesToCreate,
+            sandboxReadablePaths: sandboxReadablePaths,
             sandboxProtectedWriteDenyPaths: CopilotCLIRuntime.configWriteDenyPaths(userHome: userHome),
-            providerDetectedFields: [
-                "runtime": id.rawValue,
-                "provider_version": providerVersion ?? "unknown",
-                "executable_configured": String(!context.executablePath.isEmpty),
-                "executable_exists": String(FileManager.default.isExecutableFile(atPath: executable)),
-                "executable_path": executable,
-                "executable_mtime": AgentRuntimeProcessRunner.fileModificationTimestamp(executable)
-            ],
-            commandPlannedFields: [
-                "runtime": id.rawValue,
-                "phase": context.phase,
-                "model": model,
-                "parses_json_lines": String(plan.parsesJSONLines),
-                "supports_output_format_json": String(capabilities.supportsOutputFormatJSON),
-                "supports_streaming_flag": String(capabilities.supportsStreamingFlag),
-                "supports_no_ask_user": String(capabilities.supportsNoAskUser),
-                "supports_secret_env_vars": String(capabilities.supportsSecretEnvVars),
-                "supports_allow_all": String(capabilities.supportsAllowAll),
-                "supports_silent": String(capabilities.supportsSilent),
-                "supports_allow_all_tools": String(capabilities.supportsAllowAllTools),
-                "supports_allow_all_paths": String(capabilities.supportsAllowAllPaths),
-                "supports_allow_all_urls": String(capabilities.supportsAllowAllURLs),
-                "supports_available_tools": String(capabilities.supportsAvailableTools),
-                "supports_excluded_tools": String(capabilities.supportsExcludedTools),
-                "supports_reasoning_effort": String(capabilities.supportsReasoningEffort),
-                "requires_allow_all_tools": String(capabilities.requiresAllowAllToolsForPrompt),
-                "permission_policy": effectivePermissionPolicy.rawValue,
-                "allowed_tools_count": String(providerAllowed.count),
-                "provider_launch_allowed_tool_count": String(providerLaunchAllowed.count),
-                "runtime_support_tool_count": String(runtimeSupportTools.count),
-                "runtime_support_tool_names": runtimeSupportTools.joined(separator: ","),
-                "ask_first_tool_count": String(askFirstTools.count),
-                "ask_first_tool_names": askFirstTools.joined(separator: ","),
-                "surfaced_ask_first_tool_count": String(surfacedAskFirstTools.count),
-                "surfaced_ask_first_tool_names": surfacedAskFirstTools.joined(separator: ","),
-                "artifact_bootstrap_tool_count": String(artifactBootstrapTools.count),
-                "artifact_bootstrap_tool_names": artifactBootstrapTools.joined(separator: ","),
-                "artifact_bootstrap_profile": String(!artifactBootstrapTools.isEmpty),
-                "allowed_tools_override": String(context.executionPolicy.allowedToolsOverride != nil),
-                "local_tool_commands_count": String(localToolCommands.count),
-                "additional_paths_count": String(additionalPaths.count),
-                "task_env_count": String(taskEnv.count),
-                "uses_output_format_json": String(plan.arguments.contains("--output-format=json")),
-                "uses_stream_flag": String(plan.arguments.contains("--stream=on")),
-                "uses_no_ask_user": String(plan.arguments.contains("--no-ask-user")),
-                "uses_reasoning_effort": String(plan.arguments.contains("--effort")),
-                "uses_secret_env_vars": String(plan.arguments.contains("--secret-env-vars")),
-                "uses_silent": String(plan.arguments.contains("--silent")),
-                "uses_allow_all": String(plan.arguments.contains("--allow-all")),
-                "uses_allow_all_tools": String(plan.arguments.contains("--allow-all-tools")),
-                "uses_allow_all_paths": String(plan.arguments.contains("--allow-all-paths")),
-                "uses_allow_all_urls": String(plan.arguments.contains("--allow-all-urls")),
-                "uses_allow_tool": String(plan.arguments.contains("--allow-tool")),
-                "uses_available_tools": String(plan.arguments.contains("--available-tools")),
-                "uses_excluded_tools": String(plan.arguments.contains("--excluded-tools")),
-                "excludes_task_tool": String(AgentRuntimeArgumentInspector.argumentList(plan.arguments, after: "--excluded-tools").contains("task"))
-            ].merging(browserBridgeMetadata.commandPlannedFields) { current, _ in current }
+            providerDetectedFields: providerDetectedFields,
+            commandPlannedFields: commandPlannedFields
         )
     }
 

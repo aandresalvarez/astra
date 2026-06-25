@@ -280,17 +280,18 @@ struct MCPRuntimeProjectionTests {
 @MainActor
 struct MCPRuntimeParityTests {
 
-    @Test("Claude Code is the only runtime declaring MCP support today")
-    func claudeDeclaresMCPSupport() {
+    @Test("Claude Code, Copilot, and Codex declare MCP support")
+    func claudeCopilotAndCodexDeclareMCPSupport() {
         let descriptors = CapabilityRuntimeSupportPresentation.allRuntimeDescriptors()
         let supporting = CapabilityRuntimeSupportPresentation.mcpSupportingRuntimes(descriptors: descriptors)
-        #expect(supporting.map(\.id) == [.claudeCode])
+        #expect(supporting.map(\.id) == [.claudeCode, .copilotCLI, .codexCLI])
     }
 
     @Test("Catalog subtitle names the delivering runtimes")
     func catalogSubtitleNamesRuntimes() {
         let subtitle = CapabilityRuntimeSupportPresentation.mcpSupportSubtitle()
         #expect(subtitle.contains("Claude Code"))
+        #expect(subtitle.contains("GitHub Copilot CLI"))
         #expect(subtitle.contains("skip"))
     }
 

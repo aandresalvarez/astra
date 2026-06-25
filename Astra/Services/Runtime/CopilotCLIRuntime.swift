@@ -18,6 +18,7 @@ struct CopilotCLICapabilities: Equatable {
     var supportsLogDir: Bool
     var supportsNoAutoUpdate: Bool
     var supportsReasoningEffort: Bool
+    var supportsAdditionalMCPConfig: Bool
 
     static let conservative = CopilotCLICapabilities(
         supportsOutputFormatJSON: false,
@@ -35,7 +36,8 @@ struct CopilotCLICapabilities: Equatable {
         supportsExcludedTools: false,
         supportsLogDir: false,
         supportsNoAutoUpdate: false,
-        supportsReasoningEffort: false
+        supportsReasoningEffort: false,
+        supportsAdditionalMCPConfig: false
     )
 
     init(helpText: String) {
@@ -56,6 +58,7 @@ struct CopilotCLICapabilities: Equatable {
         supportsLogDir = Self.hasOption("--log-dir", in: helpText)
         supportsNoAutoUpdate = Self.hasOption("--no-auto-update", in: helpText)
         supportsReasoningEffort = Self.hasOption("--effort", in: helpText)
+        supportsAdditionalMCPConfig = Self.hasOption("--additional-mcp-config", in: helpText)
     }
 
     private init(
@@ -74,7 +77,8 @@ struct CopilotCLICapabilities: Equatable {
         supportsExcludedTools: Bool,
         supportsLogDir: Bool,
         supportsNoAutoUpdate: Bool,
-        supportsReasoningEffort: Bool
+        supportsReasoningEffort: Bool,
+        supportsAdditionalMCPConfig: Bool
     ) {
         self.supportsOutputFormatJSON = supportsOutputFormatJSON
         self.supportsStreamingFlag = supportsStreamingFlag
@@ -92,6 +96,7 @@ struct CopilotCLICapabilities: Equatable {
         self.supportsLogDir = supportsLogDir
         self.supportsNoAutoUpdate = supportsNoAutoUpdate
         self.supportsReasoningEffort = supportsReasoningEffort
+        self.supportsAdditionalMCPConfig = supportsAdditionalMCPConfig
     }
 
     private static func hasOption(_ option: String, in helpText: String) -> Bool {
@@ -198,6 +203,7 @@ enum CopilotCLIRuntime {
         localToolCommands: [String] = [],
         runtimeSupportTools: [String] = [],
         askFirstTools: [String] = [],
+        additionalMCPConfigPaths: [String] = [],
         reasoningEffort: String? = nil,
         disableCustomInstructions: Bool = false,
         allowAllPathsForSSHConnections: Bool = false
@@ -229,6 +235,12 @@ enum CopilotCLIRuntime {
 
         if capabilities.supportsStreamingFlag {
             args += ["--stream=on"]
+        }
+
+        if capabilities.supportsAdditionalMCPConfig {
+            for path in additionalMCPConfigPaths where !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                args += ["--additional-mcp-config", "@\(path)"]
+            }
         }
 
         if capabilities.supportsNoAskUser {
@@ -624,6 +636,9 @@ enum CopilotCLIRuntime {
             if lower.hasPrefix("shell(") || lower == "read" || lower == "write" {
                 return [trimmed]
             }
+            if let mcpPermission = copilotMCPPermissionPattern(for: trimmed) {
+                return [mcpPermission]
+            }
             return []
         }
     }
@@ -655,11 +670,40 @@ enum CopilotCLIRuntime {
         case "agent", "task":
             return ["task"]
         default:
+            if let mcpToolName = copilotMCPAvailableToolName(for: trimmed) {
+                return [mcpToolName]
+            }
             if lower.hasPrefix("bash(") || lower.hasPrefix("shell(") {
                 return ["bash"]
             }
             return trimmed.isEmpty ? [] : [trimmed]
         }
+    }
+
+    static func copilotMCPPermissionPattern(for permission: String) -> String? {
+        guard let parsed = parseClaudeStyleMCPPermission(permission) else { return nil }
+        guard let toolName = parsed.toolName else { return parsed.serverID }
+        return "\(parsed.serverID)(\(toolName))"
+    }
+
+    static func copilotMCPAvailableToolName(for permission: String) -> String? {
+        guard let parsed = parseClaudeStyleMCPPermission(permission) else { return nil }
+        guard let toolName = parsed.toolName else { return parsed.serverID }
+        return "\(parsed.serverID)-\(toolName)"
+    }
+
+    private static func parseClaudeStyleMCPPermission(_ permission: String) -> (serverID: String, toolName: String?)? {
+        let trimmed = permission.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.lowercased().hasPrefix("mcp__") else { return nil }
+        let remainder = String(trimmed.dropFirst("mcp__".count))
+        guard !remainder.isEmpty else { return nil }
+        guard let separator = remainder.range(of: "__") else {
+            return (serverID: remainder, toolName: nil)
+        }
+        let serverID = String(remainder[..<separator.lowerBound])
+        let toolName = String(remainder[separator.upperBound...])
+        guard !serverID.isEmpty, !toolName.isEmpty else { return nil }
+        return (serverID: serverID, toolName: toolName)
     }
 
     private static func isDelegationToolPermission(_ value: String) -> Bool {

@@ -175,6 +175,7 @@ enum TaskCorrectiveWorkService {
             "Validation assertion \(payload.failedAssertionID) passes when rerun."
         ]
         child.executionRootPath = sourceTask.executionRootPath
+        child.executionEnvironmentSnapshotJSON = sourceTask.executionEnvironmentSnapshotJSON
         child.queuePosition = (sourceTask.workspace?.tasks.map(\.queuePosition).max() ?? sourceTask.queuePosition) + 1
         modelContext.insert(child)
 
