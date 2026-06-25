@@ -63,6 +63,29 @@ struct ProviderLaunchCapabilityScopeTests {
         ) == "success")
     }
 
+    @Test("Credential projection preflight runs in shared worker path before provider launch")
+    func credentialProjectionPreflightRunsBeforeProviderLaunch() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let workerURL = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Runtime")
+            .appendingPathComponent("AgentRuntimeWorker.swift")
+        let workerSource = try String(contentsOf: workerURL, encoding: .utf8)
+        let preflight = "AgentRuntimeLaunchPreflight.preflightCredentialProjectionBeforeLaunch("
+        let promptBuild = "let prompt = promptOverride ?? buildPrompt(for: task)"
+        let providerLaunch = "processRunner.runRuntimeProcess"
+        let preflightRange = try #require(workerSource.range(of: preflight))
+        let promptBuildRange = try #require(workerSource.range(of: promptBuild))
+        let providerLaunchRange = try #require(workerSource.range(of: providerLaunch))
+
+        #expect(sourceContains(workerSource, preflight))
+        #expect(preflightRange.lowerBound < promptBuildRange.lowerBound)
+        #expect(preflightRange.lowerBound < providerLaunchRange.lowerBound)
+    }
+
     private func sourceContains(_ source: String, _ expected: String) -> Bool {
         normalizeWhitespace(source).contains(normalizeWhitespace(expected))
     }
@@ -629,6 +652,7 @@ struct BuildPromptTests {
             .nativeContinuation,
             .conversationHistory,
             .changedFiles,
+            .workspaceEnvironment,
             .taskOutputFolder,
             .followUpContext,
             .capabilities,
@@ -1169,6 +1193,41 @@ struct BuildPromptTests {
         })
     }
 
+    @Test("Docker follow-up prompt preserves workspace executor instructions")
+    func dockerFollowUpPromptPreservesWorkspaceExecutorInstructions() throws {
+        let root = NSTemporaryDirectory() + "docker-followup-prompt-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Docker Followup", primaryPath: root)
+        ctx.insert(ws)
+        let task = AgentTask(title: "T", goal: "Inspect dbt", workspace: ws)
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:starr",
+            kind: .dockerImage,
+            displayName: "starr-data-lake Image",
+            image: "astra-starr-data-lake:latest"
+        ))
+        ctx.insert(task)
+        try ctx.save()
+        _ = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
+            message: "is dbt installed and working correctly?",
+            task: task
+        )
+
+        #expect(prompt.contains("Execution Environment: starr-data-lake Image"))
+        #expect(prompt.contains("Provider placement: host macOS"))
+        #expect(prompt.contains("mcp__astra_workspace__workspace_shell"))
+        #expect(prompt.contains("astra_workspace-workspace_shell"))
+        #expect(prompt.contains("command -v dbt && dbt --version"))
+        #expect(prompt.contains("Do not use host-created virtual environments"))
+        #expect(prompt.contains("User's follow-up request:\nis dbt installed and working correctly?"))
+    }
+
     @Test("Prompt IO snapshot loader owns turn output and session history reads")
     func promptIOSnapshotLoaderOwnsTurnOutputAndSessionHistoryReads() throws {
         let folder = NSTemporaryDirectory() + "prompt-io-snapshot-\(UUID().uuidString)"
@@ -1707,7 +1766,8 @@ struct BuildPromptTests {
         let prompt = AgentPromptBuilder.buildPrompt(for: task)
 
         #expect(prompt.contains("Shelf Browser Session:"))
-        #expect(prompt.contains("Use the provider-neutral `astra-browser` command"))
+        #expect(prompt.contains("Use ASTRA's browser bridge only"))
+        #expect(prompt.contains("Shell-capable runtimes can run `astra-browser ...`"))
         #expect(prompt.contains("ASTRA_BROWSER_URL"))
         #expect(prompt.contains(task.id.uuidString))
         #expect(prompt.contains("https://outlook.office.com/mail/"))

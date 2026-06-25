@@ -23,7 +23,13 @@ struct TaskRunStopReason: RawRepresentable, Codable, Sendable, Hashable, Express
     static let capabilityRuntimeResourcesMissing: TaskRunStopReason = "capability_runtime_resources_missing"
     static let completed: TaskRunStopReason = "completed"
     static let connectorPreflightFailed: TaskRunStopReason = "connector_preflight_failed"
+    static let credentialProjectionRequired: TaskRunStopReason = "credential_projection_required"
     static let deliverableVerificationFailed: TaskRunStopReason = "deliverable_verification_failed"
+    static let dockerDaemonUnavailable: TaskRunStopReason = "docker_daemon_unavailable"
+    static let dockerImageUnavailable: TaskRunStopReason = "docker_image_unavailable"
+    static let dockerLaunchFailed: TaskRunStopReason = "docker_launch_failed"
+    static let dockerMountFailed: TaskRunStopReason = "docker_mount_failed"
+    static let dockerProviderExecutableMissing: TaskRunStopReason = "docker_provider_executable_missing"
     static let failed: TaskRunStopReason = "failed"
     static let inferredValidationFailed: TaskRunStopReason = "inferred_validation_failed"
     static let isolationFailed: TaskRunStopReason = "isolation_failed"
@@ -47,6 +53,10 @@ struct TaskRunStopReason: RawRepresentable, Codable, Sendable, Hashable, Express
 
     var isPolicyBlocked: Bool {
         rawValue.lowercased().contains("policy")
+    }
+
+    var isDockerRuntimeBlocked: Bool {
+        rawValue.lowercased().hasPrefix("docker_")
     }
 }
 

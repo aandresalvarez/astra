@@ -469,6 +469,55 @@ struct AgentRuntimeLaunchPreflightTests {
         #expect(!task.events.contains { $0.type == "error" && $0.payload.contains("GitHub") })
     }
 
+    @Test("Docker workspace preflight blocks when bundled workspace helper is missing")
+    func dockerWorkspacePreflightBlocksMissingWorkspaceHelper() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-docker-preflight-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Docker", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Summarize",
+            goal: "Summarize files",
+            workspace: workspace,
+            runtime: .claudeCode
+        )
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:workspace",
+            kind: .dockerImage,
+            displayName: "Workspace Image",
+            image: "astra/workspace:latest"
+        ))
+        task.status = .running
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let result = AgentRuntimeLaunchPreflight.preflightCapabilitiesBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "run",
+            mcpIsExecutableFile: { path in
+                path != (RuntimePathResolver.astraToolsPath as NSString).appendingPathComponent("astra-workspace")
+            }
+        )
+
+        #expect(result.status == .capabilityRuntimeResourcesMissing)
+        #expect(!result.didPass)
+        #expect(result.reason == "mcp_server_executable_missing")
+        #expect(result.detail?.contains("astra_workspace") == true)
+        #expect(result.detail?.contains("astra-workspace") == true)
+        #expect(task.status == .failed)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "mcp_server_executable_missing")
+        #expect(task.events.contains { $0.type == "error" && $0.payload.contains("astra-workspace") })
+    }
+
     @Test("Remote workspace preflight records SSH diagnostic event")
     func remoteWorkspacePreflightRecordsSSHDiagnosticEvent() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())

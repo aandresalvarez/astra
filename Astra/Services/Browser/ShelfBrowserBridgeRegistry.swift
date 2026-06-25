@@ -203,7 +203,7 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         \(adapterLine)
         \(pageLine)
 
-        Use the provider-neutral `astra-browser` command. It talks to ASTRA_BROWSER_URL and returns compact JSON without curl progress noise:
+        Use ASTRA's browser bridge only. Shell-capable runtimes can run `astra-browser ...`; MCP-capable runtimes can call `\(BrowserBridgeMCPProjection.providerToolPermission)` with `command` plus optional `arguments`, using the same command names shown below. The bridge talks to ASTRA_BROWSER_URL and returns compact JSON without curl progress noise:
         - List supported actions: `astra-browser actions`
         - Inspect provider-safe navigation/action diagnostics: `astra-browser trace`; it is compact by default. Use `astra-browser trace --full` only for intentional deep debugging because full mode can include retained screenshots, compact trees, and console/navigation/network events when Browser Debug Capture is enabled in Settings > Appearance > Privacy & Logging. Prefix one command with `ASTRA_BROWSER_DEBUG_CAPTURE=0` to suppress capture for that command.
         - Build a deterministic action map: `astra-browser analyze` or `astra-browser analyze --query "Save"`; v2 semantic controlRefs/source evidence are the default.

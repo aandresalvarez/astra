@@ -68,6 +68,9 @@ final class AgentTask {
     /// thread always lands in the same checkout regardless of how the
     /// workspace's active location later changes.
     var executionRootPath: String?
+    /// JSON-encoded immutable execution environment for this thread. Nil means
+    /// host unless the first run snapshots the workspace default.
+    var executionEnvironmentSnapshotJSON: String?
     var createdAt: Date
     var updatedAt: Date
     var completedAt: Date?
@@ -127,6 +130,7 @@ final class AgentTask {
         // it always runs in the same checkout/repository, even if the workspace
         // later switches its default.
         self.executionRootPath = workspace?.isUsingWorktree == true ? workspace?.activeWorkingPath : nil
+        self.executionEnvironmentSnapshotJSON = workspace?.activeExecutionEnvironmentJSON
         self.createdAt = Date()
         self.updatedAt = Date()
     }

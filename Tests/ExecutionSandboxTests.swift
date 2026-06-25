@@ -623,22 +623,37 @@ struct ExecutionSandboxTests {
         #expect(decision == .failClosed(reason: "no_execution_path"))
     }
 
-    @Test("Browser bridge launch block fails closed when provider lacks shell tool")
-    func browserBridgeLaunchBlockFailsClosedWhenProviderLacksShellTool() throws {
+    @Test("Browser bridge launch block fails closed when provider lacks browser control transport")
+    func browserBridgeLaunchBlockFailsClosedWhenProviderLacksBrowserControlTransport() throws {
         let plan = makePlan(
             runtime: .copilotCLI,
             environment: ["ASTRA_BROWSER_URL": "http://127.0.0.1:49152"],
             commandPlannedFields: [
                 "browser_bridge_shell_tool_supported": "false",
-                "browser_bridge_launch_block_reason": "provider_missing_browser_shell_tool"
+                "browser_bridge_launch_block_reason": "provider_missing_browser_control_tool"
             ]
         )
 
         let result = try #require(BrowserBridgeRuntimeLaunchGuard.launchBlock(for: plan))
 
         #expect(result.exitCode == -1)
-        #expect(result.runtimeStopReason == "provider_missing_browser_shell_tool")
-        #expect(result.runtimeStopMessage?.contains("cannot execute the astra-browser command") == true)
+        #expect(result.runtimeStopReason == "provider_missing_browser_control_tool")
+        #expect(result.runtimeStopMessage?.contains("cannot access a browser-control transport") == true)
+    }
+
+    @Test("Browser bridge launch block allows provider native MCP browser tool")
+    func browserBridgeLaunchBlockAllowsProviderNativeMCPBrowserTool() {
+        let plan = makePlan(
+            runtime: .copilotCLI,
+            environment: ["ASTRA_BROWSER_URL": "http://127.0.0.1:49152"],
+            commandPlannedFields: [
+                "browser_bridge_shell_tool_supported": "false",
+                "browser_bridge_mcp_tool_supported": "true",
+                "browser_bridge_launch_block_reason": "none"
+            ]
+        )
+
+        #expect(BrowserBridgeRuntimeLaunchGuard.launchBlock(for: plan) == nil)
     }
 
     @Test("Best-effort enforcement falls back when there is no execution path")

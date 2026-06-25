@@ -8,6 +8,8 @@ struct AgentRuntimeLaunchPreflightResult: Sendable, Equatable {
         case taskFolderCreateFailed
         case runtimeReadinessPassed
         case runtimeReadinessFailed
+        case credentialProjectionPassed
+        case credentialProjectionFailed
         case remoteWorkspacePreflightPassed
         case capabilityRuntimeResourcesPassed
         case capabilityRuntimeResourcesMissing
@@ -23,9 +25,18 @@ struct AgentRuntimeLaunchPreflightResult: Sendable, Equatable {
 
     var didPass: Bool {
         switch status {
-        case .taskFolderPrepared, .runtimeReadinessPassed, .remoteWorkspacePreflightPassed, .capabilityRuntimeResourcesPassed, .connectorPreflightPassed:
+        case .taskFolderPrepared,
+             .runtimeReadinessPassed,
+             .credentialProjectionPassed,
+             .remoteWorkspacePreflightPassed,
+             .capabilityRuntimeResourcesPassed,
+             .connectorPreflightPassed:
             return true
-        case .taskFolderCreateFailed, .runtimeReadinessFailed, .capabilityRuntimeResourcesMissing, .connectorPreflightFailed:
+        case .taskFolderCreateFailed,
+             .runtimeReadinessFailed,
+             .credentialProjectionFailed,
+             .capabilityRuntimeResourcesMissing,
+             .connectorPreflightFailed:
             return false
         }
     }
@@ -391,13 +402,82 @@ enum AgentRuntimeLaunchPreflight {
         ).didPass
     }
 
+    static func preflightCredentialProjectionBeforeLaunchResult(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String,
+        codeDirectory: String,
+        homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
+        fileManager: FileManager = .default
+    ) -> AgentRuntimeLaunchPreflightResult {
+        let report = ExecutionEnvironmentCredentialReadinessService.evaluate(
+            task: task,
+            codeDirectory: codeDirectory,
+            homeDirectoryPath: homeDirectoryPath,
+            fileManager: fileManager
+        )
+        var fields = report.auditFields
+        fields["phase"] = phase
+        fields["runtime"] = task.resolvedRuntimeID.rawValue
+        fields["diagnostic_result"] = report.shouldBlockLaunch
+            ? AgentRuntimeLaunchPreflightResult.Status.credentialProjectionFailed.rawValue
+            : AgentRuntimeLaunchPreflightResult.Status.credentialProjectionPassed.rawValue
+        fields["result"] = report.shouldBlockLaunch ? "blocked" : "passed"
+
+        guard !report.shouldBlockLaunch else {
+            AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: fields, level: .error, fieldMaxLength: 240)
+            finishPreLaunchFailure(
+                task: task,
+                run: run,
+                modelContext: modelContext,
+                reason: TaskRunStopReason.credentialProjectionRequired.rawValue,
+                payload: report.userMessage
+            )
+            return AgentRuntimeLaunchPreflightResult(
+                status: .credentialProjectionFailed,
+                phase: phase,
+                reason: TaskRunStopReason.credentialProjectionRequired.rawValue,
+                detail: report.detail,
+                auditFields: fields
+            )
+        }
+
+        AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: fields, level: .debug, fieldMaxLength: 240)
+        return AgentRuntimeLaunchPreflightResult(
+            status: .credentialProjectionPassed,
+            phase: phase,
+            reason: nil,
+            detail: report.detail,
+            auditFields: fields
+        )
+    }
+
+    static func preflightCredentialProjectionBeforeLaunch(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String,
+        codeDirectory: String
+    ) -> Bool {
+        preflightCredentialProjectionBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: phase,
+            codeDirectory: codeDirectory
+        ).didPass
+    }
+
     static func preflightCapabilitiesBeforeLaunchResult(
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
         phase: String,
         contextText: String = "",
-        prerequisiteStatuses: [String: HealthStatus] = [:]
+        prerequisiteStatuses: [String: HealthStatus] = [:],
+        mcpDetectExecutable: (String) -> String = { RuntimePathResolver.detectExecutablePath(named: $0) },
+        mcpIsExecutableFile: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
     ) -> AgentRuntimeLaunchPreflightResult {
         let policyContext = task.workspace.map {
             CapabilityCatalogPolicyContext.workspaceUser(
@@ -429,12 +509,30 @@ enum AgentRuntimeLaunchPreflight {
         let runtime = AgentRuntimeID(rawValue: task.runtimeID ?? "") ?? TaskExecutionDefaults.runtime
         let mcpIssues: [MCPRuntimeProjection.PreflightIssue]
         if AgentRuntimeAdapterRegistry.descriptor(for: runtime).supportsMCPServers {
+            var mcpServers = MCPRuntimeProjection.enabledServers(
+                for: task.workspace,
+                packages: CapabilityRuntimeResourceMatcher.packageDefinitions(),
+                approvalRecords: CapabilityApprovalStore().records()
+            )
+            let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: task)
+            if let workspaceServer = DockerWorkspaceMCPProjection.resolvedServer(
+                task: task,
+                environment: executionEnvironment,
+                currentDirectory: TaskWorkspaceAccess(task: task).effectiveWorkspacePath,
+                runID: run.id
+            ) {
+                mcpServers.append(workspaceServer)
+            }
+            if let browserServer = BrowserBridgeMCPProjection.resolvedServer(
+                for: task,
+                contextText: contextText
+            ) {
+                mcpServers.append(browserServer)
+            }
             mcpIssues = MCPRuntimeProjection.preflightIssues(
-                servers: MCPRuntimeProjection.enabledServers(
-                    for: task.workspace,
-                    packages: CapabilityRuntimeResourceMatcher.packageDefinitions(),
-                    approvalRecords: CapabilityApprovalStore().records()
-                )
+                servers: mcpServers,
+                detectExecutable: mcpDetectExecutable,
+                isExecutableFile: mcpIsExecutableFile
             )
         } else {
             mcpIssues = []
