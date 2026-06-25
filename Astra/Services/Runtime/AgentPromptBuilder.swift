@@ -258,10 +258,10 @@ enum AgentPromptBuilder {
             )
         }
     }
-
     private static func appendWorkspacePaths(for task: AgentTask, to sections: inout [PromptContextSection]) {
-        guard let ws = task.workspace, !ws.additionalPaths.isEmpty else { return }
         let codeDir = TaskWorkspaceAccess(task: task).codeWorkingDirectory
+        if let section = AgentPromptExecutionEnvironmentSection.section(for: task, codeDir: codeDir) { sections.append(section) }
+        guard let ws = task.workspace, !ws.additionalPaths.isEmpty else { return }
         if codeDir != TaskWorkspaceAccess(task: task).effectiveWorkspacePath {
             appendSection(
                 "WORKING DIRECTORY: Your process is running in \(codeDir). This is the primary code directory for this workspace. All relative paths resolve from here.",

@@ -8,6 +8,9 @@ struct AgentRuntimeLaunchPreflightResult: Sendable, Equatable {
         case taskFolderCreateFailed
         case runtimeReadinessPassed
         case runtimeReadinessFailed
+        case credentialProjectionPassed
+        case credentialProjectionFailed
+        case remoteWorkspacePreflightPassed
         case capabilityRuntimeResourcesPassed
         case capabilityRuntimeResourcesMissing
         case connectorPreflightPassed
@@ -22,9 +25,18 @@ struct AgentRuntimeLaunchPreflightResult: Sendable, Equatable {
 
     var didPass: Bool {
         switch status {
-        case .taskFolderPrepared, .runtimeReadinessPassed, .capabilityRuntimeResourcesPassed, .connectorPreflightPassed:
+        case .taskFolderPrepared,
+             .runtimeReadinessPassed,
+             .credentialProjectionPassed,
+             .remoteWorkspacePreflightPassed,
+             .capabilityRuntimeResourcesPassed,
+             .connectorPreflightPassed:
             return true
-        case .taskFolderCreateFailed, .runtimeReadinessFailed, .capabilityRuntimeResourcesMissing, .connectorPreflightFailed:
+        case .taskFolderCreateFailed,
+             .runtimeReadinessFailed,
+             .credentialProjectionFailed,
+             .capabilityRuntimeResourcesMissing,
+             .connectorPreflightFailed:
             return false
         }
     }
@@ -224,6 +236,106 @@ enum AgentRuntimeLaunchPreflight {
         ).didPass
     }
 
+    static func preflightRemoteWorkspaceBeforeLaunchResult(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String,
+        runtime: AgentRuntimeID
+    ) -> AgentRuntimeLaunchPreflightResult {
+        let buildInfo = AppBuildInfo.current
+        var fields = buildInfo.auditFields
+        fields.merge([
+            "source": "remote_workspace_preflight",
+            "phase": phase,
+            "runtime": runtime.rawValue,
+            "diagnostic_result": AgentRuntimeLaunchPreflightResult.Status.remoteWorkspacePreflightPassed.rawValue
+        ]) { _, new in new }
+
+        guard let workspace = task.workspace else {
+            fields["result"] = "no_workspace"
+            return AgentRuntimeLaunchPreflightResult(
+                status: .remoteWorkspacePreflightPassed,
+                phase: phase,
+                reason: nil,
+                detail: nil,
+                auditFields: fields
+            )
+        }
+
+        let hasStoredConnections = SSHConnectionManager.hasStoredConnections(workspacePath: workspace.primaryPath)
+        fields["workspace_id"] = workspace.id.uuidString
+        fields["has_stored_ssh_connections"] = String(hasStoredConnections)
+        guard hasStoredConnections else {
+            fields["result"] = "no_ssh_connections"
+            return AgentRuntimeLaunchPreflightResult(
+                status: .remoteWorkspacePreflightPassed,
+                phase: phase,
+                reason: nil,
+                detail: nil,
+                auditFields: fields
+            )
+        }
+
+        let connections = SSHConnectionManager.load(workspacePath: workspace.primaryPath)
+        let names = connections.map { displayName(for: $0) }
+        let aliasNames = connections
+            .map(\.configAlias)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        fields["result"] = "ssh_connections_detected"
+        fields["ssh_connection_count"] = String(connections.count)
+        fields["ssh_connection_names"] = CapabilityAudit.compactNames(names)
+        fields["ssh_config_alias_count"] = String(aliasNames.count)
+        fields["ssh_config_aliases"] = CapabilityAudit.compactNames(aliasNames)
+        fields["provider_path_access_expected"] = "true"
+
+        AppLogger.audit(
+            .remoteWorkspacePreflight,
+            category: "Worker",
+            taskID: task.id,
+            fields: fields,
+            level: .info,
+            fieldMaxLength: 240
+        )
+
+        modelContext.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.System.info,
+            payload: remoteWorkspacePreflightMessage(
+                connectionNames: names,
+                aliasNames: aliasNames,
+                runtime: runtime
+            ),
+            run: run
+        ))
+        try? modelContext.save()
+
+        return AgentRuntimeLaunchPreflightResult(
+            status: .remoteWorkspacePreflightPassed,
+            phase: phase,
+            reason: nil,
+            detail: names.joined(separator: ", "),
+            auditFields: fields
+        )
+    }
+
+    static func preflightRemoteWorkspaceBeforeLaunch(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String,
+        runtime: AgentRuntimeID
+    ) -> Bool {
+        preflightRemoteWorkspaceBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: phase,
+            runtime: runtime
+        ).didPass
+    }
+
     static func preflightRuntimeReadinessBeforeLaunchResult(
         task: AgentTask,
         run: TaskRun,
@@ -290,13 +402,82 @@ enum AgentRuntimeLaunchPreflight {
         ).didPass
     }
 
+    static func preflightCredentialProjectionBeforeLaunchResult(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String,
+        codeDirectory: String,
+        homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
+        fileManager: FileManager = .default
+    ) -> AgentRuntimeLaunchPreflightResult {
+        let report = ExecutionEnvironmentCredentialReadinessService.evaluate(
+            task: task,
+            codeDirectory: codeDirectory,
+            homeDirectoryPath: homeDirectoryPath,
+            fileManager: fileManager
+        )
+        var fields = report.auditFields
+        fields["phase"] = phase
+        fields["runtime"] = task.resolvedRuntimeID.rawValue
+        fields["diagnostic_result"] = report.shouldBlockLaunch
+            ? AgentRuntimeLaunchPreflightResult.Status.credentialProjectionFailed.rawValue
+            : AgentRuntimeLaunchPreflightResult.Status.credentialProjectionPassed.rawValue
+        fields["result"] = report.shouldBlockLaunch ? "blocked" : "passed"
+
+        guard !report.shouldBlockLaunch else {
+            AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: fields, level: .error, fieldMaxLength: 240)
+            finishPreLaunchFailure(
+                task: task,
+                run: run,
+                modelContext: modelContext,
+                reason: TaskRunStopReason.credentialProjectionRequired.rawValue,
+                payload: report.userMessage
+            )
+            return AgentRuntimeLaunchPreflightResult(
+                status: .credentialProjectionFailed,
+                phase: phase,
+                reason: TaskRunStopReason.credentialProjectionRequired.rawValue,
+                detail: report.detail,
+                auditFields: fields
+            )
+        }
+
+        AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: fields, level: .debug, fieldMaxLength: 240)
+        return AgentRuntimeLaunchPreflightResult(
+            status: .credentialProjectionPassed,
+            phase: phase,
+            reason: nil,
+            detail: report.detail,
+            auditFields: fields
+        )
+    }
+
+    static func preflightCredentialProjectionBeforeLaunch(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String,
+        codeDirectory: String
+    ) -> Bool {
+        preflightCredentialProjectionBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: phase,
+            codeDirectory: codeDirectory
+        ).didPass
+    }
+
     static func preflightCapabilitiesBeforeLaunchResult(
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
         phase: String,
         contextText: String = "",
-        prerequisiteStatuses: [String: HealthStatus] = [:]
+        prerequisiteStatuses: [String: HealthStatus] = [:],
+        mcpDetectExecutable: (String) -> String = { RuntimePathResolver.detectExecutablePath(named: $0) },
+        mcpIsExecutableFile: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
     ) -> AgentRuntimeLaunchPreflightResult {
         let policyContext = task.workspace.map {
             CapabilityCatalogPolicyContext.workspaceUser(
@@ -315,6 +496,7 @@ enum AgentRuntimeLaunchPreflight {
             task: task,
             scope: .providerLaunch(contextText: contextText)
         )
+        fields.merge(AppBuildInfo.current.auditFields) { _, new in new }
         fields["phase"] = phase
         fields["result"] = issues.isEmpty ? "passed" : "missing_resources"
         for (key, value) in CapabilityRuntimeIntegrityService.summaryFields(for: issues) {
@@ -327,12 +509,30 @@ enum AgentRuntimeLaunchPreflight {
         let runtime = AgentRuntimeID(rawValue: task.runtimeID ?? "") ?? TaskExecutionDefaults.runtime
         let mcpIssues: [MCPRuntimeProjection.PreflightIssue]
         if AgentRuntimeAdapterRegistry.descriptor(for: runtime).supportsMCPServers {
+            var mcpServers = MCPRuntimeProjection.enabledServers(
+                for: task.workspace,
+                packages: CapabilityRuntimeResourceMatcher.packageDefinitions(),
+                approvalRecords: CapabilityApprovalStore().records()
+            )
+            let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: task)
+            if let workspaceServer = DockerWorkspaceMCPProjection.resolvedServer(
+                task: task,
+                environment: executionEnvironment,
+                currentDirectory: TaskWorkspaceAccess(task: task).effectiveWorkspacePath,
+                runID: run.id
+            ) {
+                mcpServers.append(workspaceServer)
+            }
+            if let browserServer = BrowserBridgeMCPProjection.resolvedServer(
+                for: task,
+                contextText: contextText
+            ) {
+                mcpServers.append(browserServer)
+            }
             mcpIssues = MCPRuntimeProjection.preflightIssues(
-                servers: MCPRuntimeProjection.enabledServers(
-                    for: task.workspace,
-                    packages: CapabilityRuntimeResourceMatcher.packageDefinitions(),
-                    approvalRecords: CapabilityApprovalStore().records()
-                )
+                servers: mcpServers,
+                detectExecutable: mcpDetectExecutable,
+                isExecutableFile: mcpIsExecutableFile
             )
         } else {
             mcpIssues = []
@@ -480,6 +680,32 @@ enum AgentRuntimeLaunchPreflight {
         \(check.title) check failed before the agent ran:
 
         \(check.detail)\(remediation)
+        """
+    }
+
+    private static func displayName(for connection: SSHConnection) -> String {
+        let name = connection.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty { return name }
+        let alias = connection.configAlias.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !alias.isEmpty { return alias }
+        return connection.host.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func remoteWorkspacePreflightMessage(
+        connectionNames: [String],
+        aliasNames: [String],
+        runtime: AgentRuntimeID
+    ) -> String {
+        let connectionSummary = connectionNames.isEmpty
+            ? "an SSH connection"
+            : connectionNames.joined(separator: ", ")
+        let aliasSummary = aliasNames.isEmpty
+            ? "No SSH config alias is recorded."
+            : "SSH aliases: \(aliasNames.joined(separator: ", "))."
+        return """
+        Remote workspace preflight: \(connectionSummary) is configured for this workspace. \(aliasSummary)
+
+        ASTRA will launch \(runtime.rawValue) with SSH-aware filesystem access when the provider supports it so local SSH config, SSH keys, and gcloud/IAP ProxyCommand inputs remain reachable. If the remote still cannot connect, check that the VM is running and that `gcloud auth list` and `ssh <alias> "echo connected"` work in Terminal.
         """
     }
 

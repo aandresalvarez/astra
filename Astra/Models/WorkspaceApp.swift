@@ -36,7 +36,7 @@ final class WorkspaceApp: Identifiable {
     var manifestRelativePath: String
     var appDirectoryRelativePath: String
     var manifestDigest: String
-    // Slice 3 versioning. Defaulted so they are absorbed into ASTRASchemaV7's fresh
+    // Slice 3 versioning. Defaulted so they are absorbed into ASTRASchemaV8's fresh
     // table (same pattern as WorkspaceAppRun.pendingStepIndex / awaitedTaskIDsJSON);
     // NO new @Model, NO new schema version. The on-disk versions/index.json is the
     // source of truth; these mirror it for cheap reads without a directory scan.

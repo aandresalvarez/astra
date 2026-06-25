@@ -86,6 +86,7 @@ enum AuditEvent: String, CaseIterable {
     case runtimeProgressState = "runtime.progress_state"
     case runtimeStreamDebug = "runtime.stream_debug"
     case runtimeStreamDebugSample = "runtime.stream_debug_sample"
+    case remoteWorkspacePreflight = "remote_workspace.preflight"
     case contextStateUpdated = "context.state_updated"
     case contextPromptDiagnostics = "context.prompt_diagnostics"
 
@@ -217,6 +218,7 @@ enum AuditEvent: String, CaseIterable {
     case gitActiveRepositoryChanged = "git.active_repository_changed"
     case gitChangedFileOpenedInShelf = "git.changed_file_opened_in_shelf"
     case gitChangedFileDiffViewed = "git.changed_file_diff_viewed"
+    case executionEnvironmentChanged = "execution_environment.changed"
 
     case schedulerStarted = "scheduler.started"
     case schedulerStopped = "scheduler.stopped"

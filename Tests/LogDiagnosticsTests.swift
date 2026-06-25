@@ -19,6 +19,26 @@ struct LogDiagnosticsTests {
         #expect(report.markdown.contains("No actionable issue signals were found"))
     }
 
+    @Test("Remote workspace preflight is retained as diagnostic context")
+    func remoteWorkspacePreflightNotice() {
+        let taskID = UUID(uuidString: "56D6BA0F-AF57-4D33-855F-D90F84642CA5")!
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .info,
+                category: "Worker",
+                message: "remote_workspace.preflight source=remote_workspace_preflight result=ssh_connections_detected runtime=copilot_cli app_git_commit=83768b3a1234 workspace_id=pcornet ssh_config_alias_count=1",
+                taskID: taskID
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 0))
+
+        #expect(report.issueCount == 0)
+        #expect(report.notices.count == 1)
+        #expect(report.notices.first?.title == "Remote workspace preflight was recorded")
+        #expect(report.markdown.contains("remote_workspace.preflight"))
+        #expect(report.markdown.contains("56D6BA0F"))
+        #expect(report.markdown.contains("SSH-aware launch path"))
+    }
+
     @Test("Report groups runtime failure diagnostics and redacts evidence")
     func runtimeFailureReport() {
         let taskID = UUID(uuidString: "437BF453-D7D2-48AC-B316-971AF314ADB4")!

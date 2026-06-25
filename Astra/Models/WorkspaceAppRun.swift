@@ -37,8 +37,8 @@ final class WorkspaceAppRun: Identifiable {
     // B2 resumable runs: when a pipeline/loop suspends on an async agent task,
     // `pendingActionID` is the suspended pipeline/loop action and
     // `pendingStepIndex` the next step to execute on resume. `linkedTaskID` holds
-    // the awaited task. Defaulted so it is absorbed into schema V7's fresh tables
-    // (the V6 -> V7 stage), no new schema version.
+    // the awaited task. Defaulted so it is absorbed into schema V8's fresh tables
+    // (the V7 -> V8 stage), no new schema version.
     var pendingActionID: String?
     var pendingStepIndex: Int = 0
     // B3: tokens consumed by the run's awaited agent tasks so far, accumulated on
@@ -46,13 +46,13 @@ final class WorkspaceAppRun: Identifiable {
     var consumedTokens: Int = 0
     // C1 parallel fan-out barrier: the SET of agent tasks a fanned-out run awaits,
     // stored as a JSON [UUID] string (SwiftData has no [UUID] attribute; defaulted,
-    // absorbed into V7). The single-task B2 case is the degenerate one-element
+    // absorbed into V8). The single-task B2 case is the degenerate one-element
     // barrier; linkedTaskID is retained for the single-await fast path + back-compat.
     var awaitedTaskIDsJSON: String = "[]"
     // Human-in-the-loop approval: when a pipeline suspends on an un-approved gate.humanApproval
     // step, this holds that gate action's id (pendingStepIndex points at the gate step). The run is
     // `.waiting` pending a HUMAN decision — distinct from awaiting an agent task, where this is nil.
-    // Defaulted/optional → lightweight, absorbed into V7 like the B2/C1 fields above.
+    // Defaulted/optional → lightweight, absorbed into V8 like the B2/C1 fields above.
     var pendingApprovalActionID: String?
 
     init(

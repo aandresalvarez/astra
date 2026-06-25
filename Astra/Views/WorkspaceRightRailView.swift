@@ -259,6 +259,7 @@ struct WorkspaceRightRailView: View {
     @State private var isReadyCapabilitiesExpanded = false
     @State private var isDraftCapabilitiesExpanded = false
     @State private var hasGitRepositories = false
+    @State private var hasDockerEnvironments = false
 
     private static let shortDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -463,6 +464,16 @@ struct WorkspaceRightRailView: View {
                 }
             }
 
+            if hasDockerEnvironments {
+                floatingContextSection {
+                    WorkspaceDockerSectionView(
+                        workspace: workspace,
+                        selectedTask: selectedTask,
+                        isCompact: isCompact
+                    )
+                }
+            }
+
             if leadWithCapabilities {
                 capabilityHealthPanel(snapshot)
                 floatingContextSection {
@@ -483,6 +494,7 @@ struct WorkspaceRightRailView: View {
             rebuildCapabilityRailSnapshot(for: capabilityRailSnapshotSignature)
             applyConfigureDefaults()
             checkGitRepositories()
+            checkDockerEnvironments()
         }
         .task(id: signature) {
             rebuildCapabilityRailSnapshot(for: signature)
@@ -490,6 +502,7 @@ struct WorkspaceRightRailView: View {
         .onChange(of: workspace.primaryPath) {
             loadSSHConnections()
             checkGitRepositories()
+            checkDockerEnvironments()
         }
         .onChange(of: workspace.id) {
             syncInstructionDraftFromWorkspace()
@@ -506,6 +519,10 @@ struct WorkspaceRightRailView: View {
         }
         .onChange(of: workspace.additionalPaths) {
             checkGitRepositories()
+            checkDockerEnvironments()
+        }
+        .onChange(of: workspace.activeExecutionEnvironmentJSON) {
+            checkDockerEnvironments()
         }
         .onChange(of: sshReloadTrigger) {
             loadSSHConnections()
@@ -2114,6 +2131,15 @@ struct WorkspaceRightRailView: View {
                 self.hasGitRepositories = !repos.isEmpty
             }
         }
+    }
+
+    private func checkDockerEnvironments() {
+        let candidates = DockerWorkspaceDiscoveryService.candidates(
+            primaryPath: workspace.primaryPath,
+            additionalPaths: workspace.additionalPaths
+        )
+        let active = ExecutionEnvironmentStore.decode(workspace.activeExecutionEnvironmentJSON)
+        hasDockerEnvironments = active.isContainerized || !candidates.isEmpty
     }
 
     private var workspaceDisclosureID: String {

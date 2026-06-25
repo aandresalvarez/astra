@@ -76,11 +76,57 @@ final class AgentRuntimeProcessRunner {
         adapter: any AgentRuntimeProcessLaunchPlanning & AgentRuntimeProcessEventParsing,
         context: AgentRuntimeProcessLaunchContext
     ) -> SandboxedPlanOutcome {
-        let plan = adapter.makeProcessLaunchPlan(context: context)
+        var plan = adapter.makeProcessLaunchPlan(context: context)
+        let environment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
+        if environment.workspaceCommandsRunInsideContainer,
+           (!DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: plan.runtime)
+            || plan.commandPlannedFields["docker_workspace_executor_supported"] == "false") {
+            let detail = plan.commandPlannedFields["docker_workspace_executor_unsupported_detail"]?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let message = detail?.isEmpty == false
+                ? detail!
+                : "\(plan.runtime.displayName) cannot yet route workspace shell commands through ASTRA's Docker executor. Switch this task to Claude Code or choose Host execution, then retry."
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.task.id, fields: [
+                "runtime": plan.runtime.rawValue,
+                "reason": "docker_workspace_executor_unsupported_runtime",
+                "execution_environment": environment.kind.rawValue,
+                "provider_placement": environment.effectiveProviderPlacement.rawValue,
+                "detail": detail ?? ""
+            ], level: .error)
+            return .blocked(AgentProcessResult(
+                exitCode: -1,
+                error: message,
+                runtimeStopReason: "docker_workspace_executor_unsupported_runtime",
+                runtimeStopMessage: message
+            ))
+        }
+        switch DockerExecutionPlanner.plan(
+            base: plan,
+            environment: environment,
+            task: context.task,
+            runID: context.runID
+        ) {
+        case .success(let resolvedPlan):
+            plan = resolvedPlan
+        case .failure(let error):
+            let message = error.localizedDescription
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.task.id, fields: [
+                "runtime": plan.runtime.rawValue,
+                "reason": "execution_environment_unavailable",
+                "execution_environment": environment.kind.rawValue,
+                "detail": message
+            ], level: .error)
+            return .blocked(AgentProcessResult(
+                exitCode: -1,
+                error: message,
+                runtimeStopReason: "execution_environment_unavailable",
+                runtimeStopMessage: message
+            ))
+        }
         if let block = BrowserBridgeRuntimeLaunchGuard.launchBlock(for: plan) {
             AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.task.id, fields: [
                 "runtime": plan.runtime.rawValue,
-                "reason": block.runtimeStopReason ?? BrowserBridgeRuntimeLaunchGuard.missingShellToolReason,
+                "reason": block.runtimeStopReason ?? BrowserBridgeRuntimeLaunchGuard.missingBrowserControlToolReason,
                 "source": "runtime_launch_preflight",
                 "has_browser_bridge": "true"
             ], level: .error)
@@ -92,6 +138,15 @@ final class AgentRuntimeProcessRunner {
         // resolves the sandbox tier.
         let effectivePermissionPolicy = context.executionPolicy.permissionPolicyOverride ?? context.permissionPolicy
         let settings = sandboxSettingsProvider(effectivePermissionPolicy)
+        if plan.executionEnvironment.providerRunsInsideContainer {
+            AppLogger.audit(.sandboxSkipped, category: "Worker", taskID: context.task.id, fields: [
+                "runtime": plan.runtime.rawValue,
+                "reason": "container_environment_uses_docker_policy",
+                "execution_environment": plan.executionEnvironment.kind.rawValue,
+                "provider_placement": plan.executionEnvironment.effectiveProviderPlacement.rawValue
+            ], level: .debug)
+            return .plan(plan)
+        }
         // Multi-path workspaces: the agent is granted the workspace's additional
         // paths + input dirs (same set passed to providers via `--add-dir` and
         // honored by the in-band policy guard), so include them in the sandbox's
@@ -296,7 +351,9 @@ final class AgentRuntimeProcessRunner {
                 idleTimeoutSeconds: timeoutSeconds,
                 noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
                 taskID: task.id,
-                policyGuard: permissionManifest.map(AgentRuntimePolicyGuard.init),
+                policyGuard: permissionManifest.map {
+                    AgentRuntimePolicyGuard(manifest: $0, pathMapper: plan.pathMapper)
+                },
                 liveApprovalsActive: plan.interactiveAsk != nil
             )
 
@@ -372,6 +429,21 @@ final class AgentRuntimeProcessRunner {
                     _ = monitor.processEvent(filtered, process: process)
                 }
                 let error = errorOutput.value
+                let dockerFailure = DockerRuntimeFailureDiagnostics.diagnose(
+                    exitCode: Int(proc.terminationStatus),
+                    error: error,
+                    plan: plan
+                )
+                if let dockerFailure {
+                    AppLogger.audit(
+                        .runtimeFailureDiagnostic,
+                        category: "Worker",
+                        taskID: taskID,
+                        fields: dockerFailure.auditFields,
+                        level: .error,
+                        fieldMaxLength: 900
+                    )
+                }
                 Self.cleanupBrowserToolShim(at: plan.browserShimDirectory, taskID: taskID)
                 resumeOnce(AgentProcessResult(
                     exitCode: Int(proc.terminationStatus),
@@ -381,8 +453,8 @@ final class AgentRuntimeProcessRunner {
                     policyViolationMessage: monitor.policyViolationMessage,
                     policyApprovalRequired: monitor.policyApprovalRequired,
                     policyApprovalMessage: monitor.policyApprovalMessage,
-                    runtimeStopReason: monitor.runtimeStopReason,
-                    runtimeStopMessage: monitor.runtimeStopMessage,
+                    runtimeStopReason: dockerFailure?.stopReason ?? monitor.runtimeStopReason,
+                    runtimeStopMessage: dockerFailure?.message ?? monitor.runtimeStopMessage,
                     budgetExceeded: monitor.budgetExceeded,
                     budgetWarning: monitor.budgetWarning,
                     finalReportedBudgetExceededAfterCompletion: monitor.finalReportedBudgetExceededAfterCompletion,

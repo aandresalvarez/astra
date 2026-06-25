@@ -534,6 +534,14 @@ final class AgentRuntimeWorker {
             return
         }
 
+        _ = AgentRuntimeLaunchPreflight.preflightRemoteWorkspaceBeforeLaunch(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: auditPhase,
+            runtime: selectedRuntime
+        )
+
         let codeDir = TaskWorkspaceAccess(task: task).codeWorkingDirectory
         var isDir: ObjCBool = false
         let workspaceExists = FileManager.default.fileExists(atPath: codeDir, isDirectory: &isDir) && isDir.boolValue
@@ -552,6 +560,17 @@ final class AgentRuntimeWorker {
             let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error,
                 payload: "Workspace directory not found: \(codeDir)", run: run)
             modelContext.insert(event)
+            isRunning = false
+            return
+        }
+
+        guard AgentRuntimeLaunchPreflight.preflightCredentialProjectionBeforeLaunch(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: auditPhase,
+            codeDirectory: codeDir
+        ) else {
             isRunning = false
             return
         }
@@ -588,6 +607,14 @@ final class AgentRuntimeWorker {
             executionPath = codeDir
             shouldCleanupIsolation = false
         }
+
+        let executionEnvironment = DockerExecutionPlanner.snapshotForRun(
+            task: task,
+            currentDirectory: executionPath
+        )
+        let executionEnvironmentJSON = ExecutionEnvironmentStore.encode(executionEnvironment)
+        task.executionEnvironmentSnapshotJSON = executionEnvironmentJSON
+        run.executionEnvironmentSnapshotJSON = executionEnvironmentJSON
 
         let prompt = promptOverride ?? buildPrompt(for: task)
         logContextPromptDiagnostics(for: task, prompt: prompt, phase: auditPhase)
@@ -1402,8 +1429,10 @@ final class AgentRuntimeWorker {
         nextTask.status = .queued
         nextTask.chainedFromID = task.id
         nextTask.runtimeID = task.runtimeID
-        // A chained follow-up continues in the same checkout as its parent.
+        // A chained follow-up continues in the same checkout and execution
+        // environment as its parent.
         nextTask.executionRootPath = task.executionRootPath
+        nextTask.executionEnvironmentSnapshotJSON = task.executionEnvironmentSnapshotJSON
         if !output.isEmpty {
             nextTask.inputs = ["Previous task output (\(task.title)):\n\(String(output.prefix(5000)))"]
         }
@@ -1628,6 +1657,7 @@ final class AgentRuntimeWorker {
         let mcpServerIDs: [String]
         let browserAdapters: [String]
         let promptSchemaVersion: String
+        let executionEnvironmentFingerprint: String?
 
         var signatureValue: String {
             [
@@ -1655,7 +1685,8 @@ final class AgentRuntimeWorker {
                 "credentials=\(credentialLabels.joined(separator: ","))",
                 "mcp=\(mcpServerIDs.joined(separator: ","))",
                 "browserAdapters=\(browserAdapters.joined(separator: ","))",
-                "prompt=\(promptSchemaVersion)"
+                "prompt=\(promptSchemaVersion)",
+                "environment=\(executionEnvironmentFingerprint ?? WorkspaceExecutionEnvironment.host.signatureFingerprint)"
             ].joined(separator: "\u{1f}")
         }
     }
@@ -1804,7 +1835,8 @@ final class AgentRuntimeWorker {
             credentialLabels: canonicalStrings(manifest.credentialLabels),
             mcpServerIDs: canonicalStrings(manifest.mcpServers.map { "\($0.packageID):\($0.id)" }),
             browserAdapters: canonicalStrings(scope.enabledBrowserAdapters),
-            promptSchemaVersion: "context_capsule_v2"
+            promptSchemaVersion: "context_capsule_v2",
+            executionEnvironmentFingerprint: DockerExecutionPlanner.resolveEnvironment(for: task).signatureFingerprint
         )
     }
 
@@ -1917,6 +1949,9 @@ final class AgentRuntimeWorker {
 
     private static func isTerminalRuntimeStop(_ reason: String) -> Bool {
         guard let stopReason = TaskRunStopReason(rawValue: reason) else { return false }
+        if stopReason.isDockerRuntimeBlocked {
+            return true
+        }
         return [
             .providerPermissionDeniedBroadPermissions,
             .providerPermissionUnresumable,
