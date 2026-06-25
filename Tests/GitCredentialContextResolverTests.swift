@@ -202,6 +202,36 @@ struct GitCredentialContextResolverTests {
         #expect(!context.readablePaths.contains(unmatched.path))
     }
 
+    @Test("includeIf gitdir trailing slash preserves directory boundary")
+    func includeIfGitdirTrailingSlashPreservesDirectoryBoundary() throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        let matchingParent = root.appendingPathComponent("matching", isDirectory: true)
+        let siblingParent = root.appendingPathComponent("matching-other", isDirectory: true)
+        let repo = siblingParent.appendingPathComponent("repo", isDirectory: true)
+        let git = repo.appendingPathComponent(".git", isDirectory: true)
+        try FileManager.default.createDirectory(at: git, withIntermediateDirectories: true)
+
+        let matching = home.appendingPathComponent("matching.gitconfig")
+        try write("""
+        [includeIf "gitdir:\(matchingParent.path)/"]
+            path = ~/matching.gitconfig
+        """, to: home.appendingPathComponent(".gitconfig"))
+        try write("[credential]\nhelper = osxkeychain\n", to: matching)
+        try write("""
+        [remote "origin"]
+            url = https://github.com/susom/astra.git
+        """, to: git.appendingPathComponent("config"))
+
+        let context = GitCredentialContextResolver.sandboxContext(
+            repositoryPath: repo.path,
+            homeDirectory: home.path
+        )
+
+        #expect(!context.readablePaths.contains(matching.path))
+    }
+
     @Test("Network Git intent detection handles commands and plain English")
     func gitNetworkIntentDetection() {
         let task = AgentTask(title: "Sync", goal: "Please pull from GitHub before editing.")
