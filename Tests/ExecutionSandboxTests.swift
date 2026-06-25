@@ -18,7 +18,9 @@ struct ExecutionSandboxTests {
         directoriesToCreate: [String] = [],
         sandboxReadablePaths: [String] = [],
         sandboxProtectedWriteDenyPaths: [String] = [],
-        commandPlannedFields: [String: String] = [:]
+        commandPlannedFields: [String: String] = [:],
+        pathMapper: ExecutionEnvironmentPathMapper? = nil,
+        executionEnvironment: WorkspaceExecutionEnvironment = .host
     ) -> AgentRuntimeProcessLaunchPlan {
         AgentRuntimeProcessLaunchPlan(
             runtime: runtime,
@@ -33,7 +35,9 @@ struct ExecutionSandboxTests {
             sandboxReadablePaths: sandboxReadablePaths,
             sandboxProtectedWriteDenyPaths: sandboxProtectedWriteDenyPaths,
             providerDetectedFields: [:],
-            commandPlannedFields: commandPlannedFields
+            commandPlannedFields: commandPlannedFields,
+            pathMapper: pathMapper,
+            executionEnvironment: executionEnvironment
         )
     }
 
@@ -197,7 +201,7 @@ struct ExecutionSandboxTests {
 
     // MARK: - Writable roots
 
-    @Test("Writable roots include workspace, provider home, and temp; deduped")
+    @Test("Writable roots include workspace, temp, and narrow inherited HOME provider state")
     func writableRoots() {
         let plan = makePlan(
             currentDirectory: "/tmp/astra-workspace",
@@ -213,12 +217,14 @@ struct ExecutionSandboxTests {
         #expect(roots.contains(workspace))
         #expect(roots.contains("/private/tmp/astra-workspace/.astra/tasks/ab"))
         #expect(roots.contains("/private/tmp/astra-home/.claude"))
+        #expect(!roots.contains("/private/tmp/astra-home"))
+        #expect(!roots.contains("/private/tmp/astra-home/.cache"))
         #expect(roots.contains("/private/tmp")) // TMPDIR + "/tmp" both canonicalize here
         // No duplicates.
         #expect(roots.count == Set(roots).count)
     }
 
-    @Test("Provider state roots include Claude application support")
+    @Test("Readable and narrow writable provider state can use HOME without granting HOME")
     func providerStateRootsIncludeClaudeApplicationSupport() {
         let plan = makePlan(
             runtime: .claudeCode,
@@ -238,7 +244,112 @@ struct ExecutionSandboxTests {
         )
 
         #expect(readableRoots.contains("/private/tmp/astra-home/Library/Application Support/Claude"))
+        #expect(writableRoots.contains("/private/tmp/astra-home/.claude"))
+        #expect(writableRoots.contains("/private/tmp/astra-home/.claude.json"))
         #expect(writableRoots.contains("/private/tmp/astra-home/Library/Application Support/Claude"))
+        #expect(!writableRoots.contains("/private/tmp/astra-home"))
+        #expect(!writableRoots.contains("/private/tmp/astra-home/.config"))
+    }
+
+    @Test("Claude Bash session env parent is writable without granting HOME")
+    func claudeSessionEnvParentIsWritableFromLaunchHome() {
+        let plan = makePlan(
+            runtime: .claudeCode,
+            currentDirectory: "/tmp/astra-workspace",
+            environment: ["HOME": "/tmp/astra-home", "TMPDIR": "/tmp"]
+        )
+        let workspace = ExecutionSandbox.canonicalize(plan.currentDirectory)!
+        let roots = ExecutionSandbox.writableRoots(
+            plan: plan,
+            providerHomeDirectory: "",
+            canonicalWorkspace: workspace
+        )
+
+        #expect(roots.contains("/private/tmp/astra-home/.claude"))
+        #expect(!roots.contains("/private/tmp/astra-home"))
+    }
+
+    @Test("Registered runtime home-state contracts drive inherited HOME writable roots")
+    func registeredRuntimeHomeStateContractsDriveWritableRoots() throws {
+        let expectedInherited: [AgentRuntimeID: [String]] = [
+            .claudeCode: [".claude", ".claude.json", "Library/Application Support/Claude"],
+            .copilotCLI: [".copilot", "Library/Caches/copilot"],
+            .antigravityCLI: [".antigravity", ".gemini"],
+            .codexCLI: [".codex"],
+            .cursorCLI: [".cursor"],
+            .openCodeCLI: [".config/opencode", ".cache/opencode", ".local/share/opencode", ".local/state/opencode"]
+        ]
+
+        #expect(Set(expectedInherited.keys) == Set(AgentRuntimeAdapterRegistry.runtimeIDs))
+        for runtime in AgentRuntimeAdapterRegistry.runtimeIDs {
+            let home = "/tmp/astra-home-\(runtime.rawValue)"
+            let plan = makePlan(
+                runtime: runtime,
+                currentDirectory: "/tmp/astra-workspace-\(runtime.rawValue)",
+                environment: ["HOME": home, "TMPDIR": "/tmp"]
+            )
+            let workspace = ExecutionSandbox.canonicalize(plan.currentDirectory)!
+            let roots = ExecutionSandbox.writableRoots(
+                plan: plan,
+                providerHomeDirectory: "",
+                canonicalWorkspace: workspace
+            )
+
+            #expect(!roots.contains("/private\(home)"))
+            #expect(!roots.contains("/private\(home)/.cache"))
+            #expect(!roots.contains("/private\(home)/.config"))
+            for relativePath in try #require(expectedInherited[runtime]) {
+                #expect(roots.contains("/private\(home)/\(relativePath)"))
+            }
+        }
+    }
+
+    @Test("Sandbox wrapping preserves execution environment metadata")
+    func sandboxWrappingPreservesExecutionEnvironmentMetadata() throws {
+        let mount = ExecutionEnvironmentMount(
+            hostPath: "/tmp/astra-workspace",
+            containerPath: "/workspace",
+            access: .readWrite,
+            role: .workspace
+        )
+        let mapper = ExecutionEnvironmentPathMapper(mounts: [mount])
+        let environment = WorkspaceExecutionEnvironment(
+            id: "test-docker-image",
+            kind: .dockerImage,
+            displayName: "Test Docker Image",
+            image: "astra-test:latest",
+            providerPlacement: .host,
+            mounts: [mount]
+        )
+        let plan = makePlan(
+            runtime: .claudeCode,
+            executablePath: "/bin/echo",
+            currentDirectory: "/tmp/astra-workspace",
+            environment: ["HOME": "/tmp/astra-home", "TMPDIR": "/tmp"],
+            commandPlannedFields: ["workspace_executor": "docker"],
+            pathMapper: mapper,
+            executionEnvironment: environment
+        )
+
+        let decision = ExecutionSandbox.decide(
+            plan: plan,
+            providerHomeDirectory: "",
+            settings: ExecutionSandboxSettings(
+                enforcement: .strict,
+                wrappedRuntimes: [.claudeCode],
+                allowNetwork: true,
+                readScope: .audit
+            )
+        )
+
+        guard case .applied(let wrapped, _) = decision else {
+            Issue.record("Expected sandbox to wrap the Docker-host-provider launch plan")
+            return
+        }
+        #expect(wrapped.pathMapper == mapper)
+        #expect(wrapped.executionEnvironment == environment)
+        #expect(wrapped.sandboxHomeStateAccess == plan.sandboxHomeStateAccess)
+        #expect(wrapped.commandPlannedFields["workspace_executor"] == "docker")
     }
 
     @Test("Copilot provider state roots omit Claude application support")
@@ -289,6 +400,40 @@ struct ExecutionSandboxTests {
         #expect(!readableRoots.contains(keychains))
     }
 
+    @Test("Claude Vertex ADC readable roots grant gcloud credentials without home")
+    func claudeVertexADCReadableRootsGrantGcloudCredentialsWithoutHome() {
+        let userHome = "/tmp/astra-claude-user-\(UUID().uuidString)"
+        let plan = makePlan(
+            runtime: .claudeCode,
+            currentDirectory: "/tmp/astra-workspace",
+            environment: ["HOME": userHome, "TMPDIR": "/tmp"],
+            sandboxReadablePaths: ClaudeCodeRuntime.vertexADCReadablePaths(
+                isVertexEnabled: true,
+                userHome: userHome
+            )
+        )
+        let workspace = ExecutionSandbox.canonicalize(plan.currentDirectory)!
+        let readableRoots = ExecutionSandbox.readableRoots(
+            plan: plan,
+            providerHomeDirectory: "",
+            canonicalWorkspace: workspace
+        )
+        let gcloudConfig = (userHome as NSString).appendingPathComponent(".config/gcloud")
+        let adcFile = (gcloudConfig as NSString).appendingPathComponent("application_default_credentials.json")
+
+        #expect(readableRoots.contains(gcloudConfig))
+        #expect(readableRoots.contains(adcFile))
+        #expect(!readableRoots.contains(userHome))
+        #expect(!readableRoots.contains((userHome as NSString).appendingPathComponent(".config")))
+    }
+
+    @Test("Claude Vertex ADC readable roots are disabled outside Vertex")
+    func claudeVertexADCReadableRootsAreDisabledOutsideVertex() {
+        let userHome = "/tmp/astra-claude-user-\(UUID().uuidString)"
+
+        #expect(ClaudeCodeRuntime.vertexADCReadablePaths(isVertexEnabled: false, userHome: userHome).isEmpty)
+    }
+
     @Test("Readable roots include explicit roots, provider state, and system toolchain roots")
     func readableRoots() {
         let plan = makePlan(
@@ -314,6 +459,12 @@ struct ExecutionSandboxTests {
         #expect(roots.contains("/System"))
         #expect(roots.contains("/usr"))
         #expect(roots.contains("/opt/homebrew"))
+        #expect(roots.contains("/Library/Frameworks"))
+        #expect(roots.contains("/Library/Managed Preferences"))
+        #expect(roots.contains("/Library/Preferences"))
+        #expect(roots.contains { $0.hasPrefix("/Applications/Xcode") && $0.hasSuffix(".app") })
+        #expect(roots.contains("/private/var/select"))
+        #expect(roots.contains("/var/select"))
         #expect(!roots.contains("/Applications"))
         #expect(roots.count == Set(roots).count)
     }
@@ -330,6 +481,53 @@ struct ExecutionSandboxTests {
         #expect(roots.contains("/opt/homebrew/bin"))
         #expect(!roots.contains("/"))
         #expect(roots.count == Set(roots).count)
+    }
+
+    @Test("Readable metadata roots include visible var spelling for private var runtime roots")
+    func readableMetadataRootsIncludeVisibleVarSpellingForPrivateVarRuntimeRoots() {
+        let roots = ExecutionSandbox.readableMetadataRoots(for: ["/private/var/run"])
+
+        #expect(roots.contains("/private/var/run"))
+        #expect(roots.contains("/private/var"))
+        #expect(roots.contains("/var/run"))
+        #expect(roots.contains("/var"))
+        #expect(roots.count == Set(roots).count)
+    }
+
+    @Test("Write-only SSH parent does not become a readable root")
+    func writeOnlySSHParentDoesNotBecomeReadableRoot() {
+        let workspace = "/tmp/astra-workspace"
+        let sshDirectory = "/tmp/astra-home/.ssh"
+        let sshConfig = "\(sshDirectory)/config"
+        let identityFile = "\(sshDirectory)/google_compute_engine"
+        let knownHosts = "\(sshDirectory)/known_hosts"
+        let plan = makePlan(
+            runtime: .claudeCode,
+            executablePath: "/bin/sh",
+            currentDirectory: workspace,
+            sandboxReadablePaths: [sshConfig, identityFile, knownHosts]
+        )
+        let canonicalWorkspace = ExecutionSandbox.canonicalize(workspace)!
+
+        let readable = ExecutionSandbox.readableRoots(
+            plan: plan,
+            providerHomeDirectory: "",
+            additionalReadablePaths: [sshConfig, identityFile, knownHosts],
+            canonicalWorkspace: canonicalWorkspace
+        )
+        let writable = ExecutionSandbox.writableRoots(
+            plan: plan,
+            providerHomeDirectory: "",
+            additionalWritablePaths: [sshDirectory, knownHosts],
+            canonicalWorkspace: canonicalWorkspace
+        )
+
+        #expect(writable.contains("/private/tmp/astra-home/.ssh"))
+        #expect(writable.contains("/private/tmp/astra-home/.ssh/known_hosts"))
+        #expect(readable.contains("/private/tmp/astra-home/.ssh/config"))
+        #expect(readable.contains("/private/tmp/astra-home/.ssh/google_compute_engine"))
+        #expect(readable.contains("/private/tmp/astra-home/.ssh/known_hosts"))
+        #expect(!readable.contains("/private/tmp/astra-home/.ssh"))
     }
 
     @Test("Strict read-scope starts the Homebrew Copilot CLI under sandbox")
@@ -773,6 +971,7 @@ struct ExecutionSandboxTests {
         #expect(base.readScope == .audit)
         #expect(base.shouldWrap(runtime: .claudeCode))
         #expect(base.shouldWrap(runtime: .copilotCLI))
+        #expect(base.shouldWrap(runtime: .openCodeCLI))
         #expect(!base.shouldWrap(runtime: .codexCLI))
 
         // Autonomous escalates best-effort to strict AND force-wraps the
@@ -800,6 +999,7 @@ struct ExecutionSandboxTests {
         #expect(custom.shouldWrap(runtime: .codexCLI))
         #expect(custom.shouldWrap(runtime: .cursorCLI))
         #expect(custom.shouldWrap(runtime: .antigravityCLI))
+        #expect(custom.shouldWrap(runtime: .openCodeCLI))
 
         // Off disables wrapping for every runtime.
         defaults.set(ExecutionSandboxEnforcement.off.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
@@ -808,6 +1008,7 @@ struct ExecutionSandboxTests {
         #expect(off.readScope == .open)
         #expect(!off.shouldWrap(runtime: .claudeCode))
         #expect(!off.shouldWrap(runtime: .codexCLI))
+        #expect(!off.shouldWrap(runtime: .openCodeCLI))
     }
 
     @Test("Offline settings produce a network-denying profile via decide")
@@ -1461,7 +1662,7 @@ struct ExecutionSandboxTests {
 
     // MARK: - Writable roots edge cases
 
-    @Test("effectiveHome precedence: provider home > env HOME > process home")
+    @Test("Writable provider state uses explicit provider home first and never falls back to process home")
     func writableRootsEffectiveHomePrecedence() {
         let ws = ExecutionSandbox.canonicalize("/tmp/ws")!
         let planEnvHome = makePlan(environment: ["HOME": "/tmp/envhome"])
@@ -1473,20 +1674,26 @@ struct ExecutionSandboxTests {
         #expect(withProvider.contains("/private/tmp/providerhome/.claude"))
         #expect(!withProvider.contains("/private/tmp/envhome/.claude"))
 
-        // Env HOME used when there is no provider home.
+        // Env HOME can provide narrow provider-owned state, but it must not
+        // become a writable root itself.
         let envOnly = ExecutionSandbox.writableRoots(
             plan: planEnvHome, providerHomeDirectory: "", canonicalWorkspace: ws
         )
         #expect(envOnly.contains("/private/tmp/envhome/.claude"))
+        #expect(!envOnly.contains("/private/tmp/envhome"))
+        #expect(!envOnly.contains("/private/tmp/envhome/.cache"))
+        #expect(ExecutionSandbox.effectiveHome(plan: planEnvHome, providerHomeDirectory: "") == "/tmp/envhome")
 
-        // Process home (NSHomeDirectory) when neither is set.
+        // No process home fallback when neither is set.
         let planNoHome = makePlan(environment: [:])
         let processHome = ExecutionSandbox.writableRoots(
             plan: planNoHome, providerHomeDirectory: "", canonicalWorkspace: ws
         )
-        let expected = ExecutionSandbox.canonicalize((NSHomeDirectory() as NSString).appendingPathComponent(".claude"))
-        #expect(expected != nil)
-        if let expected { #expect(processHome.contains(expected)) }
+        let processHomeDotClaude = ExecutionSandbox.canonicalize((NSHomeDirectory() as NSString).appendingPathComponent(".claude"))
+        if let processHomeDotClaude {
+            #expect(!processHome.contains(processHomeDotClaude))
+        }
+        #expect(ExecutionSandbox.effectiveHome(plan: planNoHome, providerHomeDirectory: "") == "")
     }
 
     @Test("/private/tmp is always a writable root, even with no TMPDIR set")
@@ -1594,7 +1801,7 @@ struct ExecutionSandboxTests {
 
     @Test("shouldWrap matrix: only no-native-sandbox runtimes wrap, and never when off")
     func settingsShouldWrapMatrix() {
-        let all: [AgentRuntimeID] = [.claudeCode, .copilotCLI, .codexCLI, .cursorCLI, .antigravityCLI]
+        let all: [AgentRuntimeID] = AgentRuntimeAdapterRegistry.runtimeIDs
         let wrappedByDefault: Set<AgentRuntimeID> = ExecutionSandboxSettings.defaultWrappedRuntimes
         for enforcement in [ExecutionSandboxEnforcement.off, .bestEffort, .strict] {
             let settings = ExecutionSandboxSettings(enforcement: enforcement) // no layering

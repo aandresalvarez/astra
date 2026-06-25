@@ -105,6 +105,9 @@ enum TaskGeneratedFiles {
         if rel == "diagnostics" || rel.hasPrefix("diagnostics/") {
             return false
         }
+        if rel == "run_resource_manifest.json" {
+            return false
+        }
         if rel == "fork_sources/history" || rel.hasPrefix("fork_sources/history/") {
             return false
         }

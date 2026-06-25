@@ -237,9 +237,12 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
             workspacePath: context.workspacePath,
             runID: context.runID,
             executionEnvironment: executionEnvironment,
-            contextText: context.contextText
+            contextText: context.contextText,
+            taskEnvironment: taskEnv
         )
-        let launchTaskEnv = taskEnv.merging(mcpProjection.workspaceExecutorEnvironment) { current, _ in current }
+        let launchTaskEnv = taskEnv
+            .merging(mcpProjection.workspaceExecutorEnvironment) { current, _ in current }
+            .merging(mcpProjection.hostControlEnvironment) { current, _ in current }
         let plan = CodexCLIRuntime.buildCommand(
             executablePath: executable,
             prompt: context.prompt,
@@ -311,6 +314,9 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "docker_workspace_executor_unsupported_detail": mcpProjection.dockerWorkspaceUnsupportedDetail,
                 "docker_workspace_tool": DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment) ? DockerWorkspaceMCPProjection.providerToolPermission : "none",
                 "docker_workspace_mcp_env_key_count": String(mcpProjection.workspaceExecutorEnvironment.count),
+                "host_control_plane_tool_count": String(HostControlPlaneMCPProjection.toolNames.count),
+                "host_control_plane_supported": String(mcpProjection.hostControlPlaneSupported),
+                "host_control_plane_mcp_env_key_count": String(mcpProjection.hostControlEnvironment.count),
                 "docker_workspace_container_env_key_count": String(DockerExecutionPlanner.credentialProjectionEnvironment(environment: executionEnvironment).count),
                 "docker_workspace_credential_projection_count": String(executionEnvironment.effectiveCredentialProjections.count),
                 "browser_bridge_mcp_tool": mcpProjection.browserBridgeMCPToolSupported ? BrowserBridgeMCPProjection.providerToolPermission : "none"

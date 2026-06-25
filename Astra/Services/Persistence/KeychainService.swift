@@ -17,6 +17,10 @@ enum KeychainService {
         "\(AppChannel.current.keychainConnectorPrefix)-\(connectorID.uuidString)"
     }
 
+    private static func connectorServices(for connector: Connector) -> [String] {
+        KeychainSecretStore.connectorEntityIDs(for: connector)
+    }
+
     private static func skillService(for skillID: UUID) -> String {
         "\(AppChannel.current.keychainSkillPrefix)-\(skillID.uuidString)"
     }
@@ -38,6 +42,31 @@ enum KeychainService {
             ], level: .warning)
         }
         return saved
+    }
+
+    /// Save or update a credential value for a connector in every supported
+    /// connector namespace. The UUID namespace preserves compatibility with
+    /// existing rows; the stable namespace lets equivalent recreated connectors
+    /// reuse user-entered secrets without another prompt.
+    @discardableResult
+    static func save(key: String, value: String, connector: Connector, label: String? = nil) -> Bool {
+        let services = connectorServices(for: connector)
+        let saved = services.map { service in
+            AstraSecureKeychainStore.save(
+                service: service,
+                account: key,
+                value: value,
+                label: label ?? "Astra connector credential"
+            )
+        }
+        let ok = saved.allSatisfy { $0 }
+        if !ok {
+            AppLogger.audit(.keychainSaveFailed, category: "Keychain", fields: [
+                "scope": "connector",
+                "namespace_count": String(services.count)
+            ], level: .warning)
+        }
+        return ok
     }
 
     /// Save or update a credential value for a skill-owned secret.
@@ -64,6 +93,18 @@ enum KeychainService {
         AstraSecureKeychainStore.load(service: connectorService(for: connectorID), account: key)
     }
 
+    /// Load a credential value for a connector from the first namespace that
+    /// contains it. UUID wins over stable so user edits to a specific connector
+    /// can override shared stable defaults.
+    static func load(key: String, connector: Connector) -> String? {
+        for service in connectorServices(for: connector) {
+            if let value = AstraSecureKeychainStore.load(service: service, account: key) {
+                return value
+            }
+        }
+        return nil
+    }
+
     /// Load a credential value for a skill-owned secret.
     static func load(key: String, skillID: UUID) -> String? {
         AstraSecureKeychainStore.load(service: skillService(for: skillID), account: key)
@@ -80,6 +121,17 @@ enum KeychainService {
         return result
     }
 
+    /// Load all credential values for a connector, given the key names.
+    static func loadAll(keys: [String], connector: Connector) -> [String: String] {
+        var result: [String: String] = [:]
+        for key in keys {
+            if let value = load(key: key, connector: connector) {
+                result[key] = value
+            }
+        }
+        return result
+    }
+
     // MARK: - Delete
 
     /// Delete a single credential for a connector.
@@ -89,6 +141,23 @@ enum KeychainService {
         if !ok {
             AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
                 "scope": "connector"
+            ], level: .warning)
+        }
+        return ok
+    }
+
+    /// Delete a single credential from every namespace owned by a connector.
+    @discardableResult
+    static func delete(key: String, connector: Connector) -> Bool {
+        let services = connectorServices(for: connector)
+        let deleted = services.map { service in
+            AstraSecureKeychainStore.delete(service: service, account: key)
+        }
+        let ok = deleted.contains(true)
+        if !ok {
+            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                "scope": "connector",
+                "namespace_count": String(services.count)
             ], level: .warning)
         }
         return ok
@@ -116,6 +185,18 @@ enum KeychainService {
         }
     }
 
+    /// Delete all credentials for a connector from every supported namespace.
+    static func deleteAll(connector: Connector) {
+        let services = connectorServices(for: connector)
+        let deleted = services.map { AstraSecureKeychainStore.deleteAll(service: $0) }
+        if !deleted.contains(true) {
+            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                "scope": "connector_all",
+                "namespace_count": String(services.count)
+            ], level: .warning)
+        }
+    }
+
     /// Delete all credentials for a skill.
     static func deleteAll(skillID: UUID) {
         let ok = AstraSecureKeychainStore.deleteAll(service: skillService(for: skillID))
@@ -136,11 +217,27 @@ enum KeychainService {
         }
     }
 
+    /// Save multiple credential key-value pairs for a connector in every
+    /// supported namespace.
+    static func saveAll(credentials: [String: String], connector: Connector, connectorName: String = "") {
+        let label = connectorName.isEmpty ? nil : "Astra: \(connectorName)"
+        for (key, value) in credentials {
+            save(key: key, value: value, connector: connector, label: label)
+        }
+    }
+
     // MARK: - Check
 
     /// Check if a credential exists in the keychain (without reading the value).
     static func exists(key: String, connectorID: UUID) -> Bool {
         AstraSecureKeychainStore.exists(service: connectorService(for: connectorID), account: key)
+    }
+
+    /// Check if a connector credential exists in any supported namespace.
+    static func exists(key: String, connector: Connector) -> Bool {
+        connectorServices(for: connector).contains { service in
+            AstraSecureKeychainStore.exists(service: service, account: key)
+        }
     }
 
     /// Check if a skill-owned secret exists in the keychain (without reading the value).
@@ -157,9 +254,32 @@ enum KeychainService {
         migrate(service: connectorService(for: connectorID), scope: "connector")
     }
 
+    /// Move legacy login-keychain items for every namespace this connector can
+    /// use, then copy any found declared credentials across all namespaces.
+    static func migrateConnectorFromLoginKeychain(connector: Connector) {
+        for service in connectorServices(for: connector) {
+            migrate(service: service, scope: "connector")
+        }
+        synchronizeConnectorCredentialNamespaces(connector: connector)
+    }
+
     /// Move any of this skill's secrets out of the login keychain. Idempotent.
     static func migrateSkillFromLoginKeychain(skillID: UUID) {
         migrate(service: skillService(for: skillID), scope: "skill")
+    }
+
+    /// If a declared connector credential exists in one namespace, backfill it
+    /// into every namespace so future connector re-imports do not need the
+    /// user to re-enter the same secret.
+    static func synchronizeConnectorCredentialNamespaces(connector: Connector) {
+        let label = connector.name.isEmpty ? nil : "Astra: \(connector.name)"
+        for key in connector.credentialKeys {
+            guard let value = load(key: key, connector: connector),
+                  !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                continue
+            }
+            save(key: key, value: value, connector: connector, label: label)
+        }
     }
 
     private static func migrate(service: String, scope: String) {

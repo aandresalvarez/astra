@@ -5,8 +5,10 @@ struct CodexMCPLaunchProjection {
     let servers: [MCPRuntimeProjection.ResolvedServer]
     let configArguments: [String]
     let workspaceExecutorEnvironment: [String: String]
+    let hostControlEnvironment: [String: String]
     let dockerWorkspaceExecutorSupported: Bool
     let dockerWorkspaceUnsupportedDetail: String
+    let hostControlPlaneSupported: Bool
     let browserBridgeMCPToolSupported: Bool
 
     static func resolve(
@@ -14,7 +16,8 @@ struct CodexMCPLaunchProjection {
         workspacePath: String,
         runID: UUID?,
         executionEnvironment: WorkspaceExecutionEnvironment,
-        contextText: String
+        contextText: String,
+        taskEnvironment: [String: String] = [:]
     ) -> CodexMCPLaunchProjection {
         let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
         var browserServerProjected = false
@@ -31,6 +34,22 @@ struct CodexMCPLaunchProjection {
         ) {
             servers.append(workspaceServer)
         }
+        let hostControlEnvironment = HostControlPlaneMCPProjection.environmentVariables(
+            task: task,
+            environment: executionEnvironment,
+            currentDirectory: workspacePath,
+            runID: runID,
+            taskEnvironment: taskEnvironment
+        )
+        if let hostControlServer = HostControlPlaneMCPProjection.resolvedServer(
+            task: task,
+            environment: executionEnvironment,
+            currentDirectory: workspacePath,
+            runID: runID,
+            taskEnvironment: taskEnvironment.merging(hostControlEnvironment) { current, _ in current }
+        ) {
+            servers.append(hostControlServer)
+        }
         if let browserServer = BrowserBridgeMCPProjection.resolvedServer(
             for: task,
             contextText: contextText
@@ -39,12 +58,18 @@ struct CodexMCPLaunchProjection {
             browserServerProjected = true
         }
 
-        let configArguments = CodexMCPConfigRenderer.configArguments(servers: servers)
         let workspaceExecutorEnvironment = DockerWorkspaceMCPProjection.environmentVariables(
             task: task,
             environment: executionEnvironment,
             currentDirectory: workspacePath,
             runID: runID
+        )
+        let explicitMCPEnvironment = taskEnvironment
+            .merging(workspaceExecutorEnvironment) { current, _ in current }
+            .merging(hostControlEnvironment) { current, _ in current }
+        let configArguments = CodexMCPConfigRenderer.configArguments(
+            servers: servers,
+            availableEnvironment: explicitMCPEnvironment
         )
         let dockerWorkspaceExecutorSupported = !usesDockerWorkspaceExecutor
             || configArguments.containsMCPServerConfig(for: DockerWorkspaceMCPProjection.serverID)
@@ -52,13 +77,17 @@ struct CodexMCPLaunchProjection {
             usesDockerWorkspaceExecutor: usesDockerWorkspaceExecutor,
             configArguments: configArguments
         )
+        let hostControlPlaneSupported = !usesDockerWorkspaceExecutor
+            || configArguments.containsMCPServerConfig(for: HostControlPlaneMCPProjection.serverID)
 
         return CodexMCPLaunchProjection(
             servers: servers,
             configArguments: configArguments,
             workspaceExecutorEnvironment: workspaceExecutorEnvironment,
+            hostControlEnvironment: hostControlEnvironment,
             dockerWorkspaceExecutorSupported: dockerWorkspaceExecutorSupported,
             dockerWorkspaceUnsupportedDetail: unsupportedDetail,
+            hostControlPlaneSupported: hostControlPlaneSupported,
             browserBridgeMCPToolSupported: browserServerProjected
                 && configArguments.containsMCPServerConfig(for: BrowserBridgeMCPProjection.serverID)
         )
@@ -77,14 +106,18 @@ struct CodexMCPLaunchProjection {
 }
 
 enum CodexMCPConfigRenderer {
-    static func configArguments(servers: [MCPRuntimeProjection.ResolvedServer]) -> [String] {
-        let entries = servers.compactMap(configEntry)
+    static func configArguments(
+        servers: [MCPRuntimeProjection.ResolvedServer],
+        availableEnvironment: [String: String] = [:]
+    ) -> [String] {
+        let entries = servers.compactMap { configEntry(for: $0, availableEnvironment: availableEnvironment) }
         guard !entries.isEmpty else { return [] }
         return ["-c", "mcp_servers={\(entries.joined(separator: ","))}"]
     }
 
     private static func configEntry(
-        for resolved: MCPRuntimeProjection.ResolvedServer
+        for resolved: MCPRuntimeProjection.ResolvedServer,
+        availableEnvironment: [String: String]
     ) -> String? {
         let server = resolved.server
         guard MCPEnvironmentKeyPolicy.isValidPermissionName(server.id) else {
@@ -115,9 +148,28 @@ enum CodexMCPConfigRenderer {
             .filter { resolved.permittedEnvironmentKeys.contains($0) }
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter(isSafeEnvironmentKey)
+            .filter { availableEnvironment[$0]?.isEmpty == false }
             .sorted()
         if !envVars.isEmpty {
             fields.append("env_vars=\(tomlArray(envVars))")
+        }
+        let enabledTools = server.allowedTools
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter(MCPEnvironmentKeyPolicy.isValidPermissionName)
+            .sorted()
+        if !enabledTools.isEmpty {
+            fields.append("enabled_tools=\(tomlArray(enabledTools))")
+            fields.append("default_tools_enabled=false")
+        }
+        let disabledTools = server.excludedTools
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter(MCPEnvironmentKeyPolicy.isValidPermissionName)
+            .sorted()
+        if !disabledTools.isEmpty {
+            fields.append("disabled_tools=\(tomlArray(disabledTools))")
+        }
+        if server.trustLevel == .high {
+            fields.append("default_tools_approval_mode=\"approve\"")
         }
 
         return "\(tomlString(server.id))={\(fields.joined(separator: ","))}"

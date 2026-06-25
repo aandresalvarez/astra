@@ -95,19 +95,21 @@ enum CapabilitySharing {
         to destination: Connector,
         secretStore: SecretStore
     ) {
-        let sourceEntityID = KeychainSecretStore.connectorEntityID(for: source.id)
-        let destinationEntityID = KeychainSecretStore.connectorEntityID(for: destination.id)
+        let sourceEntityIDs = KeychainSecretStore.connectorEntityIDs(for: source)
+        let destinationEntityIDs = KeychainSecretStore.connectorEntityIDs(for: destination)
         for key in source.credentialKeys {
-            guard let value = secretStore.load(key: key, entityID: sourceEntityID),
+            guard let value = sourceEntityIDs.compactMap({ secretStore.load(key: key, entityID: $0) }).first,
                   !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 continue
             }
-            secretStore.save(
-                key: key,
-                value: value,
-                entityID: destinationEntityID,
-                label: "Astra: \(destination.name)"
-            )
+            for destinationEntityID in destinationEntityIDs {
+                secretStore.save(
+                    key: key,
+                    value: value,
+                    entityID: destinationEntityID,
+                    label: "Astra: \(destination.name)"
+                )
+            }
         }
     }
 

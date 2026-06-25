@@ -176,8 +176,10 @@ final class Skill {
                     "skill_id": id.uuidString,
                     "result": saved ? "stored" : "failed"
                 ], level: saved ? .info : .warning)
+                environmentValues[index] = saved ? "" : value
+            } else {
+                environmentValues[index] = ""
             }
-            environmentValues[index] = ""
         } else {
             environmentValues[index] = value
         }
@@ -208,10 +210,14 @@ final class Skill {
             let legacyValue = environmentValues[index]
             guard !legacyValue.isEmpty else { continue }
 
-            if !KeychainService.exists(key: key, skillID: id) {
-                KeychainService.save(key: key, value: legacyValue, skillID: id, label: "Astra: \(name)")
+            if KeychainService.exists(key: key, skillID: id) {
+                environmentValues[index] = ""
+                continue
             }
-            environmentValues[index] = ""
+
+            if KeychainService.save(key: key, value: legacyValue, skillID: id, label: "Astra: \(name)") {
+                environmentValues[index] = ""
+            }
         }
     }
 

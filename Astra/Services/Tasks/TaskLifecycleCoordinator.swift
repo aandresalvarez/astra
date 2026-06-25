@@ -13,9 +13,16 @@ final class TaskLifecycleCoordinator {
     }
 
     /// Canonical follow-up message sent when the user resumes a previously
-    /// session-backed task. Kept as a named constant so the resume contract is
-    /// traceable and independently testable.
-    static let resumeContinuationMessage = "Continue where you left off. Complete the original goal."
+    /// session-backed task. The task-specific variant appends ASTRA's resolved
+    /// active objective so stale original goals do not re-anchor long threads.
+    static let resumeContinuationMessage = "Continue where you left off. Continue the current objective."
+
+    static func resumeContinuationMessage(for task: AgentTask) -> String {
+        let objective = TaskContextStateManager.activeObjectiveText(for: task)
+        guard !objective.isEmpty else { return resumeContinuationMessage }
+        let base = resumeContinuationMessage.trimmingCharacters(in: CharacterSet(charactersIn: ". "))
+        return "\(base): \(boundedResumeObjective(objective))"
+    }
 
     // MARK: - Task Lifecycle
 
@@ -149,7 +156,11 @@ final class TaskLifecycleCoordinator {
         modelContext.insert(event)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         return Task {
-            let didStart = await taskQueue.continueSession(task: task, message: Self.resumeContinuationMessage, modelContext: modelContext)
+            let didStart = await taskQueue.continueSession(
+                task: task,
+                message: Self.resumeContinuationMessage(for: task),
+                modelContext: modelContext
+            )
             finishContinuationLaunch(
                 task,
                 didStart: didStart,
@@ -895,6 +906,14 @@ final class TaskLifecycleCoordinator {
             return "{}"
         }
         return string
+    }
+
+    private static func boundedResumeObjective(_ value: String) -> String {
+        let collapsed = value
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard collapsed.count > 240 else { return collapsed }
+        return String(collapsed.prefix(240)) + "..."
     }
 
     // MARK: - Migration

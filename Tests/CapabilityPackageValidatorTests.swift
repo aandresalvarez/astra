@@ -155,6 +155,36 @@ struct CapabilityPackageValidatorTests {
         #expect(report.blockers.map(\.code).contains(.unsafeLocalTool))
     }
 
+    @Test("local tool interpreter inline execution defaults are blocked")
+    func localToolInterpreterInlineExecutionDefaultsAreBlocked() {
+        let cases: [(String, String)] = [
+            ("/bin/bash", "-c id"),
+            ("python3", "-c print")
+        ]
+
+        for (command, arguments) in cases {
+            var package = makePackage(id: "local.inline-\(UUID().uuidString)", governance: .localDraft())
+            package.localTools = [
+                PluginLocalTool(
+                    name: "Inline",
+                    description: "Unsafe inline interpreter",
+                    icon: "terminal",
+                    toolType: "cli",
+                    command: command,
+                    arguments: arguments
+                )
+            ]
+
+            let report = CapabilityPackageValidator.validate(package: package, checkPrerequisites: false)
+
+            #expect(!report.canInstall)
+            #expect(report.blockers.contains { issue in
+                issue.code == .unsafeLocalTool
+                    && issue.message.contains("interpreter execution flag")
+            }, "\(command) \(arguments) should be blocked")
+        }
+    }
+
     @Test("credentialed HTTP connector is blocked")
     func credentialedHTTPConnectorIsBlocked() {
         var package = makePackage(governance: .localDraft())
@@ -197,8 +227,8 @@ struct CapabilityPackageValidatorTests {
                 id: "danger",
                 displayName: "Danger MCP",
                 transport: .stdio,
-                command: "npx",
-                arguments: ["server", ";", "rm"]
+                command: "python3",
+                arguments: ["-c", "print"]
             )
         ]
 
@@ -206,6 +236,7 @@ struct CapabilityPackageValidatorTests {
 
         #expect(!report.canInstall)
         #expect(report.blockers.map(\.code).contains(.unsafeMCPServer))
+        #expect(report.blockers.contains { $0.message.contains("interpreter execution flag") })
     }
 
     @Test("missing prerequisites are warnings")

@@ -306,8 +306,27 @@ struct AgentRuntimePolicyGuard: Sendable {
 
     private func runtimeSupportToolDescriptor(for toolName: String) -> ProviderRuntimeSupportToolDescriptor? {
         let normalized = Self.normalizedToolName(toolName)
-        return manifest.providerRender.runtimeSupportTools.first {
-            Self.normalizedToolName($0.name) == normalized
+        if let canonicalWorkspaceTool = DockerWorkspaceMCPProjection.canonicalToolName(
+            fromObservedToolName: toolName,
+            runtime: manifest.providerID
+        ) {
+            let permission = DockerWorkspaceMCPProjection.providerToolPermission(for: canonicalWorkspaceTool)
+            return manifest.providerRender.runtimeSupportTools.first { descriptor in
+                Self.normalizedToolName(descriptor.name) == Self.normalizedToolName(permission)
+            }
+        }
+        if let canonicalHostTool = HostControlPlaneMCPProjection.canonicalToolName(
+            fromObservedToolName: toolName,
+            runtime: manifest.providerID
+        ) {
+            let permission = HostControlPlaneMCPProjection.providerToolPermission(for: canonicalHostTool)
+            return manifest.providerRender.runtimeSupportTools.first { descriptor in
+                Self.normalizedToolName(descriptor.name) == Self.normalizedToolName(permission)
+            }
+        }
+        return manifest.providerRender.runtimeSupportTools.first { descriptor in
+            Self.normalizedToolName(descriptor.name) == normalized
+                || descriptor.providerNativePermission.map(Self.normalizedToolName) == normalized
         }
     }
 
@@ -316,9 +335,10 @@ struct AgentRuntimePolicyGuard: Sendable {
         observed: PolicyObservedEvent,
         toolName: String
     ) -> AgentRuntimePolicyViolation? {
-        if observed.command != nil || observed.path != nil || observed.url != nil {
+        let allowedKeys = Set(descriptor.allowedInputKeys)
+        if let field = disallowedRuntimeSupportActionField(observed, allowedKeys: allowedKeys) {
             return AgentRuntimePolicyViolation(
-                reason: "The provider support tool carried action-like input outside its safe runtime schema",
+                reason: "The provider support tool carried action-like input outside its safe runtime schema: \(field)",
                 toolName: toolName,
                 detail: observed.summary,
                 violationCategory: "runtime_support_tool_action_field"
@@ -337,7 +357,6 @@ struct AgentRuntimePolicyGuard: Sendable {
             )
         }
 
-        let allowedKeys = Set(descriptor.allowedInputKeys)
         let unsupportedKeys = observedKeys.subtracting(allowedKeys).sorted()
         if !unsupportedKeys.isEmpty {
             return AgentRuntimePolicyViolation(
@@ -358,6 +377,29 @@ struct AgentRuntimePolicyGuard: Sendable {
             )
         }
 
+        return nil
+    }
+
+    private func disallowedRuntimeSupportActionField(
+        _ observed: PolicyObservedEvent,
+        allowedKeys: Set<String>
+    ) -> String? {
+        if observed.command != nil,
+           !allowedKeys.contains("command"),
+           !allowedKeys.contains("cmd") {
+            return "command"
+        }
+        if observed.path != nil,
+           !allowedKeys.contains("path"),
+           !allowedKeys.contains("file_path"),
+           !allowedKeys.contains("filepath") {
+            return "path"
+        }
+        if observed.url != nil,
+           !allowedKeys.contains("url"),
+           !allowedKeys.contains("uri") {
+            return "url"
+        }
         return nil
     }
 

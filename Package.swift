@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .executable(name: "ASTRA", targets: ["ASTRAExecutable"]),
         .executable(name: "astra-browser", targets: ["AstraBrowserTool"]),
+        .executable(name: "astra-host-control", targets: ["AstraHostControlTool"]),
         .executable(name: "astra-workspace", targets: ["AstraWorkspaceTool"]),
         .executable(name: "stanford-mail", targets: ["StanfordMailTool"]),
         .executable(name: "stanford-apple-mail", targets: ["StanfordAppleMailTool"]),
@@ -39,10 +40,19 @@ let package = Package(
             name: "WorkspaceToolSupport",
             path: "Tools/WorkspaceToolSupport"
         ),
+        .target(
+            name: "HostControlToolSupport",
+            path: "Tools/HostControlToolSupport"
+        ),
         .executableTarget(
             name: "AstraBrowserTool",
             dependencies: ["ASTRACore"],
             path: "Tools/AstraBrowserTool"
+        ),
+        .executableTarget(
+            name: "AstraHostControlTool",
+            dependencies: ["HostControlToolSupport"],
+            path: "Tools/AstraHostControlTool"
         ),
         .executableTarget(
             name: "AstraWorkspaceTool",
@@ -89,7 +99,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ASTRATests",
-            dependencies: ["ASTRA", "ASTRACore", "ASTRAGitContracts", "WorkspaceToolSupport"],
+            dependencies: ["ASTRA", "ASTRACore", "ASTRAGitContracts", "HostControlToolSupport", "WorkspaceToolSupport"],
             path: "Tests"
         )
     ]

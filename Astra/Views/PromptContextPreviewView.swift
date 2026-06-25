@@ -22,7 +22,7 @@ struct PromptContextPreviewRequest: Equatable {
 }
 
 enum PromptContextPreviewPresentation {
-    static let defaultResumeMessage = "Continue where you left off. Complete the original goal."
+    static let defaultResumeMessage = "Continue where you left off. Continue the current objective."
 
     static func request(
         taskStatus: TaskStatus,

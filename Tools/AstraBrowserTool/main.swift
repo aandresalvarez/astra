@@ -84,7 +84,7 @@ struct AstraBrowserTool {
                 "analysisID": analysisID,
                 "controlID": controlID,
                 "action": action,
-                "allowDangerous": args.contains("--dangerous")
+                "allowDangerous": false
             ])
         case "snapshot":
             let endpoint = try browserEndpoint()
@@ -139,7 +139,7 @@ struct AstraBrowserTool {
             return try await request(endpoint: endpoint, method: "POST", path: "/open", object: [
                 "analysisID": analysisID,
                 "controlID": controlID,
-                "allowDangerous": args.contains("--dangerous")
+                "allowDangerous": false
             ])
         case "double-click", "doubleclick", "double_click":
             let endpoint = try browserEndpoint()
@@ -156,7 +156,7 @@ struct AstraBrowserTool {
             guard (analysisID != nil && controlID != nil) || selector != nil || label != nil || role != nil || placeholder != nil || testID != nil || (x != nil && y != nil) else {
                 throw ToolError("double-click requires --analysis/--control, --selector, --label, --role, --placeholder, --testid, or --x/--y")
             }
-            var object: [String: Any] = ["allowDangerous": args.contains("--dangerous")]
+            var object: [String: Any] = ["allowDangerous": false]
             if let analysisID { object["analysisID"] = analysisID }
             if let controlID { object["controlID"] = controlID }
             if let selector { object["selector"] = selector }
@@ -180,7 +180,7 @@ struct AstraBrowserTool {
             let testID = args.value(after: "--testid") ?? args.value(after: "--test-id")
             let x = args.value(after: "--x").flatMap(Double.init)
             let y = args.value(after: "--y").flatMap(Double.init)
-            var object: [String: Any] = ["allowDangerous": args.contains("--dangerous")]
+            var object: [String: Any] = ["allowDangerous": false]
             if let analysisID { object["analysisID"] = analysisID }
             if let controlID { object["controlID"] = controlID }
             if let selector { object["selector"] = selector }
@@ -210,7 +210,7 @@ struct AstraBrowserTool {
             var object: [String: Any] = [
                 "text": text,
                 "clear": !args.contains("--append"),
-                "allowDangerous": args.contains("--dangerous")
+                "allowDangerous": false
             ]
             if let analysisID { object["analysisID"] = analysisID }
             if let controlID { object["controlID"] = controlID }
@@ -237,7 +237,7 @@ struct AstraBrowserTool {
             }
             var object: [String: Any] = [
                 "text": text,
-                "allowDangerous": args.contains("--dangerous")
+                "allowDangerous": false
             ]
             if let analysisID { object["analysisID"] = analysisID }
             if let controlID { object["controlID"] = controlID }
@@ -259,7 +259,7 @@ struct AstraBrowserTool {
                 "find": find,
                 "replacement": replacement,
                 "all": !args.contains("--first"),
-                "allowDangerous": args.contains("--dangerous")
+                "allowDangerous": false
             ]
             if let analysisID { object["analysisID"] = analysisID }
             if let controlID { object["controlID"] = controlID }
@@ -290,7 +290,7 @@ struct AstraBrowserTool {
                 throw ToolError("click-control requires --label or --analysis/--control")
             }
             var object: [String: Any] = [
-                "allowDangerous": args.contains("--dangerous")
+                "allowDangerous": false
             ]
             if let label { object["label"] = label }
             if let analysisID { object["analysisID"] = analysisID }
@@ -429,9 +429,6 @@ struct AstraBrowserTool {
             }
             if let clickRole = args.value(after: "--click-role") {
                 object["clickRole"] = clickRole
-            }
-            if args.contains("--dangerous") {
-                object["allowDangerous"] = true
             }
             if args.contains("--wait-saved") {
                 object["waitSaved"] = true

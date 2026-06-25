@@ -56,6 +56,43 @@ struct ExecutionEnvironmentTests {
         #expect(images.map(\.name) == ["astra-api:dev", "astra-demo:latest"])
     }
 
+    @Test("Docker image availability probes selected image directly")
+    func dockerImageAvailabilityProbesSelectedImageDirectly() async throws {
+        let runner = RecordingDockerRunner(results: [
+            .exited(code: 0, stdout: "desktop-linux\n", stderr: ""),
+            .exited(code: 0, stdout: "sha256:abc\n", stderr: "")
+        ])
+        let service = DockerImageInventoryService(runner: runner, environment: [:])
+
+        let availability = try await service.checkImageAvailability("astra/test:latest").get()
+
+        #expect(availability.image == "astra/test:latest")
+        #expect(availability.imageID == "sha256:abc")
+        let calls = await runner.recordedCalls()
+        #expect(calls.map(\.args) == [
+            ["docker", "context", "show"],
+            ["docker", "image", "inspect", "--format", "{{.Id}}", "astra/test:latest"]
+        ])
+    }
+
+    @Test("Docker image availability reports missing image")
+    func dockerImageAvailabilityReportsMissingImage() async throws {
+        let runner = RecordingDockerRunner(results: [
+            .exited(code: 0, stdout: "desktop-linux\n", stderr: ""),
+            .exited(code: 1, stdout: "", stderr: "Error response from daemon: No such image: astra/missing:latest\n")
+        ])
+        let service = DockerImageInventoryService(runner: runner, environment: [:])
+
+        let availability = await service.checkImageAvailability("astra/missing:latest")
+
+        #expect(availability.failure == .missingImage("astra/missing:latest"))
+        let calls = await runner.recordedCalls()
+        #expect(calls.map(\.args) == [
+            ["docker", "context", "show"],
+            ["docker", "image", "inspect", "--format", "{{.Id}}", "astra/missing:latest"]
+        ])
+    }
+
     @Test("Docker launch planning keeps provider on host by default and routes workspace commands through Docker")
     func dockerPlannerKeepsProviderOnHostByDefault() throws {
         let root = try makeTempDir("docker-plan-host-provider")
@@ -81,6 +118,8 @@ struct ExecutionEnvironmentTests {
         #expect(plan.arguments == ["--print"])
         #expect(plan.executionEnvironment.workspaceCommandsRunInsideContainer)
         #expect(plan.commandPlannedFields["workspace_executor_mode"] == "host_provider_container_workspace")
+        #expect(plan.commandPlannedFields["workspace_command_placement"] == "docker")
+        #expect(plan.commandPlannedFields["shell_route"] == "astra_workspace_mcp")
         #expect(plan.commandPlannedFields["os_sandbox_claim"] == "true")
         #expect(plan.commandPlannedFields["container_image"] == "astra/test:latest")
         #expect(plan.pathMapper?.containerPath(forHostPath: root) == "/workspace")
@@ -112,7 +151,14 @@ struct ExecutionEnvironmentTests {
         #expect(section.text.contains("mcp__astra_workspace__workspace_shell"))
         #expect(section.text.contains("astra_workspace-workspace_shell"))
         #expect(section.text.contains("Claude-style and Codex runtimes"))
+        #expect(section.text.contains("synchronous shell calls are intentionally bounded"))
+        #expect(section.text.contains("short `workspace_job_wait` polling windows"))
         #expect(section.text.contains("Do not use native host Bash"))
+        #expect(section.text.contains("Routing contract: provider reasoning runs on host macOS"))
+        #expect(section.text.contains("host control-plane actions such as GitHub PR metadata, Jira, Google Cloud, SSH, browser, and Keychain access"))
+        #expect(section.text.contains("Do not ask a subagent to \"run locally\""))
+        #expect(section.text.contains("Path mapping: inside workspace MCP tools"))
+        #expect(section.text.contains("Do not run `cd /Users/...`"))
         #expect(section.text.contains("Prefer tools installed in the image environment"))
         #expect(section.text.contains("command -v dbt && dbt --version"))
         #expect(section.text.contains("verify credential readiness from inside the container"))
@@ -154,6 +200,9 @@ struct ExecutionEnvironmentTests {
         #expect(plan.executablePath == "/usr/bin/env")
         #expect(plan.arguments.prefix(3) == ["docker", "run", "--rm"])
         #expect(plan.arguments.contains("astra/test:latest"))
+        let imageIndex = try #require(plan.arguments.firstIndex(of: "astra/test:latest"))
+        #expect(imageIndex > 0)
+        #expect(plan.arguments[imageIndex - 1] == "--")
         #expect(plan.arguments.contains("/usr/local/bin/claude"))
         #expect(plan.arguments.contains("--workdir"))
         #expect(plan.arguments.contains("/workspace"))
@@ -162,6 +211,8 @@ struct ExecutionEnvironmentTests {
         #expect(plan.pathMapper?.hostPath(forContainerPath: "/workspace/file.txt") == (root as NSString).appendingPathComponent("file.txt"))
         #expect(plan.commandPlannedFields["os_sandbox_claim"] == "false")
         #expect(plan.commandPlannedFields["workspace_executor_mode"] == "provider_inside_container")
+        #expect(plan.commandPlannedFields["workspace_command_placement"] == "docker")
+        #expect(plan.commandPlannedFields["shell_route"] == "provider_inside_container")
         #expect(plan.commandPlannedFields["container_executable_source"] == "environment")
         #expect(plan.commandPlannedFields["container_image"] == "astra/test:latest")
         #expect(plan.commandPlannedFields["container_workdir"] == "/workspace")
@@ -331,18 +382,17 @@ struct ExecutionEnvironmentTests {
         #expect(report.state == .pinnedTaskSnapshotMissingProjection)
         #expect(report.shouldBlockLaunch)
         #expect(report.isTaskSnapshotStale)
-        #expect(report.remediation?.contains("Fork this task") == true)
+        #expect(report.remediation?.contains("Update task credentials") == true)
     }
 
     @MainActor
-    @Test("Credential projection preflight stops provider launch before agent execution")
-    func credentialProjectionPreflightStopsProviderLaunchBeforeAgentExecution() throws {
+    @Test("Credential projection preflight stops provider launch when local ADC is missing")
+    func credentialProjectionPreflightStopsProviderLaunchWhenLocalADCIsMissing() throws {
         let root = try makeTempDir("docker-credential-preflight")
         defer { try? FileManager.default.removeItem(atPath: root) }
         try writeBigQueryDBTProfile(in: root)
         let home = try makeTempDir("docker-credential-preflight-home")
         defer { try? FileManager.default.removeItem(atPath: home) }
-        try writeADCFile(inHome: home)
         let container = try makeContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Docker", primaryPath: root)
@@ -374,6 +424,63 @@ struct ExecutionEnvironmentTests {
         #expect(run.status == .failed)
         #expect(run.typedStopReason == .credentialProjectionRequired)
         #expect(task.status == .failed)
+    }
+
+    @MainActor
+    @Test("Credential projection preflight auto-projects local ADC for Docker retries")
+    func credentialProjectionPreflightAutoProjectsLocalADCForDockerRetries() throws {
+        let root = try makeTempDir("docker-credential-auto-project")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try writeBigQueryDBTProfile(in: root)
+        let home = try makeTempDir("docker-credential-auto-project-home")
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let gcloudDirectory = try writeADCFile(inHome: home)
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Docker", primaryPath: root)
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test Image",
+            sourcePath: root,
+            image: "astra/test:latest"
+        )
+        workspace.activeExecutionEnvironmentJSON = ExecutionEnvironmentStore.encode(.host)
+        let task = AgentTask(title: "Run dbt", goal: "Check BigQuery", workspace: workspace)
+        task.status = .failed
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(environment)
+        let previousRun = TaskRun(task: task)
+        previousRun.status = .failed
+        previousRun.output = "provider already changed files"
+        previousRun.outputTokens = 5
+        previousRun.executionEnvironmentSnapshotJSON = task.executionEnvironmentSnapshotJSON
+        let retryRun = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(previousRun)
+        context.insert(retryRun)
+
+        let result = AgentRuntimeLaunchPreflight.preflightCredentialProjectionBeforeLaunchResult(
+            task: task,
+            run: retryRun,
+            modelContext: context,
+            phase: "retry",
+            codeDirectory: root,
+            homeDirectoryPath: home
+        )
+
+        #expect(result.didPass)
+        #expect(result.status == .credentialProjectionPassed)
+        #expect(result.auditFields["auto_projected_credentials"] == "true")
+        let taskEnvironment = ExecutionEnvironmentStore.decode(task.executionEnvironmentSnapshotJSON)
+        let retryEnvironment = ExecutionEnvironmentStore.decode(retryRun.executionEnvironmentSnapshotJSON)
+        let previousRunEnvironment = ExecutionEnvironmentStore.decode(previousRun.executionEnvironmentSnapshotJSON)
+        let workspaceEnvironment = ExecutionEnvironmentStore.decode(workspace.activeExecutionEnvironmentJSON)
+        #expect(taskEnvironment.effectiveCredentialProjections.map(\.id) == [ExecutionEnvironmentCredentialProjection.gcpADCID])
+        #expect(taskEnvironment.effectiveCredentialProjections.first?.hostPath == gcloudDirectory)
+        #expect(retryEnvironment.effectiveCredentialProjections.map(\.id) == [ExecutionEnvironmentCredentialProjection.gcpADCID])
+        #expect(previousRunEnvironment.effectiveCredentialProjections.isEmpty)
+        #expect(workspaceEnvironment.isHost)
     }
 
     @Test("Docker launch planning falls back to provider binary name inside the image")
@@ -507,6 +614,80 @@ struct ExecutionEnvironmentTests {
             task: task,
             runID: nil
         ).failure == .dockerSocketDenied)
+
+        let optionImage = WorkspaceExecutionEnvironment(
+            id: "option-image",
+            kind: .dockerImage,
+            displayName: "Option Image",
+            image: "--privileged",
+            runtimeExecutablePath: "/bin/tool"
+        )
+        #expect(DockerExecutionPlanner.plan(
+            base: base,
+            environment: optionImage,
+            task: task,
+            runID: nil
+        ).failure == .invalidImageReference("--privileged"))
+
+        let spacedImage = WorkspaceExecutionEnvironment(
+            id: "spaced-image",
+            kind: .dockerImage,
+            displayName: "Spaced Image",
+            image: "alpine --privileged",
+            runtimeExecutablePath: "/bin/tool"
+        )
+        #expect(DockerExecutionPlanner.plan(
+            base: base,
+            environment: spacedImage,
+            task: task,
+            runID: nil
+        ).failure == .invalidImageReference("alpine --privileged"))
+    }
+
+    @Test("Imported credential projections are closed to ASTRA-owned GCP ADC")
+    func importedCredentialProjectionsAreSanitized() throws {
+        let root = try makeTempDir("docker-credential-sanitize")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let gcloudPath = (root as NSString).appendingPathComponent(".config/gcloud")
+        let imported = WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test Image",
+            image: "astra/test:latest",
+            credentialProjections: [
+                ExecutionEnvironmentCredentialProjection(
+                    id: ExecutionEnvironmentCredentialProjection.gcpADCID,
+                    kind: .gcpADC,
+                    displayName: "Tampered ADC",
+                    hostPath: gcloudPath,
+                    containerPath: "/tmp/not-gcloud",
+                    access: .readWrite,
+                    environment: ["LD_PRELOAD": "/evil.dylib"]
+                ),
+                ExecutionEnvironmentCredentialProjection(
+                    id: "host-root",
+                    kind: .genericDirectory,
+                    displayName: "Host Root",
+                    hostPath: "/",
+                    containerPath: "/host",
+                    access: .readWrite,
+                    environment: ["PATH": "/tmp/bin"]
+                )
+            ]
+        )
+
+        let projections = imported.effectiveCredentialProjections
+
+        #expect(projections.count == 1)
+        let projection = try #require(projections.first)
+        #expect(projection.id == ExecutionEnvironmentCredentialProjection.gcpADCID)
+        #expect(projection.hostPath == gcloudPath)
+        #expect(projection.containerPath == ExecutionEnvironmentCredentialProjection.gcpADCContainerPath)
+        #expect(projection.access == .readOnly)
+        #expect(projection.environment == [
+            "CLOUDSDK_CONFIG": ExecutionEnvironmentCredentialProjection.gcpADCContainerPath,
+            "GOOGLE_APPLICATION_CREDENTIALS": "\(ExecutionEnvironmentCredentialProjection.gcpADCContainerPath)/\(ExecutionEnvironmentCredentialProjection.gcpADCFileName)"
+        ])
     }
 
     @Test("Run file changes translate container paths into host paths")
@@ -670,6 +851,77 @@ struct ExecutionEnvironmentTests {
     }
 
     @MainActor
+    @Test("Docker view model exposes explicit runtime routing contract")
+    func dockerViewModelExposesRuntimeRoutingContract() async throws {
+        let root = try makeTempDir("docker-contract")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let repository = DockerWorkspaceDiscoveryService.generatedImageName(for: root)
+        let workspace = Workspace(name: "Docker", primaryPath: root)
+        let viewModel = WorkspaceDockerViewModel(imageInventory: FakeDockerImageInventory(result: .success([
+            DockerImageReference(repository: repository, tag: "latest", imageID: "sha256:abc")
+        ])))
+        viewModel.setWorkspaceForTesting(workspace)
+
+        await viewModel.refresh()
+        #expect(viewModel.runtimeContractRows.map(\.title) == [
+            "Provider: Host",
+            "Workspace commands: Host"
+        ])
+
+        viewModel.selectEnvironmentOption("image:\(repository):latest")
+
+        #expect(viewModel.runtimeContractRows.map(\.title).contains("Provider: Host"))
+        #expect(viewModel.runtimeContractRows.map(\.title).contains("Workspace commands: Docker image"))
+        #expect(viewModel.runtimeContractRows.map(\.title).contains("Host capabilities: ASTRA managed"))
+        #expect(viewModel.runtimeContractRows.contains {
+            $0.subtitle.contains("Project shell runs in \(repository):latest")
+        })
+        #expect(viewModel.runtimeContractRows.contains {
+            $0.subtitle.contains("GitHub, Jira, GCloud, SSH, browser, and Keychain")
+        })
+    }
+
+    @MainActor
+    @Test("Docker view model offers explicit retry in Docker for legacy Host-pinned tasks")
+    func dockerViewModelSwitchesLegacyHostPinnedTaskToWorkspaceImageForNextRetry() async throws {
+        let root = try makeTempDir("docker-pinned-switch")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let workspace = Workspace(name: "Docker", primaryPath: root)
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test Image",
+            sourcePath: root,
+            image: "astra/test:latest"
+        )
+        workspace.activeExecutionEnvironmentJSON = ExecutionEnvironmentStore.encode(environment)
+
+        let task = AgentTask(title: "Historical Host", goal: "Run dbt", workspace: workspace)
+        task.status = .completed
+        // Simulate tasks created before Host was stored as an explicit snapshot.
+        task.executionEnvironmentSnapshotJSON = nil
+        #expect(DockerExecutionPlanner.resolveEnvironment(for: task).isHost)
+
+        let viewModel = WorkspaceDockerViewModel(imageInventory: FakeDockerImageInventory(result: .success([])))
+        viewModel.setWorkspaceForTesting(workspace, selectedTask: task)
+
+        #expect(viewModel.selectedEnvironment.isHost)
+        #expect(viewModel.canSwitchPinnedTaskToWorkspaceEnvironment)
+        #expect(viewModel.pinnedTaskEnvironmentActionTitle == "Retry in Test Image")
+        #expect(viewModel.pinnedTaskEnvironmentActionSubtitle.contains("astra/test:latest"))
+
+        viewModel.switchPinnedTaskToWorkspaceEnvironment()
+
+        let taskEnvironment = ExecutionEnvironmentStore.decode(task.executionEnvironmentSnapshotJSON)
+        #expect(taskEnvironment.id == "image:test")
+        #expect(taskEnvironment.workspaceCommandsRunInsideContainer)
+        #expect(DockerExecutionPlanner.resolveEnvironment(for: task).id == "image:test")
+        #expect(viewModel.selectedEnvironment.id == "image:test")
+        #expect(viewModel.statusMessage == "Next retry will use Test Image")
+        #expect(!viewModel.canSwitchPinnedTaskToWorkspaceEnvironment)
+    }
+
+    @MainActor
     @Test("Docker view model connects and disconnects GCP ADC projections")
     func dockerViewModelTogglesGCPADCProjection() async throws {
         let root = try makeTempDir("docker-viewmodel-gcp")
@@ -715,6 +967,157 @@ struct ExecutionEnvironmentTests {
         #expect(disconnected.effectiveCredentialProjections.isEmpty)
         #expect(viewModel.credentialProjectionTitle == "Connect GCP credentials")
         #expect(viewModel.statusMessage == "GCP credentials disconnected")
+    }
+
+    @MainActor
+    @Test("Docker view model repairs setup-only credential projection failures")
+    func dockerViewModelRepairsSetupOnlyCredentialProjectionFailures() async throws {
+        let root = try makeTempDir("docker-viewmodel-gcp-repair")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try writeBigQueryDBTProfile(in: root)
+        let home = try makeTempDir("docker-viewmodel-gcp-repair-home")
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let gcloudDirectory = try writeADCFile(inHome: home)
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test Image",
+            sourcePath: root,
+            image: "astra/test:latest"
+        )
+        let workspace = Workspace(name: "Docker", primaryPath: root)
+        workspace.activeExecutionEnvironmentJSON = ExecutionEnvironmentStore.encode(environment)
+        let task = AgentTask(title: "Task", goal: "Run dbt", workspace: workspace)
+        task.status = .failed
+        task.executionEnvironmentSnapshotJSON = workspace.activeExecutionEnvironmentJSON
+        let run = TaskRun(task: task)
+        run.status = .failed
+        run.typedStopReason = .credentialProjectionRequired
+        run.completedAt = Date()
+        task.runs = [run]
+
+        let viewModel = WorkspaceDockerViewModel(
+            imageInventory: FakeDockerImageInventory(result: .success([])),
+            homeDirectoryPath: home
+        )
+        viewModel.setWorkspaceForTesting(workspace, selectedTask: task)
+
+        #expect(viewModel.canChangeActiveEnvironment == false)
+        #expect(viewModel.canRepairCredentialProjection)
+        #expect(viewModel.credentialProjectionTitle == "Connect task GCP credentials")
+        #expect(viewModel.credentialProjectionSubtitle.contains("then retry"))
+        #expect(viewModel.credentialProjectionIsEnabled)
+        #expect(viewModel.credentialProjectionHelp.contains("setup-only failed task"))
+
+        viewModel.toggleGCPADCProjection()
+
+        let taskEnvironment = ExecutionEnvironmentStore.decode(task.executionEnvironmentSnapshotJSON)
+        let workspaceEnvironment = ExecutionEnvironmentStore.decode(workspace.activeExecutionEnvironmentJSON)
+        #expect(taskEnvironment.effectiveCredentialProjections.map(\.id) == [ExecutionEnvironmentCredentialProjection.gcpADCID])
+        #expect(taskEnvironment.effectiveCredentialProjections.first?.hostPath == gcloudDirectory)
+        #expect(workspaceEnvironment.effectiveCredentialProjections.map(\.id) == [ExecutionEnvironmentCredentialProjection.gcpADCID])
+        #expect(viewModel.statusMessage == "GCP credentials connected. Retry this task.")
+        #expect(viewModel.errorMessage == nil)
+        #expect(task.status == .failed)
+        #expect(viewModel.credentialProjectionTitle == "GCP credentials ready")
+        #expect(viewModel.credentialProjectionIsEnabled == false)
+        #expect(viewModel.credentialProjectionActionSystemName == "checkmark.circle.fill")
+
+        let report = ExecutionEnvironmentCredentialReadinessService.evaluate(
+            task: task,
+            codeDirectory: root,
+            homeDirectoryPath: home
+        )
+        #expect(report.state == .ready)
+        #expect(!report.shouldBlockLaunch)
+
+        viewModel.toggleGCPADCProjection()
+
+        let repairedEnvironmentAfterExtraClick = ExecutionEnvironmentStore.decode(task.executionEnvironmentSnapshotJSON)
+        #expect(repairedEnvironmentAfterExtraClick.effectiveCredentialProjections.map(\.id) == [ExecutionEnvironmentCredentialProjection.gcpADCID])
+        #expect(viewModel.errorMessage == nil)
+        #expect(viewModel.statusMessage == "GCP credentials are connected. Retry this task.")
+
+        let container = try makeContainer()
+        let context = container.mainContext
+        context.insert(workspace)
+        context.insert(task)
+        let retryRun = TaskRun(task: task)
+        context.insert(retryRun)
+        let preflight = AgentRuntimeLaunchPreflight.preflightCredentialProjectionBeforeLaunchResult(
+            task: task,
+            run: retryRun,
+            modelContext: context,
+            phase: "test",
+            codeDirectory: root,
+            homeDirectoryPath: home
+        )
+        #expect(preflight.status == .credentialProjectionPassed)
+        #expect(preflight.reason == nil)
+    }
+
+    @MainActor
+    @Test("Docker view model connects credentials for substantive pinned task next retry")
+    func dockerViewModelConnectsCredentialProjectionForSubstantivePinnedTaskNextRetry() async throws {
+        let root = try makeTempDir("docker-viewmodel-gcp-no-repair")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try writeBigQueryDBTProfile(in: root)
+        let home = try makeTempDir("docker-viewmodel-gcp-no-repair-home")
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let gcloudDirectory = try writeADCFile(inHome: home)
+        let workspace = Workspace(name: "Docker", primaryPath: root)
+        workspace.activeExecutionEnvironmentJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test Image",
+            sourcePath: root,
+            image: "astra/test:latest"
+        ))
+        let task = AgentTask(title: "Task", goal: "Run dbt", workspace: workspace)
+        task.status = .failed
+        task.executionEnvironmentSnapshotJSON = workspace.activeExecutionEnvironmentJSON
+        let run = TaskRun(task: task)
+        run.status = .failed
+        run.typedStopReason = .failed
+        run.output = "provider started"
+        run.outputTokens = 5
+        run.executionEnvironmentSnapshotJSON = task.executionEnvironmentSnapshotJSON
+        task.runs = [run]
+
+        let viewModel = WorkspaceDockerViewModel(
+            imageInventory: FakeDockerImageInventory(result: .success([])),
+            homeDirectoryPath: home
+        )
+        viewModel.setWorkspaceForTesting(workspace, selectedTask: task)
+
+        #expect(viewModel.canRepairCredentialProjection == false)
+        #expect(viewModel.canUpdatePinnedTaskCredentialProjection)
+        #expect(viewModel.credentialProjectionTitle == "Connect task GCP credentials")
+        #expect(viewModel.credentialProjectionSubtitle.contains("next retry"))
+        #expect(viewModel.credentialProjectionIsEnabled)
+        #expect(viewModel.credentialProjectionHelp.contains("Earlier run manifests stay unchanged"))
+
+        viewModel.toggleGCPADCProjection()
+
+        let taskEnvironment = ExecutionEnvironmentStore.decode(task.executionEnvironmentSnapshotJSON)
+        let runEnvironment = ExecutionEnvironmentStore.decode(run.executionEnvironmentSnapshotJSON)
+        let workspaceEnvironment = ExecutionEnvironmentStore.decode(workspace.activeExecutionEnvironmentJSON)
+        #expect(taskEnvironment.effectiveCredentialProjections.map(\.id) == [ExecutionEnvironmentCredentialProjection.gcpADCID])
+        #expect(taskEnvironment.effectiveCredentialProjections.first?.hostPath == gcloudDirectory)
+        #expect(runEnvironment.effectiveCredentialProjections.isEmpty)
+        #expect(workspaceEnvironment.effectiveCredentialProjections.isEmpty)
+        #expect(viewModel.errorMessage == nil)
+        #expect(viewModel.statusMessage == "GCP credentials connected. Retry this task.")
+        #expect(viewModel.credentialProjectionTitle == "GCP credentials ready")
+        #expect(viewModel.credentialProjectionIsEnabled == false)
+
+        let report = ExecutionEnvironmentCredentialReadinessService.evaluate(
+            task: task,
+            codeDirectory: root,
+            homeDirectoryPath: home
+        )
+        #expect(report.state == .ready)
+        #expect(!report.shouldBlockLaunch)
     }
 
     @MainActor
@@ -775,6 +1178,8 @@ struct ExecutionEnvironmentTests {
 
         let completed = AgentTask(title: "Completed", goal: "Run", workspace: workspace)
         completed.status = .completed
+        let completedRun = TaskRun(task: completed)
+        completedRun.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(.host)
         let completedViewModel = WorkspaceDockerViewModel(imageInventory: FakeDockerImageInventory(result: .success([
             DockerImageReference(repository: repository, tag: "latest", imageID: "sha256:built")
         ])))
@@ -783,8 +1188,13 @@ struct ExecutionEnvironmentTests {
         await completedViewModel.refresh()
 
         #expect(completedViewModel.environmentPickerTitle == "Pinned to")
-        #expect(completedViewModel.environmentPickerHelp.contains("already has execution history"))
-        #expect(completedViewModel.environmentOptions.allSatisfy { !$0.isEnabled })
+        #expect(completedViewModel.canUseEnvironmentPicker)
+        #expect(completedViewModel.environmentPickerHelp.contains("next retry snapshot"))
+        #expect(completedViewModel.environmentOptions.map(\.isEnabled) == [true, true])
+        completedViewModel.selectEnvironmentOption("image:\(imageName)")
+        #expect(ExecutionEnvironmentStore.decode(completed.executionEnvironmentSnapshotJSON).image == imageName)
+        #expect(ExecutionEnvironmentStore.decode(completedRun.executionEnvironmentSnapshotJSON).isHost)
+        #expect(completedViewModel.statusMessage?.contains("Next retry will use") == true)
     }
 
     @MainActor
@@ -846,9 +1256,9 @@ struct ExecutionEnvironmentTests {
         await viewModel.refresh()
         await viewModel.buildWorkspaceImage()
 
-        #expect(task.executionEnvironmentSnapshotJSON == nil)
+        #expect(ExecutionEnvironmentStore.decode(task.executionEnvironmentSnapshotJSON).isHost)
         #expect(viewModel.selectedEnvironment.isHost)
-        #expect(viewModel.statusMessage == "Image built. Start a new task to use it.")
+        #expect(viewModel.statusMessage == "Image built. Select it under Pinned to for the next retry.")
         #expect(viewModel.errorMessage == nil)
     }
 
@@ -955,7 +1365,7 @@ struct ExecutionEnvironmentTests {
 
         viewModel.selectCandidate(candidate)
 
-        #expect(task.executionEnvironmentSnapshotJSON == nil)
+        #expect(ExecutionEnvironmentStore.decode(task.executionEnvironmentSnapshotJSON).isHost)
         #expect(viewModel.errorMessage?.contains("pinned") == true)
     }
 
@@ -1109,6 +1519,13 @@ private struct FakeDockerImageInventory: DockerImageInventoryListing {
 
 private extension Result where Failure == DockerExecutionPlanningError {
     var failure: DockerExecutionPlanningError? {
+        if case .failure(let error) = self { return error }
+        return nil
+    }
+}
+
+private extension Result where Failure == DockerImageAvailabilityError {
+    var failure: DockerImageAvailabilityError? {
         if case .failure(let error) = self { return error }
         return nil
     }

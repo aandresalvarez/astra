@@ -22,6 +22,24 @@ private actor RuntimeComponentCompletionRecorder {
     }
 }
 
+private actor RecordingDockerImageAvailabilityChecker: DockerImageAvailabilityChecking {
+    private let result: Result<DockerImageAvailability, DockerImageAvailabilityError>
+    private var images: [String] = []
+
+    init(result: Result<DockerImageAvailability, DockerImageAvailabilityError>) {
+        self.result = result
+    }
+
+    func checkedImages() -> [String] {
+        images
+    }
+
+    func checkImageAvailability(_ image: String) async -> Result<DockerImageAvailability, DockerImageAvailabilityError> {
+        images.append(image)
+        return result
+    }
+}
+
 @Suite("Agent Runtime Async Work")
 @MainActor
 struct AgentRuntimeAsyncWorkTests {
@@ -516,6 +534,121 @@ struct AgentRuntimeLaunchPreflightTests {
         #expect(run.status == .failed)
         #expect(run.stopReason == "mcp_server_executable_missing")
         #expect(task.events.contains { $0.type == "error" && $0.payload.contains("astra-workspace") })
+    }
+
+    @Test("Docker image preflight skips Host tasks without probing Docker")
+    func dockerImagePreflightSkipsHostTasks() async throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Host", primaryPath: NSTemporaryDirectory())
+        let task = AgentTask(title: "Host task", goal: "Inspect files", workspace: workspace, runtime: .claudeCode)
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(.host)
+        task.status = .running
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        let checker = RecordingDockerImageAvailabilityChecker(result: .failure(.missingImage("unused:latest")))
+
+        let result = await AgentRuntimeLaunchPreflight.preflightDockerImageBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "run",
+            imageAvailabilityChecker: checker
+        )
+
+        #expect(result.didPass)
+        #expect(result.status == .dockerImageAvailabilityPassed)
+        #expect(result.auditFields["result"] == "skipped_host_environment")
+        #expect(await checker.checkedImages().isEmpty)
+        #expect(task.status == .running)
+        #expect(run.status == .running)
+        #expect(run.stopReason.isEmpty)
+    }
+
+    @Test("Docker image preflight blocks missing selected image before provider launch")
+    func dockerImagePreflightBlocksMissingImage() async throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Docker", primaryPath: NSTemporaryDirectory())
+        let task = AgentTask(title: "Docker task", goal: "Inspect files", workspace: workspace, runtime: .claudeCode)
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:missing",
+            kind: .dockerImage,
+            displayName: "Missing Image",
+            image: "astra/missing:latest"
+        ))
+        task.status = .running
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        let checker = RecordingDockerImageAvailabilityChecker(result: .failure(.missingImage("astra/missing:latest")))
+
+        let result = await AgentRuntimeLaunchPreflight.preflightDockerImageBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "run",
+            imageAvailabilityChecker: checker
+        )
+
+        #expect(!result.didPass)
+        #expect(result.status == .dockerImageAvailabilityFailed)
+        #expect(result.reason == TaskRunStopReason.dockerImageUnavailable.rawValue)
+        #expect(result.auditFields["result"] == "image_missing")
+        #expect(await checker.checkedImages() == ["astra/missing:latest"])
+        #expect(task.status == .failed)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == TaskRunStopReason.dockerImageUnavailable.rawValue)
+        #expect(task.events.contains {
+            $0.type == "error" &&
+                $0.payload.contains("Docker image preflight stopped this task") &&
+                $0.payload.contains("astra/missing:latest") &&
+                $0.payload.contains("Build the workspace image")
+        })
+    }
+
+    @Test("Docker image preflight passes when selected image is loaded")
+    func dockerImagePreflightPassesAvailableImage() async throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Docker", primaryPath: NSTemporaryDirectory())
+        let task = AgentTask(title: "Docker task", goal: "Inspect files", workspace: workspace, runtime: .claudeCode)
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:loaded",
+            kind: .dockerImage,
+            displayName: "Loaded Image",
+            image: "astra/loaded:latest"
+        ))
+        task.status = .running
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        let checker = RecordingDockerImageAvailabilityChecker(result: .success(DockerImageAvailability(
+            image: "astra/loaded:latest",
+            imageID: "sha256:abc"
+        )))
+
+        let result = await AgentRuntimeLaunchPreflight.preflightDockerImageBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "run",
+            imageAvailabilityChecker: checker
+        )
+
+        #expect(result.didPass)
+        #expect(result.status == .dockerImageAvailabilityPassed)
+        #expect(result.auditFields["result"] == "image_available")
+        #expect(result.auditFields["container_image"] == "astra/loaded:latest")
+        #expect(result.auditFields["container_image_id"] == "sha256:abc")
+        #expect(await checker.checkedImages() == ["astra/loaded:latest"])
+        #expect(task.status == .running)
+        #expect(run.status == .running)
+        #expect(run.stopReason.isEmpty)
     }
 
     @Test("Remote workspace preflight records SSH diagnostic event")

@@ -6,8 +6,10 @@ struct CopilotMCPLaunchProjection {
     let configURL: URL?
     let allowedTools: [String]
     let workspaceExecutorEnvironment: [String: String]
+    let hostControlEnvironment: [String: String]
     let dockerWorkspaceExecutorSupported: Bool
     let dockerWorkspaceUnsupportedDetail: String
+    let hostControlPlaneSupported: Bool
     let browserBridgeMCPToolSupported: Bool
 
     var readablePaths: [String] {
@@ -20,6 +22,7 @@ struct CopilotMCPLaunchProjection {
         runID: UUID?,
         executionEnvironment: WorkspaceExecutionEnvironment,
         contextText: String,
+        taskEnvironment: [String: String] = [:],
         capabilities: CopilotCLICapabilities
     ) -> CopilotMCPLaunchProjection {
         let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
@@ -39,6 +42,22 @@ struct CopilotMCPLaunchProjection {
             ) {
                 servers.append(workspaceServer)
             }
+            let hostControlEnvironment = HostControlPlaneMCPProjection.environmentVariables(
+                task: task,
+                environment: executionEnvironment,
+                currentDirectory: workspacePath,
+                runID: runID,
+                taskEnvironment: taskEnvironment
+            )
+            if let hostControlServer = HostControlPlaneMCPProjection.resolvedServer(
+                task: task,
+                environment: executionEnvironment,
+                currentDirectory: workspacePath,
+                runID: runID,
+                taskEnvironment: taskEnvironment.merging(hostControlEnvironment) { current, _ in current }
+            ) {
+                servers.append(hostControlServer)
+            }
             if let browserServer = BrowserBridgeMCPProjection.resolvedServer(
                 for: task,
                 contextText: contextText
@@ -48,16 +67,32 @@ struct CopilotMCPLaunchProjection {
             }
         }
 
-        let configURL = servers.isEmpty
-            ? nil
-            : MCPRuntimeProjection.writeClaudeConfig(servers: servers, taskID: task.id)
         let workspaceExecutorEnvironment = DockerWorkspaceMCPProjection.environmentVariables(
             task: task,
             environment: executionEnvironment,
             currentDirectory: workspacePath,
             runID: runID
         )
+        let hostControlEnvironment = HostControlPlaneMCPProjection.environmentVariables(
+            task: task,
+            environment: executionEnvironment,
+            currentDirectory: workspacePath,
+            runID: runID,
+            taskEnvironment: taskEnvironment
+        )
+        let explicitMCPEnvironment = taskEnvironment
+            .merging(workspaceExecutorEnvironment) { current, _ in current }
+            .merging(hostControlEnvironment) { current, _ in current }
+        let configURL = servers.isEmpty
+            ? nil
+            : MCPRuntimeProjection.writeClaudeConfig(
+                servers: servers,
+                taskID: task.id,
+                availableEnvironment: explicitMCPEnvironment
+            )
         let dockerWorkspaceExecutorSupported = !usesDockerWorkspaceExecutor
+            || (capabilities.supportsAdditionalMCPConfig && configURL != nil)
+        let hostControlPlaneSupported = !usesDockerWorkspaceExecutor
             || (capabilities.supportsAdditionalMCPConfig && configURL != nil)
         let unsupportedDetail = unsupportedDockerWorkspaceDetail(
             usesDockerWorkspaceExecutor: usesDockerWorkspaceExecutor,
@@ -70,8 +105,10 @@ struct CopilotMCPLaunchProjection {
             configURL: configURL,
             allowedTools: configURL == nil ? [] : MCPRuntimeProjection.allowedToolPermissions(servers: servers),
             workspaceExecutorEnvironment: workspaceExecutorEnvironment,
+            hostControlEnvironment: hostControlEnvironment,
             dockerWorkspaceExecutorSupported: dockerWorkspaceExecutorSupported,
             dockerWorkspaceUnsupportedDetail: unsupportedDetail,
+            hostControlPlaneSupported: hostControlPlaneSupported,
             browserBridgeMCPToolSupported: browserServerProjected && configURL != nil
         )
     }
@@ -174,6 +211,9 @@ enum CopilotLaunchDiagnostics {
             "docker_workspace_executor_unsupported_detail": mcpProjection.dockerWorkspaceUnsupportedDetail,
             "docker_workspace_tool": usesDockerWorkspaceExecutor ? DockerWorkspaceMCPProjection.providerToolPermission : "none",
             "docker_workspace_mcp_env_key_count": String(mcpProjection.workspaceExecutorEnvironment.count),
+            "host_control_plane_tool_count": String(HostControlPlaneMCPProjection.toolNames.count),
+            "host_control_plane_supported": String(mcpProjection.hostControlPlaneSupported),
+            "host_control_plane_mcp_env_key_count": String(mcpProjection.hostControlEnvironment.count),
             "docker_workspace_container_env_key_count": String(dockerContainerEnvCount),
             "docker_workspace_credential_projection_count": String(dockerCredentialProjectionCount),
             "browser_bridge_mcp_tool": mcpProjection.browserBridgeMCPToolSupported ? BrowserBridgeMCPProjection.providerToolPermission : "none",

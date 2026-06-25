@@ -124,7 +124,7 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
     var readScope: ExecutionSandboxReadScope
 
     /// Providers without a native OS sandbox today — wrapped by default.
-    static let defaultWrappedRuntimes: Set<AgentRuntimeID> = [.claudeCode, .copilotCLI]
+    static let defaultWrappedRuntimes: Set<AgentRuntimeID> = [.claudeCode, .copilotCLI, .openCodeCLI]
 
     /// Providers that ship their own OS sandbox (enforced via per-run flags).
     /// Excluded by default to avoid double-confinement breakage; the user can
@@ -280,36 +280,6 @@ enum ExecutionSandboxDecision: Equatable {
 enum ExecutionSandbox {
     static let sandboxExecPath = "/usr/bin/sandbox-exec"
 
-    /// Directories under the provider HOME that CLIs need to write (config,
-    /// session, and cache state). Without these the provider breaks on launch.
-    static let sharedHomeWritableRelativePaths: [String] = [
-        ".config",
-        ".cache",
-        ".npm",
-        ".local/share",
-        ".local/state",
-        "Library/Caches"
-    ]
-
-    static let claudeHomeWritableRelativePaths: [String] = [
-        ".claude",
-        ".claude.json",
-        "Library/Application Support/Claude"
-    ]
-
-    static let codexHomeWritableRelativePaths: [String] = [
-        ".codex"
-    ]
-
-    static let cursorHomeWritableRelativePaths: [String] = [
-        ".cursor"
-    ]
-
-    static let antigravityHomeWritableRelativePaths: [String] = [
-        ".antigravity",
-        ".gemini"
-    ]
-
     /// System and toolchain roots providers commonly need to execute CLIs,
     /// dynamic libraries, developer tools, Homebrew installs, and shell support
     /// files. User data locations such as `/Applications`, `~/Pictures`, and
@@ -322,9 +292,20 @@ enum ExecutionSandbox {
         "/usr/local",
         "/opt/homebrew",
         "/opt/local",
+        "/Library/Frameworks",
         "/Library/Developer",
         "/Library/Apple",
+        // Network-capable host CLIs (gcloud, ssh helpers, provider CLIs) consult
+        // system DNS, proxy, and managed-preference state while resolving hosts.
+        // These are system configuration roots, not user document locations.
+        "/Library/Managed Preferences",
+        "/Library/Preferences",
+        "/Applications/Xcode.app",
         "/private/etc",
+        // macOS resolves `/bin/sh` through this selector on some systems.
+        // Shell-script CLIs such as `gcloud` can fail before their own code runs
+        // if Seatbelt cannot read the selector symlink.
+        "/private/var/select",
         // /var/run holds host runtime state — the mDNSResponder name-resolution
         // socket, other system daemon sockets, lock/pid files — that network-
         // capable provider CLIs reach (e.g. to resolve hostnames). Read-only
@@ -424,6 +405,7 @@ enum ExecutionSandbox {
         plan: AgentRuntimeProcessLaunchPlan,
         providerHomeDirectory: String,
         additionalWritablePaths: [String] = [],
+        additionalReadablePaths: [String]? = nil,
         settings: ExecutionSandboxSettings,
         fileManager: FileManager = .default
     ) -> ExecutionSandboxDecision {
@@ -466,9 +448,10 @@ enum ExecutionSandbox {
             return unavailable("no_writable_roots")
         }
 
+        let readAdditionalPaths = additionalReadablePaths ?? additionalWritablePaths
         let explicitReadRoots = explicitlyGrantedReadableRoots(
             plan: plan,
-            additionalReadablePaths: additionalWritablePaths,
+            additionalReadablePaths: readAdditionalPaths,
             canonicalWorkspace: workspace
         )
         // The active developer toolchain must stay readable wherever it lives, or
@@ -483,7 +466,7 @@ enum ExecutionSandbox {
                 readableRoots(
                     plan: plan,
                     providerHomeDirectory: providerHomeDirectory,
-                    additionalReadablePaths: additionalWritablePaths,
+                    additionalReadablePaths: readAdditionalPaths,
                     canonicalWorkspace: workspace
                 ),
                 developerRoots
@@ -616,15 +599,20 @@ enum ExecutionSandbox {
         let trimmedHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedHome.isEmpty {
             raw.append(trimmedHome)
-        }
-
-        // Only anchor the provider config/cache subpaths on a real home; a home
-        // that is itself an overly broad root (e.g. "/") would just yield junk
-        // top-level paths like "/.claude".
-        let home = effectiveHome(plan: plan, providerHomeDirectory: trimmedHome)
-        if !home.isEmpty, let canonicalHome = canonicalize(home), !isOverlyBroadRoot(canonicalHome) {
-            for relative in homeWritableRelativePaths(for: plan.runtime) {
-                raw.append((home as NSString).appendingPathComponent(relative))
+            if let canonicalHome = canonicalize(trimmedHome), !isOverlyBroadRoot(canonicalHome) {
+                for relative in plan.sandboxHomeStateAccess.explicitHomeWritableRelativePaths {
+                    raw.append((trimmedHome as NSString).appendingPathComponent(relative))
+                }
+            }
+        } else if let envHome = plan.environment["HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !envHome.isEmpty,
+                  let canonicalHome = canonicalize(envHome),
+                  !isOverlyBroadRoot(canonicalHome) {
+            // If the provider runtime intentionally launches with a HOME, allow
+            // only that provider's own state under it. Do not grant the HOME
+            // root or generic shared cache/config roots from an inherited home.
+            for relative in plan.sandboxHomeStateAccess.inheritedHomeWritableRelativePaths {
+                raw.append((envHome as NSString).appendingPathComponent(relative))
             }
         }
 
@@ -766,29 +754,25 @@ enum ExecutionSandbox {
         providerHomeDirectory: String
     ) -> [String] {
         let trimmedHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
-        let home = effectiveHome(plan: plan, providerHomeDirectory: trimmedHome)
+        let home: String
+        let relativePaths: [String]
+        if !trimmedHome.isEmpty {
+            home = trimmedHome
+            relativePaths = plan.sandboxHomeStateAccess.explicitHomeWritableRelativePaths
+        } else if let envHome = plan.environment["HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !envHome.isEmpty {
+            home = envHome
+            relativePaths = plan.sandboxHomeStateAccess.inheritedHomeWritableRelativePaths
+        } else {
+            return []
+        }
         guard !home.isEmpty,
               let canonicalHome = canonicalize(home),
               !isOverlyBroadRoot(canonicalHome) else {
             return []
         }
-        return homeWritableRelativePaths(for: plan.runtime).map { relative in
+        return relativePaths.map { relative in
             (home as NSString).appendingPathComponent(relative)
-        }
-    }
-
-    private static func homeWritableRelativePaths(for runtime: AgentRuntimeID) -> [String] {
-        switch runtime {
-        case .claudeCode:
-            return sharedHomeWritableRelativePaths + claudeHomeWritableRelativePaths
-        case .codexCLI:
-            return sharedHomeWritableRelativePaths + codexHomeWritableRelativePaths
-        case .cursorCLI:
-            return sharedHomeWritableRelativePaths + cursorHomeWritableRelativePaths
-        case .antigravityCLI:
-            return sharedHomeWritableRelativePaths + antigravityHomeWritableRelativePaths
-        default:
-            return sharedHomeWritableRelativePaths
         }
     }
 
@@ -800,9 +784,9 @@ enum ExecutionSandbox {
         path == root || path.hasPrefix(root + "/")
     }
 
-    /// The HOME the spawned CLI will actually see: an explicit provider home if
-    /// configured, otherwise the HOME baked into the launch environment, falling
-    /// back to the process home.
+    /// The HOME ASTRA can safely reason about for provider-owned state. A caller
+    /// must pass an explicit provider home or set HOME in the launch plan; ASTRA
+    /// never falls back to its own process home for sandbox grants.
     static func effectiveHome(plan: AgentRuntimeProcessLaunchPlan, providerHomeDirectory: String) -> String {
         if !providerHomeDirectory.isEmpty {
             return providerHomeDirectory
@@ -811,7 +795,7 @@ enum ExecutionSandbox {
            !envHome.isEmpty {
             return envHome
         }
-        return NSHomeDirectory()
+        return ""
     }
 
     // MARK: - Profile generation
@@ -1074,10 +1058,13 @@ enum ExecutionSandbox {
             parsesJSONLines: plan.parsesJSONLines,
             directoriesToCreate: plan.directoriesToCreate,
             sandboxReadablePaths: plan.sandboxReadablePaths,
+            sandboxHomeStateAccess: plan.sandboxHomeStateAccess,
             sandboxProtectedWriteDenyPaths: plan.sandboxProtectedWriteDenyPaths,
             providerDetectedFields: plan.providerDetectedFields,
             commandPlannedFields: plan.commandPlannedFields,
-            interactiveAsk: plan.interactiveAsk
+            interactiveAsk: plan.interactiveAsk,
+            pathMapper: plan.pathMapper,
+            executionEnvironment: plan.executionEnvironment
         )
     }
 }

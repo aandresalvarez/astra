@@ -120,6 +120,20 @@ struct ExecutionEnvironmentCredentialProjection: Codable, Equatable, Hashable, S
         )
     }
 
+    func sanitizedForRuntime() -> ExecutionEnvironmentCredentialProjection? {
+        switch kind {
+        case .gcpADC:
+            guard id == Self.gcpADCID,
+                  Self.isApprovedGCPADCHostPath(hostPath),
+                  !hostPath.isEmpty else {
+                return nil
+            }
+            return Self.gcpADC(hostPath: hostPath)
+        case .serviceAccountFile, .genericDirectory, .genericFile:
+            return nil
+        }
+    }
+
     var mount: ExecutionEnvironmentMount {
         ExecutionEnvironmentMount(
             hostPath: hostPath,
@@ -158,6 +172,24 @@ struct ExecutionEnvironmentCredentialProjection: Codable, Equatable, Hashable, S
             return ""
         }
         return trimmed
+    }
+
+    private static func isApprovedGCPADCHostPath(_ path: String) -> Bool {
+        let standardized = WorkspacePathPresentation.standardizedPath(path)
+        guard !standardized.isEmpty else { return false }
+        let nsPath = standardized as NSString
+        guard nsPath.lastPathComponent == "gcloud",
+              (nsPath.deletingLastPathComponent as NSString).lastPathComponent == ".config" else {
+            return false
+        }
+        if let canonical = ExecutionSandbox.canonicalize(standardized) {
+            guard !ExecutionSandbox.isForbiddenReadableRoot(canonical),
+                  !ExecutionSandbox.isForbiddenWritableRoot(canonical),
+                  !ExecutionSandbox.isOverlyBroadRoot(canonical) else {
+                return false
+            }
+        }
+        return true
     }
 }
 
@@ -256,6 +288,13 @@ struct WorkspaceExecutionEnvironment: Codable, Equatable, Sendable {
     var workspaceCommandsRunInsideContainer: Bool {
         isContainerized && effectiveProviderPlacement == .host
     }
+    var workspaceCommandPlacement: String {
+        isContainerized ? "docker" : "host"
+    }
+    var workspaceShellRoute: String {
+        guard isContainerized else { return "native_host" }
+        return workspaceCommandsRunInsideContainer ? "astra_workspace_mcp" : "provider_inside_container"
+    }
     var effectiveCredentialProjections: [ExecutionEnvironmentCredentialProjection] {
         Self.normalizedCredentialProjections(credentialProjections ?? []) ?? []
     }
@@ -319,8 +358,14 @@ struct WorkspaceExecutionEnvironment: Codable, Equatable, Sendable {
         _ projections: [ExecutionEnvironmentCredentialProjection]
     ) -> [ExecutionEnvironmentCredentialProjection]? {
         var byID: [String: ExecutionEnvironmentCredentialProjection] = [:]
-        for projection in projections where !projection.id.isEmpty && !projection.hostPath.isEmpty && !projection.containerPath.isEmpty {
-            byID[projection.id] = projection
+        for projection in projections {
+            guard let sanitized = projection.sanitizedForRuntime(),
+                  !sanitized.id.isEmpty,
+                  !sanitized.hostPath.isEmpty,
+                  !sanitized.containerPath.isEmpty else {
+                continue
+            }
+            byID[sanitized.id] = sanitized
         }
         let normalized = byID.values.sorted { $0.id < $1.id }
         return normalized.isEmpty ? nil : normalized
@@ -339,6 +384,14 @@ struct WorkspaceExecutionEnvironment: Codable, Equatable, Sendable {
 enum ExecutionEnvironmentStore {
     static func encode(_ environment: WorkspaceExecutionEnvironment?) -> String? {
         guard let environment, !environment.isHost else { return nil }
+        return encodeRaw(environment)
+    }
+
+    static func encodeSnapshot(_ environment: WorkspaceExecutionEnvironment?) -> String? {
+        encodeRaw(environment ?? .host)
+    }
+
+    private static func encodeRaw(_ environment: WorkspaceExecutionEnvironment) -> String? {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         guard let data = try? encoder.encode(environment) else { return nil }
@@ -610,6 +663,7 @@ enum DockerExecutionPlanningError: LocalizedError, Equatable {
     case privilegedDenied
     case hostNetworkDenied
     case dockerSocketDenied
+    case invalidImageReference(String)
 
     var errorDescription: String? {
         switch self {
@@ -627,6 +681,8 @@ enum DockerExecutionPlanningError: LocalizedError, Equatable {
             return "Docker host networking is not allowed for ASTRA task execution."
         case .dockerSocketDenied:
             return "Mounting the Docker socket into task containers is not allowed."
+        case .invalidImageReference(let image):
+            return "Docker image reference is not safe to pass to docker run: \(image)."
         }
     }
 }
@@ -639,10 +695,17 @@ enum DockerExecutionPlanner {
            !snapshot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return ExecutionEnvironmentStore.decode(snapshot)
         }
+        if taskHasHistoricalSnapshotBoundary(task) {
+            return .host
+        }
         if let workspace = task.workspace {
             return ExecutionEnvironmentStore.decode(workspace.activeExecutionEnvironmentJSON)
         }
         return .host
+    }
+
+    private static func taskHasHistoricalSnapshotBoundary(_ task: AgentTask) -> Bool {
+        task.status != .draft || !task.runs.isEmpty
     }
 
     static func plan(
@@ -660,6 +723,9 @@ enum DockerExecutionPlanner {
         guard environment.networkMode != "host" else { return .failure(.hostNetworkDenied) }
         guard let image = environment.image, !image.isEmpty else {
             return .failure(.missingImage(environment.id))
+        }
+        guard isSafeDockerImageReference(image) else {
+            return .failure(.invalidImageReference(image))
         }
         let mounts = mountPlan(base: base, environment: environment, task: task)
         for mount in mounts {
@@ -715,6 +781,7 @@ enum DockerExecutionPlanner {
         for key in allowedEnv.keys.sorted() {
             dockerArgs += ["--env", key]
         }
+        dockerArgs.append("--")
         dockerArgs.append(image)
         dockerArgs.append(containerExecutable)
         dockerArgs.append(contentsOf: base.arguments)
@@ -726,6 +793,8 @@ enum DockerExecutionPlanner {
         commandFields["execution_environment_provider_placement"] = environment.effectiveProviderPlacement.rawValue
         commandFields["workspace_executor"] = "docker"
         commandFields["workspace_executor_mode"] = "provider_inside_container"
+        commandFields["workspace_command_placement"] = environment.workspaceCommandPlacement
+        commandFields["shell_route"] = environment.workspaceShellRoute
         commandFields["container_image"] = image
         commandFields["container_image_digest"] = environment.imageDigest ?? ""
         commandFields["container_name"] = name
@@ -760,6 +829,7 @@ enum DockerExecutionPlanner {
             parsesJSONLines: base.parsesJSONLines,
             directoriesToCreate: base.directoriesToCreate,
             sandboxReadablePaths: [],
+            sandboxHomeStateAccess: base.sandboxHomeStateAccess,
             sandboxProtectedWriteDenyPaths: [],
             providerDetectedFields: base.providerDetectedFields,
             commandPlannedFields: commandFields,
@@ -786,6 +856,8 @@ enum DockerExecutionPlanner {
         commandFields["execution_environment_provider_placement"] = environment.effectiveProviderPlacement.rawValue
         commandFields["workspace_executor"] = "docker"
         commandFields["workspace_executor_mode"] = "host_provider_container_workspace"
+        commandFields["workspace_command_placement"] = environment.workspaceCommandPlacement
+        commandFields["shell_route"] = environment.workspaceShellRoute
         commandFields["container_image"] = image
         commandFields["container_image_digest"] = environment.imageDigest ?? ""
         commandFields["container_name"] = containerName
@@ -811,6 +883,7 @@ enum DockerExecutionPlanner {
             parsesJSONLines: base.parsesJSONLines,
             directoriesToCreate: base.directoriesToCreate,
             sandboxReadablePaths: base.sandboxReadablePaths,
+            sandboxHomeStateAccess: base.sandboxHomeStateAccess,
             sandboxProtectedWriteDenyPaths: base.sandboxProtectedWriteDenyPaths,
             providerDetectedFields: base.providerDetectedFields,
             commandPlannedFields: commandFields,
@@ -828,6 +901,27 @@ enum DockerExecutionPlanner {
                 || path == "/private/var/run/docker.sock"
                 || path.hasSuffix("/.docker/run/docker.sock")
         }
+    }
+
+    static func isSafeDockerImageReference(_ image: String) -> Bool {
+        let trimmed = image.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed == image,
+              !trimmed.isEmpty,
+              !trimmed.hasPrefix("-"),
+              trimmed.rangeOfCharacter(from: .whitespacesAndNewlines) == nil else {
+            return false
+        }
+        guard trimmed.range(of: #"^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$"#, options: .regularExpression) != nil else {
+            return false
+        }
+        guard !trimmed.contains("://"),
+              !trimmed.contains(".."),
+              !trimmed.contains("//"),
+              !trimmed.hasSuffix(":"),
+              !trimmed.hasSuffix("/") else {
+            return false
+        }
+        return true
     }
 
     static func mountPlan(
@@ -1115,13 +1209,80 @@ enum DockerWorkspaceMCPProjection {
     static let serverID = "astra_workspace"
     static let toolName = "workspace_shell"
     static let providerToolPermission = "mcp__\(serverID)__\(toolName)"
+    static let copilotObservedToolName = "\(serverID)-\(toolName)"
+    static let copilotPermissionPattern = "\(serverID)(\(toolName))"
+    static let managedJobToolNames = [
+        "workspace_job_start",
+        "workspace_job_status",
+        "workspace_job_tail",
+        "workspace_job_cancel",
+        "workspace_job_wait"
+    ]
+    static let toolNames = [toolName] + managedJobToolNames
 
     static func isEnabled(for environment: WorkspaceExecutionEnvironment) -> Bool {
         environment.workspaceCommandsRunInsideContainer
     }
 
     static func supportsHostProviderWorkspaceExecutor(runtime: AgentRuntimeID) -> Bool {
-        runtime == .claudeCode || runtime == .copilotCLI || runtime == .codexCLI
+        AgentRuntimeAdapterRegistry.descriptor(for: runtime).supportsMCPServers
+    }
+
+    static func runtimeSupportToolDescriptor(for runtime: AgentRuntimeID) -> ProviderRuntimeSupportToolDescriptor? {
+        runtimeSupportToolDescriptors(for: runtime).first
+    }
+
+    static func runtimeSupportToolDescriptors(for runtime: AgentRuntimeID) -> [ProviderRuntimeSupportToolDescriptor] {
+        guard supportsHostProviderWorkspaceExecutor(runtime: runtime) else { return [] }
+        return toolNames.map { tool in
+            ProviderRuntimeSupportToolDescriptor(
+                name: providerToolPermission(for: tool),
+                purpose: runtimeSupportPurpose(for: tool),
+                allowedInputKeys: allowedInputKeys(for: tool),
+                deniedInputKeys: deniedInputKeys(for: tool),
+                maxSummaryLength: 2_000
+            )
+        }
+    }
+
+    static func isObservedWorkspaceTool(_ observedToolName: String, runtime: AgentRuntimeID) -> Bool {
+        canonicalToolName(fromObservedToolName: observedToolName, runtime: runtime) != nil
+    }
+
+    static func canonicalToolName(fromObservedToolName observedToolName: String, runtime: AgentRuntimeID) -> String? {
+        let normalized = observedToolName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return nil }
+        for tool in toolNames {
+            let commonNames: Set<String> = [
+                providerToolPermission(for: tool).lowercased(),
+                "\(serverID).\(tool)".lowercased(),
+                "\(serverID)/\(tool)".lowercased(),
+                tool.lowercased()
+            ]
+            if commonNames.contains(normalized) {
+                return tool
+            }
+            if runtime == .copilotCLI,
+               normalized == copilotObservedToolName(for: tool).lowercased()
+                    || normalized == copilotPermissionPattern(for: tool).lowercased() {
+                return tool
+            }
+        }
+        return nil
+    }
+
+    static func manifestServer() -> RunPermissionManifest.MCPServer {
+        RunPermissionManifest.MCPServer(
+            id: serverID,
+            packageID: "astra-builtin",
+            displayName: "ASTRA Workspace Shell",
+            transport: PluginMCPServer.Transport.stdio.rawValue,
+            allowedTools: toolNames,
+            excludedTools: [],
+            resourcesEnabled: false,
+            promptsEnabled: false,
+            trustLevel: PluginMCPServer.TrustLevel.high.rawValue
+        )
     }
 
     static func resolvedServer(
@@ -1140,7 +1301,7 @@ enum DockerWorkspaceMCPProjection {
                 command: astraWorkspaceToolPath(),
                 arguments: [],
                 environmentKeys: environmentKeys,
-                allowedTools: [toolName],
+                allowedTools: toolNames,
                 trustLevel: .high
             ),
             permittedEnvironmentKeys: Set(environmentKeys)
@@ -1167,7 +1328,10 @@ enum DockerWorkspaceMCPProjection {
         let workdir = mapper.containerPath(forHostPath: currentDirectory) ?? environment.containerWorkingDirectory
         let containerName = containerName(taskID: task.id, runID: runID)
         let containerEnv = DockerExecutionPlanner.credentialProjectionEnvironment(environment: environment)
-        return [
+        let jobRootHost = jobRootHostPath(task: task)
+        let jobRootContainer = mapper.containerPath(forHostPath: jobRootHost)
+            ?? (workdir as NSString).appendingPathComponent(".astra/tasks/\(String(task.id.uuidString.prefix(8)))/jobs")
+        var variables = [
             "ASTRA_WORKSPACE_DOCKER_EXECUTABLE": "docker",
             "ASTRA_WORKSPACE_DOCKER_IMAGE": image,
             "ASTRA_WORKSPACE_DOCKER_CONTAINER": containerName,
@@ -1176,8 +1340,14 @@ enum DockerWorkspaceMCPProjection {
             "ASTRA_WORKSPACE_DOCKER_MOUNTS": mountsJSON(mounts),
             "ASTRA_WORKSPACE_DOCKER_ENV": containerEnvironmentJSON(containerEnv),
             "ASTRA_WORKSPACE_TASK_ID": task.id.uuidString,
-            "ASTRA_WORKSPACE_RUN_ID": runID?.uuidString ?? "run"
+            "ASTRA_WORKSPACE_RUN_ID": runID?.uuidString ?? "run",
+            "ASTRA_WORKSPACE_JOB_ROOT_HOST": jobRootHost,
+            "ASTRA_WORKSPACE_JOB_ROOT_CONTAINER": jobRootContainer
         ]
+        if let dockerConfigDirectory = taskScopedDockerConfigDirectory(task: task, runID: runID) {
+            variables["DOCKER_CONFIG"] = dockerConfigDirectory
+        }
+        return variables
     }
 
     static func removingNativeShellTools(_ tools: [String]) -> [String] {
@@ -1186,6 +1356,67 @@ enum DockerWorkspaceMCPProjection {
 
     static func containerName(taskID: UUID, runID: UUID?) -> String {
         "astra-\(taskID.uuidString.prefix(8).lowercased())-\((runID?.uuidString.prefix(8).lowercased()) ?? "run")"
+    }
+
+    static func providerToolPermission(for tool: String) -> String {
+        "mcp__\(serverID)__\(tool)"
+    }
+
+    static func copilotObservedToolName(for tool: String) -> String {
+        "\(serverID)-\(tool)"
+    }
+
+    static func copilotPermissionPattern(for tool: String) -> String {
+        "\(serverID)(\(tool))"
+    }
+
+    private static func runtimeSupportPurpose(for tool: String) -> String {
+        switch tool {
+        case "workspace_shell":
+            return "Run short project shell commands inside ASTRA's selected Docker workspace container."
+        case "workspace_job_start":
+            return "Start durable long-running project commands inside ASTRA's selected Docker workspace container."
+        case "workspace_job_status":
+            return "Read status for durable ASTRA-managed Docker workspace jobs."
+        case "workspace_job_tail":
+            return "Read stdout or stderr logs for durable ASTRA-managed Docker workspace jobs."
+        case "workspace_job_cancel":
+            return "Cancel durable ASTRA-managed Docker workspace jobs."
+        case "workspace_job_wait":
+            return "Briefly wait for durable ASTRA-managed Docker workspace jobs without owning their full runtime."
+        default:
+            return "Use ASTRA's Docker workspace executor."
+        }
+    }
+
+    private static func allowedInputKeys(for tool: String) -> [String] {
+        switch tool {
+        case "workspace_shell":
+            return ["command", "timeout_seconds"]
+        case "workspace_job_start":
+            return ["command", "timeout_seconds", "label", "progress_probe"]
+        case "workspace_job_status", "workspace_job_cancel":
+            return ["job_id"]
+        case "workspace_job_tail":
+            return ["job_id", "stream", "lines"]
+        case "workspace_job_wait":
+            return ["job_id", "max_wait_seconds"]
+        default:
+            return []
+        }
+    }
+
+    private static func deniedInputKeys(for tool: String) -> [String] {
+        let allowed = Set(allowedInputKeys(for: tool) + ["cmd"])
+        return ProviderRuntimeSupportToolDescriptor.defaultDeniedActionInputKeys.filter {
+            !allowed.contains($0)
+        }
+    }
+
+    private static func jobRootHostPath(task: AgentTask) -> String {
+        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !taskFolder.isEmpty else { return "" }
+        return (taskFolder as NSString).appendingPathComponent("jobs")
     }
 
     private static let environmentKeys = [
@@ -1197,7 +1428,10 @@ enum DockerWorkspaceMCPProjection {
         "ASTRA_WORKSPACE_DOCKER_MOUNTS",
         "ASTRA_WORKSPACE_DOCKER_ENV",
         "ASTRA_WORKSPACE_TASK_ID",
-        "ASTRA_WORKSPACE_RUN_ID"
+        "ASTRA_WORKSPACE_RUN_ID",
+        "ASTRA_WORKSPACE_JOB_ROOT_HOST",
+        "ASTRA_WORKSPACE_JOB_ROOT_CONTAINER",
+        "DOCKER_CONFIG"
     ]
 
     private struct MountPayload: Codable {
@@ -1234,6 +1468,37 @@ enum DockerWorkspaceMCPProjection {
             return "{}"
         }
         return json
+    }
+
+    static func taskScopedDockerConfigDirectory(
+        task: AgentTask,
+        runID: UUID?,
+        fileManager: FileManager = .default
+    ) -> String? {
+        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !taskFolder.isEmpty else { return nil }
+        let directory = URL(fileURLWithPath: taskFolder, isDirectory: true)
+            .appendingPathComponent(".runtime", isDirectory: true)
+            .appendingPathComponent("docker-client", isDirectory: true)
+            .appendingPathComponent(String((runID?.uuidString ?? "run").prefix(8)), isDirectory: true)
+        let configFile = directory.appendingPathComponent("config.json", isDirectory: false)
+        do {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            if !fileManager.fileExists(atPath: configFile.path) {
+                try #"{"auths":{}}"#
+                    .appending("\n")
+                    .write(to: configFile, atomically: true, encoding: .utf8)
+            }
+            return directory.standardizedFileURL.path
+        } catch {
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
+                "reason": "docker_client_config_prepare_failed",
+                "run_id": runID?.uuidString ?? "",
+                "path": directory.path,
+                "error": error.localizedDescription
+            ], level: .error)
+            return nil
+        }
     }
 
     private static func isNativeShellTool(_ tool: String) -> Bool {
