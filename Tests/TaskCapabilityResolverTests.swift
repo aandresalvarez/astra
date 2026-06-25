@@ -157,6 +157,106 @@ struct TaskCapabilityResolverTests {
         #expect(prompt.contains("[Jira Agent]:"))
     }
 
+    @Test("Provider launch connector scope follows active objective instead of stale task goal")
+    func providerLaunchConnectorScopeFollowsActiveObjective() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let jiraPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+
+        let workspace = Workspace(name: "Starr Data Lake", primaryPath: "/tmp/starr-data-lake")
+        workspace.enabledCapabilityIDs = [jiraPackage.id]
+        context.insert(workspace)
+
+        let jiraSkill = Skill(
+            name: "Jira Agent",
+            allowedTools: ["Bash"],
+            behaviorInstructions: "Use Jira only for sprint story work."
+        )
+        jiraSkill.isGlobal = true
+        context.insert(jiraSkill)
+
+        let jiraConnector = Connector(
+            name: "Jira-new",
+            serviceType: "jira",
+            connectorDescription: "Jira sprint story connector",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "basic"
+        )
+        jiraConnector.isGlobal = true
+        jiraConnector.skill = jiraSkill
+        jiraConnector.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        context.insert(jiraConnector)
+
+        let gcpConnector = Connector(
+            name: "Google Cloud",
+            serviceType: "gcp",
+            connectorDescription: "Google Cloud BigQuery credentials for dbt regression tests",
+            baseURL: "https://bigquery.googleapis.com",
+            authMethod: "adc"
+        )
+        gcpConnector.isGlobal = true
+        gcpConnector.credentialKeys = ["GOOGLE_APPLICATION_CREDENTIALS"]
+        context.insert(gcpConnector)
+
+        workspace.enabledGlobalConnectorIDs = [
+            jiraConnector.id.uuidString,
+            gcpConnector.id.uuidString
+        ]
+
+        let task = AgentTask(
+            title: "List active sprint stories",
+            goal: "List my stories for the active sprint in the STAR Jira project",
+            workspace: workspace
+        )
+        context.insert(task)
+
+        let first = TaskEvent(
+            task: task,
+            type: "user.message",
+            payload: "List my stories for the active sprint in the STAR Jira project"
+        )
+        first.timestamp = Date(timeIntervalSince1970: 1)
+        context.insert(first)
+
+        let correction = TaskEvent(
+            task: task,
+            type: "user.message",
+            payload: "no your goal is to complete the plan.md document"
+        )
+        correction.timestamp = Date(timeIntervalSince1970: 2)
+        context.insert(correction)
+        try context.save()
+
+        let scope = TaskCapabilityResolver(task: task).promptScope(
+            contextText: "Continue Phase 5 from plan.md: run dbt tests against BigQuery in Docker."
+        )
+
+        #expect(scope.behaviorSkills.map(\.name).contains("Jira Agent") == false)
+        #expect(scope.connectors.map(\.name) == ["Google Cloud"])
+        #expect(scope.resolver.resolvedEnvironmentVariables.keys.contains { $0.contains("JIRA") } == false)
+
+        let providerLaunchIssues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [jiraPackage],
+            checkExecutables: false,
+            scope: .providerLaunch(contextText: "Continue Phase 5 from plan.md: run dbt tests against BigQuery in Docker."),
+            secretStore: MockSecretStore()
+        )
+        #expect(providerLaunchIssues.isEmpty)
+
+        let fullInventoryIssues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [jiraPackage],
+            checkExecutables: false,
+            scope: .fullInventory,
+            secretStore: MockSecretStore()
+        )
+        #expect(fullInventoryIssues.contains {
+            $0.resourceKind == .credential &&
+                $0.message.contains("Jira-new is missing Keychain value")
+        })
+    }
+
     @Test("Multiple same-service connectors project namespaced env vars without legacy collision")
     func multipleSameServiceConnectorsProjectNamespacedEnvVarsWithoutLegacyCollision() throws {
         let container = try makeTaskCapabilityResolverContainer()
@@ -317,8 +417,8 @@ struct TaskCapabilityResolverTests {
         #expect(prompt.contains("ASTRA_CONNECTORS"))
     }
 
-    @Test("Single same-service connector keeps legacy env vars during deprecation window")
-    func singleSameServiceConnectorKeepsLegacyEnvVarsDuringDeprecationWindow() throws {
+    @Test("Single same-service connector uses namespaced env vars by default")
+    func singleSameServiceConnectorUsesNamespacedEnvVarsByDefault() throws {
         let container = try makeTaskCapabilityResolverContainer()
         let context = container.mainContext
 
@@ -347,7 +447,7 @@ struct TaskCapabilityResolverTests {
 
         let env = TaskCapabilityResolver(task: task).resolver.resolvedEnvironmentVariables
         #expect(env["REDCAP_STUDY_A_SOURCE_API_URL"] == "https://redcap.example.edu/api/source")
-        #expect(env["REDCAP_API_URL"] == "https://redcap.example.edu/api/source")
+        #expect(env["REDCAP_API_URL"] == nil)
     }
 
     @Test("Projection namespaces duplicate connector credentials")
@@ -398,7 +498,7 @@ struct TaskCapabilityResolverTests {
         ).environmentVariables()
 
         #expect(env["JIRA_JIRA_EMAIL"] == "user@example.edu")
-        #expect(env["JIRA_EMAIL"] == "user@example.edu")
+        #expect(env["JIRA_EMAIL"] == nil)
         #expect(env["JIRA_JIRA_API_TOKEN"] == nil)
         #expect(env["JIRA_API_TOKEN"] == nil)
 
@@ -600,7 +700,7 @@ struct TaskCapabilityResolverTests {
         let env = ConnectorRuntimeProjection(connectors: [connector]).environmentVariables()
 
         #expect(env["JIRA_JIRA_BASE_URL"] == "https://jira.example.edu")
-        #expect(env["JIRA_BASE_URL"] == "https://jira.example.edu")
+        #expect(env["JIRA_BASE_URL"] == nil)
         #expect(env["JIRA_JIRA_PROJECTS"] == nil)
         #expect(env["JIRA_PROJECTS"] == nil)
         #expect(env["JIRA_JIRA_REGION"] == nil)
@@ -746,7 +846,8 @@ struct TaskCapabilityResolverTests {
 
         let env = scope.resolver.resolvedEnvironmentVariables
         #expect(env["JIRA_JIRA_NEW_BASE_URL"] == "https://stanfordmed.atlassian.net")
-        #expect(env["JIRA_PROJECTS"] == "SS")
+        #expect(env["JIRA_JIRA_NEW_PROJECTS"] == "SS")
+        #expect(env["JIRA_PROJECTS"] == nil)
         #expect(env["ASTRA_CONNECTORS"]?.contains(#""name":"Jira-new""#) == true)
 
         let prompt = AgentPromptBuilder.buildPrompt(for: task)
@@ -1957,6 +2058,39 @@ struct TaskCapabilityResolverTests {
         let prompt = ShelfBrowserBridgeRegistry.shared.promptContext(for: task.id)
         #expect(prompt?.contains("Enabled browser site adapters: googleDrive") == true)
         #expect(prompt?.contains("astra-browser google-drive-open") == true)
+    }
+
+    @Test("Hidden adapter-only browser state does not expose browser bridge to unrelated tasks")
+    func hiddenAdapterOnlyBrowserStateDoesNotExposeBrowserBridgeToUnrelatedTasks() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Docker Browser Adapter Workspace", primaryPath: "/tmp/docker-browser-adapter-workspace")
+        context.insert(workspace)
+
+        let task = AgentTask(
+            title: "Summarize folder contents",
+            goal: "summarize the contents of this folder using the configured Docker image",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: nil,
+            currentTitle: nil,
+            taskID: task.id,
+            isPresented: false,
+            isEnabled: true,
+            enabledBrowserAdapters: [BrowserSiteAdapterID.github]
+        )
+        defer { ShelfBrowserBridgeRegistry.shared.reset() }
+
+        let contextText = "summarize the contents of this folder using the configured Docker image"
+
+        #expect(!TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText))
+        #expect(AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: task, contextText: contextText)["ASTRA_BROWSER_URL"] == nil)
     }
 
     @Test("Browser adapters require runnable catalog policy")

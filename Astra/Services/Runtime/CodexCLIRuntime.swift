@@ -45,6 +45,7 @@ enum CodexCLIRuntime {
         pathPrefix: [String] = [],
         includeAstraToolsPath: Bool = false,
         allowExternalFileReadsForSSH: Bool = false,
+        mcpConfigArguments: [String] = [],
         resumeSessionID: String? = nil
     ) -> CodexCLICommandPlan {
         let providerModel = resolvedModelName(model)
@@ -62,6 +63,7 @@ enum CodexCLIRuntime {
                 "--ignore-rules",
                 "--model", providerModel
             ]
+            args += mcpConfigArguments
             args += codexResumePermissionArguments(policy: permissionPolicy)
             if allowExternalFileReadsForSSH, permissionPolicy != .autonomous {
                 args += ["--config", "sandbox_permissions=[\"disk-full-read-access\"]"]
@@ -77,6 +79,7 @@ enum CodexCLIRuntime {
                 "--model", providerModel,
                 "--cd", workspacePath
             ]
+            args += mcpConfigArguments
 
             let uniquePaths = Array(Set(additionalPaths.filter { !$0.isEmpty && $0 != workspacePath })).sorted()
             for path in uniquePaths {
@@ -125,9 +128,9 @@ enum CodexCLIRuntime {
         case .autonomous:
             return ["--dangerously-bypass-approvals-and-sandbox"]
         case .restricted:
-            return ["--sandbox", "workspace-write"]
+            return nonInteractiveApprovalArguments + ["--sandbox", "workspace-write"]
         case .interactive:
-            return ["--sandbox", "read-only"]
+            return nonInteractiveApprovalArguments + ["--sandbox", "read-only"]
         }
     }
 
@@ -142,11 +145,13 @@ enum CodexCLIRuntime {
         case .autonomous:
             return ["--dangerously-bypass-approvals-and-sandbox"]
         case .restricted:
-            return ["-c", "sandbox_mode=\"workspace-write\""]
+            return nonInteractiveApprovalArguments + ["-c", "sandbox_mode=\"workspace-write\""]
         case .interactive:
-            return ["-c", "sandbox_mode=\"read-only\""]
+            return nonInteractiveApprovalArguments + ["-c", "sandbox_mode=\"read-only\""]
         }
     }
+
+    private static let nonInteractiveApprovalArguments = ["-c", "approval_policy=\"never\""]
 
     static func resolvedModelName(_ model: String) -> String {
         let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)

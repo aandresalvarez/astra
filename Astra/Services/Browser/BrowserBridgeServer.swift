@@ -69,6 +69,12 @@ final class BrowserBridgeServer: @unchecked Sendable {
     typealias RouteHandler = @Sendable (BrowserBridgeRequest) async -> BrowserBridgeResponse
     typealias EndpointHandler = @Sendable (String?) -> Void
 
+    private enum RequestParseResult {
+        case pending
+        case invalid(String)
+        case complete(BrowserBridgeRequest)
+    }
+
     private let queue = DispatchQueue(label: "com.coral.astra.browser-bridge")
     private let route: RouteHandler
     private let onEndpointChanged: EndpointHandler
@@ -159,7 +165,8 @@ final class BrowserBridgeServer: @unchecked Sendable {
                 buffer.append(data)
             }
 
-            if let request = Self.parseRequest(from: buffer) {
+            switch Self.parseRequest(from: buffer) {
+            case .complete(let request):
                 guard self.isAuthorized(request) else {
                     self.send(.json(["ok": false, "error": "unauthorized_browser_bridge_request"], statusCode: 403), on: connection)
                     return
@@ -173,6 +180,11 @@ final class BrowserBridgeServer: @unchecked Sendable {
                     self.send(response, on: connection)
                 }
                 return
+            case .invalid(let reason):
+                self.send(.json(["ok": false, "error": reason], statusCode: 400), on: connection)
+                return
+            case .pending:
+                break
             }
 
             guard buffer.count < 1024 * 1024 else {
@@ -209,14 +221,14 @@ final class BrowserBridgeServer: @unchecked Sendable {
         return String(authorization.dropFirst(prefix.count)) == requiredAccessToken
     }
 
-    private static func parseRequest(from data: Data) -> BrowserBridgeRequest? {
-        guard let separatorRange = data.range(of: Data("\r\n\r\n".utf8)) else { return nil }
+    private static func parseRequest(from data: Data) -> RequestParseResult {
+        guard let separatorRange = data.range(of: Data("\r\n\r\n".utf8)) else { return .pending }
         let headerData = data[..<separatorRange.lowerBound]
-        guard let headerText = String(data: headerData, encoding: .utf8) else { return nil }
+        guard let headerText = String(data: headerData, encoding: .utf8) else { return .invalid("invalid_request_headers") }
         let lines = headerText.components(separatedBy: "\r\n")
-        guard let requestLine = lines.first else { return nil }
+        guard let requestLine = lines.first else { return .invalid("invalid_request_line") }
         let requestParts = requestLine.split(separator: " ", maxSplits: 2).map(String.init)
-        guard requestParts.count >= 2 else { return nil }
+        guard requestParts.count >= 2 else { return .invalid("invalid_request_line") }
 
         var headers: [String: String] = [:]
         for line in lines.dropFirst() {
@@ -226,10 +238,22 @@ final class BrowserBridgeServer: @unchecked Sendable {
             headers[key] = value
         }
 
-        let contentLength = headers["content-length"].flatMap(Int.init) ?? 0
+        let contentLength: Int
+        if let rawContentLength = headers["content-length"] {
+            guard let parsed = Int(rawContentLength), parsed >= 0 else {
+                return .invalid("invalid_content_length")
+            }
+            contentLength = parsed
+        } else {
+            contentLength = 0
+        }
+        guard contentLength <= 1024 * 1024 else {
+            return .invalid("request_too_large")
+        }
         let bodyStart = separatorRange.upperBound
-        guard data.count >= bodyStart + contentLength else { return nil }
-        let body = data[bodyStart..<(bodyStart + contentLength)]
+        guard contentLength <= data.count - bodyStart else { return .pending }
+        let bodyEnd = bodyStart + contentLength
+        let body = data[bodyStart..<bodyEnd]
         let requestTarget = requestParts[1]
         let components = URLComponents(string: requestTarget)
         let path = components?.path.isEmpty == false ? components?.path ?? requestTarget : requestTarget.split(separator: "?", maxSplits: 1).first.map(String.init) ?? requestTarget
@@ -240,13 +264,13 @@ final class BrowserBridgeServer: @unchecked Sendable {
             }
         }
 
-        return BrowserBridgeRequest(
+        return .complete(BrowserBridgeRequest(
             method: requestParts[0].uppercased(),
             path: path,
             headers: headers,
             queryItems: queryItems,
             body: Data(body)
-        )
+        ))
     }
 
     private static func reasonPhrase(for statusCode: Int) -> String {

@@ -156,6 +156,7 @@ struct CodexCLIRuntimeTests {
         #expect(plan.arguments.contains("/tmp/extra"))
         #expect(plan.arguments.contains("--sandbox"))
         #expect(plan.arguments.contains("workspace-write"))
+        #expect(plan.arguments.contains(#"approval_policy="never""#))
         #expect(plan.arguments.contains("--ask-for-approval") == false)
         #expect(plan.arguments.contains("--skip-git-repo-check"))
         #expect(plan.arguments.contains("--ignore-user-config"))
@@ -246,6 +247,7 @@ struct CodexCLIRuntimeTests {
         // its run-phase sandbox mode via the supported `-c sandbox_mode` override.
         #expect(!plan.arguments.contains("--sandbox"))
         #expect(plan.arguments.contains("-c"))
+        #expect(plan.arguments.contains(#"approval_policy="never""#))
         #expect(plan.arguments.contains(#"sandbox_mode="workspace-write""#))
         #expect(plan.arguments.contains("--ephemeral") == false)
         #expect(plan.arguments.last == "Continue the work")
@@ -271,11 +273,11 @@ struct CodexCLIRuntimeTests {
         // Parity with codexPermissionArguments: each non-autonomous policy maps to
         // the matching `sandbox_mode`, and no bare --sandbox flag leaks onto resume.
         let restricted = CodexCLIRuntime.codexResumePermissionArguments(policy: .restricted)
-        #expect(restricted == ["-c", "sandbox_mode=\"workspace-write\""])
+        #expect(restricted == ["-c", "approval_policy=\"never\"", "-c", "sandbox_mode=\"workspace-write\""])
         #expect(!restricted.contains("--sandbox"))
 
         let interactive = CodexCLIRuntime.codexResumePermissionArguments(policy: .interactive)
-        #expect(interactive == ["-c", "sandbox_mode=\"read-only\""])
+        #expect(interactive == ["-c", "approval_policy=\"never\"", "-c", "sandbox_mode=\"read-only\""])
         #expect(!interactive.contains("--sandbox"))
 
         // Autonomous stays externally sandboxed via the bypass flag (no -c needed).
@@ -321,6 +323,7 @@ struct CodexCLIRuntimeTests {
 
         #expect(render.providerID == AgentRuntimeID.codexCLI)
         #expect(render.generatedConfigPreview.contains("--sandbox workspace-write"))
+        #expect(render.generatedConfigPreview.contains(#"approval_policy="never""#))
         #expect(render.generatedConfigPreview.contains("--ask-for-approval") == false)
         #expect(render.diagnostics.contains { $0.id == "codex_cli.fine-grained-provider-native-gap" })
         #expect(render.usesBroadProviderPermissions == false)

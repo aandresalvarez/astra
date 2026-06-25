@@ -705,11 +705,8 @@ struct CapabilityInstaller {
     private func unsafeLocalToolMessages(for package: PluginPackage) -> [String] {
         package.localTools.compactMap { tool in
             let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let reason = LocalToolSecurityPolicy.unsafeCommandReason(command) {
-                return "\(package.name) defines local tool \(tool.name) with an unsafe command: \(reason). Put flags or shell syntax in reviewed documentation, not in the command field."
-            }
-            if let reason = LocalToolSecurityPolicy.unsafeArgumentsReason(tool.arguments) {
-                return "\(package.name) defines local tool \(tool.name) with unsafe default arguments: \(reason). Keep shell control syntax out of package defaults."
+            if let reason = LocalToolSecurityPolicy.unsafeInvocationReason(command: command, arguments: tool.arguments) {
+                return "\(package.name) defines local tool \(tool.name) with an unsafe command or default arguments: \(reason). Put flags or shell syntax in reviewed documentation, not in package defaults."
             }
             return nil
         }
@@ -737,11 +734,11 @@ struct CapabilityInstaller {
             switch server.transport {
             case .stdio:
                 let command = (server.command ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                if let reason = LocalToolSecurityPolicy.unsafeCommandReason(command) {
-                    return "\(package.name) defines MCP server \(server.displayName) with an unsafe command: \(reason)."
-                }
-                if let reason = LocalToolSecurityPolicy.unsafeArgumentsReason(server.arguments.joined(separator: " ")) {
-                    return "\(package.name) defines MCP server \(server.displayName) with unsafe default arguments: \(reason)."
+                if let reason = LocalToolSecurityPolicy.unsafeInvocationReason(
+                    command: command,
+                    arguments: server.arguments.joined(separator: " ")
+                ) {
+                    return "\(package.name) defines MCP server \(server.displayName) with an unsafe command or default arguments: \(reason)."
                 }
             case .http, .sse:
                 guard let url = server.url,

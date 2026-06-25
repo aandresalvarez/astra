@@ -181,10 +181,12 @@ struct CapabilityLibrary {
             at: destinationAssetURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        if fileManager.fileExists(atPath: destinationAssetURL.path) {
-            try fileManager.removeItem(at: destinationAssetURL)
+        if !sameFile(sourceAssetURL, destinationAssetURL) {
+            if fileManager.fileExists(atPath: destinationAssetURL.path) {
+                try fileManager.removeItem(at: destinationAssetURL)
+            }
+            try fileManager.copyItem(at: sourceAssetURL, to: destinationAssetURL)
         }
-        try fileManager.copyItem(at: sourceAssetURL, to: destinationAssetURL)
 
         storedPackage.sourceMetadata?.url = manifestURL
         let encoder = JSONEncoder()
@@ -201,7 +203,7 @@ struct CapabilityLibrary {
             let url = packageStorageURL(for: package.id)
             if let data = readLibraryData(at: url),
                let existing = try? decoder.decode(PluginPackage.self, from: data),
-               shouldPreserveExistingPackage(existing, insteadOf: approved) {
+               shouldPreserveExistingPackage(existing, insteadOf: approved, storageURL: url) {
                 continue
             }
 
@@ -433,8 +435,17 @@ struct CapabilityLibrary {
         (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
     }
 
-    private func shouldPreserveExistingPackage(_ existing: PluginPackage, insteadOf approved: PluginPackage) -> Bool {
+    private func shouldPreserveExistingPackage(
+        _ existing: PluginPackage,
+        insteadOf approved: PluginPackage,
+        storageURL: URL
+    ) -> Bool {
         if approved.sourceMetadata?.kind == "built-in", existing.sourceMetadata?.kind != "built-in" {
+            return false
+        }
+
+        if approved.iconDescriptor.kind == .asset,
+           !storedIconAssetIsValid(for: existing, storageURL: storageURL) {
             return false
         }
 
@@ -451,6 +462,21 @@ struct CapabilityLibrary {
         }
 
         return canonicalPackageData(existing) == canonicalPackageData(approved)
+    }
+
+    private func storedIconAssetIsValid(for package: PluginPackage, storageURL: URL) -> Bool {
+        guard package.iconDescriptor.kind == .asset else { return true }
+        let packageRoot = storageURL.deletingLastPathComponent()
+        return (try? CapabilityIconAssetPolicy.validatedAssetURL(
+            relativePath: package.iconDescriptor.value,
+            rootURL: packageRoot,
+            fileManager: fileManager
+        )) != nil
+    }
+
+    private func sameFile(_ lhs: URL, _ rhs: URL) -> Bool {
+        lhs.resolvingSymlinksInPath().standardizedFileURL.path ==
+            rhs.resolvingSymlinksInPath().standardizedFileURL.path
     }
 
     private func canonicalPackageData(_ package: PluginPackage) -> Data? {

@@ -566,6 +566,127 @@ struct LegacyCredentialTests {
         #expect(creds["API_KEY"] == "secure-value")
     }
 
+    @Test("Stable connector namespace normalizes equivalent base URLs")
+    func stableConnectorNamespaceNormalizesBaseURL() {
+        let first = KeychainSecretStore.stableConnectorEntityID(
+            serviceType: "jira",
+            baseURL: "https://StanfordMed.atlassian.net/"
+        )
+        let second = KeychainSecretStore.stableConnectorEntityID(
+            serviceType: "jira",
+            baseURL: "stanfordmed.atlassian.net"
+        )
+
+        #expect(first != nil)
+        #expect(first == second)
+    }
+
+    @Test("Package-owned stable connector namespaces include package identity")
+    func packageOwnedStableConnectorNamespaceIncludesPackageIdentity() throws {
+        let first = KeychainSecretStore.stableConnectorEntityID(
+            serviceType: "jira",
+            baseURL: "https://stanfordmed.atlassian.net",
+            originPackageID: "package.a",
+            originComponentID: "connector:jira"
+        )
+        let second = KeychainSecretStore.stableConnectorEntityID(
+            serviceType: "jira",
+            baseURL: "https://stanfordmed.atlassian.net",
+            originPackageID: "package.b",
+            originComponentID: "connector:jira"
+        )
+        let endpointOnly = KeychainSecretStore.stableConnectorEntityID(
+            serviceType: "jira",
+            baseURL: "https://stanfordmed.atlassian.net"
+        )
+
+        #expect(first != nil)
+        #expect(second != nil)
+        #expect(endpointOnly != nil)
+        #expect(first != second)
+        #expect(first != endpointOnly)
+        #expect(second != endpointOnly)
+    }
+
+    @Test("Package connector does not claim endpoint-only stable secrets")
+    func packageConnectorDoesNotClaimEndpointOnlyStableSecrets() throws {
+        let store = MockSecretStore()
+        let endpointOnly = try #require(KeychainSecretStore.stableConnectorEntityID(
+            serviceType: "jira",
+            baseURL: "https://stanfordmed.atlassian.net"
+        ))
+        store.save(key: "JIRA_API_TOKEN", value: "endpoint-secret", entityID: endpointOnly, label: nil)
+
+        let connector = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "basic"
+        )
+        connector.originPackageID = "untrusted.package"
+        connector.originComponentID = "connector:jira"
+        connector.credentialKeys = ["JIRA_API_TOKEN"]
+
+        #expect(connector.credentials(store: store)["JIRA_API_TOKEN"] == nil)
+        #expect(connector.missingCredentialKeys(store: store) == ["JIRA_API_TOKEN"])
+    }
+
+    @Test("Stable connector namespace requires endpoint or package origin")
+    func stableConnectorNamespaceRequiresDurableIdentity() {
+        let entityID = KeychainSecretStore.stableConnectorEntityID(
+            serviceType: "custom",
+            baseURL: ""
+        )
+
+        #expect(entityID == nil)
+    }
+
+    @Test("Recreated connector reuses stable endpoint credentials")
+    func recreatedConnectorReusesStableEndpointCredentials() throws {
+        let store = MockSecretStore()
+        let original = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "basic"
+        )
+        original.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        let stableEntityID = try #require(KeychainSecretStore.stableConnectorEntityID(for: original))
+        store.save(key: "JIRA_EMAIL", value: "user@example.com", entityID: stableEntityID, label: nil)
+        store.save(key: "JIRA_API_TOKEN", value: "secret-token", entityID: stableEntityID, label: nil)
+
+        let recreated = Connector(
+            name: "Jira-new",
+            serviceType: "jira",
+            baseURL: "stanfordmed.atlassian.net/",
+            authMethod: "basic"
+        )
+        recreated.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+
+        let credentials = recreated.credentials(store: store)
+        #expect(credentials["JIRA_EMAIL"] == "user@example.com")
+        #expect(credentials["JIRA_API_TOKEN"] == "secret-token")
+        #expect(recreated.missingCredentialKeys(store: store).isEmpty)
+    }
+
+    @Test("Connector UUID namespace overrides stable endpoint credentials")
+    func uuidNamespaceOverridesStableEndpointCredentials() throws {
+        let store = MockSecretStore()
+        let connector = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "basic"
+        )
+        connector.credentialKeys = ["JIRA_API_TOKEN"]
+        let stableEntityID = try #require(KeychainSecretStore.stableConnectorEntityID(for: connector))
+        let uuidEntityID = KeychainSecretStore.connectorEntityID(for: connector.id)
+        store.save(key: "JIRA_API_TOKEN", value: "shared-token", entityID: stableEntityID, label: nil)
+        store.save(key: "JIRA_API_TOKEN", value: "specific-token", entityID: uuidEntityID, label: nil)
+
+        #expect(connector.credentials(store: store)["JIRA_API_TOKEN"] == "specific-token")
+    }
+
     @Test("Missing credential keys are detected before connector tests")
     func missingCredentialKeysDetected() {
         let store = MockSecretStore()
@@ -650,5 +771,47 @@ private final class RecordingConnectorHTTPTransport: ConnectorHTTPTransport {
             headerFields: nil
         )!
         return (Data(), response)
+    }
+}
+
+@Suite("Document Reader Security")
+struct DocumentReaderSecurityTests {
+    @Test("readfile treats Python metacharacters in document paths as data")
+    func readfileTreatsPythonMetacharactersInDocumentPathsAsData() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-readfile-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let basePath = root.appendingPathComponent("safe").path
+        try #"{"url":"https://docs.example.com/base"}"#.write(toFile: basePath, atomically: true, encoding: .utf8)
+        let markerName = "pwned"
+        let markerPath = root.appendingPathComponent(markerName).path
+        let injectedLeaf = "safe') as f:\n    pass\nopen('\(markerName)','w').write('pwned')\n# .gdoc"
+        let injectedURL = root.appendingPathComponent(injectedLeaf)
+        try #"{"url":"https://docs.example.com/safe"}"#.write(to: injectedURL, atomically: true, encoding: .utf8)
+
+        let testFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let readfile = repoRoot.appendingPathComponent("Tools/readfile")
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [readfile.path, injectedURL.path]
+        process.currentDirectoryURL = root
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+        try process.run()
+        process.waitUntilExit()
+
+        let output = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let error = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        #expect(process.terminationStatus == 0, Comment(rawValue: error))
+        #expect(output.contains("https://docs.example.com/safe"))
+        #expect(!FileManager.default.fileExists(atPath: markerPath))
     }
 }

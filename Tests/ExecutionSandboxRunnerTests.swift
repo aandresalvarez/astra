@@ -81,7 +81,8 @@ struct ExecutionSandboxRunnerTests {
     private func makeContext(
         workspacePath: String,
         permissionPolicy: PermissionPolicy = .restricted,
-        executionPolicy: AgentRuntimeExecutionPolicy = .default
+        executionPolicy: AgentRuntimeExecutionPolicy = .default,
+        contextText: String = ""
     ) -> AgentRuntimeProcessLaunchContext {
         AgentRuntimeProcessLaunchContext(
             prompt: "p",
@@ -92,7 +93,8 @@ struct ExecutionSandboxRunnerTests {
             permissionPolicy: permissionPolicy,
             executionPolicy: executionPolicy,
             permissionManifest: nil,
-            timeoutSeconds: 1
+            timeoutSeconds: 1,
+            contextText: contextText
         )
     }
 
@@ -190,6 +192,61 @@ struct ExecutionSandboxRunnerTests {
         }
     }
 
+    @Test("sandboxedPlan projects task-scoped Docker client config before sandboxing")
+    func sandboxedPlanProjectsTaskScopedDockerClientConfig() throws {
+        let fm = FileManager.default
+        let ws = fm.temporaryDirectory.appendingPathComponent("astra-runner-docker-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: ws, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: ws) }
+
+        let workspace = Workspace(name: "Docker Workspace", primaryPath: ws.path)
+        let task = AgentTask(title: "Docker", goal: "Run commands", workspace: workspace, runtime: .codexCLI)
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:workspace",
+            kind: .dockerImage,
+            displayName: "Workspace Image",
+            image: "astra/workspace:latest"
+        ))
+        let runID = UUID()
+        let context = AgentRuntimeProcessLaunchContext(
+            prompt: "run pwd through the workspace shell",
+            task: task,
+            workspacePath: ws.path,
+            executablePath: "/bin/codex",
+            providerHomeDirectory: "",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            permissionManifest: nil,
+            timeoutSeconds: 1,
+            runID: runID
+        )
+
+        withStandardEnforcement(.off) {
+            let runner = AgentRuntimeProcessRunner()
+            let outcome = runner.sandboxedPlan(
+                adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: ws.path),
+                context: context
+            )
+
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected Docker workspace execution to proceed to a launch plan")
+                return
+            }
+            guard let dockerConfigDirectory = DockerWorkspaceMCPProjection.taskScopedDockerConfigDirectory(
+                task: task,
+                runID: runID
+            ) else {
+                Issue.record("Expected task-scoped Docker client config directory")
+                return
+            }
+            #expect(plan.sandboxReadablePaths.contains(dockerConfigDirectory))
+            #expect(plan.commandPlannedFields["launch_resource_host_readable_count"] != "0")
+            #expect(plan.commandPlannedFields["launch_resource_diagnostic_count"] != "0")
+            #expect(!plan.sandboxReadablePaths.contains { $0.hasSuffix("/.docker/config.json") })
+            #expect(FileManager.default.fileExists(atPath: (dockerConfigDirectory as NSString).appendingPathComponent("config.json")))
+        }
+    }
+
     @Test("sandboxedPlan attaches Git credential readable roots before sandboxing")
     func sandboxedPlanAddsGitCredentialContext() {
         withStandardEnforcement(.off) {
@@ -215,6 +272,39 @@ struct ExecutionSandboxRunnerTests {
             #expect(plan.commandPlannedFields["git_credential_readable_path_count"] == "2")
             #expect(plan.commandPlannedFields["git_credential_writable_path_count"] == "1")
             #expect(plan.commandPlannedFields["git_credential_transports"] == "ssh")
+        }
+    }
+
+    @Test("sandboxedPlan projects explicit attached files as read-only roots")
+    func sandboxedPlanAddsAttachmentReadablePaths() throws {
+        let fm = FileManager.default
+        let ws = fm.temporaryDirectory.appendingPathComponent("astra-runner-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: ws, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: ws) }
+
+        let attachment = ws.appendingPathComponent("DBT Unit Tests (1).md")
+        try "team dbt unit-test notes".write(to: attachment, atomically: true, encoding: .utf8)
+        let contextText = """
+        Please merge the attached testing document into the guidelines.
+
+        Attached files:
+        - \(attachment.path)
+        """
+
+        withStandardEnforcement(.off) {
+            let runner = AgentRuntimeProcessRunner()
+            let outcome = runner.sandboxedPlan(
+                adapter: FakeLaunchAdapter(currentDirectory: ws.path),
+                context: makeContext(workspacePath: ws.path, contextText: contextText)
+            )
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected .plan when disabled")
+                return
+            }
+
+            let expectedAttachmentPath = attachment.standardizedFileURL.path
+            #expect(plan.sandboxReadablePaths.contains(expectedAttachmentPath))
+            #expect(plan.commandPlannedFields["attachment_readable_path_count"] == "1")
         }
     }
 
@@ -300,6 +390,177 @@ struct ExecutionSandboxRunnerTests {
             #expect(plan.arguments.contains("--allow-all-paths"))
             #expect(plan.commandPlannedFields["git_provider_native_read_access"] == "copilot_allow_all_paths")
         }
+    }
+
+    @Test("sandboxedPlan blocks runtimes without Docker workspace command support")
+    func sandboxedPlanBlocksRuntimeWithoutDockerWorkspaceSupport() {
+        withStandardEnforcement(.off) {
+            let task = AgentTask(title: "Docker", goal: "Run commands", runtime: .cursorCLI)
+            task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+                id: "image:workspace",
+                kind: .dockerImage,
+                displayName: "Workspace Image",
+                image: "astra/workspace:latest"
+            ))
+            let context = AgentRuntimeProcessLaunchContext(
+                prompt: "p",
+                task: task,
+                workspacePath: "/tmp/whatever",
+                executablePath: "/bin/cursor-agent",
+                providerHomeDirectory: "",
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 1
+            )
+
+            let runner = AgentRuntimeProcessRunner()
+            let outcome = runner.sandboxedPlan(
+                adapter: FakeLaunchAdapter(runtime: .cursorCLI, currentDirectory: "/tmp/whatever"),
+                context: context
+            )
+
+            guard case .blocked(let result) = outcome else {
+                Issue.record("Expected unsupported runtime to fail closed for Docker workspace execution")
+                return
+            }
+            #expect(result.exitCode == -1)
+            #expect(result.runtimeStopReason == "docker_workspace_executor_unsupported_runtime")
+            #expect(result.runtimeStopMessage?.contains("cannot yet route workspace shell commands") == true)
+        }
+    }
+
+    @Test("sandboxedPlan allows Codex Docker workspace command support")
+    func sandboxedPlanAllowsCodexDockerWorkspaceSupport() {
+        withStandardEnforcement(.off) {
+            let task = AgentTask(title: "Docker", goal: "Run commands", runtime: .codexCLI)
+            task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+                id: "image:workspace",
+                kind: .dockerImage,
+                displayName: "Workspace Image",
+                image: "astra/workspace:latest"
+            ))
+            let context = AgentRuntimeProcessLaunchContext(
+                prompt: "p",
+                task: task,
+                workspacePath: "/tmp/whatever",
+                executablePath: "/bin/codex",
+                providerHomeDirectory: "",
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 1
+            )
+
+            let runner = AgentRuntimeProcessRunner()
+            let outcome = runner.sandboxedPlan(
+                adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: "/tmp/whatever"),
+                context: context
+            )
+
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected Codex Docker workspace execution to proceed to a launch plan")
+                return
+            }
+            #expect(plan.commandPlannedFields["workspace_executor_mode"] == "host_provider_container_workspace")
+            #expect(plan.commandPlannedFields["workspace_executor"] == "docker")
+        }
+    }
+
+    @Test("sandboxedPlan composes Git credential context with Docker workspace execution")
+    func sandboxedPlanComposesGitCredentialContextWithDockerWorkspaceExecution() {
+        withStandardEnforcement(.off) {
+            let task = AgentTask(title: "Docker Git", goal: "Pull latest changes", runtime: .codexCLI)
+            task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+                id: "image:workspace",
+                kind: .dockerImage,
+                displayName: "Workspace Image",
+                image: "astra/workspace:latest"
+            ))
+            let context = AgentRuntimeProcessLaunchContext(
+                prompt: "git pull origin main",
+                task: task,
+                workspacePath: "/tmp/whatever",
+                executablePath: "/bin/codex",
+                providerHomeDirectory: "",
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 1
+            )
+
+            let runner = AgentRuntimeProcessRunner(gitCredentialContextProvider: { _ in
+                GitCredentialSandboxContext(
+                    readablePaths: ["/tmp/astra-gitconfig"],
+                    writablePaths: ["/tmp/astra-external-gitdir"],
+                    transports: [.ssh],
+                    diagnostics: []
+                )
+            })
+            let outcome = runner.sandboxedPlan(
+                adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: "/tmp/whatever"),
+                context: context
+            )
+
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected Git credential preflight and Docker workspace execution to share one plan")
+                return
+            }
+            #expect(plan.commandPlannedFields["git_credential_context"] == "true")
+            #expect(plan.commandPlannedFields["git_provider_native_read_access"] == "codex_disk_full_read")
+            #expect(plan.commandPlannedFields["workspace_executor_mode"] == "host_provider_container_workspace")
+            #expect(plan.commandPlannedFields["workspace_executor"] == "docker")
+            #expect(plan.sandboxReadablePaths.contains("/tmp/astra-gitconfig"))
+            #expect(plan.executionEnvironment.workspaceCommandsRunInsideContainer)
+            #expect(plan.pathMapper?.containerPath(forHostPath: "/tmp/whatever") == "/workspace")
+        }
+    }
+
+    @Test("Git credential plan helpers preserve Docker execution metadata")
+    func gitCredentialPlanHelpersPreserveDockerExecutionMetadata() {
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:workspace",
+            kind: .dockerImage,
+            displayName: "Workspace Image",
+            image: "astra/workspace:latest"
+        )
+        let mapper = ExecutionEnvironmentPathMapper(mounts: [
+            ExecutionEnvironmentMount(
+                hostPath: "/tmp/whatever",
+                containerPath: "/workspace",
+                access: .readWrite,
+                role: .workspace
+            )
+        ])
+        let base = AgentRuntimeProcessLaunchPlan(
+            runtime: .codexCLI,
+            executablePath: "/bin/codex",
+            arguments: ["exec", "git pull origin main"],
+            currentDirectory: "/tmp/whatever",
+            environment: [:],
+            browserShimDirectory: nil,
+            providerVersion: nil,
+            parsesJSONLines: false,
+            commandPlannedFields: [:],
+            pathMapper: mapper,
+            executionEnvironment: environment
+        )
+        let context = GitCredentialSandboxContext(
+            readablePaths: ["/tmp/astra-gitconfig"],
+            writablePaths: ["/tmp/astra-external-gitdir"],
+            transports: [.ssh],
+            diagnostics: []
+        )
+
+        let plan = base.addingGitCredentialContext(context)
+            .enablingProviderNativeGitCredentialReads(
+                for: context,
+                permissionPolicy: .restricted
+            )
+
+        #expect(plan.executionEnvironment.id == "image:workspace")
+        #expect(plan.pathMapper?.containerPath(forHostPath: "/tmp/whatever") == "/workspace")
+        #expect(plan.commandPlannedFields["git_credential_context"] == "true")
     }
 
     @Test("sandboxedPlan honors the execution-policy permissionPolicy override (autonomous escalates to strict)")

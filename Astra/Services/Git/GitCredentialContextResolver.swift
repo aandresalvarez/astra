@@ -23,6 +23,11 @@ struct GitCredentialSandboxContext: Equatable, Sendable {
 }
 
 enum GitOperationIntentDetector {
+    static func detectsRuntimeGitOperation(prompt: String, task: AgentTask, contextText: String = "") -> Bool {
+        detectsNetworkGitOperation(prompt: prompt, task: task, contextText: contextText)
+            || detectsLocalGitInspectionOperation(prompt: prompt, task: task, contextText: contextText)
+    }
+
     static func detectsNetworkGitOperation(prompt: String, task: AgentTask, contextText: String = "") -> Bool {
         let haystack = networkGitIntentText(prompt: prompt, task: task, contextText: contextText)
 
@@ -38,10 +43,19 @@ enum GitOperationIntentDetector {
             "pull from github",
             "pull from git hub",
             "pull latest",
+            "pull the latest",
+            "pull latest code",
+            "pull the latest code",
             "pull origin",
+            "pull from remote",
+            "pull remote",
             "fetch from github",
+            "fetch origin",
+            "fetch main",
             "sync with origin",
             "sync from github",
+            "sync from remote",
+            "sync main",
             "push to github",
             "clone from github",
             "clone from git hub",
@@ -51,7 +65,50 @@ enum GitOperationIntentDetector {
             "create pull request",
             "open pull request"
         ]
-        return naturalLanguageSignals.contains { haystack.contains($0) }
+        if naturalLanguageSignals.contains(where: { haystack.contains($0) }) {
+            return true
+        }
+
+        let orderedSignals = [
+            ["pull", "latest"],
+            ["pull", "code", "main"],
+            ["pull", "main"],
+            ["pull", "remote"],
+            ["pull", "origin"],
+            ["fetch", "main"],
+            ["fetch", "origin"],
+            ["sync", "main"],
+            ["sync", "origin"],
+            ["update", "from", "main"],
+            ["update", "with", "main"],
+            ["latest", "code", "main"]
+        ]
+        return orderedSignals.contains { containsOrderedWords($0, in: haystack) }
+    }
+
+    static func detectsLocalGitInspectionOperation(prompt: String, task: AgentTask, contextText: String = "") -> Bool {
+        let haystack = networkGitIntentText(prompt: prompt, task: task, contextText: contextText)
+
+        let exactCommands = [
+            "git status", "git diff", "git log", "git show", "git branch",
+            "git rev-parse", "git describe", "git ls-files", "git grep",
+            "git blame", "git stash list", "git worktree list"
+        ]
+        if exactCommands.contains(where: { haystack.contains($0) }) {
+            return true
+        }
+
+        let naturalLanguageSignals = [
+            "inspect the local diff",
+            "check the local diff",
+            "review local changes",
+            "check uncommitted changes",
+            "verify no unrelated files",
+            "list changed files",
+            "show changed files",
+            "what changed locally"
+        ]
+        return naturalLanguageSignals.contains(where: { haystack.contains($0) })
     }
 
     static func networkGitIntentText(prompt: String, task: AgentTask, contextText: String = "") -> String {
@@ -63,6 +120,23 @@ enum GitOperationIntentDetector {
         ]
             .joined(separator: "\n")
             .lowercased()
+    }
+
+    private static func containsOrderedWords(_ words: [String], in text: String) -> Bool {
+        guard !words.isEmpty else { return false }
+        var searchStart = text.startIndex
+        for word in words {
+            let pattern = #"\b"# + NSRegularExpression.escapedPattern(for: word) + #"\b"#
+            guard let range = text.range(
+                of: pattern,
+                options: [.regularExpression],
+                range: searchStart..<text.endIndex
+            ) else {
+                return false
+            }
+            searchStart = range.upperBound
+        }
+        return true
     }
 }
 
@@ -193,6 +267,98 @@ enum GitCredentialContextResolver {
             ),
             transports: transports,
             diagnostics: uniqueNonEmpty(diagnostics)
+        )
+    }
+
+    static func runtimeSandboxContext(
+        prompt: String,
+        task: AgentTask,
+        contextText: String,
+        repositoryPath: String,
+        homeDirectory: String = FileManager.default.homeDirectoryForCurrentUser.path,
+        fileManager: FileManager = .default
+    ) -> GitCredentialSandboxContext {
+        let intentText = GitOperationIntentDetector.networkGitIntentText(
+            prompt: prompt,
+            task: task,
+            contextText: contextText
+        )
+        if GitOperationIntentDetector.detectsNetworkGitOperation(
+            prompt: prompt,
+            task: task,
+            contextText: contextText
+        ) {
+            return sandboxContext(
+                repositoryPath: repositoryPath,
+                intentText: intentText,
+                homeDirectory: homeDirectory,
+                fileManager: fileManager
+            )
+        }
+        if GitOperationIntentDetector.detectsLocalGitInspectionOperation(
+            prompt: prompt,
+            task: task,
+            contextText: contextText
+        ) {
+            return localGitConfigSandboxContext(
+                repositoryPath: repositoryPath,
+                homeDirectory: homeDirectory,
+                fileManager: fileManager
+            )
+        }
+        return .empty
+    }
+
+    static func localGitConfigSandboxContext(
+        repositoryPath: String,
+        homeDirectory: String = FileManager.default.homeDirectoryForCurrentUser.path,
+        fileManager: FileManager = .default
+    ) -> GitCredentialSandboxContext {
+        let trimmedRepo = repositoryPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedRepo.isEmpty else { return .empty }
+
+        let fallbackRoot = canonicalPath(trimmedRepo, fileManager: fileManager)
+        let repositoryRoot = repositoryRoot(startingAt: trimmedRepo, fileManager: fileManager) ?? fallbackRoot
+        let gitLayout = gitLayout(repositoryRoot: repositoryRoot, fileManager: fileManager)
+        let evaluationContext = GitConfigEvaluationContext(
+            repositoryRoot: repositoryRoot,
+            gitDirectory: gitLayout?.gitDirectory,
+            currentBranch: gitLayout.flatMap { currentBranch(gitDirectory: $0.gitDirectory, fileManager: fileManager) }
+        )
+
+        var processedConfigs: Set<String> = []
+        var pendingConfigs = defaultGitConfigPaths(homeDirectory: homeDirectory, fileManager: fileManager)
+        if let configPath = gitLayout?.configPath {
+            pendingConfigs.append(configPath)
+        }
+
+        while let config = pendingConfigs.popLast() {
+            guard processedConfigs.insert(config).inserted,
+                  fileManager.fileExists(atPath: config),
+                  let data = parseGitConfig(
+                    at: config,
+                    homeDirectory: homeDirectory,
+                    evaluationContext: evaluationContext,
+                    fileManager: fileManager
+                  ) else {
+                continue
+            }
+            pendingConfigs.append(contentsOf: data.includePaths.filter {
+                !processedConfigs.contains($0) && fileManager.fileExists(atPath: $0)
+            })
+        }
+
+        return GitCredentialSandboxContext(
+            readablePaths: externalReadablePaths(
+                rawPaths: Array(processedConfigs),
+                repositoryRoot: repositoryRoot,
+                fileManager: fileManager
+            ),
+            writablePaths: gitLayout.map {
+                externalWritableGitPaths(gitLayout: $0, repositoryRoot: repositoryRoot, fileManager: fileManager)
+            } ?? [],
+            transports: [],
+            diagnostics: ["local_git_config"]
         )
     }
 
@@ -479,8 +645,14 @@ enum GitCredentialContextResolver {
         } else {
             resolved = "**/" + trimmed
         }
-        let suffix = resolved.hasSuffix("/") ? "**" : ""
-        return canonicalPath(resolved, fileManager: fileManager) + suffix
+        let canonical = canonicalPath(resolved, fileManager: fileManager)
+        return resolved.hasSuffix("/") ? appendingDescendantGlob(to: canonical) : canonical
+    }
+
+    private static func appendingDescendantGlob(to canonicalDirectoryPattern: String) -> String {
+        canonicalDirectoryPattern.hasSuffix("/")
+            ? canonicalDirectoryPattern + "**"
+            : canonicalDirectoryPattern + "/**"
     }
 
     private static func wildcardPatternMatches(
@@ -627,7 +799,7 @@ enum GitCredentialContextResolver {
             return []
         }
 
-        var activePatterns: [String] = []
+        var activePatterns: [String] = ["*"]
         var identities: [String] = []
         var knownHostFiles: [String] = []
         for rawLine in raw.components(separatedBy: .newlines) {

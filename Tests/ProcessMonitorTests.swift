@@ -157,7 +157,7 @@ struct ProcessMonitorTests {
         #expect(shouldKill == true)
         #expect(process.didTerminate == true)
         #expect(monitor.runtimeStopped == true)
-        #expect(monitor.runtimeStopReason == "provider_missing_browser_shell_tool")
+        #expect(monitor.runtimeStopReason == "provider_missing_browser_control_tool")
         #expect(monitor.budgetExceeded == false)
         #expect(monitor.policyViolation == false)
     }
@@ -881,6 +881,144 @@ struct ProcessMonitorTests {
         #expect(monitor.runtimeStopMessage?.contains("stopped advancing") == true)
     }
 
+    @Test("Open tool use suppresses semantic progress stalled timeout")
+    func openToolUseSuppressesSemanticProgressStalledTimeout() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            idleTimeoutSeconds: 60,
+            noSemanticProgressTimeoutSeconds: 0,
+            activeToolIdleTimeoutSeconds: 60
+        )
+        let process = MonitorMockProcess()
+
+        _ = monitor.processEvent(.text(text: "Starting the long dbt build"), process: process)
+        _ = monitor.processEvent(
+            .toolUse(
+                name: "mcp__astra_workspace__workspace_shell",
+                id: "tool-1",
+                input: ["command": "dbt build --select +death --full-refresh"]
+            ),
+            process: process
+        )
+        let watchdogStopped = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+
+        #expect(watchdogStopped == false)
+        #expect(process.didTerminate == false)
+        #expect(monitor.runtimeStopReason == nil)
+    }
+
+    @Test("Open tool use has a bounded silent idle timeout")
+    func openToolUseHasBoundedSilentIdleTimeout() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            idleTimeoutSeconds: 60,
+            noSemanticProgressTimeoutSeconds: 0,
+            activeToolIdleTimeoutSeconds: 0
+        )
+        let process = MonitorMockProcess()
+
+        _ = monitor.processEvent(
+            .toolUse(
+                name: "mcp__astra_workspace__workspace_shell",
+                id: "tool-1",
+                input: ["command": "dbt build --select +death --full-refresh"]
+            ),
+            process: process
+        )
+        let watchdogStopped = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+
+        #expect(watchdogStopped == true)
+        #expect(process.didTerminate == true)
+        #expect(monitor.runtimeStopReason == "provider_active_tool_stalled")
+        #expect(monitor.runtimeStopMessage?.contains("tool call was still running") == true)
+    }
+
+    @Test("Running managed workspace job heartbeat suppresses semantic progress stalled timeout")
+    func runningManagedWorkspaceJobHeartbeatSuppressesSemanticProgressStalledTimeout() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-managed-job-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let heartbeat = root.appendingPathComponent("heartbeat.json", isDirectory: false)
+        let result = root.appendingPathComponent("result.json", isDirectory: false)
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        try #"{"status":"running","timestamp":"\#(timestamp)"}"#.write(to: heartbeat, atomically: true, encoding: .utf8)
+
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            idleTimeoutSeconds: 60,
+            noSemanticProgressTimeoutSeconds: 0,
+            managedWorkspaceJobIdleTimeoutSeconds: 60
+        )
+        let process = MonitorMockProcess()
+
+        _ = monitor.processEvent(.text(text: "Started the dbt validation as a managed workspace job"), process: process)
+        _ = monitor.processEvent(
+            .toolResult(
+                toolId: "job-start",
+                content: """
+                job_id: dbt-build
+                status: running
+                runtime: docker
+                command: dbt build --select +death --full-refresh
+                heartbeat: \(heartbeat.path)
+                result: \(result.path)
+                """
+            ),
+            process: process
+        )
+
+        let watchdogStopped = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+
+        #expect(watchdogStopped == false)
+        #expect(process.didTerminate == false)
+        #expect(monitor.runtimeStopReason == nil)
+    }
+
+    @Test("Stale managed workspace job heartbeat stops with explicit reason")
+    func staleManagedWorkspaceJobHeartbeatStopsWithExplicitReason() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-managed-job-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let heartbeat = root.appendingPathComponent("heartbeat.json", isDirectory: false)
+        let result = root.appendingPathComponent("result.json", isDirectory: false)
+        let timestamp = ISO8601DateFormatter().string(from: Date(timeIntervalSinceNow: -120))
+        try #"{"status":"running","timestamp":"\#(timestamp)"}"#.write(to: heartbeat, atomically: true, encoding: .utf8)
+
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            idleTimeoutSeconds: 60,
+            noSemanticProgressTimeoutSeconds: 0,
+            managedWorkspaceJobIdleTimeoutSeconds: 1
+        )
+        let process = MonitorMockProcess()
+
+        _ = monitor.processEvent(
+            .toolResult(
+                toolId: "job-start",
+                content: """
+                job_id: dbt-build
+                status: running
+                runtime: docker
+                command: dbt build --select +death --full-refresh
+                heartbeat: \(heartbeat.path)
+                result: \(result.path)
+                """
+            ),
+            process: process
+        )
+
+        let watchdogStopped = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+
+        #expect(watchdogStopped == true)
+        #expect(process.didTerminate == true)
+        #expect(monitor.runtimeStopReason == "provider_workspace_job_stalled")
+        #expect(monitor.runtimeStopMessage?.contains("managed workspace job dbt-build") == true)
+    }
+
     @Test("Terminal progress exit grace terminates without runtime stop")
     func terminalProgressExitGraceTerminatesWithoutRuntimeStop() {
         let taskID = UUID()
@@ -1267,6 +1405,144 @@ struct RuntimePolicyGuardTests {
         #expect(shouldKill == false)
         #expect(monitor.policyViolation == false)
         #expect(monitor.policyApprovalRequired == false)
+    }
+
+    @Test("Docker workspace MCP command support allows provider aliases")
+    func dockerWorkspaceMCPCommandSupportAllowsProviderAliases() throws {
+        let cases: [(AgentRuntimeID, String)] = [
+            (.claudeCode, DockerWorkspaceMCPProjection.providerToolPermission),
+            (.copilotCLI, DockerWorkspaceMCPProjection.copilotObservedToolName),
+            (.codexCLI, DockerWorkspaceMCPProjection.toolName)
+        ]
+
+        for (runtime, toolName) in cases {
+            let descriptor = try #require(DockerWorkspaceMCPProjection.runtimeSupportToolDescriptor(for: runtime))
+            let manifest = runtimePolicyManifest(
+                allowedTools: ["read"],
+                providerID: runtime,
+                runtimeSupportTools: [descriptor]
+            )
+            let monitor = AgentRuntimeWorker.ProcessMonitor(
+                tokenBudget: Int.max,
+                taskID: manifest.taskID,
+                policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+            )
+
+            let shouldKill = monitor.processEvent(
+                .toolUse(
+                    name: toolName,
+                    id: "docker-workspace",
+                    input: [
+                        "command": "test -r /root/.config/gcloud/application_default_credentials.json",
+                        "timeout_seconds": 5
+                    ]
+                ),
+                process: nil
+            )
+
+            #expect(shouldKill == false)
+            #expect(monitor.policyViolation == false)
+            #expect(monitor.policyApprovalRequired == false)
+        }
+    }
+
+    @Test("Docker workspace managed job support allows provider aliases")
+    func dockerWorkspaceManagedJobSupportAllowsProviderAliases() throws {
+        let cases: [(AgentRuntimeID, String)] = [
+            (.claudeCode, DockerWorkspaceMCPProjection.providerToolPermission(for: "workspace_job_start")),
+            (.copilotCLI, DockerWorkspaceMCPProjection.copilotObservedToolName(for: "workspace_job_start")),
+            (.codexCLI, "workspace_job_start")
+        ]
+
+        for (runtime, toolName) in cases {
+            let manifest = runtimePolicyManifest(
+                allowedTools: ["read"],
+                providerID: runtime,
+                runtimeSupportTools: DockerWorkspaceMCPProjection.runtimeSupportToolDescriptors(for: runtime)
+            )
+            let monitor = AgentRuntimeWorker.ProcessMonitor(
+                tokenBudget: Int.max,
+                taskID: manifest.taskID,
+                policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+            )
+
+            let shouldKill = monitor.processEvent(
+                .toolUse(
+                    name: toolName,
+                    id: "docker-workspace-job",
+                    input: [
+                        "command": "dbt build --select +death --full-refresh",
+                        "timeout_seconds": 7200,
+                        "label": "death validation",
+                        "progress_probe": "dbt"
+                    ]
+                ),
+                process: nil
+            )
+
+            #expect(shouldKill == false)
+            #expect(monitor.policyViolation == false)
+            #expect(monitor.policyApprovalRequired == false)
+        }
+    }
+
+    @Test("Docker workspace managed job support rejects unsupported action keys")
+    func dockerWorkspaceManagedJobSupportRejectsUnsupportedActionKeys() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["read"],
+            providerID: .codexCLI,
+            runtimeSupportTools: DockerWorkspaceMCPProjection.runtimeSupportToolDescriptors(for: .codexCLI)
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(
+                name: "workspace_job_status",
+                id: "docker-workspace-job-status",
+                input: [
+                    "job_id": "job-1",
+                    "command": "rm -rf /workspace"
+                ]
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyViolationMessage?.contains("action-like input outside its safe runtime schema: command") == true)
+    }
+
+    @Test("Docker workspace support does not bless Codex native command execution")
+    func dockerWorkspaceSupportDoesNotBlessCodexNativeCommandExecution() throws {
+        let descriptor = try #require(DockerWorkspaceMCPProjection.runtimeSupportToolDescriptor(for: .codexCLI))
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["read"],
+            providerID: .codexCLI,
+            runtimeSupportTools: [descriptor]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(
+                name: "command_execution",
+                id: "native-shell",
+                input: ["summary": "/bin/zsh -lc 'cat .astra-docker-secret.txt'"]
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.policyViolationMessage?.contains("not in the provider allow-list") == true)
     }
 
     @Test("Copilot documentation support tool with empty input does not trip policy")
@@ -1794,6 +2070,91 @@ struct RuntimePolicyGuardTests {
         #expect(shouldKill == false)
         #expect(monitor.policyApprovalRequired == false)
         #expect(monitor.policyViolation == false)
+    }
+
+    @Test("OS sandbox read denial in a tool result stops the provider")
+    func osSandboxReadDenialStopsProvider() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Bash"],
+            usesBroadProviderPermissions: true
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let toolUseShouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": "git fetch origin main"]),
+            process: nil
+        )
+        let resultShouldKill = monitor.processEvent(
+            .toolResult(
+                toolId: "t1",
+                content: "fatal: unable to access '/Users/alvaro1/.gitconfig': Operation not permitted"
+            ),
+            process: nil
+        )
+
+        #expect(toolUseShouldKill == false)
+        #expect(resultShouldKill == true)
+        #expect(monitor.runtimeStopReason == "os_sandbox_file_read_denied")
+        #expect(monitor.runtimeStopMessage?.contains("/Users/alvaro1/.gitconfig") == true)
+        #expect(monitor.runtimeStopMessage?.contains("Auto mode") == true)
+        #expect(monitor.policyViolation == false)
+    }
+
+    @Test("Nonfatal Git sandbox warning does not stop a successful tool result")
+    func nonfatalGitSandboxWarningDoesNotStopSuccessfulToolResult() {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Bash"],
+            usesBroadProviderPermissions: true
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+        let successfulPullOutput = """
+        warning: unable to access '/Users/alvaro1/.config/git/ignore': Operation not permitted
+        From github.com:susom/starr-data-lake
+         * branch            main       -> FETCH_HEAD
+        Updating ec0d2206..d5088969
+        Fast-forward
+         dbt/configs/omop_atropos_phi/common | 2 +-
+         create mode 120000 dbt/configs/omop_atropos_phi/common
+        """
+
+        let toolUseShouldKill = monitor.processEvent(
+            .toolUse(name: "Bash", id: "t1", input: ["command": "git fetch origin && git pull origin main"]),
+            process: nil
+        )
+        let resultShouldKill = monitor.processEvent(
+            .toolResult(toolId: "t1", content: successfulPullOutput),
+            process: nil
+        )
+
+        #expect(RuntimeSandboxDenialDiagnostics.fileDenial(in: successfulPullOutput) == nil)
+        #expect(toolUseShouldKill == false)
+        #expect(resultShouldKill == false)
+        #expect(monitor.runtimeStopReason == nil)
+        #expect(monitor.policyViolation == false)
+    }
+
+    @Test("Fatal sandbox write denial is parsed from the offending line")
+    func fatalSandboxWriteDenialUsesOffendingLine() {
+        let output = """
+        From github.com:susom/starr-data-lake
+         * branch            main       -> FETCH_HEAD
+        fatal: Unable to create '/Users/alvaro1/Documents/Coral/Code/starr-data-lake/.git/index.lock': Operation not permitted
+         create mode 100644 /starr-data-lake/not-the-denied-path.txt
+        """
+
+        let denial = RuntimeSandboxDenialDiagnostics.fileDenial(in: output)
+
+        #expect(denial?.operation == .write)
+        #expect(denial?.path == "/Users/alvaro1/Documents/Coral/Code/starr-data-lake/.git/index.lock")
+        #expect(denial?.detail.contains("/starr-data-lake/not-the-denied-path.txt") == false)
     }
 
     @Test("Approved shell path grant satisfies ask-first Bash across absolute workspace path")

@@ -88,7 +88,10 @@ struct MCPEnvironmentKeyGatingTests {
             packageID: "p", server: server,
             permittedEnvironmentKeys: ["DECLARED_KEY"]
         )
-        let data = MCPRuntimeProjection.claudeConfigJSON(servers: [resolved])
+        let data = MCPRuntimeProjection.claudeConfigJSON(
+            servers: [resolved],
+            availableEnvironment: ["DECLARED_KEY": "projected"]
+        )
         let rendered = String(decoding: data ?? Data(), as: UTF8.self)
         #expect(rendered.contains("DECLARED_KEY"))
         #expect(!rendered.contains("GITHUB_TOKEN"))

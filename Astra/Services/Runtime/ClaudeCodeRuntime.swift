@@ -12,4 +12,20 @@ enum ClaudeCodeRuntime {
             (trimmedHome as NSString).appendingPathComponent("Library/Keychains/login.keychain-db")
         ]
     }
+
+    static func vertexADCReadablePaths(
+        isVertexEnabled: Bool,
+        userHome: String = FileManager.default.homeDirectoryForCurrentUser.path
+    ) -> [String] {
+        guard isVertexEnabled else { return [] }
+        let trimmedHome = userHome.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedHome.isEmpty else { return [] }
+        let gcloudConfig = ExecutionEnvironmentCredentialProjection.defaultGCPADCHostPath(homeDirectory: trimmedHome)
+        return [
+            gcloudConfig,
+            (gcloudConfig as NSString).appendingPathComponent(
+                ExecutionEnvironmentCredentialProjection.gcpADCFileName
+            )
+        ]
+    }
 }

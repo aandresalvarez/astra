@@ -71,6 +71,42 @@ struct GitCredentialContextResolverTests {
         #expect(!context.readablePaths.contains(git.appendingPathComponent("config").path))
     }
 
+    @Test("SSH global options before the first Host block apply to all remote hosts")
+    func sshRemoteResolvesGlobalOptionsBeforeFirstHostBlock() throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        let repo = root.appendingPathComponent("repo", isDirectory: true)
+        let git = repo.appendingPathComponent(".git", isDirectory: true)
+        try FileManager.default.createDirectory(at: git, withIntermediateDirectories: true)
+
+        try write("""
+        IdentityFile ~/.ssh/global_ed25519
+        UserKnownHostsFile ~/.ssh/global_known_hosts
+        Host gitlab.com
+            IdentityFile ~/.ssh/gitlab_ed25519
+        """, to: home.appendingPathComponent(".ssh/config"))
+        try write("github.com ssh-ed25519 BBBB\n", to: home.appendingPathComponent(".ssh/global_known_hosts"))
+        try write("private", to: home.appendingPathComponent(".ssh/global_ed25519"))
+        try write("public", to: home.appendingPathComponent(".ssh/global_ed25519.pub"))
+        try write("private", to: home.appendingPathComponent(".ssh/gitlab_ed25519"))
+        try write("""
+        [remote "origin"]
+            url = git@github.com:susom/astra.git
+        """, to: git.appendingPathComponent("config"))
+
+        let context = GitCredentialContextResolver.sandboxContext(
+            repositoryPath: repo.path,
+            homeDirectory: home.path
+        )
+
+        #expect(context.readablePaths.contains(home.appendingPathComponent(".ssh/global_known_hosts").path))
+        #expect(context.readablePaths.contains(home.appendingPathComponent(".ssh/global_ed25519").path))
+        #expect(context.readablePaths.contains(home.appendingPathComponent(".ssh/global_ed25519.pub").path))
+        #expect(!context.readablePaths.contains(home.appendingPathComponent(".ssh/gitlab_ed25519").path))
+        #expect(!context.diagnostics.contains("ssh_default_identities"))
+    }
+
     @Test("HTTPS remotes include credential helper state without SSH files")
     func httpsRemoteResolvesCredentialHelperFiles() throws {
         let root = try makeRoot()
@@ -202,6 +238,73 @@ struct GitCredentialContextResolverTests {
         #expect(!context.readablePaths.contains(unmatched.path))
     }
 
+    @Test("includeIf gitdir trailing slash preserves directory boundary")
+    func includeIfGitdirTrailingSlashPreservesDirectoryBoundary() throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        let matchingParent = root.appendingPathComponent("matching", isDirectory: true)
+        let siblingParent = root.appendingPathComponent("matching-other", isDirectory: true)
+        let repo = siblingParent.appendingPathComponent("repo", isDirectory: true)
+        let git = repo.appendingPathComponent(".git", isDirectory: true)
+        try FileManager.default.createDirectory(at: git, withIntermediateDirectories: true)
+
+        let matching = home.appendingPathComponent("matching.gitconfig")
+        try write("""
+        [includeIf "gitdir:\(matchingParent.path)/"]
+            path = ~/matching.gitconfig
+        """, to: home.appendingPathComponent(".gitconfig"))
+        try write("[credential]\nhelper = osxkeychain\n", to: matching)
+        try write("""
+        [remote "origin"]
+            url = https://github.com/susom/astra.git
+        """, to: git.appendingPathComponent("config"))
+
+        let context = GitCredentialContextResolver.sandboxContext(
+            repositoryPath: repo.path,
+            homeDirectory: home.path
+        )
+
+        #expect(!context.readablePaths.contains(matching.path))
+    }
+
+    @Test("Local Git inspection projects config without credential files")
+    func localGitInspectionProjectsConfigOnly() throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        let repo = root.appendingPathComponent("repo", isDirectory: true)
+        let git = repo.appendingPathComponent(".git", isDirectory: true)
+        try FileManager.default.createDirectory(at: git, withIntermediateDirectories: true)
+
+        let included = home.appendingPathComponent("diff-options.gitconfig")
+        try write("""
+        [include]
+            path = ~/diff-options.gitconfig
+        """, to: home.appendingPathComponent(".gitconfig"))
+        try write("[diff]\nstatGraphWidth = 80\n", to: included)
+        try write("[remote \"origin\"]\nurl = git@github.com:susom/astra.git\n", to: git.appendingPathComponent("config"))
+        try write("secret", to: home.appendingPathComponent(".ssh/id_ed25519"))
+        try write("token", to: home.appendingPathComponent(".git-credentials"))
+
+        let task = AgentTask(title: "Review diff", goal: "Verify no unrelated files")
+        let context = GitCredentialContextResolver.runtimeSandboxContext(
+            prompt: "git diff --stat",
+            task: task,
+            contextText: "",
+            repositoryPath: repo.path,
+            homeDirectory: home.path
+        )
+
+        #expect(context.transports.isEmpty)
+        #expect(context.diagnostics == ["local_git_config"])
+        #expect(context.readablePaths.contains(home.appendingPathComponent(".gitconfig").path))
+        #expect(context.readablePaths.contains(included.path))
+        #expect(!context.readablePaths.contains(home.appendingPathComponent(".ssh/id_ed25519").path))
+        #expect(!context.readablePaths.contains(home.appendingPathComponent(".git-credentials").path))
+        #expect(context.writablePaths.isEmpty)
+    }
+
     @Test("Network Git intent detection handles commands and plain English")
     func gitNetworkIntentDetection() {
         let task = AgentTask(title: "Sync", goal: "Please pull from GitHub before editing.")
@@ -218,7 +321,23 @@ struct GitCredentialContextResolverTests {
             prompt: "please clone the repo from GitHub",
             task: AgentTask(title: "Other", goal: "Other")
         ))
+        #expect(GitOperationIntentDetector.detectsNetworkGitOperation(
+            prompt: "ok lets pull the latest code from main, then create a new branch",
+            task: AgentTask(title: "Other", goal: "Other")
+        ))
+        #expect(GitOperationIntentDetector.detectsNetworkGitOperation(
+            prompt: "update from main before editing STAR-12262",
+            task: AgentTask(title: "Other", goal: "Other")
+        ))
         #expect(!GitOperationIntentDetector.detectsNetworkGitOperation(
+            prompt: "inspect the local diff",
+            task: AgentTask(title: "Review", goal: "No network")
+        ))
+        #expect(GitOperationIntentDetector.detectsLocalGitInspectionOperation(
+            prompt: "git diff --stat",
+            task: AgentTask(title: "Review", goal: "No network")
+        ))
+        #expect(GitOperationIntentDetector.detectsRuntimeGitOperation(
             prompt: "inspect the local diff",
             task: AgentTask(title: "Review", goal: "No network")
         ))

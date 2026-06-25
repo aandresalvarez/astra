@@ -944,7 +944,16 @@ enum AgentPolicyManifestService {
             allowedToolsOverride: policyApprovedTools.isEmpty ? executionPolicy.allowedToolsOverride : policyApprovedTools,
             permissionGrantsOverride: effectiveGrants.isEmpty ? executionPolicy.permissionGrantsOverride : effectiveGrants
         )
-        let envKeys = Array(taskCapabilityScope.resolver.resolvedEnvironmentVariables.keys).sorted()
+        let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: task)
+        let envKeys = uniqueStrings(
+            Array(taskCapabilityScope.resolver.resolvedEnvironmentVariables.keys)
+                + dockerCredentialEnvironmentKeyNames(environment: executionEnvironment)
+        )
+        let manifestCredentialLabels = uniqueStrings(
+            credentialLabels(for: task, contextText: contextText)
+                + dockerCredentialLabels(environment: executionEnvironment)
+                + gitCredentialLabels(task: task, contextText: contextText)
+        )
         let runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: runtime)
         let providerPolicyAdapter = runtimeAdapter.policyAdapter(runtimeCapabilities: providerCapabilities)
         let configOwnership = runtimeAdapter.providerConfigOwnership(workspacePath: workspacePath)
@@ -957,17 +966,32 @@ enum AgentPolicyManifestService {
             requestedAllowedTools: requestedAllowedTools,
             localToolCommands: localToolCommands(for: task, contextText: contextText),
             environmentKeyNames: envKeys,
-            credentialLabels: credentialLabels(for: task, contextText: contextText),
+            credentialLabels: manifestCredentialLabels,
             providerFeatures: providerPolicyAdapter.supportedFeatures,
             providerConfigOwnership: configOwnership,
             existingProviderConfigSummary: runtimeAdapter.existingProviderConfigSummary(workspacePath: workspacePath)
         )
         var render = providerPolicyAdapter.render(policy: policy, context: context)
+        render = applyingDockerWorkspaceManifestSupport(
+            to: render,
+            runtime: runtime,
+            executionEnvironment: executionEnvironment
+        )
         render.allowedShellPatterns = uniqueStrings(
             render.allowedShellPatterns
                 + runtimeSupportAllowedShellPatterns(environmentKeyNames: envKeys)
         )
         render.diagnostics = providerPolicyAdapter.validate(render: render, context: context)
+        if shouldProjectGitCredentials(task: task, contextText: contextText) {
+            render.diagnostics.append(PolicyDiagnostic(
+                id: "git.credential-projection",
+                severity: .info,
+                title: "Git credentials projected",
+                message: "Network Git intent was detected, so ASTRA will project Git config and credential files through the active sandbox for this run.",
+                affectedCapability: "git",
+                remediation: "Review the requested Git operation if this was unexpected."
+            ))
+        }
         // Reflect ASTRA's OS-level Seatbelt sandbox in the declared enforcement
         // tiers — but only when the run will both be wrapped (runtime in scope)
         // AND the sandbox would actually apply (enforcement on, usable workspace,
@@ -977,10 +1001,24 @@ enum AgentPolicyManifestService {
         // at launch time.
         let effectiveSandboxPolicy = manifestExecutionPolicy.permissionPolicyOverride ?? permissionPolicy
         let sandboxSettings = ExecutionSandboxSettings.current(permissionPolicy: effectiveSandboxPolicy)
-        if sandboxSettings.shouldWrap(runtime: runtime),
+        if !executionEnvironment.providerRunsInsideContainer,
+           sandboxSettings.shouldWrap(runtime: runtime),
            ExecutionSandbox.willLikelyApply(workspacePath: workspacePath, settings: sandboxSettings),
            !render.enforcementTiers.contains(.osSandboxed) {
             render.enforcementTiers.append(.osSandboxed)
+        }
+        if executionEnvironment.isContainerized {
+            let message = executionEnvironment.workspaceCommandsRunInsideContainer
+                ? "This run keeps the provider on macOS and routes workspace shell commands through ASTRA's Docker command executor."
+                : "This run launches the provider inside ASTRA's Docker execution environment; host Seatbelt sandboxing is not reported for the container workload."
+            render.diagnostics.append(PolicyDiagnostic(
+                id: "container.execution-environment",
+                severity: .info,
+                title: "Container execution environment",
+                message: message,
+                affectedCapability: "execution_environment",
+                remediation: "Review the selected image, mounts, network mode, and allowed environment keys before running credentialed work."
+            ))
         }
         let approvals = approvalsGranted(executionPolicy: manifestExecutionPolicy, render: render)
         let policyScope = if executionPolicy.allowedToolsOverride != nil || !executionGrants.isEmpty {
@@ -1003,14 +1041,18 @@ enum AgentPolicyManifestService {
             workspacePath: workspacePath,
             additionalPaths: runtimePaths,
             environmentKeyNames: envKeys,
-            credentialLabels: credentialLabels(for: task, contextText: contextText),
-            mcpServers: capabilityPackages.map {
-                TaskCapabilityResolver.enabledMCPServerManifests(
-                    for: task.workspace,
-                    packages: $0,
-                    approvalRecords: approvalRecords ?? CapabilityApprovalStore().records()
-                )
-            } ?? taskCapabilityResolver.enabledMCPServerManifests,
+            credentialLabels: manifestCredentialLabels,
+            mcpServers: dockerAugmentedMCPServers(
+                base: capabilityPackages.map {
+                    TaskCapabilityResolver.enabledMCPServerManifests(
+                        for: task.workspace,
+                        packages: $0,
+                        approvalRecords: approvalRecords ?? CapabilityApprovalStore().records()
+                    )
+                } ?? taskCapabilityResolver.enabledMCPServerManifests,
+                runtime: runtime,
+                executionEnvironment: executionEnvironment
+            ),
             approvalsGranted: approvals,
             approvalGrants: effectiveGrants
         )
@@ -1044,6 +1086,95 @@ enum AgentPolicyManifestService {
             guard !path.isEmpty, seen.insert(path).inserted else { return nil }
             return path
         }
+    }
+
+    private static func applyingDockerWorkspaceManifestSupport(
+        to render: ProviderPolicyRender,
+        runtime: AgentRuntimeID,
+        executionEnvironment: WorkspaceExecutionEnvironment
+    ) -> ProviderPolicyRender {
+        guard DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment),
+              DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: runtime) else {
+            return render
+        }
+
+        var updated = render
+        updated.allowedTools = DockerWorkspaceMCPProjection.removingNativeShellTools(updated.allowedTools)
+        updated.askFirstTools = DockerWorkspaceMCPProjection.removingNativeShellTools(updated.askFirstTools)
+        updated.deniedTools = uniqueStrings(updated.deniedTools + ["Bash", "shell"])
+        updated.diagnostics.append(PolicyDiagnostic(
+            id: "container.host-control-plane-routing",
+            severity: .info,
+            title: "Host control plane routed through ASTRA",
+            message: "Project shell commands run in Docker through ASTRA's workspace MCP tools. Host services such as GitHub, Jira, Google Cloud, SSH, browser, and Keychain access must use enabled ASTRA capabilities rather than native provider Bash or Docker workspace shell.",
+            affectedCapability: "control_plane",
+            remediation: "Enable or repair the relevant capability before asking the provider to use host credentials or host services."
+        ))
+
+        for descriptor in DockerWorkspaceMCPProjection.runtimeSupportToolDescriptors(for: runtime)
+            where !updated.runtimeSupportTools.contains(where: { $0.name == descriptor.name }) {
+            updated.runtimeSupportTools.append(descriptor)
+        }
+        for descriptor in HostControlPlaneMCPProjection.runtimeSupportToolDescriptors(for: runtime)
+            where !updated.runtimeSupportTools.contains(where: { $0.name == descriptor.name }) {
+            updated.runtimeSupportTools.append(descriptor)
+        }
+        updated.runtimeSupportTools.sort { $0.name < $1.name }
+        return updated
+    }
+
+    private static func dockerAugmentedMCPServers(
+        base: [RunPermissionManifest.MCPServer],
+        runtime: AgentRuntimeID,
+        executionEnvironment: WorkspaceExecutionEnvironment
+    ) -> [RunPermissionManifest.MCPServer] {
+        guard DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment),
+              DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: runtime) else {
+            return base
+        }
+        return uniqueMCPServers(base + [
+            DockerWorkspaceMCPProjection.manifestServer(),
+            HostControlPlaneMCPProjection.manifestServer()
+        ])
+    }
+
+    private static func uniqueMCPServers(
+        _ servers: [RunPermissionManifest.MCPServer]
+    ) -> [RunPermissionManifest.MCPServer] {
+        var seen: Set<String> = []
+        return servers.filter { server in
+            seen.insert("\(server.packageID):\(server.id)").inserted
+        }
+    }
+
+    private static func dockerCredentialEnvironmentKeyNames(
+        environment: WorkspaceExecutionEnvironment
+    ) -> [String] {
+        uniqueStrings(Array(DockerExecutionPlanner.credentialProjectionEnvironment(environment: environment).keys))
+    }
+
+    private static func dockerCredentialLabels(
+        environment: WorkspaceExecutionEnvironment
+    ) -> [String] {
+        uniqueStrings(environment.effectiveCredentialProjections.map {
+            "docker:\($0.displayName):\($0.access.rawValue):\($0.containerPath)"
+        })
+    }
+
+    @MainActor
+    private static func gitCredentialLabels(task: AgentTask, contextText: String) -> [String] {
+        shouldProjectGitCredentials(task: task, contextText: contextText)
+            ? ["git:credential-context:read-only"]
+            : []
+    }
+
+    @MainActor
+    private static func shouldProjectGitCredentials(task: AgentTask, contextText: String) -> Bool {
+        GitOperationIntentDetector.detectsNetworkGitOperation(
+            prompt: "",
+            task: task,
+            contextText: contextText
+        )
     }
 
     @MainActor
@@ -1221,7 +1352,8 @@ enum AgentPolicyManifestService {
             return LogSanitizer.sanitize(event.payload, maxLength: 240)
         }
         let providerSandboxActions: [String] = events.compactMap(providerSandboxDeniedAction(from:))
-        return uniqueLimited(explicitActions + providerSandboxActions)
+        let osSandboxActions: [String] = events.compactMap(osSandboxDeniedAction(from:))
+        return uniqueLimited(explicitActions + providerSandboxActions + osSandboxActions)
     }
 
     private static func providerSandboxDeniedAction(from event: TaskEvent) -> String? {
@@ -1232,6 +1364,13 @@ enum AgentPolicyManifestService {
         guard lower.contains("sandbox") || lower.contains("outside") || lower.contains("workspace") else { return nil }
         guard let path = filesystemPaths(in: event.payload).first else { return nil }
         return "provider_sandbox_blocked_write path=\(path)"
+    }
+
+    private static func osSandboxDeniedAction(from event: TaskEvent) -> String? {
+        guard event.type == "tool.result" || event.type == "agent.response" || event.type == "agent.thinking" else {
+            return nil
+        }
+        return RuntimeSandboxDenialDiagnostics.fileDenial(in: event.payload)?.deniedActionValue
     }
 
     private static func filesystemPaths(in text: String) -> [String] {

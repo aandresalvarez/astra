@@ -8,11 +8,15 @@ struct AgentRuntimeLaunchPreflightResult: Sendable, Equatable {
         case taskFolderCreateFailed
         case runtimeReadinessPassed
         case runtimeReadinessFailed
+        case credentialProjectionPassed
+        case credentialProjectionFailed
         case remoteWorkspacePreflightPassed
         case capabilityRuntimeResourcesPassed
         case capabilityRuntimeResourcesMissing
         case connectorPreflightPassed
         case connectorPreflightFailed
+        case dockerImageAvailabilityPassed
+        case dockerImageAvailabilityFailed
     }
 
     var status: Status
@@ -23,9 +27,20 @@ struct AgentRuntimeLaunchPreflightResult: Sendable, Equatable {
 
     var didPass: Bool {
         switch status {
-        case .taskFolderPrepared, .runtimeReadinessPassed, .remoteWorkspacePreflightPassed, .capabilityRuntimeResourcesPassed, .connectorPreflightPassed:
+        case .taskFolderPrepared,
+             .runtimeReadinessPassed,
+             .credentialProjectionPassed,
+             .remoteWorkspacePreflightPassed,
+             .capabilityRuntimeResourcesPassed,
+             .connectorPreflightPassed,
+             .dockerImageAvailabilityPassed:
             return true
-        case .taskFolderCreateFailed, .runtimeReadinessFailed, .capabilityRuntimeResourcesMissing, .connectorPreflightFailed:
+        case .taskFolderCreateFailed,
+             .runtimeReadinessFailed,
+             .credentialProjectionFailed,
+             .capabilityRuntimeResourcesMissing,
+             .connectorPreflightFailed,
+             .dockerImageAvailabilityFailed:
             return false
         }
     }
@@ -391,13 +406,285 @@ enum AgentRuntimeLaunchPreflight {
         ).didPass
     }
 
+    static func preflightCredentialProjectionBeforeLaunchResult(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String,
+        codeDirectory: String,
+        homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
+        fileManager: FileManager = .default
+    ) -> AgentRuntimeLaunchPreflightResult {
+        var report = ExecutionEnvironmentCredentialReadinessService.evaluate(
+            task: task,
+            codeDirectory: codeDirectory,
+            homeDirectoryPath: homeDirectoryPath,
+            fileManager: fileManager
+        )
+        var fields = report.auditFields
+        fields["phase"] = phase
+        fields["runtime"] = task.resolvedRuntimeID.rawValue
+        fields["diagnostic_result"] = report.shouldBlockLaunch
+            ? AgentRuntimeLaunchPreflightResult.Status.credentialProjectionFailed.rawValue
+            : AgentRuntimeLaunchPreflightResult.Status.credentialProjectionPassed.rawValue
+        fields["result"] = report.shouldBlockLaunch ? "blocked" : "passed"
+
+        if report.shouldBlockLaunch,
+           autoProjectRequiredDockerCredentialsIfPossible(
+               task: task,
+               run: run,
+               modelContext: modelContext,
+               report: report,
+               homeDirectoryPath: homeDirectoryPath,
+               fileManager: fileManager
+           ) {
+            report = ExecutionEnvironmentCredentialReadinessService.evaluate(
+                task: task,
+                codeDirectory: codeDirectory,
+                homeDirectoryPath: homeDirectoryPath,
+                fileManager: fileManager
+            )
+            fields = report.auditFields
+            fields["phase"] = phase
+            fields["runtime"] = task.resolvedRuntimeID.rawValue
+            fields["auto_projected_credentials"] = "true"
+            fields["diagnostic_result"] = report.shouldBlockLaunch
+                ? AgentRuntimeLaunchPreflightResult.Status.credentialProjectionFailed.rawValue
+                : AgentRuntimeLaunchPreflightResult.Status.credentialProjectionPassed.rawValue
+            fields["result"] = report.shouldBlockLaunch ? "blocked_after_auto_projection" : "auto_projected_and_passed"
+        }
+
+        guard !report.shouldBlockLaunch else {
+            AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: fields, level: .error, fieldMaxLength: 240)
+            finishPreLaunchFailure(
+                task: task,
+                run: run,
+                modelContext: modelContext,
+                reason: TaskRunStopReason.credentialProjectionRequired.rawValue,
+                payload: report.userMessage
+            )
+            return AgentRuntimeLaunchPreflightResult(
+                status: .credentialProjectionFailed,
+                phase: phase,
+                reason: TaskRunStopReason.credentialProjectionRequired.rawValue,
+                detail: report.detail,
+                auditFields: fields
+            )
+        }
+
+        AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: fields, level: .debug, fieldMaxLength: 240)
+        return AgentRuntimeLaunchPreflightResult(
+            status: .credentialProjectionPassed,
+            phase: phase,
+            reason: nil,
+            detail: report.detail,
+            auditFields: fields
+        )
+    }
+
+    private static func autoProjectRequiredDockerCredentialsIfPossible(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        report: ExecutionEnvironmentCredentialReadinessReport,
+        homeDirectoryPath: String,
+        fileManager: FileManager
+    ) -> Bool {
+        guard report.requiredProjectionIDs.contains(ExecutionEnvironmentCredentialProjection.gcpADCID) else {
+            return false
+        }
+        switch report.state {
+        case .hostCredentialAvailableButNotProjected,
+             .pinnedTaskSnapshotMissingProjection,
+             .projectedButHostCredentialMissing:
+            break
+        case .notRequired,
+             .requiredButHostCredentialMissing,
+             .ready,
+             .failed:
+            return false
+        }
+
+        let gcloudDirectory = ExecutionEnvironmentCredentialProjection
+            .defaultGCPADCHostPath(homeDirectory: homeDirectoryPath)
+        let adcFile = (gcloudDirectory as NSString)
+            .appendingPathComponent(ExecutionEnvironmentCredentialProjection.gcpADCFileName)
+        var isDirectory = ObjCBool(false)
+        guard fileManager.fileExists(atPath: adcFile, isDirectory: &isDirectory),
+              !isDirectory.boolValue else {
+            return false
+        }
+
+        var environment = DockerExecutionPlanner.resolveEnvironment(for: task)
+        guard environment.isContainerized else { return false }
+
+        var projections = environment.effectiveCredentialProjections
+        projections.removeAll { $0.id == ExecutionEnvironmentCredentialProjection.gcpADCID }
+        projections.append(ExecutionEnvironmentCredentialProjection.gcpADC(hostPath: gcloudDirectory))
+        environment.setCredentialProjections(projections)
+
+        guard let json = ExecutionEnvironmentStore.encodeSnapshot(environment) else {
+            return false
+        }
+        task.executionEnvironmentSnapshotJSON = json
+        task.updatedAt = Date()
+        run.executionEnvironmentSnapshotJSON = json
+        try? modelContext.save()
+
+        AppLogger.audit(.executionEnvironmentChanged, category: "Worker", taskID: task.id, fields: [
+            "result": "auto_projected_required_docker_credentials",
+            "credential_projection": ExecutionEnvironmentCredentialProjection.gcpADCID,
+            "credential_projection_state": report.state.rawValue,
+            "environment": environment.kind.rawValue,
+            "environment_id": environment.id,
+            "run_id": run.id.uuidString
+        ], level: .info)
+        return true
+    }
+
+    static func preflightDockerImageBeforeLaunchResult(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String,
+        imageAvailabilityChecker: any DockerImageAvailabilityChecking = DockerImageInventoryService()
+    ) async -> AgentRuntimeLaunchPreflightResult {
+        let environment = DockerExecutionPlanner.resolveEnvironment(for: task)
+        var fields: [String: String] = [
+            "source": "docker_image_availability_preflight",
+            "phase": phase,
+            "runtime": task.resolvedRuntimeID.rawValue,
+            "execution_environment_kind": environment.kind.rawValue,
+            "execution_environment_id": environment.id,
+            "execution_environment_provider_placement": environment.effectiveProviderPlacement.rawValue,
+            "workspace_command_placement": environment.workspaceCommandPlacement,
+            "shell_route": environment.workspaceShellRoute
+        ]
+
+        guard environment.isContainerized else {
+            fields["result"] = "skipped_host_environment"
+            fields["diagnostic_result"] = AgentRuntimeLaunchPreflightResult.Status.dockerImageAvailabilityPassed.rawValue
+            AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: fields, level: .debug)
+            return AgentRuntimeLaunchPreflightResult(
+                status: .dockerImageAvailabilityPassed,
+                phase: phase,
+                reason: nil,
+                detail: "Host execution does not require a Docker image.",
+                auditFields: fields
+            )
+        }
+
+        guard let image = environment.image?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !image.isEmpty else {
+            let reason = TaskRunStopReason.dockerImageUnavailable.rawValue
+            fields["result"] = "missing_image_configuration"
+            fields["diagnostic_result"] = AgentRuntimeLaunchPreflightResult.Status.dockerImageAvailabilityFailed.rawValue
+            fields["stop_reason"] = reason
+            let message = dockerImagePreflightFailureMessage(
+                image: environment.image ?? environment.displayName,
+                detail: "The selected Docker execution environment does not have an image configured.",
+                remediation: "Build or select a loaded Docker image in the Container panel, then retry the task."
+            )
+            AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: fields, level: .error, fieldMaxLength: 240)
+            finishPreLaunchFailure(
+                task: task,
+                run: run,
+                modelContext: modelContext,
+                reason: reason,
+                payload: message
+            )
+            return AgentRuntimeLaunchPreflightResult(
+                status: .dockerImageAvailabilityFailed,
+                phase: phase,
+                reason: reason,
+                detail: message,
+                auditFields: fields
+            )
+        }
+
+        fields["container_image"] = image
+        let availability = await imageAvailabilityChecker.checkImageAvailability(image)
+        switch availability {
+        case .success(let summary):
+            fields["result"] = "image_available"
+            fields["diagnostic_result"] = AgentRuntimeLaunchPreflightResult.Status.dockerImageAvailabilityPassed.rawValue
+            fields["container_image_id"] = summary.imageID ?? "unknown"
+            AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: fields, level: .debug, fieldMaxLength: 240)
+            return AgentRuntimeLaunchPreflightResult(
+                status: .dockerImageAvailabilityPassed,
+                phase: phase,
+                reason: nil,
+                detail: summary.imageID,
+                auditFields: fields
+            )
+        case .failure(let error):
+            let classification = dockerImagePreflightFailure(for: image, error: error)
+            fields["result"] = classification.result
+            fields["diagnostic_result"] = AgentRuntimeLaunchPreflightResult.Status.dockerImageAvailabilityFailed.rawValue
+            fields["stop_reason"] = classification.reason.rawValue
+            fields["error_description"] = classification.detail
+            AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: fields, level: .error, fieldMaxLength: 240)
+            let message = dockerImagePreflightFailureMessage(
+                image: image,
+                detail: classification.detail,
+                remediation: classification.remediation
+            )
+            finishPreLaunchFailure(
+                task: task,
+                run: run,
+                modelContext: modelContext,
+                reason: classification.reason.rawValue,
+                payload: message
+            )
+            return AgentRuntimeLaunchPreflightResult(
+                status: .dockerImageAvailabilityFailed,
+                phase: phase,
+                reason: classification.reason.rawValue,
+                detail: classification.detail,
+                auditFields: fields
+            )
+        }
+    }
+
+    static func preflightDockerImageBeforeLaunch(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String
+    ) async -> Bool {
+        await preflightDockerImageBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: phase
+        ).didPass
+    }
+
+    static func preflightCredentialProjectionBeforeLaunch(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String,
+        codeDirectory: String
+    ) -> Bool {
+        preflightCredentialProjectionBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: phase,
+            codeDirectory: codeDirectory
+        ).didPass
+    }
+
     static func preflightCapabilitiesBeforeLaunchResult(
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
         phase: String,
         contextText: String = "",
-        prerequisiteStatuses: [String: HealthStatus] = [:]
+        prerequisiteStatuses: [String: HealthStatus] = [:],
+        mcpDetectExecutable: (String) -> String = { RuntimePathResolver.detectExecutablePath(named: $0) },
+        mcpIsExecutableFile: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
     ) -> AgentRuntimeLaunchPreflightResult {
         let policyContext = task.workspace.map {
             CapabilityCatalogPolicyContext.workspaceUser(
@@ -429,12 +716,43 @@ enum AgentRuntimeLaunchPreflight {
         let runtime = AgentRuntimeID(rawValue: task.runtimeID ?? "") ?? TaskExecutionDefaults.runtime
         let mcpIssues: [MCPRuntimeProjection.PreflightIssue]
         if AgentRuntimeAdapterRegistry.descriptor(for: runtime).supportsMCPServers {
+            let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
+                for: task,
+                contextText: contextText
+            )
+            var mcpServers = MCPRuntimeProjection.enabledServers(
+                for: task.workspace,
+                packages: CapabilityRuntimeResourceMatcher.packageDefinitions(),
+                approvalRecords: CapabilityApprovalStore().records()
+            )
+            let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: task)
+            if let workspaceServer = DockerWorkspaceMCPProjection.resolvedServer(
+                task: task,
+                environment: executionEnvironment,
+                currentDirectory: TaskWorkspaceAccess(task: task).effectiveWorkspacePath,
+                runID: run.id
+            ) {
+                mcpServers.append(workspaceServer)
+            }
+            if let hostControlServer = HostControlPlaneMCPProjection.resolvedServer(
+                task: task,
+                environment: executionEnvironment,
+                currentDirectory: TaskWorkspaceAccess(task: task).effectiveWorkspacePath,
+                runID: run.id,
+                taskEnvironment: taskEnv
+            ) {
+                mcpServers.append(hostControlServer)
+            }
+            if let browserServer = BrowserBridgeMCPProjection.resolvedServer(
+                for: task,
+                contextText: contextText
+            ) {
+                mcpServers.append(browserServer)
+            }
             mcpIssues = MCPRuntimeProjection.preflightIssues(
-                servers: MCPRuntimeProjection.enabledServers(
-                    for: task.workspace,
-                    packages: CapabilityRuntimeResourceMatcher.packageDefinitions(),
-                    approvalRecords: CapabilityApprovalStore().records()
-                )
+                servers: mcpServers,
+                detectExecutable: mcpDetectExecutable,
+                isExecutableFile: mcpIsExecutableFile
             )
         } else {
             mcpIssues = []
@@ -608,6 +926,64 @@ enum AgentRuntimeLaunchPreflight {
         Remote workspace preflight: \(connectionSummary) is configured for this workspace. \(aliasSummary)
 
         ASTRA will launch \(runtime.rawValue) with SSH-aware filesystem access when the provider supports it so local SSH config, SSH keys, and gcloud/IAP ProxyCommand inputs remain reachable. If the remote still cannot connect, check that the VM is running and that `gcloud auth list` and `ssh <alias> "echo connected"` work in Terminal.
+        """
+    }
+
+    private static func dockerImagePreflightFailure(
+        for image: String,
+        error: DockerImageAvailabilityError
+    ) -> (
+        reason: TaskRunStopReason,
+        result: String,
+        detail: String,
+        remediation: String
+    ) {
+        switch error {
+        case .missingImage:
+            return (
+                .dockerImageUnavailable,
+                "image_missing",
+                "Docker image \(image) is not loaded on this Mac.",
+                "Build the workspace image from the Container panel, pull the image, or choose a loaded image before retrying."
+            )
+        case .invalidImageReference(let invalidImage):
+            return (
+                .dockerImageUnavailable,
+                "invalid_image_reference",
+                "Docker image reference \(invalidImage) is not safe to pass to Docker.",
+                "Select or rebuild an image with a standard Docker image reference."
+            )
+        case .unsafeRemoteContext(let detail):
+            return (
+                .dockerContextUnapproved,
+                "unsafe_remote_context",
+                detail,
+                "Switch Docker Desktop back to a local context, or add an explicit remote-Docker approval flow before using this context for ASTRA tasks."
+            )
+        case .unavailable(let detail):
+            let cleaned = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (
+                .dockerDaemonUnavailable,
+                "docker_unavailable",
+                cleaned.isEmpty ? "Docker is not available." : cleaned,
+                "Start Docker Desktop, verify `docker image inspect \(image)` works in Terminal, then retry."
+            )
+        }
+    }
+
+    private static func dockerImagePreflightFailureMessage(
+        image: String,
+        detail: String,
+        remediation: String
+    ) -> String {
+        """
+        Docker image preflight stopped this task before the agent ran:
+
+        \(detail)
+
+        Image: \(image)
+
+        \(remediation)
         """
     }
 

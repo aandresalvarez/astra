@@ -1185,7 +1185,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         analysisID: command.analysisID,
                         controlID: command.controlID,
                         action: BrowserActionKind.click.rawValue,
-                        allowDangerous: command.allowDangerous ?? false
+                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(command.allowDangerous)
                     )
                     guard resolved.ok, let control = resolved.currentControl else {
                         return .json(resolved.response)
@@ -1196,7 +1196,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         selector: target.selector,
                         x: target.x,
                         y: target.y,
-                        allowDangerous: command.allowDangerous ?? false,
+                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(command.allowDangerous),
                         label: target.label,
                         role: target.role,
                         text: nil,
@@ -1214,7 +1214,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     selector: command.normalizedSelector,
                     x: command.x,
                     y: command.y,
-                    allowDangerous: command.allowDangerous ?? false,
+                    allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(command.allowDangerous),
                     label: command.normalizedLabel,
                     role: command.normalizedRole,
                     text: command.normalizedText,
@@ -1231,7 +1231,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     analysisID: command.analysisID,
                     controlID: command.controlID,
                     action: BrowserActionKind.open.rawValue,
-                    allowDangerous: command.allowDangerous ?? false
+                    allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(command.allowDangerous)
                 )
                 guard resolved.ok, let control = resolved.currentControl else {
                     return .json(resolved.response)
@@ -1239,7 +1239,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 var object = try await openControl(
                     control,
                     controlRef: resolved.currentControlRef,
-                    allowDangerous: command.allowDangerous ?? false
+                    allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(command.allowDangerous)
                 )
                 object["preflight"] = resolved.response
                 return .json(object)
@@ -1250,7 +1250,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         analysisID: command.analysisID,
                         controlID: command.controlID,
                         action: BrowserActionKind.doubleClick.rawValue,
-                        allowDangerous: command.allowDangerous ?? false
+                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(command.allowDangerous)
                     )
                     guard resolved.ok, let control = resolved.currentControl else {
                         return .json(resolved.response)
@@ -1261,7 +1261,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         selector: target.selector,
                         x: target.x,
                         y: target.y,
-                        allowDangerous: command.allowDangerous ?? false,
+                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(command.allowDangerous),
                         label: target.label,
                         role: target.role,
                         text: nil,
@@ -1279,7 +1279,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     selector: command.normalizedSelector,
                     x: command.x,
                     y: command.y,
-                    allowDangerous: command.allowDangerous ?? false,
+                    allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(command.allowDangerous),
                     label: command.normalizedLabel,
                     role: command.normalizedRole,
                     text: command.normalizedText,
@@ -1295,7 +1295,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         analysisID: command.analysisID,
                         controlID: command.controlID,
                         action: action,
-                        allowDangerous: command.allowDangerous ?? false
+                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(command.allowDangerous)
                     )
                     guard resolved.ok, let control = resolved.currentControl else {
                         return .json(resolved.response)
@@ -1335,7 +1335,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         analysisID: command.analysisID,
                         controlID: command.controlID,
                         action: BrowserActionKind.setValue.rawValue,
-                        allowDangerous: command.allowDangerous ?? false
+                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(command.allowDangerous)
                     )
                     guard resolved.ok, let control = resolved.currentControl else {
                         return .json(resolved.response)
@@ -1378,7 +1378,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         analysisID: command.analysisID,
                         controlID: command.controlID,
                         action: BrowserActionKind.setValue.rawValue,
-                        allowDangerous: command.allowDangerous ?? false
+                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(command.allowDangerous)
                     )
                     guard resolved.ok, let control = resolved.currentControl else {
                         return .json(resolved.response)
@@ -1415,7 +1415,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         analysisID: command.analysisID,
                         controlID: command.controlID,
                         action: BrowserActionKind.click.rawValue,
-                        allowDangerous: command.allowDangerous ?? false
+                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(command.allowDangerous)
                     )
                     guard resolved.ok, let control = resolved.currentControl else {
                         return .json(resolved.response)
@@ -1426,7 +1426,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         selector: target.selector,
                         x: target.x,
                         y: target.y,
-                        allowDangerous: command.allowDangerous ?? false,
+                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(command.allowDangerous),
                         label: target.label,
                         role: target.role,
                         text: nil,
@@ -1446,7 +1446,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 return .json(try await clickControl(
                     label: label,
                     role: command.role,
-                    allowDangerous: command.allowDangerous ?? false
+                    allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(command.allowDangerous)
                 ))
             case .verifyText:
                 let command = try request.decodeJSON(VerifyTextCommand.self)
@@ -2275,7 +2275,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             analysisID: command.analysisID,
             controlID: command.controlID,
             action: command.action,
-            allowDangerous: command.allowDangerous ?? false
+            allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(command.allowDangerous)
         )
         AppLogger.audit(
             .shelfBrowserAction,
@@ -4957,7 +4957,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 analysisID: setAnalysisID,
                 controlID: setControlID,
                 action: BrowserActionKind.setValue.rawValue,
-                allowDangerous: command.allowDangerous ?? false
+                allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(command.allowDangerous)
             )
             guard resolved.ok, let control = resolved.currentControl else {
                 results.append(resolved.response.merging(["action": "set"], uniquingKeysWith: { current, _ in current }))
@@ -5008,7 +5008,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 analysisID: clickAnalysisID,
                 controlID: clickControlID,
                 action: BrowserActionKind.click.rawValue,
-                allowDangerous: command.allowDangerous ?? false
+                allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(command.allowDangerous)
             )
             guard resolved.ok, let control = resolved.currentControl else {
                 results.append(resolved.response.merging(["action": "click"], uniquingKeysWith: { current, _ in current }))
@@ -5020,7 +5020,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 selector: target.selector,
                 x: target.x,
                 y: target.y,
-                allowDangerous: command.allowDangerous ?? false,
+                allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(command.allowDangerous),
                 label: target.label,
                 role: target.role,
                 text: nil,
@@ -5038,7 +5038,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             let result = try await clickControl(
                 label: click,
                 role: command.clickRole,
-                allowDangerous: command.allowDangerous ?? false
+                allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(command.allowDangerous)
             )
             results.append(result.merging(["action": "click"], uniquingKeysWith: { current, _ in current }))
         }
@@ -5100,7 +5100,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     analysisID: action.analysisID,
                     controlID: action.controlID,
                     action: action.preflightAction ?? action.action,
-                    allowDangerous: action.allowDangerous
+                    allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous)
                 ))
                 results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
                 if !Self.boolValue(result["ok"]) {
@@ -5127,7 +5127,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         analysisID: action.analysisID,
                         controlID: action.controlID,
                         action: BrowserActionKind.click.rawValue,
-                        allowDangerous: action.allowDangerous ?? false
+                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous)
                     )
                     guard resolved.ok, let control = resolved.currentControl else {
                         results.append(resolved.response.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
@@ -5140,7 +5140,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         selector: target.selector,
                         x: target.x,
                         y: target.y,
-                        allowDangerous: action.allowDangerous ?? false,
+                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous),
                         label: target.label,
                         role: target.role,
                         text: nil,
@@ -5157,7 +5157,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         selector: action.normalizedSelector,
                         x: action.x,
                         y: action.y,
-                        allowDangerous: action.allowDangerous ?? false,
+                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous),
                         label: action.normalizedLabel,
                         role: action.normalizedRole,
                         text: action.text,
@@ -5176,7 +5176,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     analysisID: action.analysisID,
                     controlID: action.controlID,
                     action: BrowserActionKind.open.rawValue,
-                    allowDangerous: action.allowDangerous ?? false
+                    allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous)
                 )
                 guard resolved.ok, let control = resolved.currentControl else {
                     results.append(resolved.response.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
@@ -5186,7 +5186,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 var object = try await openControl(
                     control,
                     controlRef: resolved.currentControlRef,
-                    allowDangerous: action.allowDangerous ?? false,
+                    allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous),
                     timeoutSeconds: action.timeoutSeconds ?? 12,
                     intervalMilliseconds: action.intervalMilliseconds ?? 500
                 )
@@ -5198,7 +5198,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         analysisID: action.analysisID,
                         controlID: action.controlID,
                         action: BrowserActionKind.doubleClick.rawValue,
-                        allowDangerous: action.allowDangerous ?? false
+                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous)
                     )
                     guard resolved.ok, let control = resolved.currentControl else {
                         results.append(resolved.response.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
@@ -5211,7 +5211,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         selector: target.selector,
                         x: target.x,
                         y: target.y,
-                        allowDangerous: action.allowDangerous ?? false,
+                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous),
                         label: target.label,
                         role: target.role,
                         text: nil,
@@ -5228,7 +5228,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         selector: action.normalizedSelector,
                         x: action.x,
                         y: action.y,
-                        allowDangerous: action.allowDangerous ?? false,
+                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous),
                         label: action.normalizedLabel,
                         role: action.normalizedRole,
                         text: action.text,
@@ -5247,7 +5247,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         analysisID: action.analysisID,
                         controlID: action.controlID,
                         action: BrowserActionKind.fill.rawValue,
-                        allowDangerous: action.allowDangerous ?? false
+                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous)
                     )
                     guard resolved.ok, let control = resolved.currentControl else {
                         results.append(resolved.response.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
@@ -5292,7 +5292,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         analysisID: action.analysisID,
                         controlID: action.controlID,
                         action: action.normalizedAction == "fill" ? BrowserActionKind.fill.rawValue : BrowserActionKind.setValue.rawValue,
-                        allowDangerous: action.allowDangerous ?? false
+                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous)
                     )
                     guard resolved.ok, let control = resolved.currentControl else {
                         results.append(resolved.response.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
@@ -5342,7 +5342,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         analysisID: action.analysisID,
                         controlID: action.controlID,
                         action: BrowserActionKind.setValue.rawValue,
-                        allowDangerous: action.allowDangerous ?? false
+                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous)
                     )
                     guard resolved.ok, let control = resolved.currentControl else {
                         results.append(resolved.response.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
@@ -5381,7 +5381,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         analysisID: action.analysisID,
                         controlID: action.controlID,
                         action: BrowserActionKind.click.rawValue,
-                        allowDangerous: action.allowDangerous ?? false
+                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous)
                     )
                     guard resolved.ok, let control = resolved.currentControl else {
                         results.append(resolved.response.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
@@ -5394,7 +5394,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         selector: target.selector,
                         x: target.x,
                         y: target.y,
-                        allowDangerous: action.allowDangerous ?? false,
+                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous),
                         label: target.label,
                         role: target.role,
                         text: nil,
@@ -5415,7 +5415,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 let result = try await clickControl(
                     label: label,
                     role: action.role,
-                    allowDangerous: action.allowDangerous ?? false
+                    allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous)
                 )
                 results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
             case "verifytext", "verify-text":
@@ -5501,7 +5501,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     role: action.role,
                     click: action.click ?? action.label,
                     clickRole: action.clickRole,
-                    allowDangerous: action.allowDangerous,
+                    allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous),
                     waitSaved: action.waitSaved,
                     verify: action.verify,
                     absent: action.absentText ?? (action.absent == true ? action.text : nil),

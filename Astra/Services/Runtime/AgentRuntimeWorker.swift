@@ -564,6 +564,27 @@ final class AgentRuntimeWorker {
             return
         }
 
+        guard await AgentRuntimeLaunchPreflight.preflightDockerImageBeforeLaunch(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: auditPhase
+        ) else {
+            isRunning = false
+            return
+        }
+
+        guard AgentRuntimeLaunchPreflight.preflightCredentialProjectionBeforeLaunch(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: auditPhase,
+            codeDirectory: codeDir
+        ) else {
+            isRunning = false
+            return
+        }
+
         let executionPath: String
         let shouldCleanupIsolation: Bool
         if runtimeAdapter.shouldPrepareIsolation(phase: auditPhase) {
@@ -597,7 +618,26 @@ final class AgentRuntimeWorker {
             shouldCleanupIsolation = false
         }
 
+        let executionEnvironment = DockerExecutionPlanner.snapshotForRun(
+            task: task,
+            currentDirectory: executionPath
+        )
+        let executionEnvironmentJSON = ExecutionEnvironmentStore.encodeSnapshot(executionEnvironment)
+        task.executionEnvironmentSnapshotJSON = executionEnvironmentJSON
+        run.executionEnvironmentSnapshotJSON = executionEnvironmentJSON
+
         let prompt = promptOverride ?? buildPrompt(for: task)
+        let launchResourcePlan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: run.id,
+            runtime: selectedRuntime,
+            phase: auditPhase,
+            prompt: prompt,
+            contextText: providerLaunchContextText,
+            workspacePath: executionPath,
+            executionEnvironment: executionEnvironment
+        )
+        TaskLaunchResourceManifestStore.persist(launchResourcePlan, task: task)
         logContextPromptDiagnostics(for: task, prompt: prompt, phase: auditPhase)
         let budgetEnforcementMode = currentBudgetEnforcementMode
         guard AgentRuntimeBudgetPolicy.enforcePromptBudgetIfNeeded(
@@ -727,6 +767,7 @@ final class AgentRuntimeWorker {
             contextText: providerLaunchContextText,
             nativeContinuationSessionID: nativeContinuationSessionID,
             runID: run.id,
+            launchResourcePlan: launchResourcePlan,
             liveApprovalsEnabled: liveApprovalsEnabled,
             noSemanticProgressTimeoutSeconds: semanticProgressTimeout,
             onInteractiveAsk: Self.interactiveAskHandler(
@@ -1410,8 +1451,10 @@ final class AgentRuntimeWorker {
         nextTask.status = .queued
         nextTask.chainedFromID = task.id
         nextTask.runtimeID = task.runtimeID
-        // A chained follow-up continues in the same checkout as its parent.
+        // A chained follow-up continues in the same checkout and execution
+        // environment as its parent.
         nextTask.executionRootPath = task.executionRootPath
+        nextTask.executionEnvironmentSnapshotJSON = task.executionEnvironmentSnapshotJSON
         if !output.isEmpty {
             nextTask.inputs = ["Previous task output (\(task.title)):\n\(String(output.prefix(5000)))"]
         }
@@ -1636,6 +1679,7 @@ final class AgentRuntimeWorker {
         let mcpServerIDs: [String]
         let browserAdapters: [String]
         let promptSchemaVersion: String
+        let executionEnvironmentFingerprint: String?
 
         var signatureValue: String {
             [
@@ -1663,7 +1707,8 @@ final class AgentRuntimeWorker {
                 "credentials=\(credentialLabels.joined(separator: ","))",
                 "mcp=\(mcpServerIDs.joined(separator: ","))",
                 "browserAdapters=\(browserAdapters.joined(separator: ","))",
-                "prompt=\(promptSchemaVersion)"
+                "prompt=\(promptSchemaVersion)",
+                "environment=\(executionEnvironmentFingerprint ?? WorkspaceExecutionEnvironment.host.signatureFingerprint)"
             ].joined(separator: "\u{1f}")
         }
     }
@@ -1812,7 +1857,8 @@ final class AgentRuntimeWorker {
             credentialLabels: canonicalStrings(manifest.credentialLabels),
             mcpServerIDs: canonicalStrings(manifest.mcpServers.map { "\($0.packageID):\($0.id)" }),
             browserAdapters: canonicalStrings(scope.enabledBrowserAdapters),
-            promptSchemaVersion: "context_capsule_v2"
+            promptSchemaVersion: "context_capsule_v2",
+            executionEnvironmentFingerprint: DockerExecutionPlanner.resolveEnvironment(for: task).signatureFingerprint
         )
     }
 
@@ -1925,12 +1971,17 @@ final class AgentRuntimeWorker {
 
     private static func isTerminalRuntimeStop(_ reason: String) -> Bool {
         guard let stopReason = TaskRunStopReason(rawValue: reason) else { return false }
+        if stopReason.isDockerRuntimeBlocked {
+            return true
+        }
         return [
             .providerPermissionDeniedBroadPermissions,
             .providerPermissionUnresumable,
             .providerNoActionableProgress,
             .providerNoSemanticProgress,
-            .providerSemanticProgressStalled
+            .providerSemanticProgressStalled,
+            .providerActiveToolStalled,
+            .providerWorkspaceJobStalled
         ].contains(stopReason)
     }
 

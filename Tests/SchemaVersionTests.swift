@@ -37,6 +37,11 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV6.models.count == 10)
     }
 
+    @Test("SchemaV7 declares all 10 model types")
+    func v7ModelCount() {
+        #expect(ASTRASchemaV7.models.count == 10)
+    }
+
     @Test("SchemaV1 version identifier is 1.0.0")
     func v1VersionIdentifier() {
         #expect(ASTRASchemaV1.versionIdentifier == Schema.Version(1, 0, 0))
@@ -67,14 +72,19 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV6.versionIdentifier == Schema.Version(6, 0, 0))
     }
 
-    @Test("Migration plan lists SchemaV1 through SchemaV6")
-    func migrationPlanHasVersions() {
-        #expect(ASTRAMigrationPlan.schemas.count == 6)
+    @Test("SchemaV7 version identifier is 7.0.0")
+    func v7VersionIdentifier() {
+        #expect(ASTRASchemaV7.versionIdentifier == Schema.Version(7, 0, 0))
     }
 
-    @Test("Migration plan has V1 to V6 lightweight stages")
+    @Test("Migration plan lists SchemaV1 through SchemaV7")
+    func migrationPlanHasVersions() {
+        #expect(ASTRAMigrationPlan.schemas.count == 7)
+    }
+
+    @Test("Migration plan has V1 to V7 lightweight stages")
     func migrationPlanHasStage() {
-        #expect(ASTRAMigrationPlan.stages.count == 5)
+        #expect(ASTRAMigrationPlan.stages.count == 6)
     }
 
     @Test("ModelContainer can be created with versioned schema")
@@ -105,6 +115,7 @@ struct SchemaVersionTests {
         #expect(workspace.enabledCapabilityIDs.isEmpty)
         #expect(workspace.isStarred == false)
         #expect(workspace.activeWorkingPath == nil)
+        #expect(workspace.activeExecutionEnvironmentJSON == nil)
 
         let skill = Skill(name: "Reader", allowedTools: ["Read"])
         skill.workspace = workspace
@@ -125,9 +136,11 @@ struct SchemaVersionTests {
         let task = AgentTask(title: "Test Task", goal: "Do something", workspace: workspace)
         task.skills = [skill]
         #expect(task.executionRootPath == nil)
+        #expect(ExecutionEnvironmentStore.decode(task.executionEnvironmentSnapshotJSON).isHost)
         context.insert(task)
 
         let run = TaskRun(task: task)
+        #expect(ExecutionEnvironmentStore.decode(run.executionEnvironmentSnapshotJSON).isHost)
         context.insert(run)
 
         let event = TaskEvent(task: task, type: "test", run: run)
@@ -391,9 +404,14 @@ struct SchemaVersionTests {
         let context = migratedContainer.mainContext
         let migratedWorkspace = try #require(try context.fetch(FetchDescriptor<Workspace>()).first)
         #expect(migratedWorkspace.activeWorkingPath == nil)
+        #expect(migratedWorkspace.activeExecutionEnvironmentJSON == nil)
         #expect(migratedWorkspace.isUsingWorktree == false)
 
         let migratedTask = try #require(try context.fetch(FetchDescriptor<AgentTask>()).first)
         #expect(migratedTask.executionRootPath == nil)
+        #expect(migratedTask.executionEnvironmentSnapshotJSON == nil)
+
+        let migratedRuns = try context.fetch(FetchDescriptor<TaskRun>())
+        #expect(migratedRuns.allSatisfy { $0.executionEnvironmentSnapshotJSON == nil })
     }
 }

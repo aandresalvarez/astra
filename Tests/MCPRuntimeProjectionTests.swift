@@ -125,7 +125,8 @@ struct MCPRuntimeProjectionTests {
             environmentKeys: ["FILES_TOKEN"]
         )
         let data = try #require(MCPRuntimeProjection.claudeConfigJSON(
-            servers: [.init(packageID: "p", server: server)]
+            servers: [.init(packageID: "p", server: server)],
+            availableEnvironment: ["FILES_TOKEN": "secret"]
         ))
         let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let serversDict = try #require(object["mcpServers"] as? [String: Any])
@@ -224,7 +225,8 @@ struct MCPRuntimeProjectionTests {
         let server = stdioServer(id: "stub", command: stub.path, environmentKeys: ["STUB_MARKER"])
         let configURL = try #require(MCPRuntimeProjection.writeClaudeConfig(
             servers: [.init(packageID: "p", server: server)],
-            taskID: UUID()
+            taskID: UUID(),
+            availableEnvironment: ["STUB_MARKER": "marker-42"]
         ))
         defer { try? FileManager.default.removeItem(at: configURL) }
 
@@ -274,23 +276,78 @@ struct MCPRuntimeProjectionTests {
         // The env indirection round-tripped from process environment.
         #expect(serverInfo["version"] as? String == "marker-42")
     }
+
+    @Test("Claude config omits declared env keys that ASTRA did not project")
+    func claudeConfigOmitsUnavailableEnvironmentKeys() throws {
+        let server = stdioServer(
+            id: "secret-server",
+            command: "/bin/cat",
+            environmentKeys: ["AWS_SECRET_ACCESS_KEY", "EXPLICIT_TOKEN"]
+        )
+        let data = try #require(MCPRuntimeProjection.claudeConfigJSON(
+            servers: [.init(
+                packageID: "p",
+                server: server,
+                permittedEnvironmentKeys: ["AWS_SECRET_ACCESS_KEY", "EXPLICIT_TOKEN"]
+            )],
+            availableEnvironment: ["EXPLICIT_TOKEN": "projected"]
+        ))
+        let rendered = String(decoding: data, as: UTF8.self)
+
+        #expect(rendered.contains("EXPLICIT_TOKEN"))
+        #expect(!rendered.contains("AWS_SECRET_ACCESS_KEY"))
+        #expect(!rendered.contains("projected"))
+    }
+
+    @Test("Codex MCP config only renders env vars from explicit ASTRA environment")
+    func codexMCPConfigFiltersUnavailableEnvironmentKeys() {
+        let server = stdioServer(
+            id: "codex-secret-server",
+            command: "/bin/cat",
+            environmentKeys: ["AWS_SECRET_ACCESS_KEY", "EXPLICIT_TOKEN"]
+        )
+        let resolved = MCPRuntimeProjection.ResolvedServer(
+            packageID: "p",
+            server: server,
+            permittedEnvironmentKeys: ["AWS_SECRET_ACCESS_KEY", "EXPLICIT_TOKEN"]
+        )
+
+        let withoutExplicitSecret = CodexMCPConfigRenderer.configArguments(
+            servers: [resolved],
+            availableEnvironment: ["EXPLICIT_TOKEN": "projected"]
+        ).joined(separator: " ")
+        #expect(withoutExplicitSecret.contains("EXPLICIT_TOKEN"))
+        #expect(!withoutExplicitSecret.contains("AWS_SECRET_ACCESS_KEY"))
+        #expect(!withoutExplicitSecret.contains("projected"))
+
+        let withExplicitSecret = CodexMCPConfigRenderer.configArguments(
+            servers: [resolved],
+            availableEnvironment: [
+                "EXPLICIT_TOKEN": "projected",
+                "AWS_SECRET_ACCESS_KEY": "explicitly-projected"
+            ]
+        ).joined(separator: " ")
+        #expect(withExplicitSecret.contains("AWS_SECRET_ACCESS_KEY"))
+        #expect(!withExplicitSecret.contains("explicitly-projected"))
+    }
 }
 
 @Suite("MCP Runtime Parity")
 @MainActor
 struct MCPRuntimeParityTests {
 
-    @Test("Claude Code is the only runtime declaring MCP support today")
-    func claudeDeclaresMCPSupport() {
+    @Test("Claude Code, Copilot, and Codex declare MCP support")
+    func claudeCopilotAndCodexDeclareMCPSupport() {
         let descriptors = CapabilityRuntimeSupportPresentation.allRuntimeDescriptors()
         let supporting = CapabilityRuntimeSupportPresentation.mcpSupportingRuntimes(descriptors: descriptors)
-        #expect(supporting.map(\.id) == [.claudeCode])
+        #expect(supporting.map(\.id) == [.claudeCode, .copilotCLI, .codexCLI])
     }
 
     @Test("Catalog subtitle names the delivering runtimes")
     func catalogSubtitleNamesRuntimes() {
         let subtitle = CapabilityRuntimeSupportPresentation.mcpSupportSubtitle()
         #expect(subtitle.contains("Claude Code"))
+        #expect(subtitle.contains("GitHub Copilot CLI"))
         #expect(subtitle.contains("skip"))
     }
 
