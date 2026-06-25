@@ -25,20 +25,11 @@ final class AgentRuntimeProcessRunner {
     init(sandboxSettingsProvider: @escaping SandboxSettingsProvider = { permissionPolicy in
         ExecutionSandboxSettings.current(permissionPolicy: permissionPolicy)
     }, gitCredentialContextProvider: @escaping GitCredentialContextProvider = { context in
-        guard GitOperationIntentDetector.detectsNetworkGitOperation(
+        GitCredentialContextResolver.runtimeSandboxContext(
             prompt: context.prompt,
             task: context.task,
-            contextText: context.contextText
-        ) else {
-            return .empty
-        }
-        return GitCredentialContextResolver.sandboxContext(
+            contextText: context.contextText,
             repositoryPath: context.workspacePath,
-            intentText: GitOperationIntentDetector.networkGitIntentText(
-                prompt: context.prompt,
-                task: context.task,
-                contextText: context.contextText
-            )
         )
     }) {
         self.sandboxSettingsProvider = sandboxSettingsProvider
@@ -96,9 +87,25 @@ final class AgentRuntimeProcessRunner {
         context: AgentRuntimeProcessLaunchContext
     ) -> SandboxedPlanOutcome {
         var plan = adapter.makeProcessLaunchPlan(context: context)
-        let environment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
-        let gitCredentialContext = gitCredentialContextProvider(context)
+        let launchResourcePlan = context.launchResourcePlan ?? TaskLaunchResourceResolver.resolve(
+            task: context.task,
+            runID: context.runID,
+            runtime: plan.runtime,
+            phase: context.phase,
+            prompt: context.prompt,
+            contextText: context.contextText,
+            workspacePath: context.workspacePath,
+            gitCredentialContextProvider: { [gitCredentialContextProvider] _, _, _, _ in
+                gitCredentialContextProvider(context)
+            }
+        )
+        let gitCredentialContext = launchResourcePlan.gitCredentialSandboxContext
         let effectivePermissionPolicy = context.executionPolicy.permissionPolicyOverride ?? context.permissionPolicy
+        plan = plan.addingSandboxReadablePaths(
+            launchResourcePlan.hostReadablePaths,
+            plannedFields: launchResourcePlan.commandPlannedFields
+        )
+        plan = plan.addingSandboxProtectedWriteDenyPaths(launchResourcePlan.hostProtectedWriteDenyPaths)
         if !gitCredentialContext.isEmpty {
             plan = plan.addingGitCredentialContext(gitCredentialContext)
                 .enablingProviderNativeGitCredentialReads(
@@ -106,6 +113,7 @@ final class AgentRuntimeProcessRunner {
                     permissionPolicy: effectivePermissionPolicy
                 )
         }
+        let environment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
         if environment.workspaceCommandsRunInsideContainer,
            (!DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: plan.runtime)
             || plan.commandPlannedFields["docker_workspace_executor_supported"] == "false") {
@@ -178,10 +186,12 @@ final class AgentRuntimeProcessRunner {
         // paths + input dirs (same set passed to providers via `--add-dir` and
         // honored by the in-band policy guard), so include them in the sandbox's
         // writable allowlist or the kernel would block legitimate writes.
+        let runtimeAdditionalPaths = Self.runtimeAdditionalPaths(for: context.task)
         let decision = ExecutionSandbox.decide(
             plan: plan,
             providerHomeDirectory: context.providerHomeDirectory,
-            additionalWritablePaths: Self.runtimeAdditionalPaths(for: context.task) + gitCredentialContext.writablePaths,
+            additionalWritablePaths: runtimeAdditionalPaths + launchResourcePlan.hostWritablePaths,
+            additionalReadablePaths: runtimeAdditionalPaths + launchResourcePlan.hostReadablePaths,
             settings: settings
         )
         let taskID = context.task.id
@@ -193,6 +203,10 @@ final class AgentRuntimeProcessRunner {
                 "read_scope": settings.readScope.rawValue,
                 "read_scope_audit": String(settings.readScope == .audit),
                 "writable_root_count": String(writableRoots.count),
+                "attachment_readable_path_count": plan.commandPlannedFields["attachment_readable_path_count"] ?? "0",
+                "launch_resource_host_readable_count": plan.commandPlannedFields["launch_resource_host_readable_count"] ?? "0",
+                "launch_resource_host_writable_count": plan.commandPlannedFields["launch_resource_host_writable_count"] ?? "0",
+                "launch_resource_credential_label_count": plan.commandPlannedFields["launch_resource_credential_label_count"] ?? "0",
                 "git_credential_readable_path_count": String(gitCredentialContext.readablePaths.count),
                 "git_credential_writable_path_count": String(gitCredentialContext.writablePaths.count),
                 "allow_network": String(settings.allowNetwork)
@@ -236,6 +250,7 @@ final class AgentRuntimeProcessRunner {
         contextText: String = "",
         nativeContinuationSessionID: String? = nil,
         runID: UUID? = nil,
+        launchResourcePlan: TaskLaunchResourcePlan? = nil,
         liveApprovalsEnabled: Bool = false,
         noSemanticProgressTimeoutSeconds: TimeInterval? = nil,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
@@ -255,7 +270,8 @@ final class AgentRuntimeProcessRunner {
             contextText: contextText,
             nativeContinuationSessionID: nativeContinuationSessionID,
             runID: runID,
-            liveApprovalsEnabled: liveApprovalsEnabled && onInteractiveAsk != nil
+            liveApprovalsEnabled: liveApprovalsEnabled && onInteractiveAsk != nil,
+            launchResourcePlan: launchResourcePlan
         )
         if let sharedStateKey = adapter.sharedLaunchStateKey(context: launchContext) {
             do {
@@ -677,10 +693,14 @@ final class AgentRuntimeProcessRunner {
 
     @MainActor
     static func pathPrefix(for task: AgentTask, taskEnv: [String: String]) -> [String] {
-        guard let browserShimDirectory = prepareBrowserToolShimIfNeeded(task: task, taskEnv: taskEnv) else {
-            return []
+        var paths: [String] = []
+        if let browserShimDirectory = prepareBrowserToolShimIfNeeded(task: task, taskEnv: taskEnv) {
+            paths.append(browserShimDirectory)
         }
-        return [browserShimDirectory]
+        if let sshShimDirectory = prepareSSHShimIfNeeded(task: task) {
+            paths.append(sshShimDirectory)
+        }
+        return Array(Set(paths)).sorted()
     }
 
     @MainActor
@@ -722,15 +742,12 @@ final class AgentRuntimeProcessRunner {
 
         let shimDirectory = (TaskWorkspaceAccess(task: task).taskFolder as NSString).appendingPathComponent(".runtime-bin")
         let shimPath = (shimDirectory as NSString).appendingPathComponent("astra-browser")
-        let tokenExport = browserToken?.isEmpty == false
-            ? "\nexport ASTRA_BROWSER_TOKEN=\(shellSingleQuoted(browserToken!))"
-            : ""
         let requiredEngineExport = requiredEngine?.isEmpty == false
             ? "\nexport \(BrowserAutomationEngineRequirement.environmentKey)=\(shellSingleQuoted(requiredEngine!))"
             : ""
         let script = """
         #!/bin/sh
-        export ASTRA_BROWSER_URL=\(shellSingleQuoted(endpoint))\(tokenExport)\(requiredEngineExport)
+        export ASTRA_BROWSER_URL=\(shellSingleQuoted(endpoint))\(requiredEngineExport)
         exec \(shellSingleQuoted(realToolPath)) "$@"
         """
 
@@ -758,6 +775,69 @@ final class AgentRuntimeProcessRunner {
             AppLogger.audit(.shelfBrowserAction, category: "Browser", taskID: task.id, fields: [
                 "action": "browser_tool_shim",
                 "result": "failed",
+                "error": error.localizedDescription
+            ], level: .warning)
+            return nil
+        }
+    }
+
+    @MainActor
+    static func prepareSSHShimIfNeeded(
+        task: AgentTask,
+        fileManager: FileManager = .default,
+        realSSHPath: String = "/usr/bin/ssh",
+        hostKnownHostsPath: String = "\(NSHomeDirectory())/.ssh/known_hosts"
+    ) -> String? {
+        guard hasWorkspaceSSHConnections(for: task),
+              fileManager.isExecutableFile(atPath: realSSHPath),
+              realSSHPath.rangeOfCharacter(from: .newlines) == nil else {
+            return nil
+        }
+        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
+        guard !taskFolder.isEmpty else { return nil }
+
+        let shimDirectory = (taskFolder as NSString).appendingPathComponent(".runtime-bin")
+        let stateDirectory = (taskFolder as NSString).appendingPathComponent(".runtime-ssh")
+        let shimPath = (shimDirectory as NSString).appendingPathComponent("ssh")
+        let knownHostsPath = (stateDirectory as NSString).appendingPathComponent("known_hosts")
+        let script = """
+        #!/bin/sh
+        exec \(shellSingleQuoted(realSSHPath)) -o UserKnownHostsFile=\(shellSingleQuoted(knownHostsPath)) -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o CheckHostIP=no "$@"
+        """
+
+        do {
+            try fileManager.createDirectory(atPath: shimDirectory, withIntermediateDirectories: true)
+            try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: shimDirectory)
+            try fileManager.createDirectory(atPath: stateDirectory, withIntermediateDirectories: true)
+            try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: stateDirectory)
+            if !fileManager.fileExists(atPath: knownHostsPath) {
+                if fileManager.fileExists(atPath: hostKnownHostsPath) {
+                    try fileManager.copyItem(atPath: hostKnownHostsPath, toPath: knownHostsPath)
+                } else {
+                    try "".write(toFile: knownHostsPath, atomically: true, encoding: .utf8)
+                }
+                try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: knownHostsPath)
+            }
+
+            let existing = try? HostFileAccessBroker(fileManager: fileManager).readString(
+                at: URL(fileURLWithPath: shimPath),
+                encoding: .utf8,
+                intent: .astraManagedStorage(root: URL(fileURLWithPath: taskFolder, isDirectory: true))
+            )
+            if existing != script {
+                try script.write(toFile: shimPath, atomically: true, encoding: .utf8)
+            }
+            try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: shimPath)
+            AppLogger.audit(.workerEnvironmentInjected, category: "Worker", taskID: task.id, fields: [
+                "source": "remote_workspace_ssh",
+                "result": "ssh_shim_ready",
+                "known_hosts": "task_scoped"
+            ], level: .debug)
+            return shimDirectory
+        } catch {
+            AppLogger.audit(.workerEnvironmentInjected, category: "Worker", taskID: task.id, fields: [
+                "source": "remote_workspace_ssh",
+                "result": "ssh_shim_failed",
                 "error": error.localizedDescription
             ], level: .warning)
             return nil

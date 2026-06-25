@@ -46,7 +46,7 @@ struct ConnectorRuntimeProjection {
         Self.aliasesByConnectorID(for: connectors)
     }
 
-    func environmentVariables(includeLegacySingleConnectorFallback: Bool = true) -> [String: String] {
+    func environmentVariables(includeLegacySingleConnectorFallback: Bool = false) -> [String: String] {
         guard !connectors.isEmpty else { return [:] }
         let aliases = aliasesByConnectorID
         let bindings = environmentBindings(aliases: aliases)

@@ -1066,7 +1066,7 @@ enum WorkspaceConfigManager {
             skillIDs: task.skills.map { $0.id.uuidString },
             skillNames: task.skills.map(\.name),
             skillSnapshots: snapshots,
-            executionEnvironmentSnapshotJSON: sanitizedExecutionEnvironmentJSON(task.executionEnvironmentSnapshotJSON)
+            executionEnvironmentSnapshotJSON: sanitizedExecutionEnvironmentJSON(task.executionEnvironmentSnapshotJSON, preservingHost: true)
         )
     }
 
@@ -1082,9 +1082,11 @@ enum WorkspaceConfigManager {
         return result
     }
 
-    private static func sanitizedExecutionEnvironmentJSON(_ json: String?) -> String? {
+    private static func sanitizedExecutionEnvironmentJSON(_ json: String?, preservingHost: Bool = false) -> String? {
         let environment = ExecutionEnvironmentStore.decode(json)
-        return ExecutionEnvironmentStore.encode(environment)
+        return preservingHost
+            ? ExecutionEnvironmentStore.encodeSnapshot(environment)
+            : ExecutionEnvironmentStore.encode(environment)
     }
 
     // MARK: - Import Helpers
@@ -1524,7 +1526,10 @@ enum WorkspaceConfigManager {
         }
         task.templateHooksJSON = config.templateHooksJSON ?? ""
         task.skillSnapshots = config.skillSnapshots ?? []
-        task.executionEnvironmentSnapshotJSON = sanitizedExecutionEnvironmentJSON(config.executionEnvironmentSnapshotJSON)
+        task.executionEnvironmentSnapshotJSON = sanitizedExecutionEnvironmentJSON(
+            config.executionEnvironmentSnapshotJSON,
+            preservingHost: true
+        )
         modelContext.insert(task)
 
         linkSkills(
@@ -1560,7 +1565,10 @@ enum WorkspaceConfigManager {
             run.runtimeID = rc.runtimeID ?? task.runtimeID
             run.providerSessionId = rc.providerSessionId
             run.providerVersion = rc.providerVersion
-            run.executionEnvironmentSnapshotJSON = sanitizedExecutionEnvironmentJSON(rc.executionEnvironmentSnapshotJSON)
+            run.executionEnvironmentSnapshotJSON = sanitizedExecutionEnvironmentJSON(
+                rc.executionEnvironmentSnapshotJSON,
+                preservingHost: true
+            )
             run.exitCode = rc.exitCode
             run.output = rc.output
             run.costUSD = rc.costUSD

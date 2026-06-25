@@ -128,9 +128,9 @@ enum CodexCLIRuntime {
         case .autonomous:
             return ["--dangerously-bypass-approvals-and-sandbox"]
         case .restricted:
-            return ["--sandbox", "workspace-write"]
+            return nonInteractiveApprovalArguments + ["--sandbox", "workspace-write"]
         case .interactive:
-            return ["--sandbox", "read-only"]
+            return nonInteractiveApprovalArguments + ["--sandbox", "read-only"]
         }
     }
 
@@ -145,11 +145,13 @@ enum CodexCLIRuntime {
         case .autonomous:
             return ["--dangerously-bypass-approvals-and-sandbox"]
         case .restricted:
-            return ["-c", "sandbox_mode=\"workspace-write\""]
+            return nonInteractiveApprovalArguments + ["-c", "sandbox_mode=\"workspace-write\""]
         case .interactive:
-            return ["-c", "sandbox_mode=\"read-only\""]
+            return nonInteractiveApprovalArguments + ["-c", "sandbox_mode=\"read-only\""]
         }
     }
+
+    private static let nonInteractiveApprovalArguments = ["-c", "approval_policy=\"never\""]
 
     static func resolvedModelName(_ model: String) -> String {
         let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)

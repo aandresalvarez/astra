@@ -487,6 +487,27 @@ struct AgentRuntimeStreamDebugTests {
         #expect(snapshot.fields["unknown_json_shapes"] == "1")
         #expect(snapshot.fields["event_types"]?.contains("unknown:assistant.new_event:1") == true)
     }
+
+    @Test("Stream debug samples and stderr tails are redacted")
+    func streamDebugRedactsSensitiveSamples() {
+        let capture = AgentRuntimeStreamDebugCapture(
+            maxRawSamples: 2,
+            maxUnknownJSONShapes: 1,
+            maxSampleLength: 300,
+            maxStderrTailLength: 300
+        )
+
+        capture.recordLine("login user@example.edu token=super-secret-token-value", parsesJSONLines: false)
+        capture.recordStderr("Authorization: Bearer abcdefghijklmnopqrstuvwxyz1234567890ABCDEFGHIJ")
+
+        let snapshot = capture.snapshot()
+        let combined = (snapshot.rawSamples + [snapshot.stderrTail ?? ""]).joined(separator: " ")
+        #expect(!combined.contains("user@example.edu"))
+        #expect(!combined.contains("super-secret-token-value"))
+        #expect(!combined.contains("abcdefghijklmnopqrstuvwxyz1234567890ABCDEFGHIJ"))
+        #expect(combined.contains("[redacted-email]"))
+        #expect(combined.contains("[redacted-secret]") || combined.contains("[redacted-token]"))
+    }
 }
 
 @Suite("Agent Runtime Failure Diagnostics")

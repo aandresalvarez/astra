@@ -58,6 +58,70 @@ struct RuntimeReadinessServiceTests {
         #expect(!report.checks.map(\.detail).joined(separator: "\n").contains("ya29.secret-token-value"))
     }
 
+    @Test("Vertex gcloud version timeout warns and still validates ADC")
+    func vertexGCloudVersionTimeoutWarnsAndStillValidatesADC() async {
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/opt/claude --version",
+            result: RunResult(outcome: .exited(code: 0), stdout: "1.2.3\n", stderr: "")
+        )
+        await runner.setResponse(
+            forKey: "/opt/claude auth status",
+            result: RunResult(
+                outcome: .exited(code: 0),
+                stdout: #"{"loggedIn":true,"authMethod":"third_party","apiProvider":"vertex"}"#,
+                stderr: ""
+            )
+        )
+        await runner.setResponse(
+            forKey: "/opt/gcloud --version",
+            result: RunResult(outcome: .timedOut, stdout: "", stderr: "")
+        )
+        await runner.setResponse(
+            forKey: "/opt/gcloud auth application-default print-access-token --quiet",
+            result: RunResult(outcome: .exited(code: 0), stdout: "ya29.secret-token-value\n", stderr: "")
+        )
+
+        let service = RuntimeReadinessService(
+            runner: runner,
+            detectExecutable: { binary in
+                switch binary {
+                case "claude": "/opt/claude"
+                case "gcloud": "/opt/gcloud"
+                default: ""
+                }
+            },
+            isExecutable: { !$0.isEmpty }
+        )
+
+        let report = await service.check(configuration: RuntimeReadinessConfiguration(
+            runtime: .claudeCode,
+            claudePath: "",
+            copilotPath: "",
+            claudeProvider: .vertex,
+            vertexProjectID: "project-1",
+            vertexRegion: "global",
+            vertexOpusModel: "claude-opus-4-6@default",
+            vertexSonnetModel: "claude-sonnet-4-6@default",
+            vertexHaikuModel: "claude-haiku-4-5@20251001"
+        ))
+
+        #expect(report.state == .warning)
+        #expect(report.checks.contains {
+            $0.id == "gcloud-cli" &&
+                $0.state == .warning &&
+                $0.detail == "Timed out after 20s."
+        })
+        #expect(report.checks.contains { $0.id == "vertex-adc" && $0.state == .ready })
+        #expect(!report.checks.map(\.detail).joined(separator: "\n").contains("ya29.secret-token-value"))
+
+        let calls = await runner.recordedCalls()
+        #expect(calls.contains {
+            $0.path == "/opt/gcloud" &&
+                $0.args == ["auth", "application-default", "print-access-token", "--quiet"]
+        })
+    }
+
     @Test("Vertex missing aliases block readiness")
     func missingVertexAliasesBlockReadiness() async {
         let runner = StubBinaryRunner()

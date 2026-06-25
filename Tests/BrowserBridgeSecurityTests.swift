@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import Testing
 import WebKit
 @testable import ASTRA
@@ -129,6 +130,7 @@ struct BrowserBridgeSecurityTests {
         #expect(click.normalizedTestID == nil)
         #expect(click.hasAnalysisControl)
         #expect(click.allowDangerous == true)
+        #expect(BrowserDangerousActionApproval.trustedProviderApproval(click.allowDangerous) == false)
 
         let batchJSON = Data("""
         {
@@ -137,7 +139,8 @@ struct BrowserBridgeSecurityTests {
               "action": " CLICK ",
               "analysisID": "analysis-1",
               "controlID": " ",
-              "selector": " button.primary "
+              "selector": " button.primary ",
+              "allowDangerous": true
             }
           ],
           "snapshotMode": "summary",
@@ -150,6 +153,8 @@ struct BrowserBridgeSecurityTests {
         #expect(action.normalizedAction == "click")
         #expect(action.normalizedSelector == "button.primary")
         #expect(!action.hasAnalysisControl)
+        #expect(action.allowDangerous == true)
+        #expect(BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous) == false)
         #expect(batch.snapshotMode == "summary")
         #expect(batch.snapshotLimit == 12)
     }
@@ -231,6 +236,27 @@ struct BrowserBridgeSecurityTests {
         #expect(body["timeoutSeconds"] as? Double == 24)
     }
 
+    @Test("Malformed negative Content-Length receives 400 instead of crashing parser")
+    func malformedNegativeContentLengthReceivesBadRequest() async throws {
+        let endpoint = LockedEndpoint()
+        let server = BrowserBridgeServer(requiredAccessToken: nil, route: { _ in
+            .json(["ok": true])
+        }, onEndpointChanged: { value in
+            Task { await endpoint.set(value) }
+        })
+        server.start()
+        defer { server.stop() }
+
+        let baseURL = try await endpoint.waitForURL()
+        let response = try rawHTTP(
+            to: baseURL,
+            request: "POST /health HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: -1\r\n\r\n"
+        )
+
+        #expect(response.contains("HTTP/1.1 400 Bad Request"))
+        #expect(response.contains("invalid_content_length"))
+    }
+
     private func httpGet(_ url: URL, token: String?) async throws -> (statusCode: Int, body: String) {
         var request = URLRequest(url: url)
         if let token {
@@ -239,6 +265,47 @@ struct BrowserBridgeSecurityTests {
         let (data, response) = try await URLSession.shared.data(for: request)
         let statusCode = try #require((response as? HTTPURLResponse)?.statusCode)
         return (statusCode, String(data: data, encoding: .utf8) ?? "")
+    }
+
+    private func rawHTTP(to baseURL: URL, request: String) throws -> String {
+        let port = try #require(baseURL.port)
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { throw BrowserBridgeSecurityTestError.socketFailed }
+        defer { close(fd) }
+
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = UInt16(port).bigEndian
+        guard inet_pton(AF_INET, "127.0.0.1", &address.sin_addr) == 1 else {
+            throw BrowserBridgeSecurityTestError.socketFailed
+        }
+        let connected = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                connect(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard connected == 0 else { throw BrowserBridgeSecurityTestError.socketFailed }
+
+        let bytes = Array(request.utf8)
+        try bytes.withUnsafeBytes { buffer in
+            guard let baseAddress = buffer.baseAddress else { return }
+            let written = Darwin.write(fd, baseAddress, bytes.count)
+            guard written == bytes.count else { throw BrowserBridgeSecurityTestError.socketFailed }
+        }
+        shutdown(fd, SHUT_WR)
+
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let readCount = Darwin.read(fd, &buffer, buffer.count)
+            if readCount > 0 {
+                data.append(buffer, count: readCount)
+            } else {
+                break
+            }
+        }
+        return String(data: data, encoding: .utf8) ?? ""
     }
 }
 
@@ -267,6 +334,7 @@ private actor LockedEndpoint {
 
 private enum BrowserBridgeSecurityTestError: Error {
     case endpointUnavailable
+    case socketFailed
 }
 
 private final class RateLimitClock {

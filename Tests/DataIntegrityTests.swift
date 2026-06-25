@@ -12,13 +12,13 @@ struct DuplicateKeyTests {
     func skillDuplicateKeysNoCrash() {
         let skill = Skill(name: "Test")
         // Manually inject duplicate keys (simulates corruption or migration bug)
-        skill.environmentKeys = ["API_KEY", "TOKEN", "API_KEY"]
-        skill.environmentValues = ["first", "tok", "second"]
+        skill.environmentKeys = ["SETTING", "MODE", "SETTING"]
+        skill.environmentValues = ["first", "batch", "second"]
 
         // This must not crash — should use last value for duplicates
         let dict = skill.environmentVariables
-        #expect(dict["API_KEY"] == "second")
-        #expect(dict["TOKEN"] == "tok")
+        #expect(dict["SETTING"] == "second")
+        #expect(dict["MODE"] == "batch")
     }
 
     @Test("Connector.config does not crash with duplicate keys")
@@ -68,6 +68,7 @@ struct CredentialKeyCaseTests {
     @Test("saveCredential uppercases key and deduplicates")
     func saveCredentialUppercaseDedup() {
         let connector = Connector(name: "Test")
+        defer { KeychainService.deleteAll(connector: connector) }
 
         // Add a credential with lowercase key
         connector.saveCredential(key: "api_token", value: "v1")
@@ -82,6 +83,7 @@ struct CredentialKeyCaseTests {
     @Test("saveCredential with mixed case finds existing uppercase entry")
     func saveCredentialMixedCase() {
         let connector = Connector(name: "Test")
+        defer { KeychainService.deleteAll(connector: connector) }
         connector.saveCredential(key: "MyToken", value: "v1")
         #expect(connector.credentialKeys == ["MYTOKEN"])
 

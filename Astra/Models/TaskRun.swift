@@ -42,7 +42,10 @@ final class TaskRun {
         self.runtimeID = task.runtimeID
         self.providerSessionId = task.sessionId
         self.providerVersion = nil
-        let snapshot = task.executionEnvironmentSnapshotJSON ?? task.workspace?.activeExecutionEnvironmentJSON
+        let snapshot = task.executionEnvironmentSnapshotJSON
+            ?? ExecutionEnvironmentStore.encodeSnapshot(
+                ExecutionEnvironmentStore.decode(task.workspace?.activeExecutionEnvironmentJSON)
+            )
         self.executionEnvironmentSnapshotJSON = snapshot
         if task.executionEnvironmentSnapshotJSON == nil {
             task.executionEnvironmentSnapshotJSON = snapshot

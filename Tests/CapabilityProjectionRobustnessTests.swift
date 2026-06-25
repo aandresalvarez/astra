@@ -67,14 +67,36 @@ struct ConnectorCredentialPresenceTests {
         let projection = ConnectorRuntimeProjection(connectors: [connector], secretStore: store)
         #expect(projection.missingCredentialKeysByConnector().isEmpty)
     }
+
+    @Test("Stable connector namespace is enough for runtime projection")
+    func stableNamespaceCountsAsConfigured() throws {
+        let container = try makeRobustnessContainer()
+        let store = MockSecretStore()
+        let connector = Connector(
+            name: "Jira", serviceType: "jira", icon: "j",
+            connectorDescription: "d", baseURL: "https://stanfordmed.atlassian.net", authMethod: "basic"
+        )
+        connector.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        container.mainContext.insert(connector)
+        let stableEntityID = try #require(KeychainSecretStore.stableConnectorEntityID(for: connector))
+        _ = store.save(key: "JIRA_EMAIL", value: "user@example.com", entityID: stableEntityID, label: nil)
+        _ = store.save(key: "JIRA_API_TOKEN", value: "secret-token", entityID: stableEntityID, label: nil)
+
+        let projection = ConnectorRuntimeProjection(connectors: [connector], secretStore: store)
+        let environment = projection.environmentVariables()
+
+        #expect(projection.missingCredentialKeysByConnector().isEmpty)
+        #expect(environment.values.contains("user@example.com"))
+        #expect(environment.values.contains("secret-token"))
+    }
 }
 
 @Suite("Legacy Env Fallback Boundaries")
 @MainActor
 struct LegacyEnvFallbackTests {
 
-    @Test("Single connector per service exposes bare legacy names; duplicates do not")
-    func bareNamesOnlyForSingleConnectorServices() throws {
+    @Test("Single connector per service omits bare legacy names unless explicitly requested")
+    func bareNamesRequireExplicitLegacyOptIn() throws {
         let container = try makeRobustnessContainer()
         let store = MockSecretStore()
 
@@ -97,7 +119,12 @@ struct LegacyEnvFallbackTests {
         let solo = jiraConnector(name: "Solo Jira", host: "https://solo.example.com")
         let single = ConnectorRuntimeProjection(connectors: [solo], secretStore: store)
             .environmentVariables()
-        #expect(single["JIRA_API_TOKEN"] == "tok-Solo Jira")
+        #expect(single["JIRA_API_TOKEN"] == nil)
+        #expect(single.keys.contains { $0.hasSuffix("_JIRA_API_TOKEN") })
+
+        let legacySingle = ConnectorRuntimeProjection(connectors: [solo], secretStore: store)
+            .environmentVariables(includeLegacySingleConnectorFallback: true)
+        #expect(legacySingle["JIRA_API_TOKEN"] == "tok-Solo Jira")
 
         let second = jiraConnector(name: "Second Jira", host: "https://second.example.com")
         let dual = ConnectorRuntimeProjection(connectors: [solo, second], secretStore: store)

@@ -456,10 +456,10 @@ struct ConnectorEditorView: View {
                                             .fontWeight(.medium)
                                             .frame(minWidth: 100, alignment: .leading)
 
-                                        let inKeychain = KeychainService.exists(key: key, connectorID: connector.id)
+                                        let inKeychain = KeychainService.exists(key: key, connector: connector)
 
                                         if showSecrets {
-                                            let value = KeychainService.load(key: key, connectorID: connector.id)
+                                            let value = KeychainService.load(key: key, connector: connector)
                                                 ?? (idx < connector.credentialValues.count ? connector.credentialValues[idx] : "")
                                             Text(value.isEmpty ? "(empty)" : value)
                                                 .font(Stanford.ui(13, design: .monospaced))

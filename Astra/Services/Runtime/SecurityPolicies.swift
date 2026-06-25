@@ -2,7 +2,20 @@ import Foundation
 
 enum LocalToolSecurityPolicy {
     static func isSafe(command: String, arguments: String = "") -> Bool {
-        unsafeCommandReason(command) == nil && unsafeArgumentsReason(arguments) == nil
+        unsafeInvocationReason(command: command, arguments: arguments) == nil
+    }
+
+    static func unsafeInvocationReason(command: String, arguments: String = "") -> String? {
+        if let reason = unsafeCommandReason(command) {
+            return reason
+        }
+        if let reason = unsafeArgumentsReason(arguments) {
+            return reason
+        }
+        if let reason = unsafeInterpreterExecutionReason(command: command, arguments: arguments) {
+            return reason
+        }
+        return nil
     }
 
     static func unsafeCommandReason(_ command: String) -> String? {
@@ -32,6 +45,40 @@ enum LocalToolSecurityPolicy {
         }
         return nil
     }
+
+    private static func unsafeInterpreterExecutionReason(command: String, arguments: String) -> String? {
+        let executable = (command.trimmingCharacters(in: .whitespacesAndNewlines) as NSString).lastPathComponent
+            .lowercased()
+        let flags: Set<String>
+        if let configuredFlags = interpreterExecutionFlags[executable] {
+            flags = configuredFlags
+        } else if executable.hasPrefix("python") {
+            flags = ["-c"]
+        } else {
+            flags = []
+        }
+        guard !flags.isEmpty else { return nil }
+        let tokens = arguments
+            .split(whereSeparator: \.isWhitespace)
+            .map(String.init)
+        guard tokens.contains(where: { flags.contains($0) }) else { return nil }
+        return "interpreter execution flag \(tokens.first(where: { flags.contains($0) }) ?? "") is not allowed in package defaults"
+    }
+
+    private static let interpreterExecutionFlags: [String: Set<String>] = [
+        "sh": ["-c"],
+        "bash": ["-c"],
+        "zsh": ["-c"],
+        "fish": ["-c"],
+        "python": ["-c"],
+        "python3": ["-c"],
+        "python2": ["-c"],
+        "node": ["-e", "--eval"],
+        "ruby": ["-e"],
+        "perl": ["-e"],
+        "php": ["-r"],
+        "osascript": ["-e"]
+    ]
 }
 
 enum ConnectorSecurityPolicy {

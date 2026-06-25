@@ -86,6 +86,29 @@ struct ProviderLaunchCapabilityScopeTests {
         #expect(preflightRange.lowerBound < providerLaunchRange.lowerBound)
     }
 
+    @Test("Docker image preflight runs before credential projection and provider launch")
+    func dockerImagePreflightRunsBeforeCredentialProjectionAndProviderLaunch() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let workerURL = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Runtime")
+            .appendingPathComponent("AgentRuntimeWorker.swift")
+        let workerSource = try String(contentsOf: workerURL, encoding: .utf8)
+        let dockerPreflight = "AgentRuntimeLaunchPreflight.preflightDockerImageBeforeLaunch("
+        let credentialPreflight = "AgentRuntimeLaunchPreflight.preflightCredentialProjectionBeforeLaunch("
+        let providerLaunch = "processRunner.runRuntimeProcess"
+        let dockerRange = try #require(workerSource.range(of: dockerPreflight))
+        let credentialRange = try #require(workerSource.range(of: credentialPreflight))
+        let providerLaunchRange = try #require(workerSource.range(of: providerLaunch))
+
+        #expect(sourceContains(workerSource, dockerPreflight))
+        #expect(dockerRange.lowerBound < credentialRange.lowerBound)
+        #expect(dockerRange.lowerBound < providerLaunchRange.lowerBound)
+    }
+
     private func sourceContains(_ source: String, _ expected: String) -> Bool {
         normalizeWhitespace(source).contains(normalizeWhitespace(expected))
     }

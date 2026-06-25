@@ -69,10 +69,10 @@ case "$EXT_LOWER" in
         echo "=== $BASENAME (Word Document) ==="
         textutil -convert txt -stdout "$FILE" 2>/dev/null || {
             # Fallback: extract text from docx XML directly
-            python3 -c "
+            python3 - "$FILE" <<'PY'
 import zipfile, xml.etree.ElementTree as ET, sys
 try:
-    with zipfile.ZipFile('$FILE') as z:
+    with zipfile.ZipFile(sys.argv[1]) as z:
         with z.open('word/document.xml') as f:
             tree = ET.parse(f)
             ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
@@ -83,7 +83,7 @@ try:
 except Exception as e:
     print(f'Error reading docx: {e}', file=sys.stderr)
     sys.exit(1)
-"
+PY
         }
         ;;
 
@@ -108,13 +108,13 @@ except Exception as e:
     # PDF — use python3 to extract text
     pdf)
         echo "=== $BASENAME (PDF) ==="
-        python3 -c "
+        python3 - "$FILE" <<'PY'
 import subprocess, sys
 
 # Try using macOS built-in: mdimport outputs spotlight text
 try:
     result = subprocess.run(
-        ['mdimport', '-d2', '$FILE'],
+        ['mdimport', '-d2', sys.argv[1]],
         capture_output=True, text=True, timeout=30
     )
     # mdimport -d2 outputs to stderr
@@ -133,7 +133,7 @@ except Exception:
 # Fallback: try strings command for basic text extraction
 try:
     result = subprocess.run(
-        ['strings', '$FILE'],
+        ['strings', sys.argv[1]],
         capture_output=True, text=True, timeout=30
     )
     lines = [l.strip() for l in result.stdout.split('\n') if len(l.strip()) > 3]
@@ -147,17 +147,17 @@ except Exception:
 
 print('Could not extract text from PDF. Install pypdf for better results: pip3 install pypdf', file=sys.stderr)
 sys.exit(1)
-" 2>&1
+PY
         ;;
 
     # Excel — extract text from shared strings and sheet data
     xlsx)
         echo "=== $BASENAME (Excel Spreadsheet) ==="
-        python3 -c "
+        python3 - "$FILE" <<'PY'
 import zipfile, xml.etree.ElementTree as ET, sys
 
 try:
-    with zipfile.ZipFile('$FILE') as z:
+    with zipfile.ZipFile(sys.argv[1]) as z:
         # Read shared strings
         strings = []
         try:
@@ -195,17 +195,17 @@ try:
 except Exception as e:
     print(f'Error reading xlsx: {e}', file=sys.stderr)
     sys.exit(1)
-"
+PY
         ;;
 
     # PowerPoint — extract text from slides
     pptx)
         echo "=== $BASENAME (PowerPoint) ==="
-        python3 -c "
+        python3 - "$FILE" <<'PY'
 import zipfile, xml.etree.ElementTree as ET, sys
 
 try:
-    with zipfile.ZipFile('$FILE') as z:
+    with zipfile.ZipFile(sys.argv[1]) as z:
         slide_files = sorted([n for n in z.namelist() if n.startswith('ppt/slides/slide') and n.endswith('.xml')])
         for i, slide_file in enumerate(slide_files, 1):
             print(f'--- Slide {i} ---')
@@ -220,16 +220,16 @@ try:
 except Exception as e:
     print(f'Error reading pptx: {e}', file=sys.stderr)
     sys.exit(1)
-"
+PY
         ;;
 
     # Google Docs/Sheets/Slides — these are just JSON link files
     gdoc|gsheet|gslides)
         echo "=== $BASENAME (Google ${EXT_LOWER#g} link) ==="
-        python3 -c "
+        python3 - "$FILE" <<'PY'
 import json, sys
 try:
-    with open('$FILE') as f:
+    with open(sys.argv[1]) as f:
         data = json.load(f)
     url = data.get('url', data.get('doc_id', '(no URL found)'))
     print(f'Google Docs URL: {url}')
@@ -237,7 +237,7 @@ try:
     print('To read the content, use the Google Drive API or export it first.')
 except Exception as e:
     print(f'Error reading: {e}', file=sys.stderr)
-"
+PY
         ;;
 
     # Unknown format — try textutil, then fall back to strings

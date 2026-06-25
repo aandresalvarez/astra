@@ -12,6 +12,14 @@ struct DockerEnvironmentOption: Identifiable, Equatable, Sendable {
     var environment: WorkspaceExecutionEnvironment
 }
 
+struct DockerRuntimeContractRow: Identifiable, Equatable, Sendable {
+    var id: String
+    var title: String
+    var subtitle: String
+    var iconSystemName: String
+    var help: String
+}
+
 @MainActor
 final class WorkspaceDockerViewModel: ObservableObject {
     @Published var candidates: [DockerWorkspaceCandidate] = []
@@ -94,10 +102,10 @@ final class WorkspaceDockerViewModel: ObservableObject {
 
     var environmentOptions: [DockerEnvironmentOption] {
         var options = [
-            environmentOption(for: .host, isEnabled: canChangeActiveEnvironment)
+            environmentOption(for: .host, isEnabled: canSelectEnvironmentOption)
         ]
         options.append(contentsOf: runnableCandidates.map {
-            environmentOption(for: $0.environment, isEnabled: canChangeActiveEnvironment)
+            environmentOption(for: $0.environment, isEnabled: canSelectEnvironmentOption)
         })
 
         if selectedEnvironment.isContainerized,
@@ -114,6 +122,92 @@ final class WorkspaceDockerViewModel: ObservableObject {
     var canChangeActiveEnvironment: Bool {
         guard let task = selectedTask else { return true }
         return task.status == .draft
+    }
+
+    var canUseEnvironmentPicker: Bool {
+        canChangeActiveEnvironment || canRepinPinnedTaskEnvironment
+    }
+
+    var canRepinPinnedTaskEnvironment: Bool {
+        guard let task = selectedTask,
+              task.status != .draft || !task.runs.isEmpty else {
+            return false
+        }
+        return pinnedTaskEnvironmentTargets.contains {
+            $0.signatureFingerprint != selectedEnvironment.signatureFingerprint
+        }
+    }
+
+    private var canSelectEnvironmentOption: Bool {
+        canChangeActiveEnvironment || canRepinPinnedTaskEnvironment
+    }
+
+    var canRepairCredentialProjection: Bool {
+        guard let task = selectedTask,
+              !canChangeActiveEnvironment,
+              !task.runs.isEmpty else {
+            return false
+        }
+        return task.runs.allSatisfy(Self.isCredentialProjectionSetupFailure)
+    }
+
+    var canUpdatePinnedTaskCredentialProjection: Bool {
+        guard selectedTask != nil,
+              !canChangeActiveEnvironment,
+              selectedEnvironment.isContainerized,
+              gcpADCCredentialFileExists,
+              let report = credentialReadinessReport,
+              report.shouldBlockLaunch,
+              report.requiredProjectionIDs.contains(ExecutionEnvironmentCredentialProjection.gcpADCID) else {
+            return false
+        }
+        switch report.state {
+        case .hostCredentialAvailableButNotProjected,
+             .pinnedTaskSnapshotMissingProjection,
+             .projectedButHostCredentialMissing:
+            return true
+        case .notRequired,
+             .requiredButHostCredentialMissing,
+             .ready,
+             .failed:
+            return false
+        }
+    }
+
+    var canSwitchPinnedTaskToWorkspaceEnvironment: Bool {
+        guard let task = selectedTask,
+              !canChangeActiveEnvironment,
+              task.status != .draft,
+              let workspaceEnvironment = workspaceDefaultEnvironment,
+              workspaceEnvironment.isContainerized else {
+            return false
+        }
+        return selectedEnvironment.signatureFingerprint != workspaceEnvironment.signatureFingerprint
+    }
+
+    var pinnedTaskEnvironmentActionTitle: String {
+        guard let environment = workspaceDefaultEnvironment else {
+            return "Use workspace container"
+        }
+        return "Retry in \(environment.displayName)"
+    }
+
+    var pinnedTaskEnvironmentActionSubtitle: String {
+        guard let environment = workspaceDefaultEnvironment else {
+            return "Switch the next retry to the workspace default container."
+        }
+        if let image = environment.image {
+            return "Next retry will run project commands in \(image)."
+        }
+        return "Next retry will use the workspace default container."
+    }
+
+    var pinnedTaskEnvironmentActionHelp: String {
+        guard let environment = workspaceDefaultEnvironment else {
+            return pinnedTaskEnvironmentActionSubtitle
+        }
+        let effect = selectedEnvironmentEffect(for: environment)
+        return "This changes only this task's next run snapshot. Earlier run manifests stay unchanged. \(effect)"
     }
 
     var activeScopeLabel: String {
@@ -157,8 +251,12 @@ final class WorkspaceDockerViewModel: ObservableObject {
     }
 
     var environmentPickerHelp: String {
+        if canRepinPinnedTaskEnvironment {
+            let effect = selectedEnvironmentEffect(for: selectedEnvironment)
+            return "Pinned task. Changing this updates only this task's next retry snapshot. Earlier run manifests keep their recorded environment. \(effect)"
+        }
         if !canChangeActiveEnvironment {
-            return "Pinned task. This task keeps \(selectedTitle) because it already has execution history. Start a new task or fork this one to use another environment."
+            return "Pinned task. This task keeps \(selectedTitle) because it already has execution history, and no alternate loaded Docker image is available yet. Build or load an image, then select it here for the next retry."
         }
 
         let scope = selectedTask == nil
@@ -166,6 +264,62 @@ final class WorkspaceDockerViewModel: ObservableObject {
             : "Changing this sets only this draft task. The workspace default is unchanged."
         let effect = selectedEnvironmentEffect(for: selectedEnvironment)
         return "\(scope) \(effect)"
+    }
+
+    var runtimeContractRows: [DockerRuntimeContractRow] {
+        if selectedEnvironment.isHost {
+            return [
+                DockerRuntimeContractRow(
+                    id: "provider",
+                    title: "Provider: Host",
+                    subtitle: "AI provider CLI runs on macOS.",
+                    iconSystemName: "cpu",
+                    help: "ASTRA launches the selected AI provider directly on this Mac."
+                ),
+                DockerRuntimeContractRow(
+                    id: "workspace-commands",
+                    title: "Workspace commands: Host",
+                    subtitle: "Project shell commands run on macOS.",
+                    iconSystemName: "terminal",
+                    help: "Provider shell tools execute against the host workspace and ASTRA's macOS sandbox grants."
+                )
+            ]
+        }
+
+        let image = selectedEnvironment.image ?? selectedEnvironment.displayName
+        var rows = [
+            DockerRuntimeContractRow(
+                id: "provider",
+                title: "Provider: Host",
+                subtitle: "AI provider stays on macOS.",
+                iconSystemName: "cpu",
+                help: "ASTRA keeps provider CLIs on the host so provider authentication, browser bridges, and control-plane capabilities are managed by ASTRA instead of being baked into the image."
+            ),
+            DockerRuntimeContractRow(
+                id: "workspace-commands",
+                title: "Workspace commands: Docker image",
+                subtitle: "Project shell runs in \(image).",
+                iconSystemName: "shippingbox.fill",
+                help: "workspace_shell and workspace_job_start execute inside the selected Docker image using mounted workspace paths such as /workspace."
+            ),
+            DockerRuntimeContractRow(
+                id: "host-capabilities",
+                title: "Host capabilities: ASTRA managed",
+                subtitle: "GitHub, Jira, GCloud, SSH, browser, and Keychain stay outside workspace_shell.",
+                iconSystemName: "link.circle",
+                help: "Control-plane work must use enabled ASTRA capabilities. The Docker workspace shell is only for project commands inside the image."
+            )
+        ]
+        if shouldShowCredentialProjectionRow {
+            rows.append(DockerRuntimeContractRow(
+                id: "gcp-credentials",
+                title: credentialProjectionTitle,
+                subtitle: credentialProjectionSubtitle,
+                iconSystemName: "key.fill",
+                help: credentialProjectionHelp
+            ))
+        }
+        return rows
     }
 
     var dockerIssueTitle: String? {
@@ -226,9 +380,14 @@ final class WorkspaceDockerViewModel: ObservableObject {
             case .requiredButHostCredentialMissing:
                 return "GCP credentials missing"
             case .hostCredentialAvailableButNotProjected:
-                return "GCP credentials required"
+                if canUpdatePinnedTaskCredentialProjection {
+                    return "Connect task GCP credentials"
+                }
+                return "Connect GCP credentials"
             case .pinnedTaskSnapshotMissingProjection:
-                return "Task missing GCP credentials"
+                return (canRepairCredentialProjection || canUpdatePinnedTaskCredentialProjection)
+                    ? "Update task credentials"
+                    : "Task missing GCP credentials"
             case .projectedButHostCredentialMissing:
                 return "GCP credentials need refresh"
             case .failed:
@@ -252,8 +411,14 @@ final class WorkspaceDockerViewModel: ObservableObject {
             case .ready:
                 return "Application Default Credentials are projected read-only for Docker commands."
             case .hostCredentialAvailableButNotProjected:
+                if canRepairCredentialProjection || canUpdatePinnedTaskCredentialProjection {
+                    return "BigQuery/dbt detected. Connect ADC to this task's next retry, then retry."
+                }
                 return "BigQuery/dbt detected. Connect local ADC before running container tasks."
             case .pinnedTaskSnapshotMissingProjection:
+                if canRepairCredentialProjection || canUpdatePinnedTaskCredentialProjection {
+                    return "Workspace credentials changed. Update this task's next retry, then retry."
+                }
                 return "Workspace credentials changed; fork or start a new task to use them."
             case .requiredButHostCredentialMissing:
                 return "BigQuery/dbt detected, but no local ADC file was found on this Mac."
@@ -278,19 +443,42 @@ final class WorkspaceDockerViewModel: ObservableObject {
         if credentialReadinessReport?.state == .pinnedTaskSnapshotMissingProjection {
             return "exclamationmark.triangle.fill"
         }
+        if !canChangeActiveEnvironment && hasGCPADCProjection {
+            return "checkmark.circle.fill"
+        }
         return hasGCPADCProjection ? "minus.circle.fill" : "link.circle.fill"
     }
 
     var credentialProjectionIsEnabled: Bool {
-        canChangeActiveEnvironment && (hasGCPADCProjection || gcpADCCredentialFileExists)
+        if canChangeActiveEnvironment {
+            return hasGCPADCProjection || gcpADCCredentialFileExists
+        }
+        if hasGCPADCProjection,
+           credentialReadinessReport?.state != .projectedButHostCredentialMissing {
+            return false
+        }
+        return (canRepairCredentialProjection || canUpdatePinnedTaskCredentialProjection)
+            && gcpADCCredentialFileExists
     }
 
     var credentialProjectionHelp: String {
         if let report = credentialReadinessReport, report.shouldBlockLaunch {
+            if canRepairCredentialProjection {
+                return "\(report.detail) Connect local GCP Application Default Credentials to this setup-only failed task, then retry it."
+            }
+            if canUpdatePinnedTaskCredentialProjection {
+                return "\(report.detail) Connect local GCP Application Default Credentials to this pinned task's next retry snapshot. Earlier run manifests stay unchanged."
+            }
             let remediation = report.remediation.map { " \($0)" } ?? ""
             return "\(report.detail)\(remediation)"
         }
         if !canChangeActiveEnvironment {
+            if canRepairCredentialProjection {
+                if hasGCPADCProjection {
+                    return "This task snapshot has local GCP Application Default Credentials projected. Retry the task so ASTRA can run Docker workspace commands with those credentials."
+                }
+                return "This task only failed during Docker credential setup. ASTRA can connect local GCP Application Default Credentials to this task snapshot so retry uses the repaired environment."
+            }
             return "Pinned task. This task keeps its current Docker credential projection because it already has execution history."
         }
         if hasGCPADCProjection {
@@ -338,22 +526,51 @@ final class WorkspaceDockerViewModel: ObservableObject {
     func selectEnvironmentOption(_ optionID: String) {
         guard let option = environmentOptions.first(where: { $0.id == optionID }) else { return }
         guard option.isEnabled else {
-            errorMessage = "This task already has execution history, so its execution environment is pinned. Fork or start a new task to use another container."
+            errorMessage = "No alternate loaded Docker environment is available for this pinned task yet."
             return
         }
         persist(option.environment)
     }
 
+    func switchPinnedTaskToWorkspaceEnvironment() {
+        guard canSwitchPinnedTaskToWorkspaceEnvironment,
+              let selectedTask,
+              let workspaceEnvironment = workspaceDefaultEnvironment else {
+            errorMessage = "No newer workspace Docker environment is available for this pinned task."
+            return
+        }
+        let json = ExecutionEnvironmentStore.encodeSnapshot(workspaceEnvironment)
+        selectedTask.executionEnvironmentSnapshotJSON = json
+        selectedTask.updatedAt = Date()
+        selectedEnvironment = workspaceEnvironment
+        errorMessage = nil
+        statusMessage = "Next retry will use \(workspaceEnvironment.displayName)"
+        AppLogger.audit(.executionEnvironmentChanged, category: "ExecutionEnvironment", fields: [
+            "result": "pinned_task_environment_updated",
+            "environment": workspaceEnvironment.kind.rawValue,
+            "environment_id": workspaceEnvironment.id,
+            "scope": activeScopeLabel,
+            "task_id": selectedTask.id.uuidString
+        ])
+    }
+
     func toggleGCPADCProjection() {
         guard selectedEnvironment.isContainerized else { return }
-        guard canChangeActiveEnvironment else {
-            errorMessage = "This task already has execution history, so its Docker credential projection is pinned. Fork or start a new task to change it."
+        let canPatchPinnedTask = canRepairCredentialProjection || canUpdatePinnedTaskCredentialProjection
+        guard canChangeActiveEnvironment || canPatchPinnedTask else {
+            errorMessage = "This task already has execution history, and no required Docker credential update is available for its next retry."
             return
         }
 
         var environment = selectedEnvironment
         var projections = environment.effectiveCredentialProjections
-        if hasGCPADCProjection {
+        if hasGCPADCProjection,
+           credentialReadinessReport?.state != .projectedButHostCredentialMissing {
+            guard canChangeActiveEnvironment else {
+                errorMessage = nil
+                statusMessage = "GCP credentials are connected. Retry this task."
+                return
+            }
             projections.removeAll { $0.id == ExecutionEnvironmentCredentialProjection.gcpADCID }
             environment.setCredentialProjections(projections)
             persist(environment)
@@ -368,8 +585,13 @@ final class WorkspaceDockerViewModel: ObservableObject {
         projections.removeAll { $0.id == ExecutionEnvironmentCredentialProjection.gcpADCID }
         projections.append(ExecutionEnvironmentCredentialProjection.gcpADC(hostPath: gcpADCHostPath))
         environment.setCredentialProjections(projections)
-        persist(environment)
-        statusMessage = "GCP credentials connected"
+        if canPatchPinnedTask, !canChangeActiveEnvironment {
+            updatePinnedTaskCredentialProjection(environment, alsoUpdateWorkspaceDefault: canRepairCredentialProjection)
+            statusMessage = "GCP credentials connected. Retry this task."
+        } else {
+            persist(environment)
+            statusMessage = "GCP credentials connected"
+        }
     }
 
     func buildWorkspaceImage() async {
@@ -398,7 +620,7 @@ final class WorkspaceDockerViewModel: ObservableObject {
             } else if canChangeActiveEnvironment {
                 statusMessage = "Image built. Refresh containers to select it."
             } else {
-                statusMessage = "Image built. Start a new task to use it."
+                statusMessage = "Image built. Select it under Pinned to for the next retry."
             }
         case .failure(let error):
             let detail = error.localizedDescription
@@ -437,8 +659,9 @@ final class WorkspaceDockerViewModel: ObservableObject {
     }
 
     private func persist(_ environment: WorkspaceExecutionEnvironment) {
-        guard canChangeActiveEnvironment else {
-            errorMessage = "This task already has execution history, so its execution environment is pinned. Fork or start a new task to use another container."
+        let isPinnedTaskRetarget = selectedTask != nil && !canChangeActiveEnvironment
+        guard canChangeActiveEnvironment || canRepinPinnedTaskEnvironment else {
+            errorMessage = "This pinned task has no alternate loaded Docker environment yet. Build or load an image first."
             AppLogger.audit(.executionEnvironmentChanged, category: "ExecutionEnvironment", fields: [
                 "result": "blocked",
                 "environment": environment.kind.rawValue,
@@ -447,7 +670,9 @@ final class WorkspaceDockerViewModel: ObservableObject {
             return
         }
 
-        let json = ExecutionEnvironmentStore.encode(environment)
+        let json = isPinnedTaskRetarget
+            ? ExecutionEnvironmentStore.encodeSnapshot(environment)
+            : ExecutionEnvironmentStore.encode(environment)
         if let selectedTask {
             guard selectedTask.executionEnvironmentSnapshotJSON != json else {
                 selectedEnvironment = environment
@@ -465,11 +690,50 @@ final class WorkspaceDockerViewModel: ObservableObject {
         }
         selectedEnvironment = environment
         errorMessage = nil
+        if isPinnedTaskRetarget {
+            statusMessage = "Next retry will use \(environment.isHost ? "Host" : environment.displayName)"
+        }
         AppLogger.audit(.executionEnvironmentChanged, category: "ExecutionEnvironment", fields: [
-            "result": "changed",
+            "result": isPinnedTaskRetarget ? "pinned_task_environment_updated" : "changed",
             "environment": environment.kind.rawValue,
             "environment_id": environment.id,
             "scope": activeScopeLabel
+        ])
+    }
+
+    private func updatePinnedTaskCredentialProjection(
+        _ environment: WorkspaceExecutionEnvironment,
+        alsoUpdateWorkspaceDefault: Bool
+    ) {
+        guard selectedTask != nil,
+              !canChangeActiveEnvironment,
+              let selectedTask else {
+            persist(environment)
+            return
+        }
+
+        let json = ExecutionEnvironmentStore.encodeSnapshot(environment)
+        selectedTask.executionEnvironmentSnapshotJSON = json
+        selectedTask.updatedAt = Date()
+
+        if alsoUpdateWorkspaceDefault, let workspace {
+            let workspaceEnvironment = ExecutionEnvironmentStore.decode(workspace.activeExecutionEnvironmentJSON)
+            if workspaceEnvironment.id == environment.id {
+                workspace.activeExecutionEnvironmentJSON = ExecutionEnvironmentStore.encode(environment)
+                workspace.updatedAt = Date()
+            }
+        }
+
+        selectedEnvironment = environment
+        errorMessage = nil
+        AppLogger.audit(.executionEnvironmentChanged, category: "ExecutionEnvironment", fields: [
+            "result": alsoUpdateWorkspaceDefault
+                ? "credential_projection_repaired"
+                : "pinned_task_credential_projection_updated",
+            "environment": environment.kind.rawValue,
+            "environment_id": environment.id,
+            "scope": activeScopeLabel,
+            "task_id": selectedTask.id.uuidString
         ])
     }
 
@@ -478,6 +742,10 @@ final class WorkspaceDockerViewModel: ObservableObject {
            let snapshot = selectedTask.executionEnvironmentSnapshotJSON,
            !snapshot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             selectedEnvironment = ExecutionEnvironmentStore.decode(snapshot)
+            return
+        }
+        if let selectedTask, selectedTask.status != .draft || !selectedTask.runs.isEmpty {
+            selectedEnvironment = .host
             return
         }
         if let workspace {
@@ -525,6 +793,15 @@ final class WorkspaceDockerViewModel: ObservableObject {
         }
     }
 
+    private static func isCredentialProjectionSetupFailure(_ run: TaskRun) -> Bool {
+        run.typedStopReason == .credentialProjectionRequired
+            && run.inputTokens == 0
+            && run.outputTokens == 0
+            && run.tokensUsed == 0
+            && run.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && run.fileChanges.isEmpty
+    }
+
     private func imageWithDefaultTag(_ image: String) -> String {
         let name = image.trimmingCharacters(in: .whitespacesAndNewlines)
         let lastComponent = name.split(separator: "/").last.map(String.init) ?? name
@@ -566,9 +843,14 @@ final class WorkspaceDockerViewModel: ObservableObject {
     }
 
     private func environmentOptionHelp(for environment: WorkspaceExecutionEnvironment) -> String {
-        let scope = selectedTask == nil
-            ? "Select this to set the workspace default for new tasks."
-            : "Select this to set the execution environment for this draft task."
+        let scope: String
+        if selectedTask == nil {
+            scope = "Select this to set the workspace default for new tasks."
+        } else if canChangeActiveEnvironment {
+            scope = "Select this to set the execution environment for this draft task."
+        } else {
+            scope = "Select this to change only this pinned task's next retry. Previous run manifests stay unchanged."
+        }
         return "\(scope) \(selectedEnvironmentEffect(for: environment))"
     }
 
@@ -589,6 +871,22 @@ final class WorkspaceDockerViewModel: ObservableObject {
         selectedEnvironment.effectiveCredentialProjections.contains {
             $0.id == ExecutionEnvironmentCredentialProjection.gcpADCID
         }
+    }
+
+    private var workspaceDefaultEnvironment: WorkspaceExecutionEnvironment? {
+        guard let workspace else { return nil }
+        return ExecutionEnvironmentStore.decode(workspace.activeExecutionEnvironmentJSON)
+    }
+
+    private var pinnedTaskEnvironmentTargets: [WorkspaceExecutionEnvironment] {
+        var targets: [WorkspaceExecutionEnvironment] = [.host]
+        targets.append(contentsOf: runnableCandidates.map(\.environment))
+        if let workspaceDefaultEnvironment,
+           workspaceDefaultEnvironment.isContainerized,
+           !targets.contains(where: { $0.id == workspaceDefaultEnvironment.id }) {
+            targets.append(workspaceDefaultEnvironment)
+        }
+        return targets
     }
 
     private var credentialReadinessReport: ExecutionEnvironmentCredentialReadinessReport? {

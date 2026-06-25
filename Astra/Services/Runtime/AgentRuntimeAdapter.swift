@@ -188,7 +188,8 @@ protocol AgentRuntimeAdapter: AgentRuntimeDescriptorReadiness,
     AgentRuntimeProcessEventParsing,
     AgentRuntimeWorkerEventRecording,
     AgentUtilityRuntimeAdapter,
-    AgentRuntimePostRunDiagnostics {}
+    AgentRuntimePostRunDiagnostics,
+    AgentRuntimeSandboxContract {}
 
 extension AgentRuntimeDescriptorReadiness {
     var availableModelsStorageKey: String {
@@ -616,6 +617,7 @@ enum AgentRuntimeAdapterRegistry {
     static func postRunDiagnostics(for runtime: AgentRuntimeID) -> any AgentRuntimePostRunDiagnostics {
         liveCatalog.postRunDiagnostics(for: runtime)
     }
+
 }
 
 struct RuntimeExecutableCheckResult {
@@ -640,6 +642,7 @@ struct AgentRuntimeProcessLaunchContext {
     let nativeContinuationSessionID: String?
     let runID: UUID?
     let liveApprovalsEnabled: Bool
+    let launchResourcePlan: TaskLaunchResourcePlan?
 
     init(
         prompt: String,
@@ -655,7 +658,8 @@ struct AgentRuntimeProcessLaunchContext {
         contextText: String = "",
         nativeContinuationSessionID: String? = nil,
         runID: UUID? = nil,
-        liveApprovalsEnabled: Bool = false
+        liveApprovalsEnabled: Bool = false,
+        launchResourcePlan: TaskLaunchResourcePlan? = nil
     ) {
         self.prompt = prompt
         self.task = task
@@ -671,6 +675,7 @@ struct AgentRuntimeProcessLaunchContext {
         self.nativeContinuationSessionID = nativeContinuationSessionID
         self.runID = runID
         self.liveApprovalsEnabled = liveApprovalsEnabled
+        self.launchResourcePlan = launchResourcePlan
     }
 }
 
@@ -699,6 +704,7 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
     let parsesJSONLines: Bool
     let directoriesToCreate: [String]
     let sandboxReadablePaths: [String]
+    let sandboxHomeStateAccess: AgentRuntimeHomeStateAccess
     /// Files carved back out of a writable root as read-only (write-deny over
     /// write-allow). See `CopilotCLIRuntime.configWriteDenyPaths`.
     let sandboxProtectedWriteDenyPaths: [String]
@@ -719,6 +725,7 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
         parsesJSONLines: Bool,
         directoriesToCreate: [String] = [],
         sandboxReadablePaths: [String] = [],
+        sandboxHomeStateAccess: AgentRuntimeHomeStateAccess? = nil,
         sandboxProtectedWriteDenyPaths: [String] = [],
         providerDetectedFields: [String: String] = [:],
         commandPlannedFields: [String: String] = [:],
@@ -736,6 +743,7 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
         self.parsesJSONLines = parsesJSONLines
         self.directoriesToCreate = directoriesToCreate
         self.sandboxReadablePaths = sandboxReadablePaths
+        self.sandboxHomeStateAccess = sandboxHomeStateAccess ?? AgentRuntimeAdapterRegistry.homeStateAccess(for: runtime)
         self.sandboxProtectedWriteDenyPaths = sandboxProtectedWriteDenyPaths
         self.providerDetectedFields = providerDetectedFields
         self.commandPlannedFields = commandPlannedFields
@@ -744,99 +752,6 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
         self.executionEnvironment = executionEnvironment
     }
 
-    func addingGitCredentialContext(_ context: GitCredentialSandboxContext) -> AgentRuntimeProcessLaunchPlan {
-        guard !context.isEmpty else { return self }
-        var readable = sandboxReadablePaths
-        readable.append(contentsOf: context.readablePaths)
-        readable = Self.uniqueNonEmpty(readable)
-
-        var plannedFields = commandPlannedFields
-        plannedFields["git_credential_context"] = "true"
-        plannedFields["git_credential_readable_path_count"] = String(context.readablePaths.count)
-        plannedFields["git_credential_writable_path_count"] = String(context.writablePaths.count)
-        plannedFields["git_credential_transports"] = context.transports.map(\.rawValue).joined(separator: ",")
-        if !context.diagnostics.isEmpty {
-            plannedFields["git_credential_diagnostics"] = context.diagnostics.joined(separator: ",")
-        }
-
-        return AgentRuntimeProcessLaunchPlan(
-            runtime: runtime,
-            executablePath: executablePath,
-            arguments: arguments,
-            currentDirectory: currentDirectory,
-            environment: environment,
-            browserShimDirectory: browserShimDirectory,
-            providerVersion: providerVersion,
-            parsesJSONLines: parsesJSONLines,
-            directoriesToCreate: directoriesToCreate,
-            sandboxReadablePaths: readable,
-            sandboxProtectedWriteDenyPaths: sandboxProtectedWriteDenyPaths,
-            providerDetectedFields: providerDetectedFields,
-            commandPlannedFields: plannedFields,
-            interactiveAsk: interactiveAsk,
-            pathMapper: pathMapper,
-            executionEnvironment: executionEnvironment
-        )
-    }
-
-    func enablingProviderNativeGitCredentialReads(
-        for context: GitCredentialSandboxContext,
-        permissionPolicy: PermissionPolicy
-    ) -> AgentRuntimeProcessLaunchPlan {
-        guard context.needsExternalCredentialAccess,
-              permissionPolicy != .autonomous else {
-            return self
-        }
-
-        var updatedArguments = arguments
-        var plannedFields = commandPlannedFields
-        switch runtime {
-        case .codexCLI:
-            let config = "sandbox_permissions=[\"disk-full-read-access\"]"
-            guard !updatedArguments.contains(config) else { return self }
-            let insertIndex = updatedArguments.firstIndex(of: "--skip-git-repo-check")
-                ?? max(0, updatedArguments.count - 1)
-            updatedArguments.insert(contentsOf: ["--config", config], at: insertIndex)
-            plannedFields["git_provider_native_read_access"] = "codex_disk_full_read"
-        case .copilotCLI:
-            guard commandPlannedFields["supports_allow_all_paths"] == "true",
-                  !updatedArguments.contains("--allow-all-paths") else {
-                return self
-            }
-            updatedArguments.append("--allow-all-paths")
-            plannedFields["git_provider_native_read_access"] = "copilot_allow_all_paths"
-        default:
-            return self
-        }
-
-        return AgentRuntimeProcessLaunchPlan(
-            runtime: runtime,
-            executablePath: executablePath,
-            arguments: updatedArguments,
-            currentDirectory: currentDirectory,
-            environment: environment,
-            browserShimDirectory: browserShimDirectory,
-            providerVersion: providerVersion,
-            parsesJSONLines: parsesJSONLines,
-            directoriesToCreate: directoriesToCreate,
-            sandboxReadablePaths: sandboxReadablePaths,
-            sandboxProtectedWriteDenyPaths: sandboxProtectedWriteDenyPaths,
-            providerDetectedFields: providerDetectedFields,
-            commandPlannedFields: plannedFields,
-            interactiveAsk: interactiveAsk,
-            pathMapper: pathMapper,
-            executionEnvironment: executionEnvironment
-        )
-    }
-
-    private static func uniqueNonEmpty(_ values: [String]) -> [String] {
-        var seen: Set<String> = []
-        return values.filter { value in
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return false }
-            return seen.insert(trimmed).inserted
-        }
-    }
 }
 
 enum AgentRuntimeRecordingMode {
@@ -957,7 +872,10 @@ struct RuntimeReadinessProbeContext {
         executable: String?,
         args: [String],
         missingDetail: String,
-        installHint: String
+        installHint: String,
+        timeout overrideTimeout: TimeInterval? = nil,
+        timedOutState: RuntimeReadinessState = .blocked,
+        timedOutRemediation: String? = nil
     ) async -> RuntimeExecutableCheckResult {
         guard let executable, !executable.isEmpty, isExecutable(executable) else {
             return RuntimeExecutableCheckResult(
@@ -972,14 +890,27 @@ struct RuntimeReadinessProbeContext {
             )
         }
 
-        let result = await runner.run(path: executable, args: args, timeout: timeout, environment: processEnvironment)
+        let effectiveTimeout = overrideTimeout ?? timeout
+        let result = await runner.run(path: executable, args: args, timeout: effectiveTimeout, environment: processEnvironment)
+        if case .timedOut = result.outcome {
+            return RuntimeExecutableCheckResult(
+                executable: executable,
+                check: RuntimeReadinessCheck(
+                    id: id,
+                    title: title,
+                    detail: processFailureDetail(result, timeout: effectiveTimeout),
+                    state: timedOutState,
+                    remediation: timedOutRemediation ?? "Verify the configured path: \(executable)"
+                )
+            )
+        }
         guard result.isSuccess else {
             return RuntimeExecutableCheckResult(
                 executable: executable,
                 check: RuntimeReadinessCheck(
                     id: id,
                     title: title,
-                    detail: processFailureDetail(result),
+                    detail: processFailureDetail(result, timeout: effectiveTimeout),
                     state: .blocked,
                     remediation: "Verify the configured path: \(executable)"
                 )
@@ -1005,7 +936,7 @@ struct RuntimeReadinessProbeContext {
         return detected.isEmpty ? nil : detected
     }
 
-    private func processFailureDetail(_ result: RunResult) -> String {
+    private func processFailureDetail(_ result: RunResult, timeout: TimeInterval) -> String {
         switch result.outcome {
         case .launchFailed(let reason):
             return "Could not launch: \(RuntimeReadinessRedactor.redacted(reason))"
@@ -1191,10 +1122,13 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
                 executable: probes.resolvedExecutable(configuredPath: "", binary: "gcloud"),
                 args: ["--version"],
                 missingDetail: "gcloud was not found on PATH.",
-                installHint: CommonCLIPrerequisites.gcloud.installHint
+                installHint: CommonCLIPrerequisites.gcloud.installHint,
+                timeout: 20,
+                timedOutState: .warning,
+                timedOutRemediation: "gcloud responded slowly. ASTRA will continue and validate Application Default Credentials separately."
             )
             checks.append(gcloud.check)
-            if gcloud.isReady, let executable = gcloud.executable {
+            if gcloud.check.state != .blocked, let executable = gcloud.executable {
                 checks.append(await checkVertexADC(gcloudPath: executable, probes: probes))
             }
         }
@@ -1303,17 +1237,47 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         ) {
             mcpServers.append(workspaceServer)
         }
+        let hostControlEnvironment = HostControlPlaneMCPProjection.environmentVariables(
+            task: context.task,
+            environment: executionEnvironment,
+            currentDirectory: context.workspacePath,
+            runID: context.runID,
+            taskEnvironment: taskEnv
+        )
+        if let hostControlServer = HostControlPlaneMCPProjection.resolvedServer(
+            task: context.task,
+            environment: executionEnvironment,
+            currentDirectory: context.workspacePath,
+            runID: context.runID,
+            taskEnvironment: taskEnv.merging(hostControlEnvironment) { current, _ in current }
+        ) {
+            mcpServers.append(hostControlServer)
+        }
         if let browserServer = BrowserBridgeMCPProjection.resolvedServer(
             for: context.task,
             contextText: context.contextText
         ) {
             mcpServers.append(browserServer)
         }
+        let workspaceExecutorEnvironment = DockerWorkspaceMCPProjection.environmentVariables(
+            task: context.task,
+            environment: executionEnvironment,
+            currentDirectory: context.workspacePath,
+            runID: context.runID
+        )
+        let explicitMCPEnvironment = taskEnv
+            .merging(workspaceExecutorEnvironment) { current, _ in current }
+            .merging(hostControlEnvironment) { current, _ in current }
         // allowEmpty: strict mode must apply even with zero governed servers,
         // or a repository's own .mcp.json loads ungoverned on those runs.
-        let mcpConfigURL = MCPRuntimeProjection.writeClaudeConfig(servers: mcpServers, taskID: context.task.id, allowEmpty: true)
+        let mcpConfigURL = MCPRuntimeProjection.writeClaudeConfig(
+            servers: mcpServers,
+            taskID: context.task.id,
+            availableEnvironment: explicitMCPEnvironment,
+            allowEmpty: true
+        )
         let mcpConfigReadablePaths = mcpConfigURL.map { [$0.deletingLastPathComponent().path] } ?? []
-        let sandboxReadablePaths = mcpConfigReadablePaths + ClaudeCodeRuntime.authReadablePaths()
+        let baseSandboxReadablePaths = mcpConfigReadablePaths + ClaudeCodeRuntime.authReadablePaths()
         let mcpAllowedTools = mcpConfigURL == nil ? [] : MCPRuntimeProjection.allowedToolPermissions(servers: mcpServers)
         let mcpDeniedTools = mcpConfigURL == nil ? [] : MCPRuntimeProjection.deniedToolPermissions(servers: mcpServers)
         let nativeDeniedTools = Array(Set(mcpDeniedTools + (usesDockerWorkspaceExecutor ? ["Bash"] : []))).sorted()
@@ -1346,12 +1310,6 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             task: context.task,
             permissionPolicy: effectivePermissionPolicy
         )
-        let workspaceExecutorEnvironment = DockerWorkspaceMCPProjection.environmentVariables(
-            task: context.task,
-            environment: executionEnvironment,
-            currentDirectory: context.workspacePath,
-            runID: context.runID
-        )
         var processEnvironment = AgentRuntimeProcessRunner.environment(
             phase: context.phase,
             task: context.task,
@@ -1361,6 +1319,13 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         for (key, value) in workspaceExecutorEnvironment {
             processEnvironment[key] = value
         }
+        for (key, value) in hostControlEnvironment {
+            processEnvironment[key] = value
+        }
+        let vertexADCReadablePaths = ClaudeCodeRuntime.vertexADCReadablePaths(
+            isVertexEnabled: processEnvironment["CLAUDE_CODE_USE_VERTEX"] == "1"
+        )
+        let sandboxReadablePaths = baseSandboxReadablePaths + vertexADCReadablePaths
         let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
         var args = interactiveAsk == nil ? ["-p", context.prompt] : ["-p"]
         if let sessionID = context.nativeContinuationSessionID,
@@ -1436,6 +1401,9 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
                 "docker_workspace_executor": String(usesDockerWorkspaceExecutor),
                 "docker_workspace_tool": usesDockerWorkspaceExecutor ? DockerWorkspaceMCPProjection.providerToolPermission : "none",
                 "docker_workspace_mcp_env_key_count": String(workspaceExecutorEnvironment.count),
+                "host_control_plane_tool_count": String(HostControlPlaneMCPProjection.toolNames.count),
+                "host_control_plane_supported": String(!usesDockerWorkspaceExecutor || mcpAllowedTools.contains(HostControlPlaneMCPProjection.providerToolPermission(for: "gcloud"))),
+                "host_control_plane_mcp_env_key_count": String(hostControlEnvironment.count),
                 "docker_workspace_container_env_key_count": String(
                     DockerExecutionPlanner.credentialProjectionEnvironment(environment: executionEnvironment).count
                 ),
@@ -1461,7 +1429,8 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
                 "mcp_server_count": String(mcpConfigURL == nil ? 0 : mcpServers.count),
                 "mcp_config_rendered": String(mcpConfigURL != nil),
                 "native_denied_tool_count": String(nativeDeniedTools.count),
-                "native_denied_tool_names": nativeDeniedTools.joined(separator: ",")
+                "native_denied_tool_names": nativeDeniedTools.joined(separator: ","),
+                "claude_vertex_adc_readable": String(!vertexADCReadablePaths.isEmpty)
             ],
             interactiveAsk: interactiveAsk
         )
@@ -1907,6 +1876,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             runID: context.runID,
             executionEnvironment: executionEnvironment,
             contextText: context.contextText,
+            taskEnvironment: taskEnv,
             capabilities: capabilities
         )
         let browserBridgeMetadata = BrowserBridgeRuntimeLaunchGuard.planMetadata(
@@ -1922,6 +1892,9 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let providerLaunchAllowed = Array(Set(providerAllowed + artifactBootstrapTools + mcpProjection.allowedTools)).sorted()
         var launchTaskEnv = taskEnv
         for (key, value) in mcpProjection.workspaceExecutorEnvironment {
+            launchTaskEnv[key] = value
+        }
+        for (key, value) in mcpProjection.hostControlEnvironment {
             launchTaskEnv[key] = value
         }
         let plan = CopilotCLIRuntime.buildCommand(

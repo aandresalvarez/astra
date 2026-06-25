@@ -159,7 +159,7 @@ struct CapabilitySetupCopier {
             serviceType: serviceType
         )
 
-        for entityID in Self.copySourceEntityIDs(for: connector.id) {
+        for entityID in Self.copySourceEntityIDs(for: connector) {
             for candidate in keyCandidates {
                 if let value = nonEmpty(secretStore.load(key: candidate, entityID: entityID)) {
                     return value
@@ -209,6 +209,15 @@ struct CapabilitySetupCopier {
             KeychainSecretStore.connectorEntityID(for: connectorID),
             "agentflow-\(connectorID.uuidString)"
         ]
+    }
+
+    private static func copySourceEntityIDs(for connector: Connector) -> [String] {
+        var entityIDs = KeychainSecretStore.connectorEntityIDs(for: connector)
+        let agentFlowEntityID = "agentflow-\(connector.id.uuidString)"
+        if !entityIDs.contains(agentFlowEntityID) {
+            entityIDs.append(agentFlowEntityID)
+        }
+        return entityIDs
     }
 
     private func connectorValue(

@@ -268,6 +268,43 @@ struct GitCredentialContextResolverTests {
         #expect(!context.readablePaths.contains(matching.path))
     }
 
+    @Test("Local Git inspection projects config without credential files")
+    func localGitInspectionProjectsConfigOnly() throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        let repo = root.appendingPathComponent("repo", isDirectory: true)
+        let git = repo.appendingPathComponent(".git", isDirectory: true)
+        try FileManager.default.createDirectory(at: git, withIntermediateDirectories: true)
+
+        let included = home.appendingPathComponent("diff-options.gitconfig")
+        try write("""
+        [include]
+            path = ~/diff-options.gitconfig
+        """, to: home.appendingPathComponent(".gitconfig"))
+        try write("[diff]\nstatGraphWidth = 80\n", to: included)
+        try write("[remote \"origin\"]\nurl = git@github.com:susom/astra.git\n", to: git.appendingPathComponent("config"))
+        try write("secret", to: home.appendingPathComponent(".ssh/id_ed25519"))
+        try write("token", to: home.appendingPathComponent(".git-credentials"))
+
+        let task = AgentTask(title: "Review diff", goal: "Verify no unrelated files")
+        let context = GitCredentialContextResolver.runtimeSandboxContext(
+            prompt: "git diff --stat",
+            task: task,
+            contextText: "",
+            repositoryPath: repo.path,
+            homeDirectory: home.path
+        )
+
+        #expect(context.transports.isEmpty)
+        #expect(context.diagnostics == ["local_git_config"])
+        #expect(context.readablePaths.contains(home.appendingPathComponent(".gitconfig").path))
+        #expect(context.readablePaths.contains(included.path))
+        #expect(!context.readablePaths.contains(home.appendingPathComponent(".ssh/id_ed25519").path))
+        #expect(!context.readablePaths.contains(home.appendingPathComponent(".git-credentials").path))
+        #expect(context.writablePaths.isEmpty)
+    }
+
     @Test("Network Git intent detection handles commands and plain English")
     func gitNetworkIntentDetection() {
         let task = AgentTask(title: "Sync", goal: "Please pull from GitHub before editing.")
@@ -284,7 +321,23 @@ struct GitCredentialContextResolverTests {
             prompt: "please clone the repo from GitHub",
             task: AgentTask(title: "Other", goal: "Other")
         ))
+        #expect(GitOperationIntentDetector.detectsNetworkGitOperation(
+            prompt: "ok lets pull the latest code from main, then create a new branch",
+            task: AgentTask(title: "Other", goal: "Other")
+        ))
+        #expect(GitOperationIntentDetector.detectsNetworkGitOperation(
+            prompt: "update from main before editing STAR-12262",
+            task: AgentTask(title: "Other", goal: "Other")
+        ))
         #expect(!GitOperationIntentDetector.detectsNetworkGitOperation(
+            prompt: "inspect the local diff",
+            task: AgentTask(title: "Review", goal: "No network")
+        ))
+        #expect(GitOperationIntentDetector.detectsLocalGitInspectionOperation(
+            prompt: "git diff --stat",
+            task: AgentTask(title: "Review", goal: "No network")
+        ))
+        #expect(GitOperationIntentDetector.detectsRuntimeGitOperation(
             prompt: "inspect the local diff",
             task: AgentTask(title: "Review", goal: "No network")
         ))

@@ -19,6 +19,9 @@ enum TaskFailureReasonPresentation {
         if isDockerProviderExecutableMissing(payload) {
             return "Docker image is missing the provider CLI."
         }
+        if isWorkspaceManagedJobStalled(payload) {
+            return "Workspace job stopped producing heartbeats."
+        }
         if payload.contains("CLI not found") {
             return "Provider CLI not found. Check Settings."
         }
@@ -48,5 +51,12 @@ enum TaskFailureReasonPresentation {
                     && lower.contains("exec:")
                     && lower.contains("executable file not found in $path")
             )
+    }
+
+    private static func isWorkspaceManagedJobStalled(_ payload: String) -> Bool {
+        let lower = payload.lowercased()
+        return lower.contains(TaskRunStopReason.providerWorkspaceJobStalled.rawValue)
+            || lower.contains("managed workspace job")
+                && lower.contains("heartbeat")
     }
 }
