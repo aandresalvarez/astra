@@ -633,7 +633,7 @@ enum GitCredentialContextResolver {
             return []
         }
 
-        var activePatterns: [String] = []
+        var activePatterns: [String] = ["*"]
         var identities: [String] = []
         var knownHostFiles: [String] = []
         for rawLine in raw.components(separatedBy: .newlines) {
