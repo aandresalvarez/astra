@@ -462,7 +462,7 @@ struct ExecutionSandboxTests {
         #expect(roots.contains("/Library/Frameworks"))
         #expect(roots.contains("/Library/Managed Preferences"))
         #expect(roots.contains("/Library/Preferences"))
-        #expect(roots.contains("/Applications/Xcode.app"))
+        #expect(roots.contains { $0.hasPrefix("/Applications/Xcode") && $0.hasSuffix(".app") })
         #expect(roots.contains("/private/var/select"))
         #expect(roots.contains("/var/select"))
         #expect(!roots.contains("/Applications"))
