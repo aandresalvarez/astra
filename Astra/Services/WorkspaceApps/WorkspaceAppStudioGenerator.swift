@@ -564,13 +564,14 @@ enum WorkspaceAppStudioGenerator {
         let htmlGuidance = current.html.map { body in """
 
         This is a DYNAMIC HTML app — its UI and logic live in the HTML body shown in CURRENT_HTML \
-        below. PREFER surgical edits: send an ASTRA_APP_HTML_EDIT block — a JSON array of \
-        { "find", "replace" } edits. Each "find" MUST be a snippet copied VERBATIM from CURRENT_HTML \
-        that occurs EXACTLY ONCE (extend it with surrounding context if a short snippet repeats); \
-        "replace" is the new text. Edits apply top-to-bottom and compound. This is far more reliable \
-        than re-sending the whole UI — it changes only what you target and can't regress the rest. \
-        For a UI-only change, send ONLY the edit block (no patch needed). Reserve a full ASTRA_APP_HTML \
-        block for a near-total rewrite. Sandbox rules are unchanged either way: inner content only \
+        below. For a SMALL, targeted change PREFER surgical edits: send an ASTRA_APP_HTML_EDIT block — \
+        a JSON array of { "find", "replace" } edits. Each "find" is a snippet copied from CURRENT_HTML \
+        that occurs once (extend it with surrounding context if a short snippet repeats); whitespace/ \
+        indentation need not match exactly, but the non-whitespace text must. "replace" is the new text. \
+        Edits apply top-to-bottom and compound. For a UI-only change, send ONLY the edit block (no patch \
+        needed). For a BROAD change (a restyle/theme, or anything touching many places), prefer a full \
+        ASTRA_APP_HTML block with the entire updated UI — surgical anchors are unreliable at that scale. \
+        Sandbox rules are unchanged either way: inner content only \
         (markup + <style> + <script>), strict CSP, NO network/eval/iframe/external resources; JS \
         reaches storage only through the injected `astra.*` bridge — `query`/`insert`/`update` only \
         (there is NO `astra.delete`; model a removal as an archived/status column updated via \
@@ -664,12 +665,21 @@ enum WorkspaceAppStudioGenerator {
         let currentHTML = currentManifest?.html ?? rejected?.html
         let htmlRepairGuidance = currentHTML.map { body in """
 
-        This is a DYNAMIC HTML app — its UI and logic live in the HTML body in CURRENT_HTML below. To \
-        make the actual change, PREFER a surgical ASTRA_APP_HTML_EDIT block (a JSON array of \
-        { "find", "replace" }; each "find" copied VERBATIM from CURRENT_HTML and occurring EXACTLY \
-        ONCE). It targets only what you change and won't regress the rest. Send it INSTEAD of a \
-        manifest block when the fix is UI-only. (Only if you must re-send a full ASTRA_APP_MANIFEST \
-        for a structural blocker, include a full ASTRA_APP_HTML block with it — never drop the UI.)
+        This is a DYNAMIC HTML app — its UI and logic live in the HTML body in CURRENT_HTML below.
+
+        CRITICAL — if a BLOCKER above says an ASTRA_APP_HTML_EDIT anchor "could not be placed" or "did \
+        not match" (your "find" snippets didn't line up with the current HTML), do NOT retry surgical \
+        edits — you will fail the same way. Instead send a FULL ASTRA_APP_HTML block containing the \
+        ENTIRE updated UI with the requested change applied to the CURRENT_HTML shown below. This is the \
+        reliable path for a broad change (e.g. a restyle/theme) and when anchors won't match:
+
+        ASTRA_APP_HTML
+        ...the entire updated inner HTML (markup + <style> + <script>), with the change applied...
+        END_ASTRA_APP_HTML
+
+        Otherwise, for a SMALL, well-anchored change, a surgical ASTRA_APP_HTML_EDIT block (a JSON array \
+        of { "find", "replace" }; each "find" copied VERBATIM from CURRENT_HTML) is fine — anchors now \
+        tolerate whitespace differences, but the non-whitespace text must still match.
 
         ASTRA_APP_HTML_EDIT
         [ { "find": "<verbatim snippet from CURRENT_HTML>", "replace": "<the new text>" } ]

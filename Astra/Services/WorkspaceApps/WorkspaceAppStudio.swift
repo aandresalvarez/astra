@@ -150,9 +150,12 @@ struct WorkspaceAppStudioHTMLEdit: Codable, Sendable, Equatable {
 
 /// Outcome of applying a list of `WorkspaceAppStudioHTMLEdit`s to an HTML body.
 enum WorkspaceAppStudioHTMLEditResult: Equatable {
-    case applied(String)
-    /// A repair-actionable message naming WHY the edit could not be applied (anchor missing,
-    /// ambiguous, or a no-op), so the repair loop and the user get something to act on.
+    /// The edited HTML, plus how many edits were SKIPPED (their anchor couldn't be placed) — the apply
+    /// is resilient: it keeps the edits that landed instead of discarding the whole turn on one miss.
+    /// `skipped == 0` is a clean full apply; `> 0` is a partial apply the chat surfaces as a warning.
+    case applied(String, skipped: Int)
+    /// A repair-actionable message naming WHY NOTHING could be applied (every anchor missing/ambiguous,
+    /// or a no-op), so the repair loop and the user get something to act on.
     case failure(String)
 }
 
@@ -242,12 +245,18 @@ enum WorkspaceAppStudioBuilder {
         return copy
     }
 
-    /// Apply surgical `{find, replace}` edits to an HTML body, in order. Each `find` must occur
-    /// EXACTLY ONCE in the running text (0 ⇒ "anchor not found", >1 ⇒ "ambiguous") so an edit can
-    /// never land in the wrong place; edits compound (a later `find` sees earlier `replace`s). The
-    /// whole batch is atomic in effect — the first bad anchor fails the turn with a precise message
-    /// and nothing is kept. A batch that leaves the HTML byte-identical is rejected as a no-op so a
-    /// "fix it" turn can't silently change nothing.
+    /// Apply surgical `{find, replace}` edits to an HTML body, in order. Each `find` must locate a
+    /// UNIQUE span — first by EXACT match, then (when exact fails) by a WHITESPACE-TOLERANT match, so
+    /// the dominant LLM error (indentation/whitespace drift in a copied anchor) no longer breaks the
+    /// edit while precision is preserved (the non-whitespace content must still match exactly once).
+    /// Edits compound (a later `find` sees earlier `replace`s).
+    ///
+    /// The apply is RESILIENT, not all-or-nothing: an edit whose anchor can't be uniquely placed is
+    /// SKIPPED (and counted) rather than discarding the whole turn — a partial restyle that lands 3 of
+    /// 4 changes beats keeping the app unchanged. Only when NOTHING lands does it fail, steering the
+    /// repair loop to a full `ASTRA_APP_HTML` rewrite (the reliable channel for a model that can't
+    /// reproduce exact anchors). A batch that leaves the HTML byte-identical is still rejected as a
+    /// no-op so a "fix it" turn can't silently change nothing.
     /// The most edits one turn may carry — a real refinement is a handful; a flood is pathological
     /// input. Each `find`/`replace` is also length-capped, and the running body is bounded by the
     /// validator's HTML size limit so a batch can't burn CPU/memory before validation runs.
@@ -268,6 +277,8 @@ enum WorkspaceAppStudioBuilder {
             return .failure("ASTRA_APP_HTML_EDIT had \(edits.count) edits — at most \(maxHTMLEdits) per turn. Make a focused change or send a full ASTRA_APP_HTML block for a rewrite.")
         }
         var current = html
+        var applied = 0
+        var skipped = 0
         for (index, edit) in edits.enumerated() {
             guard !edit.find.isEmpty else {
                 return .failure("edit[\(index)] has an empty \"find\" — it must be a snippet copied verbatim from the current HTML that occurs exactly once.")
@@ -275,23 +286,67 @@ enum WorkspaceAppStudioBuilder {
             guard edit.find.utf8.count <= maxHTMLEditFieldBytes, edit.replace.utf8.count <= maxHTMLEditFieldBytes else {
                 return .failure("edit[\(index)] is too large — \"find\" and \"replace\" are each capped at \(maxHTMLEditFieldBytes / 1024) KB. Use a smaller, targeted snippet.")
             }
-            let occurrences = current.components(separatedBy: edit.find).count - 1
-            if occurrences == 0 {
-                return .failure("edit[\(index)] anchor not found — \"find\" must match the current HTML EXACTLY (including whitespace and quotes). Copy a unique snippet verbatim from the CURRENT_HTML shown to you.")
+            // Tolerant locate: exact first, then whitespace-normalized. A non-unique anchor (missing or
+            // ambiguous) is SKIPPED, not fatal — the remaining edits still apply.
+            guard let range = locateUniqueAnchor(edit.find, in: current) else {
+                skipped += 1
+                continue
             }
-            if occurrences > 1 {
-                return .failure("edit[\(index)] anchor is ambiguous — \"find\" appears \(occurrences) times. Extend it with surrounding context so it matches exactly once.")
-            }
-            // Exactly one occurrence (verified above), so this replaces that single match.
-            current = current.replacingOccurrences(of: edit.find, with: edit.replace)
+            current.replaceSubrange(range, with: edit.replace)
+            applied += 1
             guard current.utf8.count <= maxHTMLEditBodyBytes else {
                 return .failure("edit[\(index)] grew the HTML past the \(maxHTMLEditBodyBytes / 1024) KB limit. Keep the UI small and focused.")
             }
         }
+        guard applied > 0 else {
+            // Nothing matched — the model's anchors didn't line up with the current HTML at all. Steer
+            // recovery to the reliable channel (a full rewrite) rather than another doomed anchor try.
+            return .failure("none of the \(edits.count) edits could be placed — their \"find\" anchors don't match the current HTML (whitespace, quotes, or escaping differ). Don't retry surgical edits; send a full ASTRA_APP_HTML block with the change applied to the CURRENT_HTML shown to you.")
+        }
         guard current != html else {
             return .failure("the edits left the HTML unchanged — \"find\" and \"replace\" were identical. Make the actual change the request asked for.")
         }
-        return .applied(current)
+        if skipped > 0 {
+            AppLogger.info("app_studio.html_edit_partial applied=\(applied) skipped=\(skipped) of=\(edits.count)", category: "WorkspaceApps")
+        }
+        return .applied(current, skipped: skipped)
+    }
+
+    /// Locate `find` as a UNIQUE span of `text`, returning its range or nil (absent OR ambiguous —
+    /// either way the caller skips it). Tries an EXACT match first (today's strict behavior when the
+    /// model nails the anchor), then a WHITESPACE-TOLERANT match: the non-whitespace tokens of `find`
+    /// must appear in order separated by ANY whitespace. That absorbs indentation/newline drift — the
+    /// #1 reason a copied anchor fails — without losing precision, since the match must still be unique.
+    static func locateUniqueAnchor(_ find: String, in text: String) -> Range<String.Index>? {
+        // 1. Exact, unique.
+        let exactCount = text.components(separatedBy: find).count - 1
+        if exactCount == 1 { return text.range(of: find) }
+        if exactCount > 1 { return nil }   // ambiguous → skip (never place in the wrong spot)
+        // 2. Whitespace-tolerant, unique.
+        guard let regex = whitespaceTolerantAnchorRegex(for: find) else { return nil }
+        let nsText = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+        guard matches.count == 1 else { return nil }   // 0 → not found; >1 → ambiguous; both skip
+        return Range(matches[0].range, in: text)
+    }
+
+    /// Build a regex that matches `find` literally EXCEPT every run of whitespace becomes `\s+` (and
+    /// leading/trailing whitespace is dropped). No nested quantifiers, so no catastrophic backtracking;
+    /// nil when `find` has no non-whitespace content.
+    ///
+    /// Word-boundary guards bracket the pattern when an edge token is a word char, so a fragment can
+    /// NEVER match inside a larger identifier — `btn red` must not match inside `btn redish`. With the
+    /// caller's exactly-one-match requirement, this keeps the safety contract ("never place in the
+    /// wrong span") that exact matching had: a fragment can't sneak in, and a genuine duplicate token
+    /// sequence is >1 match ⇒ ambiguous ⇒ skipped.
+    static func whitespaceTolerantAnchorRegex(for find: String) -> NSRegularExpression? {
+        let rawTokens = find.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        guard let first = rawTokens.first, let last = rawTokens.last else { return nil }
+        func isWordChar(_ c: Character?) -> Bool { guard let c else { return false }; return c.isLetter || c.isNumber || c == "_" }
+        let leadingGuard = isWordChar(first.first) ? "(?<![A-Za-z0-9_])" : ""
+        let trailingGuard = isWordChar(last.last) ? "(?![A-Za-z0-9_])" : ""
+        let body = rawTokens.map { NSRegularExpression.escapedPattern(for: $0) }.joined(separator: "\\s+")
+        return try? NSRegularExpression(pattern: leadingGuard + body + trailingGuard, options: [.dotMatchesLineSeparators])
     }
 
     static func applyPatch(
@@ -597,9 +652,11 @@ enum WorkspaceAppStudioBuilder {
             )
         }
         let newHTML: String
+        let skippedEdits: Int
         switch applyHTMLEdits(edits, to: currentHTML) {
-        case .applied(let updated):
+        case let .applied(updated, skipped):
             newHTML = updated
+            skippedEdits = skipped
         case .failure(let message):
             return structuredOutputFailure(
                 preserving: manifest,
@@ -633,11 +690,25 @@ enum WorkspaceAppStudioBuilder {
             )
         }
         let patchResult = applyPatch(operations, html: newHTML, to: manifest)
+        // Surface a PARTIAL apply (some anchors couldn't be placed) as a non-blocking warning, so the
+        // chat says "valid (1 warning)" and the inspector names the skipped edits — instead of pretending
+        // the whole change landed. Warnings never block publishing.
+        let report: WorkspaceAppManifestValidationReport
+        if skippedEdits > 0, patchResult.accepted {
+            let warning = WorkspaceAppManifestValidationReport.Issue(
+                severity: .warning,
+                path: "/structuredOutput/ASTRA_APP_HTML_EDIT",
+                message: "Applied a PARTIAL change — \(skippedEdits) edit\(skippedEdits == 1 ? "" : "s") couldn't be placed (their anchor didn't match the current HTML), so the result may be incomplete. Check the preview; if it looks wrong, ask again for just those parts or request a full rewrite."
+            )
+            report = WorkspaceAppManifestValidationReport(issues: patchResult.validationReport.issues + [warning])
+        } else {
+            report = patchResult.validationReport
+        }
         return WorkspaceAppStudioStructuredOutputResult(
             kind: .patch,
             manifest: patchResult.manifest,
             rejectedManifest: patchResult.rejectedManifest,
-            validationReport: patchResult.validationReport,
+            validationReport: report,
             accepted: patchResult.accepted
         )
     }

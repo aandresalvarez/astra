@@ -299,7 +299,7 @@ struct WorkspaceAppHTMLAppTests {
     func htmlEditsReplaceUniqueAnchor() {
         let html = "<main><button onclick=\"a()\">A</button><button onclick=\"b()\">B</button></main>"
         let edit = WorkspaceAppStudioHTMLEdit(find: "onclick=\"a()\">A", replace: "onclick=\"a2()\">A2")
-        guard case let .applied(out) = WorkspaceAppStudioBuilder.applyHTMLEdits([edit], to: html) else {
+        guard case let .applied(out, _) = WorkspaceAppStudioBuilder.applyHTMLEdits([edit], to: html) else {
             Issue.record("expected the edit to apply"); return
         }
         #expect(out == "<main><button onclick=\"a2()\">A2</button><button onclick=\"b()\">B</button></main>")
@@ -312,30 +312,78 @@ struct WorkspaceAppHTMLAppTests {
             WorkspaceAppStudioHTMLEdit(find: "one", replace: "two"),
             WorkspaceAppStudioHTMLEdit(find: "<p>two</p>", replace: "<p>two</p><p>three</p>")
         ]
-        guard case let .applied(out) = WorkspaceAppStudioBuilder.applyHTMLEdits(edits, to: html) else {
+        guard case let .applied(out, _) = WorkspaceAppStudioBuilder.applyHTMLEdits(edits, to: html) else {
             Issue.record("expected the edits to apply"); return
         }
         #expect(out == "<p>two</p><p>three</p>")
     }
 
-    @Test("an anchor that does not appear is rejected, not applied to the wrong place")
-    func htmlEditAnchorNotFound() {
+    @Test("when NOTHING matches, the failure steers to a full ASTRA_APP_HTML rewrite (not another anchor try)")
+    func htmlEditAllMissSteersToRewrite() {
         let result = WorkspaceAppStudioBuilder.applyHTMLEdits(
             [WorkspaceAppStudioHTMLEdit(find: "no-such-text", replace: "x")],
             to: "<main>hello</main>"
         )
         guard case let .failure(message) = result else { Issue.record("expected failure"); return }
-        #expect(message.contains("anchor not found"))
+        #expect(message.contains("could be placed"))
+        #expect(message.contains("ASTRA_APP_HTML"))   // the reliable recovery channel
     }
 
-    @Test("an ambiguous anchor (matches more than once) is rejected")
-    func htmlEditAnchorAmbiguous() {
-        let result = WorkspaceAppStudioBuilder.applyHTMLEdits(
-            [WorkspaceAppStudioHTMLEdit(find: "<li>", replace: "<li class=x>")],
-            to: "<ul><li>a</li><li>b</li></ul>"
-        )
-        guard case let .failure(message) = result else { Issue.record("expected failure"); return }
-        #expect(message.contains("ambiguous"))
+    // MARK: - #1 tolerant matching + #3 per-edit resilience
+
+    @Test("an anchor whose whitespace differs from the HTML still applies (whitespace-tolerant match)")
+    func htmlEditWhitespaceTolerant() {
+        // The HTML uses a newline + 4-space indent between attributes; the model's `find` uses single
+        // spaces. Exact match would fail; the tolerant match places it.
+        let html = "<button\n    onclick=\"a()\"\n    class=\"btn\">A</button>"
+        let edit = WorkspaceAppStudioHTMLEdit(find: "onclick=\"a()\" class=\"btn\"", replace: "onclick=\"a2()\" class=\"btn primary\"")
+        guard case let .applied(out, skipped) = WorkspaceAppStudioBuilder.applyHTMLEdits([edit], to: html) else {
+            Issue.record("expected the whitespace-different anchor to still apply"); return
+        }
+        #expect(skipped == 0)
+        #expect(out.contains("a2()"))
+        #expect(out.contains("btn primary"))
+    }
+
+    @Test("a batch keeps the edits that match and SKIPS the ones that don't (resilient, not all-or-nothing)")
+    func htmlEditPartialApplyKeepsLanded() {
+        let html = "<main><span id=\"a\">A</span><span id=\"b\">B</span></main>"
+        let edits = [
+            WorkspaceAppStudioHTMLEdit(find: "id=\"a\">A", replace: "id=\"a\">AA"),     // matches
+            WorkspaceAppStudioHTMLEdit(find: "id=\"z\">Z", replace: "id=\"z\">ZZ"),     // no such anchor → skipped
+            WorkspaceAppStudioHTMLEdit(find: "id=\"b\">B", replace: "id=\"b\">BB")      // matches
+        ]
+        guard case let .applied(out, skipped) = WorkspaceAppStudioBuilder.applyHTMLEdits(edits, to: html) else {
+            Issue.record("expected a partial apply, not a whole-batch failure"); return
+        }
+        #expect(skipped == 1)
+        #expect(out == "<main><span id=\"a\">AA</span><span id=\"b\">BB</span></main>")
+    }
+
+    @Test("the tolerant match respects word boundaries — a token fragment never matches inside a larger word")
+    func htmlEditTolerantRespectsWordBoundaries() {
+        // The whitespace between "btn" and "redish" differs from the find (newline+spaces vs one space),
+        // so the EXACT path misses and the tolerant path runs. The guard must NOT let "btn red" match
+        // the "btn red" sitting inside "btn redish" (followed by a word char) — that would corrupt the UI.
+        let html = "<div class=\"btn\n  redish\">x</div>"
+        let edit = WorkspaceAppStudioHTMLEdit(find: "btn red", replace: "btn blue")
+        let result = WorkspaceAppStudioBuilder.applyHTMLEdits([edit], to: html)
+        // No clean boundary match anywhere → nothing lands → steer to a rewrite, NOT a corrupting splice.
+        guard case .failure = result else { Issue.record("a fragment must not match inside a larger word"); return }
+    }
+
+    @Test("an AMBIGUOUS anchor is skipped (never placed in the wrong spot), the rest still apply")
+    func htmlEditAmbiguousIsSkippedNotMisplaced() {
+        let html = "<ul><li>a</li><li>b</li></ul><h1>Title</h1>"
+        let edits = [
+            WorkspaceAppStudioHTMLEdit(find: "<li>", replace: "<li class=x>"),   // appears twice → ambiguous → skip
+            WorkspaceAppStudioHTMLEdit(find: "<h1>Title</h1>", replace: "<h1>New Title</h1>")  // unique → applies
+        ]
+        guard case let .applied(out, skipped) = WorkspaceAppStudioBuilder.applyHTMLEdits(edits, to: html) else {
+            Issue.record("expected the unique edit to apply while the ambiguous one is skipped"); return
+        }
+        #expect(skipped == 1)
+        #expect(out == "<ul><li>a</li><li>b</li></ul><h1>New Title</h1>")   // <li> untouched, not misplaced
     }
 
     @Test("a no-op edit (find == replace) is rejected so 'fix it' can't change nothing")
@@ -384,7 +432,9 @@ struct WorkspaceAppHTMLAppTests {
         let edits = #"[{"find":"absent-snippet","replace":"x"}]"#
         let result = WorkspaceAppStudioBuilder.applyStructuredOutput(htmlEditOutput(edits), to: base)
         #expect(!result.accepted)
-        #expect(result.validationReport.issues.first?.message.contains("anchor not found") == true)
+        // The single anchor can't be placed → nothing landed → the message steers to a full rewrite.
+        #expect(result.validationReport.issues.first?.message.contains("could be placed") == true)
+        #expect(result.validationReport.issues.first?.message.contains("ASTRA_APP_HTML") == true)
         #expect(result.manifest.html == base.html)   // original preserved on failure
     }
 
