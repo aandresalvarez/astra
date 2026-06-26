@@ -837,6 +837,12 @@ struct ContentView: View {
                 if activeWorkspaceCanvasItem == .markdown, effectiveWorkspace != nil {
                     return
                 }
+                // The live preview belongs to the App Studio composer, not a task
+                // thread. "New App" nils the selected task (collapsing the thread)
+                // right after docking .appPreview — don't let that close it.
+                if activeWorkspaceCanvasItem == .appPreview, isComposingWorkspaceApp {
+                    return
+                }
                 animatePanelChange {
                     setActiveWorkspaceCanvasItem(nil, remember: false)
                 }
