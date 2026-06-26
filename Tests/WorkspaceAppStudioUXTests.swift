@@ -157,6 +157,15 @@ struct WorkspaceAppStudioUXTests {
         #expect(!source.contains("onClose"))
     }
 
+    @Test("draft preview headers use theme-backed chrome")
+    func draftPreviewHeadersUseThemeChrome() throws {
+        let preview = try sourceFile("Astra/Views/WorkspaceAppPreviewView.swift")
+        let shelf = try sourceFile("Astra/Views/ShelfWorkspaceAppPreviewView.swift")
+
+        #expect(preview.contains(".background(Stanford.cardBackground)"))
+        #expect(shelf.contains(".background(Stanford.cardBackground)"))
+    }
+
     private func sourceFile(_ relativePath: String) throws -> String {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

@@ -388,7 +388,7 @@ final class WorkspaceAppStudioSession: ObservableObject {
         messages.append(StudioMessage(
             role: .assistant,
             kind: .summary,
-            text: "I couldn't publish this app: \(detail) Tell me what to change and I'll fix it."
+            text: "I couldn't publish this app: \(sentenceTerminated(detail)) Tell me what to change and I'll fix it."
         ))
     }
 
@@ -397,8 +397,14 @@ final class WorkspaceAppStudioSession: ObservableObject {
         messages.append(StudioMessage(
             role: .assistant,
             kind: .summary,
-            text: "I couldn't save this draft yet: \(detail) You can keep editing, but publish or retry before leaving App Studio."
+            text: "I couldn't save this draft yet: \(sentenceTerminated(detail)) You can keep editing, but publish or retry before leaving App Studio."
         ))
+    }
+
+    private func sentenceTerminated(_ detail: String) -> String {
+        let trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let last = trimmed.last else { return "Unknown error." }
+        return ".!?".contains(last) ? trimmed : "\(trimmed)."
     }
 
     // MARK: - Journal (durable conversation + event log)

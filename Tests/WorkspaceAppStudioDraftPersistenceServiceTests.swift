@@ -138,7 +138,31 @@ struct WorkspaceAppStudioDraftPersistenceServiceTests {
         #expect(onDisk.app.name == "Published Lab Samples")
     }
 
-    private struct Fixture {
+    @Test("autosave coordinator scopes app fetches to the needed draft target")
+    func autosaveCoordinatorScope() {
+        let workspaceID = UUID()
+        #expect(
+            WorkspaceAppStudioDraftAutosaveScope(
+                preferredWorkspaceID: workspaceID,
+                editingLogicalID: nil
+            ).appQuery == .preferredWorkspace(workspaceID)
+        )
+        #expect(
+            WorkspaceAppStudioDraftAutosaveScope(
+                preferredWorkspaceID: workspaceID,
+                editingLogicalID: "lab-samples"
+            ).appQuery == .editingLogicalID("lab-samples")
+        )
+        #expect(
+            WorkspaceAppStudioDraftAutosaveScope(
+                preferredWorkspaceID: workspaceID,
+                editingLogicalID: "   "
+            ).appQuery == .preferredWorkspace(workspaceID)
+        )
+    }
+
+    @MainActor
+    private final class Fixture {
         let root: URL
         let container: ModelContainer
         let context: ModelContext
@@ -157,6 +181,10 @@ struct WorkspaceAppStudioDraftPersistenceServiceTests {
             context = container.mainContext
             workspace = Workspace(name: "Drafts", primaryPath: root.path)
             context.insert(workspace)
+        }
+
+        deinit {
+            try? FileManager.default.removeItem(at: root)
         }
     }
 

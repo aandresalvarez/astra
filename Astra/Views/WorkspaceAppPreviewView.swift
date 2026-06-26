@@ -162,7 +162,7 @@ struct WorkspaceAppPreviewView: View {
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 14)
-        .background(Color.primary.opacity(0.025))
+        .background(Stanford.cardBackground)
     }
 
     /// True when this draft can perform a LIVE connector read here: it's an HTML app (only the HTML

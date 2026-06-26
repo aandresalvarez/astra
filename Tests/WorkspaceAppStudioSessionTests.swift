@@ -201,6 +201,15 @@ struct WorkspaceAppStudioSessionTests {
         #expect(session.messages.last?.text.contains("number") == true)
     }
 
+    @Test("a failed draft autosave surfaces clean sentence-separated guidance")
+    func draftSaveFailureSurfacesCleanCopy() {
+        let (session, _) = session([Self.result(Self.validManifest)])
+        session.noteDraftSaveFailure("Disk full")
+        #expect(session.messages.last?.role == .assistant)
+        #expect(session.messages.last?.text.contains("couldn't save this draft") == true)
+        #expect(session.messages.last?.text.contains("Disk full. You can keep editing") == true)
+    }
+
     @Test("editingAppLogicalID tracks the source app on Edit, nil for a new build")
     func editingAppLogicalIDTracksSource() {
         let (session, _) = session([Self.result(Self.validManifest)])

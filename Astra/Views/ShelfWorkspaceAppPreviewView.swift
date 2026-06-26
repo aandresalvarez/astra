@@ -55,7 +55,7 @@ struct ShelfWorkspaceAppPreviewView: View {
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 14)
-        .background(Color.primary.opacity(0.025))
+        .background(Stanford.cardBackground)
     }
 
     private var buildingState: some View {
