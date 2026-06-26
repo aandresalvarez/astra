@@ -481,6 +481,7 @@ struct MarkdownTextView: View, Equatable {
             Text(cell)
                 .font(Stanford.caption(11).weight(.semibold))
                 .foregroundStyle(statusColor)
+                .markdownTextSelection(isSelectable)
                 .lineLimit(1)
                 .padding(.horizontal, 7)
                 .padding(.vertical, 3)

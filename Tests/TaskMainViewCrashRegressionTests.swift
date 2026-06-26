@@ -48,6 +48,19 @@ struct TaskMainViewCrashRegressionTests {
         #expect(!gitSource.contains(".onChange(of: selectedTask?.id) {\n            viewModel.setup(for: workspace, selectedTask: selectedTask)"))
     }
 
+    @Test("Container environment picker keeps text from being squeezed by scope badge")
+    func containerEnvironmentPickerKeepsTextFromBeingSqueezedByScopeBadge() throws {
+        let dockerSource = try fileText("Astra/Views/WorkspaceDockerSectionView.swift")
+        let pickerStart = try #require(dockerSource.range(of: "private var environmentPickerRow"))
+        let nextRowStart = try #require(dockerSource[pickerStart.upperBound...].range(of: "private var credentialProjectionRow"))
+        let pickerSource = String(dockerSource[pickerStart.lowerBound..<nextRowStart.lowerBound])
+
+        #expect(pickerSource.contains("rowTitle(viewModel.environmentPickerTitle)"))
+        #expect(pickerSource.contains(".frame(maxWidth: .infinity, alignment: .leading)"))
+        #expect(pickerSource.contains("Image(systemName: \"chevron.up.chevron.down\")"))
+        #expect(!pickerSource.contains("RailCountBadge(viewModel.activeScopeLabel)"))
+    }
+
     private func fileText(_ path: String) throws -> String {
         let root = URL(filePath: #filePath)
             .deletingLastPathComponent()
