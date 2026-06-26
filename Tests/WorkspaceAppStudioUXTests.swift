@@ -121,4 +121,46 @@ struct WorkspaceAppStudioUXTests {
         #expect(updated.permissions.defaultMode == .approvalRequired)
         #expect(valid(updated))
     }
+
+    // MARK: - Draft command surface
+
+    @Test("Studio and preview share one draft lifecycle command model")
+    func draftCommandSurfaceKeepsPreviewSubordinate() {
+        let presentation = WorkspaceAppStudioCommandPresentation(appName: "Simple Note Taker", workspaceName: "test")
+
+        #expect(presentation.studioTitle == "Simple Note Taker")
+        #expect(presentation.studioSubtitle == "Draft · Preview sandbox")
+        #expect(presentation.previewTitle == "Live Preview")
+        #expect(presentation.previewSubtitle == "Sandbox · not published")
+        #expect(presentation.seedSampleDataTitle == "Seed data")
+        #expect(presentation.closeDraftTitle == "Close draft")
+        #expect(presentation.publishTitle == "Publish")
+        #expect(presentation.previewResetSampleDataTitle == "Reset sample data")
+        #expect(presentation.previewCompletionTitle == nil)
+    }
+
+    @Test("Studio command model falls back to the workspace before an app name exists")
+    func draftCommandSurfaceFallbackTitle() {
+        let presentation = WorkspaceAppStudioCommandPresentation(appName: nil, workspaceName: "Artana")
+
+        #expect(presentation.studioTitle == "App Studio")
+        #expect(presentation.studioSubtitle == "Artana · Draft")
+        #expect(presentation.previewTitle == "Live Preview")
+        #expect(presentation.previewSubtitle == "Sandbox · not published")
+    }
+
+    @Test("docked preview does not expose its own completion action")
+    func dockedPreviewHasNoDoneButton() throws {
+        let source = try sourceFile("Astra/Views/WorkspaceAppPreviewView.swift")
+
+        #expect(!source.contains("Button(\"Done\""))
+        #expect(!source.contains("onClose"))
+    }
+
+    private func sourceFile(_ relativePath: String) throws -> String {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+    }
 }

@@ -30,6 +30,10 @@ struct WorkspaceAppStudioChatView: View {
         !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !session.isGenerating
     }
 
+    private var commandPresentation: WorkspaceAppStudioCommandPresentation {
+        WorkspaceAppStudioCommandPresentation(appName: session.appName, workspaceName: workspace.name)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -77,12 +81,12 @@ struct WorkspaceAppStudioChatView: View {
                 .foregroundStyle(Stanford.lagunita)
                 .frame(width: 28, height: 28)
             VStack(alignment: .leading, spacing: 2) {
-                Text("App Studio")
+                Text(commandPresentation.studioTitle)
                     .font(Stanford.heading(20))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
-                    .fixedSize()
-                Text(session.appName ?? workspace.name)
+                    .truncationMode(.tail)
+                Text(commandPresentation.studioSubtitle)
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -91,12 +95,12 @@ struct WorkspaceAppStudioChatView: View {
             Spacer(minLength: 8)
 
             Toggle(isOn: $seedSampleData) {
-                Text("Sample data").font(Stanford.caption(12)).lineLimit(1)
+                Text(commandPresentation.seedSampleDataTitle).font(Stanford.caption(12)).lineLimit(1)
             }
             .toggleStyle(.switch)
             .controlSize(.small)
             .fixedSize()
-            .help("Seed a few example rows on publish so the app isn't empty. You can delete them anytime.")
+            .help("Adds example rows when you publish this draft.")
 
             Menu {
                 Button { isTesting = true } label: { Label("Test app…", systemImage: "checkmark.seal") }
@@ -109,11 +113,12 @@ struct WorkspaceAppStudioChatView: View {
             .disabled(session.draft == nil)
             .help("Test the app, or inspect its manifest")
 
-            Button("Close", action: onCancel)
+            Button(commandPresentation.closeDraftTitle, action: onCancel)
                 .buttonStyle(.borderless)
+                .help("Leave Studio. The draft stays in Apps until you publish or delete it.")
 
             Button(action: { onPublish(seedSampleData) }) {
-                Label("Publish", systemImage: "square.and.arrow.down")
+                Label(commandPresentation.publishTitle, systemImage: "paperplane")
             }
             .buttonStyle(.borderedProminent)
             .disabled(!session.canPublish)

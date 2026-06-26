@@ -12,8 +12,10 @@ struct ShelfWorkspaceAppPreviewView: View {
     /// resolve LIVE, read-only `astra.read` data (real `gh` PRs etc.) before publishing. nil ⇒ reads
     /// stay simulated.
     var workspace: Workspace?
-    /// Collapses the preview shelf (the preview's own "Done" button).
-    var onClose: () -> Void
+
+    private var commandPresentation: WorkspaceAppStudioCommandPresentation {
+        WorkspaceAppStudioCommandPresentation(appName: session.appName, workspaceName: workspace?.name ?? "Workspace")
+    }
 
     var body: some View {
         Group {
@@ -23,7 +25,7 @@ struct ShelfWorkspaceAppPreviewView: View {
                 // app. Once the result lands, the real app replaces this.
                 buildingState
             } else if let draft = session.draft {
-                WorkspaceAppPreviewView(manifest: draft.manifest, workspace: workspace, onClose: onClose, minWidth: 400)
+                WorkspaceAppPreviewView(manifest: draft.manifest, workspace: workspace, minWidth: 400)
                     // A new draft => a new sandbox: discard the prior preview's in-memory edits.
                     .id(session.draftRevision)
             } else {
@@ -42,10 +44,10 @@ struct ShelfWorkspaceAppPreviewView: View {
                 .foregroundStyle(Stanford.lagunita)
                 .frame(width: 28, height: 28)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Live preview")
+                Text(commandPresentation.previewTitle)
                     .font(Stanford.ui(16, weight: .semibold))
                     .foregroundStyle(.primary)
-                Text("Sandbox · nothing is written or saved")
+                Text(commandPresentation.previewSubtitle)
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
             }
@@ -53,7 +55,7 @@ struct ShelfWorkspaceAppPreviewView: View {
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 14)
-        .background(Stanford.cardBackground)
+        .background(Color.primary.opacity(0.025))
     }
 
     private var buildingState: some View {
