@@ -157,6 +157,36 @@ struct WorkspaceAppRendererTests {
         #expect(!html.contains("<table"))
     }
 
+    @Test("sandbox check ignores escaped app text that resembles load surfaces")
+    func htmlReportSandboxCheckAllowsEscapedMarkerText() {
+        let markerText = #"Text only: <img src="x"> href= srcset= formaction= action= @import url(https://example.test/a.css)"#
+        let html = WorkspaceAppWebReportHTML.html(
+            title: markerText,
+            columns: ["note"],
+            rows: [[
+                "note": .text(#"literal src= href= srcset= formaction= action= @import url(foo)"#)
+            ]]
+        )
+
+        assertNoRemoteLoadSurface(html)
+        #expect(html.contains("&lt;img src=&quot;x&quot;&gt;"))
+        #expect(html.contains("literal src= href= srcset= formaction= action= @import url(foo)"))
+    }
+
+    @Test("sandbox check flags actual remote load markup surfaces")
+    func htmlReportSandboxCheckFlagsActualMarkupSurfaces() {
+        let html = """
+        <html><head><style>.hero { background: url(https://example.test/bg.png); }</style></head>
+        <body><script></script><img src="https://example.test/img.png"><a href="https://example.test">x</a></body></html>
+        """
+        let violations = remoteLoadSurfaceViolations(in: html)
+
+        #expect(violations.contains("<style>"))
+        #expect(violations.contains("<script>"))
+        #expect(violations.contains("<img src>"))
+        #expect(violations.contains("<a href>"))
+    }
+
     @Test("a webView/htmlReport widget resolves to a sandboxed web report in the surface")
     func webViewWidgetBecomesWebReport() {
         let manifest = WorkspaceAppManifest(
@@ -203,19 +233,92 @@ struct WorkspaceAppRendererTests {
     }
 
     private func assertNoRemoteLoadSurface(_ html: String) {
-        let lower = html.lowercased()
-        #expect(!lower.contains("<script"))
-        #expect(!lower.contains("<iframe"))
-        #expect(!lower.contains("<object"))
-        #expect(!lower.contains("<embed"))
-        #expect(!lower.contains("<link"))
-        #expect(!lower.contains("<base"))
-        #expect(!lower.contains(" src="))
-        #expect(!lower.contains(" href="))
-        #expect(!lower.contains(" srcset="))
-        #expect(!lower.contains(" formaction="))
-        #expect(!lower.contains(" action="))
-        #expect(!lower.contains("@import"))
-        #expect(!lower.contains("url("))
+        #expect(remoteLoadSurfaceViolations(in: html).isEmpty)
+    }
+
+    private func remoteLoadSurfaceViolations(in html: String) -> [String] {
+        let disallowedTags = Set(["script", "iframe", "object", "embed", "link", "base"])
+        let loadingAttributes = Set(["src", "href", "srcset", "formaction", "action"])
+        var violations: [String] = []
+
+        for tag in htmlTags(in: html) {
+            if disallowedTags.contains(tag.name) {
+                violations.append("<\(tag.name)>")
+            }
+
+            for attribute in tag.attributes {
+                if loadingAttributes.contains(attribute.name) {
+                    violations.append("<\(tag.name) \(attribute.name)>")
+                }
+                if attribute.name == "style", cssContainsRemoteLoad(attribute.value ?? "") {
+                    violations.append("<\(tag.name) style>")
+                }
+            }
+        }
+
+        for styleBlock in styleBlocks(in: html) where cssContainsRemoteLoad(styleBlock) {
+            violations.append("<style>")
+        }
+
+        return violations
+    }
+
+    private func cssContainsRemoteLoad(_ css: String) -> Bool {
+        let lower = css.lowercased()
+        return lower.contains("@import") || lower.contains("url(")
+    }
+
+    private func htmlTags(in html: String) -> [HTMLTagInspection] {
+        matches(
+            pattern: #"<\s*/?\s*([A-Za-z][A-Za-z0-9:-]*)([^<>]*)>"#,
+            in: html
+        ).compactMap { match in
+            guard match.count >= 3 else { return nil }
+            return HTMLTagInspection(
+                name: match[1].lowercased(),
+                attributes: htmlAttributes(in: match[2])
+            )
+        }
+    }
+
+    private func htmlAttributes(in tagAttributes: String) -> [HTMLAttributeInspection] {
+        matches(
+            pattern: #"([A-Za-z_:][A-Za-z0-9_:\-.]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>/=`]+)))?"#,
+            in: tagAttributes
+        ).compactMap { match in
+            guard match.count >= 2 else { return nil }
+            let name = match[1]
+            let value = match.dropFirst(2).first(where: { !$0.isEmpty })
+            return HTMLAttributeInspection(name: name.lowercased(), value: value)
+        }
+    }
+
+    private func styleBlocks(in html: String) -> [String] {
+        matches(pattern: #"(?is)<style\b[^>]*>(.*?)</style>"#, in: html)
+            .compactMap { $0.count > 1 ? $0[1] : nil }
+    }
+
+    private func matches(pattern: String, in text: String) -> [[String]] {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return []
+        }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return regex.matches(in: text, range: range).map { result in
+            (0..<result.numberOfRanges).map { rangeIndex in
+                let range = result.range(at: rangeIndex)
+                guard let stringRange = Range(range, in: text) else { return "" }
+                return String(text[stringRange])
+            }
+        }
+    }
+
+    private struct HTMLTagInspection {
+        let name: String
+        let attributes: [HTMLAttributeInspection]
+    }
+
+    private struct HTMLAttributeInspection {
+        let name: String
+        let value: String?
     }
 }
