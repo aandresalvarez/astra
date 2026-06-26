@@ -211,9 +211,8 @@ struct WorkspaceAppService {
             // primary key, tighten a required constraint) — applySchema is additive-only, so accepting
             // one would silently drift manifest.json from the SQLite file. Additive adds proceed; the
             // user forks via Save as a Copy for a structural change.
-            let currentStorage = (try? JSONDecoder().decode(
-                WorkspaceAppManifest.self, from: Data(contentsOf: URL(fileURLWithPath: manifestPath))
-            ))?.storage
+            let currentStorage = (try? WorkspaceAppManifestStore(fileManager: fileManager)
+                .loadManifest(app: app, workspace: workspace).manifest)?.storage
             let blockedKinds: Set<WorkspaceAppStorageMigrationStep.Kind> =
                 [.dropTable, .dropColumn, .changeColumnType, .changePrimaryKey, .changeRequiredConstraint]
             if let blocked = storageService.planMigration(from: currentStorage, to: storage)
@@ -462,10 +461,9 @@ struct WorkspaceAppService {
         guard !workspace.primaryPath.isEmpty else {
             throw WorkspaceAppServiceError.emptyWorkspacePath
         }
-        let sourceDirectory = URL(fileURLWithPath: workspace.primaryPath)
-            .appendingPathComponent(app.appDirectoryRelativePath, isDirectory: true)
-        let sourceManifestURL = URL(fileURLWithPath: workspace.primaryPath)
-            .appendingPathComponent(app.manifestRelativePath)
+        let manifestStore = WorkspaceAppManifestStore(fileManager: fileManager)
+        let sourceDirectory = manifestStore.appDirectoryURL(app: app, workspace: workspace)
+        let sourceManifestURL = manifestStore.readableManifestURL(app: app, workspace: workspace)
         guard fileManager.fileExists(atPath: sourceManifestURL.path) else {
             throw WorkspaceAppServiceError.missingManifest(sourceManifestURL.path)
         }
@@ -565,8 +563,8 @@ struct WorkspaceAppService {
         now: Date = Date()
     ) throws {
         if let workspace, !workspace.primaryPath.isEmpty {
-            let directory = URL(fileURLWithPath: workspace.primaryPath)
-                .appendingPathComponent(app.appDirectoryRelativePath, isDirectory: true)
+            let directory = WorkspaceAppManifestStore(fileManager: fileManager)
+                .appDirectoryURL(app: app, workspace: workspace)
             if fileManager.fileExists(atPath: directory.path) {
                 do {
                     try fileManager.removeItem(at: directory)
@@ -735,10 +733,8 @@ struct WorkspaceAppService {
         workspace: Workspace?
     ) -> WorkspaceAppAutomationSpec? {
         guard let workspace else { return nil }
-        let manifestURL = URL(fileURLWithPath: workspace.primaryPath)
-            .appendingPathComponent(app.manifestRelativePath)
-        guard let data = try? Data(contentsOf: manifestURL),
-              let manifest = try? JSONDecoder().decode(WorkspaceAppManifest.self, from: data) else {
+        guard let manifest = try? WorkspaceAppManifestStore(fileManager: fileManager)
+            .loadManifest(app: app, workspace: workspace).manifest else {
             return nil
         }
         return manifest.automations.first { $0.id == automationID }

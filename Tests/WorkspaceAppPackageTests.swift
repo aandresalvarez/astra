@@ -664,6 +664,37 @@ struct WorkspaceAppPackageTests {
         #expect(!FileManager.default.fileExists(atPath: first.packageURL.appendingPathComponent("storage/data/full").path))
     }
 
+    @MainActor
+    @Test("package exporter reads canonical manifest when stored relative path is stale")
+    func packageExporterReadsCanonicalManifestWhenStoredRelativePathIsStale() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let workspace = Workspace(name: "Package Export", primaryPath: root.path)
+        container.mainContext.insert(workspace)
+        let created = try WorkspaceAppService().createApp(
+            manifest: Self.groceryManifest(),
+            in: workspace,
+            modelContext: container.mainContext,
+            status: .published
+        )
+        created.app.manifestRelativePath = ".astra/apps/stale-grocery/manifest.json"
+        created.app.appDirectoryRelativePath = ".astra/apps/stale-grocery"
+
+        let export = try WorkspaceAppPackageExporter().exportTemplatePackage(
+            app: created.app,
+            workspace: workspace,
+            createdAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+
+        #expect(export.validationReport.canInstall)
+        #expect(export.validationReport.package?.appID == created.app.logicalID)
+    }
+
     @Test("package library discovers shared folder app bundles with validation state")
     func packageLibraryDiscoversSharedFolderAppBundlesWithValidationState() throws {
         let root = try Self.temporaryRoot()

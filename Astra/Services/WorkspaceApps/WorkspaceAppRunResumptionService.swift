@@ -8,6 +8,7 @@ import SwiftData
 // completion in the runtime — calls `resumeRuns(awaitingTaskID:...)`.
 struct WorkspaceAppRunResumptionService {
     var executor = WorkspaceAppActionExecutor()
+    var manifestStore = WorkspaceAppManifestStore()
 
     @MainActor
     @discardableResult
@@ -149,11 +150,6 @@ struct WorkspaceAppRunResumptionService {
     }
 
     private func manifest(for app: WorkspaceApp, workspace: Workspace) -> WorkspaceAppManifest? {
-        let url = URL(fileURLWithPath: WorkspaceFileLayout.appManifestFile(
-            workspacePath: workspace.primaryPath,
-            appID: app.logicalID
-        ))
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(WorkspaceAppManifest.self, from: data)
+        try? manifestStore.loadManifest(app: app, workspace: workspace).manifest
     }
 }
