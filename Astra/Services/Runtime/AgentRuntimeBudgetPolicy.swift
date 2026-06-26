@@ -20,7 +20,11 @@ struct AgentRuntimeBudgetSnapshot: Equatable, Sendable {
     }
 
     var hasReportedTokensAboveBudget: Bool {
-        effectiveTokenBudget != Int.max && tokensUsed > effectiveTokenBudget
+        hasEnabledBudget && tokensUsed > effectiveTokenBudget
+    }
+
+    var hasEnabledBudget: Bool {
+        effectiveTokenBudget != Int.max
     }
 }
 
@@ -105,7 +109,8 @@ enum AgentRuntimeBudgetPolicy {
         budget: AgentRuntimeBudgetSnapshot,
         budgetEnforcementMode: BudgetEnforcementMode
     ) -> Bool {
-        result.budgetExceeded ||
+        guard budget.hasEnabledBudget else { return false }
+        return result.budgetExceeded ||
             (budgetEnforcementMode == .hardStop && hasReportedTokensAboveBudget(budget: budget))
     }
 
@@ -131,6 +136,8 @@ enum AgentRuntimeBudgetPolicy {
         phase: String,
         budgetEnforcementMode: BudgetEnforcementMode
     ) {
+        guard AgentRuntimeBudgetSnapshot(task: task).hasEnabledBudget else { return }
+
         let reportedBudgetWarning = budgetEnforcementMode == .warning && hasReportedTokensAboveBudget(task: task)
         guard result.budgetWarning || result.finalReportedBudgetExceededAfterCompletion || reportedBudgetWarning else {
             return
