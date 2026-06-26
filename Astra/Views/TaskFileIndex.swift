@@ -41,6 +41,7 @@ enum TaskFileIndex {
         runs: [TaskRunSnapshot],
         generatedFilePaths: [String],
         inputs: [String],
+        taskFolder: String = "",
         fileManager: FileManager = .default
     ) -> [TaskFileItem] {
         var seen = Set<String>()
@@ -48,7 +49,9 @@ enum TaskFileIndex {
 
         func append(path rawPath: String, source: String, change: StoredFileChange? = nil) {
             let path = normalizedPath(rawPath)
-            guard !path.isEmpty, seen.insert(path).inserted else { return }
+            guard !path.isEmpty,
+                  shouldIncludeUserFacingPath(path, taskFolder: taskFolder),
+                  seen.insert(path).inserted else { return }
 
             var isDirectory = ObjCBool(false)
             guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory),
@@ -85,6 +88,7 @@ enum TaskFileIndex {
         taskFolderFiles: [TaskFileItem],
         inputs: [String],
         outputPathFiles: [TaskFileItem],
+        taskFolder: String = "",
         fileManager: FileManager = .default
     ) -> [TaskFileItem] {
         var files: [TaskFileItem] = []
@@ -93,7 +97,9 @@ enum TaskFileIndex {
         if let latestRun {
             for change in latestRun.fileChanges {
                 let path = normalizedPath(change.path)
-                guard !path.isEmpty, seen.insert(path).inserted else { continue }
+                guard !path.isEmpty,
+                      shouldIncludeUserFacingPath(path, taskFolder: taskFolder),
+                      seen.insert(path).inserted else { continue }
                 files.append(fileItem(
                     path: path,
                     isDirectory: false,
@@ -105,7 +111,9 @@ enum TaskFileIndex {
         }
 
         for file in taskFolderFiles where seen.insert(file.path).inserted {
-            files.append(file)
+            if shouldIncludeUserFacingPath(file.path, taskFolder: taskFolder) {
+                files.append(file)
+            }
         }
 
         for input in inputs {
@@ -123,7 +131,9 @@ enum TaskFileIndex {
         }
 
         for file in outputPathFiles where seen.insert(file.path).inserted {
-            files.append(file)
+            if shouldIncludeUserFacingPath(file.path, taskFolder: taskFolder) {
+                files.append(file)
+            }
         }
 
         return files
@@ -228,6 +238,24 @@ enum TaskFileIndex {
 
     static func normalizedPath(_ path: String) -> String {
         (path.trimmingCharacters(in: .whitespacesAndNewlines) as NSString).expandingTildeInPath
+    }
+
+    static func displayName(for path: String, duplicateBasenames: Set<String> = []) -> String {
+        let url = URL(fileURLWithPath: path)
+        let basename = url.lastPathComponent
+        guard duplicateBasenames.contains(basename.lowercased()) else {
+            return basename
+        }
+        let parent = url.deletingLastPathComponent().lastPathComponent
+        return parent.isEmpty ? basename : "\(parent)/\(basename)"
+    }
+
+    private static func shouldIncludeUserFacingPath(_ path: String, taskFolder: String) -> Bool {
+        guard !taskFolder.isEmpty,
+              TaskOutputArtifactPathPolicy.relativePath(path, under: taskFolder) != nil else {
+            return true
+        }
+        return TaskOutputArtifactPathPolicy.isDisplayableUserArtifactPath(path, taskFolder: taskFolder)
     }
 
     private static func shouldIncludeReferencedPath(_ path: String) -> Bool {

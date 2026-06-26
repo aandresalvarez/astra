@@ -91,36 +91,10 @@ enum TaskGeneratedFiles {
     }
 
     static func shouldDisplayTaskFolderFile(relativePath: String) -> Bool {
-        let rel = relativePath.replacingOccurrences(of: "\\", with: "/")
-        let name = (rel as NSString).lastPathComponent.lowercased()
-        if rel == "session_history.md" || rel == "outputs" || rel.hasPrefix("outputs/") {
-            return false
-        }
-        if rel == ".runtime-bin" || rel.hasPrefix(".runtime-bin/") {
-            return false
-        }
-        if rel == "turns" || rel.hasPrefix("turns/") {
-            return false
-        }
-        if rel == "diagnostics" || rel.hasPrefix("diagnostics/") {
-            return false
-        }
-        if rel == "run_resource_manifest.json" {
-            return false
-        }
-        if rel == "fork_sources/history" || rel.hasPrefix("fork_sources/history/") {
-            return false
-        }
-        if name == "current_state.json" || name == "current_state.md" {
-            return false
-        }
-        if name == TaskForkManifest.fileName {
-            return false
-        }
-        if name.hasPrefix("turn_") && name.hasSuffix(".md") {
-            return false
-        }
-        return true
+        TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(
+            relativePath,
+            context: .taskFolder
+        ) != nil
     }
 
     static func filesAsync(in folder: String) async -> [String] {

@@ -1005,10 +1005,11 @@ struct ArchitectureFitnessTests {
         #expect(reuseFastPath.lowerBound < fullDocumentLoad.lowerBound)
     }
 
-    @Test("Completed chat markdown avoids SwiftUI text selection overlay")
-    func completedChatMarkdownAvoidsSwiftUITextSelectionOverlay() throws {
+    @Test("Task answer text selection uses explicit safe policy")
+    func taskAnswerTextSelectionUsesExplicitSafePolicy() throws {
         let root = try repositoryRoot()
         let taskMainView = try fileText("Astra/Views/TaskMainView.swift", root: root)
+        let markdownTextView = try fileText("Astra/Views/MarkdownTextView.swift", root: root)
         let completedAgentMarkdownView = try extractedStruct(
             named: "CompletedAgentMarkdownView",
             from: taskMainView
@@ -1017,10 +1018,16 @@ struct ArchitectureFitnessTests {
             named: "StreamingAgentTextView",
             from: taskMainView
         )
+        let listItemStart = try #require(markdownTextView.range(of: "case .listItem"))
+        let blockquoteStart = try #require(markdownTextView[listItemStart.upperBound...].range(of: "case .blockquote"))
+        let listItemCase = String(markdownTextView[listItemStart.lowerBound..<blockquoteStart.lowerBound])
 
-        #expect(completedAgentMarkdownView.contains("isSelectable: false"))
+        #expect(completedAgentMarkdownView.contains("TaskAnswerTextSelectionPolicy.completedAnswerMarkdownIsSelectable"))
         #expect(!completedAgentMarkdownView.contains(".textSelection(.enabled)"))
+        #expect(streamingAgentTextView.contains("taskAnswerTextSelection(TaskAnswerTextSelectionPolicy.liveAnswerTextIsSelectable)"))
         #expect(!streamingAgentTextView.contains(".textSelection(.enabled)"))
+        #expect(listItemCase.contains("HStack(alignment: .top"))
+        #expect(!listItemCase.contains("HStack(alignment: .firstTextBaseline"))
     }
 
     @Test("Repository protection artifacts stay wired")
