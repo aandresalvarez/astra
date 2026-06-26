@@ -23,9 +23,30 @@ struct WorkspaceAppDetailView: View {
     @State private var versionEntries: [WorkspaceAppVersionService.Index.Entry] = []
     @State private var versionStatusMessage = ""
     @State private var showDeleteConfirmation = false
+    /// HTML apps render the interactive surface as the hero (filling the pane); the supporting chrome
+    /// (dependencies/automations/versions/metadata) lives in this collapsed-by-default footer so it
+    /// doesn't steal space from the app.
+    @State private var isDetailsExpanded = false
 
     private var presentation: WorkspaceAppDetailPresentation {
         WorkspaceAppsPresentation.detail(for: app)
+    }
+
+    /// A dynamic HTML app owns its whole surface and scrolls internally, so it gets the app-first
+    /// layout (`htmlAppLayout`) where the WebView fills the pane. A native declarative app keeps the
+    /// scrolling, sectioned column.
+    private var isHTMLApp: Bool {
+        !(dataSnapshot.manifest?.html?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+    }
+
+    /// One-line context under the app title. Leads with the app's description (folding the old, bulky
+    /// "App surface" blurb up into the header) and appends the permission mode; falls back to the
+    /// workspace name when there's no description.
+    private var headerSubtitle: String {
+        let description = presentation.subtitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !description.isEmpty else { return workspace?.name ?? "Workspace app" }
+        let permission = presentation.permissionLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        return permission.isEmpty ? description : "\(description) · \(permission)"
     }
 
     var body: some View {
@@ -34,24 +55,22 @@ struct WorkspaceAppDetailView: View {
 
             Divider()
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    appSurface
-                    attentionSection
-                    dependencySection
-                    automationSection
-                    WorkspaceAppSurfaceView(
-                        snapshot: dataSnapshot,
-                        onRunAction: onRunAction,
-                        onReload: loadDataSnapshot,
-                        isWorkflowRunPending: makeWorkflowPendingCheck(),
-                        onCapabilityRead: makeCapabilityReadRunner()
-                    )
-                    versionsSection
-                    metadataRows
+            if isHTMLApp {
+                htmlAppLayout
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        appSurface
+                        attentionSection
+                        dependencySection
+                        automationSection
+                        appSurfaceView
+                        versionsSection
+                        metadataRows
+                    }
+                    .frame(maxWidth: 980, alignment: .leading)
+                    .padding(24)
                 }
-                .frame(maxWidth: 980, alignment: .leading)
-                .padding(24)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -61,6 +80,95 @@ struct WorkspaceAppDetailView: View {
         .onChange(of: app.updatedAt) {
             loadDataSnapshot()
         }
+    }
+
+    /// The interactive app surface (HTML WebView or native widgets), shared by both layouts.
+    private var appSurfaceView: some View {
+        WorkspaceAppSurfaceView(
+            snapshot: dataSnapshot,
+            onRunAction: onRunAction,
+            onReload: loadDataSnapshot,
+            isWorkflowRunPending: makeWorkflowPendingCheck(),
+            onCapabilityRead: makeCapabilityReadRunner()
+        )
+    }
+
+    /// App-first layout for a dynamic HTML app: the surface FILLS the pane; the only chrome above it
+    /// is pending approvals (conditional) and a permission/package warning when relevant. Everything
+    /// else — dependencies, automations, version history, metadata — sits in a collapsed Details footer.
+    @ViewBuilder
+    private var htmlAppLayout: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 12) {
+                attentionSection
+                if !presentation.canRunLocalActions {
+                    Text(presentation.surfaceSubtitle)
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(Stanford.statusWarn)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if !packageStatusMessage.isEmpty {
+                    Text(packageStatusMessage)
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                appSurfaceView
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .padding(24)
+
+            // The footer is anchored at the bottom, so it expands UPWARD: the content sits ABOVE the
+            // toggle bar (a downward-expanding disclosure here would render off-screen), and the app
+            // surface above shrinks to make room only while it's open.
+            if isDetailsExpanded {
+                detailsContent
+            }
+            detailsToggleBar
+        }
+    }
+
+    /// The always-visible bottom bar that toggles the Details drawer. Collapsed by default so the app
+    /// surface keeps the full pane.
+    private var detailsToggleBar: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.15)) { isDetailsExpanded.toggle() }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: isDetailsExpanded ? "chevron.down" : "chevron.right")
+                    .font(Stanford.caption(10).weight(.semibold))
+                Text("Details")
+                    .font(Stanford.ui(13, weight: .semibold))
+                Spacer()
+            }
+            .foregroundStyle(.secondary)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 10)
+        .background(Stanford.cardBackground)
+        .overlay(Divider(), alignment: .top)
+    }
+
+    /// The app's secondary chrome — dependencies, automations, version history, metadata — shown in a
+    /// bounded, scrollable drawer above the toggle bar so it never permanently steals space from the app.
+    private var detailsContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                dependencySection
+                automationSection
+                versionsSection
+                metadataRows
+            }
+            .frame(maxWidth: 980, alignment: .leading)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 14)
+        }
+        .frame(maxHeight: 260)
+        .background(Stanford.panelBackground)
+        .overlay(Divider(), alignment: .top)
     }
 
     private var header: some View {
@@ -76,10 +184,11 @@ struct WorkspaceAppDetailView: View {
                     .foregroundStyle(.primary)
                     .lineLimit(1)
 
-                Text(workspace?.name ?? "Workspace app")
+                Text(headerSubtitle)
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .help(headerSubtitle)
             }
 
             Spacer(minLength: 16)

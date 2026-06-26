@@ -29,24 +29,51 @@ struct WorkspaceAppPreviewView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
+            content
+        }
+        .frame(minWidth: minWidth, minHeight: 560)
+        .background(Stanford.panelBackground)
+        .accessibilityIdentifier("WorkspaceAppPreviewView")
+    }
+
+    /// A dynamic HTML app owns its whole surface and scrolls INTERNALLY, so it FILLS the pane — an
+    /// outer ScrollView would pin the WebView to its minimum height and leave dead space below (the
+    /// "preview doesn't use the full space" bug). A native declarative app is a vertical stack of
+    /// cards, so it keeps the scrolling, width-capped column.
+    @ViewBuilder
+    private var content: some View {
+        if isHTMLApp {
+            VStack(alignment: .leading, spacing: 12) {
+                banner
+                surface
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .padding(24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     banner
-                    WorkspaceAppSurfaceView(
-                        snapshot: snapshot,
-                        onRunAction: { action, manifest, input in
-                            try runner.run(action, manifest: manifest, input: input)
-                        },
-                        onReload: { snapshot = runner.snapshot() }
-                    )
+                    surface
                 }
                 .frame(maxWidth: 980, alignment: .leading)
                 .padding(24)
             }
         }
-        .frame(minWidth: minWidth, minHeight: 560)
-        .background(Stanford.panelBackground)
-        .accessibilityIdentifier("WorkspaceAppPreviewView")
+    }
+
+    private var isHTMLApp: Bool {
+        !(manifest.html?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+    }
+
+    private var surface: some View {
+        WorkspaceAppSurfaceView(
+            snapshot: snapshot,
+            onRunAction: { action, manifest, input in
+                try runner.run(action, manifest: manifest, input: input)
+            },
+            onReload: { snapshot = runner.snapshot() }
+        )
     }
 
     private var header: some View {
