@@ -197,10 +197,10 @@ struct WorkspaceAppEndToEndTests {
         #expect(created.app.lifecycleStatus == .published)
     }
 
-    // MARK: - Studio UX redesign: identity -> refine -> publish
+    // MARK: - Studio UX redesign: refine -> publish
 
     @MainActor
-    @Test("Studio UX flow: a human identity, a chip refinement, then publish carrying the refinement")
+    @Test("Studio UX flow: a chip refinement publishes with the refinement persisted")
     func studioUXRefinementFlow() throws {
         let env = try Self.makeEnv()
         defer { try? FileManager.default.removeItem(at: env.root) }
@@ -210,15 +210,6 @@ struct WorkspaceAppEndToEndTests {
         // intents are now HTML apps whose only data surface is the astra bridge, so native chips
         // don't apply to them.)
         var manifest = WorkspaceAppStudioBuilder.baseManifest(intent: "monitor records and alert when a threshold is crossed")
-
-        // Phase 1: the identity reads as a human-facing app, not a manifest dump.
-        let identity = WorkspaceAppStudioIdentityBuilder.identity(
-            for: manifest, report: WorkspaceAppManifestValidator.validate(manifest)
-        )
-        #expect(!identity.archetypeLabel.isEmpty)
-        #expect(!identity.capabilities.isEmpty)
-        #expect(!identity.permissionSummary.isEmpty)
-        #expect(identity.isReadyToPublish)
 
         // Phase 4: refine by chip (connect REDCap) — adds an external write, steps the mode up,
         // and stays valid.

@@ -2,9 +2,9 @@ import Foundation
 import Testing
 @testable import ASTRA
 
-/// The Studio UX redesign logic: Phase 1 identity (plain-language hero), Phase 2 archetype catalog
-/// metadata, Phase 4 refinement transforms. All pure + manifest-derived, so the SwiftUI views are
-/// thin renderers over what these assert.
+/// The Studio UX redesign logic that still feeds the live chat flow: archetype catalog metadata
+/// and refinement transforms. All pure + manifest-derived, so the SwiftUI views are thin renderers
+/// over what these assert.
 @Suite("Workspace App Studio UX")
 struct WorkspaceAppStudioUXTests {
     private func base(archetype: String = "Review Queue", mode: WorkspaceAppPermissionMode = .draftOnly) -> WorkspaceAppManifest {
@@ -33,44 +33,6 @@ struct WorkspaceAppStudioUXTests {
 
     private func valid(_ manifest: WorkspaceAppManifest) -> Bool {
         WorkspaceAppManifestValidator.validate(manifest).isValid
-    }
-
-    // MARK: - Phase 1: identity
-
-    @Test("identity surfaces the archetype, plain capabilities, and a plain permission")
-    func identityBasics() {
-        let manifest = base()
-        let identity = WorkspaceAppStudioIdentityBuilder.identity(for: manifest, report: WorkspaceAppManifestValidator.validate(manifest))
-        #expect(identity.archetypeLabel == "Review Queue")
-        #expect(identity.iconSystemName == "checklist")
-        #expect(identity.capabilities.contains("Add and edit records"))
-        #expect(identity.capabilities.contains("See summary metrics"))
-        #expect(identity.permissionSummary == "Stays on your machine — no external systems")
-        #expect(identity.isReadyToPublish)
-    }
-
-    @Test("identity permission + capabilities reflect an external-write app in plain English")
-    func identityExternalWrite() {
-        let manifest = WorkspaceAppStudioRefinement.connectREDCap.apply(to: base(mode: .approvalRequired))
-        let identity = WorkspaceAppStudioIdentityBuilder.identity(for: manifest, report: WorkspaceAppManifestValidator.validate(manifest))
-        #expect(identity.permissionSummary.contains("external"))
-        #expect(identity.capabilities.contains("Write to a connected system"))
-    }
-
-    @Test("identity falls back to the archetype tagline when the manifest has no description")
-    func identityPurposeFallback() {
-        var manifest = base()
-        manifest.app.description = ""
-        let identity = WorkspaceAppStudioIdentityBuilder.identity(for: manifest, report: WorkspaceAppManifestValidator.validate(manifest))
-        #expect(identity.purpose == WorkspaceAppArchetype.reviewQueue.tagline)
-    }
-
-    @Test("identity uses the archetype tagline instead of the recipe's boilerplate description")
-    func identityPrefersTaglineOverBoilerplate() {
-        var manifest = base()
-        manifest.app.description = "Draft operational app surface generated from the requested workflow."
-        let identity = WorkspaceAppStudioIdentityBuilder.identity(for: manifest, report: WorkspaceAppManifestValidator.validate(manifest))
-        #expect(identity.purpose == WorkspaceAppArchetype.reviewQueue.tagline)
     }
 
     @Test("a generated name drops a trailing connector instead of ending mid-phrase")

@@ -544,9 +544,8 @@ Closed the residuals from the conversational rework:
   `WorkspaceAppManifestInspectorPresentationBuilder`.
 - **Ideate + identity card.** Their standalone form UIs are intentionally NOT re-surfaced —
   conversational generation supersedes the ideation cards, and the live interactive preview replaces
-  the identity card. The engines (`WorkspaceAppStudioIdeator`, `WorkspaceAppStudioIdentityBuilder`,
-  and the core `WorkspaceAppStudioIdea` plumbing) are retained and still test-covered; they were
-  NOT deleted (they back the deterministic manifest builders + archetype tests).
+  the identity card. Follow-up cleanup retired the old proposal/identity scaffolding; deterministic
+  coverage now lives on `WorkspaceAppArchetype.classify` and `WorkspaceAppStudioRecipes`.
 - **Workspace-switch correctness.** Switching workspaces while in the Studio now exits it
   (`handleSelectedWorkspaceChanged`), so a stale session can't publish into the wrong workspace.
 
@@ -887,7 +886,6 @@ Core implementation files:
 - `Astra/Services/WorkspaceApps/WorkspaceAppAutomationScheduler.swift`
 - `Astra/Services/WorkspaceApps/WorkspaceAppAutomationExecutionService.swift`
 - `Astra/Services/WorkspaceApps/WorkspaceAppStudio.swift`
-- `Astra/Services/WorkspaceApps/WorkspaceAppStudioIdeation.swift`
 - `Astra/Services/WorkspaceApps/WorkspaceAppPackageService.swift`
 - `Astra/Services/WorkspaceApps/WorkspaceAppPackageExporter.swift`
 - `Astra/Services/WorkspaceApps/WorkspaceAppPackageImportReview.swift`
@@ -1016,8 +1014,8 @@ Implemented:
 - Deterministic builder for several known intent families.
 - Structured manifest output validation.
 - Manifest patch operation validation.
-- Basic ideation from request/conversation-like excerpts.
-- Studio view with intent, ideas, proposal, validation, and manifest inspector.
+- Direct conversation-driven generation from the user's request.
+- Studio view with intent, preview, validation, and manifest inspector.
 
 Pending:
 
@@ -1153,9 +1151,9 @@ Pending:
 
 4. User can turn a repeated conversation/task process into a reusable app.
    - Status: partial.
-   - Reason: ideation scaffolding exists, but it does not yet consume real
-     task/conversation context deeply enough or generate robust task-backed
-     reusable apps.
+   - Reason: the old standalone ideation scaffold has been retired; a future
+     implementation needs a first-class conversation/task-context mining service
+     rather than a second app-generation owner.
 
 5. Apps can display metrics, charts, diagrams, tables, forms, and actionable
    controls.
