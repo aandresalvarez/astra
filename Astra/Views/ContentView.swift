@@ -2235,8 +2235,7 @@ struct ContentView: View {
             setSelectedTask(nil)
         }
         // Switching workspaces exits App Studio (its session is bound to the start workspace).
-        if selectedWorkspaceApp != nil { selectedWorkspaceApp = nil }
-        if isComposingWorkspaceApp { cancelWorkspaceAppStudio() }
+        clearWorkspaceAppSurfaceSelection()
         if isUITestingSeededLaunch {
             setSelectedTask(nil)
             isComposingTask = selectedWorkspace != nil
