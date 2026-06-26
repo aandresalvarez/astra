@@ -210,9 +210,7 @@ struct PluginCatalogView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .capabilityApprovalsChanged)) { _ in
-            Task { @MainActor in
-                refreshApprovalRecords()
-            }
+            refreshApprovalRecords()
         }
         .onChange(of: focusedPackageID) { _, newValue in
             selectedPackageID = newValue
@@ -1088,9 +1086,19 @@ struct PluginCatalogView: View {
         }
     }
 
-    @MainActor
     private func refreshApprovalRecords() {
-        approvalRecords = CapabilityApprovalStore().records()
+        Task {
+            let records = await Self.loadApprovalRecords()
+            await MainActor.run {
+                approvalRecords = records
+            }
+        }
+    }
+
+    private static func loadApprovalRecords() async -> [CapabilityApprovalRecord] {
+        await Task.detached(priority: .utility) {
+            CapabilityApprovalStore().records()
+        }.value
     }
 
     // MARK: - Prerequisite Section

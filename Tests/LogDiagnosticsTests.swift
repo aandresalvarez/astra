@@ -171,8 +171,10 @@ struct LogDiagnosticsTests {
         #expect(manifest.contains("browser_flight_logs_when_present"))
         #expect(manifest.contains("macos_crash_reports_when_present"))
         #expect(manifest.contains("macos_crash_hang_reports_when_present"))
+        #expect(manifest.contains("macos_diagnostic_reports_when_present"))
         #expect(manifest.contains(#""kind" : "crash""#))
         #expect(readme.contains("*.ips, *.crash, *.hang, or *.spin"))
+        #expect(readme.contains("macOS diagnostic reports"))
         #expect(analyzedLog.contains("app.started"))
         #expect(!analyzedLog.contains("stale.failure"))
     }
@@ -228,6 +230,7 @@ struct LogDiagnosticsTests {
         let legacyCrash = directory.appendingPathComponent("ASTRA Dev-2023-11-14-115800.crash")
         let hangExtension = directory.appendingPathComponent("ASTRA Dev-2023-11-14-115700.hang")
         let spinExtension = directory.appendingPathComponent("ASTRA Dev-2023-11-14-115600.spin")
+        let crashAfterUnknownEvent = directory.appendingPathComponent("ASTRA Dev-2023-11-14-115500.ips")
 
         try """
         {"app_name":"ASTRA Dev","timestamp":"2023-11-14 12:00:00.00 -0500"}
@@ -245,13 +248,21 @@ struct LogDiagnosticsTests {
         Process: ASTRA Dev [12345]
         Exception Type: EXC_CRASH (SIGABRT)
         """.write(to: legacyCrash, atomically: true, encoding: .utf8)
-        try "Event: hang\n".write(to: hangExtension, atomically: true, encoding: .utf8)
-        try "Event: spin\n".write(to: spinExtension, atomically: true, encoding: .utf8)
+        try Data().write(to: hangExtension)
+        try Data().write(to: spinExtension)
+        try """
+        {"app_name":"ASTRA Dev","timestamp":"2023-11-14 11:55:00.00 -0500","bug_type":"309"}
+        Event: process-exit
+        {
+          "exception" : { "type" : "EXC_CRASH", "signal" : "SIGABRT" }
+        }
+        """.write(to: crashAfterUnknownEvent, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-60)], ofItemAtPath: hang.path)
         try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-120)], ofItemAtPath: crash.path)
         try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-180)], ofItemAtPath: legacyCrash.path)
         try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-240)], ofItemAtPath: hangExtension.path)
         try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-300)], ofItemAtPath: spinExtension.path)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-360)], ofItemAtPath: crashAfterUnknownEvent.path)
 
         let reports = CrashDiagnosticsService.recentReports(
             limit: 10,
@@ -266,9 +277,10 @@ struct LogDiagnosticsTests {
             "ASTRA Dev-2023-11-14-115900.ips",
             "ASTRA Dev-2023-11-14-115800.crash",
             "ASTRA Dev-2023-11-14-115700.hang",
-            "ASTRA Dev-2023-11-14-115600.spin"
+            "ASTRA Dev-2023-11-14-115600.spin",
+            "ASTRA Dev-2023-11-14-115500.ips"
         ])
-        #expect(reports.map(\.kind) == [.hang, .crash, .crash, .hang, .spin])
+        #expect(reports.map(\.kind) == [.hang, .crash, .crash, .hang, .spin, .crash])
     }
 
     @Test("Report includes crash and hang report retrieval details")
@@ -301,12 +313,12 @@ struct LogDiagnosticsTests {
         )
 
         #expect(report.crashReports == [hang, crash])
-        #expect(report.markdown.contains("## Crash / Hang Reports"))
+        #expect(report.markdown.contains("## Diagnostic Reports"))
         #expect(report.markdown.contains("Hang report: `ASTRA Dev-2023-11-14-121500.ips`"))
         #expect(report.markdown.contains("Crash report: `ASTRA Dev-2023-11-14-120000.ips`"))
         #expect(report.markdown.contains("ASTRA Dev-2023-11-14-120000.ips"))
         #expect(report.markdown.contains("$HOME/Library/Logs/DiagnosticReports"))
-        #expect(report.markdown.contains("Crash/Hang button"))
+        #expect(report.markdown.contains("Diagnostic Reports button"))
     }
 
     @Test("Collects persisted app and task log entries")

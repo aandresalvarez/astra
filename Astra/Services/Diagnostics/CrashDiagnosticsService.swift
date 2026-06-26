@@ -169,6 +169,17 @@ enum CrashDiagnosticsService {
     }
 
     private static func reportKind(for url: URL) -> CrashReportKind {
+        switch url.pathExtension.lowercased() {
+        case "crash":
+            return .crash
+        case "hang":
+            return .hang
+        case "spin":
+            return .spin
+        default:
+            break
+        }
+
         let prefix = reportClassificationPrefix(from: url)
         if let eventKind = eventReportKind(in: prefix) {
             return eventKind
@@ -184,16 +195,7 @@ enum CrashDiagnosticsService {
         if lowercasedPrefix.contains("stackshot") {
             return .stackshot
         }
-        switch url.pathExtension.lowercased() {
-        case "crash":
-            return .crash
-        case "hang":
-            return .hang
-        case "spin":
-            return .spin
-        default:
-            return .unknown
-        }
+        return .unknown
     }
 
     private static func reportClassificationPrefix(from url: URL) -> String {
@@ -210,7 +212,9 @@ enum CrashDiagnosticsService {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard trimmed.lowercased().hasPrefix("event:") else { continue }
             let event = trimmed.dropFirst("event:".count).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            return reportKind(fromEventText: event) ?? .unknown
+            if let kind = reportKind(fromEventText: event) {
+                return kind
+            }
         }
         return nil
     }

@@ -447,7 +447,8 @@ enum LogDiagnosticsService {
                 "app_and_task_logs",
                 "browser_flight_logs_when_present",
                 "macos_crash_reports_when_present",
-                "macos_crash_hang_reports_when_present"
+                "macos_crash_hang_reports_when_present",
+                "macos_diagnostic_reports_when_present"
             ],
             "sourceLogFiles": logFiles.map { file in
                 [
@@ -490,7 +491,7 @@ enum LogDiagnosticsService {
         - manifest.json: machine-readable index of included diagnostics artifacts.
         - logs/analyzed-log-entries.jsonl: sanitized log entries used by the report.
         - logs/*.log and logs/browser-flight-*.jsonl: relevant app, task, breadcrumb, and browser debug artifacts from the selected time window.
-        - crashes/*.ips, *.crash, *.hang, or *.spin: matching macOS crash/hang diagnostic reports from the selected time window, when present.
+        - crashes/*.ips, *.crash, *.hang, or *.spin: matching macOS diagnostic reports from the selected time window, when present.
 
         Browser flight logs may include compact page evidence and screenshot thumbnails only when Browser Debug Capture was enabled.
         """
@@ -2008,19 +2009,19 @@ enum LogDiagnosticsService {
     private static func appendCrashReports(_ crashReports: [CrashReportSummary], to lines: inout [String]) {
         lines += [
             "",
-            "## Crash / Hang Reports",
+            "## Diagnostic Reports",
             ""
         ]
 
         guard !crashReports.isEmpty else {
             lines += [
-                "No recent ASTRA crash or hang reports were found in `\(CrashDiagnosticsService.userFacingPath(CrashDiagnosticsService.defaultDiagnosticReportsDirectory))`."
+                "No recent ASTRA diagnostic reports were found in `\(CrashDiagnosticsService.userFacingPath(CrashDiagnosticsService.defaultDiagnosticReportsDirectory))`."
             ]
             return
         }
 
         lines += [
-            "Recent macOS crash/hang diagnostic reports matching ASTRA app names:",
+            "Recent macOS diagnostic reports matching ASTRA app names:",
             ""
         ]
 
@@ -2032,7 +2033,7 @@ enum LogDiagnosticsService {
 
         lines += [
             "",
-            "Open `$HOME/Library/Logs/DiagnosticReports` or use the Crash/Hang button in the log viewer to reveal these files in Finder."
+            "Open `$HOME/Library/Logs/DiagnosticReports` or use the Diagnostic Reports button in the log viewer to reveal these files in Finder."
         ]
     }
 
