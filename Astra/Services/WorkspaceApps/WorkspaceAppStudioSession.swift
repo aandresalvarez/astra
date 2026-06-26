@@ -145,9 +145,11 @@ final class WorkspaceAppStudioSession: ObservableObject {
 
     /// Bind a newly autosaved draft app to this Studio session. Later turns persist their journal to
     /// the same app directory, and Publish promotes this draft instead of creating a sibling.
-    func bindPersistedDraft(appID: String, workspacePath: String) {
-        guard !appID.isEmpty, !workspacePath.isEmpty else { return }
+    @discardableResult
+    func bindPersistedDraft(appID: String, workspacePath: String) -> Bool {
+        guard !appID.isEmpty, !workspacePath.isEmpty else { return false }
         persistenceTarget = (appID, workspacePath)
+        return true
     }
 
     /// Adopt the manifest exactly as it was persisted by `WorkspaceAppService`.
@@ -161,7 +163,7 @@ final class WorkspaceAppStudioSession: ObservableObject {
         appID: String,
         workspacePath: String
     ) {
-        guard !appID.isEmpty, !workspacePath.isEmpty else { return }
+        guard bindPersistedDraft(appID: appID, workspacePath: workspacePath) else { return }
         if let current = draft {
             draft = WorkspaceAppStudioDraft(
                 id: current.id,
@@ -177,7 +179,6 @@ final class WorkspaceAppStudioSession: ObservableObject {
            let lastIndex = generationEvents.indices.last {
             generationEvents[lastIndex].manifestDigest = WorkspaceAppService.digest(for: data)
         }
-        persistenceTarget = (appID, workspacePath)
         draftRevision &+= 1
         persistJournal()
     }

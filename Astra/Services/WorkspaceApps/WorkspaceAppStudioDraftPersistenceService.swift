@@ -8,7 +8,6 @@ import SwiftData
 /// to mutate published apps, because editing a live app remains an explicit Publish action.
 struct WorkspaceAppStudioDraftPersistenceService {
     var appService = WorkspaceAppService()
-    var journalStore: WorkspaceAppStudioJournalStoring = WorkspaceAppStudioJournalService()
 
     @MainActor
     func saveDraft(
@@ -39,7 +38,6 @@ struct WorkspaceAppStudioDraftPersistenceService {
                 modelContext: modelContext,
                 status: .draft
             )
-            journalStore.save(journal, appID: result.app.logicalID, workspacePath: workspace.primaryPath)
             return result
         }
 
@@ -50,7 +48,6 @@ struct WorkspaceAppStudioDraftPersistenceService {
             modelContext: modelContext,
             status: .draft
         )
-        journalStore.save(journal, appID: result.app.logicalID, workspacePath: preferredWorkspace.primaryPath)
         return result
     }
 

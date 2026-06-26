@@ -6,7 +6,7 @@ import Testing
 @MainActor
 @Suite("Workspace App Studio Draft Persistence")
 struct WorkspaceAppStudioDraftPersistenceServiceTests {
-    @Test("autosave creates a durable draft app with its manifest and journal")
+    @Test("autosave creates a durable draft app and leaves journal adoption to the session")
     func autosaveCreatesDurableDraftApp() throws {
         let fixture = try Fixture()
         let manifest = Self.manifest(named: "Lab Samples")
@@ -37,8 +37,43 @@ struct WorkspaceAppStudioDraftPersistenceServiceTests {
             appID: saved.logicalID,
             workspacePath: fixture.workspace.primaryPath
         )
-        #expect(savedJournal.messages.map { $0.text }.contains("track lab samples"))
-        #expect(savedJournal.events.first?.manifestDigest == journal.events.first?.manifestDigest)
+        #expect(savedJournal.isEmpty)
+    }
+
+    @Test("autosave coordinator saves the adopted journal once after app persistence")
+    func autosaveCoordinatorSavesAdoptedJournalOnce() async throws {
+        let fixture = try Fixture()
+        let manifest = Self.manifest(named: "Lab Samples")
+        let store = SpyJournalStore()
+        let session = WorkspaceAppStudioSession(
+            generate: { _, _, _, _, _, _, _ in Self.generationResult(manifest) },
+            verify: Self.noVerify,
+            journalStore: store
+        )
+
+        await session.submit(
+            "track lab samples",
+            workspace: fixture.workspace,
+            runtimeID: TaskExecutionDefaults.runtime.rawValue,
+            model: TaskExecutionDefaults.model,
+            availableProviders: []
+        )
+        #expect(store.saveCount == 0)
+
+        WorkspaceAppStudioDraftAutosaveCoordinator.autosave(
+            session: session,
+            preferredWorkspace: fixture.workspace,
+            modelContext: fixture.context
+        )
+
+        let saved = try #require(store.saved)
+        let digest = try Self.journalDigest(for: manifest)
+        #expect(store.saveCount == 1)
+        #expect(saved.appID == manifest.app.id)
+        #expect(saved.workspacePath == fixture.workspace.primaryPath)
+        #expect(saved.journal.messages.map(\.text).contains("track lab samples"))
+        #expect(saved.journal.events.first?.manifestDigest == digest)
+        #expect(session.editingAppLogicalID == manifest.app.id)
     }
 
     @Test("autosave create path lets app service dedupe identity without renaming the draft")
@@ -228,6 +263,20 @@ struct WorkspaceAppStudioDraftPersistenceServiceTests {
         }
     }
 
+    private final class SpyJournalStore: WorkspaceAppStudioJournalStoring {
+        private(set) var saveCount = 0
+        private(set) var saved: (journal: WorkspaceAppStudioJournal, appID: String, workspacePath: String)?
+
+        func load(appID: String, workspacePath: String) -> WorkspaceAppStudioJournal {
+            WorkspaceAppStudioJournal()
+        }
+
+        func save(_ journal: WorkspaceAppStudioJournal, appID: String, workspacePath: String) {
+            saveCount += 1
+            saved = (journal, appID, workspacePath)
+        }
+    }
+
     private static func manifest(named name: String) -> WorkspaceAppManifest {
         var manifest = WorkspaceAppStudioBuilder.localDatabaseManifest(intent: name)
         manifest.app.name = name
@@ -251,8 +300,7 @@ struct WorkspaceAppStudioDraftPersistenceServiceTests {
         for manifest: WorkspaceAppManifest,
         intent: String
     ) throws -> WorkspaceAppStudioJournal {
-        let data = try WorkspaceAppService.encodeManifest(manifest)
-        let digest = WorkspaceAppService.digest(for: data)
+        let digest = try journalDigest(for: manifest)
         return WorkspaceAppStudioJournal(
             messages: [
                 StudioMessage(role: .user, text: intent),
@@ -269,5 +317,25 @@ struct WorkspaceAppStudioDraftPersistenceServiceTests {
                 )
             ]
         )
+    }
+
+    private static func generationResult(_ manifest: WorkspaceAppManifest) -> WorkspaceAppStudioGenerationResult {
+        WorkspaceAppStudioGenerationResult(
+            manifest: manifest,
+            validationReport: WorkspaceAppManifestValidator.validate(manifest),
+            accepted: true,
+            origin: .model,
+            attemptCount: 1,
+            providerFailure: nil,
+            summary: "Saved draft."
+        )
+    }
+
+    private static let noVerify: WorkspaceAppStudioVerify = { _, _, _, _ in
+        WorkspaceAppStudioVerification(status: .notApplicable, headline: "", detail: "", autoExercise: nil, scenario: nil)
+    }
+
+    private static func journalDigest(for manifest: WorkspaceAppManifest) throws -> String {
+        try WorkspaceAppService.digest(for: WorkspaceAppService.encodeManifest(manifest))
     }
 }
