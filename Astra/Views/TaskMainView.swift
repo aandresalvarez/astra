@@ -132,7 +132,7 @@ private struct AgentGeneratedFilesListView: View {
 
     private var groupedPaths: [(title: String, paths: [String])] {
         let grouped = Dictionary(grouping: visiblePaths, by: groupTitle(for:))
-        return ["Task docs", "Project changes", "Inputs"].compactMap { title in
+        return ["Task docs", "Project changes"].compactMap { title in
             guard let paths = grouped[title], !paths.isEmpty else { return nil }
             return (title, paths)
         }

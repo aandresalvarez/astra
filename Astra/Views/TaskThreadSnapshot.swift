@@ -479,18 +479,16 @@ struct TaskRunOutputPresentation: Hashable, Sendable {
     }
 
     private static func progressMessages(from events: [TaskEventSnapshot]) -> [TaskRunProgressMessage] {
-        let dedupedTexts = TaskRunAnswerPresentationPolicy.dedupedProgressTexts(events.map(\.payload))
-        var textIndex = 0
+        var previousKey: String?
         return events.compactMap { event -> TaskRunProgressMessage? in
-            let trimmed = event.payload.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard textIndex < dedupedTexts.count,
-                  TaskRunAnswerPresentationPolicy.dedupedProgressTexts([trimmed]).first == dedupedTexts[textIndex] else {
+            guard let progress = TaskRunAnswerPresentationPolicy.normalizedProgressText(event.payload),
+                  progress.comparisonKey != previousKey else {
                 return nil
             }
-            defer { textIndex += 1 }
+            previousKey = progress.comparisonKey
             return TaskRunProgressMessage(
                 id: event.id,
-                text: dedupedTexts[textIndex],
+                text: progress.text,
                 timestamp: event.timestamp
             )
         }
