@@ -22,6 +22,7 @@ struct WorkspaceAppStudioChatView: View {
     @State private var seedSampleData = false
     @State private var isTesting = false
     @State private var isInspecting = false
+    @State private var appliedInitialPrompt: String?
     @FocusState private var composerFocused: Bool
 
     private var canSend: Bool {
@@ -38,7 +39,11 @@ struct WorkspaceAppStudioChatView: View {
         }
         .background(Stanford.panelBackground)
         .accessibilityIdentifier("WorkspaceAppStudioChatView")
-        .onAppear { composerFocused = true }
+        .onAppear {
+            applyInitialPromptIfNeeded()
+            composerFocused = true
+        }
+        .onChange(of: session.initialPrompt) { _, _ in applyInitialPromptIfNeeded() }
         .sheet(isPresented: $isTesting) {
             if let draft = session.draft {
                 WorkspaceAppTestPanelView(
@@ -311,5 +316,14 @@ struct WorkspaceAppStudioChatView: View {
                 )
             }
         }
+    }
+
+    private func applyInitialPromptIfNeeded() {
+        let normalized = WorkspaceAppStudioLaunchRequest.normalizedPrompt(session.initialPrompt)
+        guard appliedInitialPrompt != normalized else { return }
+        appliedInitialPrompt = normalized
+        guard let normalized,
+              inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        inputText = normalized
     }
 }

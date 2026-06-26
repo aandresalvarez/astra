@@ -81,6 +81,18 @@ struct WorkspaceAppStudioSessionTests {
 
     // MARK: - First turn
 
+    @Test("reset can carry a normalized initial prompt for the Studio composer")
+    func resetCarriesInitialPrompt() {
+        let (session, _) = session([Self.result(Self.validManifest)])
+        let ws = workspace()
+
+        session.reset(for: ws, initialPrompt: "  build a PR tracker  ")
+        #expect(session.initialPrompt == "build a PR tracker")
+
+        session.reset(for: ws)
+        #expect(session.initialPrompt == nil)
+    }
+
     @Test("the first message generates an app and surfaces an assistant summary")
     func firstTurnGenerates() async {
         let (session, stub) = session([Self.result(Self.validManifest)])
