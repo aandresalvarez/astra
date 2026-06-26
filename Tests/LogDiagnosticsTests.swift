@@ -283,6 +283,47 @@ struct LogDiagnosticsTests {
         #expect(reports.map(\.kind) == [.hang, .crash, .crash, .hang, .spin, .crash])
     }
 
+    @Test("Diagnostic report locator classifies only selected limited reports")
+    func diagnosticReportLocatorClassifiesOnlySelectedLimitedReports() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-diagnostic-report-limit-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let newest = directory.appendingPathComponent("ASTRA Dev-2023-11-14-120000.ips")
+        let middle = directory.appendingPathComponent("ASTRA Dev-2023-11-14-115900.ips")
+        let oldest = directory.appendingPathComponent("ASTRA Dev-2023-11-14-115800.ips")
+
+        for file in [newest, middle, oldest] {
+            try #"{"app_name":"ASTRA Dev"}"#.write(to: file, atomically: true, encoding: .utf8)
+        }
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-60)], ofItemAtPath: newest.path)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-120)], ofItemAtPath: middle.path)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-180)], ofItemAtPath: oldest.path)
+
+        var classifiedFileNames: [String] = []
+        let reports = CrashDiagnosticsService.reports(
+            limit: 2,
+            modifiedIn: nil,
+            prefixes: ["ASTRA Dev"],
+            searchDirectories: [directory],
+            kindForReport: { url in
+                classifiedFileNames.append(url.lastPathComponent)
+                return .unknown
+            }
+        )
+
+        #expect(reports.map(\.fileName) == [
+            "ASTRA Dev-2023-11-14-120000.ips",
+            "ASTRA Dev-2023-11-14-115900.ips"
+        ])
+        #expect(classifiedFileNames == [
+            "ASTRA Dev-2023-11-14-120000.ips",
+            "ASTRA Dev-2023-11-14-115900.ips"
+        ])
+    }
+
     @Test("Report includes crash and hang report retrieval details")
     func reportIncludesCrashAndHangReports() {
         let crashURL = FileManager.default.homeDirectoryForCurrentUser
@@ -313,6 +354,8 @@ struct LogDiagnosticsTests {
         )
 
         #expect(report.crashReports == [hang, crash])
+        #expect(report.markdown.contains("- Diagnostic reports found: 2"))
+        #expect(!report.markdown.contains("Crash / hang reports found"))
         #expect(report.markdown.contains("## Diagnostic Reports"))
         #expect(report.markdown.contains("Hang report: `ASTRA Dev-2023-11-14-121500.ips`"))
         #expect(report.markdown.contains("Crash report: `ASTRA Dev-2023-11-14-120000.ips`"))

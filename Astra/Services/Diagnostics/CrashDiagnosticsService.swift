@@ -44,6 +44,15 @@ struct CrashReportSummary: Equatable, Identifiable {
     var displayPath: String { CrashDiagnosticsService.userFacingPath(url) }
 }
 
+private struct CrashReportCandidate {
+    let url: URL
+    let appName: String
+    let modifiedAt: Date
+    let sizeBytes: Int64
+
+    var fileName: String { url.lastPathComponent }
+}
+
 enum CrashDiagnosticsService {
     static let defaultRecentLimit = 8
     static let defaultRecentDays = 30
@@ -102,12 +111,30 @@ enum CrashDiagnosticsService {
         searchDirectories: [URL] = defaultSearchDirectories(),
         fileManager: FileManager = .default
     ) -> [CrashReportSummary] {
+        reports(
+            limit: limit,
+            modifiedIn: interval,
+            prefixes: prefixes,
+            searchDirectories: searchDirectories,
+            fileManager: fileManager,
+            kindForReport: reportKind(for:)
+        )
+    }
+
+    static func reports(
+        limit: Int = defaultRecentLimit,
+        modifiedIn interval: DateInterval?,
+        prefixes: [String] = reportNamePrefixes(),
+        searchDirectories: [URL] = defaultSearchDirectories(),
+        fileManager: FileManager = .default,
+        kindForReport: (URL) -> CrashReportKind
+    ) -> [CrashReportSummary] {
         let normalizedPrefixes = prefixes
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         guard !normalizedPrefixes.isEmpty, limit > 0 else { return [] }
 
-        let reports = searchDirectories.flatMap { directory -> [CrashReportSummary] in
+        let candidates = searchDirectories.flatMap { directory -> [CrashReportCandidate] in
             let broker = HostFileAccessBroker(fileManager: fileManager)
             guard let files = try? broker.contentsOfDirectory(
                 at: directory,
@@ -136,24 +163,32 @@ enum CrashDiagnosticsService {
                     return nil
                 }
 
-                return CrashReportSummary(
+                return CrashReportCandidate(
                     url: file,
                     appName: appName,
                     modifiedAt: modifiedAt,
-                    sizeBytes: Int64(values.fileSize ?? 0),
-                    kind: reportKind(for: file)
+                    sizeBytes: Int64(values.fileSize ?? 0)
                 )
             }
         }
 
-        return Array(reports
+        return candidates
             .sorted { lhs, rhs in
                 if lhs.modifiedAt != rhs.modifiedAt {
                     return lhs.modifiedAt > rhs.modifiedAt
                 }
                 return lhs.fileName < rhs.fileName
             }
-            .prefix(limit))
+            .prefix(limit)
+            .map { candidate in
+                CrashReportSummary(
+                    url: candidate.url,
+                    appName: candidate.appName,
+                    modifiedAt: candidate.modifiedAt,
+                    sizeBytes: candidate.sizeBytes,
+                    kind: kindForReport(candidate.url)
+                )
+            }
     }
 
     static func userFacingPath(_ url: URL, fileManager: FileManager = .default) -> String {

@@ -76,6 +76,8 @@ struct PluginCatalogView: View {
     @State private var importReview: CapabilityImportReview?
     @State private var importError: String?
     @State private var selectedPackageID: String?
+    @State private var approvalRecordsRefreshTask: Task<Void, Never>?
+    @State private var approvalRecordsRefreshGeneration = 0
 
     private var capabilities: WorkspaceCapabilities {
         WorkspaceCapabilities(
@@ -211,6 +213,9 @@ struct PluginCatalogView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .capabilityApprovalsChanged)) { _ in
             refreshApprovalRecords()
+        }
+        .onDisappear {
+            cancelApprovalRecordsRefresh()
         }
         .onChange(of: focusedPackageID) { _, newValue in
             selectedPackageID = newValue
@@ -1087,12 +1092,24 @@ struct PluginCatalogView: View {
     }
 
     private func refreshApprovalRecords() {
-        Task {
+        approvalRecordsRefreshTask?.cancel()
+        approvalRecordsRefreshGeneration += 1
+        let refreshGeneration = approvalRecordsRefreshGeneration
+        approvalRecordsRefreshTask = Task {
             let records = await Self.loadApprovalRecords()
+            guard !Task.isCancelled else { return }
             await MainActor.run {
+                guard approvalRecordsRefreshGeneration == refreshGeneration else { return }
                 approvalRecords = records
+                approvalRecordsRefreshTask = nil
             }
         }
+    }
+
+    private func cancelApprovalRecordsRefresh() {
+        approvalRecordsRefreshGeneration += 1
+        approvalRecordsRefreshTask?.cancel()
+        approvalRecordsRefreshTask = nil
     }
 
     private static func loadApprovalRecords() async -> [CapabilityApprovalRecord] {
