@@ -57,7 +57,8 @@ enum TaskOutputWorkspaceDiscovery {
             }
 
             if values.isDirectory == true {
-                if TaskOutputArtifactPathPolicy.isRuntimeDiagnosticRelativePath(relative) || depth >= scanDepthLimit {
+                if TaskOutputArtifactPathPolicy.isRuntimeDiagnosticRelativePath(relative, context: .workspace) ||
+                    depth >= scanDepthLimit {
                     enumerator.skipDescendants()
                 }
                 continue
@@ -65,7 +66,10 @@ enum TaskOutputWorkspaceDiscovery {
 
             guard depth <= scanDepthLimit,
                   values.isRegularFile == true,
-                  TaskOutputArtifactPathPolicy.isDisplayableUserArtifactRelativePath(relative),
+                  TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(
+                    relative,
+                    context: .workspace
+                  ) != nil,
                   wasChangedDuringRun(values, run: run) else {
                 continue
             }

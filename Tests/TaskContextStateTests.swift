@@ -891,6 +891,80 @@ struct TaskContextStateTests {
         #expect(legacy.type == "HTML")
     }
 
+    @Test("context capsule hides polluted runtime artifact rows without deleting them")
+    func contextCapsuleHidesPollutedRuntimeArtifactRowsWithoutDeletingThem() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Polluted Artifacts", primaryPath: root)
+        let task = AgentTask(
+            title: "Polluted artifact state",
+            goal: "Render current state without runtime diagnostics",
+            workspace: workspace
+        )
+        context.insert(workspace)
+        context.insert(task)
+
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let planPath = (folder as NSString).appendingPathComponent("plan.md")
+        let configPath = (folder as NSString).appendingPathComponent(".runtime/docker-client/client-1/config.json")
+        let stdoutPath = (folder as NSString).appendingPathComponent("jobs/job-1/stdout.log")
+        try FileManager.default.createDirectory(
+            atPath: (configPath as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            atPath: (stdoutPath as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true
+        )
+        try "# Plan".write(toFile: planPath, atomically: true, encoding: .utf8)
+        try "{}".write(toFile: configPath, atomically: true, encoding: .utf8)
+        try "log".write(toFile: stdoutPath, atomically: true, encoding: .utf8)
+
+        let planArtifact = Artifact(task: task, type: "markdown", path: planPath)
+        let configArtifact = Artifact(task: task, type: "json", path: configPath)
+        let stdoutArtifact = Artifact(task: task, type: "log", path: stdoutPath)
+        context.insert(planArtifact)
+        context.insert(configArtifact)
+        context.insert(stdoutArtifact)
+        task.artifacts.append(contentsOf: [planArtifact, configArtifact, stdoutArtifact])
+
+        let run = TaskRun(task: task)
+        run.status = .completed
+        run.stopReason = "completed"
+        run.output = "Generated the plan."
+        run.completedAt = Date()
+        run.appendFileChange(StoredFileChange(from: FileChange(
+            path: configPath,
+            changeType: .write,
+            content: "{}",
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        )))
+        run.appendFileChange(StoredFileChange(from: FileChange(
+            path: stdoutPath,
+            changeType: .write,
+            content: "log",
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        )))
+        context.insert(run)
+        task.status = .completed
+
+        TaskContextStateManager.recordTurn(task: task, run: run, message: "Create plan")
+
+        let state = try #require(TaskContextStateManager.load(taskFolder: folder))
+        #expect(state.artifacts.map(\.path) == [planPath])
+        #expect(!state.filesChanged.contains(configPath))
+        #expect(!state.filesChanged.contains(stdoutPath))
+        #expect(!state.changedFiles.contains { $0.path == configPath || $0.path == stdoutPath })
+        #expect(task.artifacts.contains { $0.path == configPath })
+        #expect(task.artifacts.contains { $0.path == stdoutPath })
+    }
+
     @Test("context capsule discovers task output files when provider metadata is missing")
     func contextCapsuleDiscoversTaskOutputFilesWhenProviderMetadataIsMissing() throws {
         let root = try temporaryRoot()

@@ -105,6 +105,88 @@ struct MarkdownTextViewTests {
         #expect(!rendered.contains("--- | ---: | :---"))
     }
 
+    @Test("Parser keeps heading followed by pipe table as separate blocks")
+    func parserKeepsHeadingFollowedByPipeTableAsSeparateBlocks() {
+        let source = """
+        ### What passed across all runs (death-specific)
+
+        | Model/Test | Status | Details |
+        |---|---|---|
+        | `lpch_deaths` | PASS | 15.1k rows (prod) |
+        | `shc_deaths` | PASS | 504.5k rows (prod) |
+        """
+
+        let blocks = MarkdownTextView.parse(source)
+
+        #expect(blocks.count == 2)
+        #expect(blocks[0].kind == .heading(level: 3))
+        #expect(blocks[0].content == "What passed across all runs (death-specific)")
+        #expect(blocks[1].kind == .table)
+        #expect(blocks[1].content.contains("Model/Test | Status | Details"))
+        #expect(blocks[1].content.contains("`lpch_deaths` | PASS | 15.1k rows (prod)"))
+    }
+
+    @Test("Chunk joiner preserves table block boundary after heading")
+    func chunkJoinerPreservesTableBlockBoundaryAfterHeading() {
+        let joined = MarkdownRenderPreparation.joinChunks([
+            "### What passed across all runs (death-specific)\n",
+            """
+            | Model/Test | Status | Details |
+            |---|---|---|
+            | `lpch_deaths` | PASS | 15.1k rows (prod) |
+            """
+        ])
+
+        #expect(joined.contains("death-specific)\n\n| Model/Test | Status | Details |"))
+        #expect(MarkdownTextView.parse(joined).contains { $0.kind == .table })
+    }
+
+    @Test("Display preparation repairs missing blank line before table")
+    func displayPreparationRepairsMissingBlankLineBeforeTable() {
+        let prepared = MarkdownRenderPreparation.prepareForDisplay("""
+        ### What passed across all runs (death-specific)
+        | Model/Test | Status | Details |
+        |---|---|---|
+        | `lpch_deaths` | PASS | 15.1k rows (prod) |
+        """)
+
+        #expect(prepared.contains("death-specific)\n\n| Model/Test | Status | Details |"))
+
+        let blocks = MarkdownTextView.parse(prepared)
+        #expect(blocks.map(\.kind) == [.heading(level: 3), .table])
+    }
+
+    @Test("Display preparation repairs same-line heading table corruption")
+    func displayPreparationRepairsSameLineHeadingTableCorruption() {
+        let prepared = MarkdownRenderPreparation.prepareForDisplay("""
+        ### What passed across all runs (death-specific) | Model/Test | Status | Details |
+        |---|---|---|
+        | `lpch_deaths` | PASS | 15.1k rows (prod) |
+        """)
+
+        #expect(prepared.contains("death-specific)\n\n| Model/Test | Status | Details |"))
+
+        let blocks = MarkdownTextView.parse(prepared)
+        #expect(blocks.map(\.kind) == [.heading(level: 3), .table])
+    }
+
+    @Test("Display preparation preserves fenced table-looking text")
+    func displayPreparationPreservesFencedTableLookingText() {
+        let source = """
+        Before
+        ```markdown
+        ### Heading | A | B |
+        |---|---|
+        ```
+        After
+        """
+
+        let prepared = MarkdownRenderPreparation.prepareForDisplay(source)
+
+        #expect(prepared.contains("```markdown\n### Heading | A | B |\n|---|---|\n```"))
+        #expect(MarkdownTextView.parse(prepared).contains { $0.kind == .codeBlock(language: "markdown") })
+    }
+
     @Test("Parser recognizes additional heading forms")
     func parserRecognizesAdditionalHeadingForms() {
         let source = """
@@ -234,6 +316,20 @@ struct MarkdownTextViewTests {
         """)
 
         #expect(normalized == "First sentence. Second sentence continues here.")
+    }
+
+    @Test("Streaming text preserves markdown tables")
+    func streamingTextPreservesMarkdownTables() {
+        let normalized = MarkdownTextView.normalizedStreamingText("""
+        Progress summary
+        | Model/Test | Status |
+        |---|---|
+        | death | PASS |
+        """)
+
+        #expect(normalized.contains("Progress summary\n\n| Model/Test | Status |"))
+        #expect(normalized.contains("|---|---|"))
+        #expect(normalized.contains("| death | PASS |"))
     }
 }
 

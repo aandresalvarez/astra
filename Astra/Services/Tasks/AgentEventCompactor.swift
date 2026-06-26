@@ -74,7 +74,9 @@ enum AgentEventCompactor {
         // (see latestReconstructedEventIDs for the per-key rules). Bounded by the
         // number of distinct keys, so high-volume plan.step.* streams still compact.
         let reconstructionCriticalIDs = latestReconstructedEventIDs(in: compactionCandidates)
-        let toCompact = compactionCandidates.filter { !reconstructionCriticalIDs.contains($0.id) }
+        let outputPresentationAnchorIDs = latestOutputPresentationAnchorIDs(in: compactionCandidates)
+        let preservedIDs = reconstructionCriticalIDs.union(outputPresentationAnchorIDs)
+        let toCompact = compactionCandidates.filter { !preservedIDs.contains($0.id) }
         guard !toCompact.isEmpty else {
             logCompactionIfNeeded(
                 start: start,
@@ -97,7 +99,7 @@ enum AgentEventCompactor {
             .sorted { $0.value > $1.value }
             .map { "\($0.value) \($0.key)" }
             .joined(separator: ", ")
-        let semanticLines = semanticSummaryLines(from: toCompact)
+        let semanticLines = semanticSummaryLines(from: compactionCandidates)
         var payload = "Compacted \(toCompact.count) earlier events. Breakdown: \(summary)"
         if !semanticLines.isEmpty {
             payload += "\nCompacted detail index:\n" + semanticLines.joined(separator: "\n")
@@ -181,6 +183,45 @@ enum AgentEventCompactor {
             latestByKey[key] = event
         }
         return Set(latestByKey.values.map(\.id))
+    }
+
+    private static func latestOutputPresentationAnchorIDs(in events: [TaskEvent]) -> Set<UUID> {
+        let grouped = Dictionary(grouping: events.filter { isOutputPresentationEvent($0) }) { event in
+            event.run?.id.uuidString ?? "task"
+        }
+        var output = Set<UUID>()
+        for runEvents in grouped.values {
+            let sorted = runEvents.sorted { $0.timestamp < $1.timestamp }
+            guard let latestBoundaryIndex = sorted.lastIndex(where: isOutputPresentationBoundaryEvent) else {
+                if let latestResponse = sorted.last(where: { $0.type == "agent.response" }) {
+                    output.insert(latestResponse.id)
+                }
+                continue
+            }
+
+            output.insert(sorted[latestBoundaryIndex].id)
+            let finalResponses = sorted
+                .dropFirst(latestBoundaryIndex + 1)
+                .filter { $0.type == "agent.response" }
+                .suffix(3)
+            for event in finalResponses {
+                output.insert(event.id)
+            }
+        }
+        return output
+    }
+
+    private static func isOutputPresentationEvent(_ event: TaskEvent) -> Bool {
+        event.type == "agent.response" || isOutputPresentationBoundaryEvent(event)
+    }
+
+    private static func isOutputPresentationBoundaryEvent(_ event: TaskEvent) -> Bool {
+        switch event.type {
+        case "tool.use", "tool.result", "permission.denied", "permission.approval.requested":
+            return true
+        default:
+            return false
+        }
     }
 
     private static func isReconstructedLifecycleEvent(_ event: TaskEvent) -> Bool {
