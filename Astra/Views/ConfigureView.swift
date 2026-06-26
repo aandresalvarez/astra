@@ -42,6 +42,65 @@ enum ConfigureTab: String, CaseIterable {
 
 }
 
+enum CapabilitySourceExportDirectoryState: Equatable {
+    case resolving
+    case resolved(URL)
+    case unavailable
+
+    var directory: URL? {
+        guard case let .resolved(url) = self else { return nil }
+        return url
+    }
+
+    var isTerminal: Bool {
+        switch self {
+        case .resolving:
+            return false
+        case .resolved, .unavailable:
+            return true
+        }
+    }
+
+    var canToggleSourceSaving: Bool {
+        directory != nil
+    }
+
+    func saveToggleValue(saveSourceJSON: Bool) -> Bool {
+        saveSourceJSON && directory != nil
+    }
+
+    var chipTitle: String {
+        switch self {
+        case .resolving:
+            return "Locating source library"
+        case let .resolved(url):
+            return url.lastPathComponent
+        case .unavailable:
+            return "No source library"
+        }
+    }
+
+    func validationLabel(saveSourceJSON: Bool) -> String {
+        switch self {
+        case .resolving:
+            return "Resolving"
+        case .resolved:
+            return saveSourceJSON ? "Save" : "Skip"
+        case .unavailable:
+            return "Unavailable"
+        }
+    }
+}
+
+enum CapabilityCreationSourceExportPolicy {
+    static func canCreate(
+        hasRequiredContent: Bool,
+        sourceState: CapabilitySourceExportDirectoryState
+    ) -> Bool {
+        hasRequiredContent && sourceState.isTerminal
+    }
+}
+
 struct ConfigureView: View {
     var workspace: Workspace
     var initialTab: ConfigureTab = .capabilities
@@ -413,6 +472,7 @@ struct CapabilityCreationWizardView: View {
 
     var workspace: Workspace
     var onCreated: (PluginPackage, Bool, URL?) -> Void
+    var sourceExportDirectoryResolver: () async -> URL?
     @Environment(\.dismiss) private var dismiss
     @Query(filter: #Predicate<Connector> { $0.isGlobal == true })
     private var globalConnectors: [Connector]
@@ -439,7 +499,17 @@ struct CapabilityCreationWizardView: View {
     @State private var allowedTools = "Read, Grep"
     @State private var installEnabled = true
     @State private var saveSourceJSON = true
-    @State private var sourceExportDirectory: URL? = CapabilityPackageSourceExporter.defaultSourceDirectory()
+    @State private var sourceExportDirectoryState: CapabilitySourceExportDirectoryState = .resolving
+
+    init(
+        workspace: Workspace,
+        onCreated: @escaping (PluginPackage, Bool, URL?) -> Void,
+        sourceExportDirectoryResolver: @escaping () async -> URL? = Self.defaultSourceExportDirectoryResolver
+    ) {
+        self.workspace = workspace
+        self.onCreated = onCreated
+        self.sourceExportDirectoryResolver = sourceExportDirectoryResolver
+    }
 
     private var availableTools: [LocalTool] {
         uniqueTools(workspace.localTools + globalTools)
@@ -455,11 +525,22 @@ struct CapabilityCreationWizardView: View {
     }
 
     private var canCreate: Bool {
+        CapabilityCreationSourceExportPolicy.canCreate(
+            hasRequiredContent: hasRequiredCapabilityContent,
+            sourceState: sourceExportDirectoryState
+        )
+    }
+
+    private var hasRequiredCapabilityContent: Bool {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
         (!selectedToolIDs.isEmpty ||
          !selectedDetectedCLIIDs.isEmpty ||
          !selectedConnectorIDs.isEmpty ||
          !behaviorInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    private var sourceExportDirectory: URL? {
+        sourceExportDirectoryState.directory
     }
 
     var body: some View {
@@ -524,6 +605,9 @@ struct CapabilityCreationWizardView: View {
             .padding(18)
         }
         .frame(width: 620, height: 620)
+        .task {
+            await resolveSourceExportDirectoryIfNeeded()
+        }
     }
 
     private var selectableTools: some View {
@@ -714,17 +798,20 @@ struct CapabilityCreationWizardView: View {
                 .disabled(true)
             Toggle("Enable in this workspace", isOn: $installEnabled)
             Toggle("Save source JSON", isOn: Binding(
-                get: { saveSourceJSON && sourceExportDirectory != nil },
+                get: { sourceExportDirectoryState.saveToggleValue(saveSourceJSON: saveSourceJSON) },
                 set: { saveSourceJSON = $0 }
             ))
-            .disabled(sourceExportDirectory == nil)
+            .disabled(!sourceExportDirectoryState.canToggleSourceSaving)
             HStack(spacing: 6) {
                 ConfigureCardChip(title: CapabilityLibrary.capabilitiesDirectory().lastPathComponent, color: ConfigureTab.capabilities.color)
                 ConfigureCardChip(title: workspace.name)
                 if let sourceExportDirectory {
                     ConfigureCardChip(title: sourceExportDirectory.lastPathComponent, color: ConfigureTab.capabilities.color)
                 } else {
-                    ConfigureCardChip(title: "No source library", color: Stanford.poppy)
+                    ConfigureCardChip(
+                        title: sourceExportDirectoryState.chipTitle,
+                        color: sourceExportDirectoryState == .resolving ? Stanford.coolGrey : Stanford.poppy
+                    )
                 }
             }
         }
@@ -742,7 +829,7 @@ struct CapabilityCreationWizardView: View {
             validationRow("Connectors", "\(selectedConnectorIDs.count) selected")
             validationRow("Behavior", behaviorInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "None" : "Ready")
             validationRow("Scope", installEnabled ? "Install and enable here" : "Install only")
-            validationRow("Source JSON", sourceExportDirectory == nil ? "Unavailable" : (saveSourceJSON ? "Save" : "Skip"))
+            validationRow("Source JSON", sourceExportDirectoryState.validationLabel(saveSourceJSON: saveSourceJSON))
         }
     }
 
@@ -843,6 +930,8 @@ struct CapabilityCreationWizardView: View {
     }
 
     private func createCapability() {
+        guard sourceExportDirectoryState.isTerminal else { return }
+
         let selectedExistingTools = availableTools.filter { selectedToolIDs.contains($0.id) }
         let selectedCandidates = availableCLICandidates.filter { selectedDetectedCLIIDs.contains($0.id) }
         let detectedTools = selectedCandidates.map(CapabilityToolDetector.makeTool)
@@ -871,6 +960,22 @@ struct CapabilityCreationWizardView: View {
 
         onCreated(package, installEnabled, sourceURL)
         dismiss()
+    }
+
+    @MainActor
+    private func resolveSourceExportDirectoryIfNeeded() async {
+        guard sourceExportDirectoryState == .resolving else { return }
+        if let directory = await sourceExportDirectoryResolver() {
+            sourceExportDirectoryState = .resolved(directory)
+        } else {
+            sourceExportDirectoryState = .unavailable
+        }
+    }
+
+    private static func defaultSourceExportDirectoryResolver() async -> URL? {
+        await Task.detached(priority: .utility) {
+            CapabilityPackageSourceExporter.defaultSourceDirectory()
+        }.value
     }
 
     private func detectCLIs() {

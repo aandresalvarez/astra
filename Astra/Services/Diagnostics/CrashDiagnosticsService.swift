@@ -1,10 +1,43 @@
 import Foundation
 
+enum CrashReportKind: String, Equatable, Codable {
+    case crash
+    case hang
+    case spin
+    case stackshot
+    case unknown
+
+    var displayName: String {
+        switch self {
+        case .crash: "Crash"
+        case .hang: "Hang"
+        case .spin: "Spin"
+        case .stackshot: "Stackshot"
+        case .unknown: "Diagnostic"
+        }
+    }
+}
+
 struct CrashReportSummary: Equatable, Identifiable {
     let url: URL
     let appName: String
     let modifiedAt: Date
     let sizeBytes: Int64
+    let kind: CrashReportKind
+
+    init(
+        url: URL,
+        appName: String,
+        modifiedAt: Date,
+        sizeBytes: Int64,
+        kind: CrashReportKind = .crash
+    ) {
+        self.url = url
+        self.appName = appName
+        self.modifiedAt = modifiedAt
+        self.sizeBytes = sizeBytes
+        self.kind = kind
+    }
 
     var id: String { url.path }
     var fileName: String { url.lastPathComponent }
@@ -14,7 +47,8 @@ struct CrashReportSummary: Equatable, Identifiable {
 enum CrashDiagnosticsService {
     static let defaultRecentLimit = 8
     static let defaultRecentDays = 30
-    static let supportedExtensions: Set<String> = ["ips", "crash"]
+    static let supportedExtensions: Set<String> = ["ips", "crash", "hang", "spin"]
+    private static let reportClassificationPrefixBytes = 64 * 1024
 
     static var defaultDiagnosticReportsDirectory: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -106,7 +140,8 @@ enum CrashDiagnosticsService {
                     url: file,
                     appName: appName,
                     modifiedAt: modifiedAt,
-                    sizeBytes: Int64(values.fileSize ?? 0)
+                    sizeBytes: Int64(values.fileSize ?? 0),
+                    kind: reportKind(for: file)
                 )
             }
         }
@@ -131,6 +166,105 @@ enum CrashDiagnosticsService {
             return "$HOME/" + path.dropFirst(home.count + 1)
         }
         return path
+    }
+
+    private static func reportKind(for url: URL) -> CrashReportKind {
+        let prefix = reportClassificationPrefix(from: url)
+        if let eventKind = eventReportKind(in: prefix) {
+            return eventKind
+        }
+        if let structuredKind = structuredReportKind(in: prefix) {
+            return structuredKind
+        }
+
+        let lowercasedPrefix = prefix.lowercased()
+        if lowercasedPrefix.contains("exception type:") || lowercasedPrefix.contains("termination reason:") {
+            return .crash
+        }
+        if lowercasedPrefix.contains("stackshot") {
+            return .stackshot
+        }
+        switch url.pathExtension.lowercased() {
+        case "crash":
+            return .crash
+        case "hang":
+            return .hang
+        case "spin":
+            return .spin
+        default:
+            return .unknown
+        }
+    }
+
+    private static func reportClassificationPrefix(from url: URL) -> String {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return "" }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: reportClassificationPrefixBytes) else {
+            return ""
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    private static func eventReportKind(in prefix: String) -> CrashReportKind? {
+        for line in prefix.split(whereSeparator: \.isNewline).prefix(80) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.lowercased().hasPrefix("event:") else { continue }
+            let event = trimmed.dropFirst("event:".count).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return reportKind(fromEventText: event) ?? .unknown
+        }
+        return nil
+    }
+
+    private static func reportKind(fromEventText eventText: String) -> CrashReportKind? {
+        let event = eventText.lowercased()
+        if event.contains("hang") {
+            return .hang
+        }
+        if event.contains("crash") {
+            return .crash
+        }
+        if event.contains("spin") {
+            return .spin
+        }
+        if event.contains("stackshot") {
+            return .stackshot
+        }
+        return nil
+    }
+
+    private static func structuredReportKind(in prefix: String) -> CrashReportKind? {
+        if let metadata = firstJSONMetadataObject(in: prefix) {
+            if let event = metadata["event"] as? String,
+               let eventKind = reportKind(fromEventText: event) {
+                return eventKind
+            }
+            if String(describing: metadata["bug_type"] ?? "") == "309" {
+                return .crash
+            }
+        }
+
+        let compactPrefix = prefix
+            .lowercased()
+            .filter { !$0.isWhitespace }
+        if compactPrefix.contains(#""exception":"#) ||
+            compactPrefix.contains(#""exception":{"#) ||
+            compactPrefix.contains(#""termination":"#) ||
+            compactPrefix.contains(#""termination":{"#) {
+            return .crash
+        }
+        return nil
+    }
+
+    private static func firstJSONMetadataObject(in prefix: String) -> [String: Any]? {
+        for line in prefix.split(whereSeparator: \.isNewline).prefix(5) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.hasPrefix("{"), trimmed.hasSuffix("}") else { continue }
+            guard let data = trimmed.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { continue }
+            return object
+        }
+        return nil
     }
 
     private static func matchingAppName(for fileName: String, prefixes: [String]) -> String? {

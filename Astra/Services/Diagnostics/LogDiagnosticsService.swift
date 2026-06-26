@@ -446,7 +446,8 @@ enum LogDiagnosticsService {
                 "analyzed_log_entries_jsonl",
                 "app_and_task_logs",
                 "browser_flight_logs_when_present",
-                "macos_crash_reports_when_present"
+                "macos_crash_reports_when_present",
+                "macos_crash_hang_reports_when_present"
             ],
             "sourceLogFiles": logFiles.map { file in
                 [
@@ -460,6 +461,7 @@ enum LogDiagnosticsService {
                 [
                     "name": report.fileName,
                     "appName": report.appName,
+                    "kind": report.kind.rawValue,
                     "path": report.displayPath,
                     "modifiedAt": archiveISOFormatter.string(from: report.modifiedAt),
                     "sizeBytes": report.sizeBytes
@@ -488,7 +490,7 @@ enum LogDiagnosticsService {
         - manifest.json: machine-readable index of included diagnostics artifacts.
         - logs/analyzed-log-entries.jsonl: sanitized log entries used by the report.
         - logs/*.log and logs/browser-flight-*.jsonl: relevant app, task, breadcrumb, and browser debug artifacts from the selected time window.
-        - crashes/*.ips or *.crash: matching macOS crash reports from the selected time window, when present.
+        - crashes/*.ips, *.crash, *.hang, or *.spin: matching macOS crash/hang diagnostic reports from the selected time window, when present.
 
         Browser flight logs may include compact page evidence and screenshot thumbnails only when Browser Debug Capture was enabled.
         """
@@ -1896,7 +1898,7 @@ enum LogDiagnosticsService {
             "- Warnings: \(warnings)",
             "- Issue groups: \(issues.count + omittedIssueCount)",
             "- Resolved / non-actionable events: \(notices.count)",
-            "- Crash reports found: \(crashReports.count)",
+            "- Crash / hang reports found: \(crashReports.count)",
             "- Trace groups: \(traceSummaries.count)",
             "- Tasks with issues: \(issueTaskIDs.isEmpty ? "none" : issueTaskIDs.joined(separator: ", "))",
             "- Other tasks seen: \(otherTaskIDs.isEmpty ? "none" : otherTaskIDs.joined(separator: ", "))",
@@ -2006,31 +2008,31 @@ enum LogDiagnosticsService {
     private static func appendCrashReports(_ crashReports: [CrashReportSummary], to lines: inout [String]) {
         lines += [
             "",
-            "## Crash Reports",
+            "## Crash / Hang Reports",
             ""
         ]
 
         guard !crashReports.isEmpty else {
             lines += [
-                "No recent ASTRA crash reports were found in `\(CrashDiagnosticsService.userFacingPath(CrashDiagnosticsService.defaultDiagnosticReportsDirectory))`."
+                "No recent ASTRA crash or hang reports were found in `\(CrashDiagnosticsService.userFacingPath(CrashDiagnosticsService.defaultDiagnosticReportsDirectory))`."
             ]
             return
         }
 
         lines += [
-            "Recent macOS crash reports matching ASTRA app names:",
+            "Recent macOS crash/hang diagnostic reports matching ASTRA app names:",
             ""
         ]
 
         for report in crashReports {
             lines.append(
-                "- `\(report.fileName)` | app: \(report.appName) | modified: \(displayTimestamp(report.modifiedAt)) | size: \(byteCount(report.sizeBytes)) | path: `\(report.displayPath)`"
+                "- \(report.kind.displayName) report: `\(report.fileName)` | app: \(report.appName) | modified: \(displayTimestamp(report.modifiedAt)) | size: \(byteCount(report.sizeBytes)) | path: `\(report.displayPath)`"
             )
         }
 
         lines += [
             "",
-            "Open `$HOME/Library/Logs/DiagnosticReports` or use the Crashes button in the log viewer to reveal these files in Finder."
+            "Open `$HOME/Library/Logs/DiagnosticReports` or use the Crash/Hang button in the log viewer to reveal these files in Finder."
         ]
     }
 
