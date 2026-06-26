@@ -39,6 +39,53 @@ struct ArchitectureFitnessTests {
         ])
     }
 
+    @Test("Workspace App Studio stays on the direct session architecture")
+    func workspaceAppStudioStaysOnDirectSessionArchitecture() throws {
+        let root = try repositoryRoot()
+        let retiredFiles = [
+            "Astra/Services/WorkspaceApps/WorkspaceAppStudioBuildTaskBuilder.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppStudioBuilderContractFactory.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppStudioContext.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppStudioContextBuilder.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppStudioContextRedactor.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppStudioDraftSupport.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppStudioGenerationTaskBuilder.swift",
+            "Astra/Views/ChatPanelDraftPresentation.swift"
+        ]
+
+        let existingRetiredFiles = retiredFiles.filter {
+            FileManager.default.fileExists(atPath: root.appendingPathComponent($0).path)
+        }
+        #expect(existingRetiredFiles.isEmpty, "Retired task-draft App Studio files should stay removed: \(existingRetiredFiles)")
+
+        let retiredSymbols = [
+            "ChatPanelDraftPresentation",
+            "WorkspaceAppStudioBuildConversationMessage",
+            "WorkspaceAppStudioBuilderContract",
+            "WorkspaceAppStudioBuilderContractFactory",
+            "WorkspaceAppStudioBuildTaskBuilder",
+            "WorkspaceAppStudioBuildTaskDraft",
+            "WorkspaceAppStudioContext",
+            "WorkspaceAppStudioContextBuilder",
+            "WorkspaceAppStudioContextRedactor",
+            "WorkspaceAppStudioContextRequest",
+            "WorkspaceAppStudioDraftSupport",
+            "WorkspaceAppStudioGenerationTaskBuilder",
+            "WorkspaceAppStudioGenerationTaskDraft"
+        ]
+
+        let symbolMatches = try swiftFiles(under: root.appendingPathComponent("Astra"))
+            .flatMap { file -> [String] in
+                let relativePath = relativePath(for: file, root: root)
+                let text = try String(contentsOf: file, encoding: .utf8)
+                return retiredSymbols
+                    .filter { text.contains($0) }
+                    .map { "\(relativePath): \($0)" }
+            }
+
+        #expect(symbolMatches.isEmpty, "Workspace App Studio should be owned by WorkspaceAppStudioSession and generator, not task drafts: \(symbolMatches)")
+    }
+
     @Test("Prompt section provider identifiers are unique and used by known prompt modes")
     @MainActor
     func promptSectionProviderIdentifiersAreUniqueAndUsedByKnownModes() {
