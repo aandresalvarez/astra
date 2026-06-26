@@ -96,15 +96,15 @@ struct WorkspaceAppEndToEndTests {
     // MARK: - Chat entry point
 
     @MainActor
-    @Test("the /app chat command publishes a working app end to end")
-    func chatCommandPublishesApp() throws {
+    @Test("the /app chat command routes without publishing an app")
+    func chatCommandRoutesWithoutPublishingApp() throws {
         let env = try Self.makeEnv()
         defer { try? FileManager.default.removeItem(at: env.root) }
-        let reply = WorkspaceAppChatCommand.reply(input: "/app Build me a grocery database app.", workspace: env.workspace, modelContext: env.context)
-        #expect(reply.contains("created"))
-        let app = try #require(try env.context.fetch(FetchDescriptor<WorkspaceApp>()).first { $0.workspaceID == env.workspace.id })
-        #expect(app.lifecycleStatus == .published)
-        #expect(app.latestVersionNumber == 1)  // publish snapshotted a version
+        let request = try #require(WorkspaceAppChatCommand.launchRequest(input: "/app Build me a grocery database app."))
+        #expect(request.initialPrompt == "Build me a grocery database app.")
+        let apps = try env.context.fetch(FetchDescriptor<WorkspaceApp>())
+            .filter { $0.workspaceID == env.workspace.id }
+        #expect(apps.isEmpty)
     }
 
     // MARK: - REDCap form pipeline

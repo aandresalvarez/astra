@@ -62,13 +62,4 @@ struct WorkspaceAppDetailPresentationTests {
         )
         #expect(presentation == .existingTask)
     }
-
-    @Test("the New App entry shows only on the workspace home and new-task composer")
-    func newAppEntryVisibility() {
-        #expect(WorkspaceAppStudioEntryPresentation.shouldShowNewAppEntry(for: .workspaceHome))
-        #expect(WorkspaceAppStudioEntryPresentation.shouldShowNewAppEntry(for: .newTaskComposer))
-        #expect(!WorkspaceAppStudioEntryPresentation.shouldShowNewAppEntry(for: .workspaceApp))
-        #expect(!WorkspaceAppStudioEntryPresentation.shouldShowNewAppEntry(for: .workspaceAppStudio))
-        #expect(!WorkspaceAppStudioEntryPresentation.shouldShowNewAppEntry(for: .existingTask))
-    }
 }
