@@ -43,6 +43,12 @@ struct WorkspaceAppChatCommandTests {
         #expect(request.initialPrompt == "Build me a PR tracker.")
     }
 
+    @Test("'/app' parser treats the command as a token")
+    func appCommandParserTreatsCommandAsToken() throws {
+        let request = try #require(WorkspaceAppChatCommand.launchRequest(input: "  /APP\tBuild me a PR tracker.  "))
+        #expect(request.initialPrompt == "Build me a PR tracker.")
+    }
+
     @Test("similar slash commands do not route to App Studio")
     func nonAppCommandsDoNotMatch() {
         #expect(WorkspaceAppChatCommand.launchRequest(input: "/application build") == nil)

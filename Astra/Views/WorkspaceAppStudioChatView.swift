@@ -44,6 +44,7 @@ struct WorkspaceAppStudioChatView: View {
             composerFocused = true
         }
         .onChange(of: session.initialPrompt) { _, _ in applyInitialPromptIfNeeded() }
+        .onChange(of: inputText) { _, _ in applyInitialPromptIfNeeded() }
         .sheet(isPresented: $isTesting) {
             if let draft = session.draft {
                 WorkspaceAppTestPanelView(
@@ -319,11 +320,29 @@ struct WorkspaceAppStudioChatView: View {
     }
 
     private func applyInitialPromptIfNeeded() {
-        let normalized = WorkspaceAppStudioLaunchRequest.normalizedPrompt(session.initialPrompt)
+        WorkspaceAppStudioInitialPromptApplicator.apply(
+            initialPrompt: session.initialPrompt,
+            inputText: &inputText,
+            appliedInitialPrompt: &appliedInitialPrompt
+        )
+    }
+}
+
+enum WorkspaceAppStudioInitialPromptApplicator {
+    static func apply(
+        initialPrompt: String?,
+        inputText: inout String,
+        appliedInitialPrompt: inout String?
+    ) {
+        let normalized = WorkspaceAppStudioLaunchRequest.normalizedPrompt(initialPrompt)
         guard appliedInitialPrompt != normalized else { return }
-        appliedInitialPrompt = normalized
-        guard let normalized,
-              inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard let normalized else {
+            appliedInitialPrompt = nil
+            return
+        }
+        guard inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
         inputText = normalized
+        appliedInitialPrompt = normalized
     }
 }

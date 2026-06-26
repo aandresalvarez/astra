@@ -93,6 +93,44 @@ struct WorkspaceAppStudioSessionTests {
         #expect(session.initialPrompt == nil)
     }
 
+    @Test("initial prompt is only marked applied after it reaches an empty composer")
+    func initialPromptApplicationDefersUntilComposerIsEmpty() {
+        var inputText = "existing draft"
+        var appliedInitialPrompt: String?
+
+        WorkspaceAppStudioInitialPromptApplicator.apply(
+            initialPrompt: "  build a PR tracker  ",
+            inputText: &inputText,
+            appliedInitialPrompt: &appliedInitialPrompt
+        )
+        #expect(inputText == "existing draft")
+        #expect(appliedInitialPrompt == nil)
+
+        inputText = ""
+        WorkspaceAppStudioInitialPromptApplicator.apply(
+            initialPrompt: "  build a PR tracker  ",
+            inputText: &inputText,
+            appliedInitialPrompt: &appliedInitialPrompt
+        )
+        #expect(inputText == "build a PR tracker")
+        #expect(appliedInitialPrompt == "build a PR tracker")
+    }
+
+    @Test("initial prompt applicator clears applied state when prompt is removed")
+    func initialPromptApplicationClearsRemovedPrompt() {
+        var inputText = ""
+        var appliedInitialPrompt: String? = "build a PR tracker"
+
+        WorkspaceAppStudioInitialPromptApplicator.apply(
+            initialPrompt: nil,
+            inputText: &inputText,
+            appliedInitialPrompt: &appliedInitialPrompt
+        )
+
+        #expect(inputText.isEmpty)
+        #expect(appliedInitialPrompt == nil)
+    }
+
     @Test("the first message generates an app and surfaces an assistant summary")
     func firstTurnGenerates() async {
         let (session, stub) = session([Self.result(Self.validManifest)])

@@ -17,12 +17,18 @@ struct WorkspaceAppStudioLaunchRequest: Equatable {
 /// Generation, validation, and publishing stay inside `WorkspaceAppStudioSession`
 /// plus the Publish callback owned by `ContentView`.
 enum WorkspaceAppChatCommand {
+    private static let commandToken = "/app"
+
     static func launchRequest(input: String) -> WorkspaceAppStudioLaunchRequest? {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        let lower = trimmed.lowercased()
-        guard lower == "/app" || lower.hasPrefix("/app ") else { return nil }
+        let commandEnd = trimmed.firstIndex(where: isCommandSeparator) ?? trimmed.endIndex
+        let token = String(trimmed[..<commandEnd]).lowercased()
+        guard token == commandToken else { return nil }
 
-        let promptStart = trimmed.index(trimmed.startIndex, offsetBy: 4)
-        return WorkspaceAppStudioLaunchRequest(initialPrompt: String(trimmed[promptStart...]))
+        return WorkspaceAppStudioLaunchRequest(initialPrompt: String(trimmed[commandEnd...]))
+    }
+
+    private static func isCommandSeparator(_ character: Character) -> Bool {
+        character.unicodeScalars.allSatisfy { CharacterSet.whitespacesAndNewlines.contains($0) }
     }
 }
