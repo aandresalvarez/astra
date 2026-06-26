@@ -513,6 +513,69 @@ struct WorkspaceAppServiceTests {
     }
 
     @MainActor
+    @Test("service duplicates from the directory that owns the readable manifest")
+    func serviceDuplicatesFromReadableManifestDirectoryWhenCanonicalDirectoryIsStale() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("workspace-app-duplicate-legacy-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let workspace = Workspace(name: "Apps", primaryPath: root.path)
+        context.insert(workspace)
+
+        let service = WorkspaceAppService()
+        let result = try service.createApp(
+            manifest: Self.reconciliationManifest(),
+            in: workspace,
+            modelContext: context
+        )
+        let canonicalDirectory = result.manifestURL.deletingLastPathComponent()
+        let legacyDirectory = URL(fileURLWithPath: workspace.primaryPath)
+            .appendingPathComponent(".astra/apps/legacy-reconciliation", isDirectory: true)
+        try FileManager.default.moveItem(at: canonicalDirectory, to: legacyDirectory)
+        try FileManager.default.createDirectory(
+            at: canonicalDirectory.appendingPathComponent("data", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        result.app.manifestRelativePath = ".astra/apps/legacy-reconciliation/manifest.json"
+        result.app.appDirectoryRelativePath = ".astra/apps/legacy-reconciliation"
+
+        let legacyDatabaseURL = legacyDirectory
+            .appendingPathComponent("data", isDirectory: true)
+            .appendingPathComponent("app.sqlite")
+        try WorkspaceAppStorageService().insertRecord(
+            [
+                "id": .text("review-1"),
+                "source_record_id": .text("P-001"),
+                "match_status": .text("missing")
+            ],
+            into: "review_items",
+            databaseURL: legacyDatabaseURL
+        )
+
+        let duplicate = try service.duplicateApp(
+            result.app,
+            in: workspace,
+            modelContext: context,
+            now: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+
+        let duplicateDatabaseURL = URL(fileURLWithPath: WorkspaceFileLayout.appDatabaseFile(
+            workspacePath: workspace.primaryPath,
+            appID: duplicate.app.logicalID
+        ))
+        let rows = try WorkspaceAppStorageService().records(in: "review_items", databaseURL: duplicateDatabaseURL)
+        #expect(rows.count == 1)
+        #expect(rows[0]["source_record_id"] == .text("P-001"))
+    }
+
+    @MainActor
     @Test("service deletes app files and related domain records")
     func serviceDeletesAppFilesAndRelatedDomainRecords() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())

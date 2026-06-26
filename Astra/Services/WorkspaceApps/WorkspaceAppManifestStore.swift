@@ -45,16 +45,15 @@ struct WorkspaceAppManifestStore {
 
     func appDirectoryURL(app: WorkspaceApp, workspace: Workspace) -> URL {
         let canonical = canonicalAppDirectoryURL(app: app, workspace: workspace)
-        if fileManager.fileExists(atPath: canonical.path) {
-            return canonical
+        if let manifest = existingManifestURL(app: app, workspace: workspace) {
+            return manifest.deletingLastPathComponent()
         }
         if let stored = storedAppDirectoryURL(app: app, workspace: workspace),
            fileManager.fileExists(atPath: stored.path) {
             return stored
         }
-        if let storedManifest = storedManifestURL(app: app, workspace: workspace),
-           fileManager.fileExists(atPath: storedManifest.path) {
-            return storedManifest.deletingLastPathComponent()
+        if fileManager.fileExists(atPath: canonical.path) {
+            return canonical
         }
         return canonical
     }
