@@ -936,7 +936,7 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Browser/ShelfBrowserSession.swift": 5_900,
             "Astra/Views/ContentView.swift": 5_000,
             "Astra/Views/WorkspaceRightRailView.swift": 3_500,
-            "Astra/Views/ChatPanelView.swift": 3_215,  // +/app chat command (one-shot Workspace App generation)
+            "Astra/Views/ChatPanelView.swift": 3_215,
             "Astra/Services/Runtime/AgentRuntimeAdapter.swift": 2_940,
             "Astra/Views/PluginCatalogView.swift": 2_900,
             "Astra/Views/ShelfMarkdownPanelView.swift": 2_850,

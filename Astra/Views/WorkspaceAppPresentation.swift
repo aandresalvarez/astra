@@ -1027,14 +1027,7 @@ enum WorkspaceAppDetailActionsPresentation {
 }
 
 enum WorkspaceAppsPresentation {
-    static let sectionTitle = "Apps"
-    static let newAppActionTitle = "New App"
-    static let editActionTitle = "Open in App Studio"
-    static let appCardsAppearBeforeTasks = true
-    static let hidesEmptySection = true
-    static let sectionIsUnframed = true
     static let cardCornerRadius: CGFloat = 8
-    static let cardMinHeight = WorkspaceHomePresentation.rowMinHeight
 
     static func cards(
         for apps: [WorkspaceApp],
