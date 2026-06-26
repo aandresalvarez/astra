@@ -73,13 +73,6 @@ enum ContentDetailPresentation: Equatable {
     }
 }
 
-// Slice 9 / F7: where the "New App" entry should appear in the workspace UI.
-enum WorkspaceAppStudioEntryPresentation {
-    static func shouldShowNewAppEntry(for presentation: ContentDetailPresentation) -> Bool {
-        presentation == .newTaskComposer || presentation == .workspaceHome
-    }
-}
-
 struct ContentWorkspaceSelectionUpdate {
     let selectedTask: AgentTask?
     let selectedWorkspace: Workspace?

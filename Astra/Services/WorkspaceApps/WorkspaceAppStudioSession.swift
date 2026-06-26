@@ -60,6 +60,7 @@ typealias WorkspaceAppStudioVerify = (
 @MainActor
 final class WorkspaceAppStudioSession: ObservableObject {
     @Published private(set) var messages: [StudioMessage] = []
+    @Published private(set) var initialPrompt: String?
     /// The work-in-progress app. `nil` until the first turn produces one — the preview
     /// shows an empty state meanwhile.
     @Published private(set) var draft: WorkspaceAppStudioDraft?
@@ -151,8 +152,13 @@ final class WorkspaceAppStudioSession: ObservableObject {
 
     /// Start (or restart) a conversation. With `existingManifest`, seed the draft from it so
     /// "Edit in Studio" continues from the current app instead of a blank slate.
-    func reset(for workspace: Workspace, existingManifest: WorkspaceAppManifest? = nil) {
+    func reset(
+        for workspace: Workspace,
+        existingManifest: WorkspaceAppManifest? = nil,
+        initialPrompt: String? = nil
+    ) {
         workspaceID = workspace.id
+        self.initialPrompt = WorkspaceAppStudioLaunchRequest.normalizedPrompt(initialPrompt)
         isGenerating = false
         isBuildingFirstDraft = false
         isVerifying = false
@@ -197,6 +203,7 @@ final class WorkspaceAppStudioSession: ObservableObject {
     /// so a late result can't resume into a session that's no longer active.
     func cancelGeneration() {
         generationToken &+= 1
+        initialPrompt = nil
         isGenerating = false
         isBuildingFirstDraft = false
         isVerifying = false
@@ -215,6 +222,7 @@ final class WorkspaceAppStudioSession: ObservableObject {
     ) async {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isGenerating else { return }
+        initialPrompt = nil
         workspaceID = workspace.id
         messages.append(StudioMessage(role: .user, text: text))
 
