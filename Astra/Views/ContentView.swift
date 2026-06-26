@@ -600,18 +600,16 @@ struct ContentView: View {
         .id(app.id)
     }
 
-    private func startWorkspaceAppStudio(existingManifest: WorkspaceAppManifest? = nil, initialPrompt: String? = nil) {
+    private func startWorkspaceAppStudio(existingManifest: WorkspaceAppManifest? = nil, initialPrompt: String? = nil, workspace targetWorkspace: Workspace? = nil) {
+        if let targetWorkspace { selectedWorkspace = targetWorkspace }
         selectedTask = nil
         selectedWorkspaceApp = nil
         isComposingTask = false
         isComposingWorkspaceApp = true
-        // The app builder owns the right side: clear any open context rail so toggling the
-        // preview off later doesn't reveal a stale rail underneath it.
         isWorkspaceRightRailVisible = false
-        if let workspace = effectiveWorkspace {
+        if let workspace = targetWorkspace ?? effectiveWorkspace {
             workspaceAppStudioSession.reset(for: workspace, existingManifest: existingManifest, initialPrompt: initialPrompt)
         }
-        // Dock the live preview alongside the conversation.
         setActiveWorkspaceCanvasItem(.appPreview, remember: false)
     }
 
@@ -624,7 +622,6 @@ struct ContentView: View {
         }
     }
 
-    /// Show/hide the live preview shelf from the Studio chat header.
     private func toggleAppPreviewCanvas() {
         if activeWorkspaceCanvasItem == .appPreview {
             animatePanelChange {
@@ -650,10 +647,13 @@ struct ContentView: View {
     }
 
     private func setSelectedWorkspaceApp(_ app: WorkspaceApp?) {
+        if let route = WorkspaceAppStudioDraftOpenResolver.route(app: app, workspaces: workspaces, fallbackWorkspace: effectiveWorkspace) {
+            startWorkspaceAppStudio(existingManifest: route.manifest, workspace: route.workspace)
+            return
+        }
         selectedTask = nil
         isComposingTask = false
         isComposingWorkspaceApp = false
-        // Leaving the Studio (e.g. on publish): collapse the live-preview shelf.
         if activeWorkspaceCanvasItem == .appPreview {
             setActiveWorkspaceCanvasItem(nil, remember: false)
         }

@@ -10,11 +10,15 @@ import Testing
 struct WorkspaceAppDetailPresentationTests {
 
     @MainActor
-    private func makeApp(_ workspace: Workspace) -> WorkspaceApp {
+    private func makeApp(
+        _ workspace: Workspace,
+        lifecycleStatus: WorkspaceAppLifecycleStatus = .published
+    ) -> WorkspaceApp {
         WorkspaceApp(
             workspaceID: workspace.id,
             logicalID: "agentic-workflow",
             name: "Agentic Workflow",
+            lifecycleStatus: lifecycleStatus,
             manifestRelativePath: "m.json",
             appDirectoryRelativePath: "d",
             manifestDigest: "digest"
@@ -22,8 +26,8 @@ struct WorkspaceAppDetailPresentationTests {
     }
 
     @MainActor
-    @Test("a selected workspace app resolves to the app detail surface")
-    func selectedAppResolvesToAppDetail() {
+    @Test("a selected published workspace app resolves to the app detail surface")
+    func selectedPublishedAppResolvesToAppDetail() {
         let workspace = Workspace(name: "WS", primaryPath: "/tmp/f7")
         let presentation = ContentDetailPresentation.resolve(
             selectedTask: nil,
@@ -32,6 +36,19 @@ struct WorkspaceAppDetailPresentationTests {
             selectedWorkspaceApp: makeApp(workspace)
         )
         #expect(presentation == .workspaceApp)
+    }
+
+    @MainActor
+    @Test("a selected draft workspace app resolves to App Studio")
+    func selectedDraftAppResolvesToStudio() {
+        let workspace = Workspace(name: "WS", primaryPath: "/tmp/f7")
+        let presentation = ContentDetailPresentation.resolve(
+            selectedTask: nil,
+            effectiveWorkspace: workspace,
+            isComposingTask: false,
+            selectedWorkspaceApp: makeApp(workspace, lifecycleStatus: .draft)
+        )
+        #expect(presentation == .workspaceAppStudio)
     }
 
     @MainActor

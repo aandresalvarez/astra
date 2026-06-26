@@ -53,8 +53,8 @@ enum ContentDetailPresentation: Equatable {
             return selectedTask.status == .draft ? .draftTask : .existingTask
         }
 
-        if selectedWorkspaceApp != nil {
-            return .workspaceApp
+        if let selectedWorkspaceApp {
+            return selectedWorkspaceApp.lifecycleStatus == .draft ? .workspaceAppStudio : .workspaceApp
         }
 
         guard let effectiveWorkspace else {
