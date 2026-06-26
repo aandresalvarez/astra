@@ -62,4 +62,31 @@ struct WorkspaceAppDetailPresentationTests {
         )
         #expect(presentation == .existingTask)
     }
+
+    @MainActor
+    @Test("new task composition takes precedence over a selected app")
+    func newTaskCompositionTakesPrecedenceOverApp() {
+        let workspace = Workspace(name: "WS", primaryPath: "/tmp/f7")
+        let presentation = ContentDetailPresentation.resolve(
+            selectedTask: nil,
+            effectiveWorkspace: workspace,
+            isComposingTask: true,
+            selectedWorkspaceApp: makeApp(workspace)
+        )
+        #expect(presentation == .newTaskComposer)
+    }
+
+    @MainActor
+    @Test("App Studio composition takes precedence over a selected app")
+    func appStudioCompositionTakesPrecedenceOverApp() {
+        let workspace = Workspace(name: "WS", primaryPath: "/tmp/f7")
+        let presentation = ContentDetailPresentation.resolve(
+            selectedTask: nil,
+            effectiveWorkspace: workspace,
+            isComposingTask: false,
+            selectedWorkspaceApp: makeApp(workspace),
+            isComposingWorkspaceApp: true
+        )
+        #expect(presentation == .workspaceAppStudio)
+    }
 }

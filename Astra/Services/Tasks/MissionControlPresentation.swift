@@ -36,7 +36,7 @@ struct MissionControlPresentation: Equatable {
     var blockerCount: Int
     var artifactCount: Int
     var changedFileCount: Int
-    var budgetSummary: String
+    var budgetSummary: String?
     var nextAction: String?
     var correction: MissionControlCorrection?
     var sourcePointerCount: Int
@@ -180,8 +180,10 @@ struct MissionControlPresentation: Equatable {
         return "\(contract.status): \(contract.requiredPassed)/\(contract.requiredTotal) required, \(contract.assertionCount) assertions"
     }
 
-    private static func budgetSummary(task: AgentTask) -> String {
-        let budget = task.tokenBudget > 0 ? Formatters.formatTokens(task.tokenBudget) : "unlimited"
+    private static func budgetSummary(task: AgentTask) -> String? {
+        guard RuntimeBudgetPresentation.isEnabled(task.tokenBudget) else { return nil }
+
+        let budget = Formatters.formatTokens(task.tokenBudget)
         let used = Formatters.formatTokens(task.tokensUsed)
         if task.costUSD > 0 {
             return "\(used) used / \(budget), \(String(format: "$%.2f", task.costUSD))"
