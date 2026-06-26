@@ -591,14 +591,14 @@ struct WorkspaceToolSupportTests {
 
         let docker = root.appendingPathComponent("docker")
         let log = root.appendingPathComponent("docker.log")
+        let quotedLogPath = log.path.replacingOccurrences(of: "'", with: "'\\''")
         try """
         #!/bin/sh
-        printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+        LOG='\(quotedLogPath)'
+        printf '%s\\n' "$*" >> "$LOG"
         exit 99
         """.write(to: docker, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
-        setenv("FAKE_DOCKER_LOG", log.path, 1)
-        defer { unsetenv("FAKE_DOCKER_LOG") }
 
         let configuration = WorkspaceToolConfiguration(
             dockerExecutable: docker.path,
@@ -681,9 +681,11 @@ struct WorkspaceToolSupportTests {
 
         let docker = root.appendingPathComponent("docker")
         let log = root.appendingPathComponent("docker.log")
+        let quotedLogPath = log.path.replacingOccurrences(of: "'", with: "'\\''")
         try """
         #!/bin/sh
-        printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+        LOG='\(quotedLogPath)'
+        printf '%s\\n' "$*" >> "$LOG"
         case "$1" in
           inspect) exit 1 ;;
           rm) exit 0 ;;
@@ -694,8 +696,6 @@ struct WorkspaceToolSupportTests {
         esac
         """.write(to: docker, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
-        setenv("FAKE_DOCKER_LOG", log.path, 1)
-        defer { unsetenv("FAKE_DOCKER_LOG") }
 
         let jobRoot = root.appendingPathComponent("jobs", isDirectory: true)
         let configuration = WorkspaceToolConfiguration(
@@ -754,9 +754,11 @@ struct WorkspaceToolSupportTests {
         try FileManager.default.createDirectory(at: hostWorkspace, withIntermediateDirectories: true)
         let docker = root.appendingPathComponent("docker")
         let log = root.appendingPathComponent("docker.log")
+        let quotedLogPath = log.path.replacingOccurrences(of: "'", with: "'\\''")
         try """
         #!/bin/sh
-        printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+        LOG='\(quotedLogPath)'
+        printf '%s\\n' "$*" >> "$LOG"
         case "$1" in
           inspect) exit 1 ;;
           rm) exit 0 ;;
@@ -767,8 +769,6 @@ struct WorkspaceToolSupportTests {
         esac
         """.write(to: docker, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
-        setenv("FAKE_DOCKER_LOG", log.path, 1)
-        defer { unsetenv("FAKE_DOCKER_LOG") }
 
         let jobRoot = root.appendingPathComponent("jobs", isDirectory: true)
         let configuration = WorkspaceToolConfiguration(
@@ -816,9 +816,11 @@ struct WorkspaceToolSupportTests {
 
         let docker = root.appendingPathComponent("docker")
         let log = root.appendingPathComponent("docker.log")
+        let quotedLogPath = log.path.replacingOccurrences(of: "'", with: "'\\''")
         try """
         #!/bin/sh
-        printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+        LOG='\(quotedLogPath)'
+        printf '%s\\n' "$*" >> "$LOG"
         case "$1" in
           inspect) exit 1 ;;
           rm) exit 0 ;;
@@ -834,8 +836,6 @@ struct WorkspaceToolSupportTests {
         esac
         """.write(to: docker, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
-        setenv("FAKE_DOCKER_LOG", log.path, 1)
-        defer { unsetenv("FAKE_DOCKER_LOG") }
 
         let jobRoot = root.appendingPathComponent(".astra/tasks/task-4/jobs", isDirectory: true)
         let diagnostics = root.appendingPathComponent(".astra/tasks/task-4/diagnostics", isDirectory: true)
