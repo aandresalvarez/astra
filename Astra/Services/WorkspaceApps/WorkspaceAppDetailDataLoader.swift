@@ -85,20 +85,12 @@ struct WorkspaceAppDetailDataLoader {
             )
         }
 
-        let manifestURL = URL(fileURLWithPath: WorkspaceFileLayout.appManifestFile(
-            workspacePath: workspace.primaryPath,
-            appID: app.logicalID
-        ))
-        let databaseURL = URL(fileURLWithPath: WorkspaceFileLayout.appDatabaseFile(
-            workspacePath: workspace.primaryPath,
-            appID: app.logicalID
-        ))
-
         do {
-            let data = try Data(contentsOf: manifestURL)
-            let manifest = try JSONDecoder().decode(WorkspaceAppManifest.self, from: data)
+            let manifestStore = WorkspaceAppManifestStore(fileManager: fileManager)
+            let loaded = try manifestStore.loadManifest(app: app, workspace: workspace)
+            let manifest = loaded.manifest
             let tables = (manifest.storage?.tables ?? []).map { table in
-                tableSnapshot(table, databaseURL: databaseURL)
+                tableSnapshot(table, databaseURL: loaded.location.databaseURL)
             }
             return WorkspaceAppDetailDataSnapshot(
                 manifest: manifest,

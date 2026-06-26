@@ -347,6 +347,58 @@ struct WorkspaceAppServiceTests {
     }
 
     @MainActor
+    @Test("service enables automation from canonical manifest when stored path is stale")
+    func serviceEnablesAutomationFromCanonicalManifestWhenStoredPathIsStale() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("workspace-app-enable-automation-canonical-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let workspace = Workspace(name: "Apps", primaryPath: root.path)
+        context.insert(workspace)
+
+        var manifest = Self.reconciliationManifest()
+        manifest.automations = [
+            WorkspaceAppAutomationSpec(
+                id: "hourly-refresh",
+                type: "schedule",
+                enabledByDefault: false,
+                action: "refresh",
+                scheduleType: "interval",
+                intervalSeconds: 3_600
+            )
+        ]
+
+        let service = WorkspaceAppService()
+        let result = try service.createApp(
+            manifest: manifest,
+            in: workspace,
+            modelContext: context
+        )
+        result.app.manifestRelativePath = ".astra/apps/stale/manifest.json"
+        result.app.appDirectoryRelativePath = ".astra/apps/stale"
+        let enabledAt = Date(timeIntervalSince1970: 1_800_000_000)
+
+        try service.setAutomationEnabled(
+            app: result.app,
+            automationID: "hourly-refresh",
+            isEnabled: true,
+            workspace: workspace,
+            modelContext: context,
+            now: enabledAt
+        )
+
+        let automation = try #require(try service.automationStates(for: result.app, modelContext: context).first)
+        #expect(automation.nextRunAt == enabledAt.addingTimeInterval(3_600))
+    }
+
+    @MainActor
     @Test("service records app open and refresh lifecycle timestamps")
     func serviceRecordsAppOpenAndRefreshLifecycleTimestamps() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())

@@ -41,18 +41,15 @@ struct WorkspaceAppPackageExporter {
             throw WorkspaceAppPackageExportError.missingWorkspacePath
         }
 
-        let manifest = try loadManifest(app: app, workspace: workspace)
+        let loaded = try loadManifest(app: app, workspace: workspace)
         let packageURL = try nextPackageURL(appID: app.logicalID, workspacePath: workspace.primaryPath)
         _ = try packageService.exportPackage(
-            manifest: manifest,
+            manifest: loaded.manifest,
             to: packageURL,
             packageID: "\(app.logicalID).astra-app",
             version: version,
             mode: mode,
-            appStorageDatabaseURL: URL(fileURLWithPath: WorkspaceFileLayout.appDatabaseFile(
-                workspacePath: workspace.primaryPath,
-                appID: app.logicalID
-            )),
+            appStorageDatabaseURL: loaded.location.databaseURL,
             createdAt: createdAt
         )
         let report = packageService.validatePackage(at: packageURL)
@@ -62,14 +59,14 @@ struct WorkspaceAppPackageExporter {
         return WorkspaceAppPackageExportResult(packageURL: packageURL, validationReport: report)
     }
 
-    private func loadManifest(app: WorkspaceApp, workspace: Workspace) throws -> WorkspaceAppManifest {
-        let manifestURL = URL(fileURLWithPath: workspace.primaryPath)
-            .appendingPathComponent(app.manifestRelativePath)
+    private func loadManifest(app: WorkspaceApp, workspace: Workspace) throws -> WorkspaceAppLoadedManifest {
+        let manifestStore = WorkspaceAppManifestStore(fileManager: fileManager)
+        let manifestURL = manifestStore.readableManifestURL(app: app, workspace: workspace)
         guard fileManager.fileExists(atPath: manifestURL.path) else {
             throw WorkspaceAppPackageExportError.missingManifest(manifestURL.path)
         }
         do {
-            return try JSONDecoder().decode(WorkspaceAppManifest.self, from: Data(contentsOf: manifestURL))
+            return try manifestStore.loadManifest(app: app, workspace: workspace)
         } catch {
             throw WorkspaceAppPackageExportError.decodeManifestFailed(String(describing: error))
         }

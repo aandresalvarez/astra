@@ -65,6 +65,51 @@ struct WorkspaceAppDetailDataLoaderTests {
         #expect(snapshot.storageTables[0].rows[0]["quantity"] == .integer(6))
     }
 
+    @Test("loader reads a manifest from a stored legacy path when canonical storage is absent")
+    func loaderReadsManifestFromStoredLegacyPathWhenCanonicalStorageIsAbsent() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("workspace-app-detail-legacy-path-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let workspace = Workspace(name: "Legacy", primaryPath: root.path)
+        let manifest = WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(
+                id: "legacy-recon",
+                name: "Legacy Reconciliation",
+                description: "Imported before the canonical app layout."
+            ),
+            storage: WorkspaceAppStorageSchema(tables: [
+                WorkspaceAppStorageTable(name: "records", columns: [
+                    WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true),
+                    WorkspaceAppStorageColumn(name: "title", type: "text")
+                ])
+            ]),
+            sources: [
+                WorkspaceAppSource(id: "legacy_source", mode: "read", tableRef: "records")
+            ]
+        )
+        let legacyRelativeManifest = "apps/legacy-recon/manifest.json"
+        let legacyManifestURL = root.appendingPathComponent(legacyRelativeManifest)
+        try FileManager.default.createDirectory(at: legacyManifestURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try WorkspaceAppService.encodeManifest(manifest).write(to: legacyManifestURL)
+
+        let app = WorkspaceApp(
+            workspaceID: workspace.id,
+            logicalID: manifest.app.id,
+            name: manifest.app.name,
+            manifestRelativePath: legacyRelativeManifest,
+            appDirectoryRelativePath: "apps/legacy-recon",
+            manifestDigest: "digest"
+        )
+
+        let snapshot = WorkspaceAppDetailDataLoader().load(app: app, workspace: workspace)
+
+        #expect(snapshot.errorMessage == nil)
+        #expect(snapshot.manifest == manifest)
+        #expect(snapshot.storageTables.map { $0.name } == ["records"])
+    }
+
     @Test("loader includes dependency bindings for the selected app")
     func loaderIncludesDependencyBindingsForSelectedApp() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
