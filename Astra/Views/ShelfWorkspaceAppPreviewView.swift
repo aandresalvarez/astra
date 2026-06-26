@@ -8,6 +8,10 @@ import SwiftUI
 /// it from the new manifest (a fresh, disposable test sandbox — by design).
 struct ShelfWorkspaceAppPreviewView: View {
     @ObservedObject var session: WorkspaceAppStudioSession
+    /// The workspace the draft belongs to — threaded into the preview so a connector-read app can
+    /// resolve LIVE, read-only `astra.read` data (real `gh` PRs etc.) before publishing. nil ⇒ reads
+    /// stay simulated.
+    var workspace: Workspace?
     /// Collapses the preview shelf (the preview's own "Done" button).
     var onClose: () -> Void
 
@@ -19,7 +23,7 @@ struct ShelfWorkspaceAppPreviewView: View {
                 // app. Once the result lands, the real app replaces this.
                 buildingState
             } else if let draft = session.draft {
-                WorkspaceAppPreviewView(manifest: draft.manifest, onClose: onClose, minWidth: 400)
+                WorkspaceAppPreviewView(manifest: draft.manifest, workspace: workspace, onClose: onClose, minWidth: 400)
                     // A new draft => a new sandbox: discard the prior preview's in-memory edits.
                     .id(session.draftRevision)
             } else {
@@ -41,7 +45,7 @@ struct ShelfWorkspaceAppPreviewView: View {
                 Text("Live preview")
                     .font(Stanford.ui(16, weight: .semibold))
                     .foregroundStyle(.primary)
-                Text("Sandbox · nothing is saved")
+                Text("Sandbox · nothing is written or saved")
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
             }

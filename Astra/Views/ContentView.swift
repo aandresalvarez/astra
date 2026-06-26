@@ -3266,6 +3266,7 @@ private struct ContentDetailAreaView: View {
         case .appPreview:
             ShelfWorkspaceAppPreviewView(
                 session: studioSession,
+                workspace: effectiveWorkspace,
                 onClose: { activeCanvasItem = nil }
             )
         }

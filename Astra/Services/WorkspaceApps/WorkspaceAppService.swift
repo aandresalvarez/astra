@@ -319,6 +319,27 @@ struct WorkspaceAppService {
         return contractRegistry.including(capabilityFamilies: derived.families, implementations: derived.implementations)
     }
 
+    /// Preview-only: synthesize the SAME `.mapped` dependency bindings the publish path computes, for a
+    /// TRANSIENT (un-persisted) draft app id, so the App Studio preview can resolve live `astra.read`
+    /// connector reads before publishing. Reads nothing from SwiftData. MUST use `registry(for:)` (the
+    /// built-ins PLUS the workspace's enabled-capability families) so the preview maps EXACTLY what a
+    /// published app with the same requirements would — no privilege escalation, no silent under-mapping.
+    func previewDependencyBindings(
+        for requirements: [WorkspaceAppRequirement],
+        workspace: Workspace,
+        appID: UUID,
+        appLogicalID: String
+    ) -> [WorkspaceAppDependencyBinding] {
+        dependencyBindings(
+            for: requirements,
+            workspaceID: workspace.id,
+            appID: appID,
+            appLogicalID: appLogicalID,
+            now: Date(),
+            registry: registry(for: workspace)
+        )
+    }
+
     private func dependencyBindings(
         for requirements: [WorkspaceAppRequirement],
         workspaceID: UUID,

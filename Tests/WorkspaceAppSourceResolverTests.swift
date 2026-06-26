@@ -391,6 +391,64 @@ struct WorkspaceAppSourceResolverTests {
         }
     }
 
+    // MARK: - Preview live-read binding synthesis (App Studio preview)
+
+    /// The App Studio preview synthesizes the SAME `.mapped` bindings the publish path computes for a
+    /// DRAFT (no persisted app), so a connector-read app can be tested live before publishing.
+    @Test("preview binding synthesis maps pullRequest.read to .mapped with no workspace connector")
+    func previewBindingsMapPullRequestReadWithoutConnector() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = Workspace(name: "Preview", primaryPath: root.path)
+        let manifest = WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(id: "pr-tracker", name: "PR Tracker"),
+            requirements: [
+                WorkspaceAppRequirement(id: "github", contract: "pullRequest.read",
+                                        operations: ["listMyPullRequests"], providerHint: "github")
+            ]
+        )
+        let appID = UUID()
+        let bindings = WorkspaceAppService().previewDependencyBindings(
+            for: manifest.requirements, workspace: workspace, appID: appID, appLogicalID: manifest.app.id)
+        #expect(bindings.count == 1)
+        let binding = try #require(bindings.first)
+        #expect(binding.status == .mapped)            // github-pr-read-native is a built-in → always maps
+        #expect(binding.provider == "github")
+        #expect(binding.appID == appID)               // scoped to the SAME transient id the read uses
+        #expect(binding.requirementID == "github")
+    }
+
+    /// The appID-scoping invariant holds even with synthesized bindings: a binding minted for one
+    /// transient app id does NOT satisfy a read against a DIFFERENT app id (fails closed before any
+    /// network call), so the preview can never resolve a read with a mismatched/forged binding.
+    @Test("synthesized bindings are appID-scoped — a mismatched app id fails closed")
+    func previewBindingsAreAppIDScoped() async throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = Workspace(name: "Preview", primaryPath: root.path)
+        let manifest = WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(id: "pr-tracker", name: "PR Tracker"),
+            requirements: [
+                WorkspaceAppRequirement(id: "github", contract: "pullRequest.read",
+                                        operations: ["listMyPullRequests"], providerHint: "github")
+            ],
+            sources: [
+                WorkspaceAppSource(id: "myPRs", requirementRef: "github",
+                                   operation: "listMyPullRequests", mode: "read")
+            ]
+        )
+        let bindingAppID = UUID()
+        let bindings = WorkspaceAppService().previewDependencyBindings(
+            for: manifest.requirements, workspace: workspace, appID: bindingAppID, appLogicalID: manifest.app.id)
+        // Resolve with a DIFFERENT app id than the bindings were minted for → missingMappedBinding.
+        let otherApp = Self.app(for: manifest, workspace: workspace)   // its own fresh UUID != bindingAppID
+        await #expect(throws: WorkspaceAppSourceResolutionError.missingMappedBinding("github")) {
+            _ = try await WorkspaceAppSourceResolver().resolveCapabilityReadAsync(
+                sourceID: "myPRs", app: otherApp, workspace: workspace, manifest: manifest,
+                dependencyBindings: bindings)
+        }
+    }
+
     static func temporaryRoot() throws -> URL {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("workspace-app-source-resolver-\(UUID().uuidString)", isDirectory: true)

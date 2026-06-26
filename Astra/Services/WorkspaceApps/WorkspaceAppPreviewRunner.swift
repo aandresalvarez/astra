@@ -25,7 +25,10 @@ final class WorkspaceAppPreviewRunner {
     /// table name -> rows. The single source of truth the preview surface renders.
     private(set) var tables: [String: [[String: WorkspaceAppStorageValue]]]
 
-    private let sandboxAppID = UUID()
+    /// Stable for the runner's lifetime — the preview's single app identity. The live-read closure
+    /// (in `WorkspaceAppPreviewView`) reuses it for BOTH the synthesized `.mapped` bindings AND the
+    /// connector-read rate limiter, so a runaway `setInterval(astra.read)` poller is actually throttled.
+    let sandboxAppID = UUID()
     private let sandboxWorkspaceID = UUID()
     private let sampleRowsPerTable: Int
 
