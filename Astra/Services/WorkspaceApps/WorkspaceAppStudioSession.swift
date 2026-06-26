@@ -77,6 +77,10 @@ final class WorkspaceAppStudioSession: ObservableObject {
     /// generate/refine turn: origin, attempts, validation, the resulting manifest digest). Persisted
     /// alongside `messages` so a published app's build history is durable and auditable.
     @Published private(set) var generationEvents: [StudioGenerationEvent] = []
+    /// Bumped only when this live session appends a new generation/refinement event. Loading saved
+    /// history replaces `generationEvents` without touching this revision, so autosave can react to
+    /// new turns without rewriting immediately on resume.
+    @Published private(set) var draftAutosaveRevision = 0
     /// True while a turn's grounded verification is running in the sandbox (after the result is shown,
     /// before the verdict lands). The view shows a subtle "checking your change…" indicator; the user
     /// can already see and act on the app — verification is informational, never a publish gate.
@@ -146,6 +150,38 @@ final class WorkspaceAppStudioSession: ObservableObject {
         persistenceTarget = (appID, workspacePath)
     }
 
+    /// Adopt the manifest exactly as it was persisted by `WorkspaceAppService`.
+    ///
+    /// New app autosave can suffix the logical id at the service boundary. The Studio session must
+    /// follow that persisted identity so subsequent autosaves, publish, preview metadata, and the
+    /// journal's turn digest all point at the same on-disk draft.
+    func adoptPersistedDraft(
+        _ manifest: WorkspaceAppManifest,
+        workspace: Workspace,
+        appID: String,
+        workspacePath: String
+    ) {
+        guard !appID.isEmpty, !workspacePath.isEmpty else { return }
+        if let current = draft {
+            draft = WorkspaceAppStudioDraft(
+                id: current.id,
+                workspaceID: workspace.id,
+                intent: current.intent,
+                manifest: manifest,
+                validationReport: WorkspaceAppManifestValidator.validate(manifest)
+            )
+        } else {
+            draft = WorkspaceAppStudioBuilder.draft(intent: "", workspace: workspace, existingManifest: manifest)
+        }
+        if let data = try? WorkspaceAppService.encodeManifest(manifest),
+           let lastIndex = generationEvents.indices.last {
+            generationEvents[lastIndex].manifestDigest = WorkspaceAppService.digest(for: data)
+        }
+        persistenceTarget = (appID, workspacePath)
+        draftRevision &+= 1
+        persistJournal()
+    }
+
     /// Publish is gated on the validator (blockers only — warnings never block).
     var canPublish: Bool { draft?.canPublish ?? false }
 
@@ -172,6 +208,7 @@ final class WorkspaceAppStudioSession: ObservableObject {
         lastResolvedRuntimeID = nil   // a stale auto-fallback must not rewrite the picker after a reset
         generationToken &+= 1  // invalidate any in-flight generation from a prior session
         generationEvents = []
+        draftAutosaveRevision = 0
         persistenceTarget = nil
         if let existingManifest {
             draft = WorkspaceAppStudioBuilder.draft(intent: "", workspace: workspace, existingManifest: existingManifest)
@@ -401,6 +438,16 @@ final class WorkspaceAppStudioSession: ObservableObject {
         ))
     }
 
+    /// Surface a failed draft resume as an explicit Studio state instead of routing a broken draft
+    /// into the full app surface or leaving stale Studio state on screen.
+    func noteDraftOpenFailure(appName: String, detail: String) {
+        messages.append(StudioMessage(
+            role: .assistant,
+            kind: .summary,
+            text: "I couldn't reopen \(appName) as a draft: \(sentenceTerminated(detail)) Start again here or rebuild the draft before publishing."
+        ))
+    }
+
     private func sentenceTerminated(_ detail: String) -> String {
         let trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let last = trimmed.last else { return "Unknown error." }
@@ -430,6 +477,7 @@ final class WorkspaceAppStudioSession: ObservableObject {
             accepted: accepted, blockerCount: blockerCount, providerFailure: providerFailure,
             manifestDigest: digest, runtimeID: runtimeID, model: model
         ))
+        draftAutosaveRevision &+= 1
         persistJournal()
     }
 

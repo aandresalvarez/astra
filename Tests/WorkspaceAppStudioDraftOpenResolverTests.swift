@@ -33,6 +33,37 @@ struct WorkspaceAppStudioDraftOpenResolverTests {
     }
 
     @MainActor
+    @Test("draft app open failures are explicit instead of falling through to app detail")
+    func draftAppOpenFailureIsExplicit() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("workspace-app-draft-open-missing-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let workspace = Workspace(name: "Drafts", primaryPath: root.path)
+        let manifest = WorkspaceAppStudioBuilder.localDatabaseManifest(intent: "notes")
+        let app = makeApp(workspace: workspace, manifest: manifest, lifecycleStatus: .draft)
+
+        let resolution = WorkspaceAppStudioDraftOpenResolver.resolve(
+            app: app,
+            workspaces: [workspace],
+            fallbackWorkspace: nil
+        )
+
+        if case .failed(let failure) = resolution {
+            #expect(failure.workspace?.id == workspace.id)
+            #expect(failure.detail.contains("manifest.json"))
+        } else {
+            Issue.record("Expected a failed draft-open resolution, got \(resolution)")
+        }
+        #expect(WorkspaceAppStudioDraftOpenResolver.route(
+            app: app,
+            workspaces: [workspace],
+            fallbackWorkspace: nil
+        ) == nil)
+    }
+
+    @MainActor
     @Test("published apps do not route through the draft Studio path")
     func publishedAppDoesNotRouteThroughDraftStudioPath() {
         let workspace = Workspace(name: "Published", primaryPath: "/tmp/published")

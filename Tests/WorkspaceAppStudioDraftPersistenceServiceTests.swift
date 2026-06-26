@@ -41,6 +41,37 @@ struct WorkspaceAppStudioDraftPersistenceServiceTests {
         #expect(savedJournal.events.first?.manifestDigest == journal.events.first?.manifestDigest)
     }
 
+    @Test("autosave create path lets app service dedupe identity without renaming the draft")
+    func autosaveCreatePathUsesServiceIdentityDedupe() throws {
+        let fixture = try Fixture()
+        let manifest = Self.manifest(named: "Lab Samples")
+        let existing = try WorkspaceAppService().createApp(
+            manifest: manifest,
+            in: fixture.workspace,
+            modelContext: fixture.context,
+            status: .draft
+        )
+        let draft = Self.draft(manifest: manifest, workspace: fixture.workspace)
+        let journal = try Self.journal(for: manifest, intent: "track duplicate lab samples")
+
+        let result = try WorkspaceAppStudioDraftPersistenceService().saveDraft(
+            draft,
+            journal: journal,
+            existingLogicalID: nil,
+            sessionWorkspaceID: nil,
+            preferredWorkspace: fixture.workspace,
+            workspaces: [fixture.workspace],
+            apps: [existing.app],
+            modelContext: fixture.context
+        )
+
+        let saved = try #require(result?.app)
+        #expect(saved.logicalID == "\(manifest.app.id)-2")
+        #expect(saved.name == manifest.app.name)
+        #expect(result?.manifest.app.id == saved.logicalID)
+        #expect(result?.manifest.app.name == manifest.app.name)
+    }
+
     @Test("autosave updates an existing draft in place instead of creating a sibling")
     func autosaveUpdatesExistingDraftInPlace() throws {
         let fixture = try Fixture()
@@ -159,6 +190,15 @@ struct WorkspaceAppStudioDraftPersistenceServiceTests {
                 editingLogicalID: "   "
             ).appQuery == .preferredWorkspace(workspaceID)
         )
+    }
+
+    @Test("autosave trigger only fires for one newly appended event")
+    func autosaveTriggerOnlyFiresForSingleAppend() {
+        #expect(WorkspaceAppStudioDraftAutosaveTrigger.shouldAutosave(previousRevision: 0, currentRevision: 1))
+        #expect(WorkspaceAppStudioDraftAutosaveTrigger.shouldAutosave(previousRevision: 2, currentRevision: 3))
+        #expect(!WorkspaceAppStudioDraftAutosaveTrigger.shouldAutosave(previousRevision: 0, currentRevision: 2))
+        #expect(!WorkspaceAppStudioDraftAutosaveTrigger.shouldAutosave(previousRevision: 2, currentRevision: 2))
+        #expect(!WorkspaceAppStudioDraftAutosaveTrigger.shouldAutosave(previousRevision: 3, currentRevision: 1))
     }
 
     @MainActor

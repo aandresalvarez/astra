@@ -668,8 +668,22 @@ struct ContentView: View {
     }
 
     private func setSelectedWorkspaceApp(_ app: WorkspaceApp?) {
-        if let route = WorkspaceAppStudioDraftOpenResolver.route(app: app, workspaces: workspaces, fallbackWorkspace: effectiveWorkspace) {
+        let draftResolution = WorkspaceAppStudioDraftOpenResolver.resolve(app: app, workspaces: workspaces, fallbackWorkspace: effectiveWorkspace)
+        if case .routed(let route) = draftResolution {
             startWorkspaceAppStudio(existingManifest: route.manifest, workspace: route.workspace)
+            return
+        }
+        if case .failed(let failure) = draftResolution {
+            selectedTask = nil
+            selectedWorkspaceApp = nil
+            isComposingTask = false
+            isComposingWorkspaceApp = false
+            if let workspace = failure.workspace ?? effectiveWorkspace {
+                startWorkspaceAppStudio(workspace: workspace)
+                workspaceAppStudioSession.noteDraftOpenFailure(appName: app?.name ?? "this draft app", detail: failure.detail)
+            } else if activeWorkspaceCanvasItem == .appPreview {
+                setActiveWorkspaceCanvasItem(nil, remember: false)
+            }
             return
         }
         selectedTask = nil

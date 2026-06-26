@@ -44,12 +44,8 @@ struct WorkspaceAppStudioDraftPersistenceService {
         }
 
         guard existingLogicalID == nil else { return nil }
-        let manifest = WorkspaceAppStudioBuilder.manifestForPublishing(
-            draft.manifest,
-            existingLogicalIDs: Set(apps.filter { $0.workspaceID == preferredWorkspace.id }.map(\.logicalID))
-        )
         let result = try appService.createApp(
-            manifest: manifest,
+            manifest: draft.manifest,
             in: preferredWorkspace,
             modelContext: modelContext,
             status: .draft

@@ -50,7 +50,14 @@ struct WorkspaceAppStudioChatView: View {
         }
         .onChange(of: session.initialPrompt) { _, _ in applyInitialPromptIfNeeded() }
         .onChange(of: inputText) { _, _ in applyInitialPromptIfNeeded() }
-        .onChange(of: session.generationEvents.count) { _, _ in onDraftChanged() }
+        .onChange(of: session.draftAutosaveRevision) { previousRevision, currentRevision in
+            if WorkspaceAppStudioDraftAutosaveTrigger.shouldAutosave(
+                previousRevision: previousRevision,
+                currentRevision: currentRevision
+            ) {
+                onDraftChanged()
+            }
+        }
         .sheet(isPresented: $isTesting) {
             if let draft = session.draft {
                 WorkspaceAppTestPanelView(

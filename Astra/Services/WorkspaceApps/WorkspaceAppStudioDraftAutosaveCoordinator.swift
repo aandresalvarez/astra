@@ -1,6 +1,12 @@
 import Foundation
 import SwiftData
 
+struct WorkspaceAppStudioDraftAutosaveTrigger: Equatable {
+    static func shouldAutosave(previousRevision: Int, currentRevision: Int) -> Bool {
+        currentRevision == previousRevision + 1
+    }
+}
+
 struct WorkspaceAppStudioDraftAutosaveScope: Equatable {
     enum AppQuery: Equatable {
         case preferredWorkspace(UUID)
@@ -57,7 +63,12 @@ enum WorkspaceAppStudioDraftAutosaveCoordinator {
                 return
             }
             let targetWorkspace = workspaces.first { $0.id == result.app.workspaceID } ?? workspace
-            session.bindPersistedDraft(appID: result.app.logicalID, workspacePath: targetWorkspace.primaryPath)
+            session.adoptPersistedDraft(
+                result.manifest,
+                workspace: targetWorkspace,
+                appID: result.app.logicalID,
+                workspacePath: targetWorkspace.primaryPath
+            )
         } catch {
             AppLogger.error("App Studio draft autosave failed: \(error)", category: "WorkspaceApps")
             session.noteDraftSaveFailure((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
