@@ -137,6 +137,10 @@ struct WorkspaceAppRendererTests {
         )
         #expect(html.contains("Content-Security-Policy"))
         #expect(html.contains("default-src 'none'"))
+        #expect(html.contains("base-uri 'none'"))
+        #expect(html.contains("form-action 'none'"))
+        #expect(!html.contains("http://"))
+        #expect(!html.contains("https://"))
         #expect(!html.lowercased().contains("<script"))
         // App data is escaped, never injected as markup.
         #expect(html.contains("&lt;b&gt;Ann&lt;/b&gt; &amp; Bob"))
@@ -182,6 +186,10 @@ struct WorkspaceAppRendererTests {
         let bars = [WorkspaceAppChartPresentation.Bar(label: "<x>", value: 3, displayValue: "3", fraction: 0.5)]
         let html = WorkspaceAppWebReportHTML.chartHTML(title: "By status", bars: bars)
         #expect(html.contains("default-src 'none'"))
+        #expect(html.contains("base-uri 'none'"))
+        #expect(html.contains("form-action 'none'"))
+        #expect(!html.contains("http://"))
+        #expect(!html.contains("https://"))
         #expect(!html.lowercased().contains("<script"))
         #expect(html.contains("&lt;x&gt;"))
         #expect(html.contains("width:50%"))
