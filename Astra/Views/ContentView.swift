@@ -277,6 +277,13 @@ struct ContentView: View {
         )
     }
 
+    private var selectedWorkspaceBinding: Binding<Workspace?> {
+        Binding(
+            get: { selectedWorkspace },
+            set: { selectWorkspaceFromSidebar($0) }
+        )
+    }
+
     private var currentBrowserSession: ShelfBrowserSession {
         browserSessionStore.session(
             for: selectedTask?.id,
@@ -452,7 +459,7 @@ struct ContentView: View {
             selectedTask: selectedTaskBinding,
             taskQueue: runtime.taskQueue,
             workspaces: workspaces,
-            selectedWorkspace: $selectedWorkspace,
+            selectedWorkspace: selectedWorkspaceBinding,
             onNewTask: startComposingTask,
             onRunQueue: runQueue,
             onRunTask: runSingleTask,
@@ -515,13 +522,26 @@ struct ContentView: View {
 
     @ViewBuilder
     private var detailArea: some View {
-        if let app = selectedWorkspaceApp {
-            workspaceAppDetailArea(app: app)
-        } else {
-            // The App Studio conversation now renders inside the docking shell (driven by
-            // isComposingWorkspaceApp), so the live preview can dock in the global shelf.
+        switch detailPresentation {
+        case .workspaceApp:
+            if let app = selectedWorkspaceApp {
+                workspaceAppDetailArea(app: app)
+            } else {
+                taskAndHomeDetailArea
+            }
+        default:
             taskAndHomeDetailArea
         }
+    }
+
+    private var detailPresentation: ContentDetailPresentation {
+        ContentDetailPresentation.resolve(
+            selectedTask: selectedTask,
+            effectiveWorkspace: effectiveWorkspace,
+            isComposingTask: isComposingTask,
+            selectedWorkspaceApp: selectedWorkspaceApp,
+            isComposingWorkspaceApp: isComposingWorkspaceApp
+        )
     }
 
     private var taskAndHomeDetailArea: some View {
@@ -583,6 +603,7 @@ struct ContentView: View {
 
     // MARK: - F7 Workspace App surfaces
 
+    @ViewBuilder
     private func workspaceAppDetailArea(app: WorkspaceApp) -> some View {
         WorkspaceAppDetailView(
             app: app,
@@ -1715,7 +1736,22 @@ struct ContentView: View {
         if pinnedToTask { refreshMarkdownShelfAvailabilityForSelectedTask() }
     }
 
+    private func selectWorkspaceFromSidebar(_ workspace: Workspace?) {
+        selectedWorkspace = workspace
+        clearWorkspaceAppSurfaceSelection()
+    }
+
+    private func clearWorkspaceAppSurfaceSelection() {
+        selectedWorkspaceApp = nil
+        if isComposingWorkspaceApp {
+            cancelWorkspaceAppStudio()
+        } else if activeWorkspaceCanvasItem == .appPreview {
+            setActiveWorkspaceCanvasItem(nil, remember: false)
+        }
+    }
+
     private func startComposingTask() {
+        clearWorkspaceAppSurfaceSelection()
         setSelectedTask(nil)
         isComposingTask = true
         presentRightRail(rememberShelfState: false)
@@ -2201,7 +2237,7 @@ struct ContentView: View {
             setSelectedTask(nil)
         }
         // Switching workspaces exits App Studio (its session is bound to the start workspace).
-        if isComposingWorkspaceApp { cancelWorkspaceAppStudio() }
+        clearWorkspaceAppSurfaceSelection()
         if isUITestingSeededLaunch {
             setSelectedTask(nil)
             isComposingTask = selectedWorkspace != nil
@@ -4802,56 +4838,6 @@ struct WorkspaceSetupForm: View {
 
     private func capabilityPrerequisiteColor(for packageID: String) -> Color {
         capabilityPrerequisitesReady(for: packageID) ? Stanford.paloAltoGreen : Stanford.poppy
-    }
-}
-
-private struct WorkspaceEmptyStateView: View {
-    let onCreateWorkspace: () -> Void
-    let onImportWorkspace: () -> Void
-
-    var body: some View {
-        VStack(spacing: 24) {
-            Image(systemName: "folder.badge.plus")
-                .font(Stanford.ui(48))
-                .foregroundStyle(Stanford.cardinalRed)
-
-            VStack(spacing: 8) {
-                Text("Pick a Workspace")
-                    .font(Stanford.heading(24))
-                    .foregroundStyle(Stanford.black)
-
-                Text("Tasks always belong to a workspace. Create a new one or import an existing folder — ASTRA will reopen it automatically next time.")
-                    .font(Stanford.body(15))
-                    .foregroundStyle(Stanford.coolGrey)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 460)
-            }
-
-            HStack(spacing: 12) {
-                Button {
-                    onCreateWorkspace()
-                } label: {
-                    Label("New Workspace", systemImage: "plus")
-                }
-                .buttonStyle(StanfordButtonStyle())
-                .accessibilityIdentifier("OnboardingNewWorkspaceButton")
-
-                Button {
-                    onImportWorkspace()
-                } label: {
-                    Label("Import Workspace", systemImage: "square.and.arrow.down")
-                }
-                .buttonStyle(StanfordButtonStyle(isPrimary: false))
-
-                SettingsLink {
-                    Label("Settings", systemImage: "gear")
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(24)
-        .background(Stanford.panelBackground)
     }
 }
 
