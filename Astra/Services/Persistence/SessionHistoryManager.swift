@@ -108,15 +108,14 @@ enum SessionHistoryManager {
     }
 
     private static func summarizeOutput(_ output: String, maxLength: Int) -> String {
-        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "" }
+        let summary = TaskRunAnswerPresentationPolicy.summaryText(rawText: output, maxLength: maxLength)
+        guard !summary.isEmpty else { return "" }
 
-        if trimmed.count <= maxLength {
-            return trimmed
+        if summary.count <= maxLength {
+            return summary
         }
 
-        // Try to break at a sentence or paragraph boundary
-        let prefix = String(trimmed.prefix(maxLength))
+        let prefix = String(summary.prefix(maxLength))
         if let lastPeriod = prefix.lastIndex(of: ".") {
             return String(prefix[prefix.startIndex...lastPeriod]) + " *(see full output)*"
         }

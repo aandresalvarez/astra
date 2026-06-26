@@ -683,12 +683,18 @@ enum TaskContextStateManager {
         let eventBlockerMessages = eventBlockers.map { boundedInline($0.payload, maxCharacters: 220) }
         state.blockers = dedupeKeepingOrder(planBlockers + eventBlockerMessages, limit: maxListItems)
 
+        let access = TaskWorkspaceAccess(task: task)
         let changedFiles = task.runs
             .sorted { $0.startedAt < $1.startedAt }
             .flatMap(\.fileChanges)
             .map(\.path)
+            .filter { isUserFacingOutputPath($0, task: task, access: access) }
         let discoveredChangedFiles = discoveredTaskOutputFiles.map(\.path)
-        state.filesChanged = dedupeKeepingOrder(state.filesChanged + changedFiles + discoveredChangedFiles, limit: 50)
+        state.filesChanged = dedupeKeepingOrder(
+            (state.filesChanged + changedFiles + discoveredChangedFiles)
+                .filter { isUserFacingOutputPath($0, task: task, access: access) },
+            limit: 50
+        )
         state.openQuestions = dedupeKeepingOrder(state.openQuestions + recentQuestions(for: task), limit: 10)
         state.nextLikelyAction = nextLikelyAction(task: task, planState: planState)
         state.objective = objectiveState(task: task, planState: planState, state: state)
@@ -703,8 +709,8 @@ enum TaskContextStateManager {
         state.testCommand = normalizedTestCommand(task)
         state.decisionFacts = decisionFacts(for: state, task: task, planState: planState)
         state.blockerFacts = blockerFacts(for: task, planBlockers: planBlockers, eventBlockers: eventBlockers)
-        state.changedFiles = changedFileReferences(for: task, discoveredFiles: discoveredTaskOutputFiles)
-        state.artifacts = artifactReferences(for: task, discoveredFiles: discoveredTaskOutputFiles)
+        state.changedFiles = changedFileReferences(for: task, discoveredFiles: discoveredTaskOutputFiles, access: access)
+        state.artifacts = artifactReferences(for: task, discoveredFiles: discoveredTaskOutputFiles, access: access)
         state.verification = verificationState(task: task, latestRun: latestRun, artifacts: state.artifacts)
         state.validationContract = validationContractState(task: task, planState: planState)
         state.latestHandoff = latestHandoffState(task: task)
@@ -912,11 +918,16 @@ enum TaskContextStateManager {
             during: run,
             from: TaskOutputDiscovery.files(in: taskFolder)
         ).map(\.path)
+        let access = TaskWorkspaceAccess(task: task)
         return TaskContextState.Turn(
             turn: number,
             ask: boundedInline(message, maxCharacters: 400),
             summary: summarizeOutput(run.output, fallback: run.stopReason),
-            filesChanged: dedupeKeepingOrder(run.fileChanges.map(\.path) + discoveredRunFiles, limit: 20),
+            filesChanged: dedupeKeepingOrder(
+                (run.fileChanges.map(\.path) + discoveredRunFiles)
+                    .filter { isUserFacingOutputPath($0, task: task, access: access) },
+                limit: 20
+            ),
             blockers: dedupeKeepingOrder(runBlockers, limit: 8),
             outputFile: formattedOutputFileName(turn: number),
             runStatus: run.status.rawValue,
@@ -1015,7 +1026,8 @@ enum TaskContextStateManager {
     @MainActor
     private static func changedFileReferences(
         for task: AgentTask,
-        discoveredFiles: [TaskOutputDiscoveredFile]
+        discoveredFiles: [TaskOutputDiscoveredFile],
+        access: TaskWorkspaceAccess
     ) -> [TaskContextState.ChangedFile] {
         let sortedRuns = task.runs.sorted { $0.startedAt < $1.startedAt }
         var output: [TaskContextState.ChangedFile] = []
@@ -1023,6 +1035,7 @@ enum TaskContextStateManager {
 
         for run in sortedRuns {
             for change in run.fileChanges {
+                guard isUserFacingOutputPath(change.path, task: task, access: access) else { continue }
                 let pointers = [
                     sourcePointer(kind: "run", id: run.id.uuidString, summary: "Provider run"),
                     sourcePointer(kind: "file_change", id: change.id.uuidString, path: change.path, summary: "\(change.changeType) file change")
@@ -1063,13 +1076,15 @@ enum TaskContextStateManager {
     @MainActor
     private static func artifactReferences(
         for task: AgentTask,
-        discoveredFiles: [TaskOutputDiscoveredFile]
+        discoveredFiles: [TaskOutputDiscoveredFile],
+        access: TaskWorkspaceAccess
     ) -> [TaskContextState.ArtifactReference] {
         var references: [TaskContextState.ArtifactReference] = []
         var indexByPath: [String: Int] = [:]
 
         for artifact in task.artifacts.sorted(by: { $0.createdAt < $1.createdAt }) {
             let path = TaskArtifactPathNormalizer.normalizedPath(artifact.path, task: task)
+            guard isUserFacingOutputPath(path, task: task, access: access) else { continue }
             let key = artifactReferenceKey(path)
             guard !key.isEmpty else { continue }
 
@@ -1682,24 +1697,15 @@ enum TaskContextStateManager {
     }
 
     private static func summarizeOutput(_ output: String, fallback: String) -> String {
-        let visible = output
-            .split(whereSeparator: \.isNewline)
-            .map(String.init)
-            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("ASTRA_EVENT ") }
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let source = visible.isEmpty ? fallback : visible
-        guard !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        let summary = TaskRunAnswerPresentationPolicy.summaryText(
+            rawText: output,
+            fallback: fallback,
+            maxLength: 700
+        )
+        guard !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return "No assistant output captured."
         }
-        let prefix = String(source.prefix(700))
-        if source.count <= 700 {
-            return boundedInline(prefix, maxCharacters: 700)
-        }
-        if let lastPeriod = prefix.lastIndex(of: ".") {
-            return boundedInline(String(prefix[prefix.startIndex...lastPeriod]), maxCharacters: 700)
-        }
-        return boundedInline(prefix, maxCharacters: 700) + "..."
+        return boundedInline(summary, maxCharacters: 700)
     }
 
     private static func questionSentences(in text: String) -> [String] {
