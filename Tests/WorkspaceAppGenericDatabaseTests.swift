@@ -3,9 +3,9 @@ import Testing
 @testable import ASTRA
 
 /// The deterministic localDatabase recipe must NOT collapse every "track X" intent to the fixed
-/// grocery template — only genuine grocery intents get groceries; everything else gets a generic
-/// records database named from the intent.
-@Suite("Workspace App Generic Database")
+/// grocery template — only genuine grocery intents get groceries; everything else gets a
+/// data-backed HTML app over generic records.
+@Suite("Workspace App Data-Backed Local Database")
 struct WorkspaceAppGenericDatabaseTests {
     @Test("a non-grocery track intent classifies as localDatabase but does NOT produce groceries")
     func nonGroceryDoesNotCollapse() {
@@ -25,14 +25,7 @@ struct WorkspaceAppGenericDatabaseTests {
         #expect((manifest.storage?.tables.count ?? 0) == 3)
     }
 
-    @Test("subjectTitle strips leading filler and titlecases the subject")
-    func subjectExtraction() {
-        #expect(WorkspaceAppStudioBuilder.subjectTitle(from: "track lab samples with a status field") == "Lab Samples")
-        #expect(WorkspaceAppStudioBuilder.subjectTitle(from: "build me a database to store my recipes") == "Recipes")
-        #expect(WorkspaceAppStudioBuilder.subjectTitle(from: "a database app") == "")
-    }
-
-    @Test("baseManifest for a non-grocery track intent is a valid non-grocery database")
+    @Test("baseManifest for a non-grocery track intent is a valid non-grocery data app")
     func baseManifestNonGrocery() {
         let manifest = WorkspaceAppStudioBuilder.baseManifest(intent: "track equipment inventory by location")
         #expect(!manifest.app.name.lowercased().contains("grocery"))

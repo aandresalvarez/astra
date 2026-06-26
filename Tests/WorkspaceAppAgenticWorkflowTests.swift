@@ -1,96 +1,53 @@
 import Foundation
-import SwiftData
 import Testing
 @testable import ASTRA
 
-// Slice 9 Phase A: the Agentic Workflow archetype generates a valid Workspace App
-// manifest that orchestrates a workflow of governed ASTRA agents using existing
-// primitives only — task-backed steps, an agent recommendation gate, a human
-// approval gate, and a bounded loop. No parallel agent runtime is introduced.
-@Suite("Workspace App Agentic Workflow (Slice 9 Phase A)")
+// The live Agentic Workflow path is the archetype classifier plus
+// WorkspaceAppStudioRecipes, not the retired proposal-card ideator.
+@Suite("Workspace App Agentic Workflow Recipes")
 struct WorkspaceAppAgenticWorkflowTests {
 
-    @Test("agentic request proposes the agentic workflow archetype")
-    func ideatorProposesAgenticWorkflow() {
-        let ideas = WorkspaceAppStudioIdeator.proposals(
-            for: WorkspaceAppStudioIdeationContext(
-                userRequest: "Build a workflow of agents that orchestrate solving this problem"
-            )
+    @Test("agentic request classifies to the agentic workflow archetype")
+    func agenticRequestClassifiesToWorkflow() {
+        #expect(
+            WorkspaceAppArchetype.classify("Build a workflow of agents that orchestrate solving this problem")
+                == .agenticWorkflow
         )
-        #expect(ideas.contains { $0.id == "agentic-workflow" })
     }
 
-    @MainActor
-    @Test("agentic workflow archetype generates a valid manifest")
-    func agenticWorkflowManifestIsValid() throws {
-        let idea = try #require(
-            WorkspaceAppStudioIdeator.proposals(
-                for: WorkspaceAppStudioIdeationContext(userRequest: "orchestrate agents to solve this")
-            ).first { $0.id == "agentic-workflow" }
+    @Test("agentic workflow recipe generates a valid HTML workflow manifest")
+    func agenticWorkflowRecipeIsValid() {
+        let manifest = WorkspaceAppStudioRecipes.manifest(
+            for: .agenticWorkflow,
+            intent: "orchestrate agents to solve this"
         )
-        let workspace = Workspace(name: "Agentic", primaryPath: "/tmp/agentic-workflow-test")
-        let draft = WorkspaceAppStudioBuilder.draft(from: idea, workspace: workspace)
 
-        #expect(draft.validationReport.isValid)
-        #expect(draft.manifest.app.archetypes.contains("Agentic Workflow"))
+        #expect(WorkspaceAppManifestValidator.validate(manifest).isValid)
+        #expect(manifest.app.archetypes.contains("Agentic Workflow"))
+        #expect(manifest.app.archetypes.contains("HTML App"))
+        #expect(manifest.html?.contains("astra.query") == true)
     }
 
-    @MainActor
-    @Test("agentic workflow manifest composes task steps, an agent gate, and a bounded loop")
-    func agenticWorkflowManifestComposesPrimitives() throws {
-        let idea = try #require(
-            WorkspaceAppStudioIdeator.proposals(
-                for: WorkspaceAppStudioIdeationContext(userRequest: "agent workflow")
-            ).first { $0.id == "agentic-workflow" }
+    @Test("agentic workflow recipe composes task steps and approval gates inside one runnable pipeline")
+    func agenticWorkflowRecipeComposesPrimitives() throws {
+        let manifest = WorkspaceAppStudioRecipes.manifest(
+            for: .agenticWorkflow,
+            intent: "agent workflow"
         )
-        let workspace = Workspace(name: "Agentic", primaryPath: "/tmp/agentic-workflow-test")
-        let actions = WorkspaceAppStudioBuilder.draft(from: idea, workspace: workspace).manifest.actions
+        let actions = manifest.actions
 
         // Task-backed agent steps run through the normal task runtime.
         #expect(actions.contains { $0.type == "task.createAndRun" })
         // Governed by an agent recommendation gate and a human approval gate.
         #expect(actions.contains { $0.type == "gate.agentRecommendation" })
         #expect(actions.contains { $0.type == "gate.humanApproval" })
-        // Bounded by a loop with a positive iteration cap and a stop condition.
-        let loop = try #require(actions.first { $0.type == "loop.run" })
-        #expect((loop.maxIterations ?? 0) > 0)
-        #expect(loop.gateField?.isEmpty == false)
-        #expect(!loop.steps.isEmpty)
-    }
-
-    @Test("an agentic request also proposes the PARALLEL archetype")
-    func ideatorProposesParallelArchetype() {
-        let ideas = WorkspaceAppStudioIdeator.proposals(
-            for: WorkspaceAppStudioIdeationContext(userRequest: "run a workflow of agents over many items")
-        )
-        #expect(ideas.contains { $0.id == "parallel-agent-review" })
-    }
-
-    @MainActor
-    @Test("the parallel archetype generates a valid fan-out -> reduce manifest (Phase C in the builder)")
-    func parallelArchetypeComposesFanOutAndReduce() throws {
-        let idea = try #require(
-            WorkspaceAppStudioIdeator.proposals(
-                for: WorkspaceAppStudioIdeationContext(userRequest: "review all items in parallel with agents")
-            ).first { $0.id == "parallel-agent-review" }
-        )
-        let workspace = Workspace(name: "Parallel", primaryPath: "/tmp/parallel-agentic-test")
-        let manifest = WorkspaceAppStudioBuilder.draft(from: idea, workspace: workspace).manifest
-
-        #expect(WorkspaceAppManifestValidator.validate(manifest).isValid)
-        #expect(manifest.app.archetypes.contains("Parallel Review"))
-
-        // The fan-out launches one task per bound row; its child is a task.createAndRun.
-        let fanOut = try #require(manifest.actions.first { $0.type == "task.fanOut" })
-        let child = try #require(manifest.actions.first { $0.id == fanOut.fanOutStep })
-        #expect(child.type == "task.createAndRun")
-
-        // A reduce folds the fan-in, and the pipeline composes list -> fan-out -> reduce -> record.
-        #expect(manifest.actions.contains { $0.type == "rows.reduce" })
+        // The pipeline composes the data read, AI work, agent gate, human gate, and implementation.
         let pipeline = try #require(manifest.actions.first { $0.type == "pipeline.run" })
-        #expect(pipeline.steps.contains("fan_out_reviews"))
-        #expect(pipeline.steps.contains("summarize_reviews"))
-        // The fan-out is a direct pipeline step (the validator forbids it inside a loop).
-        #expect(!manifest.actions.contains { $0.type == "loop.run" })
+        #expect(pipeline.steps == ["list_review_items", "analyze", "agent_review", "human_approval", "implement"])
+
+        // The analysis answer is captured and fed into the implementation step.
+        #expect(actions.contains { $0.outputBinding != nil })
+        #expect(actions.contains { $0.inputBinding != nil })
+        #expect(manifest.permissions.defaultMode == .approvalRequired)
     }
 }
