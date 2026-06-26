@@ -1,3 +1,4 @@
+import ASTRACore
 import Combine
 import Foundation
 
@@ -79,6 +80,11 @@ final class WorkspaceAppStudioSession: ObservableObject {
     /// before the verdict lands). The view shows a subtle "checking your change…" indicator; the user
     /// can already see and act on the app — verification is informational, never a publish gate.
     @Published private(set) var isVerifying = false
+    /// When the most recent turn's app was produced by an AUTO-FALLBACK provider (the selected one
+    /// 401'd or timed out), the runtime that actually resolved it. The chat view adopts it into the
+    /// provider picker so the picker reflects reality and subsequent turns skip the dead provider.
+    /// Reset to nil at the start of every turn; only set when a fallback provider succeeded.
+    @Published private(set) var lastResolvedRuntimeID: String?
 
     private(set) var workspaceID: UUID?
     private let generate: WorkspaceAppStudioGenerate
@@ -150,6 +156,7 @@ final class WorkspaceAppStudioSession: ObservableObject {
         isGenerating = false
         isBuildingFirstDraft = false
         isVerifying = false
+        lastResolvedRuntimeID = nil   // a stale auto-fallback must not rewrite the picker after a reset
         generationToken &+= 1  // invalidate any in-flight generation from a prior session
         generationEvents = []
         persistenceTarget = nil
@@ -193,6 +200,7 @@ final class WorkspaceAppStudioSession: ObservableObject {
         isGenerating = false
         isBuildingFirstDraft = false
         isVerifying = false
+        lastResolvedRuntimeID = nil   // don't let a cancelled turn's fallback rewrite the picker
     }
 
     // MARK: - Turns
@@ -224,6 +232,7 @@ final class WorkspaceAppStudioSession: ObservableObject {
         }
 
         isGenerating = true
+        lastResolvedRuntimeID = nil   // cleared per turn; set only if a fallback provider resolves this one
         // Clear any leftover verification indicator from a prior turn whose check is still in flight:
         // that stale verifier sees the bumped token and bows out without touching `isVerifying`, so
         // this is the single owner that resets it per turn (no stuck "checking…" across turns).
@@ -275,17 +284,31 @@ final class WorkspaceAppStudioSession: ObservableObject {
         } else {
             assistantText = StudioTurnSummary.line(for: result, isEditing: existing != nil)
         }
-        messages.append(StudioMessage(role: .assistant, kind: .summary, text: assistantText))
+        // The selected provider failed (401/timeout) but a fallback provider applied the change —
+        // disclose it honestly so the user knows why the provider changed, and let the picker adopt it.
+        // The EFFECTIVE runtime/model (the one that actually produced this turn) is what the journal
+        // records and what verification re-runs — never the dead selected provider.
+        var switchNote = ""
+        var effectiveRuntimeID = runtimeID
+        var effectiveModel = model
+        if let resolved = result.resolvedRuntime {
+            lastResolvedRuntimeID = resolved
+            let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: resolved)
+            effectiveRuntimeID = resolved
+            effectiveModel = AgentRuntimeAdapterRegistry.defaultModel(for: runtime)
+            switchNote = " (Switched to \(runtime.displayName) — your selected provider wasn't reachable.)"
+        }
+        messages.append(StudioMessage(role: .assistant, kind: .summary, text: assistantText + switchNote))
         recordEvent(
             kind: .generation, intent: text, origin: result.origin.rawValue,
             attemptCount: result.attemptCount, accepted: result.canPublish,
             blockerCount: result.validationReport.blockers.count, providerFailure: result.providerFailure,
-            manifest: result.manifest, runtimeID: runtimeID, model: model
+            manifest: result.manifest, runtimeID: effectiveRuntimeID, model: effectiveModel
         )
         // The turn's app is in and the user can act on it — verification is informational.
         isGenerating = false
         await verifyTurn(intent: text, result: result, workspacePath: workspace.primaryPath,
-                         runtimeID: runtimeID, model: model, token: token)
+                         runtimeID: effectiveRuntimeID, model: effectiveModel, token: token)
     }
 
     /// Grounded post-turn verification: run the produced app in the sandbox and surface an honest
@@ -408,9 +431,19 @@ final class WorkspaceAppStudioSession: ObservableObject {
             existingManifest: existing,
             configuration: configuration,
             contractFamilies: WorkspaceAppContractRegistry().families + capabilityFamilies,
-            availableProviders: providers
+            availableProviders: providers,
+            fallbackRuntimes: WorkspaceAppStudioSession.providerFailoverOrder
         )
     }
+
+    /// Provider failover order for App Studio generation: when the SELECTED provider can't
+    /// authenticate (401) or times out, the generator retries the request on these in order before
+    /// degrading to the deterministic template. Codex first — its file-based auth (`~/.codex/auth.json`)
+    /// is the most reliable in dev/ad-hoc-signed builds where Claude's Keychain OAuth is unreachable.
+    /// The generator skips the selected runtime and bounds the number of attempts.
+    static let providerFailoverOrder: [AgentRuntimeID] = [
+        .codexCLI, .copilotCLI, .cursorCLI, .openCodeCLI, .antigravityCLI, .claudeCode
+    ]
 
     /// Real verification: run the produced app in the sandbox (Tier-1 auto-exercise + an intent-
     /// authored Tier-3 scenario), read-only tool mode via the scenario author's default runner.
@@ -450,9 +483,17 @@ enum StudioTurnSummary {
                 return "I couldn't finish that from the model, so I started you from an interactive HTML starting point\(why). It's a sample UI you can refine by chatting (it can't sync live data yet). " + validationLine(result.validationReport)
             }
             // Editing: the fallback is the user's UNCHANGED app. Don't append the "ready to publish"
-            // validation line — the app was already valid; the point is the edit didn't land. Invite
-            // a more specific instruction so the next turn can actually change something.
+            // validation line — the app was already valid; the point is the edit didn't land.
             if isEditing {
+                // providerFailed means EVERY available provider 401'd/timed out (auto-fallback already
+                // tried the others) — that's an auth/connectivity problem, so point at the fix rather
+                // than asking the user to rephrase. Otherwise the provider worked but couldn't produce
+                // a valid edit, so a more specific instruction is what helps.
+                if result.providerFailed {
+                    return "I couldn't reach a working provider to apply that change\(why) — your app "
+                        + "is unchanged. Check your provider sign-in (e.g. run `claude /login` in Terminal), "
+                        + "or pick a different provider from the model menu, then try again."
+                }
                 return "I wasn't able to apply that change\(why) — your app is unchanged. Tell me more "
                     + "specifically what to change (which button, field, or text) and I'll edit it."
             }

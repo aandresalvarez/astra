@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import ASTRA
+import ASTRACore
 
 @Suite("Workspace App Studio Generator (Slice 2)")
 struct WorkspaceAppStudioGeneratorTests {
@@ -51,6 +52,12 @@ struct WorkspaceAppStudioGeneratorTests {
 
     private static func patchBlock(_ json: String) -> AgentUtilityRunResult {
         ok("ASTRA_APP_PATCH\n\(json)\nEND_ASTRA_APP_PATCH")
+    }
+
+    /// A PROVIDER failure (non-zero exit) — auth 401, wall-clock timeout, crash — as opposed to a
+    /// well-formed response that fails validation.
+    private static func providerFailure(_ message: String = "401 Invalid authentication credentials") -> AgentUtilityRunResult {
+        AgentUtilityRunResult(exitCode: 1, output: "", error: message)
     }
 
     private static func json(_ manifest: WorkspaceAppManifest) -> String {
@@ -630,5 +637,80 @@ struct WorkspaceAppStudioGeneratorTests {
             report: WorkspaceAppManifestValidator.validate(Self.invalidManifest), contractFamilies: families
         )
         #expect(repair.contains("ASTRA_APP_SUMMARY:"))
+    }
+
+    // MARK: - Provider auto-fallback
+
+    @Test("a provider failure (401/timeout) auto-falls-back to the next runtime and records the switch")
+    func providerFailoverResolvesOnFallback() async {
+        // The selected provider's first call FAILS (401); the codex fallback returns a valid manifest.
+        let runner = ScriptedRunner([Self.providerFailure(), Self.manifestBlock(Self.json(Self.validManifest))])
+        let result = await WorkspaceAppStudioGenerator.generate(
+            intent: "Build me a grocery database app.",
+            workspaceName: "Demo",
+            workspacePath: "/tmp/demo",
+            configuration: .claude(),
+            fallbackRuntimes: [.codexCLI],
+            runner: runner.runner
+        )
+        #expect(result.accepted)
+        #expect(result.origin == .model)
+        #expect(result.providerFailed == false)
+        #expect(result.resolvedRuntime == AgentRuntimeID.codexCLI.rawValue)
+        #expect(runner.calls.count == 2)   // selected provider fails, one fallback succeeds
+    }
+
+    @Test("with NO fallback runtimes a provider failure degrades to the template (unchanged behavior)")
+    func providerFailureWithoutFallbackIsTemplate() async {
+        let runner = ScriptedRunner([Self.providerFailure()])
+        let result = await WorkspaceAppStudioGenerator.generate(
+            intent: "Build me a grocery database app.",
+            workspaceName: "Demo",
+            workspacePath: "/tmp/demo",
+            runner: runner.runner
+        )
+        #expect(result.origin == .deterministicFallback)
+        #expect(result.providerFailed)
+        #expect(result.resolvedRuntime == nil)
+        #expect(runner.calls.count == 1)
+    }
+
+    @Test("when EVERY candidate provider fails, the result is the template with providerFailed set")
+    func allProvidersFailingYieldsProviderFailedTemplate() async {
+        let runner = ScriptedRunner([Self.providerFailure("Process timed out after 240 seconds.")])
+        let result = await WorkspaceAppStudioGenerator.generate(
+            intent: "Build me a grocery database app.",
+            workspaceName: "Demo",
+            workspacePath: "/tmp/demo",
+            configuration: .claude(),
+            fallbackRuntimes: [.codexCLI, .copilotCLI],
+            runner: runner.runner
+        )
+        #expect(result.origin == .deterministicFallback)
+        #expect(result.providerFailed)
+        #expect(result.resolvedRuntime == nil)
+        #expect(result.providerFailure?.contains("timed out") == true)
+        // Bounded to selected + ONE fallback (latency cap), so 2 calls — not all of the listed
+        // fallback runtimes are attempted.
+        #expect(runner.calls.count == 2)
+    }
+
+    @Test("a validation-exhaustion fallback does NOT switch providers (the provider worked)")
+    func validationExhaustionDoesNotFailover() async {
+        // Every call SUCCEEDS (exit 0) but returns an invalid manifest → validation exhaustion, NOT a
+        // provider failure → the generator must NOT switch providers; it degrades on the same one.
+        let runner = ScriptedRunner([Self.manifestBlock(Self.json(Self.invalidManifest))])
+        let result = await WorkspaceAppStudioGenerator.generate(
+            intent: "Build me a grocery database app.",
+            workspaceName: "Demo",
+            workspacePath: "/tmp/demo",
+            configuration: .claude(),
+            fallbackRuntimes: [.codexCLI],
+            runner: runner.runner
+        )
+        #expect(result.origin == .deterministicFallback)
+        #expect(result.providerFailed == false)
+        #expect(result.resolvedRuntime == nil)
+        #expect(runner.calls.count == 3)   // 1 initial + 2 repairs on the SAME provider, no failover
     }
 }

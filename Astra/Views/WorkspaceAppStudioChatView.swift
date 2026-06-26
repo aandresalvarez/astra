@@ -301,6 +301,15 @@ struct WorkspaceAppStudioChatView: View {
                 model: model,
                 availableProviders: providers
             )
+            // If the selected provider failed (401/timeout) and the generator auto-fell-back to a
+            // working one, adopt it into the picker so it reflects reality AND subsequent turns skip
+            // the dead provider (no per-turn timeout/401 cost). The user can switch back any time.
+            if let resolved = session.lastResolvedRuntimeID, resolved != runtimeID {
+                runtimeID = resolved
+                model = AgentRuntimeAdapterRegistry.defaultModel(
+                    for: AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: resolved)
+                )
+            }
         }
     }
 }

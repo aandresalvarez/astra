@@ -1,3 +1,4 @@
+import ASTRACore
 import Foundation
 
 /// A one-shot model call used by the generator. Injected so tests can feed canned
@@ -34,6 +35,15 @@ struct WorkspaceAppStudioGenerationResult: Sendable, Equatable {
     /// status and owner"), shown in the App Studio chat. Nil on the deterministic fallback
     /// or when the model omitted it — the chat then falls back to a deterministic summary.
     var summary: String? = nil
+    /// True when this result is the deterministic fallback because the PROVIDER itself failed
+    /// (auth 401, wall-clock timeout, crash — a non-zero exit), as opposed to the provider working
+    /// but never producing a valid manifest. Lets the orchestrator decide whether retrying on a
+    /// different provider could help, and lets the chat give an auth-vs-prompt actionable message.
+    var providerFailed: Bool = false
+    /// When an AUTO-FALLBACK provider produced the accepted result, the runtime that actually
+    /// resolved it (so the chat can disclose "switched to Codex" and the picker can adopt it). Nil
+    /// when the selected provider resolved it or when everything degraded to the template.
+    var resolvedRuntime: String? = nil
 
     /// Mirrors `WorkspaceAppStudioDraft.canPublish`: a blockers-only gate. Warnings
     /// never block publishing.
@@ -58,7 +68,73 @@ enum WorkspaceAppStudioGenerator {
         )
     }
 
+    /// Orchestrator: run the generation pipeline against the selected provider, and — when that
+    /// provider itself FAILS (auth 401, wall-clock timeout, crash; never a validation rejection) —
+    /// automatically retry the SAME request on the next candidate runtime before degrading to the
+    /// deterministic template. `fallbackRuntimes` is an ordered preference (codex first, since its
+    /// file-based auth is the most reliable in dev/ad-hoc-signed builds); the selected runtime is
+    /// skipped and attempts are bounded so a string of slow providers can't stack timeouts.
     static func generate(
+        intent rawIntent: String,
+        workspaceName: String,
+        workspacePath: String,
+        existingManifest: WorkspaceAppManifest? = nil,
+        maxRepairAttempts: Int = 2,
+        configuration: AgentUtilityRuntimeConfiguration = .claude(),
+        contractFamilies: [WorkspaceAppContractFamily] = WorkspaceAppContractRegistry().families,
+        availableProviders: Set<String> = [],
+        fallbackRuntimes: [AgentRuntimeID] = [],
+        runner: WorkspaceAppStudioPromptRunner = defaultRunner
+    ) async -> WorkspaceAppStudioGenerationResult {
+        // The selected provider first, then ONE distinct fallback runtime. Each fallback is the
+        // primary configuration with only its runtime + model swapped — so custom executable paths,
+        // home dirs, and the timeout the caller chose are PRESERVED (rebuilding from scratch would
+        // drop them). Capped at one fallback so two slow providers can't stack 240s timeouts (the
+        // common failures — a missing binary or a 401 — fail in seconds, not at the timeout).
+        var candidates: [AgentUtilityRuntimeConfiguration] = [configuration]
+        for runtime in fallbackRuntimes where runtime != configuration.runtime && candidates.count < 2 {
+            var candidate = configuration
+            candidate.runtime = runtime
+            candidate.model = AgentRuntimeAdapterRegistry.defaultModel(for: runtime)
+            candidates.append(candidate)
+        }
+
+        var lastResult = await generateOnce(
+            intent: rawIntent, workspaceName: workspaceName, workspacePath: workspacePath,
+            existingManifest: existingManifest, maxRepairAttempts: maxRepairAttempts,
+            configuration: candidates[0], contractFamilies: contractFamilies,
+            availableProviders: availableProviders, runner: runner
+        )
+        // The selected provider resolved it (an accepted app OR a validation-exhaustion template) —
+        // keep it. Only a PROVIDER failure (401/timeout/crash) is worth retrying elsewhere.
+        if !lastResult.providerFailed { return lastResult }
+
+        for candidate in candidates.dropFirst() {
+            AppLogger.info(
+                "app_studio.generation_provider_failover from=\(candidates[0].runtime.rawValue) to=\(candidate.runtime.rawValue) reason=\((lastResult.providerFailure ?? "unknown").prefix(120))",
+                category: "WorkspaceApps"
+            )
+            var result = await generateOnce(
+                intent: rawIntent, workspaceName: workspaceName, workspacePath: workspacePath,
+                existingManifest: existingManifest, maxRepairAttempts: maxRepairAttempts,
+                configuration: candidate, contractFamilies: contractFamilies,
+                availableProviders: availableProviders, runner: runner
+            )
+            if !result.providerFailed {
+                // A fallback provider produced an ACCEPTED app → record the switch so the chat can
+                // disclose it and the picker can adopt the working provider. (A validation-exhaustion
+                // template carries no switch — the user's selected provider is still the one to fix.)
+                if result.accepted { result.resolvedRuntime = candidate.runtime.rawValue }
+                return result
+            }
+            lastResult = result
+        }
+        // Every candidate failed at the provider level → the last deterministic fallback; it carries
+        // the most recent provider error for the chat's actionable message.
+        return lastResult
+    }
+
+    private static func generateOnce(
         intent rawIntent: String,
         workspaceName: String,
         workspacePath: String,
@@ -75,9 +151,9 @@ enum WorkspaceAppStudioGenerator {
         let base = existingManifest ?? WorkspaceAppStudioBuilder.baseManifest(intent: intent)
         let baseReport = WorkspaceAppManifestValidator.validate(base)
 
-        func fallback(attempts: Int, providerFailure: String?) -> WorkspaceAppStudioGenerationResult {
+        func fallback(attempts: Int, providerFailure: String?, providerFailed: Bool) -> WorkspaceAppStudioGenerationResult {
             AppLogger.info(
-                "app_studio.generation_fallback runtime=\(configuration.runtime.rawValue) model=\(configuration.model) attempts=\(attempts) reason=\(providerFailure ?? "exhausted_repairs")",
+                "app_studio.generation_fallback runtime=\(configuration.runtime.rawValue) model=\(configuration.model) attempts=\(attempts) provider_failed=\(providerFailed) reason=\(providerFailure ?? "exhausted_repairs")",
                 category: "WorkspaceApps"
             )
             return WorkspaceAppStudioGenerationResult(
@@ -86,7 +162,8 @@ enum WorkspaceAppStudioGenerator {
                 accepted: false,
                 origin: .deterministicFallback,
                 attemptCount: attempts,
-                providerFailure: providerFailure
+                providerFailure: providerFailure,
+                providerFailed: providerFailed
             )
         }
 
@@ -131,7 +208,7 @@ enum WorkspaceAppStudioGenerator {
         let firstResult = await runner(firstPrompt, workspacePath, configuration)
         guard firstResult.exitCode == 0 else {
             trace(phase: "initial", attempt: 1, result: firstResult, vetted: nil)
-            return fallback(attempts: 1, providerFailure: firstResult.failureDetail)
+            return fallback(attempts: 1, providerFailure: firstResult.failureDetail, providerFailed: true)
         }
 
         var attempts = 1
@@ -171,7 +248,7 @@ enum WorkspaceAppStudioGenerator {
             attempts += 1
             guard result.exitCode == 0 else {
                 trace(phase: "repair", attempt: attempts, result: result, vetted: nil)
-                return fallback(attempts: attempts, providerFailure: result.failureDetail)
+                return fallback(attempts: attempts, providerFailure: result.failureDetail, providerFailed: true)
             }
             vetted = vetEditAware(
                 WorkspaceAppStudioBuilder.applyStructuredOutput(result.output, to: base),
@@ -200,7 +277,8 @@ enum WorkspaceAppStudioGenerator {
         // WHY it fell back rather than a generic "couldn't produce a valid manifest".
         return fallback(
             attempts: attempts,
-            providerFailure: vetted.report.issues.first?.message ?? "the model did not return a valid app manifest"
+            providerFailure: vetted.report.issues.first?.message ?? "the model did not return a valid app manifest",
+            providerFailed: false
         )
     }
 
