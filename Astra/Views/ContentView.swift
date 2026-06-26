@@ -574,6 +574,7 @@ struct ContentView: View {
             onOpenWorkspaceFile: openWorkspaceFileInShelf,
             isComposingWorkspaceApp: isComposingWorkspaceApp,
             studioSession: workspaceAppStudioSession,
+            onStartWorkspaceAppStudio: { prompt in startWorkspaceAppStudio(initialPrompt: prompt) },
             onPublishApp: { seed in publishWorkspaceAppFromStudio(seedSampleData: seed) },
             onCancelStudio: { cancelWorkspaceAppStudio() }
         )
@@ -598,7 +599,7 @@ struct ContentView: View {
         .id(app.id)
     }
 
-    private func startWorkspaceAppStudio(existingManifest: WorkspaceAppManifest? = nil) {
+    private func startWorkspaceAppStudio(existingManifest: WorkspaceAppManifest? = nil, initialPrompt: String? = nil) {
         selectedTask = nil
         selectedWorkspaceApp = nil
         isComposingTask = false
@@ -607,7 +608,7 @@ struct ContentView: View {
         // preview off later doesn't reveal a stale rail underneath it.
         isWorkspaceRightRailVisible = false
         if let workspace = effectiveWorkspace {
-            workspaceAppStudioSession.reset(for: workspace, existingManifest: existingManifest)
+            workspaceAppStudioSession.reset(for: workspace, existingManifest: existingManifest, initialPrompt: initialPrompt)
         }
         // Dock the live preview alongside the conversation.
         setActiveWorkspaceCanvasItem(.appPreview, remember: false)
@@ -2861,6 +2862,7 @@ private struct ContentDetailAreaView: View {
     // .appPreview shelf; the callbacks return control to ContentView.
     let isComposingWorkspaceApp: Bool
     @ObservedObject var studioSession: WorkspaceAppStudioSession
+    let onStartWorkspaceAppStudio: (String?) -> Void
     let onPublishApp: (_ seedSampleData: Bool) -> Void
     let onCancelStudio: () -> Void
 
@@ -3232,6 +3234,7 @@ private struct ContentDetailAreaView: View {
             onOpenGeneratedFile: onOpenGeneratedFile,
             isComposingWorkspaceApp: isComposingWorkspaceApp,
             studioSession: studioSession,
+            onStartWorkspaceAppStudio: onStartWorkspaceAppStudio,
             onPublishApp: onPublishApp,
             onCancelStudio: onCancelStudio
         )
@@ -3328,6 +3331,7 @@ private struct ContentDetailContentView: View {
     // App Studio conversation (rendered in the detail column; the live preview docks in the shelf).
     let isComposingWorkspaceApp: Bool
     @ObservedObject var studioSession: WorkspaceAppStudioSession
+    let onStartWorkspaceAppStudio: (String?) -> Void
     let onPublishApp: (_ seedSampleData: Bool) -> Void
     let onCancelStudio: () -> Void
 
@@ -3350,7 +3354,8 @@ private struct ContentDetailContentView: View {
                     onAddSSHConnection: onAddSSHConnection,
                     onManageSkills: onManageSkills,
                     isPlanCanvasVisible: isPlanCanvasVisible,
-                    onOpenPlan: onOpenPlan
+                    onOpenPlan: onOpenPlan,
+                    onStartWorkspaceAppStudio: onStartWorkspaceAppStudio
                 )
                 .id(task.id)
             }
@@ -3385,7 +3390,8 @@ private struct ContentDetailContentView: View {
                 onAddSSHConnection: onAddSSHConnection,
                 onManageSkills: onManageSkills,
                 isPlanCanvasVisible: isPlanCanvasVisible,
-                onOpenPlan: onOpenPlan
+                onOpenPlan: onOpenPlan,
+                onStartWorkspaceAppStudio: onStartWorkspaceAppStudio
             )
         case .workspaceHome:
             if let workspace = effectiveWorkspace {
