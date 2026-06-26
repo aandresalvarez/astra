@@ -10,6 +10,12 @@ import ASTRACore
 @Suite("MarkdownTextView")
 struct MarkdownTextViewTests {
 
+    @Test("Task answer result bodies stay selectable")
+    func taskAnswerResultBodiesStaySelectable() {
+        #expect(TaskAnswerTextSelectionPolicy.liveAnswerTextIsSelectable)
+        #expect(TaskAnswerTextSelectionPolicy.completedAnswerMarkdownIsSelectable)
+    }
+
     @Test("Malformed schedule markdown is rendered as text instead of trapping")
     func malformedScheduleMarkdownDoesNotTrap() {
         let malformed = "Schedule result: [unterminated link with agent output"

@@ -61,6 +61,17 @@ private enum RunNoticeProminence {
     case detail
 }
 
+private extension View {
+    @ViewBuilder
+    func taskAnswerTextSelection(_ isSelectable: Bool) -> some View {
+        if isSelectable {
+            textSelection(.enabled)
+        } else {
+            textSelection(.disabled)
+        }
+    }
+}
+
 /// Streaming agent text rendered as plain `Text` while the run is live. Isolated
 /// into its own `View` so SwiftUI can diff this subtree independently from the
 /// rest of the agent bubble — the bubble re-evaluates often as bucketed snapshot
@@ -72,7 +83,7 @@ private struct StreamingAgentTextView: View {
         Text(MarkdownTextView.normalizedStreamingText(displayText))
             .font(Stanford.chatBody())
             .foregroundStyle(Stanford.readingText)
-            .textSelection(.disabled)
+            .taskAnswerTextSelection(TaskAnswerTextSelectionPolicy.liveAnswerTextIsSelectable)
             .lineSpacing(Stanford.chatBodyLineSpacing)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -90,7 +101,7 @@ private struct CompletedAgentMarkdownView: View, Equatable {
             text: displayText,
             maxContentWidth: Stanford.chatParagraphMaxWidth,
             onSuggestedNextStep: onSuggestedNextStep,
-            isSelectable: false
+            isSelectable: TaskAnswerTextSelectionPolicy.completedAnswerMarkdownIsSelectable
         )
         .frame(maxWidth: .infinity, alignment: .leading)
     }
