@@ -132,18 +132,21 @@ struct WorkspaceAppRendererTests {
     func htmlReportIsSandboxed() {
         let html = WorkspaceAppWebReportHTML.html(
             title: "Items report",
-            columns: ["name", "qty"],
-            rows: [["name": .text("<b>Ann</b> & Bob"), "qty": .integer(2)]]
+            columns: ["name", "qty", "source"],
+            rows: [[
+                "name": .text("<b>Ann</b> & Bob"),
+                "qty": .integer(2),
+                "source": .text("https://example.com/a?b=<c>")
+            ]]
         )
         #expect(html.contains("Content-Security-Policy"))
         #expect(html.contains("default-src 'none'"))
         #expect(html.contains("base-uri 'none'"))
         #expect(html.contains("form-action 'none'"))
-        #expect(!html.contains("http://"))
-        #expect(!html.contains("https://"))
-        #expect(!html.lowercased().contains("<script"))
+        assertNoRemoteLoadSurface(html)
         // App data is escaped, never injected as markup.
         #expect(html.contains("&lt;b&gt;Ann&lt;/b&gt; &amp; Bob"))
+        #expect(html.contains("https://example.com/a?b=&lt;c&gt;"))
         #expect(html.contains("<td>2</td>"))
     }
 
@@ -183,15 +186,36 @@ struct WorkspaceAppRendererTests {
 
     @Test("chartComposite renders CSP-locked, script-free CSS bars with escaped labels")
     func chartCompositeIsSandboxed() {
-        let bars = [WorkspaceAppChartPresentation.Bar(label: "<x>", value: 3, displayValue: "3", fraction: 0.5)]
+        let bars = [WorkspaceAppChartPresentation.Bar(
+            label: "<x> https://example.com/chart",
+            value: 3,
+            displayValue: "3 via http://example.test/value",
+            fraction: 0.5
+        )]
         let html = WorkspaceAppWebReportHTML.chartHTML(title: "By status", bars: bars)
         #expect(html.contains("default-src 'none'"))
         #expect(html.contains("base-uri 'none'"))
         #expect(html.contains("form-action 'none'"))
-        #expect(!html.contains("http://"))
-        #expect(!html.contains("https://"))
-        #expect(!html.lowercased().contains("<script"))
-        #expect(html.contains("&lt;x&gt;"))
+        assertNoRemoteLoadSurface(html)
+        #expect(html.contains("&lt;x&gt; https://example.com/chart"))
+        #expect(html.contains("3 via http://example.test/value"))
         #expect(html.contains("width:50%"))
+    }
+
+    private func assertNoRemoteLoadSurface(_ html: String) {
+        let lower = html.lowercased()
+        #expect(!lower.contains("<script"))
+        #expect(!lower.contains("<iframe"))
+        #expect(!lower.contains("<object"))
+        #expect(!lower.contains("<embed"))
+        #expect(!lower.contains("<link"))
+        #expect(!lower.contains("<base"))
+        #expect(!lower.contains(" src="))
+        #expect(!lower.contains(" href="))
+        #expect(!lower.contains(" srcset="))
+        #expect(!lower.contains(" formaction="))
+        #expect(!lower.contains(" action="))
+        #expect(!lower.contains("@import"))
+        #expect(!lower.contains("url("))
     }
 }
