@@ -139,6 +139,13 @@ final class WorkspaceAppStudioSession: ObservableObject {
     /// version, instead of forking a suffixed sibling — the fix for the "Home Notes 2 2 2" pile.
     var editingAppLogicalID: String? { persistenceTarget?.appID }
 
+    /// Bind a newly autosaved draft app to this Studio session. Later turns persist their journal to
+    /// the same app directory, and Publish promotes this draft instead of creating a sibling.
+    func bindPersistedDraft(appID: String, workspacePath: String) {
+        guard !appID.isEmpty, !workspacePath.isEmpty else { return }
+        persistenceTarget = (appID, workspacePath)
+    }
+
     /// Publish is gated on the validator (blockers only — warnings never block).
     var canPublish: Bool { draft?.canPublish ?? false }
 
@@ -385,6 +392,15 @@ final class WorkspaceAppStudioSession: ObservableObject {
         ))
     }
 
+    /// Surface a failed autosave without blocking the in-memory editing flow.
+    func noteDraftSaveFailure(_ detail: String) {
+        messages.append(StudioMessage(
+            role: .assistant,
+            kind: .summary,
+            text: "I couldn't save this draft yet: \(detail) You can keep editing, but publish or retry before leaving App Studio."
+        ))
+    }
+
     // MARK: - Journal (durable conversation + event log)
 
     /// Append a turn to the event log and persist the journal (when editing an app with an on-disk
@@ -424,6 +440,12 @@ final class WorkspaceAppStudioSession: ObservableObject {
         manifest.checks = checks.isEmpty ? nil : checks
         draft = WorkspaceAppStudioBuilder.draft(intent: current.intent, workspace: workspace, existingManifest: manifest)
         draftRevision &+= 1
+        recordEvent(
+            kind: .refinement, intent: "Save test checks", origin: "test_checks",
+            attemptCount: 0, accepted: draft?.canPublish ?? false,
+            blockerCount: draft?.validationReport.blockers.count ?? 0, providerFailure: nil,
+            manifest: manifest, runtimeID: "", model: ""
+        )
     }
 
     // MARK: - Default generator

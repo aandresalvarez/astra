@@ -10,6 +10,7 @@ struct WorkspaceAppStudioChatView: View {
     @ObservedObject var session: WorkspaceAppStudioSession
     let workspace: Workspace
     let onPublish: (_ seedSampleData: Bool) -> Void
+    let onDraftChanged: () -> Void
     let onCancel: () -> Void
 
     // Generation provider + model: bound to the same global default the task composer uses,
@@ -45,6 +46,7 @@ struct WorkspaceAppStudioChatView: View {
         }
         .onChange(of: session.initialPrompt) { _, _ in applyInitialPromptIfNeeded() }
         .onChange(of: inputText) { _, _ in applyInitialPromptIfNeeded() }
+        .onChange(of: session.generationEvents.count) { _, _ in onDraftChanged() }
         .sheet(isPresented: $isTesting) {
             if let draft = session.draft {
                 WorkspaceAppTestPanelView(
@@ -107,7 +109,7 @@ struct WorkspaceAppStudioChatView: View {
             .disabled(session.draft == nil)
             .help("Test the app, or inspect its manifest")
 
-            Button("Cancel", action: onCancel)
+            Button("Close", action: onCancel)
                 .buttonStyle(.borderless)
 
             Button(action: { onPublish(seedSampleData) }) {

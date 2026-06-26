@@ -576,6 +576,7 @@ struct ContentView: View {
             studioSession: workspaceAppStudioSession,
             onStartWorkspaceAppStudio: { prompt in startWorkspaceAppStudio(initialPrompt: prompt) },
             onPublishApp: { seed in publishWorkspaceAppFromStudio(seedSampleData: seed) },
+            onDraftChanged: { WorkspaceAppStudioDraftAutosaveCoordinator.autosave(session: workspaceAppStudioSession, preferredWorkspace: effectiveWorkspace, modelContext: modelContext) },
             onCancelStudio: { cancelWorkspaceAppStudio() }
         )
     }
@@ -698,9 +699,10 @@ struct ContentView: View {
                   let appWorkspace = ((try? modelContext.fetch(FetchDescriptor<Workspace>())) ?? []).first(where: { $0.id == existing.workspaceID }) else {
                 throw WorkspaceAppServiceError.fileOperationFailed("The app you were editing no longer exists. Use Save as a Copy to keep your changes.")
             }
+            let isDraftFirstPublish = existing.lifecycleStatus == .draft && existing.latestVersionNumber == 0
             target = appWorkspace
             result = try service.updateApp(existing, manifest: draft.manifest, in: appWorkspace, modelContext: modelContext, status: .published)
-            isNewApp = false
+            isNewApp = isDraftFirstPublish
         } else {
             // New app: create in the selected workspace, deduping the logical id within it.
             target = workspace
@@ -2858,12 +2860,11 @@ private struct ContentDetailAreaView: View {
     let onImportWorkspace: () -> Void
     let onOpenGeneratedFile: (String) -> Void
     let onOpenWorkspaceFile: (String) -> Void
-    // App Studio (conversational): the studio session drives both the center chat and the
-    // .appPreview shelf; the callbacks return control to ContentView.
     let isComposingWorkspaceApp: Bool
     @ObservedObject var studioSession: WorkspaceAppStudioSession
     let onStartWorkspaceAppStudio: (String?) -> Void
     let onPublishApp: (_ seedSampleData: Bool) -> Void
+    let onDraftChanged: () -> Void
     let onCancelStudio: () -> Void
 
     private static let contentMinWidth: CGFloat = 480
@@ -3236,6 +3237,7 @@ private struct ContentDetailAreaView: View {
             studioSession: studioSession,
             onStartWorkspaceAppStudio: onStartWorkspaceAppStudio,
             onPublishApp: onPublishApp,
+            onDraftChanged: onDraftChanged,
             onCancelStudio: onCancelStudio
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -3328,11 +3330,11 @@ private struct ContentDetailContentView: View {
     let onCreateWorkspace: () -> Void
     let onImportWorkspace: () -> Void
     let onOpenGeneratedFile: (String) -> Void
-    // App Studio conversation (rendered in the detail column; the live preview docks in the shelf).
     let isComposingWorkspaceApp: Bool
     @ObservedObject var studioSession: WorkspaceAppStudioSession
     let onStartWorkspaceAppStudio: (String?) -> Void
     let onPublishApp: (_ seedSampleData: Bool) -> Void
+    let onDraftChanged: () -> Void
     let onCancelStudio: () -> Void
 
     var body: some View {
@@ -3411,8 +3413,6 @@ private struct ContentDetailContentView: View {
                 )
             }
         case .workspaceApp:
-            // App DETAIL is still rendered at the ContentView detailArea level (gated on
-            // selectedWorkspaceApp), so it never reaches this inner switch.
             EmptyView()
         case .workspaceAppStudio:
             if let workspace = effectiveWorkspace {
@@ -3420,6 +3420,7 @@ private struct ContentDetailContentView: View {
                     session: studioSession,
                     workspace: workspace,
                     onPublish: onPublishApp,
+                    onDraftChanged: onDraftChanged,
                     onCancel: onCancelStudio
                 )
             }
