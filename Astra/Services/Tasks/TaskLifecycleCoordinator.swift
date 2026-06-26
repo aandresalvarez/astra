@@ -39,6 +39,9 @@ final class TaskLifecycleCoordinator {
         }
         Task {
             await taskQueue.processQueue(modelContext: modelContext)
+            // B2-live: resume any Workspace App workflow run whose awaited agent
+            // task just finished in the queue.
+            WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: modelContext)
         }
     }
 
@@ -56,6 +59,8 @@ final class TaskLifecycleCoordinator {
             AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
                 "status": task.status.rawValue
             ])
+            // B2-live: resume any Workspace App workflow awaiting this agent task.
+            WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: modelContext)
         }
     }
 

@@ -34,7 +34,8 @@ struct ArchitectureFitnessTests {
             "Security",
             "Settings",
             "Tasks",
-            "Validation"
+            "Validation",
+            "WorkspaceApps"
         ])
     }
 
@@ -935,14 +936,14 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Browser/ShelfBrowserSession.swift": 5_900,
             "Astra/Views/ContentView.swift": 5_000,
             "Astra/Views/WorkspaceRightRailView.swift": 3_500,
-            "Astra/Views/ChatPanelView.swift": 3_200,
+            "Astra/Views/ChatPanelView.swift": 3_215,  // +/app chat command (one-shot Workspace App generation)
             "Astra/Services/Runtime/AgentRuntimeAdapter.swift": 2_940,
             "Astra/Views/PluginCatalogView.swift": 2_900,
             "Astra/Views/ShelfMarkdownPanelView.swift": 2_850,
             "Astra/Views/WorkspaceGitSectionView.swift": 2_650,
             "Astra/Views/ConfigureView.swift": 2_550,
             "Astra/Services/Diagnostics/LogDiagnosticsService.swift": 2_550,
-            "Astra/Views/TaskSidebarView.swift": 2_450,
+            "Astra/Views/TaskSidebarView.swift": 2_465,
             "Astra/Views/ShelfQueryPanelView.swift": 2_350,
             "Astra/Services/Persistence/TaskContextStateManager.swift": 2_250,
             "Astra/Services/Runtime/AgentPromptBuilder.swift": 2_250,

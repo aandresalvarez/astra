@@ -36,6 +36,8 @@ enum ContentWorkspaceSelectionResolver {
 enum ContentDetailPresentation: Equatable {
     case draftTask
     case existingTask
+    case workspaceApp
+    case workspaceAppStudio
     case newTaskComposer
     case workspaceHome
     case noWorkspace
@@ -43,14 +45,24 @@ enum ContentDetailPresentation: Equatable {
     static func resolve(
         selectedTask: AgentTask?,
         effectiveWorkspace: Workspace?,
-        isComposingTask: Bool
+        isComposingTask: Bool,
+        selectedWorkspaceApp: WorkspaceApp? = nil,
+        isComposingWorkspaceApp: Bool = false
     ) -> ContentDetailPresentation {
         if let selectedTask {
             return selectedTask.status == .draft ? .draftTask : .existingTask
         }
 
+        if selectedWorkspaceApp != nil {
+            return .workspaceApp
+        }
+
         guard let effectiveWorkspace else {
             return .noWorkspace
+        }
+
+        if isComposingWorkspaceApp {
+            return .workspaceAppStudio
         }
 
         if isComposingTask || effectiveWorkspace.tasks.isEmpty {
@@ -58,6 +70,13 @@ enum ContentDetailPresentation: Equatable {
         }
 
         return .workspaceHome
+    }
+}
+
+// Slice 9 / F7: where the "New App" entry should appear in the workspace UI.
+enum WorkspaceAppStudioEntryPresentation {
+    static func shouldShowNewAppEntry(for presentation: ContentDetailPresentation) -> Bool {
+        presentation == .newTaskComposer || presentation == .workspaceHome
     }
 }
 

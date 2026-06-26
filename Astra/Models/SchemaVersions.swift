@@ -1838,9 +1838,42 @@ enum ASTRASchemaV7: VersionedSchema {
     }
 }
 
+/// V8 adds the Workspace App Studio runtime models on top of V7's execution-environment
+/// fields. They are additive, flat, UUID-keyed models with no relationships to existing
+/// entities, so V7 -> V8 is a lightweight migration that only creates the new tables.
+enum ASTRASchemaV8: VersionedSchema {
+    static var versionIdentifier = Schema.Version(8, 0, 0)
+
+    static var models: [any PersistentModel.Type] {
+        [
+            Workspace.self,
+            AgentTask.self,
+            TaskRun.self,
+            TaskEvent.self,
+            Artifact.self,
+            Skill.self,
+            Connector.self,
+            LocalTool.self,
+            TaskTemplate.self,
+            TaskSchedule.self,
+            // Workspace App Studio runtime (F1 re-land): additive, flat
+            // UUID-keyed models with no relationships to existing entities,
+            // so V7 -> V8 is a lightweight migration.
+            WorkspaceApp.self,
+            WorkspaceAppRun.self,
+            WorkspaceAppRunEvent.self,
+            WorkspaceAppDependencyBinding.self,
+            WorkspaceAppAutomationState.self
+        ]
+    }
+}
+
 enum ASTRASchema {
     static var current: Schema {
-        Schema(versionedSchema: ASTRASchemaV7.self)
+        // V8 introduces the WorkspaceApp models (referenced as top-level classes), so the
+        // B2 resumable-run fields added to WorkspaceAppRun are part of V8's fresh table
+        // creation in the V7 -> V8 stage. No separate version needed.
+        Schema(versionedSchema: ASTRASchemaV8.self)
     }
 }
 
@@ -1853,7 +1886,8 @@ enum ASTRAMigrationPlan: SchemaMigrationPlan {
             ASTRASchemaV4.self,
             ASTRASchemaV5.self,
             ASTRASchemaV6.self,
-            ASTRASchemaV7.self
+            ASTRASchemaV7.self,
+            ASTRASchemaV8.self
         ]
     }
 
@@ -1864,7 +1898,8 @@ enum ASTRAMigrationPlan: SchemaMigrationPlan {
             .lightweight(fromVersion: ASTRASchemaV3.self, toVersion: ASTRASchemaV4.self),
             .lightweight(fromVersion: ASTRASchemaV4.self, toVersion: ASTRASchemaV5.self),
             .lightweight(fromVersion: ASTRASchemaV5.self, toVersion: ASTRASchemaV6.self),
-            .lightweight(fromVersion: ASTRASchemaV6.self, toVersion: ASTRASchemaV7.self)
+            .lightweight(fromVersion: ASTRASchemaV6.self, toVersion: ASTRASchemaV7.self),
+            .lightweight(fromVersion: ASTRASchemaV7.self, toVersion: ASTRASchemaV8.self)
         ]
     }
 }

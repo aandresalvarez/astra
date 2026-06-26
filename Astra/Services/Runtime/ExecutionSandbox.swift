@@ -316,6 +316,89 @@ enum ExecutionSandbox {
         "/dev"
     ]
 
+    // MARK: - Developer toolchain
+
+    /// The active developer directory (full Xcode or the standalone Command Line
+    /// Tools), resolved the way Apple's tool shims (`/usr/bin/git`, `clang`, `make`)
+    /// resolve it: an explicit `DEVELOPER_DIR`, then the `xcode-select` link, then
+    /// the standalone CLT. Sandboxed providers run those shims constantly (e.g.
+    /// `git` for repo context); if the profile can't read this directory the shim
+    /// falls back to the system "install the command line developer tools" dialog
+    /// even though the tools are installed — and when `xcode-select` points at
+    /// `/Applications/Xcode.app`, the privacy deny on `/Applications` is exactly
+    /// what blocks it. Resolved without spawning a process (cheap, side-effect free).
+    static func activeDeveloperDirectory(
+        environment: [String: String],
+        fileManager: FileManager = .default
+    ) -> String? {
+        // 1. Respect an explicit, existing DEVELOPER_DIR — a deliberate override wins.
+        if let explicit = environment["DEVELOPER_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !explicit.isEmpty, fileManager.fileExists(atPath: explicit) {
+            return explicit
+        }
+        // 2. Prefer the standalone Command Line Tools. It lives in an already-readable,
+        //    non-privacy-protected root (`/Library/Developer`) and — unlike full Xcode —
+        //    needs no license acceptance, so the sandboxed git/clang shims just work
+        //    without re-allowing `/Applications` or tripping the Xcode license gate.
+        let commandLineTools = "/Library/Developer/CommandLineTools"
+        if fileManager.fileExists(atPath: commandLineTools) {
+            return commandLineTools
+        }
+        // 3. Fall back to whatever `xcode-select` points at (typically Xcode under
+        //    `/Applications`), which the read-allow + protected re-allow below expose.
+        if let linked = try? fileManager.destinationOfSymbolicLink(atPath: "/var/db/xcode_select_link"),
+           linked.hasPrefix("/"), fileManager.fileExists(atPath: linked) {
+            return linked
+        }
+        return nil
+    }
+
+    /// The directory the sandbox must grant read access to so Apple's tool shims can
+    /// both *resolve* and *validate* the toolchain. A full Xcode shim stats the app
+    /// bundle's `Info.plist`/`version.plist` (siblings of `Contents/Developer`), so
+    /// the whole `.app` bundle is granted; the standalone Command Line Tools need
+    /// only their own directory. Granting the read-only Xcode bundle is safe — it is
+    /// system tooling, not user data, and already world-readable outside the sandbox.
+    static func developerToolchainGrantRoot(_ developerDirectory: String) -> String {
+        if let appRange = developerDirectory.range(of: ".app/", options: [.caseInsensitive]) {
+            return String(developerDirectory[..<appRange.lowerBound]) + ".app"
+        }
+        return developerDirectory
+    }
+
+    /// The active developer toolchain as canonical sandbox path spellings, for the
+    /// read allowlist and the protected-read re-allow. Empty when none resolves.
+    static func developerDirectoryRoots(
+        environment: [String: String],
+        fileManager: FileManager = .default
+    ) -> [String] {
+        guard let directory = activeDeveloperDirectory(environment: environment, fileManager: fileManager),
+              let canonical = canonicalize(developerToolchainGrantRoot(directory)) else { return [] }
+        var seen: Set<String> = []
+        return sandboxPathSpellings(canonical).filter { seen.insert($0).inserted }
+    }
+
+    /// `DEVELOPER_DIR` to pin into a wrapped provider's environment so toolchain
+    /// shims resolve deterministically without reading `/var/db/xcode_select_link`
+    /// (which the restricted read scope deliberately does not expose). Empty when
+    /// none resolves or the plan already sets it (a deliberate value is respected).
+    static func developerDirectoryEnvironment(
+        plan: AgentRuntimeProcessLaunchPlan,
+        fileManager: FileManager = .default
+    ) -> [String: String] {
+        if plan.environment["DEVELOPER_DIR"]?.isEmpty == false { return [:] }
+        guard let directory = activeDeveloperDirectory(environment: plan.environment, fileManager: fileManager) else {
+            return [:]
+        }
+        return ["DEVELOPER_DIR": directory]
+    }
+
+    /// `base` with the entries of `extra` not already present appended, order preserved.
+    private static func appendingUnique(_ base: [String], _ extra: [String]) -> [String] {
+        var seen = Set(base)
+        return base + extra.filter { seen.insert($0).inserted }
+    }
+
     // MARK: - Decision
 
     static func decide(
@@ -371,20 +454,33 @@ enum ExecutionSandbox {
             additionalReadablePaths: readAdditionalPaths,
             canonicalWorkspace: workspace
         )
+        // The active developer toolchain must stay readable wherever it lives, or
+        // the providers' `git`/`clang` shims hit the system "install command line
+        // developer tools" dialog. Folded into the read allowlist (so restricted
+        // scope allows it regardless of location) and, below, into the protected
+        // re-allow (so a toolchain under `/Applications` survives the privacy deny).
+        let developerRoots = developerDirectoryRoots(environment: plan.environment, fileManager: fileManager)
         let readableRoots = settings.readScope == .open
             ? []
-            : readableRoots(
-                plan: plan,
-                providerHomeDirectory: providerHomeDirectory,
-                additionalReadablePaths: readAdditionalPaths,
-                canonicalWorkspace: workspace
+            : appendingUnique(
+                readableRoots(
+                    plan: plan,
+                    providerHomeDirectory: providerHomeDirectory,
+                    additionalReadablePaths: readAdditionalPaths,
+                    canonicalWorkspace: workspace
+                ),
+                developerRoots
             )
         let readableMetadataRoots = settings.readScope == .open
             ? []
             : readableMetadataRoots(for: readableRoots)
         let protectedReadRoots = protectedReadRoots()
         let explicitProtectedReadAllowRoots = protectedReadAllowRoots(
-            explicitReadRoots: explicitReadRoots,
+            // Toolchain dirs under a protected root (Xcode at `/Applications/Xcode.app`)
+            // are re-allowed in every scope; the filter drops toolchain dirs that
+            // aren't under a protected root (e.g. the standalone CLT), which need no
+            // re-allow.
+            explicitReadRoots: explicitReadRoots + developerRoots,
             protectedReadRoots: protectedReadRoots
         )
         let protectedWriteDenyRoots = protectedWriteDenyRoots(plan: plan, writableRoots: roots)
@@ -409,7 +505,12 @@ enum ExecutionSandbox {
             executablePath: plan.executablePath,
             arguments: plan.arguments
         )
-        let wrapped = rewrite(plan, executablePath: sandboxExecPath, arguments: arguments)
+        let wrapped = rewrite(
+            plan,
+            executablePath: sandboxExecPath,
+            arguments: arguments,
+            extraEnvironment: developerDirectoryEnvironment(plan: plan, fileManager: fileManager)
+        )
         return .applied(plan: wrapped, writableRoots: roots)
     }
 
@@ -939,14 +1040,19 @@ enum ExecutionSandbox {
     private static func rewrite(
         _ plan: AgentRuntimeProcessLaunchPlan,
         executablePath: String,
-        arguments: [String]
+        arguments: [String],
+        extraEnvironment: [String: String] = [:]
     ) -> AgentRuntimeProcessLaunchPlan {
         AgentRuntimeProcessLaunchPlan(
             runtime: plan.runtime,
             executablePath: executablePath,
             arguments: arguments,
             currentDirectory: plan.currentDirectory,
-            environment: plan.environment,
+            // Merge keeps any value the plan already set (a deliberate DEVELOPER_DIR
+            // wins over the resolved one).
+            environment: extraEnvironment.isEmpty
+                ? plan.environment
+                : plan.environment.merging(extraEnvironment) { current, _ in current },
             browserShimDirectory: plan.browserShimDirectory,
             providerVersion: plan.providerVersion,
             parsesJSONLines: plan.parsesJSONLines,
