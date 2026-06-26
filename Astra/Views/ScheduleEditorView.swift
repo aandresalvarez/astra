@@ -341,7 +341,7 @@ struct ScheduleEditorView: View {
                                 Spacer()
                                 Picker("", selection: $tokenBudget) {
                                     ForEach(budgetPresets, id: \.self) { b in
-                                        Text(b == 0 ? "Unlimited" : "\(b / 1000)k").tag(b)
+                                        Text(RuntimeBudgetPresentation.compactLabel(for: b)).tag(b)
                                     }
                                 }
                                 .labelsHidden()

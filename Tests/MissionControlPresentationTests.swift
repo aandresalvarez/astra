@@ -124,6 +124,27 @@ struct MissionControlPresentationTests {
         #expect(event.payload.contains("Not needed"))
     }
 
+    @Test("mission control hides budget metric when budget is disabled")
+    func missionControlHidesBudgetMetricWhenBudgetIsDisabled() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeMissionControlContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Mission Budget", primaryPath: root)
+        let task = AgentTask(title: "Budgetless task", goal: "Run without budget", workspace: workspace, tokenBudget: 0)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.info, payload: "Ready"))
+
+        let presentation = try #require(MissionControlPresentation.build(
+            task: task,
+            planState: TaskPlanState.empty,
+            state: nil
+        ))
+
+        #expect(presentation.budgetSummary == nil)
+    }
+
     private func temporaryRoot() throws -> String {
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-mission-control-\(UUID().uuidString)", isDirectory: true)
