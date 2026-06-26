@@ -340,42 +340,47 @@ struct ComposerToolbar: View {
                 Label("Model", systemImage: "cpu")
             }
 
-            Divider()
+            if RuntimeBudgetPresentation.isEnabled(budget) {
+                Divider()
 
-            Menu {
-                ForEach(TaskExecutionDefaults.budgetPresets, id: \.self) { preset in
-                    Button {
-                        onBudgetChange?(preset)
-                    } label: {
-                        HStack {
-                            Text(budgetSummary(preset))
-                            if budget == preset {
-                                Image(systemName: "checkmark")
+                Menu {
+                    ForEach(TaskExecutionDefaults.budgetPresets, id: \.self) { preset in
+                        Button {
+                            onBudgetChange?(preset)
+                        } label: {
+                            HStack {
+                                Text(RuntimeBudgetPresentation.compactLabel(for: preset))
+                                if budget == preset {
+                                    Image(systemName: "checkmark")
+                                }
                             }
                         }
+                        .disabled(onBudgetChange == nil)
                     }
-                    .disabled(onBudgetChange == nil)
+                } label: {
+                    Label(
+                        "Budget: \(RuntimeBudgetPresentation.compactLabel(for: budget))",
+                        systemImage: "gauge.with.needle"
+                    )
                 }
-            } label: {
-                Label("Budget: \(budgetSummary(budget))", systemImage: "gauge.with.needle")
-            }
 
-            Menu {
-                ForEach(BudgetEnforcementMode.allCases) { mode in
-                    Button {
-                        budgetEnforcementModeRaw = mode.rawValue
-                    } label: {
-                        HStack {
-                            Text(mode.label)
-                            if budgetEnforcementMode == mode {
-                                Image(systemName: "checkmark")
+                Menu {
+                    ForEach(BudgetEnforcementMode.allCases) { mode in
+                        Button {
+                            budgetEnforcementModeRaw = mode.rawValue
+                        } label: {
+                            HStack {
+                                Text(mode.label)
+                                if budgetEnforcementMode == mode {
+                                    Image(systemName: "checkmark")
+                                }
                             }
                         }
+                        .help(mode.helpText)
                     }
-                    .help(mode.helpText)
+                } label: {
+                    Label("Enforcement: \(budgetEnforcementSummary)", systemImage: budgetEnforcementIcon)
                 }
-            } label: {
-                Label("Enforcement: \(budgetEnforcementSummary)", systemImage: budgetEnforcementIcon)
             }
         } label: {
             runtimeStatusLabel(style: .full)
@@ -940,7 +945,12 @@ struct ComposerToolbar: View {
         guard let displayedRuntime else {
             return "No ready provider. Finish CLI setup before running a task."
         }
-        return "\(displayedRuntime.displayName) · \(modelDisplayName(model)) · \(budgetSummary(budget)) · \(budgetEnforcementMode.label)"
+        return RuntimeBudgetPresentation.runtimeStatusHelp(
+            runtimeName: displayedRuntime.displayName,
+            modelName: modelDisplayName(model),
+            budget: budget,
+            enforcementLabel: budgetEnforcementMode.label
+        )
     }
 
     private func runtimeStatusText(includeRuntime: Bool) -> String {
@@ -951,9 +961,12 @@ struct ComposerToolbar: View {
             return "Provider setup needed"
         }
         let modelPart = displayedRuntime == resolvedRuntime ? shortModelDisplayName(model) : "Ready"
-        return includeRuntime
-            ? "\(shortRuntimeName(displayedRuntime)) · \(modelPart) · \(budgetSummary(budget))"
-            : "\(modelPart) · \(budgetSummary(budget))"
+        return RuntimeBudgetPresentation.runtimeStatusText(
+            runtimeName: shortRuntimeName(displayedRuntime),
+            modelName: modelPart,
+            budget: budget,
+            includeRuntime: includeRuntime
+        )
     }
 
     private func shortRuntimeName(_ runtime: AgentRuntimeID) -> String {
@@ -992,10 +1005,6 @@ struct ComposerToolbar: View {
         case .closed:
             return Stanford.paloAltoGreen
         }
-    }
-
-    private func budgetSummary(_ budget: Int) -> String {
-        budget == 0 ? "∞" : "\(budget / 1000)k"
     }
 
     private var budgetEnforcementMode: BudgetEnforcementMode {
