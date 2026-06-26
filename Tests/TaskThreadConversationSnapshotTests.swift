@@ -960,6 +960,157 @@ extension TaskThreadSnapshotTests {
         #expect(output.progressMessages.isEmpty)
     }
 
+    @Test("Completed response chunks join with markdown-safe separators")
+    func completedResponseChunksJoinWithMarkdownSafeSeparators() {
+        let task = makeTask(goal: "Original goal", status: .completed)
+        let run = TaskRun(task: task)
+        run.completedAt = Date(timeIntervalSince1970: 130)
+        run.status = .completed
+        run.output = "I checked death.Now the results are ready."
+
+        let events = [
+            makeEvent(
+                task: task,
+                type: "tool.use",
+                payload: "Using tool: Bash",
+                timestamp: Date(timeIntervalSince1970: 110),
+                run: run
+            ),
+            makeEvent(
+                task: task,
+                type: "agent.response",
+                payload: "I checked death.",
+                timestamp: Date(timeIntervalSince1970: 120),
+                run: run
+            ),
+            makeEvent(
+                task: task,
+                type: "agent.response",
+                payload: "Now the results are ready.",
+                timestamp: Date(timeIntervalSince1970: 121),
+                run: run
+            )
+        ]
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: events,
+            runs: [run]
+        )
+
+        let output = snapshot.outputPresentation(for: TaskRunSnapshot(input: TaskRunSnapshotInput(run: run)))
+        #expect(output.displayText == "I checked death. Now the results are ready.")
+        #expect(!output.displayText.contains("death.Now"))
+    }
+
+    @Test("Completed response chunks preserve heading table boundary")
+    func completedResponseChunksPreserveHeadingTableBoundary() {
+        let task = makeTask(goal: "Original goal", status: .completed)
+        let run = TaskRun(task: task)
+        run.completedAt = Date(timeIntervalSince1970: 130)
+        run.status = .completed
+        run.output = """
+        ### What passed across all runs (death-specific)
+
+        | Model/Test | Status | Details |
+        |---|---|---|
+        | `lpch_deaths` | PASS | 15.1k rows (prod) |
+        """
+
+        let events = [
+            makeEvent(
+                task: task,
+                type: "tool.result",
+                payload: "Done",
+                timestamp: Date(timeIntervalSince1970: 110),
+                run: run
+            ),
+            makeEvent(
+                task: task,
+                type: "agent.response",
+                payload: "### What passed across all runs (death-specific)\n",
+                timestamp: Date(timeIntervalSince1970: 120),
+                run: run
+            ),
+            makeEvent(
+                task: task,
+                type: "agent.response",
+                payload: """
+                | Model/Test | Status | Details |
+                |---|---|---|
+                | `lpch_deaths` | PASS | 15.1k rows (prod) |
+                """,
+                timestamp: Date(timeIntervalSince1970: 121),
+                run: run
+            )
+        ]
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: events,
+            runs: [run]
+        )
+
+        let output = snapshot.outputPresentation(for: TaskRunSnapshot(input: TaskRunSnapshotInput(run: run)))
+        #expect(output.displayText.contains("death-specific)\n\n| Model/Test | Status | Details |"))
+        #expect(!output.displayText.contains("death-specific) | Model/Test"))
+        #expect(MarkdownTextView.parse(output.displayText).contains { $0.kind == .table })
+    }
+
+    @Test("Raw-only long monitoring output compacts progress chatter")
+    func rawOnlyLongMonitoringOutputCompactsProgressChatter() {
+        let task = makeTask(goal: "Original goal", status: .completed)
+        let run = TaskRun(task: task)
+        run.completedAt = Date(timeIntervalSince1970: 130)
+        run.status = .completed
+        run.output = """
+        Let me check initial progress after a moment. Let me check initial progress after a moment. Build is running and already at model 296/2476. Let me wait and check progress again. Good progress at ~548/2476. Let me continue monitoring. Now at ~716/2476. Let me keep polling. Good progress, tests are passing. Let me continue monitoring. The final death model built successfully and all tests passed.
+        """ + String(repeating: " Let me continue monitoring. Good progress.", count: 20)
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: [],
+            runs: [run]
+        )
+
+        let output = snapshot.outputPresentation(for: TaskRunSnapshot(input: TaskRunSnapshotInput(run: run)))
+        #expect(output.displayText.contains("Open Diagnostics"))
+        #expect(!output.displayText.contains("Last update:"))
+        #expect(output.displayText.count < run.output.count)
+        #expect(!output.displayText.contains("Let me check initial progress after a moment. Let me check initial progress after a moment."))
+        #expect(!output.displayText.contains("Let me continue monitoring"))
+        #expect(!output.progressMessages.isEmpty)
+    }
+
+    @Test("Prod-scale monitoring tail does not render as final answer")
+    func prodScaleMonitoringTailDoesNotRenderAsFinalAnswer() {
+        let task = makeTask(goal: "Original goal", status: .completed)
+        let run = TaskRun(task: task)
+        run.completedAt = Date(timeIntervalSince1970: 130)
+        run.status = .completed
+        run.output = """
+        New output just appeared at 16:06:20. New output just appeared at 16:06:20. `stg_common__flowsheets` completed — **10.2 billion rows**, 3.3 TiB processed in 23 minutes. Now `observation_1_src_prepped` and a measurement unit test are starting. The build is progressing through the remaining upstream models. Still need `person_4_filtered` before `death_4_filtered` can run. Good progress — measurement unit tests are passing. `observation_1_src_prepped` is building in parallel. Let me keep monitoring. Measurement unit tests are all passing sequentially. `observation_1_src_prepped` is still building in parallel. Let me keep polling. All measurement unit tests passed. Now `tmp__meas_1_src_prepped` is starting to build (the actual table, very large). `tmp__observation_1_src_prepped` is still running in parallel. These are deep upstream models — still several stages before `person_4_filtered` → `death_4_filtered`. Let me keep waiting. Both `tmp__meas_1_src_prepped` and `tmp__observation_1_src_prepped` are still building — these are massive tables with prod data. Let me check the latest tail. `tmp__meas_1_src_prepped` has been building for ~7 minutes — measurement tables are among the largest in the pipeline. Continuing to wait. 12 minutes on `tmp__meas_1_src_prepped` and `tmp__observation_1_src_prepped` — these are the two largest tables in the pipeline. Heartbeat alive at 16:20. 16 minutes on `tmp__meas_1_src_prepped` / `tmp__observation_1_src_prepped`. These are the biggest models in the whole pipeline — measurement alone can be 1B+ rows at prod scale. Heartbeat alive at 16:24. 18 minutes on `tmp__meas_1_src_prepped` — still building. This model processes the full measurement staging table which was 955M rows. At prod scale with BigQuery joins and transformations, this can easily take 20-30 minutes. Heartbeat is still alive. 22+ minutes on `tmp__meas_1_src_prepped` — this is the single largest model in the pipeline. Let me check for any new output. Still building. Let me continue polling. Still building. Let me continue polling. New output at 16:37:43! New output at 16:37:43! `tmp__observation_1_src_prepped` completed — **7.2 billion rows**, 2.1 TiB, took ~31 minutes. `tmp__observation_2_src_mapped` is now starting. `tmp__meas_1_src_prepped` is still building (~29 min so far). Progress is moving — once these complete, the pipeline will move through the `_2_src_mapped` → `_3_all_with_keys` → `_4_filtered` stages, eventually reaching `person_4_filtered` → `death_4_filtered`.
+        """ + String(repeating: " Let me keep monitoring. Heartbeat is alive.", count: 12)
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: [],
+            runs: [run]
+        )
+
+        let output = snapshot.outputPresentation(for: TaskRunSnapshot(input: TaskRunSnapshotInput(run: run)))
+        #expect(output.displayText == "This run produced a long progress log. Open Diagnostics for the raw output.")
+        #expect(!output.displayText.contains("Last update:"))
+        #expect(!output.displayText.contains("observation_1_src_prepped"))
+        #expect(!output.displayText.contains("3.3 TiB"))
+        #expect(!output.displayText.contains("Let me keep monitoring"))
+        #expect(!output.displayText.contains("**10.2"))
+    }
+
     @Test("Running output is treated as progress until the run completes")
     func runningOutputIsTreatedAsProgressUntilCompletion() {
         let task = makeTask(goal: "Original goal", status: .running)
@@ -984,6 +1135,52 @@ extension TaskThreadSnapshotTests {
         let output = snapshot.outputPresentation(for: TaskRunSnapshot(input: TaskRunSnapshotInput(run: run)))
         #expect(output.displayText.isEmpty)
         #expect(output.progressMessages.map(\.text) == ["Reading the file before answering."])
+    }
+
+    @Test("Progress messages dedupe adjacent normalized events while preserving source IDs")
+    func progressMessagesDedupeAdjacentNormalizedEventsWhilePreservingSourceIDs() {
+        let task = makeTask(goal: "Original goal", status: .running)
+        let run = TaskRun(task: task)
+        run.status = .running
+        run.output = "Reading the file before answering."
+
+        let first = makeEvent(
+            task: task,
+            type: "agent.response",
+            payload: "Reading the file before answering.",
+            timestamp: Date(timeIntervalSince1970: 115),
+            run: run
+        )
+        let duplicate = makeEvent(
+            task: task,
+            type: "agent.response",
+            payload: "\nReading the file before answering.\n",
+            timestamp: Date(timeIntervalSince1970: 116),
+            run: run
+        )
+        let next = makeEvent(
+            task: task,
+            type: "agent.response",
+            payload: "Now checking the generated report.",
+            timestamp: Date(timeIntervalSince1970: 117),
+            run: run
+        )
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: [first, duplicate, next],
+            runs: [run]
+        )
+
+        let output = snapshot.outputPresentation(for: TaskRunSnapshot(input: TaskRunSnapshotInput(run: run)))
+        #expect(output.displayText.isEmpty)
+        #expect(output.progressMessages.map(\.text) == [
+            "Reading the file before answering.",
+            "Now checking the generated report."
+        ])
+        #expect(output.progressMessages.map(\.id) == [first.id, next.id])
+        #expect(output.progressMessages.map(\.timestamp) == [first.timestamp, next.timestamp])
     }
 
     @Test("Latest agent plan derives from newest ARP todo.replace event")

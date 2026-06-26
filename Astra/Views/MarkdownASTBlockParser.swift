@@ -363,8 +363,7 @@ enum MarkdownASTBlockParser {
 
             if scalar == "." || scalar == "!" || scalar == "?" {
                 let nextIsUppercase = CharacterSet.uppercaseLetters.contains(next)
-                let nextIsDigit = CharacterSet.decimalDigits.contains(next)
-                if nextIsUppercase || nextIsDigit {
+                if nextIsUppercase {
                     result.append(" ")
                 }
             }

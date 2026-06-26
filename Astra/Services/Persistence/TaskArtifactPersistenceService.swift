@@ -150,7 +150,8 @@ enum TaskArtifactPersistenceService {
         modelContext: ModelContext? = nil
     ) -> Artifact? {
         let path = normalizedPath(change.path, task: task)
-        guard !path.isEmpty else { return nil }
+        guard !path.isEmpty,
+              shouldPersistFileChangeArtifact(path, for: task) else { return nil }
         let artifact = Artifact(
             task: task,
             type: artifactKind(for: change).rawValue,
@@ -164,6 +165,23 @@ enum TaskArtifactPersistenceService {
 
     private static func normalizedPath(_ path: String, task: AgentTask) -> String {
         TaskArtifactPathNormalizer.normalizedPath(path, task: task)
+    }
+
+    private static func shouldPersistFileChangeArtifact(_ path: String, for task: AgentTask) -> Bool {
+        let access = TaskWorkspaceAccess(task: task)
+        if let relative = TaskOutputArtifactPathPolicy.relativePath(path, under: access.taskFolder) {
+            return TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(
+                relative,
+                context: .taskFolder
+            ) != nil
+        }
+        if let relative = TaskOutputArtifactPathPolicy.relativePath(path, under: access.effectiveWorkspacePath) {
+            return TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(
+                relative,
+                context: .workspace
+            ) != nil
+        }
+        return true
     }
 
     private static func nextVersion(for normalizedPath: String, task: AgentTask) -> Int {

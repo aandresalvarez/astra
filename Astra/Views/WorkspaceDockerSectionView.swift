@@ -142,11 +142,9 @@ struct WorkspaceDockerSectionView: View {
                         .lineLimit(2)
                         .truncationMode(.middle)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .layoutPriority(1)
 
-                Spacer(minLength: 8)
-
-                RailCountBadge(viewModel.activeScopeLabel)
                 Image(systemName: "chevron.up.chevron.down")
                     .font(Stanford.ui(CapabilityRailLayout.rowChevronFontSize, weight: .semibold))
                     .foregroundStyle(viewModel.canUseEnvironmentPicker ? Stanford.lagunita : .secondary)

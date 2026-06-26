@@ -681,6 +681,7 @@ enum TaskDetailArtifactScanner {
                 intent: accessIntent
               ) else { return [] }
 
+        let rootPath = rootURL.path.hasSuffix("/") ? rootURL.path : rootURL.path + "/"
         var files: [ArtifactsTabView.ArtifactFile] = []
         while let url = enumerator.nextObject() as? URL {
             let itemURL = url
@@ -690,6 +691,9 @@ enum TaskDetailArtifactScanner {
                 enumerator.skipDescendants()
                 continue
             }
+            guard itemURL.path.hasPrefix(rootPath) else { continue }
+            let relativePath = String(itemURL.path.dropFirst(rootPath.count))
+            guard TaskGeneratedFiles.shouldDisplayTaskFolderFile(relativePath: relativePath) else { continue }
             guard let values = try? itemURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
                   values.isRegularFile == true else {
                 continue

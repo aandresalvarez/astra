@@ -426,8 +426,9 @@ struct TaskRunOutputPresentation: Hashable, Sendable {
         }
 
         guard let latestWorkIndex = events.lastIndex(where: Self.isOutputBoundaryEvent) else {
-            displayText = run.output
-            progressMessages = []
+            let presentation = Self.rawOutputPresentation(for: run)
+            displayText = presentation.displayText
+            progressMessages = presentation.progressMessages
             return
         }
 
@@ -439,19 +440,21 @@ struct TaskRunOutputPresentation: Hashable, Sendable {
             }
 
         guard !finalResponseEvents.isEmpty else {
-            displayText = run.output
-            progressMessages = []
+            let presentation = Self.rawOutputPresentation(for: run)
+            displayText = presentation.displayText
+            progressMessages = presentation.progressMessages
             return
         }
 
         let finalText = Self.joinResponsePayloads(finalResponseEvents)
         guard !finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            displayText = run.output
-            progressMessages = []
+            let presentation = Self.rawOutputPresentation(for: run)
+            displayText = presentation.displayText
+            progressMessages = presentation.progressMessages
             return
         }
 
-        displayText = finalText
+        displayText = TaskRunAnswerPresentationPolicy.presentation(rawText: finalText).answerText
         progressMessages = Self.progressMessages(from: responseEvents.filter { event in
             !finalResponseEvents.contains(where: { $0.id == event.id })
         })
@@ -466,19 +469,58 @@ struct TaskRunOutputPresentation: Hashable, Sendable {
         }
     }
 
+    private static func rawOutputPresentation(for run: TaskRunSnapshot) -> TaskRunOutputPresentation {
+        let presentation = TaskRunAnswerPresentationPolicy.presentation(rawText: run.output)
+        return TaskRunOutputPresentation(
+            displayText: presentation.answerText,
+            progressMessages: progressMessages(from: presentation.progressMessages, run: run),
+            rawText: run.output
+        )
+    }
+
     private static func progressMessages(from events: [TaskEventSnapshot]) -> [TaskRunProgressMessage] {
-        events.map {
-            TaskRunProgressMessage(
-                id: $0.id,
-                text: $0.payload.trimmingCharacters(in: .whitespacesAndNewlines),
-                timestamp: $0.timestamp
+        var previousKey: String?
+        return events.compactMap { event -> TaskRunProgressMessage? in
+            guard let progress = TaskRunAnswerPresentationPolicy.normalizedProgressText(event.payload),
+                  progress.comparisonKey != previousKey else {
+                return nil
+            }
+            previousKey = progress.comparisonKey
+            return TaskRunProgressMessage(
+                id: event.id,
+                text: progress.text,
+                timestamp: event.timestamp
             )
         }
-        .filter { !$0.text.isEmpty }
+    }
+
+    private static func progressMessages(from texts: [String], run: TaskRunSnapshot) -> [TaskRunProgressMessage] {
+        let timestamp = run.completedAt ?? run.startedAt
+        return texts.enumerated().map { index, text in
+            TaskRunProgressMessage(
+                id: derivedProgressMessageID(runID: run.id, index: index),
+                text: text,
+                timestamp: timestamp
+            )
+        }
+    }
+
+    private static func derivedProgressMessageID(runID: UUID, index: Int) -> UUID {
+        let source = runID.uuidString.replacingOccurrences(of: "-", with: "")
+        let suffix = String(format: "%012llx", CUnsignedLongLong(index))
+        let hex = String(source.prefix(20)) + suffix
+        let chunks = [
+            String(hex.prefix(8)),
+            String(hex.dropFirst(8).prefix(4)),
+            String(hex.dropFirst(12).prefix(4)),
+            String(hex.dropFirst(16).prefix(4)),
+            String(hex.dropFirst(20).prefix(12))
+        ]
+        return UUID(uuidString: chunks.joined(separator: "-")) ?? UUID()
     }
 
     private static func joinResponsePayloads(_ events: [TaskEventSnapshot]) -> String {
-        events.map(\.payload).joined()
+        TaskRunAnswerPresentationPolicy.joinedResponsePayloads(events.map(\.payload))
     }
 }
 

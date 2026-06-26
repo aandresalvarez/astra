@@ -145,9 +145,11 @@ struct HostControlToolSupportTests {
 
         let docker = root.appendingPathComponent("docker", isDirectory: false)
         let dockerLog = root.appendingPathComponent("docker.log", isDirectory: false)
+        let quotedDockerLogPath = dockerLog.path.replacingOccurrences(of: "'", with: "'\\''")
         try """
         #!/bin/sh
-        printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+        LOG='\(quotedDockerLogPath)'
+        printf '%s\\n' "$*" >> "$LOG"
         case "$1" in
           inspect) exit 1 ;;
           rm) exit 0 ;;
@@ -163,8 +165,6 @@ struct HostControlToolSupportTests {
         esac
         """.write(to: docker, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
-        setenv("FAKE_DOCKER_LOG", dockerLog.path, 1)
-        defer { unsetenv("FAKE_DOCKER_LOG") }
 
         let jobRoot = root.appendingPathComponent(".astra/tasks/task-5/jobs", isDirectory: true)
         let workspaceConfiguration = WorkspaceToolConfiguration(
