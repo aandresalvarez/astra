@@ -881,6 +881,21 @@ struct ArchitectureFitnessTests {
         #expect(view.contains("CapabilityCatalogActionService("))
     }
 
+    @Test("Plugin catalog approval refresh cancels stale loads")
+    func pluginCatalogApprovalRefreshCancelsStaleLoads() throws {
+        let root = try repositoryRoot()
+        let view = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/PluginCatalogView.swift"),
+            encoding: .utf8
+        )
+
+        #expect(view.contains("@State private var approvalRecordsRefreshTask: Task<Void, Never>?"))
+        #expect(view.contains("@State private var approvalRecordsRefreshGeneration = 0"))
+        #expect(view.contains("approvalRecordsRefreshTask?.cancel()"))
+        #expect(view.contains("approvalRecordsRefreshGeneration == refreshGeneration"))
+        #expect(view.contains("cancelApprovalRecordsRefresh()"))
+    }
+
     @Test("Admin policy contexts come only from the currentUser factory")
     func adminPolicyContextsComeOnlyFromCurrentUserFactory() throws {
         // Single-user admin semantics live in exactly one place:
