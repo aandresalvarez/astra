@@ -8,10 +8,22 @@ struct MCPInstallPolicyTests {
         let intent = try #require(MCPInstallIntentParser.parse("npx -y @acme/mcp-server@1.2.3"))
         let decision = MCPInstallPolicy.decision(for: intent)
 
+        #expect(!decision.requiresGuidedSetup)
         #expect(decision.blockers.isEmpty)
         #expect(decision.warnings.isEmpty)
         #expect(decision.riskLevel == .high)
         #expect(decision.summary.contains("@acme/mcp-server"))
+    }
+
+    @Test("setup generator commands require guided setup")
+    func setupGeneratorCommandsRequireGuidedSetup() throws {
+        let intent = try #require(MCPInstallIntentParser.parse("npx @auditynow/connect --generate"))
+        let decision = MCPInstallPolicy.decision(for: intent)
+
+        #expect(decision.requiresGuidedSetup)
+        #expect(!decision.canReview)
+        #expect(decision.blockers.contains { $0.contains("setup") || $0.contains("generator") })
+        #expect(decision.summary.contains("@auditynow/connect"))
     }
 
     @Test("latest npm package warns because it is mutable")
