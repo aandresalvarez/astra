@@ -220,6 +220,37 @@ struct MCPRuntimeProjectionTests {
         #expect(!config.contains("GOOGLE_OAUTH_ACCESS_TOKEN"))
     }
 
+    @Test("Remote MCP with environment credentials routes through ASTRA gateway")
+    func remoteMCPWithEnvironmentCredentialsRoutesThroughAstraGateway() throws {
+        let remote = PluginMCPServer(
+            id: "google_drive",
+            displayName: "Google Drive",
+            transport: .http,
+            url: URL(string: "https://mcp.example.com/google")!,
+            environmentKeys: ["GOOGLE_OAUTH_ACCESS_TOKEN"],
+            allowedTools: ["drive.search"],
+            trustLevel: .high
+        )
+
+        let data = try #require(MCPRuntimeProjection.claudeConfigJSON(
+            servers: [.init(packageID: "google-workspace", server: remote)],
+            availableEnvironment: ["GOOGLE_OAUTH_ACCESS_TOKEN": "secret-token"]
+        ))
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let serversDict = try #require(object["mcpServers"] as? [String: Any])
+        let entry = try #require(serversDict["google_drive"] as? [String: Any])
+        let jsonText = String(decoding: data, as: UTF8.self)
+
+        #expect(entry["type"] as? String == "stdio")
+        #expect(entry["args"] as? [String] == [
+            "--package-id", "google-workspace",
+            "--server-id", "google_drive"
+        ])
+        #expect(entry["env"] == nil)
+        #expect(!jsonText.contains("secret-token"))
+        #expect(!jsonText.contains("GOOGLE_OAUTH_ACCESS_TOKEN"))
+    }
+
     @Test("Empty server set renders no config and writes no file")
     func emptyServersRenderNothing() {
         #expect(MCPRuntimeProjection.claudeConfigJSON(servers: []) == nil)

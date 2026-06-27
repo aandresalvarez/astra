@@ -8,6 +8,7 @@ struct RemoteMCPGatewaySupportTests {
     func gatewayListsAndCallsFakeRemoteBackend() throws {
         let descriptor = RemoteMCPServerDescriptor(
             id: "google_drive",
+            packageID: "google-workspace",
             displayName: "Google Drive",
             transport: .http,
             endpoint: URL(string: "https://mcp.example.test/google")!,
@@ -42,6 +43,18 @@ struct RemoteMCPGatewaySupportTests {
 
         let listJSON = try #require(gateway.handleLine(#"{"jsonrpc":"2.0","id":4,"method":"tools/list"}"#))
         #expect(!listJSON.contains("secret-access-token"))
+    }
+
+    @Test("Gateway command options preserve package identity")
+    func gatewayCommandOptionsPreservePackageIdentity() {
+        let options = GatewayCommandOptions(arguments: [
+            "--package-id", "google-workspace",
+            "--server-id", "google_drive"
+        ])
+        let descriptor = AstraMCPGatewayToolMain.descriptor(for: options)
+
+        #expect(descriptor.packageID == "google-workspace")
+        #expect(descriptor.id == "google_drive")
     }
 }
 

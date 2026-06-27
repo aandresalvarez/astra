@@ -9,7 +9,7 @@ enum RemoteMCPGatewayProjection {
     }
 
     static func shouldRouteThroughGateway(_ server: PluginMCPServer) -> Bool {
-        server.transport != .stdio && !server.connectorBindings.isEmpty
+        server.transport != .stdio && (!server.connectorBindings.isEmpty || !server.environmentKeys.isEmpty)
     }
 
     static func providerFacingServer(for resolved: MCPRuntimeProjection.ResolvedServer) -> PluginMCPServer {

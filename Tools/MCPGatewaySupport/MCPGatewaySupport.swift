@@ -7,6 +7,7 @@ public struct RemoteMCPServerDescriptor: Equatable {
     }
 
     public var id: String
+    public var packageID: String
     public var displayName: String
     public var transport: Transport
     public var endpoint: URL
@@ -14,12 +15,14 @@ public struct RemoteMCPServerDescriptor: Equatable {
 
     public init(
         id: String,
+        packageID: String = "",
         displayName: String,
         transport: Transport,
         endpoint: URL,
         connectorBindings: [String] = []
     ) {
         self.id = id
+        self.packageID = packageID
         self.displayName = displayName
         self.transport = transport
         self.endpoint = endpoint
@@ -118,7 +121,7 @@ public final class LocalMCPGateway {
 
     private func handleToolsList(id: Any?) -> String? {
         do {
-            let tools = try remoteClient.listTools(for: server, auth: authContext())
+            let tools = try remoteClient.listTools(for: server, auth: try authContext())
             return encodeResult(id: id, result: ["tools": tools])
         } catch {
             return encodeError(id: id, code: -32000, message: "Remote MCP tool discovery failed: \(error.localizedDescription)")
@@ -137,7 +140,7 @@ public final class LocalMCPGateway {
                 toolName,
                 arguments: arguments,
                 for: server,
-                auth: authContext()
+                auth: try authContext()
             )
             return encodeResult(id: id, result: [
                 "content": [[
@@ -221,13 +224,7 @@ public final class UnconfiguredRemoteMCPClient: RemoteMCPClient {
 public enum AstraMCPGatewayToolMain {
     public static func run(arguments: [String] = CommandLine.arguments) {
         let options = GatewayCommandOptions(arguments: Array(arguments.dropFirst()))
-        let descriptor = RemoteMCPServerDescriptor(
-            id: options.serverID,
-            displayName: options.serverID,
-            transport: .http,
-            endpoint: URL(string: "http://127.0.0.1/astra-mcp-gateway-placeholder")!,
-            connectorBindings: []
-        )
+        let descriptor = descriptor(for: options)
         let gateway = LocalMCPGateway(
             server: descriptor,
             remoteClient: UnconfiguredRemoteMCPClient(),
@@ -239,9 +236,21 @@ public enum AstraMCPGatewayToolMain {
             }
         }
     }
+
+    static func descriptor(for options: GatewayCommandOptions) -> RemoteMCPServerDescriptor {
+        let descriptor = RemoteMCPServerDescriptor(
+            id: options.serverID,
+            packageID: options.packageID,
+            displayName: options.serverID,
+            transport: .http,
+            endpoint: URL(string: "http://127.0.0.1/astra-mcp-gateway-placeholder")!,
+            connectorBindings: []
+        )
+        return descriptor
+    }
 }
 
-private struct GatewayCommandOptions {
+struct GatewayCommandOptions {
     var packageID: String = ""
     var serverID: String = "remote"
 
