@@ -71,6 +71,23 @@ public struct EmptyMCPGatewayAuthTokenProvider: MCPGatewayAuthTokenProvider {
     }
 }
 
+public struct EnvironmentMCPGatewayAuthTokenProvider: MCPGatewayAuthTokenProvider {
+    private let variableName: String
+    private let environment: [String: String]
+
+    public init(
+        variableName: String = "ASTRA_MCP_GATEWAY_ACCESS_TOKEN",
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) {
+        self.variableName = variableName
+        self.environment = environment
+    }
+
+    public func accessToken(for server: RemoteMCPServerDescriptor) throws -> String? {
+        environment[variableName]?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
 public final class LocalMCPGateway {
     private let server: RemoteMCPServerDescriptor
     private let remoteClient: RemoteMCPClient
@@ -225,13 +242,13 @@ public enum AstraMCPGatewayToolMain {
             id: options.serverID,
             displayName: options.serverID,
             transport: .http,
-            endpoint: URL(string: "http://127.0.0.1/astra-mcp-gateway-placeholder")!,
+            endpoint: options.endpoint ?? URL(string: "http://127.0.0.1/astra-mcp-gateway-unconfigured")!,
             connectorBindings: []
         )
         let gateway = LocalMCPGateway(
             server: descriptor,
-            remoteClient: UnconfiguredRemoteMCPClient(),
-            authTokenProvider: EmptyMCPGatewayAuthTokenProvider()
+            remoteClient: options.endpoint == nil ? UnconfiguredRemoteMCPClient() : RemoteMCPHTTPClient(),
+            authTokenProvider: EnvironmentMCPGatewayAuthTokenProvider(variableName: options.accessTokenEnvironmentKey)
         )
         while let line = readLine() {
             if let response = gateway.handleLine(line) {
@@ -244,6 +261,8 @@ public enum AstraMCPGatewayToolMain {
 private struct GatewayCommandOptions {
     var packageID: String = ""
     var serverID: String = "remote"
+    var endpoint: URL?
+    var accessTokenEnvironmentKey: String = "ASTRA_MCP_GATEWAY_ACCESS_TOKEN"
 
     init(arguments: [String]) {
         var index = 0
@@ -255,6 +274,12 @@ private struct GatewayCommandOptions {
                 index += 2
             case "--server-id" where index + 1 < arguments.count:
                 serverID = arguments[index + 1]
+                index += 2
+            case "--endpoint" where index + 1 < arguments.count:
+                endpoint = URL(string: arguments[index + 1])
+                index += 2
+            case "--access-token-env" where index + 1 < arguments.count:
+                accessTokenEnvironmentKey = arguments[index + 1]
                 index += 2
             default:
                 index += 1

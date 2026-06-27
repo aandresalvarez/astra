@@ -43,6 +43,23 @@ struct RemoteMCPGatewaySupportTests {
         let listJSON = try #require(gateway.handleLine(#"{"jsonrpc":"2.0","id":4,"method":"tools/list"}"#))
         #expect(!listJSON.contains("secret-access-token"))
     }
+
+    @Test("Environment token provider reads the gateway process token")
+    func environmentTokenProvider() throws {
+        let provider = EnvironmentMCPGatewayAuthTokenProvider(
+            variableName: "ASTRA_TEST_GATEWAY_TOKEN",
+            environment: ["ASTRA_TEST_GATEWAY_TOKEN": " process-token "]
+        )
+
+        let token = try provider.accessToken(for: RemoteMCPServerDescriptor(
+            id: "google_workspace_gmail",
+            displayName: "Gmail",
+            transport: .http,
+            endpoint: URL(string: "https://gmailmcp.googleapis.com/mcp/v1")!
+        ))
+
+        #expect(token == "process-token")
+    }
 }
 
 private final class RecordingRemoteMCPClient: RemoteMCPClient {

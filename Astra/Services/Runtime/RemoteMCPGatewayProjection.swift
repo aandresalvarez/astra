@@ -22,7 +22,8 @@ enum RemoteMCPGatewayProjection {
             command: executablePath,
             arguments: [
                 "--package-id", resolved.packageID,
-                "--server-id", server.id
+                "--server-id", server.id,
+                "--endpoint", server.url?.absoluteString ?? ""
             ],
             environmentKeys: [],
             connectorBindings: server.connectorBindings,

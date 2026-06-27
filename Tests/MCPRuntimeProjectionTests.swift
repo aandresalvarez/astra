@@ -186,7 +186,8 @@ struct MCPRuntimeProjectionTests {
         #expect((entry["command"] as? String)?.hasSuffix("astra-mcp-gateway") == true)
         #expect(entry["args"] as? [String] == [
             "--package-id", "google-workspace",
-            "--server-id", "google_drive"
+            "--server-id", "google_drive",
+            "--endpoint", "https://mcp.example.com/google"
         ])
         #expect(entry["url"] == nil)
         #expect(!jsonText.contains("secret-token"))
@@ -214,7 +215,7 @@ struct MCPRuntimeProjectionTests {
         let config = arguments.last ?? ""
         #expect(config.contains("\"google_drive\"={"))
         #expect(config.contains("command=\"\(RemoteMCPGatewayProjection.executablePath)\""))
-        #expect(config.contains("args=[\"--package-id\",\"google-workspace\",\"--server-id\",\"google_drive\"]"))
+        #expect(config.contains("args=[\"--package-id\",\"google-workspace\",\"--server-id\",\"google_drive\",\"--endpoint\",\"https://mcp.example.com/google\"]"))
         #expect(!config.contains("url="))
         #expect(!config.contains("secret-token"))
         #expect(!config.contains("GOOGLE_OAUTH_ACCESS_TOKEN"))

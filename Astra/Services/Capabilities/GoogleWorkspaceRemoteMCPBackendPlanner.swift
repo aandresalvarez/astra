@@ -46,7 +46,7 @@ struct GoogleWorkspaceRemoteMCPBackendDependencies: Equatable, Sendable {
     }
 }
 
-enum GoogleWorkspaceRemoteMCPBackendFailure: Equatable, Sendable {
+enum GoogleWorkspaceRemoteMCPBackendFailure: Error, Equatable, Sendable {
     case missingOAuthVault
     case missingLocalGateway
     case missingPolicyEnforcer
