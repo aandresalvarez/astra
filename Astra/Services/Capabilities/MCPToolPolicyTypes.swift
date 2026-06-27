@@ -1,25 +1,26 @@
 import Foundation
 import ASTRACore
 
-struct AnySendable: Sendable, CustomStringConvertible, ExpressibleByStringLiteral, ExpressibleByDictionaryLiteral {
-    private let storageDescription: String
+struct AnySendable: @unchecked Sendable, CustomStringConvertible, ExpressibleByStringLiteral, ExpressibleByDictionaryLiteral {
+    private let storage: any Sendable
 
     init(_ value: some Sendable) {
-        _ = value
-        storageDescription = "[payload]"
+        storage = value
     }
 
     init(stringLiteral value: String) {
-        _ = value
-        storageDescription = "[payload]"
+        storage = value
     }
 
     init(dictionaryLiteral elements: (String, AnySendable)...) {
-        _ = elements
-        storageDescription = "[payload]"
+        storage = Dictionary(uniqueKeysWithValues: elements)
     }
 
-    var description: String { storageDescription }
+    var description: String { "[payload]" }
+
+    func value<T>(as type: T.Type = T.self) -> T? {
+        storage as? T
+    }
 }
 
 enum MCPToolPolicyCaller: Sendable, Equatable {
@@ -38,6 +39,26 @@ struct MCPToolNativeApproval: Sendable, Equatable {
         reason: String
     ) -> MCPToolNativeApproval {
         MCPToolNativeApproval(approvedBy: approvedBy, approvedAt: approvedAt, reason: reason)
+    }
+}
+
+struct MCPToolPolicyWorkspaceContext: Sendable, Equatable {
+    var id: UUID
+    var enabledPackageIDs: Set<String>
+    var installedPackageIDs: Set<String>
+
+    init(id: UUID, enabledPackageIDs: Set<String>, installedPackageIDs: Set<String>) {
+        self.id = id
+        self.enabledPackageIDs = enabledPackageIDs
+        self.installedPackageIDs = installedPackageIDs
+    }
+
+    init(workspace: Workspace) {
+        self.init(
+            id: workspace.id,
+            enabledPackageIDs: Set(workspace.enabledCapabilityIDs),
+            installedPackageIDs: workspace.installedPluginIDSet
+        )
     }
 }
 
@@ -71,8 +92,8 @@ struct MCPToolPolicyDecision: Sendable, Equatable {
     }
 }
 
-struct MCPToolPolicyRequest: @unchecked Sendable {
-    var workspace: Workspace?
+struct MCPToolPolicyRequest {
+    var workspaceContext: MCPToolPolicyWorkspaceContext?
     var packages: [PluginPackage]
     var approvalRecords: [CapabilityApprovalRecord]
     var serverID: String
@@ -82,6 +103,15 @@ struct MCPToolPolicyRequest: @unchecked Sendable {
     var nativeApproval: MCPToolNativeApproval?
     var now: Date
     var arguments: [String: AnySendable]
+
+    var forwardRequest: MCPToolForwardRequest {
+        MCPToolForwardRequest(
+            serverID: serverID,
+            toolName: toolName,
+            caller: caller,
+            arguments: arguments
+        )
+    }
 
     init(
         workspace: Workspace?,
@@ -95,7 +125,7 @@ struct MCPToolPolicyRequest: @unchecked Sendable {
         now: Date,
         arguments: [String: AnySendable] = [:]
     ) {
-        self.workspace = workspace
+        self.workspaceContext = workspace.map(MCPToolPolicyWorkspaceContext.init)
         self.packages = packages
         self.approvalRecords = approvalRecords
         self.serverID = serverID
@@ -120,6 +150,7 @@ struct MCPToolPolicyAuditRecord: Sendable, Equatable {
     var requiredScopes: String
     var missingScopes: String
     var denialReason: String
+    var argumentSummary: String
 
     var fields: [String: String] {
         [
@@ -133,7 +164,8 @@ struct MCPToolPolicyAuditRecord: Sendable, Equatable {
             "granted_scopes": grantedScopes,
             "required_scopes": requiredScopes,
             "missing_scopes": missingScopes,
-            "denial_reason": denialReason
+            "denial_reason": denialReason,
+            "argument_summary": argumentSummary
         ]
     }
 }

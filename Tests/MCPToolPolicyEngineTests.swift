@@ -161,6 +161,7 @@ struct MCPToolPolicyEngineTests {
 
         #expect(!decision.isAllowed)
         #expect(decision.denialReason == .missingScope)
+        #expect(audit.records.last?.argumentSummary == "3 redacted arguments")
         let renderedDecision = String(describing: decision)
         let renderedAudit = audit.records.map { String(describing: $0) }.joined(separator: "\n")
         for forbidden in ["ya29.secret-token-value", "confidential payload", "access_token", "documentId"] {
@@ -183,10 +184,15 @@ struct MCPToolPolicyEngineTests {
         let allowedForwarder = RecordingMCPToolForwarder()
         let allowedGateway = MCPToolPolicyGatewayAdapter(policyEngine: makeEngine(), forwarder: allowedForwarder)
         let response = try await allowedGateway.call(
-            request(toolName: "docs.get", grantedScopes: [.googleDocsRead])
+            request(
+                toolName: "docs.get",
+                grantedScopes: [.googleDocsRead],
+                arguments: ["documentId": "doc-123"]
+            )
         )
         #expect(response.summary == "forwarded docs.get")
         #expect(await allowedForwarder.forwardedToolNames == ["docs.get"])
+        #expect(await allowedForwarder.forwardedArguments.first?["documentId"]?.value(as: String.self) == "doc-123")
     }
 
     private func makeEngine(
@@ -311,9 +317,11 @@ private final class RecordingMCPToolPolicyAuditSink: MCPToolPolicyAuditSink, @un
 
 private actor RecordingMCPToolForwarder: MCPToolForwarding {
     private(set) var forwardedToolNames: [String] = []
+    private(set) var forwardedArguments: [[String: AnySendable]] = []
 
-    func forward(_ request: MCPToolPolicyRequest) async throws -> MCPToolGatewayResponse {
+    func forward(_ request: MCPToolForwardRequest) async throws -> MCPToolGatewayResponse {
         forwardedToolNames.append(request.toolName)
+        forwardedArguments.append(request.arguments)
         return MCPToolGatewayResponse(summary: "forwarded \(request.toolName)")
     }
 }

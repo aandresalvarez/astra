@@ -66,7 +66,7 @@ struct MCPToolPolicyEngine: Sendable {
         }
 
         guard rateLimiter.admit(
-            workspaceID: request.workspace?.id,
+            workspaceID: request.workspaceContext?.id,
             serverID: request.serverID,
             toolName: request.toolName,
             now: request.now
@@ -83,8 +83,10 @@ struct MCPToolPolicyEngine: Sendable {
     }
 
     private func resolvedServer(for request: MCPToolPolicyRequest) -> MCPRuntimeProjection.ResolvedServer? {
-        MCPRuntimeProjection.enabledServers(
-            for: request.workspace,
+        guard let workspaceContext = request.workspaceContext else { return nil }
+        return MCPRuntimeProjection.enabledServers(
+            enabledPackageIDs: workspaceContext.enabledPackageIDs,
+            installedPackageIDs: workspaceContext.installedPackageIDs,
             packages: request.packages,
             approvalRecords: request.approvalRecords
         )
@@ -116,7 +118,7 @@ struct MCPToolPolicyEngine: Sendable {
         let missingScopes = decision.missingScopes
         return MCPToolPolicyAuditRecord(
             result: decision.isAllowed ? "allowed" : "denied",
-            workspaceID: request.workspace?.id.uuidString ?? "none",
+            workspaceID: request.workspaceContext?.id.uuidString ?? "none",
             packageID: resolved?.packageID ?? "none",
             serverID: auditValue(request.serverID),
             toolName: auditValue(request.toolName),
@@ -125,8 +127,14 @@ struct MCPToolPolicyEngine: Sendable {
             grantedScopes: scopeList(request.grantedScopes),
             requiredScopes: scopeList(requiredScopes),
             missingScopes: scopeList(missingScopes),
-            denialReason: decision.denialReason?.rawValue ?? "none"
+            denialReason: decision.denialReason?.rawValue ?? "none",
+            argumentSummary: argumentSummary(request.arguments)
         )
+    }
+
+    private func argumentSummary(_ arguments: [String: AnySendable]) -> String {
+        guard !arguments.isEmpty else { return "none" }
+        return "\(arguments.count) redacted \(arguments.count == 1 ? "argument" : "arguments")"
     }
 
     private func scopeList(_ scopes: Set<MCPToolPolicyScope>) -> String {

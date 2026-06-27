@@ -87,14 +87,28 @@ enum MCPRuntimeProjection {
         approvalRecords: [CapabilityApprovalRecord]
     ) -> [ResolvedServer] {
         guard let workspace else { return [] }
-        let enabledPackageIDs = Set(workspace.enabledCapabilityIDs)
+        return enabledServers(
+            enabledPackageIDs: Set(workspace.enabledCapabilityIDs),
+            installedPackageIDs: workspace.installedPluginIDSet,
+            packages: packages,
+            approvalRecords: approvalRecords
+        )
+    }
+
+    static func enabledServers(
+        enabledPackageIDs: Set<String>,
+        installedPackageIDs: Set<String>,
+        packages: [PluginPackage],
+        approvalRecords: [CapabilityApprovalRecord]
+    ) -> [ResolvedServer] {
         guard !enabledPackageIDs.isEmpty else { return [] }
         // The run executes on behalf of the local user, who is the admin of
         // their own catalog (single-user model). A non-admin context would
         // drop an admin-only package's servers at launch even though the
         // package is enabled — use the canonical currentUser factory.
         let context = CapabilityCatalogPolicyContext.currentUser(
-            workspace: workspace,
+            enabledPackageIDs: enabledPackageIDs,
+            installedPackageIDs: installedPackageIDs,
             approvalRecords: approvalRecords
         )
 

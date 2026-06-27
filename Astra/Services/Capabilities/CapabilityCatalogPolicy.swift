@@ -1,7 +1,7 @@
 import Foundation
 import ASTRACore
 
-struct CapabilityCatalogPolicyContext: Equatable {
+struct CapabilityCatalogPolicyContext: Equatable, Sendable {
     var userRoleIDs: Set<String>
     var workspaceTags: Set<String>
     var isAdmin: Bool
@@ -67,6 +67,21 @@ struct CapabilityCatalogPolicyContext: Equatable {
             currentAppVersion: currentAppVersion,
             installedPackageIDs: workspace.installedPluginIDSet,
             enabledPackageIDs: Set(workspace.enabledCapabilityIDs),
+            approvalRecords: approvalRecords
+        )
+    }
+
+    static func currentUser(
+        enabledPackageIDs: Set<String>,
+        installedPackageIDs: Set<String>,
+        currentAppVersion: SemanticVersion = SemanticVersion(string: AppBuildInfo.current.version) ?? SemanticVersion(0, 0, 0),
+        approvalRecords: [CapabilityApprovalRecord]
+    ) -> CapabilityCatalogPolicyContext {
+        CapabilityCatalogPolicyContext(
+            isAdmin: true,
+            currentAppVersion: currentAppVersion,
+            installedPackageIDs: installedPackageIDs,
+            enabledPackageIDs: enabledPackageIDs,
             approvalRecords: approvalRecords
         )
     }

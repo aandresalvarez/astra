@@ -4,8 +4,15 @@ struct MCPToolGatewayResponse: Sendable, Equatable {
     var summary: String
 }
 
+struct MCPToolForwardRequest: Sendable {
+    var serverID: String
+    var toolName: String
+    var caller: MCPToolPolicyCaller
+    var arguments: [String: AnySendable]
+}
+
 protocol MCPToolForwarding: Sendable {
-    func forward(_ request: MCPToolPolicyRequest) async throws -> MCPToolGatewayResponse
+    func forward(_ request: MCPToolForwardRequest) async throws -> MCPToolGatewayResponse
 }
 
 enum MCPToolPolicyGatewayError: Error, Equatable {
@@ -21,6 +28,6 @@ struct MCPToolPolicyGatewayAdapter<Forwarder: MCPToolForwarding>: Sendable {
         guard decision.isAllowed else {
             throw MCPToolPolicyGatewayError.denied(decision.denialReason ?? .unclassifiedTool)
         }
-        return try await forwarder.forward(request)
+        return try await forwarder.forward(request.forwardRequest)
     }
 }
