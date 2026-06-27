@@ -157,6 +157,56 @@ struct MCPControlPlaneContractTests {
         #expect(violations.contains(.runtimeBinding("bad-literal", .literalSegmentMustNotCarryReference)))
     }
 
+    @Test("runtime binding reference lists drop empty reference IDs")
+    func runtimeBindingReferenceListsDropEmptyReferenceIDs() {
+        let binding = MCPRuntimeBindingTemplate(
+            id: "empty-ref-binding",
+            destination: .environment,
+            name: "BROKEN_TOKEN",
+            template: [
+                .reference(.secret("   ")),
+                .reference(.config("\n\t")),
+                .reference(.authProfile("  ")),
+                .reference(.secret(" declared-secret "))
+            ]
+        )
+
+        let violations = binding.invariantViolations(
+            declaredSecretRefs: ["declared-secret"],
+            declaredConfigRefs: [],
+            declaredAuthProfileRefs: []
+        )
+
+        #expect(violations.contains(.referenceIDRequired))
+        #expect(binding.referencedSecretRefs == ["declared-secret"])
+        #expect(binding.referencedConfigRefs.isEmpty)
+        #expect(binding.referencedAuthProfileRefs.isEmpty)
+    }
+
+    @Test("provider capability required refs ignore blank IDs")
+    func providerCapabilityRequiredRefsIgnoreBlankIDs() {
+        let capability = MCPProviderCapability(
+            id: "drive-files-read",
+            displayName: "Drive files read",
+            contractID: .googleWorkspaceDriveRead,
+            availability: .preview,
+            requiredAuthProfileRefs: [" declared-auth ", " "],
+            requiredSecretRefs: ["\t"],
+            requiredConfigRefs: [" declared-config ", ""]
+        )
+
+        let violations = capability.invariantViolations(
+            declaredAuthProfileRefs: ["declared-auth"],
+            declaredSecretRefs: [],
+            declaredConfigRefs: ["declared-config"]
+        )
+
+        #expect(!violations.contains(.undeclaredAuthProfileRef("")))
+        #expect(!violations.contains(.undeclaredSecretRef("")))
+        #expect(!violations.contains(.undeclaredConfigRef("")))
+        #expect(violations.isEmpty)
+    }
+
     @Test("declared refs use canonical IDs and reject empty declarations")
     func declaredRefsUseCanonicalIDsAndRejectEmptyDeclarations() {
         let controlPlane = MCPControlPlaneMetadata(
@@ -176,14 +226,14 @@ struct MCPControlPlaneContractTests {
                 MCPRuntimeBindingTemplate(
                     id: "trimmed-binding",
                     destination: .httpHeader,
-	                    name: "Authorization",
-	                    template: [
-	                        .reference(.authProfile(" declared-auth ")),
-	                        .reference(.secret(" declared-secret ")),
-	                        .reference(.config(" declared-config "))
-	                    ]
-	                )
-	            ],
+                    name: "Authorization",
+                    template: [
+                        .reference(.authProfile(" declared-auth ")),
+                        .reference(.secret(" declared-secret ")),
+                        .reference(.config(" declared-config "))
+                    ]
+                )
+            ],
             providerCapabilities: [
                 MCPProviderCapability(
                     id: "drive-files-read",
@@ -206,13 +256,13 @@ struct MCPControlPlaneContractTests {
         #expect(!violations.contains(.runtimeBinding("trimmed-binding", .undeclaredAuthProfileRef("declared-auth"))))
         #expect(!violations.contains(.runtimeBinding("trimmed-binding", .undeclaredSecretRef("declared-secret"))))
         #expect(!violations.contains(.runtimeBinding("trimmed-binding", .undeclaredConfigRef("declared-config"))))
-	        #expect(!violations.contains(.providerCapability("drive-files-read", .undeclaredAuthProfileRef("declared-auth"))))
-	        #expect(!violations.contains(.providerCapability("drive-files-read", .undeclaredSecretRef("declared-secret"))))
-	        #expect(!violations.contains(.providerCapability("drive-files-read", .undeclaredConfigRef("declared-config"))))
-	        #expect(controlPlane.runtimeBindings.first?.referencedAuthProfileRefs == ["declared-auth"])
-	        #expect(controlPlane.runtimeBindings.first?.referencedSecretRefs == ["declared-secret"])
-	        #expect(controlPlane.runtimeBindings.first?.referencedConfigRefs == ["declared-config"])
-	    }
+        #expect(!violations.contains(.providerCapability("drive-files-read", .undeclaredAuthProfileRef("declared-auth"))))
+        #expect(!violations.contains(.providerCapability("drive-files-read", .undeclaredSecretRef("declared-secret"))))
+        #expect(!violations.contains(.providerCapability("drive-files-read", .undeclaredConfigRef("declared-config"))))
+        #expect(controlPlane.runtimeBindings.first?.referencedAuthProfileRefs == ["declared-auth"])
+        #expect(controlPlane.runtimeBindings.first?.referencedSecretRefs == ["declared-secret"])
+        #expect(controlPlane.runtimeBindings.first?.referencedConfigRefs == ["declared-config"])
+    }
 
     @Test("control-plane metadata decodes secure defaults from sparse manifests")
     func controlPlaneMetadataDecodesSecureDefaultsFromSparseManifests() throws {
