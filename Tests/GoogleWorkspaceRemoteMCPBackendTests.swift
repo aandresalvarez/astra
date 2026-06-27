@@ -110,7 +110,7 @@ struct GoogleWorkspaceRemoteMCPBackendTests {
         #expect(plan.authorizationHeader == "Bearer fake-access-token")
         #expect(plan.requiredScopes == GoogleWorkspaceRemoteMCPRegistry.product(.gmail)?.requiredScopes)
         #expect(plan.toolFamily == .read)
-        #expect(plan.gatewayURL.host()?.contains("googleapis.com") == false)
+        #expect(plan.gatewayURL.host?.contains("googleapis.com") == false)
     }
 
     @Test("backend planner reports dependency and auth failures without routing directly")
