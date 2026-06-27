@@ -550,6 +550,65 @@ public struct PluginLocalTool: Codable {
     }
 }
 
+public struct PluginMCPInstallSource: Codable, Equatable, Sendable {
+    public enum Kind: String, Codable, Sendable, Equatable, CaseIterable {
+        case npm
+        case pypi
+        case nuget
+        case oci
+        case dockerImage
+        case mcpb
+        case remoteHTTP
+        case localBinary
+        case unknown
+    }
+
+    public enum InstallMode: String, Codable, Sendable, Equatable, CaseIterable {
+        case npx
+        case uvx
+        case pipx
+        case dotnetTool
+        case dockerGateway
+        case dockerRun
+        case globalBinary
+        case localBinary
+        case remote
+        case manual
+    }
+
+    public var kind: Kind
+    public var identifier: String
+    public var version: String?
+    public var digest: String?
+    public var installMode: InstallMode
+    public var registryURL: URL?
+    public var documentationURL: URL?
+    public var packageManagerArguments: [String]
+    public var riskNotes: [String]
+
+    public init(
+        kind: Kind,
+        identifier: String,
+        version: String? = nil,
+        digest: String? = nil,
+        installMode: InstallMode,
+        registryURL: URL? = nil,
+        documentationURL: URL? = nil,
+        packageManagerArguments: [String] = [],
+        riskNotes: [String] = []
+    ) {
+        self.kind = kind
+        self.identifier = identifier
+        self.version = version
+        self.digest = digest
+        self.installMode = installMode
+        self.registryURL = registryURL
+        self.documentationURL = documentationURL
+        self.packageManagerArguments = packageManagerArguments
+        self.riskNotes = riskNotes
+    }
+}
+
 public struct PluginMCPServer: Codable, Equatable, Sendable, Identifiable {
     public enum Transport: String, Codable, Sendable, Equatable, CaseIterable {
         case stdio
@@ -577,6 +636,7 @@ public struct PluginMCPServer: Codable, Equatable, Sendable, Identifiable {
     public var resourcesEnabled: Bool
     public var promptsEnabled: Bool
     public var trustLevel: TrustLevel
+    public var installSource: PluginMCPInstallSource?
 
     public init(
         id: String,
@@ -591,7 +651,8 @@ public struct PluginMCPServer: Codable, Equatable, Sendable, Identifiable {
         excludedTools: [String] = [],
         resourcesEnabled: Bool = false,
         promptsEnabled: Bool = false,
-        trustLevel: TrustLevel = .medium
+        trustLevel: TrustLevel = .medium,
+        installSource: PluginMCPInstallSource? = nil
     ) {
         self.id = id
         self.displayName = displayName
@@ -606,6 +667,7 @@ public struct PluginMCPServer: Codable, Equatable, Sendable, Identifiable {
         self.resourcesEnabled = resourcesEnabled
         self.promptsEnabled = promptsEnabled
         self.trustLevel = trustLevel
+        self.installSource = installSource
     }
 }
 

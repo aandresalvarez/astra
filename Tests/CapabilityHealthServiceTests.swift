@@ -68,4 +68,38 @@ struct CapabilityHealthServiceTests {
 
         #expect(issues.isEmpty)
     }
+
+    @Test("readiness messages include supplied MCP command status")
+    func readinessMessagesIncludeSuppliedMCPCommandStatus() {
+        let package = PluginPackage(
+            id: "mcp-workflow",
+            name: "MCP Workflow",
+            icon: "server.rack",
+            description: "MCP workflow",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            mcpServers: [
+                PluginMCPServer(
+                    id: "github",
+                    displayName: "GitHub MCP",
+                    transport: .stdio,
+                    command: "github-mcp-server"
+                )
+            ],
+            templates: [],
+            governance: .builtInApproved()
+        )
+
+        let messages = CapabilityHealthService.readinessMessages(
+            for: package,
+            statuses: ["github-mcp-server": .missingBinary]
+        )
+
+        #expect(messages == ["GitHub MCP: command github-mcp-server is not installed."])
+    }
 }

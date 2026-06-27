@@ -206,6 +206,31 @@ struct MCPRuntimeProjectionTests {
         ])
     }
 
+    @Test("Preflight message includes MCP install source when executable is missing")
+    func preflightMessageIncludesInstallSource() throws {
+        let server = PluginMCPServer(
+            id: "github",
+            displayName: "GitHub MCP",
+            transport: .stdio,
+            command: "npx",
+            arguments: ["-y", "@acme/github-mcp@1.0.0"],
+            installSource: PluginMCPInstallSource(
+                kind: .npm,
+                identifier: "@acme/github-mcp",
+                version: "1.0.0",
+                installMode: .npx
+            )
+        )
+
+        let issue = try #require(MCPRuntimeProjection.preflightIssues(
+            servers: [MCPRuntimeProjection.ResolvedServer(packageID: "p", server: server)],
+            detectExecutable: { _ in "" }
+        ).first)
+
+        #expect(issue.message.contains("@acme/github-mcp@1.0.0"))
+        #expect(issue.message.contains("npx"))
+    }
+
     @Test("Rendered stdio config launches a server that completes an MCP initialize handshake")
     func renderedConfigHandshake() throws {
         let root = try mcpTempDirectory(named: "astra-mcp-handshake")

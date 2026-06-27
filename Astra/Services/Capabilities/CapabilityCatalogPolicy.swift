@@ -197,9 +197,7 @@ enum CapabilityCatalogPolicy {
         case .everyone:
             break
         case .hidden:
-            if !context.isAdmin {
-                visibilityBlockers.append(.hiddenFromUser)
-            }
+            visibilityBlockers.append(.hiddenFromUser)
         case .adminOnly:
             if !context.isAdmin {
                 visibilityBlockers.append(.adminOnly)

@@ -120,6 +120,7 @@ struct ContentView: View {
     @State private var configureInitialTab: ConfigureTab = .capabilities
     @State private var configureFocusItemID: UUID?
     @State private var configureFocusCapabilityPackageID: String?
+    @State private var pendingMCPInstallRequest: MCPInstallChatRequest?
     @State private var showingWorkspaceEditor = false
     @State private var showingNewWorkspace = false
     @State private var showingSSHEditor = false
@@ -595,6 +596,7 @@ struct ContentView: View {
             isComposingWorkspaceApp: isComposingWorkspaceApp,
             studioSession: workspaceAppStudioSession,
             onStartWorkspaceAppStudio: { prompt in startWorkspaceAppStudio(initialPrompt: prompt) },
+            onStartMCPInstallReview: { request in pendingMCPInstallRequest = request },
             onPublishApp: { seed in publishWorkspaceAppFromStudio(seedSampleData: seed) },
             onCancelStudio: { cancelWorkspaceAppStudio() }
         )
@@ -892,6 +894,11 @@ struct ContentView: View {
                 )
             }
         }
+        .mcpInstallReviewSheet(
+            request: $pendingMCPInstallRequest,
+            workspace: effectiveWorkspace,
+            onInstalled: openCapabilityPackage
+        )
         .sheet(isPresented: $showingWorkspaceEditor) {
             if let ws = effectiveWorkspace {
                 WorkspaceDetailView(workspace: ws, onDelete: {
@@ -2899,6 +2906,7 @@ private struct ContentDetailAreaView: View {
     let isComposingWorkspaceApp: Bool
     @ObservedObject var studioSession: WorkspaceAppStudioSession
     let onStartWorkspaceAppStudio: (String?) -> Void
+    let onStartMCPInstallReview: (MCPInstallChatRequest) -> Void
     let onPublishApp: (_ seedSampleData: Bool) -> Void
     let onCancelStudio: () -> Void
 
@@ -3271,6 +3279,7 @@ private struct ContentDetailAreaView: View {
             isComposingWorkspaceApp: isComposingWorkspaceApp,
             studioSession: studioSession,
             onStartWorkspaceAppStudio: onStartWorkspaceAppStudio,
+            onStartMCPInstallReview: onStartMCPInstallReview,
             onPublishApp: onPublishApp,
             onCancelStudio: onCancelStudio
         )
@@ -3368,6 +3377,7 @@ private struct ContentDetailContentView: View {
     let isComposingWorkspaceApp: Bool
     @ObservedObject var studioSession: WorkspaceAppStudioSession
     let onStartWorkspaceAppStudio: (String?) -> Void
+    let onStartMCPInstallReview: (MCPInstallChatRequest) -> Void
     let onPublishApp: (_ seedSampleData: Bool) -> Void
     let onCancelStudio: () -> Void
 
@@ -3391,7 +3401,8 @@ private struct ContentDetailContentView: View {
                     onManageSkills: onManageSkills,
                     isPlanCanvasVisible: isPlanCanvasVisible,
                     onOpenPlan: onOpenPlan,
-                    onStartWorkspaceAppStudio: onStartWorkspaceAppStudio
+                    onStartWorkspaceAppStudio: onStartWorkspaceAppStudio,
+                    onStartMCPInstallReview: onStartMCPInstallReview
                 )
                 .id(task.id)
             }
@@ -3427,7 +3438,8 @@ private struct ContentDetailContentView: View {
                 onManageSkills: onManageSkills,
                 isPlanCanvasVisible: isPlanCanvasVisible,
                 onOpenPlan: onOpenPlan,
-                onStartWorkspaceAppStudio: onStartWorkspaceAppStudio
+                onStartWorkspaceAppStudio: onStartWorkspaceAppStudio,
+                onStartMCPInstallReview: onStartMCPInstallReview
             )
         case .workspaceHome:
             if let workspace = effectiveWorkspace {

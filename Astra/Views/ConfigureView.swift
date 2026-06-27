@@ -361,7 +361,7 @@ private struct ConfigureCardIcon: View {
     }
 }
 
-private struct ConfigureCardChip: View {
+struct ConfigureCardChip: View {
     let title: String
     var color: Color? = nil
 
@@ -406,6 +406,7 @@ struct CapabilityCreationWizardView: View {
     enum Step: String, CaseIterable {
         case tools = "Tools"
         case connectors = "Connectors"
+        case mcp = "MCP"
         case behavior = "Behavior"
         case scope = "Scope"
         case validate = "Validate"
@@ -436,6 +437,9 @@ struct CapabilityCreationWizardView: View {
     @State private var draftConnectorBaseURL = ""
     @State private var draftConnectorCredentialKeys = ""
     @State private var draftConnectorConfigLines = ""
+    @State private var mcpServerDrafts: [CapabilityMCPServerDraft] = []
+    @State private var activeMCPServerDraft = CapabilityMCPServerDraft()
+    @State private var mcpDraftError: String?
     @State private var allowedTools = "Read, Grep"
     @State private var installEnabled = true
     @State private var saveSourceJSON = true
@@ -459,6 +463,7 @@ struct CapabilityCreationWizardView: View {
         (!selectedToolIDs.isEmpty ||
          !selectedDetectedCLIIDs.isEmpty ||
          !selectedConnectorIDs.isEmpty ||
+         !mcpServerDrafts.isEmpty ||
          !behaviorInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
@@ -496,6 +501,8 @@ struct CapabilityCreationWizardView: View {
                         selectableTools
                     case .connectors:
                         selectableConnectors
+                    case .mcp:
+                        mcpStep
                     case .behavior:
                         behaviorStep
                     case .scope:
@@ -559,6 +566,60 @@ struct CapabilityCreationWizardView: View {
         }
     }
 
+    private var mcpStep: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            identityFields
+            CapabilityMCPServerDraftEditor(
+                draft: $activeMCPServerDraft,
+                declaredEnvironmentKeys: declaredMCPEnvironmentKeys,
+                validationMessage: mcpDraftError
+            )
+            HStack {
+                Spacer()
+                Button {
+                    addMCPServerDraft()
+                } label: {
+                    Label("Add MCP Server", systemImage: "plus")
+                        .font(Stanford.body(13))
+                }
+                .buttonStyle(.bordered)
+            }
+            if !mcpServerDrafts.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("MCP Servers")
+                        .font(Stanford.caption(12).weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+                    ForEach(mcpServerDrafts) { draft in
+                        HStack(spacing: 10) {
+                            Image(systemName: "server.rack")
+                                .font(Stanford.ui(14))
+                                .foregroundStyle(ConfigureTab.capabilities.color)
+                                .frame(width: 24)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(mcpDraftDisplayName(draft))
+                                    .font(Stanford.body(13).weight(.medium))
+                                Text(mcpDraftSubtitle(draft))
+                                    .font(Stanford.caption(11))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button {
+                                removeMCPServerDraft(draft)
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(Stanford.cardinalRed)
+                        }
+                        .padding(10)
+                        .background(Color(nsColor: .controlBackgroundColor))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                }
+            }
+        }
+    }
     private var detectedCLISection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -740,6 +801,7 @@ struct CapabilityCreationWizardView: View {
                 }
             }
             validationRow("Connectors", "\(selectedConnectorIDs.count) selected")
+            validationRow("MCP servers", "\(mcpServerDrafts.count) declared")
             validationRow("Behavior", behaviorInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "None" : "Ready")
             validationRow("Scope", installEnabled ? "Install and enable here" : "Install only")
             validationRow("Source JSON", sourceExportDirectory == nil ? "Unavailable" : (saveSourceJSON ? "Save" : "Skip"))
@@ -848,6 +910,14 @@ struct CapabilityCreationWizardView: View {
         let detectedTools = selectedCandidates.map(CapabilityToolDetector.makeTool)
         let selectedTools = selectedExistingTools + detectedTools
         let selectedConnectors = availableConnectors.filter { selectedConnectorIDs.contains($0.id) }
+        let mcpServers: [PluginMCPServer]
+        do {
+            mcpServers = try validatedMCPServers()
+        } catch {
+            mcpDraftError = mcpErrorMessage(error)
+            selectedStep = .mcp
+            return
+        }
         let prerequisites = uniquePrerequisites(
             selectedCandidates.map(\.prerequisite) +
             selectedExistingTools.compactMap { CapabilityToolDetector.prerequisite(forCommand: $0.command) }
@@ -859,6 +929,7 @@ struct CapabilityCreationWizardView: View {
             allowedTools: allowedTools.split(separator: ",").map(String.init),
             connectors: selectedConnectors,
             localTools: selectedTools,
+            mcpServers: mcpServers,
             prerequisites: prerequisites
         )
 
@@ -921,6 +992,7 @@ struct CapabilityCreationWizardView: View {
         connector.configValues = config.values
         draftConnectors.append(connector)
         selectedConnectorIDs.insert(connector.id)
+        mcpDraftError = nil
         draftConnectorName = ""
         draftConnectorDescription = ""
         draftConnectorServiceType = "custom"
@@ -928,6 +1000,68 @@ struct CapabilityCreationWizardView: View {
         draftConnectorBaseURL = ""
         draftConnectorCredentialKeys = ""
         draftConnectorConfigLines = ""
+    }
+
+    private var declaredMCPEnvironmentKeys: Set<String> {
+        Set(availableConnectors
+            .filter { selectedConnectorIDs.contains($0.id) }
+            .flatMap { $0.credentialKeys + $0.configKeys })
+    }
+
+    private func addMCPServerDraft() {
+        do {
+            _ = try activeMCPServerDraft.makeServer(declaredEnvironmentKeys: declaredMCPEnvironmentKeys)
+            mcpServerDrafts.append(activeMCPServerDraft)
+            activeMCPServerDraft = CapabilityMCPServerDraft()
+            mcpDraftError = nil
+        } catch {
+            mcpDraftError = mcpErrorMessage(error)
+        }
+    }
+
+    private func removeMCPServerDraft(_ draft: CapabilityMCPServerDraft) {
+        mcpServerDrafts.removeAll { $0.id == draft.id }
+        mcpDraftError = nil
+    }
+    private func validatedMCPServers() throws -> [PluginMCPServer] {
+        try mcpServerDrafts.map {
+            try $0.makeServer(declaredEnvironmentKeys: declaredMCPEnvironmentKeys)
+        }
+    }
+    private func mcpDraftDisplayName(_ draft: CapabilityMCPServerDraft) -> String {
+        let displayName = draft.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !displayName.isEmpty { return displayName }
+        let serverID = draft.serverID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return serverID.isEmpty ? "Untitled MCP Server" : serverID
+    }
+
+    private func mcpDraftSubtitle(_ draft: CapabilityMCPServerDraft) -> String {
+        switch draft.transport {
+        case .stdio:
+            let command = draft.command.trimmingCharacters(in: .whitespacesAndNewlines)
+            return command.isEmpty ? "STDIO" : "STDIO · \(command)"
+        case .http, .sse:
+            let url = draft.urlText.trimmingCharacters(in: .whitespacesAndNewlines)
+            return url.isEmpty ? draft.transport.rawValue.uppercased() : "\(draft.transport.rawValue.uppercased()) · \(url)"
+        }
+    }
+
+    private func mcpErrorMessage(_ error: Error) -> String {
+        guard let error = error as? CapabilityMCPServerDraft.ValidationError else {
+            return "MCP server is invalid."
+        }
+        switch error {
+        case .invalidName(let reason):
+            return "Invalid MCP name: \(reason)."
+        case .unsafeInvocation(let reason):
+            return "Unsafe MCP command: \(reason)."
+        case .missingRemoteURL:
+            return "Remote MCP URL is missing."
+        case .unsafeRemoteURL(let reason):
+            return reason
+        case .undeclaredEnvironmentKeys(let keys):
+            return "MCP env keys must be declared by selected connectors or skills: \(keys.joined(separator: ", "))."
+        }
     }
 
     private func statusLabel(_ status: HealthStatus?) -> String {

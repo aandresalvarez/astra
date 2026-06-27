@@ -106,6 +106,24 @@ struct PluginCatalogBuiltInTests {
         #expect(package.version == "2.0.1")
     }
 
+    @Test("MCP smoke test bundled capability declares governed MCP server")
+    func mcpSmokeTestDeclaresGovernedMCPServer() throws {
+        let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "mcp-smoke-test" })
+        let server = try #require(package.mcpServers.first)
+        let prerequisite = try #require(package.prerequisites.first)
+
+        #expect(package.name == "MCP Smoke Test")
+        #expect(package.skills.isEmpty)
+        #expect(server.id == "smoke")
+        #expect(server.transport == .stdio)
+        #expect(server.command == "astra-mcp-smoke-server")
+        #expect(server.allowedTools == ["smoke.ping"])
+        #expect(server.environmentKeys.isEmpty)
+        #expect(prerequisite.binary == "astra-mcp-smoke-server")
+        #expect(package.governance.approvalStatus == .approved)
+        #expect(package.governance.visibility == .hidden)
+    }
+
     @Test("Built-in packages all have valid versions")
     func builtInVersionsValid() {
         for pkg in PluginCatalog.builtInPackages {

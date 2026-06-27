@@ -298,11 +298,14 @@ enum MCPRuntimeProjection {
 
     enum PreflightIssue: Equatable {
         case missingExecutable(serverID: String, command: String)
+        case missingExecutableWithInstallSource(serverID: String, command: String, source: PluginMCPInstallSource)
 
         var message: String {
             switch self {
             case .missingExecutable(let serverID, let command):
                 return "MCP server \(serverID) needs \(command), which was not found. Install it or disable the capability that provides this server."
+            case .missingExecutableWithInstallSource(let serverID, let command, let source):
+                return "MCP server \(serverID) needs \(command), which was not found. Install \(MCPRuntimeProjection.installSourceDescription(source)) or disable the capability that provides this server."
             }
         }
     }
@@ -323,11 +326,50 @@ enum MCPRuntimeProjection {
             if command.hasPrefix("/") {
                 return isExecutableFile(command)
                     ? nil
-                    : .missingExecutable(serverID: server.id, command: command)
+                    : missingExecutableIssue(for: server, command: command)
             }
             return detectExecutable(command).isEmpty
-                ? .missingExecutable(serverID: server.id, command: command)
+                ? missingExecutableIssue(for: server, command: command)
                 : nil
+        }
+    }
+
+    private static func missingExecutableIssue(
+        for server: PluginMCPServer,
+        command: String
+    ) -> PreflightIssue {
+        if let source = server.installSource {
+            return .missingExecutableWithInstallSource(serverID: server.id, command: command, source: source)
+        }
+        return .missingExecutable(serverID: server.id, command: command)
+    }
+
+    private static func installSourceDescription(_ source: PluginMCPInstallSource) -> String {
+        let target: String
+        if let version = source.version?.trimmingCharacters(in: .whitespacesAndNewlines), !version.isEmpty {
+            target = source.kind == .pypi ? "\(source.identifier)==\(version)" : "\(source.identifier)@\(version)"
+        } else if let digest = source.digest?.trimmingCharacters(in: .whitespacesAndNewlines), !digest.isEmpty {
+            target = "\(source.identifier)@sha256:\(digest)"
+        } else {
+            target = source.identifier
+        }
+        switch source.kind {
+        case .npm:
+            return "npm package \(target) with npx"
+        case .pypi:
+            return "PyPI package \(target) with uvx"
+        case .dockerImage, .oci:
+            return "Docker image \(target)"
+        case .remoteHTTP:
+            return "remote MCP server \(target)"
+        case .mcpb:
+            return "MCP bundle \(target)"
+        case .nuget:
+            return "NuGet package \(target)"
+        case .localBinary:
+            return "local binary \(target)"
+        case .unknown:
+            return "MCP source \(target)"
         }
     }
 }
