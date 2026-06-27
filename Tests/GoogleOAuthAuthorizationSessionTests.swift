@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import Testing
 @testable import ASTRA
 
@@ -39,5 +40,28 @@ struct GoogleOAuthAuthorizationSessionTests {
 
         #expect(callback.code == "auth-code")
         #expect(callback.state == "state-123")
+    }
+
+    @Test("loopback listener treats cancellation as terminal")
+    func loopbackListenerCancellationIsTerminal() throws {
+        let error = try #require(LoopbackGoogleOAuthCallbackReceiver.terminalError(for: .cancelled))
+
+        #expect(error is CancellationError)
+        #expect(LoopbackGoogleOAuthCallbackReceiver.terminalError(for: .ready) == nil)
+    }
+
+    @Test("loopback listener only accepts loopback peer endpoints")
+    func loopbackListenerOnlyAcceptsLoopbackPeers() throws {
+        let loopbackIPv4 = NWEndpoint.hostPort(host: .ipv4(try #require(IPv4Address("127.0.0.1"))), port: 48119)
+        let loopbackIPv4Range = NWEndpoint.hostPort(host: .ipv4(try #require(IPv4Address("127.10.20.30"))), port: 48119)
+        let loopbackIPv6 = NWEndpoint.hostPort(host: .ipv6(try #require(IPv6Address("::1"))), port: 48119)
+        let localhost = NWEndpoint.hostPort(host: .name("localhost", nil), port: 48119)
+        let privateNetwork = NWEndpoint.hostPort(host: .ipv4(try #require(IPv4Address("192.168.1.50"))), port: 48119)
+
+        #expect(LoopbackGoogleOAuthCallbackReceiver.isLoopbackEndpoint(loopbackIPv4))
+        #expect(LoopbackGoogleOAuthCallbackReceiver.isLoopbackEndpoint(loopbackIPv4Range))
+        #expect(LoopbackGoogleOAuthCallbackReceiver.isLoopbackEndpoint(loopbackIPv6))
+        #expect(LoopbackGoogleOAuthCallbackReceiver.isLoopbackEndpoint(localhost))
+        #expect(!LoopbackGoogleOAuthCallbackReceiver.isLoopbackEndpoint(privateNetwork))
     }
 }

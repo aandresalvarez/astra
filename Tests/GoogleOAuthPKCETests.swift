@@ -23,8 +23,8 @@ struct GoogleOAuthPKCETests {
     }
 
     @Test("generated verifier and state are nonempty URL safe values")
-    func generatedValuesAreURLSafe() {
-        let material = GoogleOAuthPKCE.generate()
+    func generatedValuesAreURLSafe() throws {
+        let material = try GoogleOAuthPKCE.generate()
 
         #expect(material.codeVerifier.count >= 43)
         #expect(material.state.count >= 24)
@@ -33,4 +33,26 @@ struct GoogleOAuthPKCETests {
         #expect(material.state.range(of: "+") == nil)
         #expect(material.state.range(of: "/") == nil)
     }
+
+    @Test("generation fails closed when secure random bytes are unavailable")
+    func generationFailsWhenRandomBytesAreUnavailable() {
+        #expect(throws: PKCETestError.randomUnavailable) {
+            _ = try GoogleOAuthPKCE.generate { _ in
+                throw PKCETestError.randomUnavailable
+            }
+        }
+    }
+
+    @Test("generation fails closed when verifier cannot produce S256 challenge")
+    func generationFailsWhenVerifierChallengeIsInvalid() {
+        #expect(throws: GoogleOAuthPKCE.Error.invalidVerifier) {
+            _ = try GoogleOAuthPKCE.generate(byteCount: 1) { byteCount in
+                [UInt8](repeating: 1, count: byteCount)
+            }
+        }
+    }
+}
+
+private enum PKCETestError: Error, Equatable {
+    case randomUnavailable
 }

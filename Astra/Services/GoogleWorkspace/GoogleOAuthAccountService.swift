@@ -29,7 +29,7 @@ final class GoogleOAuthAccountService {
         now: Date = Date()
     ) async throws -> GoogleOAuthAccountProfile {
         let normalizedScopes = GoogleOAuthScopeNormalizer.normalized(requestedScopes)
-        let pkce = GoogleOAuthPKCE.generate()
+        let pkce = try GoogleOAuthPKCE.generate()
         let grant = try await authorizationSession.authorize(GoogleOAuthAuthorizationSessionRequest(
             configuration: configuration,
             scopes: normalizedScopes,

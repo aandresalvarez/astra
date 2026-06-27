@@ -10,19 +10,25 @@ enum GoogleOAuthPKCE {
 
     enum Error: LocalizedError, Equatable {
         case invalidVerifier
+        case secureRandomUnavailable(OSStatus)
 
         var errorDescription: String? {
             switch self {
             case .invalidVerifier:
                 return "Google OAuth PKCE verifier is invalid."
+            case .secureRandomUnavailable:
+                return "Secure random generation is unavailable for Google OAuth PKCE."
             }
         }
     }
 
-    static func generate(byteCount: Int = 48) -> Material {
-        let verifier = randomBase64URL(byteCount: byteCount)
-        let state = randomBase64URL(byteCount: 24)
-        let codeChallenge = (try? challenge(for: verifier)) ?? verifier
+    static func generate(
+        byteCount: Int = 48,
+        randomBytes: (Int) throws -> [UInt8] = secureRandomBytes
+    ) throws -> Material {
+        let verifier = try randomBase64URL(byteCount: byteCount, randomBytes: randomBytes)
+        let state = try randomBase64URL(byteCount: 24, randomBytes: randomBytes)
+        let codeChallenge = try challenge(for: verifier)
         return Material(codeVerifier: verifier, codeChallenge: codeChallenge, state: state)
     }
 
@@ -41,10 +47,20 @@ enum GoogleOAuthPKCE {
         !returnedState.isEmpty && returnedState == expectedState
     }
 
-    private static func randomBase64URL(byteCount: Int) -> String {
+    private static func randomBase64URL(
+        byteCount: Int,
+        randomBytes: (Int) throws -> [UInt8]
+    ) throws -> String {
+        try base64URL(Data(randomBytes(byteCount)))
+    }
+
+    private static func secureRandomBytes(byteCount: Int) throws -> [UInt8] {
         var bytes = [UInt8](repeating: 0, count: byteCount)
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
-        return base64URL(Data(bytes))
+        let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        guard status == errSecSuccess else {
+            throw Error.secureRandomUnavailable(status)
+        }
+        return bytes
     }
 
     private static func base64URL(_ data: Data) -> String {

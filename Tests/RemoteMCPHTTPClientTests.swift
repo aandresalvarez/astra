@@ -69,6 +69,28 @@ struct RemoteMCPHTTPClientTests {
             #expect(!error.localizedDescription.contains("access-secret"))
         }
     }
+
+    @Test("URLSession transport fails closed when upstream never completes")
+    func urlSessionTransportTimesOut() throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [HangingURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let transport = URLSessionRemoteMCPHTTPTransport(session: session, timeout: 0.01)
+
+        do {
+            _ = try transport.postJSON(
+                to: URL(string: "https://mcp.example.test/hang")!,
+                headers: [:],
+                body: ["jsonrpc": "2.0", "id": 1, "method": "tools/list"]
+            )
+            Issue.record("Expected remote MCP transport timeout")
+        } catch let error as URLError {
+            #expect(error.code == .timedOut)
+        } catch {
+            Issue.record("Expected URLError.timedOut, got \(error)")
+        }
+    }
 }
 
 private func descriptor() -> RemoteMCPServerDescriptor {
@@ -109,4 +131,18 @@ private final class RecordingRemoteMCPHTTPTransport: RemoteMCPHTTPTransport {
             return (statusCode, body)
         }
     }
+}
+
+private final class HangingURLProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {}
+
+    override func stopLoading() {}
 }

@@ -194,6 +194,33 @@ struct MCPRuntimeProjectionTests {
         #expect(!jsonText.contains("GOOGLE_OAUTH_ACCESS_TOKEN"))
     }
 
+    @Test("gateway projection omits endpoint argument when remote URL is unavailable")
+    func gatewayProjectionOmitsMissingEndpointArgument() throws {
+        let remote = PluginMCPServer(
+            id: "google_drive",
+            displayName: "Google Drive",
+            transport: .http,
+            connectorBindings: ["google-workspace"],
+            allowedTools: ["drive.search"],
+            trustLevel: .high
+        )
+
+        let data = try #require(MCPRuntimeProjection.claudeConfigJSON(
+            servers: [.init(packageID: "google-workspace", server: remote)]
+        ))
+        let jsonText = String(decoding: data, as: UTF8.self)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let serversDict = try #require(object["mcpServers"] as? [String: Any])
+        let entry = try #require(serversDict["google_drive"] as? [String: Any])
+
+        #expect(entry["type"] as? String == "stdio")
+        #expect(entry["args"] as? [String] == [
+            "--package-id", "google-workspace",
+            "--server-id", "google_drive"
+        ])
+        #expect(!jsonText.contains("--endpoint"))
+    }
+
     @Test("Codex config routes credentialed remote MCP through ASTRA gateway")
     func codexConfigRoutesCredentialedRemoteThroughAstraGateway() {
         let remote = PluginMCPServer(

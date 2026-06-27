@@ -97,6 +97,10 @@ struct LoopbackGoogleOAuthCallbackReceiver: GoogleOAuthCallbackReceiving {
             try await withCheckedThrowingContinuation { continuation in
                 let state = CallbackState(continuation: continuation, listener: listener)
                 listener.newConnectionHandler = { connection in
+                    guard Self.isLoopbackEndpoint(connection.endpoint) else {
+                        connection.cancel()
+                        return
+                    }
                     connection.start(queue: queue)
                     connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { data, _, _, error in
                         if let error {
@@ -125,7 +129,7 @@ struct LoopbackGoogleOAuthCallbackReceiver: GoogleOAuthCallbackReceiving {
                     }
                 }
                 listener.stateUpdateHandler = { stateUpdate in
-                    if case .failed(let error) = stateUpdate {
+                    if let error = Self.terminalError(for: stateUpdate) {
                         state.resume(.failure(error))
                     }
                 }
@@ -143,6 +147,37 @@ struct LoopbackGoogleOAuthCallbackReceiver: GoogleOAuthCallbackReceiving {
             .first { $0.name == "redirect_uri" }?
             .value
             .flatMap(URL.init(string:))
+    }
+
+    static func terminalError(for state: NWListener.State) -> Error? {
+        switch state {
+        case .failed(let error):
+            return error
+        case .cancelled:
+            return CancellationError()
+        default:
+            return nil
+        }
+    }
+
+    static func isLoopbackEndpoint(_ endpoint: NWEndpoint) -> Bool {
+        guard case .hostPort(let host, _) = endpoint else {
+            return false
+        }
+        return isLoopbackHost(host)
+    }
+
+    private static func isLoopbackHost(_ host: NWEndpoint.Host) -> Bool {
+        switch host {
+        case .ipv4(let address):
+            return String(describing: address).hasPrefix("127.")
+        case .ipv6(let address):
+            return String(describing: address) == "::1"
+        case .name(let name, _):
+            return name.caseInsensitiveCompare("localhost") == .orderedSame
+        @unknown default:
+            return false
+        }
     }
 }
 

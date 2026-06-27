@@ -15,16 +15,20 @@ enum RemoteMCPGatewayProjection {
     static func providerFacingServer(for resolved: MCPRuntimeProjection.ResolvedServer) -> PluginMCPServer {
         let server = resolved.server
         guard shouldRouteThroughGateway(server) else { return server }
+        var arguments = [
+            "--package-id", resolved.packageID,
+            "--server-id", server.id
+        ]
+        if let endpoint = server.url?.absoluteString.trimmingCharacters(in: .whitespacesAndNewlines),
+           !endpoint.isEmpty {
+            arguments.append(contentsOf: ["--endpoint", endpoint])
+        }
         return PluginMCPServer(
             id: server.id,
             displayName: server.displayName,
             transport: .stdio,
             command: executablePath,
-            arguments: [
-                "--package-id", resolved.packageID,
-                "--server-id", server.id,
-                "--endpoint", server.url?.absoluteString ?? ""
-            ],
+            arguments: arguments,
             environmentKeys: [],
             connectorBindings: server.connectorBindings,
             allowedTools: server.allowedTools,

@@ -5,33 +5,67 @@ public protocol RemoteMCPHTTPTransport: AnyObject {
 }
 
 public final class URLSessionRemoteMCPHTTPTransport: RemoteMCPHTTPTransport {
-    public init() {}
+    private let session: URLSession
+    private let timeout: TimeInterval
+
+    public init(session: URLSession = .shared, timeout: TimeInterval = 30) {
+        self.session = session
+        self.timeout = timeout
+    }
 
     public func postJSON(to url: URL, headers: [String: String], body: [String: Any]) throws -> (statusCode: Int, body: [String: Any]) {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
         request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
 
         let semaphore = DispatchSemaphore(value: 0)
-        var result: Result<(Int, [String: Any]), Error>!
-        URLSession.shared.dataTask(with: request) { data, response, error in
+        let state = RemoteMCPHTTPTransportState()
+        let task = session.dataTask(with: request) { data, response, error in
             defer { semaphore.signal() }
             if let error {
-                result = .failure(error)
+                state.store(.failure(error))
                 return
             }
             guard let http = response as? HTTPURLResponse else {
-                result = .failure(RemoteMCPHTTPClient.Error.invalidResponse)
+                state.store(.failure(RemoteMCPHTTPClient.Error.invalidResponse))
                 return
             }
             let object = data.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any] ?? [:]
-            result = .success((http.statusCode, object))
-        }.resume()
-        semaphore.wait()
-        return try result.get()
+            state.store(.success((http.statusCode, object)))
+        }
+        task.resume()
+        if semaphore.wait(timeout: Self.deadline(for: timeout)) == .timedOut {
+            task.cancel()
+            throw URLError(.timedOut)
+        }
+        return try state.load().get()
+    }
+
+    private static func deadline(for timeout: TimeInterval) -> DispatchTime {
+        let milliseconds = max(1, Int((timeout * 1_000).rounded(.up)))
+        return DispatchTime.now() + .milliseconds(milliseconds)
+    }
+}
+
+private final class RemoteMCPHTTPTransportState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: Result<(Int, [String: Any]), Error> = .failure(URLError(.unknown))
+
+    func store(_ result: Result<(Int, [String: Any]), Error>) {
+        lock.lock()
+        self.result = result
+        lock.unlock()
+    }
+
+    func load() -> Result<(Int, [String: Any]), Error> {
+        lock.lock()
+        let current = result
+        lock.unlock()
+        return current
     }
 }
 
