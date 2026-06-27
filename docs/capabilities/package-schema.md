@@ -119,6 +119,12 @@ contract IDs such as `googleWorkspace.drive.read` or
 tokens, raw Google tool names as their authority boundary, or provider-specific
 credentials in manifests, prompts, logs, or config files.
 
+Package-owner registry metadata may include raw provider tool names inside
+`toolClassifications` so ASTRA can map, audit, and consent-gate provider
+operations. Those provider names are internal registry inputs, not generated-app
+capabilities; generated app manifests and runtime policy requests must bind to
+ASTRA contract IDs only.
+
 Remote registry metadata is contract-only. It does not perform token exchange
 or live MCP forwarding:
 

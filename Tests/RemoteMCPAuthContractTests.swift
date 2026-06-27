@@ -6,11 +6,13 @@ import ASTRACore
 struct RemoteMCPAuthContractTests {
     @Test("remote Google Workspace MCP registry metadata round trips without credentials")
     func googleWorkspaceRegistryMetadataRoundTripsWithoutCredentials() throws {
+        let registryEndpoint = try #require(URL(string: "https://mcp.astra.local/google-workspace"))
+        let serverURL = try #require(URL(string: "https://mcp.astra.local/google-workspace"))
         let registry = RemoteMCPServerRegistryMetadata(
             registryID: "google-workspace",
             providerID: "googleWorkspace",
             providerDisplayName: "Google Workspace",
-            endpoint: URL(string: "https://mcp.astra.local/google-workspace"),
+            endpoint: registryEndpoint,
             authProfile: RemoteMCPAuthProfile(
                 id: "google-workspace-primary",
                 providerID: "googleWorkspace",
@@ -49,7 +51,7 @@ struct RemoteMCPAuthContractTests {
             id: "google-workspace",
             displayName: "Google Workspace Remote MCP",
             transport: .http,
-            url: URL(string: "https://mcp.astra.local/google-workspace"),
+            url: serverURL,
             allowedTools: ["drive.files.list"],
             trustLevel: .high,
             remoteRegistry: registry
@@ -61,8 +63,9 @@ struct RemoteMCPAuthContractTests {
 
         #expect(decoded.remoteRegistry == registry)
         #expect(decoded.remoteRegistry?.authProfile?.authorizationKind == .astraOwnedOAuth)
-        #expect(!json.localizedCaseInsensitiveContains("accessToken"))
-        #expect(!json.localizedCaseInsensitiveContains("refreshToken"))
+        let normalizedJSON = json.lowercased(with: Locale(identifier: "en_US_POSIX"))
+        #expect(!normalizedJSON.contains("accesstoken"))
+        #expect(!normalizedJSON.contains("refreshtoken"))
         #expect(!json.contains("ya29.secret-token"))
         #expect(registry.invariantViolations().isEmpty)
     }
