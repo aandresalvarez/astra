@@ -347,59 +347,6 @@ private struct ConfigureSelectionCard<Content: View>: View {
     }
 }
 
-private struct ConfigureCardIcon: View {
-    let systemName: String
-    let color: Color
-    var brand: BrandMark? = nil
-
-    var body: some View {
-        CapabilityLeadingIcon(systemImage: systemName, brand: brand, pointSize: 14)
-            .foregroundStyle(color)
-            .frame(width: 28, height: 28)
-            .background(color.opacity(0.08))
-            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-    }
-}
-
-struct ConfigureCardChip: View {
-    let title: String
-    var color: Color? = nil
-
-    var body: some View {
-        Text(title)
-            .font(Stanford.caption(10))
-            .foregroundStyle(color ?? Stanford.coolGrey)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background((color ?? Color.primary).opacity(color == nil ? 0.04 : 0.1))
-            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-    }
-}
-
-// MARK: - Capabilities Tab
-
-struct CapabilitiesTabContent: View {
-    var workspace: Workspace
-    var focusPackageID: String?
-    var onCatalogChanged: () -> Void = {}
-    var onPackageFocusChanged: (String?) -> Void = { _ in }
-    var onEditElement: (ConfigureTab, UUID) -> Void = { _, _ in }
-    @State private var catalog = PluginCatalog()
-
-    var body: some View {
-        PluginCatalogView(
-            workspace: workspace,
-            catalog: catalog,
-            focus: .all,
-            presentation: .embedded,
-            focusedPackageID: focusPackageID,
-            onCatalogChanged: onCatalogChanged,
-            onPackageFocusChanged: onPackageFocusChanged,
-            onEditElement: onEditElement
-        )
-    }
-}
-
 // MARK: - Capability Creation Wizard
 
 struct CapabilityCreationWizardView: View {
@@ -414,6 +361,7 @@ struct CapabilityCreationWizardView: View {
 
     var workspace: Workspace
     var onCreated: (PluginPackage, Bool, URL?) -> Void
+    var sourceExportDirectoryResolver: () async -> URL?
     @Environment(\.dismiss) private var dismiss
     @Query(filter: #Predicate<Connector> { $0.isGlobal == true })
     private var globalConnectors: [Connector]
@@ -443,7 +391,17 @@ struct CapabilityCreationWizardView: View {
     @State private var allowedTools = "Read, Grep"
     @State private var installEnabled = true
     @State private var saveSourceJSON = true
-    @State private var sourceExportDirectory: URL? = CapabilityPackageSourceExporter.defaultSourceDirectory()
+    @State private var sourceExportDirectoryState: CapabilitySourceExportDirectoryState = .resolving
+
+    init(
+        workspace: Workspace,
+        onCreated: @escaping (PluginPackage, Bool, URL?) -> Void,
+        sourceExportDirectoryResolver: @escaping () async -> URL? = Self.defaultSourceExportDirectoryResolver
+    ) {
+        self.workspace = workspace
+        self.onCreated = onCreated
+        self.sourceExportDirectoryResolver = sourceExportDirectoryResolver
+    }
 
     private var availableTools: [LocalTool] {
         uniqueTools(workspace.localTools + globalTools)
@@ -459,12 +417,23 @@ struct CapabilityCreationWizardView: View {
     }
 
     private var canCreate: Bool {
+        CapabilityCreationSourceExportPolicy.canCreate(
+            hasRequiredContent: hasRequiredCapabilityContent,
+            sourceState: sourceExportDirectoryState
+        )
+    }
+
+    private var hasRequiredCapabilityContent: Bool {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
         (!selectedToolIDs.isEmpty ||
          !selectedDetectedCLIIDs.isEmpty ||
          !selectedConnectorIDs.isEmpty ||
          !mcpServerDrafts.isEmpty ||
          !behaviorInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    private var sourceExportDirectory: URL? {
+        sourceExportDirectoryState.directory
     }
 
     var body: some View {
@@ -531,6 +500,9 @@ struct CapabilityCreationWizardView: View {
             .padding(18)
         }
         .frame(width: 620, height: 620)
+        .task {
+            await resolveSourceExportDirectoryIfNeeded()
+        }
     }
 
     private var selectableTools: some View {
@@ -775,17 +747,20 @@ struct CapabilityCreationWizardView: View {
                 .disabled(true)
             Toggle("Enable in this workspace", isOn: $installEnabled)
             Toggle("Save source JSON", isOn: Binding(
-                get: { saveSourceJSON && sourceExportDirectory != nil },
+                get: { sourceExportDirectoryState.saveToggleValue(saveSourceJSON: saveSourceJSON) },
                 set: { saveSourceJSON = $0 }
             ))
-            .disabled(sourceExportDirectory == nil)
+            .disabled(!sourceExportDirectoryState.canToggleSourceSaving)
             HStack(spacing: 6) {
                 ConfigureCardChip(title: CapabilityLibrary.capabilitiesDirectory().lastPathComponent, color: ConfigureTab.capabilities.color)
                 ConfigureCardChip(title: workspace.name)
                 if let sourceExportDirectory {
                     ConfigureCardChip(title: sourceExportDirectory.lastPathComponent, color: ConfigureTab.capabilities.color)
                 } else {
-                    ConfigureCardChip(title: "No source library", color: Stanford.poppy)
+                    ConfigureCardChip(
+                        title: sourceExportDirectoryState.chipTitle,
+                        color: sourceExportDirectoryState == .resolving ? Stanford.coolGrey : Stanford.poppy
+                    )
                 }
             }
         }
@@ -804,7 +779,7 @@ struct CapabilityCreationWizardView: View {
             validationRow("MCP servers", "\(mcpServerDrafts.count) declared")
             validationRow("Behavior", behaviorInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "None" : "Ready")
             validationRow("Scope", installEnabled ? "Install and enable here" : "Install only")
-            validationRow("Source JSON", sourceExportDirectory == nil ? "Unavailable" : (saveSourceJSON ? "Save" : "Skip"))
+            validationRow("Source JSON", sourceExportDirectoryState.validationLabel(saveSourceJSON: saveSourceJSON))
         }
     }
 
@@ -905,6 +880,8 @@ struct CapabilityCreationWizardView: View {
     }
 
     private func createCapability() {
+        guard sourceExportDirectoryState.isTerminal else { return }
+
         let selectedExistingTools = availableTools.filter { selectedToolIDs.contains($0.id) }
         let selectedCandidates = availableCLICandidates.filter { selectedDetectedCLIIDs.contains($0.id) }
         let detectedTools = selectedCandidates.map(CapabilityToolDetector.makeTool)
@@ -942,6 +919,22 @@ struct CapabilityCreationWizardView: View {
 
         onCreated(package, installEnabled, sourceURL)
         dismiss()
+    }
+
+    @MainActor
+    private func resolveSourceExportDirectoryIfNeeded() async {
+        guard sourceExportDirectoryState == .resolving else { return }
+        if let directory = await sourceExportDirectoryResolver() {
+            sourceExportDirectoryState = .resolved(directory)
+        } else {
+            sourceExportDirectoryState = .unavailable
+        }
+    }
+
+    private static func defaultSourceExportDirectoryResolver() async -> URL? {
+        await Task.detached(priority: .utility) {
+            CapabilityPackageSourceExporter.defaultSourceDirectory()
+        }.value
     }
 
     private func detectCLIs() {

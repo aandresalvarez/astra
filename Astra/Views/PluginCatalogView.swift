@@ -71,7 +71,7 @@ struct PluginCatalogView: View {
     @State private var disableCandidate: PluginPackage?
     @State private var removalError: String?
     @State private var approvalError: String?
-    @State private var approvalRevision = 0
+    @State private var approvalRecords: [CapabilityApprovalRecord] = []
     @State private var showCreateWizard = false
     @State private var importReview: CapabilityImportReview?
     @State private var importError: String?
@@ -79,6 +79,8 @@ struct PluginCatalogView: View {
     @State private var showMCPInstallTargetSheet = false
     @State private var pastedMCPInstallTarget = ""
     @State private var mcpInstallRequest: MCPInstallChatRequest?
+    @State private var approvalRecordsRefreshTask: Task<Void, Never>?
+    @State private var approvalRecordsRefreshGeneration = 0
 
     private var capabilities: WorkspaceCapabilities {
         WorkspaceCapabilities(
@@ -90,10 +92,9 @@ struct PluginCatalogView: View {
     }
 
     private var catalogPolicyContext: CapabilityCatalogPolicyContext {
-        _ = approvalRevision
-        return CapabilityCatalogPolicyContext.currentUser(
+        PluginCatalogApprovalState.policyContext(
             workspace: workspace,
-            approvalRecords: CapabilityApprovalStore().records()
+            approvalRecords: approvalRecords
         )
     }
 
@@ -206,11 +207,18 @@ struct PluginCatalogView: View {
             alignment: .topLeading
         )
         .onAppear {
+            refreshApprovalRecords()
             selectedPackageID = focusedPackageID
             if catalog.packages.isEmpty {
                 catalog.loadApprovedCapabilities()
                 onCatalogChanged?()
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .capabilityApprovalsChanged)) { _ in
+            refreshApprovalRecords()
+        }
+        .onDisappear {
+            cancelApprovalRecordsRefresh()
         }
         .onChange(of: focusedPackageID) { _, newValue in
             selectedPackageID = newValue
@@ -1075,7 +1083,7 @@ struct PluginCatalogView: View {
                 traceID: traceID
             )
             if result.approvalRecordChanged {
-                approvalRevision += 1
+                refreshApprovalRecords()
             }
             if let installedPackage = result.installedPackage {
                 onInstall?(installedPackage)
@@ -1116,10 +1124,7 @@ struct PluginCatalogView: View {
                 package,
                 workspace: workspace,
                 modelContext: modelContext,
-                policyContext: CapabilityCatalogPolicyContext.currentUser(
-                    workspace: workspace,
-                    approvalRecords: CapabilityApprovalStore().records()
-                ),
+                policyContext: catalogPolicyContext,
                 source: "approval_definition_refresh",
                 traceID: traceID
             )
@@ -1137,7 +1142,7 @@ struct PluginCatalogView: View {
                 approvedBy: "ASTRA local admin",
                 reviewNotes: "Updated from the local catalog review controls."
             )
-            approvalRevision += 1
+            refreshApprovalRecords()
             catalog.loadApprovedCapabilities()
             refreshEnabledDefinitionsAfterApproval(package, status: status, traceID: traceID)
             onCatalogChanged?()
@@ -1165,6 +1170,33 @@ struct PluginCatalogView: View {
                 "error_type": String(describing: type(of: error))
             ], level: .error)
         }
+    }
+
+    private func refreshApprovalRecords() {
+        approvalRecordsRefreshTask?.cancel()
+        approvalRecordsRefreshGeneration += 1
+        let refreshGeneration = approvalRecordsRefreshGeneration
+        approvalRecordsRefreshTask = Task {
+            let records = await Self.loadApprovalRecords()
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard approvalRecordsRefreshGeneration == refreshGeneration else { return }
+                approvalRecords = records
+                approvalRecordsRefreshTask = nil
+            }
+        }
+    }
+
+    private func cancelApprovalRecordsRefresh() {
+        approvalRecordsRefreshGeneration += 1
+        approvalRecordsRefreshTask?.cancel()
+        approvalRecordsRefreshTask = nil
+    }
+
+    private static func loadApprovalRecords() async -> [CapabilityApprovalRecord] {
+        await Task.detached(priority: .utility) {
+            CapabilityApprovalStore().records()
+        }.value
     }
 
     // MARK: - Prerequisite Section
@@ -1458,26 +1490,15 @@ struct PluginCatalogView: View {
     }
 
     private func capabilityAdminReviewSection(_ package: PluginPackage) -> some View {
-        let decision = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext)
-        let approvalStore = CapabilityApprovalStore()
-        let records = approvalStore.records()
-        let digest = try? CapabilityApprovalDigest.digest(for: package)
-        let record = digest.flatMap { digest in
-            records.last {
-                $0.packageID == package.id &&
-                $0.packageVersion == package.version &&
-                $0.sourceDigest == digest
-            }
-        }
-        let hasVersionRecord = records.contains {
-            $0.packageID == package.id && $0.packageVersion == package.version
-        }
-        let digestLabel = record != nil ? "Digest current" : (hasVersionRecord ? "Changed since approval" : "No local record")
-        let shouldShow = catalogPolicyContext.isAdmin
-            && (record != nil || decision.requiresApproval || decision.governance.approvalStatus != .approved)
+        let reviewState = PluginCatalogApprovalState.adminReviewState(
+            for: package,
+            policyContext: catalogPolicyContext,
+            approvalRecords: approvalRecords
+        )
 
         return Group {
-            if shouldShow {
+            if let reviewState {
+                let record = reviewState.record
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 6) {
                         Image(systemName: "checkmark.seal")
@@ -1487,9 +1508,9 @@ struct PluginCatalogView: View {
                             .font(Stanford.caption(11).weight(.semibold))
                             .foregroundStyle(Stanford.lagunita)
                         Spacer()
-                        Text(digestLabel)
+                        Text(reviewState.digestLabel)
                             .font(Stanford.caption(10))
-                            .foregroundStyle(hasVersionRecord && record == nil ? Stanford.poppy : Stanford.coolGrey)
+                            .foregroundStyle(reviewState.hasVersionRecord && record == nil ? Stanford.poppy : Stanford.coolGrey)
                     }
 
                     HStack(spacing: 8) {

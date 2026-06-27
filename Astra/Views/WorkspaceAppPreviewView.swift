@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Full interactive Preview of a DRAFT Workspace App, presented as a sheet from App Studio's
-/// "Preview" button. It renders the exact same `WorkspaceAppSurfaceView` a published app uses, but
+/// Full interactive Preview of a DRAFT Workspace App, docked beside App Studio while the draft is
+/// being built. It renders the exact same `WorkspaceAppSurfaceView` a published app uses, but
 /// every action runs through a `WorkspaceAppPreviewRunner` sandbox: storage CRUD mutates an
 /// in-memory table store (so Add/Edit/Delete/List really work), while tasks, connector writes,
 /// exports, URL/clipboard/notification actions are simulated with a "(preview — …)" summary and
@@ -10,24 +10,26 @@ struct WorkspaceAppPreviewView: View {
     let manifest: WorkspaceAppManifest
     /// The workspace the draft belongs to. When set, a connector-read app resolves LIVE, READ-ONLY
     /// `astra.read` data (real `gh` PRs, enabled-capability CLI reads) so it can be tested before
-    /// publishing. nil (the App Studio Preview SHEET caller) ⇒ connector reads stay simulated.
+    /// publishing. nil means connector reads stay simulated.
     var workspace: Workspace?
-    var onClose: (() -> Void)?
-    /// Minimum width. The sheet uses the roomy default; the docked preview shelf passes a
-    /// smaller floor so the chat column beside it isn't crushed on narrower windows.
+    /// Minimum width. The standalone surface uses the roomy default; the docked preview shelf
+    /// passes a smaller floor so the chat column beside it isn't crushed on narrower windows.
     var minWidth: CGFloat = 680
 
-    @State private var runner: WorkspaceAppPreviewRunner
-    @State private var snapshot: WorkspaceAppDetailDataSnapshot
-
-    init(manifest: WorkspaceAppManifest, workspace: Workspace? = nil, onClose: (() -> Void)? = nil, minWidth: CGFloat = 680) {
+    init(manifest: WorkspaceAppManifest, workspace: Workspace? = nil, minWidth: CGFloat = 680) {
         self.manifest = manifest
         self.workspace = workspace
-        self.onClose = onClose
         self.minWidth = minWidth
         let runner = WorkspaceAppPreviewRunner(manifest: manifest)
         _runner = State(initialValue: runner)
         _snapshot = State(initialValue: runner.snapshot())
+    }
+
+    @State private var runner: WorkspaceAppPreviewRunner
+    @State private var snapshot: WorkspaceAppDetailDataSnapshot
+
+    private var commandPresentation: WorkspaceAppStudioCommandPresentation {
+        WorkspaceAppStudioCommandPresentation(appName: manifest.app.name, workspaceName: workspace?.name ?? "Workspace")
     }
 
     var body: some View {
@@ -141,11 +143,11 @@ struct WorkspaceAppPreviewView: View {
                 .frame(width: 28, height: 28)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(manifest.app.name)
+                Text(commandPresentation.previewTitle)
                     .font(Stanford.ui(16, weight: .semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
-                Text("Preview · sandbox")
+                Text(commandPresentation.previewSubtitle)
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
             }
@@ -153,13 +155,10 @@ struct WorkspaceAppPreviewView: View {
             Spacer(minLength: 16)
 
             Button(action: resetSampleData) {
-                Label("Reset sample data", systemImage: "arrow.counterclockwise")
+                Label(commandPresentation.previewResetSampleDataTitle, systemImage: "arrow.counterclockwise")
             }
             .buttonStyle(.borderless)
             .help("Restore the preview's sample rows")
-
-            Button("Done") { onClose?() }
-                .buttonStyle(.borderedProminent)
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 14)

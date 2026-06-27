@@ -421,6 +421,46 @@ struct PluginCatalogPresentationTests {
         #expect(CapabilitySetupPresentation.credentialPlaceholder(for: credential) == "Paste API token")
         #expect(CapabilitySetupPresentation.configPlaceholder(for: config) == "ENG, OPS")
     }
+
+    @Test("approval state builds policy and review from supplied records")
+    func approvalStateBuildsPolicyAndReviewFromSuppliedRecords() throws {
+        let workspace = Workspace(
+            name: "Approval Snapshot",
+            primaryPath: "/tmp/astra-approval-snapshot-\(UUID().uuidString)"
+        )
+        let package = makePresentationPackage(
+            id: "draft-\(UUID().uuidString)",
+            name: "Draft",
+            category: "Security",
+            governance: .localDraft()
+        )
+        let record = CapabilityApprovalRecord(
+            packageID: package.id,
+            packageVersion: package.version,
+            status: .approved,
+            approvedBy: "Security",
+            approvedAt: Date(timeIntervalSince1970: 1_234),
+            reviewNotes: "Reviewed",
+            sourceDigest: try CapabilityApprovalDigest.digest(for: package)
+        )
+
+        let policyContext = PluginCatalogApprovalState.policyContext(
+            workspace: workspace,
+            approvalRecords: [record]
+        )
+        let decision = CapabilityCatalogPolicy.decision(for: package, context: policyContext)
+        let reviewState = PluginCatalogApprovalState.adminReviewState(
+            for: package,
+            policyContext: policyContext,
+            approvalRecords: [record]
+        )
+
+        #expect(decision.canEnable)
+        #expect(!decision.requiresApproval)
+        #expect(reviewState?.record == record)
+        #expect(reviewState?.digestLabel == "Digest current")
+        #expect(reviewState?.shouldShow == true)
+    }
 }
 
 private func assertIconPresentation(
