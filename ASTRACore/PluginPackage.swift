@@ -676,6 +676,7 @@ public struct PluginMCPServer: Codable, Equatable, Sendable, Identifiable {
     public var trustLevel: TrustLevel
     public var installSource: PluginMCPInstallSource?
     public var remoteRegistry: RemoteMCPServerRegistryMetadata?
+    public var controlPlane: MCPControlPlaneMetadata?
 
     public init(
         id: String,
@@ -692,7 +693,8 @@ public struct PluginMCPServer: Codable, Equatable, Sendable, Identifiable {
         promptsEnabled: Bool = false,
         trustLevel: TrustLevel = .medium,
         installSource: PluginMCPInstallSource? = nil,
-        remoteRegistry: RemoteMCPServerRegistryMetadata? = nil
+        remoteRegistry: RemoteMCPServerRegistryMetadata? = nil,
+        controlPlane: MCPControlPlaneMetadata? = nil
     ) {
         self.id = id
         self.displayName = displayName
@@ -709,6 +711,7 @@ public struct PluginMCPServer: Codable, Equatable, Sendable, Identifiable {
         self.trustLevel = trustLevel
         self.installSource = installSource
         self.remoteRegistry = remoteRegistry
+        self.controlPlane = controlPlane
     }
 }
 
