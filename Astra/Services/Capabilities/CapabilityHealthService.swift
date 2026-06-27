@@ -46,7 +46,7 @@ enum CapabilityHealthService {
         statuses: [String: HealthStatus]
     ) -> [String] {
         prerequisiteIssues(for: package, statuses: statuses).map(\.message)
-            + CapabilityMCPReadinessService.readinessMessages(for: package, commandStatuses: statuses)
+            + CapabilityMCPReadinessService.readinessMessages(for: package, prerequisiteStatuses: statuses)
     }
 
     private static func issue(

@@ -305,7 +305,7 @@ enum MCPRuntimeProjection {
             case .missingExecutable(let serverID, let command):
                 return "MCP server \(serverID) needs \(command), which was not found. Install it or disable the capability that provides this server."
             case .missingExecutableWithInstallSource(let serverID, let command, let source):
-                return "MCP server \(serverID) needs \(command), which was not found. Install \(MCPRuntimeProjection.installSourceDescription(source)) or disable the capability that provides this server."
+                return "MCP server \(serverID) needs \(command), which was not found. Install \(MCPInstallSourceFormatter.installDescription(for: source)) or disable the capability that provides this server."
             }
         }
     }
@@ -344,32 +344,4 @@ enum MCPRuntimeProjection {
         return .missingExecutable(serverID: server.id, command: command)
     }
 
-    private static func installSourceDescription(_ source: PluginMCPInstallSource) -> String {
-        let target: String
-        if let version = source.version?.trimmingCharacters(in: .whitespacesAndNewlines), !version.isEmpty {
-            target = source.kind == .pypi ? "\(source.identifier)==\(version)" : "\(source.identifier)@\(version)"
-        } else if let digest = source.digest?.trimmingCharacters(in: .whitespacesAndNewlines), !digest.isEmpty {
-            target = "\(source.identifier)@sha256:\(digest)"
-        } else {
-            target = source.identifier
-        }
-        switch source.kind {
-        case .npm:
-            return "npm package \(target) with npx"
-        case .pypi:
-            return "PyPI package \(target) with uvx"
-        case .dockerImage, .oci:
-            return "Docker image \(target)"
-        case .remoteHTTP:
-            return "remote MCP server \(target)"
-        case .mcpb:
-            return "MCP bundle \(target)"
-        case .nuget:
-            return "NuGet package \(target)"
-        case .localBinary:
-            return "local binary \(target)"
-        case .unknown:
-            return "MCP source \(target)"
-        }
-    }
 }

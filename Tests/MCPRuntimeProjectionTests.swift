@@ -231,6 +231,55 @@ struct MCPRuntimeProjectionTests {
         #expect(issue.message.contains("npx"))
     }
 
+    @Test("Preflight message uses install mode for pipx MCP install source")
+    func preflightMessageUsesInstallModeForPipxSource() throws {
+        let server = PluginMCPServer(
+            id: "python",
+            displayName: "Python MCP",
+            transport: .stdio,
+            command: "pipx",
+            arguments: ["run", "example-mcp==2.1.0"],
+            installSource: PluginMCPInstallSource(
+                kind: .pypi,
+                identifier: "example-mcp",
+                version: "2.1.0",
+                installMode: .pipx
+            )
+        )
+
+        let issue = try #require(MCPRuntimeProjection.preflightIssues(
+            servers: [MCPRuntimeProjection.ResolvedServer(packageID: "p", server: server)],
+            detectExecutable: { _ in "" }
+        ).first)
+
+        #expect(issue.message.contains("example-mcp==2.1.0"))
+        #expect(issue.message.contains("pipx"))
+        #expect(!issue.message.contains("uvx"))
+    }
+
+    @Test("Preflight message uses manual install mode without package manager guess")
+    func preflightMessageUsesManualInstallModeWithoutPackageManagerGuess() throws {
+        let server = PluginMCPServer(
+            id: "manual",
+            displayName: "Manual MCP",
+            transport: .stdio,
+            command: "manual-mcp",
+            installSource: PluginMCPInstallSource(
+                kind: .npm,
+                identifier: "@acme/manual-mcp",
+                installMode: .manual
+            )
+        )
+
+        let issue = try #require(MCPRuntimeProjection.preflightIssues(
+            servers: [MCPRuntimeProjection.ResolvedServer(packageID: "p", server: server)],
+            detectExecutable: { _ in "" }
+        ).first)
+
+        #expect(issue.message.contains("MCP source @acme/manual-mcp manually"))
+        #expect(!issue.message.contains("npx"))
+    }
+
     @Test("Rendered stdio config launches a server that completes an MCP initialize handshake")
     func renderedConfigHandshake() throws {
         let root = try mcpTempDirectory(named: "astra-mcp-handshake")

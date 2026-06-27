@@ -71,6 +71,13 @@ struct CapabilityHealthServiceTests {
 
     @Test("readiness messages include supplied MCP command status")
     func readinessMessagesIncludeSuppliedMCPCommandStatus() {
+        let prerequisite = CLIPrerequisite(
+            binary: "github-mcp-server",
+            livenessArgs: ["--version"],
+            displayName: "GitHub MCP runtime",
+            purpose: "Launches the GitHub MCP server.",
+            installHint: "Install the GitHub MCP server."
+        )
         let package = PluginPackage(
             id: "mcp-workflow",
             name: "MCP Workflow",
@@ -92,14 +99,18 @@ struct CapabilityHealthServiceTests {
                 )
             ],
             templates: [],
+            prerequisites: [prerequisite],
             governance: .builtInApproved()
         )
 
         let messages = CapabilityHealthService.readinessMessages(
             for: package,
-            statuses: ["github-mcp-server": .missingBinary]
+            statuses: [prerequisite.id: .missingBinary]
         )
 
-        #expect(messages == ["GitHub MCP: command github-mcp-server is not installed."])
+        #expect(messages == [
+            "GitHub MCP runtime: not installed. Install the GitHub MCP server.",
+            "GitHub MCP: command github-mcp-server is not installed."
+        ])
     }
 }

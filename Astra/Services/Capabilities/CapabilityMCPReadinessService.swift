@@ -4,13 +4,17 @@ import ASTRACore
 enum CapabilityMCPReadinessService {
     static func readinessMessages(
         for package: PluginPackage,
-        commandStatuses: [String: HealthStatus]
+        prerequisiteStatuses: [String: HealthStatus]
     ) -> [String] {
         package.mcpServers.compactMap { server in
             guard server.transport == .stdio,
                   let command = server.command?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !command.isEmpty,
-                  let status = commandStatuses[command] else {
+                  let status = readinessStatus(
+                      for: command,
+                      in: package,
+                      prerequisiteStatuses: prerequisiteStatuses
+                  ) else {
                 return nil
             }
             return readinessMessage(for: server, command: command, status: status)
@@ -37,39 +41,31 @@ enum CapabilityMCPReadinessService {
 
     private static func installHint(for server: PluginMCPServer) -> String {
         guard let source = server.installSource else { return "" }
-        switch source.kind {
-        case .npm:
-            return " Install npm package \(packageTarget(source)) with npx."
-        case .pypi:
-            return " Install PyPI package \(packageTarget(source)) with uvx."
-        case .dockerImage, .oci:
-            return " Install or pull Docker image \(packageTarget(source))."
-        case .remoteHTTP:
-            return " Review remote MCP URL \(source.identifier)."
-        case .mcpb:
-            return " Install MCP bundle \(packageTarget(source))."
-        case .nuget:
-            return " Install NuGet package \(packageTarget(source))."
-        case .localBinary:
-            return " Install local binary \(source.identifier)."
-        case .unknown:
-            return " Review the MCP install source before enabling."
-        }
+        return " Install \(MCPInstallSourceFormatter.installDescription(for: source))."
     }
 
-    private static func packageTarget(_ source: PluginMCPInstallSource) -> String {
-        if let version = source.version?.trimmingCharacters(in: .whitespacesAndNewlines), !version.isEmpty {
-            switch source.kind {
-            case .pypi:
-                return "\(source.identifier)==\(version)"
-            default:
-                return "\(source.identifier)@\(version)"
-            }
+    private static func readinessStatus(
+        for command: String,
+        in package: PluginPackage,
+        prerequisiteStatuses: [String: HealthStatus]
+    ) -> HealthStatus? {
+        let statuses = package.prerequisites
+            .filter { $0.binary.trimmingCharacters(in: .whitespacesAndNewlines) == command }
+            .compactMap { prerequisiteStatuses[$0.id] }
+        return statuses.min { priority($0) < priority($1) }
+    }
+
+    private static func priority(_ status: HealthStatus) -> Int {
+        switch status {
+        case .missingBinary:
+            return 0
+        case .unauthenticated:
+            return 1
+        case .unresponsive:
+            return 2
+        case .healthy:
+            return 3
         }
-        if let digest = source.digest?.trimmingCharacters(in: .whitespacesAndNewlines), !digest.isEmpty {
-            return "\(source.identifier)@sha256:\(digest)"
-        }
-        return source.identifier
     }
 
     private static func displayName(_ value: String, fallback: String) -> String {
