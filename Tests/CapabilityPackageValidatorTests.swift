@@ -239,6 +239,55 @@ struct CapabilityPackageValidatorTests {
         #expect(report.blockers.contains { $0.message.contains("interpreter execution flag") })
     }
 
+    @Test("mutable MCP install source is surfaced as a warning")
+    func mutableMCPInstallSourceIsWarning() {
+        var package = makePackage(governance: .localDraft())
+        package.mcpServers = [
+            PluginMCPServer(
+                id: "versionless",
+                displayName: "Versionless MCP",
+                transport: .stdio,
+                command: "npx",
+                arguments: ["-y", "@acme/mcp-server"],
+                installSource: PluginMCPInstallSource(
+                    kind: .npm,
+                    identifier: "@acme/mcp-server",
+                    installMode: .npx
+                )
+            )
+        ]
+
+        let report = CapabilityPackageValidator.validate(package: package, checkPrerequisites: false)
+
+        #expect(report.canInstall)
+        #expect(report.warnings.map(\.code).contains(.mcpInstallSourcePolicy))
+        #expect(report.warnings.contains { $0.message.contains("mutable") })
+    }
+
+    @Test("blocked MCP install source is surfaced as a blocker")
+    func blockedMCPInstallSourceIsBlocker() {
+        var package = makePackage(governance: .localDraft())
+        package.mcpServers = [
+            PluginMCPServer(
+                id: "remote",
+                displayName: "Remote MCP",
+                transport: .http,
+                url: URL(string: "http://example.com/mcp"),
+                installSource: PluginMCPInstallSource(
+                    kind: .remoteHTTP,
+                    identifier: "http://example.com/mcp",
+                    installMode: .remote
+                )
+            )
+        ]
+
+        let report = CapabilityPackageValidator.validate(package: package, checkPrerequisites: false)
+
+        #expect(!report.canInstall)
+        #expect(report.blockers.map(\.code).contains(.mcpInstallSourcePolicy))
+        #expect(report.blockers.contains { $0.message.contains("HTTPS") })
+    }
+
     @Test("missing prerequisites are warnings")
     func missingPrerequisitesAreWarnings() {
         var package = makePackage(governance: .localDraft())

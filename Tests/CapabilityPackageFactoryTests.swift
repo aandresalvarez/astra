@@ -60,6 +60,31 @@ struct CapabilityPackageFactoryTests {
         #expect(package.localTools.first?.arguments == "--format=json")
     }
 
+    @Test("MCP-only capability creates standalone MCP server package")
+    @MainActor
+    func mcpOnlyCapability() {
+        let server = PluginMCPServer(
+            id: "github",
+            displayName: "GitHub MCP",
+            transport: .stdio,
+            command: "github-mcp-server",
+            arguments: ["stdio"],
+            allowedTools: ["issues.list"]
+        )
+
+        let package = CapabilityPackageFactory.makePackage(
+            name: "GitHub MCP",
+            description: "Expose GitHub MCP tools",
+            mcpServers: [server]
+        )
+        let report = CapabilityPackageValidator.validate(package: package, checkPrerequisites: false)
+
+        #expect(package.skills.isEmpty)
+        #expect(package.mcpServers == [server])
+        #expect(package.contentSummary == "1 MCP server")
+        #expect(report.blockers.isEmpty)
+    }
+
     @Test("full capability includes behavior connectors and tools")
     @MainActor
     func fullCapability() {

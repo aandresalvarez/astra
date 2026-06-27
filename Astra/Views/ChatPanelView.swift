@@ -371,6 +371,7 @@ struct ChatPanelView: View {
     var isPlanCanvasVisible = false
     var onOpenPlan: ((AgentTask) -> Void)?
     var onStartWorkspaceAppStudio: ((String?) -> Void)?
+    var onStartMCPInstallReview: ((MCPInstallChatRequest) -> Void)?
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1571,17 +1572,17 @@ struct ChatPanelView: View {
             // will be injected into the system prompt
         }
 
-        if let appStudioRequest = WorkspaceAppChatCommand.launchRequest(input: input) {
-            messages.append(ChatMessage(role: "user", content: input))
-            messageText = ""
-            guard workspace != nil else {
-                messages.append(ChatMessage(role: "assistant", content: "Select a workspace first — Workspace Apps are workspace-scoped."))
-                return
-            }
-            onStartWorkspaceAppStudio?(appStudioRequest.initialPrompt)
-            return
+        if let mcpRequest = MCPInstallChatCommand.installRequest(input: input) {
+            messages.append(ChatMessage(role: "user", content: input)); messageText = ""
+            guard workspace != nil else { messages.append(ChatMessage(role: "assistant", content: "Select a workspace first - MCP capabilities are workspace-scoped.")); return }
+            messages.append(ChatMessage(role: "assistant", content: "I found an MCP install target. Review it before ASTRA saves or enables anything."))
+            onStartMCPInstallReview?(mcpRequest); return
         }
-
+        if let appStudioRequest = WorkspaceAppChatCommand.launchRequest(input: input) {
+            messages.append(ChatMessage(role: "user", content: input)); messageText = ""
+            guard workspace != nil else { messages.append(ChatMessage(role: "assistant", content: "Select a workspace first — Workspace Apps are workspace-scoped.")); return }
+            onStartWorkspaceAppStudio?(appStudioRequest.initialPrompt); return
+        }
         // /recap — one-shot prose summary for resuming later. Injected into skillCtx
         // for this message only; does not use activeSlashContext (no ongoing wizard).
         let recapContext: String? = (lower == "/recap" || lower.hasPrefix("/recap "))

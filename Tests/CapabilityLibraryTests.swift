@@ -682,6 +682,7 @@ struct CapabilityLibraryTests {
             "github-workflow",
             "google-drive-browser",
             "jira-workflow",
+            "mcp-smoke-test",
             "redcap-workflow",
             "security-auditor",
             "stanford-apple-mail",

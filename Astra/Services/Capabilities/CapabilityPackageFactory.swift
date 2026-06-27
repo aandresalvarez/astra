@@ -14,6 +14,7 @@ struct CapabilityPackageFactory {
         allowedTools: [String] = [],
         connectors: [Connector] = [],
         localTools: [LocalTool] = [],
+        mcpServers: [PluginMCPServer] = [],
         prerequisites: [CLIPrerequisite] = []
     ) -> PluginPackage {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -44,6 +45,7 @@ struct CapabilityPackageFactory {
             skills: pluginSkill.map { [$0] } ?? [],
             connectors: connectors.map(makeConnector),
             localTools: localTools.map(makeLocalTool),
+            mcpServers: mcpServers,
             templates: [],
             prerequisites: prerequisites,
             sourceMetadata: .localLibrary()

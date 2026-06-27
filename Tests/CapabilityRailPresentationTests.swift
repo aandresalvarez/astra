@@ -1,5 +1,6 @@
 import Testing
 @testable import ASTRA
+import ASTRACore
 
 @Suite("Capability Rail Presentation")
 struct CapabilityRailPresentationTests {
@@ -80,6 +81,61 @@ struct CapabilityRailPresentationTests {
 
         #expect(presentation.scopeValues == ["Enabled for this workspace"])
         #expect(presentation.rowSubtitle == "Capability available to tasks")
+    }
+
+    @Test("capability composition summary includes MCP servers")
+    func capabilityCompositionSummaryIncludesMCPServers() {
+        let package = PluginPackage(
+            id: "mcp-visible",
+            name: "MCP Visible",
+            icon: "server.rack",
+            description: "MCP package",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            mcpServers: [
+                PluginMCPServer(
+                    id: "github",
+                    displayName: "GitHub MCP",
+                    transport: .stdio,
+                    command: "github-mcp-server"
+                )
+            ],
+            templates: [],
+            governance: .builtInApproved()
+        )
+        let item = RailCapabilityItem(
+            id: "package:mcp-visible",
+            name: "MCP Visible",
+            icon: "server.rack",
+            summary: "MCP package",
+            color: Stanford.lagunita,
+            isEnabled: true,
+            readiness: .ready,
+            presentation: CapabilityRailPackagePresentation.make(
+                isEnabled: true,
+                readinessLevel: .ready,
+                workspaceName: "Workspace",
+                sharedResourceCount: 0,
+                workspaceResourceCount: 0,
+                declaredResourceCount: 1,
+                contentSummary: "1 MCP server"
+            ),
+            source: .package(package),
+            skillNames: [],
+            connectorNames: [],
+            toolNames: [],
+            mcpServerNames: ["GitHub MCP"],
+            browserAdapterNames: [],
+            templateNames: [],
+            requirementNames: []
+        )
+
+        #expect(WorkspaceRightRailPresentation.compositionSummary(for: item) == "1 MCP server")
     }
 
     @Test("workspace context uses desktop inspector density")
