@@ -267,6 +267,7 @@ struct MCPControlPlaneRuntimeBindingService {
         for ref in metadata.authProfileRefs {
             let refID = Self.canonicalID(ref.id)
             let providerID = Self.canonicalID(ref.providerID)
+            guard !refID.isEmpty, !providerID.isEmpty else { continue }
             if let handle = resolver.authProfileHandle(for: ref) {
                 authProfileHandles[refID] = handle
             } else if ref.required {
@@ -278,6 +279,7 @@ struct MCPControlPlaneRuntimeBindingService {
 
         for ref in metadata.secretRefs {
             let refID = Self.canonicalID(ref.id)
+            guard !refID.isEmpty else { continue }
             if let handle = resolver.secretHandle(for: ref) {
                 secretHandles[refID] = handle
             } else if ref.required {
@@ -289,6 +291,7 @@ struct MCPControlPlaneRuntimeBindingService {
 
         for ref in metadata.configRefs {
             let refID = Self.canonicalID(ref.id)
+            guard !refID.isEmpty else { continue }
             if let handle = resolver.configHandle(for: ref) {
                 configHandles[refID] = handle
             } else if ref.required {

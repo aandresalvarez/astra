@@ -64,6 +64,82 @@ struct MCPControlPlaneRuntimeBindingServiceTests {
         #expect(readiness.issues.filter { $0.severity == .warning }.count == 3)
     }
 
+    @Test("empty declared refs rely on invariant issues instead of duplicate missing-ref issues")
+    func emptyDeclaredRefsDoNotEmitDuplicateMissingRefIssues() {
+        let metadata = MCPControlPlaneMetadata(
+            authProfileRefs: [
+                MCPAuthProfileRef(id: " ", providerID: " ", purpose: "Broken OAuth account.")
+            ],
+            secretRefs: [
+                MCPSecretRef(id: "\n", purpose: "Broken secret.")
+            ],
+            configRefs: [
+                MCPConfigRef(id: "\t", purpose: "Broken config.")
+            ]
+        )
+
+        let readiness = MCPControlPlaneRuntimeBindingService(
+            resolver: EmptyMCPControlPlaneRuntimeBindingResolver()
+        ).readiness(for: metadata)
+
+        #expect(readiness.status == .blocked)
+        #expect(!readiness.issues.contains(.missingRequiredAuthProfile(refID: "", providerID: "")))
+        #expect(!readiness.issues.contains(.missingRequiredSecret(refID: "")))
+        #expect(!readiness.issues.contains(.missingRequiredConfig(refID: "")))
+        #expect(readiness.issues.contains(.invalidControlPlane(reason: "auth profile ref ID is required")))
+        #expect(readiness.issues.contains(.invalidControlPlane(
+            reason: "auth profile <empty> is missing a provider ID"
+        )))
+        #expect(readiness.issues.contains(.invalidControlPlane(reason: "secret ref ID is required")))
+        #expect(readiness.issues.contains(.invalidControlPlane(reason: "config ref ID is required")))
+    }
+
+    @Test("empty declared refs cannot populate empty-key resolved handles")
+    func emptyDeclaredRefsDoNotPopulateResolvedHandles() throws {
+        let metadata = MCPControlPlaneMetadata(
+            authProfileRefs: [
+                MCPAuthProfileRef(id: " ", providerID: " ", purpose: "Broken OAuth account.")
+            ],
+            secretRefs: [
+                MCPSecretRef(id: "\n", purpose: "Broken secret.")
+            ],
+            configRefs: [
+                MCPConfigRef(id: "\t", purpose: "Broken config.")
+            ],
+            runtimeBindings: [
+                MCPRuntimeBindingTemplate(
+                    id: "broken-auth",
+                    destination: .environment,
+                    name: "BROKEN_AUTH",
+                    template: [.reference(.authProfile(" "))]
+                ),
+                MCPRuntimeBindingTemplate(
+                    id: "broken-secret",
+                    destination: .environment,
+                    name: "BROKEN_SECRET",
+                    template: [.reference(.secret("\n"))]
+                ),
+                MCPRuntimeBindingTemplate(
+                    id: "broken-config",
+                    destination: .environment,
+                    name: "BROKEN_CONFIG",
+                    template: [.reference(.config("\t"))]
+                )
+            ]
+        )
+
+        let readiness = MCPControlPlaneRuntimeBindingService(
+            resolver: PermissiveEmptyIDRuntimeBindingResolver()
+        ).readiness(for: metadata)
+
+        let authPreview = try #require(readiness.bindingPreviews.first { $0.id == "broken-auth" })
+        let secretPreview = try #require(readiness.bindingPreviews.first { $0.id == "broken-secret" })
+        let configPreview = try #require(readiness.bindingPreviews.first { $0.id == "broken-config" })
+        #expect(authPreview.redactedValue == "[missing-authProfile:]")
+        #expect(secretPreview.redactedValue == "[missing-secret:]")
+        #expect(configPreview.redactedValue == "[missing-config:]")
+    }
+
     @Test("resolved binding previews redact auth secret and config handles")
     func resolvedBindingPreviewsAreRedacted() throws {
         let secretStore = MockSecretStore()
@@ -428,5 +504,30 @@ private struct EmptyMCPControlPlaneRuntimeBindingResolver: MCPControlPlaneRuntim
 
     func configHandle(for ref: MCPConfigRef) -> MCPControlPlaneConfigHandle? {
         nil
+    }
+}
+
+private struct PermissiveEmptyIDRuntimeBindingResolver: MCPControlPlaneRuntimeBindingResolver {
+    func authProfileHandle(for ref: MCPAuthProfileRef) -> MCPControlPlaneAuthProfileHandle? {
+        MCPControlPlaneAuthProfileHandle(
+            refID: ref.id,
+            providerID: ref.providerID,
+            profileID: "profile-id"
+        )
+    }
+
+    func secretHandle(for ref: MCPSecretRef) -> MCPControlPlaneSecretHandle? {
+        MCPControlPlaneSecretHandle(
+            refID: ref.id,
+            entityID: "entity-id",
+            key: "SECRET_KEY"
+        )
+    }
+
+    func configHandle(for ref: MCPConfigRef) -> MCPControlPlaneConfigHandle? {
+        MCPControlPlaneConfigHandle(
+            refID: ref.id,
+            sourceID: "config-source-id"
+        )
     }
 }
