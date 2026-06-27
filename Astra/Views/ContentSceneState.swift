@@ -11,6 +11,16 @@ enum ContentSelectionResolver {
     static func effectiveWorkspace(selectedTask: AgentTask?, selectedWorkspace: Workspace?) -> Workspace? {
         selectedTask?.workspace ?? selectedWorkspace
     }
+
+    static func workspace(for app: WorkspaceApp?, in workspaces: [Workspace]) -> Workspace? {
+        guard let app else { return nil }
+        return workspace(id: app.workspaceID, in: workspaces)
+    }
+
+    static func workspace(id: UUID?, in workspaces: [Workspace]) -> Workspace? {
+        guard let id else { return nil }
+        return workspaces.first { $0.id == id }
+    }
 }
 
 enum ContentWorkspaceSelectionResolver {
@@ -182,6 +192,14 @@ struct ContentSceneCoordinator {
 
     var effectiveWorkspaceID: UUID? {
         effectiveWorkspace?.id
+    }
+
+    func workspace(for app: WorkspaceApp?) -> Workspace? {
+        ContentSelectionResolver.workspace(for: app, in: workspaces)
+    }
+
+    func workspace(id: UUID?) -> Workspace? {
+        ContentSelectionResolver.workspace(id: id, in: workspaces)
     }
 
     var workspaceSelectionSignature: String {

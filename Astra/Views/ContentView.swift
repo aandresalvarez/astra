@@ -223,6 +223,13 @@ struct ContentView: View {
         sceneCoordinator.effectiveWorkspaceID
     }
 
+    private var workspaceAppStudioWorkspace: Workspace? {
+        guard let workspaceID = workspaceAppStudioSession.workspaceID else {
+            return effectiveWorkspace
+        }
+        return sceneCoordinator.workspace(id: workspaceID)
+    }
+
     private var queryUtilityRuntime: AgentUtilityRuntimeConfiguration {
         let fallbackRuntime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
         let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(
@@ -537,7 +544,7 @@ struct ContentView: View {
     private var detailPresentation: ContentDetailPresentation {
         ContentDetailPresentation.resolve(
             selectedTask: selectedTask,
-            effectiveWorkspace: effectiveWorkspace,
+            effectiveWorkspace: sceneCoordinator.workspace(for: selectedWorkspaceApp) ?? effectiveWorkspace,
             isComposingTask: isComposingTask,
             selectedWorkspaceApp: selectedWorkspaceApp,
             isComposingWorkspaceApp: isComposingWorkspaceApp
@@ -604,13 +611,14 @@ struct ContentView: View {
 
     @ViewBuilder
     private func workspaceAppDetailArea(app: WorkspaceApp) -> some View {
+        let appWorkspace = sceneCoordinator.workspace(for: app)
         WorkspaceAppDetailView(
             app: app,
-            workspace: effectiveWorkspace,
-            onOpenStudio: { manifest in startWorkspaceAppStudio(existingManifest: manifest) },
+            workspace: appWorkspace,
+            onOpenStudio: { manifest in startWorkspaceAppStudio(existingManifest: manifest, workspace: appWorkspace) },
             onRefresh: {},
             onExportPackage: {
-                guard let workspace = effectiveWorkspace else { throw WorkspaceAppUIError.exportUnavailableFromDetail }
+                guard let workspace = appWorkspace else { throw WorkspaceAppUIError.exportUnavailableFromDetail }
                 return try WorkspaceAppPackageExporter().exportTemplatePackage(app: app, workspace: workspace).packageURL
             },
             onRunAction: { action, manifest, input in
@@ -620,7 +628,11 @@ struct ContentView: View {
         .id(app.id)
     }
 
-    private func startWorkspaceAppStudio(existingManifest: WorkspaceAppManifest? = nil, initialPrompt: String? = nil) {
+    private func startWorkspaceAppStudio(
+        existingManifest: WorkspaceAppManifest? = nil,
+        initialPrompt: String? = nil,
+        workspace: Workspace? = nil
+    ) {
         selectedTask = nil
         selectedWorkspaceApp = nil
         isComposingTask = false
@@ -628,7 +640,7 @@ struct ContentView: View {
         // The app builder owns the right side: clear any open context rail so toggling the
         // preview off later doesn't reveal a stale rail underneath it.
         isWorkspaceRightRailVisible = false
-        if let workspace = effectiveWorkspace {
+        if let workspace = workspace ?? effectiveWorkspace {
             workspaceAppStudioSession.reset(for: workspace, existingManifest: existingManifest, initialPrompt: initialPrompt)
         }
         // Dock the live preview alongside the conversation.
@@ -660,7 +672,8 @@ struct ContentView: View {
 
     /// Publish the session's current draft (called from the chat header's Publish button).
     private func publishWorkspaceAppFromStudio(seedSampleData: Bool) {
-        guard let workspace = effectiveWorkspace, let draft = workspaceAppStudioSession.draft else { return }
+        guard let workspace = workspaceAppStudioWorkspace,
+              let draft = workspaceAppStudioSession.draft else { return }
         do {
             try publishWorkspaceApp(draft, seedSampleData: seedSampleData, workspace: workspace)
         } catch {
@@ -686,7 +699,7 @@ struct ContentView: View {
         manifest: WorkspaceAppManifest,
         input: WorkspaceAppActionInput
     ) throws -> WorkspaceAppActionExecutionResult {
-        guard let workspace = effectiveWorkspace else {
+        guard let workspace = sceneCoordinator.workspace(for: app) else {
             throw WorkspaceAppUIError.noWorkspace
         }
         let appID = app.id
