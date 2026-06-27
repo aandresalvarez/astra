@@ -139,7 +139,7 @@ struct PluginCatalogBuiltInTests {
                 displayName: "Google Workspace OAuth account",
                 provider: GoogleWorkspaceCapability.connectorBinding,
                 required: true,
-                notes: "Configure an OAuth client ID, keep the redirect URI loopback-only, then connect a Google account before enabling the capability."
+                notes: "Connect with ASTRA managed OAuth when provisioned, or configure an admin custom OAuth client with a loopback redirect before enabling the capability."
             )
         ])
         #expect(GoogleWorkspaceCapability.usesGoogleWorkspaceOAuthSetup(package))

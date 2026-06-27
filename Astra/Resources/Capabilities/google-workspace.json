@@ -144,13 +144,13 @@
   "prerequisites" : [
 
   ],
-  "setupGuide" : "Configure Google Workspace from this capability row. Add a Google OAuth client ID, keep the loopback redirect URI local, then connect a Google account through ASTRA's OAuth flow.\n\nWhat this enables:\n- Gmail remote MCP tools through ASTRA's local gateway\n- Google Drive remote MCP tools through ASTRA's local gateway\n- Google Calendar remote MCP tools through ASTRA's local gateway\n\nASTRA owns OAuth, refresh, policy, and token storage. Provider MCP config must never contain Google access tokens.",
+  "setupGuide" : "Connect Google Workspace from this capability row. ASTRA uses its managed Google OAuth client when the app build is provisioned with one; administrators can switch to a custom Google Cloud OAuth client when their organization requires it.\n\nWhat this enables:\n- Gmail remote MCP tools through ASTRA's local gateway\n- Google Drive remote MCP tools through ASTRA's local gateway\n- Google Calendar remote MCP tools through ASTRA's local gateway\n\nASTRA owns OAuth, refresh, policy, and token storage. Provider MCP config must never contain Google access tokens.",
   "setupRequirements" : [
     {
       "displayName" : "Google Workspace OAuth account",
       "id" : "google-workspace-oauth",
       "kind" : "oauthAccount",
-      "notes" : "Configure an OAuth client ID, keep the redirect URI loopback-only, then connect a Google account before enabling the capability.",
+      "notes" : "Connect with ASTRA managed OAuth when provisioned, or configure an admin custom OAuth client with a loopback redirect before enabling the capability.",
       "provider" : "google-workspace",
       "required" : true
     }

@@ -16,15 +16,35 @@ struct GoogleOAuthConfiguration: Equatable, Sendable {
     }
 
     var clientID: String
+    var clientSource: GoogleOAuthClientSource
     var redirectURI: URL
     var authorizationEndpoint: URL
     var tokenEndpoint: URL
 
+    init(
+        clientID: String,
+        clientSource: GoogleOAuthClientSource = .custom,
+        redirectURI: URL,
+        authorizationEndpoint: URL,
+        tokenEndpoint: URL
+    ) {
+        self.clientID = clientID
+        self.clientSource = clientSource
+        self.redirectURI = redirectURI
+        self.authorizationEndpoint = authorizationEndpoint
+        self.tokenEndpoint = tokenEndpoint
+    }
+
     static func load(
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        bundleInfo: [String: Any] = Bundle.main.infoDictionary ?? [:]
     ) throws -> Self {
-        let settings = GoogleOAuthConfigurationSettings.load(environment: environment, defaults: defaults)
+        let settings = GoogleOAuthConfigurationSettings.load(
+            environment: environment,
+            defaults: defaults,
+            bundleInfo: bundleInfo
+        )
         return try load(settings: settings)
     }
 
@@ -41,6 +61,7 @@ struct GoogleOAuthConfiguration: Equatable, Sendable {
 
         return GoogleOAuthConfiguration(
             clientID: clientID,
+            clientSource: settings.source,
             redirectURI: redirectURI,
             authorizationEndpoint: URL(string: "https://accounts.google.com/o/oauth2/v2/auth")!,
             tokenEndpoint: URL(string: "https://oauth2.googleapis.com/token")!

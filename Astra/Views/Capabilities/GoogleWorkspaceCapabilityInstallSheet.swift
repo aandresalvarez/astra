@@ -14,6 +14,7 @@ struct GoogleWorkspaceCapabilityInstallSheet: View {
 
     @State private var oauthClientID: String
     @State private var redirectURI: String
+    @State private var useCustomOAuth: Bool
     @State private var setupError: String?
     @State private var installError: String?
     @State private var isConnecting = false
@@ -34,8 +35,13 @@ struct GoogleWorkspaceCapabilityInstallSheet: View {
         self.onInstalled = onInstalled
 
         let settings = GoogleOAuthConfigurationSettings.load()
-        _oauthClientID = State(initialValue: settings.clientID)
+        _oauthClientID = State(
+            initialValue: settings.source == .custom
+                ? settings.clientID
+                : GoogleOAuthConfigurationSettings.storedCustomClientID()
+        )
         _redirectURI = State(initialValue: settings.redirectURI)
+        _useCustomOAuth = State(initialValue: settings.source != .managed)
     }
 
     var body: some View {
@@ -112,73 +118,24 @@ struct GoogleWorkspaceCapabilityInstallSheet: View {
     }
 
     private var oauthConfigurationSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("OAuth configuration", systemImage: "key.fill")
-                    .font(Stanford.body(13).weight(.semibold))
-                    .foregroundStyle(Stanford.black)
-
-                Spacer()
-
-                if configurationSaved {
-                    Label("Saved", systemImage: "checkmark.circle.fill")
-                        .font(Stanford.caption(11).weight(.medium))
-                        .foregroundStyle(Stanford.paloAltoGreen)
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                setupTextField(
-                    title: "OAuth client ID",
-                    text: $oauthClientID,
-                    placeholder: "client.apps.googleusercontent.com"
-                )
-                setupTextField(
-                    title: "Redirect URI",
-                    text: $redirectURI,
-                    placeholder: GoogleOAuthConfigurationSettings.defaultRedirectURI
-                )
-            }
-
-            HStack {
-                Spacer()
-                Button("Save") {
-                    do {
-                        _ = try saveConfiguration()
-                        configurationSaved = true
-                    } catch {
-                        setupError = error.localizedDescription
-                    }
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .tint(Stanford.lagunita)
-            }
-        }
-        .padding(14)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        GoogleWorkspaceOAuthConfigurationSection(
+            useCustomOAuth: $useCustomOAuth,
+            oauthClientID: $oauthClientID,
+            redirectURI: $redirectURI,
+            presentation: oauthSetupPresentation,
+            configurationSaved: configurationSaved,
+            hasManagedClient: hasManagedOAuthClient,
+            onSaveCustom: saveCustomOAuthConfiguration,
+            onUseManaged: useManagedOAuthConfiguration
         )
-    }
-
-    private func setupTextField(
-        title: String,
-        text: Binding<String>,
-        placeholder: String
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(Stanford.caption(11).weight(.medium))
-                .foregroundStyle(.secondary)
-            TextField(placeholder, text: text)
-                .textFieldStyle(.roundedBorder)
-                .font(Stanford.caption(12))
-                .onChange(of: text.wrappedValue) { _, _ in
-                    configurationSaved = false
-                }
+        .onChange(of: oauthClientID) { _, _ in
+            configurationSaved = false
+        }
+        .onChange(of: redirectURI) { _, _ in
+            configurationSaved = false
+        }
+        .onChange(of: useCustomOAuth) { _, _ in
+            configurationSaved = false
         }
     }
 
@@ -261,6 +218,33 @@ struct GoogleWorkspaceCapabilityInstallSheet: View {
         GoogleWorkspaceSetupStateFactory.make(accounts: googleAccounts)
     }
 
+    private var oauthSetupPresentation: GoogleWorkspaceOAuthSetupPresentation {
+        GoogleWorkspaceOAuthSetupPresentation.make(
+            settings: currentOAuthSettings,
+            managedClientAvailable: hasManagedOAuthClient
+        )
+    }
+
+    private var currentOAuthSettings: GoogleOAuthConfigurationSettings {
+        if useCustomOAuth {
+            return GoogleOAuthConfigurationSettings(
+                clientID: oauthClientID,
+                redirectURI: redirectURI,
+                source: oauthClientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .missing : .custom
+            )
+        }
+        let managedClientID = GoogleOAuthConfigurationSettings.managedClientID()
+        return GoogleOAuthConfigurationSettings(
+            clientID: managedClientID,
+            redirectURI: redirectURI,
+            source: managedClientID.isEmpty ? .missing : .managed
+        )
+    }
+
+    private var hasManagedOAuthClient: Bool {
+        !GoogleOAuthConfigurationSettings.managedClientID().isEmpty
+    }
+
     private var setupReady: Bool {
         GoogleWorkspaceSetupPresentation.make(state: setupState).issues.isEmpty
     }
@@ -305,13 +289,36 @@ struct GoogleWorkspaceCapabilityInstallSheet: View {
     }
 
     private func saveConfiguration() throws -> GoogleOAuthConfiguration {
-        let settings = GoogleOAuthConfigurationSettings(
-            clientID: oauthClientID,
-            redirectURI: redirectURI
-        )
-        let configuration = try GoogleOAuthConfiguration.load(settings: settings)
-        settings.save()
-        return configuration
+        if useCustomOAuth {
+            let settings = GoogleOAuthConfigurationSettings(
+                clientID: oauthClientID,
+                redirectURI: redirectURI,
+                source: .custom
+            )
+            let configuration = try GoogleOAuthConfiguration.load(settings: settings)
+            settings.saveCustom()
+            return configuration
+        }
+        GoogleOAuthConfigurationSettings.preferManaged()
+        return try GoogleOAuthConfiguration.load()
+    }
+
+    private func saveCustomOAuthConfiguration() {
+        do {
+            _ = try saveConfiguration()
+            configurationSaved = true
+        } catch {
+            setupError = error.localizedDescription
+        }
+    }
+
+    private func useManagedOAuthConfiguration() {
+        guard hasManagedOAuthClient else { return }
+        GoogleOAuthConfigurationSettings.preferManaged()
+        let settings = GoogleOAuthConfigurationSettings.load()
+        redirectURI = settings.redirectURI
+        useCustomOAuth = false
+        configurationSaved = false
     }
 
     private func connectGoogleWorkspace() {
