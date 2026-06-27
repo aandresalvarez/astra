@@ -77,6 +77,9 @@ struct WorkspaceAppDetailView: View {
         .background(Stanford.panelBackground)
         .accessibilityIdentifier("WorkspaceAppDetailView-\(presentation.logicalID)")
         .onAppear(perform: loadDataSnapshot)
+        .onChange(of: workspace?.id) {
+            loadDataSnapshot()
+        }
         .onChange(of: app.updatedAt) {
             loadDataSnapshot()
         }
@@ -207,7 +210,7 @@ struct WorkspaceAppDetailView: View {
                 )
             }
 
-            Button(action: onRefresh) {
+            Button(action: refreshDetail) {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }
             .buttonStyle(.borderless)
@@ -504,7 +507,14 @@ struct WorkspaceAppDetailView: View {
         // Load the published version history once per snapshot (avoids a per-body FS scan).
         if let workspace {
             versionEntries = WorkspaceAppVersionService().listVersions(appID: app.logicalID, workspacePath: workspace.primaryPath)
+        } else {
+            versionEntries = []
         }
+    }
+
+    private func refreshDetail() {
+        loadDataSnapshot()
+        onRefresh()
     }
 
     @ViewBuilder
