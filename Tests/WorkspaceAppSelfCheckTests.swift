@@ -27,6 +27,34 @@ struct WorkspaceAppSelfCheckTests {
         )
     }
 
+    private func noteHTMLManifest(
+        html: String = """
+        <main>
+          <button aria-label="Delete note"><span class="trash">trash</span></button>
+          <script>window.astra.query("notes");</script>
+        </main>
+        """,
+        actions: [WorkspaceAppActionSpec]? = nil
+    ) -> WorkspaceAppManifest {
+        WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(id: "notes", name: "Notes"),
+            storage: WorkspaceAppStorageSchema(tables: [
+                WorkspaceAppStorageTable(name: "notes", columns: [
+                    WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true),
+                    WorkspaceAppStorageColumn(name: "title", type: "text", required: true),
+                    WorkspaceAppStorageColumn(name: "body", type: "text")
+                ])
+            ]),
+            actions: actions ?? [
+                WorkspaceAppActionSpec(id: "list_notes", type: "appStorage.query", label: "List Notes", table: "notes"),
+                WorkspaceAppActionSpec(id: "add_note", type: "appStorage.insert", label: "Add Note", table: "notes"),
+                WorkspaceAppActionSpec(id: "update_note", type: "appStorage.update", label: "Update Note", table: "notes")
+            ],
+            permissions: WorkspaceAppPermissions(reads: ["appStorage.records"], writes: ["appStorage.records"], defaultMode: .draftOnly),
+            html: html
+        )
+    }
+
     private func expectation(_ kind: String, table: String? = nil, op: String? = nil, value: Int? = nil, text: String? = nil, actionID: String? = nil) -> WorkspaceAppCheckExpectation {
         WorkspaceAppCheckExpectation(kind: kind, table: table, op: op, value: value, text: text, actionID: actionID)
     }
@@ -46,6 +74,18 @@ struct WorkspaceAppSelfCheckTests {
         #expect(report.results.count == 5)
     }
 
+    @Test("auto-exercise updates with changed values, not the same seeded row")
+    func tier1UpdateInputMutatesAField() {
+        let manifest = itemsManifest()
+        let runner = WorkspaceAppPreviewRunner(manifest: manifest)
+        let update = manifest.actions.first { $0.id == "update" }!
+        let input = WorkspaceAppSelfCheck.defaultInput(for: update, runner: runner, manifest: manifest)
+        let original = runner.tables["items"]?.first
+
+        #expect(input.record["id"] == original?["id"])
+        #expect(input.record["name"] != original?["name"])
+    }
+
     @Test("auto-exercise warns when a write-labelled action only reads")
     func tier1MislabeledWrite() {
         let manifest = itemsManifest(extraActions: [
@@ -54,6 +94,16 @@ struct WorkspaceAppSelfCheckTests {
         let save = WorkspaceAppSelfCheck.autoExercise(manifest: manifest).results.first { $0.id == "save" }
         #expect(save?.status == .warn)
         #expect(save?.detail.contains("Labelled as a write but only reads") == true)
+    }
+
+    @Test("auto-exercise flags storage HTML that offers delete without an executable delete path")
+    func tier1StorageHTMLDeleteAffordanceNeedsDeletePath() {
+        let report = WorkspaceAppSelfCheck.autoExercise(manifest: noteHTMLManifest())
+        let deleteCoverage = report.results.first { $0.id == "html-delete-affordance" }
+
+        #expect(deleteCoverage?.status == .fail)
+        #expect(deleteCoverage?.detail.contains("delete") == true)
+        #expect(deleteCoverage?.detail.contains("bridge") == true)
     }
 
     // MARK: - Tier 2
@@ -86,6 +136,25 @@ struct WorkspaceAppSelfCheckTests {
         #expect(WorkspaceAppSelfCheck.runCheck(unknown, manifest: manifest).status == .fail)
     }
 
+    // MARK: - Repair prompts
+
+    @Test("a failed result produces a focused App Studio repair prompt")
+    func repairPromptIncludesFailureAndContracts() {
+        let result = WorkspaceAppCheckResult(
+            id: "delete",
+            label: "Delete Note",
+            status: .fail,
+            detail: "Expected notes count eq 0, got 1."
+        )
+
+        let prompt = WorkspaceAppTestRepairRequestBuilder.prompt(for: result, manifest: noteHTMLManifest())
+
+        #expect(prompt.contains("Fix this App Studio test failure"))
+        #expect(prompt.contains("Delete Note"))
+        #expect(prompt.contains("Expected notes count eq 0"))
+        #expect(prompt.contains("appStorage.delete hard-deletes"))
+    }
+
     // MARK: - Tier 3
 
     @Test("the scenario generator authors a check from the model and runs it for real")
@@ -99,6 +168,40 @@ struct WorkspaceAppSelfCheckTests {
         )
         #expect(result.check != nil)
         #expect(result.result.status == .pass)   // grounded in actual sandbox execution
+    }
+
+    @Test("the scenario generator fails delete/trash scenarios when the app has no executable delete path")
+    func tier3DeleteScenarioRequiresADeletePath() async {
+        var runnerCalled = false
+        let result = await WorkspaceAppScenarioCheckGenerator.generate(
+            scenario: "notes should be removed when I click the trash can",
+            manifest: noteHTMLManifest(),
+            workspacePath: "/tmp",
+            runner: { _, _, _ in
+                runnerCalled = true
+                return AgentUtilityRunResult(exitCode: 0, output: "", error: "")
+            }
+        )
+
+        #expect(runnerCalled == false)
+        #expect(result.check == nil)
+        #expect(result.result.status == .fail)
+        #expect(result.result.detail.contains("no executable delete action") == true)
+    }
+
+    @Test("the scenario prompt documents hard-delete storage semantics")
+    func tier3PromptDocumentsDeleteContract() {
+        let prompt = WorkspaceAppScenarioCheckGenerator.buildPrompt(
+            scenario: "remove a note with the trash can",
+            manifest: noteHTMLManifest(actions: [
+                WorkspaceAppActionSpec(id: "list_notes", type: "appStorage.query", label: "List Notes", table: "notes"),
+                WorkspaceAppActionSpec(id: "delete_note", type: "appStorage.delete", label: "Delete Note", table: "notes")
+            ])
+        )
+
+        #expect(prompt.contains("appStorage.delete hard-deletes"))
+        #expect(prompt.contains("is_deleted"))
+        #expect(prompt.lowercased().contains("soft-delete expectation"))
     }
 
     @Test("the scenario generator fails cleanly on unparseable output, an unavailable model, or a bad action")

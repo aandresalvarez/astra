@@ -9,6 +9,7 @@ struct WorkspaceAppTestPanelView: View {
     let manifest: WorkspaceAppManifest
     let workspacePath: String
     var onSaveChecks: ([WorkspaceAppCheck]) -> Void
+    var onFixIssue: (String) -> Void
     var onDismiss: () -> Void
 
     @State private var selfCheckReport: WorkspaceAppSelfCheckReport?
@@ -22,11 +23,13 @@ struct WorkspaceAppTestPanelView: View {
         manifest: WorkspaceAppManifest,
         workspacePath: String,
         onSaveChecks: @escaping ([WorkspaceAppCheck]) -> Void,
+        onFixIssue: @escaping (String) -> Void = { _ in },
         onDismiss: @escaping () -> Void
     ) {
         self.manifest = manifest
         self.workspacePath = workspacePath
         self.onSaveChecks = onSaveChecks
+        self.onFixIssue = onFixIssue
         self.onDismiss = onDismiss
         _checks = State(initialValue: manifest.checks ?? [])
     }
@@ -215,7 +218,20 @@ struct WorkspaceAppTestPanelView: View {
                     .lineLimit(3)
             }
             Spacer(minLength: 0)
+            if result.status == .fail {
+                Button(action: { fix(result) }) {
+                    Label("Fix", systemImage: "wrench.and.screwdriver")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .font(Stanford.caption(11))
+                .help("Send this failure back to App Studio to repair the app")
+            }
         }
+    }
+
+    private func fix(_ result: WorkspaceAppCheckResult) {
+        onFixIssue(WorkspaceAppTestRepairRequestBuilder.prompt(for: result, manifest: manifest))
     }
 
     private func statusIcon(_ status: WorkspaceAppCheckStatus) -> String {
