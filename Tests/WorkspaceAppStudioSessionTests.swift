@@ -26,6 +26,23 @@ struct WorkspaceAppStudioSessionTests {
         }
     }
 
+    final class SpyJournalStore: WorkspaceAppStudioJournalStoring {
+        private(set) var saved: (journal: WorkspaceAppStudioJournal, appID: String, workspacePath: String)?
+        private let loaded: WorkspaceAppStudioJournal
+
+        init(loaded: WorkspaceAppStudioJournal = WorkspaceAppStudioJournal()) {
+            self.loaded = loaded
+        }
+
+        func load(appID: String, workspacePath: String) -> WorkspaceAppStudioJournal {
+            loaded
+        }
+
+        func save(_ journal: WorkspaceAppStudioJournal, appID: String, workspacePath: String) {
+            saved = (journal, appID, workspacePath)
+        }
+    }
+
     private static var validManifest: WorkspaceAppManifest {
         WorkspaceAppStudioBuilder.baseManifest(intent: "Build me a grocery database app.")
     }
@@ -199,6 +216,80 @@ struct WorkspaceAppStudioSessionTests {
         #expect(session.messages.last?.role == .assistant)
         #expect(session.messages.last?.text.contains("couldn't publish") == true)
         #expect(session.messages.last?.text.contains("number") == true)
+    }
+
+    @Test("a failed draft autosave surfaces clean sentence-separated guidance")
+    func draftSaveFailureSurfacesCleanCopy() {
+        let (session, _) = session([Self.result(Self.validManifest)])
+        session.noteDraftSaveFailure("Disk full")
+        #expect(session.messages.last?.role == .assistant)
+        #expect(session.messages.last?.text.contains("couldn't save this draft") == true)
+        #expect(session.messages.last?.text.contains("Disk full. You can keep editing") == true)
+    }
+
+    @Test("a failed draft open surfaces a clean Studio recovery message")
+    func draftOpenFailureSurfacesCleanCopy() {
+        let (session, _) = session([Self.result(Self.validManifest)])
+        session.noteDraftOpenFailure(appName: "Lab Samples", detail: "Manifest missing")
+        #expect(session.messages.last?.role == .assistant)
+        #expect(session.messages.last?.text.contains("couldn't reopen Lab Samples as a draft") == true)
+        #expect(session.messages.last?.text.contains("Manifest missing. Start again") == true)
+    }
+
+    @Test("adopting an autosaved manifest keeps session identity and journal digest aligned")
+    func adoptingPersistedDraftAlignsIdentityAndJournal() async throws {
+        let ws = workspace()
+        let store = SpyJournalStore()
+        let stub = StubGenerator([Self.result(Self.validManifest)])
+        let session = WorkspaceAppStudioSession(generate: stub.generate, verify: Self.noVerify, journalStore: store)
+        await submit(session, "build groceries", ws)
+        var persisted = Self.validManifest
+        persisted.app.id = "\(Self.validManifest.app.id)-2"
+        let beforeRevision = session.draftRevision
+        let beforeAutosaveRevision = session.draftAutosaveRevision
+
+        session.adoptPersistedDraft(
+            persisted,
+            workspace: ws,
+            appID: persisted.app.id,
+            workspacePath: "/tmp/persisted"
+        )
+
+        let persistedDigest = try WorkspaceAppService.digest(for: WorkspaceAppService.encodeManifest(persisted))
+        #expect(session.draft?.manifest.app.id == persisted.app.id)
+        #expect(session.editingAppLogicalID == persisted.app.id)
+        #expect(session.generationEvents.last?.manifestDigest == persistedDigest)
+        #expect(session.draftRevision == beforeRevision + 1)
+        #expect(session.draftAutosaveRevision == beforeAutosaveRevision)
+        #expect(store.saved?.appID == persisted.app.id)
+        #expect(store.saved?.workspacePath == "/tmp/persisted")
+        #expect(store.saved?.journal.events.last?.manifestDigest == persistedDigest)
+    }
+
+    @Test("resuming saved generation events does not request draft autosave")
+    func resumingSavedEventsDoesNotAdvanceAutosaveRevision() throws {
+        let digest = try WorkspaceAppService.digest(for: WorkspaceAppService.encodeManifest(Self.validManifest))
+        let saved = WorkspaceAppStudioJournal(
+            messages: [StudioMessage(role: .assistant, kind: .summary, text: "Saved history")],
+            events: [
+                StudioGenerationEvent(
+                    kind: .generation,
+                    intent: "saved turn",
+                    origin: "model",
+                    accepted: true,
+                    blockerCount: 0,
+                    manifestDigest: digest
+                )
+            ]
+        )
+        let store = SpyJournalStore(loaded: saved)
+        let session = WorkspaceAppStudioSession(generate: StubGenerator([Self.result(Self.validManifest)]).generate, verify: Self.noVerify, journalStore: store)
+
+        session.reset(for: workspace(), existingManifest: Self.validManifest)
+
+        #expect(session.generationEvents.count == 1)
+        #expect(session.draftAutosaveRevision == 0)
+        #expect(store.saved == nil)
     }
 
     @Test("editingAppLogicalID tracks the source app on Edit, nil for a new build")

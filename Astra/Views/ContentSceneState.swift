@@ -75,8 +75,8 @@ enum ContentDetailPresentation: Equatable {
             return .newTaskComposer
         }
 
-        if selectedWorkspaceApp != nil {
-            return .workspaceApp
+        if let selectedWorkspaceApp {
+            return selectedWorkspaceApp.lifecycleStatus == .draft ? .workspaceAppStudio : .workspaceApp
         }
 
         if effectiveWorkspace.tasks.isEmpty {
