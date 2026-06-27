@@ -6,6 +6,7 @@ struct AppBundlePackagingTests {
     private let swiftMailTools = [
         "astra-browser": "AstraBrowserTool",
         "astra-local-model": "AstraLocalModelTool",
+        "astra-mcp-gateway": "AstraMCPGatewayTool",
         "astra-host-control": "AstraHostControlTool",
         "astra-workspace": "AstraWorkspaceTool",
         "stanford-mail": "StanfordMailTool",
@@ -364,6 +365,20 @@ struct AppBundlePackagingTests {
         #expect(missingRequireCheck.output.contains("ASTRA_LOCAL_MLX_GA_EVIDENCE_CHECK_ONLY requires ASTRA_REQUIRE_LOCAL_MLX_GA_EVIDENCE=1."))
     }
 
+    @Test("build script can provision managed Google OAuth client in Info.plist")
+    func buildScriptCanProvisionManagedGoogleOAuthClient() throws {
+        let script = try String(contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"), encoding: .utf8)
+        let validation = #"if [[ -n "$GOOGLE_MANAGED_OAUTH_CLIENT_ID" ]] && ! validate_google_managed_oauth_client_id "$GOOGLE_MANAGED_OAUTH_CLIENT_ID"; then"#
+        let plistWrite = #"<string>$GOOGLE_MANAGED_OAUTH_CLIENT_ID</string>"#
+
+        #expect(script.contains("ASTRA_GOOGLE_MANAGED_OAUTH_CLIENT_ID"))
+        #expect(script.contains("validate_google_managed_oauth_client_id()"))
+        #expect(script.contains("Invalid ASTRA_GOOGLE_MANAGED_OAUTH_CLIENT_ID"))
+        #expect(script.contains("<key>ASTRAGoogleOAuthClientID</key>"))
+        #expect(script.contains(plistWrite))
+        #expect(try index(of: validation, in: script) < index(of: plistWrite, in: script))
+    }
+
     @Test("Host app sandbox entitlement stays disabled while runtime Seatbelt wrapping is active")
     func hostAppSandboxEntitlementStaysDisabledWhileRuntimeSeatbeltWrappingIsActive() throws {
         let entitlementsURL = repoRoot.appendingPathComponent("script/ASTRA.entitlements")
@@ -396,6 +411,8 @@ struct AppBundlePackagingTests {
             #expect(package.contains("name: \"\(target)\""))
             if command == "astra-browser" || command == "astra-local-model" {
                 #expect(package.contains("dependencies: [\"ASTRACore\"]"))
+            } else if command == "astra-mcp-gateway" {
+                #expect(package.contains("dependencies: [\"MCPGatewaySupport\"]"))
             } else if command == "astra-host-control" {
                 #expect(package.contains("dependencies: [\"HostControlToolSupport\"]"))
             } else if command == "astra-workspace" {

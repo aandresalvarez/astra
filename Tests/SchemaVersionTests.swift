@@ -87,14 +87,25 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV8.versionIdentifier == Schema.Version(8, 0, 0))
     }
 
-    @Test("Migration plan lists SchemaV1 through SchemaV8")
-    func migrationPlanHasVersions() {
-        #expect(ASTRAMigrationPlan.schemas.count == 8)
+    @Test("SchemaV9 declares 16 model types (V8 + Google OAuth account profiles)")
+    func v9ModelCount() {
+        #expect(ASTRASchemaV9.models.count == 16)
+        #expect(ASTRASchemaV9.models.contains { $0 == GoogleOAuthAccountProfile.self })
     }
 
-    @Test("Migration plan has V1 to V8 lightweight stages")
+    @Test("SchemaV9 version identifier is 9.0.0")
+    func v9VersionIdentifier() {
+        #expect(ASTRASchemaV9.versionIdentifier == Schema.Version(9, 0, 0))
+    }
+
+    @Test("Migration plan lists SchemaV1 through SchemaV9")
+    func migrationPlanHasVersions() {
+        #expect(ASTRAMigrationPlan.schemas.count == 9)
+    }
+
+    @Test("Migration plan has V1 to V9 lightweight stages")
     func migrationPlanHasStage() {
-        #expect(ASTRAMigrationPlan.stages.count == 7)
+        #expect(ASTRAMigrationPlan.stages.count == 8)
     }
 
     @Test("ModelContainer can be created with versioned schema")
@@ -105,7 +116,7 @@ struct SchemaVersionTests {
             migrationPlan: ASTRAMigrationPlan.self,
             configurations: [config]
         )
-        #expect(container.schema.entities.count == 15)
+        #expect(container.schema.entities.count == 16)
     }
 
     @MainActor

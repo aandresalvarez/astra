@@ -4,7 +4,7 @@ set -euo pipefail
 MODE="${1:-run}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PRODUCT_NAME="ASTRA"
-TOOL_PRODUCTS=("astra-browser" "astra-local-model" "astra-host-control" "astra-workspace" "stanford-mail" "stanford-apple-mail" "stanford-graph-mail")
+TOOL_PRODUCTS=("astra-browser" "astra-local-model" "astra-mcp-gateway" "astra-host-control" "astra-workspace" "stanford-mail" "stanford-apple-mail" "stanford-graph-mail")
 ASTRA_CHANNEL="${ASTRA_CHANNEL:-dev}"
 LOCAL_MODEL_BACKEND="${ASTRA_LOCAL_MODEL_BACKEND:-mlx}"
 LOCAL_MODEL_SMOKE_MODEL_DIR="${ASTRA_LOCAL_MODEL_SMOKE_MODEL_DIR:-}"
@@ -25,6 +25,7 @@ else
 fi
 REQUIRE_ARM64="${ASTRA_REQUIRE_ARM64:-1}"
 SPARKLE_PUBLIC_ED_KEY="${ASTRA_SPARKLE_PUBLIC_ED_KEY:-${SPARKLE_PUBLIC_ED_KEY:-}}"
+GOOGLE_MANAGED_OAUTH_CLIENT_ID="${ASTRA_GOOGLE_MANAGED_OAUTH_CLIENT_ID:-}"
 SIGN_IDENTITY="${ASTRA_SIGN_IDENTITY:-}"
 
 latest_release_tag() {
@@ -74,6 +75,11 @@ validate_sparkle_public_ed_key() {
   [[ "$decoded_length" == "32" ]]
 }
 
+validate_google_managed_oauth_client_id() {
+  local client_id="$1"
+  [[ "$client_id" =~ ^[A-Za-z0-9._-]+\.apps\.googleusercontent\.com$ ]]
+}
+
 case "$ASTRA_CHANNEL" in
   prod|production)
     ASTRA_CHANNEL="prod"
@@ -120,6 +126,11 @@ esac
 if [[ "$ASTRA_CHANNEL" != "dev" && "$LOCAL_MODEL_BACKEND" == "scaffold" ]]; then
   echo "Production and beta ASTRA bundles must include the native MLX local model helper." >&2
   echo "Use ASTRA_LOCAL_MODEL_BACKEND=mlx. The scaffold helper is only allowed for development-channel builds." >&2
+  exit 2
+fi
+
+if [[ -n "$GOOGLE_MANAGED_OAUTH_CLIENT_ID" ]] && ! validate_google_managed_oauth_client_id "$GOOGLE_MANAGED_OAUTH_CLIENT_ID"; then
+  echo "Invalid ASTRA_GOOGLE_MANAGED_OAUTH_CLIENT_ID: expected a Google OAuth client ID ending in .apps.googleusercontent.com." >&2
   exit 2
 fi
 
@@ -438,6 +449,13 @@ if [[ -n "$SPARKLE_PUBLIC_ED_KEY" ]]; then
   cat >>"$INFO_PLIST" <<PLIST
   <key>SUPublicEDKey</key>
   <string>$SPARKLE_PUBLIC_ED_KEY</string>
+PLIST
+fi
+
+if [[ -n "$GOOGLE_MANAGED_OAUTH_CLIENT_ID" ]]; then
+  cat >>"$INFO_PLIST" <<PLIST
+  <key>ASTRAGoogleOAuthClientID</key>
+  <string>$GOOGLE_MANAGED_OAUTH_CLIENT_ID</string>
 PLIST
 fi
 

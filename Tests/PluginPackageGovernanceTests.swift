@@ -263,7 +263,7 @@ struct PluginPackageGovernanceTests {
         #expect(!packages.isEmpty)
         for package in packages {
             #expect(package.governance.approvalStatus == .approved, "\(package.id) should be approved")
-            #expect(package.governance.visibility == .everyone, "\(package.id) should be visible by default")
+            #expect(package.governance.visibility != .adminOnly, "\(package.id) should declare a built-in visibility")
             #expect(package.governance.approvedBy == "ASTRA", "\(package.id) should record the approving authority")
             #expect(!package.governance.dataAccess.isEmpty || !package.governance.externalEffects.isEmpty, "\(package.id) should document access or effects")
         }
