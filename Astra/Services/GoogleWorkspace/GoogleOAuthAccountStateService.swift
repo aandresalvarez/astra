@@ -34,6 +34,10 @@ struct GoogleOAuthAccountStateService {
         let merged = GoogleOAuthScopeNormalizer.normalized(profile.requestedScopes + requiredScopes)
         let missing = GoogleOAuthScopeNormalizer.missing(required: requiredScopes, granted: profile.grantedScopes)
         profile.requestedScopes = merged
+        guard !missing.isEmpty else {
+            profile.updatedAt = date
+            return
+        }
         profile.authState = .needsReauth
         profile.authStateReason = "Additional Google scope required: \(missing.joined(separator: ", "))"
         profile.updatedAt = date

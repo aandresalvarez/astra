@@ -95,6 +95,74 @@ struct GoogleOAuthVaultTests {
         #expect(store.load(key: GoogleOAuthCredentialVault.refreshTokenKey, entityID: GoogleOAuthCredentialVault.entityID(for: profile.id)) == nil)
     }
 
+    @Test("Vault does not activate credentials when revoked marker removal fails")
+    func vaultDoesNotActivateCredentialsWhenRevokedMarkerRemovalFails() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let profile = GoogleOAuthAccountProfile(
+            subject: "google-sub-123",
+            email: "alvaro@example.com",
+            grantedScopes: ["scope.read"],
+            requestedScopes: ["scope.read"],
+            createdAt: now
+        )
+        let entityID = GoogleOAuthCredentialVault.entityID(for: profile.id)
+        let store = RecordingSecretStore()
+        let vault = GoogleOAuthCredentialVault(secretStore: store)
+
+        store.save(key: GoogleOAuthCredentialVault.revokedKey, value: "true", entityID: entityID, label: nil)
+        store.failedDeletes = [GoogleOAuthCredentialVault.revokedKey]
+
+        #expect(throws: GoogleOAuthCredentialFailure.tokenUnavailable) {
+            try vault.save(
+                GoogleOAuthTokenSet(
+                    accessToken: "access-1",
+                    refreshToken: "refresh-1",
+                    expiresAt: now.addingTimeInterval(3600),
+                    grantedScopes: ["scope.read"]
+                ),
+                for: profile,
+                now: now
+            )
+        }
+        #expect(vault.credentialStatus(for: profile, now: now) == .revokedToken)
+        #expect(store.load(key: GoogleOAuthCredentialVault.accessTokenKey, entityID: entityID) == nil)
+        #expect(profile.authState == .active)
+    }
+
+    @Test("Vault does not mark revoked when token deletion fails")
+    func vaultDoesNotMarkRevokedWhenTokenDeletionFails() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let profile = GoogleOAuthAccountProfile(
+            subject: "google-sub-123",
+            email: "alvaro@example.com",
+            grantedScopes: ["scope.read"],
+            requestedScopes: ["scope.read"],
+            createdAt: now
+        )
+        let entityID = GoogleOAuthCredentialVault.entityID(for: profile.id)
+        let store = RecordingSecretStore()
+        let vault = GoogleOAuthCredentialVault(secretStore: store)
+        try vault.save(
+            GoogleOAuthTokenSet(
+                accessToken: "access-1",
+                refreshToken: "refresh-1",
+                expiresAt: now.addingTimeInterval(3600),
+                grantedScopes: ["scope.read"]
+            ),
+            for: profile,
+            now: now
+        )
+
+        store.failedDeletes = [GoogleOAuthCredentialVault.accessTokenKey]
+
+        #expect(throws: GoogleOAuthCredentialFailure.tokenUnavailable) {
+            try vault.revoke(profile)
+        }
+        #expect(store.load(key: GoogleOAuthCredentialVault.accessTokenKey, entityID: entityID) == "access-1")
+        #expect(store.load(key: GoogleOAuthCredentialVault.revokedKey, entityID: entityID) == nil)
+        #expect(vault.credentialStatus(for: profile, now: now) == .available(expiresAt: now.addingTimeInterval(3600), grantedScopes: ["scope.read"]))
+    }
+
     @Test("Scope upgrade reauth and revoke transitions are pure profile state changes")
     func scopeUpgradeReauthAndRevokeTransitions() {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -124,6 +192,27 @@ struct GoogleOAuthVaultTests {
         #expect(profile.revokedAt == now.addingTimeInterval(10))
         #expect(service.authorizationState(account: profile, requiredScopes: ["scope.read"], credentialStatus: .available(expiresAt: now.addingTimeInterval(3600), grantedScopes: ["scope.read"])) == .revokedToken)
     }
+
+    @Test("Scope upgrade is a no-op when requested scopes are already granted")
+    func scopeUpgradeNoopsWhenScopesAlreadyGranted() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let profile = GoogleOAuthAccountProfile(
+            subject: "google-sub-123",
+            email: "alvaro@example.com",
+            grantedScopes: ["scope.read", "scope.write"],
+            requestedScopes: ["scope.read"],
+            createdAt: now
+        )
+        let service = GoogleOAuthAccountStateService()
+
+        service.requestScopeUpgrade(on: profile, requiredScopes: ["scope.write"], at: now.addingTimeInterval(20))
+
+        #expect(profile.requestedScopes == ["scope.read", "scope.write"])
+        #expect(profile.authState == .active)
+        #expect(profile.authStateReason == "")
+        #expect(profile.updatedAt == now.addingTimeInterval(20))
+    }
+
 
     @Test("Fake OAuth client exchanges and refreshes tokens through the vault")
     func fakeOAuthClientExchangeAndRefresh() async throws {
@@ -192,6 +281,7 @@ private func makeGoogleOAuthContainer() throws -> ModelContainer {
 
 private final class RecordingSecretStore: SecretStore {
     private var storage: [String: [String: String]] = [:]
+    var failedDeletes: Set<String> = []
 
     func load(key: String, entityID: String) -> String? {
         storage[entityID]?[key]
@@ -205,6 +295,7 @@ private final class RecordingSecretStore: SecretStore {
 
     @discardableResult
     func delete(key: String, entityID: String) -> Bool {
+        guard !failedDeletes.contains(key) else { return false }
         storage[entityID]?[key] = nil
         return true
     }

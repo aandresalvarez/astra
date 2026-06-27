@@ -68,14 +68,18 @@ struct GoogleOAuthCredentialVault {
 
     func save(_ token: GoogleOAuthTokenSet, for profile: GoogleOAuthAccountProfile, now: Date = Date()) throws {
         let entityID = Self.entityID(for: profile.id)
+        if secretStore.exists(key: Self.revokedKey, entityID: entityID) {
+            guard secretStore.delete(key: Self.revokedKey, entityID: entityID) else {
+                throw GoogleOAuthCredentialFailure.tokenUnavailable
+            }
+        }
         let saved = [
             secretStore.save(key: Self.accessTokenKey, value: token.accessToken, entityID: entityID, label: "Astra Google access token"),
             saveRefreshToken(token.refreshToken, entityID: entityID),
             secretStore.save(key: Self.expiresAtKey, value: String(token.expiresAt.timeIntervalSince1970), entityID: entityID, label: "Astra Google token expiry"),
-            secretStore.save(key: Self.grantedScopesKey, value: token.grantedScopes.joined(separator: " "), entityID: entityID, label: "Astra Google granted scopes"),
-            secretStore.delete(key: Self.revokedKey, entityID: entityID)
+            secretStore.save(key: Self.grantedScopesKey, value: token.grantedScopes.joined(separator: " "), entityID: entityID, label: "Astra Google granted scopes")
         ]
-        guard saved.dropLast().allSatisfy({ $0 }) else {
+        guard saved.allSatisfy({ $0 }) else {
             throw GoogleOAuthCredentialFailure.tokenUnavailable
         }
         profile.grantedScopes = token.grantedScopes
@@ -88,13 +92,19 @@ struct GoogleOAuthCredentialVault {
 
     func revoke(_ profile: GoogleOAuthAccountProfile) throws {
         let entityID = Self.entityID(for: profile.id)
-        secretStore.delete(key: Self.accessTokenKey, entityID: entityID)
-        secretStore.delete(key: Self.refreshTokenKey, entityID: entityID)
-        secretStore.delete(key: Self.expiresAtKey, entityID: entityID)
-        secretStore.delete(key: Self.grantedScopesKey, entityID: entityID)
+        for key in [Self.accessTokenKey, Self.refreshTokenKey, Self.expiresAtKey, Self.grantedScopesKey] {
+            guard deleteExisting(key: key, entityID: entityID) else {
+                throw GoogleOAuthCredentialFailure.tokenUnavailable
+            }
+        }
         guard secretStore.save(key: Self.revokedKey, value: "true", entityID: entityID, label: "Astra Google revoked marker") else {
             throw GoogleOAuthCredentialFailure.tokenUnavailable
         }
+    }
+
+    private func deleteExisting(key: String, entityID: String) -> Bool {
+        guard secretStore.exists(key: key, entityID: entityID) else { return true }
+        return secretStore.delete(key: key, entityID: entityID)
     }
 
     private func saveRefreshToken(_ refreshToken: String?, entityID: String) -> Bool {
