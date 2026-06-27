@@ -14,6 +14,7 @@ struct CapabilityPackageSourceExporter {
     }
 
     static let sourceLibraryEnvironmentKey = "ASTRA_CAPABILITY_SOURCE_LIBRARY"
+    private static let parentSearchDepthLimit = 8
 
     let fileManager: FileManager
 
@@ -120,12 +121,16 @@ struct CapabilityPackageSourceExporter {
             }
         }
 
+        guard shouldSearchParentDirectories(from: startURL) else {
+            return nil
+        }
+
         var candidate = startURL.standardizedFileURL
         if !isDirectory(candidate, fileManager: fileManager) {
             candidate.deleteLastPathComponent()
         }
 
-        while true {
+        for _ in 0...parentSearchDepthLimit {
             if hasCapabilityLibraryRoot(candidate, fileManager: fileManager) {
                 return candidate
                     .appendingPathComponent("capabilities", isDirectory: true)
@@ -137,6 +142,7 @@ struct CapabilityPackageSourceExporter {
             }
             candidate = parent
         }
+        return nil
     }
 
     private static func repositoryRootCandidates(fromBundleURL bundleURL: URL) -> [URL] {
@@ -163,5 +169,24 @@ struct CapabilityPackageSourceExporter {
     private static func isDirectory(_ url: URL, fileManager: FileManager) -> Bool {
         var isDirectory: ObjCBool = false
         return fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
+    }
+
+    private static func shouldSearchParentDirectories(from startURL: URL) -> Bool {
+        !isTransientLaunchPath(startURL)
+            && !isInsideAppBundle(startURL)
+    }
+
+    private static func isTransientLaunchPath(_ url: URL) -> Bool {
+        let standardized = url.standardizedFileURL
+        let path = standardized.path
+        return standardized.pathComponents.contains("AppTranslocation")
+            || path.hasPrefix("/private/var/folders/")
+            || path.hasPrefix("/var/folders/")
+    }
+
+    private static func isInsideAppBundle(_ url: URL) -> Bool {
+        url.standardizedFileURL.pathComponents.contains { component in
+            component.hasSuffix(".app")
+        }
     }
 }

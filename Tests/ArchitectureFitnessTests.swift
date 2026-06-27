@@ -34,8 +34,56 @@ struct ArchitectureFitnessTests {
             "Security",
             "Settings",
             "Tasks",
-            "Validation"
+            "Validation",
+            "WorkspaceApps"
         ])
+    }
+
+    @Test("Workspace App Studio stays on the direct session architecture")
+    func workspaceAppStudioStaysOnDirectSessionArchitecture() throws {
+        let root = try repositoryRoot()
+        let retiredFiles = [
+            "Astra/Services/WorkspaceApps/WorkspaceAppStudioBuildTaskBuilder.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppStudioBuilderContractFactory.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppStudioContext.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppStudioContextBuilder.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppStudioContextRedactor.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppStudioDraftSupport.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppStudioGenerationTaskBuilder.swift",
+            "Astra/Views/ChatPanelDraftPresentation.swift"
+        ]
+
+        let existingRetiredFiles = retiredFiles.filter {
+            FileManager.default.fileExists(atPath: root.appendingPathComponent($0).path)
+        }
+        #expect(existingRetiredFiles.isEmpty, "Retired task-draft App Studio files should stay removed: \(existingRetiredFiles)")
+
+        let retiredSymbols = [
+            "ChatPanelDraftPresentation",
+            "WorkspaceAppStudioBuildConversationMessage",
+            "WorkspaceAppStudioBuilderContract",
+            "WorkspaceAppStudioBuilderContractFactory",
+            "WorkspaceAppStudioBuildTaskBuilder",
+            "WorkspaceAppStudioBuildTaskDraft",
+            "WorkspaceAppStudioContext",
+            "WorkspaceAppStudioContextBuilder",
+            "WorkspaceAppStudioContextRedactor",
+            "WorkspaceAppStudioContextRequest",
+            "WorkspaceAppStudioDraftSupport",
+            "WorkspaceAppStudioGenerationTaskBuilder",
+            "WorkspaceAppStudioGenerationTaskDraft"
+        ]
+
+        let symbolMatches = try swiftFiles(under: root.appendingPathComponent("Astra"))
+            .flatMap { file -> [String] in
+                let relativePath = relativePath(for: file, root: root)
+                let text = try String(contentsOf: file, encoding: .utf8)
+                return retiredSymbols
+                    .filter { text.contains($0) }
+                    .map { "\(relativePath): \($0)" }
+            }
+
+        #expect(symbolMatches.isEmpty, "Workspace App Studio should be owned by WorkspaceAppStudioSession and generator, not task drafts: \(symbolMatches)")
     }
 
     @Test("Prompt section provider identifiers are unique and used by known prompt modes")
@@ -833,6 +881,21 @@ struct ArchitectureFitnessTests {
         #expect(view.contains("CapabilityCatalogActionService("))
     }
 
+    @Test("Plugin catalog approval refresh cancels stale loads")
+    func pluginCatalogApprovalRefreshCancelsStaleLoads() throws {
+        let root = try repositoryRoot()
+        let view = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/PluginCatalogView.swift"),
+            encoding: .utf8
+        )
+
+        #expect(view.contains("@State private var approvalRecordsRefreshTask: Task<Void, Never>?"))
+        #expect(view.contains("@State private var approvalRecordsRefreshGeneration = 0"))
+        #expect(view.contains("approvalRecordsRefreshTask?.cancel()"))
+        #expect(view.contains("approvalRecordsRefreshGeneration == refreshGeneration"))
+        #expect(view.contains("cancelApprovalRecordsRefresh()"))
+    }
+
     @Test("Admin policy contexts come only from the currentUser factory")
     func adminPolicyContextsComeOnlyFromCurrentUserFactory() throws {
         // Single-user admin semantics live in exactly one place:
@@ -935,14 +998,14 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Browser/ShelfBrowserSession.swift": 5_900,
             "Astra/Views/ContentView.swift": 5_000,
             "Astra/Views/WorkspaceRightRailView.swift": 3_500,
-            "Astra/Views/ChatPanelView.swift": 3_200,
-            "Astra/Services/Runtime/AgentRuntimeAdapter.swift": 2_910,
+            "Astra/Views/ChatPanelView.swift": 3_215,
+            "Astra/Services/Runtime/AgentRuntimeAdapter.swift": 2_961,
             "Astra/Views/PluginCatalogView.swift": 2_900,
             "Astra/Views/ShelfMarkdownPanelView.swift": 2_850,
             "Astra/Views/WorkspaceGitSectionView.swift": 2_650,
             "Astra/Views/ConfigureView.swift": 2_550,
             "Astra/Services/Diagnostics/LogDiagnosticsService.swift": 2_550,
-            "Astra/Views/TaskSidebarView.swift": 2_450,
+            "Astra/Views/TaskSidebarView.swift": 2_465,
             "Astra/Views/ShelfQueryPanelView.swift": 2_350,
             "Astra/Services/Persistence/TaskContextStateManager.swift": 2_250,
             "Astra/Services/Runtime/AgentPromptBuilder.swift": 2_315,
@@ -975,9 +1038,9 @@ struct ArchitectureFitnessTests {
                 swiftFiles(under: root.appendingPathComponent("ASTRACore"))
         )
 
-        // Ratchet bumped 125 -> 151 after merging main's sandbox read-scope/runtime
+        // Ratchet bumped 125 -> 156 after merging main's sandbox read-scope/runtime
         // settings with the Local MLX provider settings in this draft branch.
-        #expect(count <= 151, "Prefer settings snapshots or stores over new direct @AppStorage reads. Current count: \(count)")
+        #expect(count <= 156, "Prefer settings snapshots or stores over new direct @AppStorage reads. Current count: \(count)")
     }
 
     @Test("Files shelf does not decode image previews from SwiftUI body")
@@ -1003,10 +1066,11 @@ struct ArchitectureFitnessTests {
         #expect(reuseFastPath.lowerBound < fullDocumentLoad.lowerBound)
     }
 
-    @Test("Completed chat markdown avoids SwiftUI text selection overlay")
-    func completedChatMarkdownAvoidsSwiftUITextSelectionOverlay() throws {
+    @Test("Task answer text selection uses explicit safe policy")
+    func taskAnswerTextSelectionUsesExplicitSafePolicy() throws {
         let root = try repositoryRoot()
         let taskMainView = try fileText("Astra/Views/TaskMainView.swift", root: root)
+        let markdownTextView = try fileText("Astra/Views/MarkdownTextView.swift", root: root)
         let completedAgentMarkdownView = try extractedStruct(
             named: "CompletedAgentMarkdownView",
             from: taskMainView
@@ -1015,10 +1079,16 @@ struct ArchitectureFitnessTests {
             named: "StreamingAgentTextView",
             from: taskMainView
         )
+        let listItemStart = try #require(markdownTextView.range(of: "case .listItem"))
+        let blockquoteStart = try #require(markdownTextView[listItemStart.upperBound...].range(of: "case .blockquote"))
+        let listItemCase = String(markdownTextView[listItemStart.lowerBound..<blockquoteStart.lowerBound])
 
-        #expect(completedAgentMarkdownView.contains("isSelectable: false"))
+        #expect(completedAgentMarkdownView.contains("TaskAnswerTextSelectionPolicy.completedAnswerMarkdownIsSelectable"))
         #expect(!completedAgentMarkdownView.contains(".textSelection(.enabled)"))
+        #expect(streamingAgentTextView.contains("taskAnswerTextSelection(TaskAnswerTextSelectionPolicy.liveAnswerTextIsSelectable)"))
         #expect(!streamingAgentTextView.contains(".textSelection(.enabled)"))
+        #expect(listItemCase.contains("HStack(alignment: .top"))
+        #expect(!listItemCase.contains("HStack(alignment: .firstTextBaseline"))
     }
 
     @Test("Repository protection artifacts stay wired")

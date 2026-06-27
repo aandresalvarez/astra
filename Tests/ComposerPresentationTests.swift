@@ -152,6 +152,38 @@ struct ComposerPresentationTests {
         #expect(unrelated == nil)
     }
 
+    @Test("disabled budgets are omitted from composer runtime status")
+    func disabledBudgetsAreOmittedFromComposerRuntimeStatus() {
+        #expect(!RuntimeBudgetPresentation.isEnabled(0))
+        #expect(RuntimeBudgetPresentation.isEnabled(25_000))
+        #expect(RuntimeBudgetPresentation.settingsLabel(for: 0) == "Disabled")
+        #expect(RuntimeBudgetPresentation.settingsLabel(for: 25_000) == "25k tokens")
+        #expect(RuntimeBudgetPresentation.compactLabel(for: 25_000) == "25k")
+
+        let disabledStatus = RuntimeBudgetPresentation.runtimeStatusText(
+            runtimeName: "Antigravity",
+            modelName: "Gemini 3.5 Flash",
+            budget: 0,
+            includeRuntime: true
+        )
+        let enabledStatus = RuntimeBudgetPresentation.runtimeStatusText(
+            runtimeName: "Antigravity",
+            modelName: "Gemini 3.5 Flash",
+            budget: 25_000,
+            includeRuntime: true
+        )
+        let disabledHelp = RuntimeBudgetPresentation.runtimeStatusHelp(
+            runtimeName: "Antigravity",
+            modelName: "Gemini 3.5 Flash",
+            budget: 0,
+            enforcementLabel: "Warning Only"
+        )
+
+        #expect(disabledStatus == "Antigravity · Gemini 3.5 Flash")
+        #expect(enabledStatus == "Antigravity · Gemini 3.5 Flash · 25k")
+        #expect(disabledHelp == "Antigravity · Gemini 3.5 Flash")
+    }
+
     @Test("task composer slash options are centralized")
     func taskComposerSlashOptionsAreCentralized() {
         #expect(TaskComposerCoordinator.shouldShowSlashMenu(messageText: "/rem"))

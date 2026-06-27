@@ -682,6 +682,7 @@ struct CapabilityLibraryTests {
             "github-workflow",
             "google-drive-browser",
             "jira-workflow",
+            "mcp-smoke-test",
             "redcap-workflow",
             "security-auditor",
             "stanford-apple-mail",
@@ -739,6 +740,50 @@ struct CapabilityLibraryTests {
         #expect(installed.iconDescriptor.fallbackSystemName == package.icon)
         #expect(installed.sourceMetadata?.kind == "built-in")
         #expect(installed.sourceMetadata?.url?.resolvingSymlinksInPath() == manifest.resolvingSymlinksInPath())
+    }
+
+    @Test("seed approved packages repairs matching built-in manifest with missing icon asset")
+    func seedApprovedPackagesRepairsMissingBundledIconAsset() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-repair-missing-asset-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = CapabilityLibrary(directory: root)
+        let package = try #require(ApprovedCapabilityBundle.packages().first { $0.id == "gcloud-workflow" })
+
+        try library.syncApprovedPackages([package])
+        let manifest = library.packageManifestURL(for: package.id)
+        let icon = manifest.deletingLastPathComponent().appendingPathComponent("assets/google-cloud.svg")
+        #expect(FileManager.default.fileExists(atPath: icon.path))
+
+        try FileManager.default.removeItem(at: icon)
+        try library.syncApprovedPackages([package])
+
+        let repaired = try #require(library.installedPackage(id: package.id, trustedBuiltInIDs: [package.id]))
+        #expect(FileManager.default.fileExists(atPath: icon.path))
+        #expect(repaired.iconDescriptor.kind == .asset)
+        #expect(repaired.iconDescriptor.value == "assets/google-cloud.svg")
+        #expect(repaired.sourceMetadata?.url?.resolvingSymlinksInPath() == manifest.resolvingSymlinksInPath())
+    }
+
+    @Test("reinstalling installed asset package preserves its icon asset")
+    func reinstallingInstalledAssetPackagePreservesIconAsset() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-reinstall-asset-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = CapabilityLibrary(directory: root)
+        let package = try #require(ApprovedCapabilityBundle.packages().first { $0.id == "gcloud-workflow" })
+
+        try library.syncApprovedPackages([package])
+        let installed = try #require(library.installedPackage(id: package.id, trustedBuiltInIDs: [package.id]))
+        let manifest = library.packageManifestURL(for: package.id)
+        let icon = manifest.deletingLastPathComponent().appendingPathComponent("assets/google-cloud.svg")
+        #expect(FileManager.default.fileExists(atPath: icon.path))
+
+        try library.install(installed)
+
+        let reloaded = try #require(library.installedPackage(id: package.id, trustedBuiltInIDs: [package.id]))
+        #expect(FileManager.default.fileExists(atPath: icon.path))
+        #expect(reloaded.sourceMetadata?.url?.resolvingSymlinksInPath() == manifest.resolvingSymlinksInPath())
     }
 
     @Test("sync approved packages removes stale built-in package folders")

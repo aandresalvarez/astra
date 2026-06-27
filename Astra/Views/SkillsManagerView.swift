@@ -234,7 +234,7 @@ struct SkillEditorView: View {
                     InheritedConnectorSecret(
                         connector: connector,
                         key: key,
-                        isAvailable: KeychainService.exists(key: key, connectorID: connector.id)
+                        isAvailable: KeychainService.exists(key: key, connector: connector)
                     )
                 }
             }
@@ -819,7 +819,7 @@ struct SkillEditorView: View {
                                                 .frame(minWidth: 140, alignment: .leading)
 
                                             if showEnvValues {
-                                                let value = KeychainService.load(key: item.key, connectorID: item.connector.id) ?? ""
+                                                let value = KeychainService.load(key: item.key, connector: item.connector) ?? ""
                                                 Text(value.isEmpty ? "(empty)" : value)
                                                     .font(Stanford.ui(13, design: .monospaced))
                                                     .foregroundStyle(value.isEmpty ? .tertiary : .secondary)

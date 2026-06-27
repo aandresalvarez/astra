@@ -81,15 +81,16 @@ enum ComposerToolbarPresentation {
             }
             return "Private Local Chat analyzes text you provide on this Mac. It cannot use ASTRA tools, connectors, browser sessions, shell commands, workspace files, or artifacts."
         }
-        return "\(runtime.displayName) · \(menuModelDisplayName(model)) · \(menuBudgetSummary(budget)) · \(enforcementMode.label)"
+        return RuntimeBudgetPresentation.runtimeStatusHelp(
+            runtimeName: runtime.displayName,
+            modelName: menuModelDisplayName(model),
+            budget: budget,
+            enforcementLabel: enforcementMode.label
+        )
     }
 
     private static func menuModelDisplayName(_ model: String) -> String {
         model.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private static func menuBudgetSummary(_ budget: Int) -> String {
-        budget == 0 ? "∞" : "\(budget / 1000)k"
     }
 
     static func localMLXTaskStatusOverride(
@@ -488,42 +489,47 @@ struct ComposerToolbar: View {
                 Label("Model", systemImage: "cpu")
             }
 
-            Divider()
+            if RuntimeBudgetPresentation.isEnabled(budget) {
+                Divider()
 
-            Menu {
-                ForEach(TaskExecutionDefaults.budgetPresets, id: \.self) { preset in
-                    Button {
-                        onBudgetChange?(preset)
-                    } label: {
-                        HStack {
-                            Text(budgetSummary(preset))
-                            if budget == preset {
-                                Image(systemName: "checkmark")
+                Menu {
+                    ForEach(TaskExecutionDefaults.budgetPresets, id: \.self) { preset in
+                        Button {
+                            onBudgetChange?(preset)
+                        } label: {
+                            HStack {
+                                Text(RuntimeBudgetPresentation.compactLabel(for: preset))
+                                if budget == preset {
+                                    Image(systemName: "checkmark")
+                                }
                             }
                         }
+                        .disabled(onBudgetChange == nil)
                     }
-                    .disabled(onBudgetChange == nil)
+                } label: {
+                    Label(
+                        "Budget: \(RuntimeBudgetPresentation.compactLabel(for: budget))",
+                        systemImage: "gauge.with.needle"
+                    )
                 }
-            } label: {
-                Label("Budget: \(budgetSummary(budget))", systemImage: "gauge.with.needle")
-            }
 
-            Menu {
-                ForEach(BudgetEnforcementMode.allCases) { mode in
-                    Button {
-                        budgetEnforcementModeRaw = mode.rawValue
-                    } label: {
-                        HStack {
-                            Text(mode.label)
-                            if budgetEnforcementMode == mode {
-                                Image(systemName: "checkmark")
+                Menu {
+                    ForEach(BudgetEnforcementMode.allCases) { mode in
+                        Button {
+                            budgetEnforcementModeRaw = mode.rawValue
+                        } label: {
+                            HStack {
+                                Text(mode.label)
+                                if budgetEnforcementMode == mode {
+                                    Image(systemName: "checkmark")
+                                }
                             }
                         }
+                        .help(mode.helpText)
                     }
-                    .help(mode.helpText)
+                } label: {
+                    Label("Enforcement: \(budgetEnforcementSummary)", systemImage: budgetEnforcementIcon)
                 }
-            } label: {
-                Label("Enforcement: \(budgetEnforcementSummary)", systemImage: budgetEnforcementIcon)
             }
         } label: {
             runtimeStatusLabel(style: .full)
@@ -631,7 +637,7 @@ struct ComposerToolbar: View {
             Button {
                 isPolicySheetPresented = true
             } label: {
-                Label("Policy details...", systemImage: "checklist.shield")
+                Label("Policy details...", systemImage: "checkmark.shield")
             }
         } label: {
             ViewThatFits(in: .horizontal) {
@@ -1115,9 +1121,12 @@ struct ComposerToolbar: View {
         case nil:
             modelPart = "Checking"
         }
-        return includeRuntime
-            ? "\(shortRuntimeName(displayedRuntime)) · \(modelPart) · \(budgetSummary(budget))"
-            : "\(modelPart) · \(budgetSummary(budget))"
+        return RuntimeBudgetPresentation.runtimeStatusText(
+            runtimeName: shortRuntimeName(displayedRuntime),
+            modelName: modelPart,
+            budget: budget,
+            includeRuntime: includeRuntime
+        )
     }
 
     private func shortRuntimeName(_ runtime: AgentRuntimeID) -> String {
@@ -1157,10 +1166,6 @@ struct ComposerToolbar: View {
         case .closed:
             return Stanford.paloAltoGreen
         }
-    }
-
-    private func budgetSummary(_ budget: Int) -> String {
-        budget == 0 ? "∞" : "\(budget / 1000)k"
     }
 
     private var budgetEnforcementMode: BudgetEnforcementMode {

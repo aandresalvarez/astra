@@ -241,7 +241,7 @@ struct TaskContextStateTests {
 
         let run = TaskRun(task: task)
         run.status = .failed
-        run.stopReason = "provider_missing_browser_shell_tool"
+        run.stopReason = "provider_missing_browser_control_tool"
         run.output = "ASTRA blocked this browser task before launch because Copilot CLI cannot execute astra-browser."
         run.completedAt = Date()
         context.insert(run)
@@ -250,7 +250,7 @@ struct TaskContextStateTests {
         let state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
         #expect(state.mode == .blocked)
         #expect(state.verification.status == "failed")
-        #expect(state.verification.summary == "provider_missing_browser_shell_tool")
+        #expect(state.verification.summary == "provider_missing_browser_control_tool")
         #expect(state.verification.completionVerified == false)
         #expect(state.verification.status != "manual_completion")
     }
@@ -350,6 +350,59 @@ struct TaskContextStateTests {
         #expect(prompt.contains("Standing user instructions"))
         #expect(prompt.contains("Never modify the auth module"))
         #expect(prompt.contains("Output must be CSV not JSON"))
+    }
+
+    @Test("explicit follow-up objective supersedes stale original task goal")
+    func explicitFollowUpObjectiveSupersedesOriginalGoal() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Objective Pivot", primaryPath: root)
+        let task = AgentTask(
+            title: "List active sprint stories",
+            goal: "List my stories for the active sprint in the STAR Jira project",
+            workspace: workspace
+        )
+        context.insert(workspace)
+        context.insert(task)
+
+        let first = TaskEvent(
+            task: task,
+            type: "user.message",
+            payload: "List my stories for the active sprint in the STAR Jira project"
+        )
+        first.timestamp = Date(timeIntervalSince1970: 1)
+        context.insert(first)
+
+        let resumeBoilerplate = TaskEvent(
+            task: task,
+            type: "user.message",
+            payload: "Continue where you left off. Complete the original goal."
+        )
+        resumeBoilerplate.timestamp = Date(timeIntervalSince1970: 2)
+        context.insert(resumeBoilerplate)
+
+        let correction = TaskEvent(
+            task: task,
+            type: "user.message",
+            payload: "no your goal is to complete the plan.md document"
+        )
+        correction.timestamp = Date(timeIntervalSince1970: 3)
+        context.insert(correction)
+
+        TaskContextStateManager.refresh(task: task)
+
+        let state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
+        #expect(state.startingRequest == "List my stories for the active sprint in the STAR Jira project")
+        #expect(state.currentObjective == "complete the plan.md document")
+        #expect(state.objective.currentObjective == "complete the plan.md document")
+        #expect(state.objectiveDivergenceNote?.contains("supersedes the original task goal") == true)
+        #expect((state.standingInstructions ?? []).map(\.text).contains("Continue where you left off. Complete the original goal.") == false)
+
+        let prompt = try #require(TaskContextStateManager.promptContext(for: task))
+        #expect(prompt.contains("Starting request: List my stories for the active sprint"))
+        #expect(prompt.contains("Current objective: complete the plan.md document"))
     }
 
     @Test("approved plans refresh state with explicit planning mode and approved goal")
@@ -836,6 +889,80 @@ struct TaskContextStateTests {
         #expect(state.verification.artifactStatus == "1 current")
         #expect(legacy.path == relativePath)
         #expect(legacy.type == "HTML")
+    }
+
+    @Test("context capsule hides polluted runtime artifact rows without deleting them")
+    func contextCapsuleHidesPollutedRuntimeArtifactRowsWithoutDeletingThem() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Polluted Artifacts", primaryPath: root)
+        let task = AgentTask(
+            title: "Polluted artifact state",
+            goal: "Render current state without runtime diagnostics",
+            workspace: workspace
+        )
+        context.insert(workspace)
+        context.insert(task)
+
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let planPath = (folder as NSString).appendingPathComponent("plan.md")
+        let configPath = (folder as NSString).appendingPathComponent(".runtime/docker-client/client-1/config.json")
+        let stdoutPath = (folder as NSString).appendingPathComponent("jobs/job-1/stdout.log")
+        try FileManager.default.createDirectory(
+            atPath: (configPath as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            atPath: (stdoutPath as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true
+        )
+        try "# Plan".write(toFile: planPath, atomically: true, encoding: .utf8)
+        try "{}".write(toFile: configPath, atomically: true, encoding: .utf8)
+        try "log".write(toFile: stdoutPath, atomically: true, encoding: .utf8)
+
+        let planArtifact = Artifact(task: task, type: "markdown", path: planPath)
+        let configArtifact = Artifact(task: task, type: "json", path: configPath)
+        let stdoutArtifact = Artifact(task: task, type: "log", path: stdoutPath)
+        context.insert(planArtifact)
+        context.insert(configArtifact)
+        context.insert(stdoutArtifact)
+        task.artifacts.append(contentsOf: [planArtifact, configArtifact, stdoutArtifact])
+
+        let run = TaskRun(task: task)
+        run.status = .completed
+        run.stopReason = "completed"
+        run.output = "Generated the plan."
+        run.completedAt = Date()
+        run.appendFileChange(StoredFileChange(from: FileChange(
+            path: configPath,
+            changeType: .write,
+            content: "{}",
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        )))
+        run.appendFileChange(StoredFileChange(from: FileChange(
+            path: stdoutPath,
+            changeType: .write,
+            content: "log",
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        )))
+        context.insert(run)
+        task.status = .completed
+
+        TaskContextStateManager.recordTurn(task: task, run: run, message: "Create plan")
+
+        let state = try #require(TaskContextStateManager.load(taskFolder: folder))
+        #expect(state.artifacts.map(\.path) == [planPath])
+        #expect(!state.filesChanged.contains(configPath))
+        #expect(!state.filesChanged.contains(stdoutPath))
+        #expect(!state.changedFiles.contains { $0.path == configPath || $0.path == stdoutPath })
+        #expect(task.artifacts.contains { $0.path == configPath })
+        #expect(task.artifacts.contains { $0.path == stdoutPath })
     }
 
     @Test("context capsule discovers task output files when provider metadata is missing")

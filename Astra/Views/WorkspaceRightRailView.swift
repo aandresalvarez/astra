@@ -259,6 +259,7 @@ struct WorkspaceRightRailView: View {
     @State private var isReadyCapabilitiesExpanded = false
     @State private var isDraftCapabilitiesExpanded = false
     @State private var hasGitRepositories = false
+    @State private var hasDockerEnvironments = false
 
     private static let shortDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -463,6 +464,16 @@ struct WorkspaceRightRailView: View {
                 }
             }
 
+            if hasDockerEnvironments {
+                floatingContextSection {
+                    WorkspaceDockerSectionView(
+                        workspace: workspace,
+                        selectedTask: selectedTask,
+                        isCompact: isCompact
+                    )
+                }
+            }
+
             if leadWithCapabilities {
                 capabilityHealthPanel(snapshot)
                 floatingContextSection {
@@ -483,6 +494,7 @@ struct WorkspaceRightRailView: View {
             rebuildCapabilityRailSnapshot(for: capabilityRailSnapshotSignature)
             applyConfigureDefaults()
             checkGitRepositories()
+            checkDockerEnvironments()
         }
         .task(id: signature) {
             rebuildCapabilityRailSnapshot(for: signature)
@@ -490,6 +502,7 @@ struct WorkspaceRightRailView: View {
         .onChange(of: workspace.primaryPath) {
             loadSSHConnections()
             checkGitRepositories()
+            checkDockerEnvironments()
         }
         .onChange(of: workspace.id) {
             syncInstructionDraftFromWorkspace()
@@ -506,6 +519,10 @@ struct WorkspaceRightRailView: View {
         }
         .onChange(of: workspace.additionalPaths) {
             checkGitRepositories()
+            checkDockerEnvironments()
+        }
+        .onChange(of: workspace.activeExecutionEnvironmentJSON) {
+            checkDockerEnvironments()
         }
         .onChange(of: sshReloadTrigger) {
             loadSSHConnections()
@@ -923,29 +940,8 @@ struct WorkspaceRightRailView: View {
 
     private func capabilityListSubtitle(for item: RailCapabilityItem) -> String {
         let source = isWorkspaceAuthoredCapability(item) ? "Custom" : "Built-in"
-        let composition = capabilityCompositionSummary(for: item)
+        let composition = WorkspaceRightRailPresentation.compositionSummary(for: item)
         return "\(source): \(composition)"
-    }
-
-    private func capabilityCompositionSummary(for item: RailCapabilityItem) -> String {
-        var parts: [String] = []
-        appendCount(item.skillNames.count, singular: "skill", plural: "skills", to: &parts)
-        appendCount(item.connectorNames.count, singular: "connector", plural: "connectors", to: &parts)
-        appendCount(item.toolNames.count, singular: "tool", plural: "tools", to: &parts)
-        appendCount(item.browserAdapterNames.count, singular: "browser adapter", plural: "browser adapters", to: &parts)
-        appendCount(item.templateNames.count, singular: "template", plural: "templates", to: &parts)
-
-        if !parts.isEmpty {
-            return parts.joined(separator: ", ")
-        }
-
-        let fallback = item.presentation.rowSubtitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        return fallback.isEmpty ? "No resources" : fallback
-    }
-
-    private func appendCount(_ count: Int, singular: String, plural: String, to parts: inout [String]) {
-        guard count > 0 else { return }
-        parts.append("\(count) \(count == 1 ? singular : plural)")
     }
 
     private func isWorkspaceAuthoredCapability(_ item: RailCapabilityItem) -> Bool {
@@ -1098,17 +1094,13 @@ struct WorkspaceRightRailView: View {
         state: CapabilityRailPackageSnapshotState,
         prerequisiteStatuses: [String: HealthStatus]
     ) -> RailCapabilityItem {
+        let packageSummary = CapabilityPackageResourceSummary(package: package)
         let sharedResourceCount = state.linkedSkills.filter(\.isGlobal).count
             + state.linkedConnectors.filter(\.isGlobal).count
             + state.linkedTools.filter(\.isGlobal).count
         let workspaceResourceCount = state.linkedSkills.filter { !$0.isGlobal }.count
             + state.linkedConnectors.filter { !$0.isGlobal }.count
             + state.linkedTools.filter { !$0.isGlobal }.count
-        let declaredResourceCount = package.skills.count
-            + package.connectors.count
-            + package.localTools.count
-            + package.templates.count
-            + package.browserAdapters.count
         let readiness = readiness(
             for: package,
             stateReadiness: state.readiness,
@@ -1120,8 +1112,8 @@ struct WorkspaceRightRailView: View {
             workspaceName: workspace.name,
             sharedResourceCount: sharedResourceCount,
             workspaceResourceCount: workspaceResourceCount,
-            declaredResourceCount: declaredResourceCount,
-            contentSummary: package.contentSummary
+            declaredResourceCount: packageSummary.declaredResourceCount,
+            contentSummary: packageSummary.contentSummary(separator: ", ")
         )
 
         return RailCapabilityItem(
@@ -1137,6 +1129,7 @@ struct WorkspaceRightRailView: View {
             skillNames: RailStringList.uniqueSorted(package.skills.map(\.name) + state.linkedSkills.map(\.name)),
             connectorNames: RailStringList.uniqueSorted(package.connectors.map(\.name) + state.linkedConnectors.map { $0.name.isEmpty ? "Untitled Connector" : $0.name }),
             toolNames: RailStringList.uniqueSorted(package.localTools.map(\.name) + state.linkedTools.map { $0.name.isEmpty ? "Untitled Tool" : $0.name }),
+            mcpServerNames: packageSummary.mcpServerNames,
             browserAdapterNames: RailStringList.uniqueSorted(package.browserAdapters.map(browserAdapterDisplayName)),
             templateNames: RailStringList.uniqueSorted(package.templates.map(\.name)),
             requirementNames: RailStringList.uniqueSorted(package.prerequisites.map(\.displayName))
@@ -2114,6 +2107,15 @@ struct WorkspaceRightRailView: View {
                 self.hasGitRepositories = !repos.isEmpty
             }
         }
+    }
+
+    private func checkDockerEnvironments() {
+        let candidates = DockerWorkspaceDiscoveryService.candidates(
+            primaryPath: workspace.primaryPath,
+            additionalPaths: workspace.additionalPaths
+        )
+        let active = ExecutionEnvironmentStore.decode(workspace.activeExecutionEnvironmentJSON)
+        hasDockerEnvironments = active.isContainerized || !candidates.isEmpty
     }
 
     private var workspaceDisclosureID: String {

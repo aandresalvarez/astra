@@ -37,6 +37,11 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV6.models.count == 10)
     }
 
+    @Test("SchemaV7 declares all 10 model types")
+    func v7ModelCount() {
+        #expect(ASTRASchemaV7.models.count == 10)
+    }
+
     @Test("SchemaV1 version identifier is 1.0.0")
     func v1VersionIdentifier() {
         #expect(ASTRASchemaV1.versionIdentifier == Schema.Version(1, 0, 0))
@@ -67,14 +72,29 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV6.versionIdentifier == Schema.Version(6, 0, 0))
     }
 
-    @Test("Migration plan lists SchemaV1 through SchemaV6")
-    func migrationPlanHasVersions() {
-        #expect(ASTRAMigrationPlan.schemas.count == 6)
+    @Test("SchemaV7 version identifier is 7.0.0")
+    func v7VersionIdentifier() {
+        #expect(ASTRASchemaV7.versionIdentifier == Schema.Version(7, 0, 0))
     }
 
-    @Test("Migration plan has V1 to V6 lightweight stages")
+    @Test("SchemaV8 declares 15 model types (10 + 5 Workspace App models)")
+    func v8ModelCount() {
+        #expect(ASTRASchemaV8.models.count == 15)
+    }
+
+    @Test("SchemaV8 version identifier is 8.0.0")
+    func v8VersionIdentifier() {
+        #expect(ASTRASchemaV8.versionIdentifier == Schema.Version(8, 0, 0))
+    }
+
+    @Test("Migration plan lists SchemaV1 through SchemaV8")
+    func migrationPlanHasVersions() {
+        #expect(ASTRAMigrationPlan.schemas.count == 8)
+    }
+
+    @Test("Migration plan has V1 to V8 lightweight stages")
     func migrationPlanHasStage() {
-        #expect(ASTRAMigrationPlan.stages.count == 5)
+        #expect(ASTRAMigrationPlan.stages.count == 7)
     }
 
     @Test("ModelContainer can be created with versioned schema")
@@ -85,7 +105,7 @@ struct SchemaVersionTests {
             migrationPlan: ASTRAMigrationPlan.self,
             configurations: [config]
         )
-        #expect(container.schema.entities.count == 10)
+        #expect(container.schema.entities.count == 15)
     }
 
     @MainActor
@@ -105,6 +125,7 @@ struct SchemaVersionTests {
         #expect(workspace.enabledCapabilityIDs.isEmpty)
         #expect(workspace.isStarred == false)
         #expect(workspace.activeWorkingPath == nil)
+        #expect(workspace.activeExecutionEnvironmentJSON == nil)
 
         let skill = Skill(name: "Reader", allowedTools: ["Read"])
         skill.workspace = workspace
@@ -125,9 +146,11 @@ struct SchemaVersionTests {
         let task = AgentTask(title: "Test Task", goal: "Do something", workspace: workspace)
         task.skills = [skill]
         #expect(task.executionRootPath == nil)
+        #expect(ExecutionEnvironmentStore.decode(task.executionEnvironmentSnapshotJSON).isHost)
         context.insert(task)
 
         let run = TaskRun(task: task)
+        #expect(ExecutionEnvironmentStore.decode(run.executionEnvironmentSnapshotJSON).isHost)
         context.insert(run)
 
         let event = TaskEvent(task: task, type: "test", run: run)
@@ -391,9 +414,76 @@ struct SchemaVersionTests {
         let context = migratedContainer.mainContext
         let migratedWorkspace = try #require(try context.fetch(FetchDescriptor<Workspace>()).first)
         #expect(migratedWorkspace.activeWorkingPath == nil)
+        #expect(migratedWorkspace.activeExecutionEnvironmentJSON == nil)
         #expect(migratedWorkspace.isUsingWorktree == false)
 
         let migratedTask = try #require(try context.fetch(FetchDescriptor<AgentTask>()).first)
         #expect(migratedTask.executionRootPath == nil)
+        #expect(migratedTask.executionEnvironmentSnapshotJSON == nil)
+
+        let migratedRuns = try context.fetch(FetchDescriptor<TaskRun>())
+        #expect(migratedRuns.allSatisfy { $0.executionEnvironmentSnapshotJSON == nil })
+    }
+
+    @MainActor
+    @Test("SchemaV7 store (main's released 10-entity schema) migrates to V8 and gains the 5 Workspace App tables")
+    func v7StoreMigratesToWorkspaceAppTables() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-schema-v7-migration-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // Write a store at main's V7 (10 core entities, NO Workspace App tables). V7 references the
+        // live top-level @Model classes, so we insert live Workspace/AgentTask/TaskRun here.
+        let storeURL = root.appendingPathComponent("store.store")
+        var oldContainer: ModelContainer? = try ModelContainer(
+            for: Schema(versionedSchema: ASTRASchemaV7.self),
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+        let oldContext = try #require(oldContainer?.mainContext)
+        let oldWorkspace = Workspace(name: "Legacy V7", primaryPath: "/tmp/legacy-v7")
+        oldContext.insert(oldWorkspace)
+        let oldTask = AgentTask(title: "Legacy V7 Task", goal: "Do work", workspace: oldWorkspace)
+        oldContext.insert(oldTask)
+        oldContext.insert(TaskRun(task: oldTask))
+        try oldContext.save()
+        // Capture the id BEFORE tearing down the old container — the model instance is faulted/destroyed
+        // once its container is released, so reading `oldWorkspace.id` afterward would crash.
+        let oldWorkspaceID = oldWorkspace.id
+        oldContainer = nil
+
+        // Reopen at current (V8) through the migration plan: the V7 -> V8 lightweight stage must
+        // create the 5 additive Workspace App tables while preserving the existing core rows.
+        let migratedContainer = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+        let context = migratedContainer.mainContext
+
+        // Existing core rows survive the migration.
+        #expect(try context.fetch(FetchDescriptor<Workspace>()).count == 1)
+        #expect(try context.fetch(FetchDescriptor<AgentTask>()).count == 1)
+
+        // The 5 new tables exist (an empty fetch would THROW if the table were missing) and are writable.
+        #expect(try context.fetch(FetchDescriptor<WorkspaceApp>()).isEmpty)
+        #expect(try context.fetch(FetchDescriptor<WorkspaceAppRun>()).isEmpty)
+        #expect(try context.fetch(FetchDescriptor<WorkspaceAppRunEvent>()).isEmpty)
+        #expect(try context.fetch(FetchDescriptor<WorkspaceAppDependencyBinding>()).isEmpty)
+        #expect(try context.fetch(FetchDescriptor<WorkspaceAppAutomationState>()).isEmpty)
+
+        let app = WorkspaceApp(
+            workspaceID: oldWorkspaceID,
+            logicalID: "legacy-v7-app",
+            name: "Migrated App",
+            manifestRelativePath: "apps/legacy-v7-app/manifest.json",
+            appDirectoryRelativePath: "apps/legacy-v7-app",
+            manifestDigest: "deadbeef"
+        )
+        context.insert(app)
+        try context.save()
+        let apps = try context.fetch(FetchDescriptor<WorkspaceApp>())
+        #expect(apps.count == 1)
+        #expect(apps.first?.name == "Migrated App")
     }
 }

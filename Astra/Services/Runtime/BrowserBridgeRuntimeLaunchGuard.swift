@@ -4,46 +4,59 @@ import ASTRACore
 struct BrowserBridgeRuntimeLaunchMetadata: Equatable {
     let isAttached: Bool
     let shellToolSupported: Bool
+    let mcpToolSupported: Bool
     let launchBlockReason: String
 
     var commandPlannedFields: [String: String] {
         [
             "browser_bridge_attached": String(isAttached),
             "browser_bridge_shell_tool_supported": String(shellToolSupported),
+            "browser_bridge_mcp_tool_supported": String(mcpToolSupported),
+            "browser_bridge_tool_transport": toolTransport,
             "browser_bridge_launch_block_reason": launchBlockReason
         ]
+    }
+
+    private var toolTransport: String {
+        guard isAttached else { return "none" }
+        if mcpToolSupported { return "mcp" }
+        if shellToolSupported { return "cli" }
+        return "unsupported"
     }
 }
 
 enum BrowserBridgeRuntimeLaunchGuard {
-    static let missingShellToolReason = "provider_missing_browser_shell_tool"
+    static let missingBrowserControlToolReason = "provider_missing_browser_control_tool"
 
     static func planMetadata(
         runtime: AgentRuntimeID,
-        environment: [String: String]
+        environment: [String: String],
+        mcpToolSupported: Bool = false
     ) -> BrowserBridgeRuntimeLaunchMetadata {
         let isAttached = environment["ASTRA_BROWSER_URL"]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         let shellToolSupported = supportsShellToolForBrowserBridge(runtime: runtime)
+        let launchSupported = shellToolSupported || mcpToolSupported
         return BrowserBridgeRuntimeLaunchMetadata(
             isAttached: isAttached,
             shellToolSupported: shellToolSupported,
-            launchBlockReason: isAttached && !shellToolSupported ? missingShellToolReason : "none"
+            mcpToolSupported: mcpToolSupported,
+            launchBlockReason: isAttached && !launchSupported ? missingBrowserControlToolReason : "none"
         )
     }
 
     static func launchBlock(for plan: AgentRuntimeProcessLaunchPlan) -> AgentProcessResult? {
         guard plan.environment["ASTRA_BROWSER_URL"]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
-              plan.commandPlannedFields["browser_bridge_launch_block_reason"] == missingShellToolReason else {
+              plan.commandPlannedFields["browser_bridge_launch_block_reason"] == missingBrowserControlToolReason else {
             return nil
         }
 
         let message = """
-        ASTRA blocked this browser task before launch because \(plan.runtime.displayName) cannot execute the astra-browser command from the task. The browser bridge requires a provider runtime with a shell/Bash execution tool. Switch this task to a shell-capable runtime, such as Claude Code or Codex CLI, then retry.
+        ASTRA blocked this browser task before launch because \(plan.runtime.displayName) cannot access a browser-control transport from the task. The browser bridge requires either a provider runtime with a shell/Bash execution tool or a provider-native ASTRA browser MCP tool. Switch this task to a runtime that supports one of those transports, such as Claude Code or Codex CLI, then retry.
         """
         return AgentProcessResult(
             exitCode: -1,
             error: message,
-            runtimeStopReason: missingShellToolReason,
+            runtimeStopReason: missingBrowserControlToolReason,
             runtimeStopMessage: message
         )
     }
@@ -54,7 +67,7 @@ enum BrowserBridgeRuntimeLaunchGuard {
             return nil
         }
         return (
-            missingShellToolReason,
+            missingBrowserControlToolReason,
             "ASTRA stopped browser control because the selected provider reported that it cannot execute the astra-browser command: no shell/Bash execution tool is available. Switch to a shell-capable runtime, such as Claude Code or Codex CLI, then retry the browser task."
         )
     }

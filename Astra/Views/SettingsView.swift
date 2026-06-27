@@ -1306,7 +1306,7 @@ struct SettingsView: View {
             HStack {
                 Picker("Budget", selection: roleBudgetBinding(for: role)) {
                     ForEach(budgetPresets, id: \.self) { budget in
-                        Text(budget == 0 ? "Unlimited" : "\(budget / 1000)k tokens").tag(budget)
+                        Text(RuntimeBudgetPresentation.settingsLabel(for: budget)).tag(budget)
                     }
                 }
                 Picker("Policy", selection: rolePolicyBinding(for: role)) {

@@ -106,6 +106,51 @@ invalidates a prior local approval.
 - `browserAdapters`: IDs for ASTRA-known native browser adapters.
 - `prerequisites`: local CLI readiness checks.
 
+### MCP Install Sources
+
+Each `mcpServers[]` entry may include optional `installSource` metadata. This
+metadata is not executed by the importer. It records where the MCP server comes
+from so ASTRA can show policy, readiness, and launch-preflight guidance before
+the server is enabled.
+
+Use `command` and `arguments` for the runtime launch contract, and
+`installSource` for provenance:
+
+```json
+{
+  "id": "github",
+  "displayName": "GitHub MCP",
+  "transport": "stdio",
+  "command": "npx",
+  "arguments": ["-y", "@acme/github-mcp@1.0.0"],
+  "installSource": {
+    "kind": "npm",
+    "identifier": "@acme/github-mcp",
+    "version": "1.0.0",
+    "installMode": "npx",
+    "registryURL": "https://registry.npmjs.org/",
+    "packageManagerArguments": ["-y"],
+    "riskNotes": []
+  }
+}
+```
+
+Supported `installSource.kind` values are `npm`, `pypi`, `nuget`, `oci`,
+`dockerImage`, `mcpb`, `remoteHTTP`, `localBinary`, and `unknown`. Supported
+`installMode` values are `npx`, `uvx`, `pipx`, `dotnetTool`, `dockerGateway`,
+`dockerRun`, `globalBinary`, `localBinary`, `remote`, and `manual`.
+
+Prefer exact versions or immutable digests:
+
+- npm: `npx -y @scope/server@1.2.3`
+- PyPI/uvx: `uvx mcp-server==1.2.3`
+- Docker: `docker run --rm -i ghcr.io/org/server:1.2.3` or a digest-pinned image
+- Remote MCP: HTTPS URLs only, except loopback HTTP for local development
+
+Versionless package-manager targets and unpinned Docker images are accepted for
+review but surfaced as higher-risk warnings. Remote HTTP URLs outside loopback
+are blocked.
+
 ## Validation Rules
 
 The importer blocks:
@@ -134,6 +179,8 @@ The importer warns:
 - source metadata was reset to local
 - approval was reset to draft
 - declared prerequisites are missing locally
+- MCP install sources are mutable, unpinned, or otherwise require elevated
+  review before approval
 - package has no installable payload
 - a strictly newer version of an installed local package imports as an
   update: the file is replaced, the package returns to draft, and the
@@ -186,6 +233,13 @@ Then open ASTRA Dev, review the imported package in Manage Capabilities, approve
 The in-app `New Capability` flow uses the same `PluginPackage` schema. When a repository-level `capabilities/` folder is available, the create flow can save the generated package JSON into `capabilities/local/` before installing or enabling it in ASTRA Dev.
 
 Set `ASTRA_CAPABILITY_SOURCE_LIBRARY=/path/to/capabilities/local` to override the source directory used by the app. The exported JSON is always saved as a local draft package; approval records are not written to source JSON.
+
+MCP servers can also start from pasted text. In chat, use `/mcp <target>` or
+paste an obvious MCP target; in Manage Capabilities, use `Add MCP Server`.
+ASTRA recognizes exact `npx` commands, `npm:` targets, `uvx` commands, Docker
+run commands, HTTPS remote MCP URLs, and Claude-style JSON containing a
+top-level `mcpServers` object. The paste flow creates a local draft capability
+package and opens the same governed review UI as hand-authored package JSON.
 
 ## Runtime Boundary
 

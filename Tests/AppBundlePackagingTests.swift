@@ -6,6 +6,8 @@ struct AppBundlePackagingTests {
     private let swiftMailTools = [
         "astra-browser": "AstraBrowserTool",
         "astra-local-model": "AstraLocalModelTool",
+        "astra-host-control": "AstraHostControlTool",
+        "astra-workspace": "AstraWorkspaceTool",
         "stanford-mail": "StanfordMailTool",
         "stanford-apple-mail": "StanfordAppleMailTool",
         "stanford-graph-mail": "StanfordGraphMailTool"
@@ -392,7 +394,15 @@ struct AppBundlePackagingTests {
         for (command, target) in swiftMailTools {
             #expect(package.contains(".executable(name: \"\(command)\", targets: [\"\(target)\"])"))
             #expect(package.contains("name: \"\(target)\""))
-            #expect(package.contains("dependencies: [\"MailToolSupport\"]"))
+            if command == "astra-browser" || command == "astra-local-model" {
+                #expect(package.contains("dependencies: [\"ASTRACore\"]"))
+            } else if command == "astra-host-control" {
+                #expect(package.contains("dependencies: [\"HostControlToolSupport\"]"))
+            } else if command == "astra-workspace" {
+                #expect(package.contains("dependencies: [\"WorkspaceToolSupport\"]"))
+            } else {
+                #expect(package.contains("dependencies: [\"MailToolSupport\"]"))
+            }
             #expect(package.contains("path: \"Tools/\(target)\""))
             #expect(script.contains("\"\(command)\""))
 

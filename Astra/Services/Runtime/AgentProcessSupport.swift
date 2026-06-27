@@ -521,295 +521,6 @@ final class AgentLockedBuffer: @unchecked Sendable {
     }
 }
 
-struct AgentRuntimeStreamDebugSnapshot: Sendable {
-    let rawLineCount: Int
-    let jsonLineCount: Int
-    let plainTextLineCount: Int
-    let parsedEventCount: Int
-    let emittedEventCount: Int
-    let stdoutBytes: Int
-    let stderrBytes: Int
-    let durationMs: Int
-    let firstLineLatencyMs: Int?
-    let lastLineOffsetMs: Int?
-    let eventTypeCounts: [String: Int]
-    let rawSamples: [String]
-    let unknownJSONShapes: [String]
-    let stderrTail: String?
-
-    var fields: [String: String] {
-        var fields: [String: String] = [
-            "raw_lines": String(rawLineCount),
-            "json_lines": String(jsonLineCount),
-            "plain_text_lines": String(plainTextLineCount),
-            "parsed_events": String(parsedEventCount),
-            "emitted_events": String(emittedEventCount),
-            "stdout_bytes": String(stdoutBytes),
-            "stderr_bytes": String(stderrBytes),
-            "duration_ms": String(durationMs),
-            "raw_samples": String(rawSamples.count),
-            "unknown_json_shapes": String(unknownJSONShapes.count),
-            "stderr_tail_chars": String(stderrTail?.count ?? 0),
-            "event_types": eventTypeCounts
-                .sorted { $0.key < $1.key }
-                .map { "\($0.key):\($0.value)" }
-                .joined(separator: ",")
-        ]
-        if let firstLineLatencyMs {
-            fields["first_line_latency_ms"] = String(firstLineLatencyMs)
-        }
-        if let lastLineOffsetMs {
-            fields["last_line_offset_ms"] = String(lastLineOffsetMs)
-        }
-        return fields
-    }
-}
-
-final class AgentRuntimeStreamDebugCapture: @unchecked Sendable {
-    static let environmentKey = "ASTRA_STREAM_DEBUG"
-
-    private let lock = NSLock()
-    private let startedAt = Date()
-    private let maxRawSamples: Int
-    private let maxUnknownJSONShapes: Int
-    private let maxSampleLength: Int
-    private let maxStderrTailLength: Int
-
-    private var rawLineCount = 0
-    private var jsonLineCount = 0
-    private var plainTextLineCount = 0
-    private var parsedEventCount = 0
-    private var emittedEventCount = 0
-    private var stdoutBytes = 0
-    private var stderrBytes = 0
-    private var firstLineAt: Date?
-    private var lastLineAt: Date?
-    private var eventTypeCounts: [String: Int] = [:]
-    private var rawSamples: [String] = []
-    private var unknownJSONShapes: [String] = []
-    private var stderrTail = ""
-
-    init(
-        maxRawSamples: Int = 4,
-        maxUnknownJSONShapes: Int = 4,
-        maxSampleLength: Int = 500,
-        maxStderrTailLength: Int = 2_000
-    ) {
-        self.maxRawSamples = maxRawSamples
-        self.maxUnknownJSONShapes = maxUnknownJSONShapes
-        self.maxSampleLength = maxSampleLength
-        self.maxStderrTailLength = maxStderrTailLength
-    }
-
-    static var isEnabled: Bool {
-        isEnabled(environment: ProcessInfo.processInfo.environment)
-    }
-
-    static func isEnabled(environment: [String: String], defaults: UserDefaults = .standard) -> Bool {
-        guard let value = environment[environmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-              !value.isEmpty else {
-            return LoggingPreferences.runtimeStreamDebugCaptureEnabled(in: defaults)
-        }
-        return !["0", "false", "no", "off"].contains(value)
-    }
-
-    static func makeIfEnabled() -> AgentRuntimeStreamDebugCapture? {
-        isEnabled ? AgentRuntimeStreamDebugCapture() : nil
-    }
-
-    func recordLine(_ line: String, parsesJSONLines: Bool) {
-        let now = Date()
-        lock.lock()
-        rawLineCount += 1
-        if parsesJSONLines {
-            jsonLineCount += 1
-        } else {
-            plainTextLineCount += 1
-        }
-        stdoutBytes += line.utf8.count
-        if firstLineAt == nil {
-            firstLineAt = now
-        }
-        lastLineAt = now
-        if rawSamples.count < maxRawSamples {
-            rawSamples.append(Self.truncated(line, limit: maxSampleLength))
-        }
-        lock.unlock()
-    }
-
-    func recordParsed(_ events: [ParsedEvent], rawLine: String) {
-        lock.lock()
-        parsedEventCount += events.count
-        for event in events {
-            let type = Self.eventType(event)
-            eventTypeCounts[type, default: 0] += 1
-            if case .unknown(let unknownType) = event {
-                appendUnknownJSONShape(raw: rawLine, eventType: unknownType)
-            }
-        }
-        if events.isEmpty {
-            appendUnknownJSONShape(raw: rawLine, eventType: nil)
-        }
-        lock.unlock()
-    }
-
-    func recordParsed(_ events: [AgentEvent], rawLine: String) {
-        lock.lock()
-        parsedEventCount += events.count
-        for event in events {
-            let type = Self.eventType(event)
-            eventTypeCounts[type, default: 0] += 1
-            if case .unknown(_, let unknownType, let raw) = event {
-                appendUnknownJSONShape(raw: raw.isEmpty ? rawLine : raw, eventType: unknownType)
-            }
-        }
-        if events.isEmpty {
-            appendUnknownJSONShape(raw: rawLine, eventType: nil)
-        }
-        lock.unlock()
-    }
-
-    func recordEmitted(_ events: [ParsedEvent]) {
-        lock.lock()
-        emittedEventCount += events.count
-        lock.unlock()
-    }
-
-    func recordEmitted(_ events: [AgentEvent]) {
-        lock.lock()
-        emittedEventCount += events.count
-        lock.unlock()
-    }
-
-    func recordStderr(_ stderr: String?) {
-        guard let stderr, !stderr.isEmpty else { return }
-        lock.lock()
-        stderrBytes += stderr.utf8.count
-        stderrTail += stderr
-        if stderrTail.count > maxStderrTailLength {
-            stderrTail = String(stderrTail.suffix(maxStderrTailLength))
-        }
-        lock.unlock()
-    }
-
-    func snapshot() -> AgentRuntimeStreamDebugSnapshot {
-        let finishedAt = Date()
-        lock.lock()
-        defer { lock.unlock() }
-        return AgentRuntimeStreamDebugSnapshot(
-            rawLineCount: rawLineCount,
-            jsonLineCount: jsonLineCount,
-            plainTextLineCount: plainTextLineCount,
-            parsedEventCount: parsedEventCount,
-            emittedEventCount: emittedEventCount,
-            stdoutBytes: stdoutBytes,
-            stderrBytes: stderrBytes,
-            durationMs: Self.milliseconds(from: startedAt, to: finishedAt),
-            firstLineLatencyMs: firstLineAt.map { Self.milliseconds(from: startedAt, to: $0) },
-            lastLineOffsetMs: lastLineAt.map { Self.milliseconds(from: startedAt, to: $0) },
-            eventTypeCounts: eventTypeCounts,
-            rawSamples: rawSamples,
-            unknownJSONShapes: unknownJSONShapes,
-            stderrTail: stderrTail.isEmpty ? nil : stderrTail
-        )
-    }
-
-    private func appendUnknownJSONShape(raw: String, eventType: String?) {
-        guard unknownJSONShapes.count < maxUnknownJSONShapes,
-              let shape = Self.jsonShape(raw: raw, eventType: eventType),
-              !unknownJSONShapes.contains(shape) else {
-            return
-        }
-        unknownJSONShapes.append(shape)
-    }
-
-    private static func jsonShape(raw: String, eventType: String?) -> String? {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.first == "{",
-              let data = trimmed.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
-        }
-
-        let type = eventType
-            ?? firstString(in: object, keys: ["type", "event", "kind", "sessionUpdate", "name"])
-            ?? "unknown"
-        var parts = [
-            "type=\(type)",
-            "keys=\(object.keys.sorted().joined(separator: ","))"
-        ]
-        for key in ["data", "payload", "message", "content", "delta"] {
-            if let nested = object[key] as? [String: Any] {
-                parts.append("\(key)_keys=\(nested.keys.sorted().joined(separator: ","))")
-            }
-        }
-        return truncated(parts.joined(separator: " "), limit: 500)
-    }
-
-    private static func firstString(in object: [String: Any], keys: [String]) -> String? {
-        for key in keys {
-            if let value = object[key] as? String, !value.isEmpty {
-                return value
-            }
-        }
-        for key in ["data", "payload", "message"] {
-            if let nested = object[key] as? [String: Any],
-               let value = firstString(in: nested, keys: keys) {
-                return value
-            }
-        }
-        return nil
-    }
-
-    private static func eventType(_ event: ParsedEvent) -> String {
-        switch event {
-        case .systemInit: "system_init"
-        case .thinking: "thinking"
-        case .text: "text"
-        case .toolUse: "tool_use"
-        case .toolResult: "tool_result"
-        case .usage: "usage"
-        case .result: "result"
-        case .teammateStarted: "teammate_started"
-        case .teammateCompleted: "teammate_completed"
-        case .teamCreated: "team_created"
-        case .teamDeleted: "team_deleted"
-        case .teamMessage: "team_message"
-        case .permissionDenied: "permission_denied"
-        case .astraProtocol: "astra_protocol"
-        case .unknown(let type): "unknown:\(type)"
-        }
-    }
-
-    private static func eventType(_ event: AgentEvent) -> String {
-        switch event {
-        case .control(let type): "control:\(type)"
-        case .started: "started"
-        case .thinking: "thinking"
-        case .text: "text"
-        case .toolUse: "tool_use"
-        case .toolResult: "tool_result"
-        case .fileChange: "file_change"
-        case .permissionRequested: "permission_requested"
-        case .stats: "stats"
-        case .diagnostic(let kind, _): "diagnostic:\(kind)"
-        case .astraProtocol: "astra_protocol"
-        case .completed: "completed"
-        case .failed: "failed"
-        case .unknown(_, let type, _): "unknown:\(type)"
-        }
-    }
-
-    private static func milliseconds(from start: Date, to end: Date) -> Int {
-        max(0, Int(end.timeIntervalSince(start) * 1_000))
-    }
-
-    private static func truncated(_ text: String, limit: Int) -> String {
-        guard text.count > limit else { return text }
-        return String(text.prefix(limit)) + " [truncated]"
-    }
-}
-
 struct AgentRuntimeStreamTelemetrySnapshot: Sendable {
     let rawLineCount: Int
     let jsonLineCount: Int
@@ -1006,6 +717,33 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         let summary: String?
     }
 
+    private struct ManagedWorkspaceJobContext {
+        let id: String
+        var status: String
+        var heartbeatPath: String?
+        var resultPath: String?
+        var lastObservedAt: Date
+        var lastHeartbeatAt: Date?
+
+        var isTerminal: Bool {
+            Self.isTerminal(status: status)
+        }
+
+        static func isTerminal(status: String) -> Bool {
+            switch status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "succeeded", "failed", "cancelled", "timed_out", "timedout":
+                return true
+            default:
+                return false
+            }
+        }
+    }
+
+    private struct ManagedWorkspaceJobFileState {
+        var status: String?
+        var timestamp: Date?
+    }
+
     enum RuntimeProgressKind: String {
         case lifecycleMetadata = "lifecycle_metadata"
         case providerLiveness = "provider_liveness"
@@ -1022,6 +760,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     let maxRepetitions: Int
     let idleTimeoutSeconds: TimeInterval
     let noSemanticProgressTimeoutSeconds: TimeInterval
+    let activeToolIdleTimeoutSeconds: TimeInterval
+    let managedWorkspaceJobIdleTimeoutSeconds: TimeInterval
     let terminalProgressExitGraceSeconds: TimeInterval
     let taskID: UUID
     let policyGuard: AgentRuntimePolicyGuard?
@@ -1053,6 +793,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
 
     private var browserToolUseIDs: Set<String> = []
     private var browserShellIDs: Set<String> = []
+    private var activeToolUseIDs: Set<String> = []
+    private var activeManagedWorkspaceJobs: [String: ManagedWorkspaceJobContext] = [:]
     private var toolUseContextsByID: [String: ToolUseContext] = [:]
     /// Insertion order for `toolUseContextsByID`, used to evict the oldest
     /// entries so the keyed map can't grow unbounded across a long run.
@@ -1099,6 +841,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         maxRepetitions: Int = 8,
         idleTimeoutSeconds: TimeInterval = 600,
         noSemanticProgressTimeoutSeconds: TimeInterval? = nil,
+        activeToolIdleTimeoutSeconds: TimeInterval? = nil,
+        managedWorkspaceJobIdleTimeoutSeconds: TimeInterval? = nil,
         terminalProgressExitGraceSeconds: TimeInterval? = nil,
         taskID: UUID = UUID(),
         policyGuard: AgentRuntimePolicyGuard? = nil,
@@ -1110,6 +854,9 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         self.maxRepetitions = maxRepetitions
         self.idleTimeoutSeconds = idleTimeoutSeconds
         self.noSemanticProgressTimeoutSeconds = noSemanticProgressTimeoutSeconds ?? min(idleTimeoutSeconds, 180)
+        let resolvedActiveToolIdleTimeoutSeconds = activeToolIdleTimeoutSeconds ?? max(idleTimeoutSeconds, 3600)
+        self.activeToolIdleTimeoutSeconds = resolvedActiveToolIdleTimeoutSeconds
+        self.managedWorkspaceJobIdleTimeoutSeconds = managedWorkspaceJobIdleTimeoutSeconds ?? max(resolvedActiveToolIdleTimeoutSeconds, 6 * 3600)
         self.terminalProgressExitGraceSeconds = terminalProgressExitGraceSeconds ?? min(self.noSemanticProgressTimeoutSeconds, 30)
         self.taskID = taskID
         self.policyGuard = policyGuard
@@ -1151,6 +898,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         if case .toolUse(let name, let id, let input) = parsed {
             rememberToolUse(name: name, id: id, input: input)
             if !id.isEmpty {
+                activeToolUseIDs.insert(id)
                 let isBrowserTool = Self.isBrowserToolUse(name: name, input: input)
                 let isBrowserShellContinuation = Self.browserShellIDs(fromToolInput: input).contains { browserShellIDs.contains($0) }
                 if isBrowserTool || isBrowserShellContinuation {
@@ -1184,6 +932,16 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         }
 
         if case .toolResult(let toolID, let content) = parsed {
+            if !toolID.isEmpty {
+                activeToolUseIDs.remove(toolID)
+            }
+            if let jobContext = Self.managedWorkspaceJobContext(fromToolResult: content, observedAt: now) {
+                if jobContext.isTerminal {
+                    activeManagedWorkspaceJobs.removeValue(forKey: jobContext.id)
+                } else {
+                    activeManagedWorkspaceJobs[jobContext.id] = jobContext
+                }
+            }
             if Self.isProviderPermissionDenial(content) {
                 return recordProviderPermissionDenial(
                     toolID: toolID,
@@ -1191,6 +949,9 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
                     detail: content,
                     process: process
                 )
+            }
+            if let denial = RuntimeSandboxDenialDiagnostics.fileDenial(in: content) {
+                return recordOSSandboxFileDenial(denial, toolID: toolID, process: process)
             }
             let isKnownBrowserTool = !toolID.isEmpty && browserToolUseIDs.contains(toolID)
             if isKnownBrowserTool {
@@ -1421,6 +1182,67 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             return context
         }
         return recentToolUseContexts.last
+    }
+
+    private static func managedWorkspaceJobContext(fromToolResult content: String, observedAt: Date) -> ManagedWorkspaceJobContext? {
+        let fields = managedWorkspaceJobFields(in: content)
+        guard let jobID = fields["job_id"],
+              let status = fields["status"] else {
+            return nil
+        }
+        let heartbeatPath = usableManagedWorkspaceJobPath(fields["heartbeat"])
+        let resultPath = usableManagedWorkspaceJobPath(fields["result"])
+        let heartbeatTimestamp = fields["last_heartbeat_at"].flatMap(parseISO8601Date)
+        return ManagedWorkspaceJobContext(
+            id: jobID,
+            status: status,
+            heartbeatPath: heartbeatPath,
+            resultPath: resultPath,
+            lastObservedAt: heartbeatTimestamp ?? observedAt,
+            lastHeartbeatAt: heartbeatTimestamp
+        )
+    }
+
+    private static func managedWorkspaceJobFields(in content: String) -> [String: String] {
+        var fields: [String: String] = [:]
+        for line in content.split(separator: "\n", omittingEmptySubsequences: false) {
+            guard let separatorIndex = line.firstIndex(of: ":") else { continue }
+            let key = String(line[..<separatorIndex])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            let value = String(line[line.index(after: separatorIndex)...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty, !value.isEmpty else { continue }
+            fields[key] = value
+        }
+        return fields
+    }
+
+    private static func usableManagedWorkspaceJobPath(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty, trimmed != "<unavailable>" else { return nil }
+        return trimmed
+    }
+
+    private static func managedWorkspaceJobFileState(atPath path: String) -> ManagedWorkspaceJobFileState? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path, isDirectory: false)),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        let status = object["status"] as? String
+        let timestampString = (object["timestamp"] as? String) ?? (object["completedAt"] as? String)
+        return ManagedWorkspaceJobFileState(
+            status: status,
+            timestamp: timestampString.flatMap(parseISO8601Date)
+        )
+    }
+
+    private static func fileModificationDate(atPath path: String) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate]) as? Date
+    }
+
+    private static func parseISO8601Date(_ value: String) -> Date? {
+        ISO8601DateFormatter().date(from: value.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     private static func isBrowserToolUse(name: String, input: [String: Any]?) -> Bool {
@@ -1946,11 +1768,46 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         return true
     }
 
-    private func recordRuntimeStop(reason: String, message: String, process: AgentRuntimeProcessControl?) -> Bool {
+    private func recordOSSandboxFileDenial(
+        _ denial: RuntimeSandboxFileDenial,
+        toolID: String?,
+        process: AgentRuntimeProcessControl?
+    ) -> Bool {
+        guard _runtimeStopReason == nil else { return false }
+        let context = toolContext(for: toolID)
+        let toolName = Self.nonEmpty(context?.name) ?? "Tool"
+        let requestText = context?.summary
+            .map { "\nRecent request: \(LogSanitizer.sanitize($0, maxLength: 500))" }
+            ?? ""
+        let message = """
+        ASTRA's macOS sandbox denied \(toolName) \(denial.operation.rawValue) access to \(denial.path).
+        Auto mode can skip provider approval prompts, but it does not bypass ASTRA's OS sandbox. The needed host path must be explicitly projected before the provider launches.\(requestText)
+        Detail: \(denial.detail)
+        """
+        AppLogger.audit(.workerBlocked, category: "Worker", taskID: taskID, fields: [
+            "reason": denial.stopReason,
+            "source": "os_sandbox_denial",
+            "operation": denial.operation.rawValue,
+            "path": denial.path,
+            "tool": toolName,
+            "detail": denial.detail
+        ], level: .error, fieldMaxLength: 360)
+        _runtimeStopReason = denial.stopReason
+        _runtimeStopMessage = message
+        process?.terminate()
+        return true
+    }
+
+    private func recordRuntimeStop(
+        reason: String,
+        message: String,
+        process: AgentRuntimeProcessControl?,
+        source: String = "browser_terminal_error"
+    ) -> Bool {
         guard _runtimeStopReason == nil else { return false }
         AppLogger.audit(.workerBlocked, category: "Worker", taskID: taskID, fields: [
             "reason": reason,
-            "source": "browser_terminal_error",
+            "source": source,
             "message": message
         ], level: .error, fieldMaxLength: 260)
         _runtimeStopReason = reason
@@ -2034,13 +1891,18 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         let idleDuration = now.timeIntervalSince(lastActivityTime)
         let anyIdleDuration = now.timeIntervalSince(lastAnyActivityTime)
         let terminalIdleDuration = lastTerminalProgressTime.map { now.timeIntervalSince($0) }
+        let stalledManagedWorkspaceJob = refreshManagedWorkspaceJobs(now: now)
         let hasMetadataOnlyActivity = hasSeenAnyActivity
             && !hasSeenProviderLivenessActivity
             && !hasSeenProgressActivity
         let hasProviderLivenessOnlyActivity = hasSeenProviderLivenessActivity
             && !hasSeenProgressActivity
+        let hasActiveToolUse = !activeToolUseIDs.isEmpty
+        let hasActiveManagedWorkspaceJob = !activeManagedWorkspaceJobs.isEmpty
+        let hasActiveRuntimeWork = hasActiveToolUse || hasActiveManagedWorkspaceJob
         let hasStalledAfterProgress = hasSeenProgressActivity
             && terminalIdleDuration == nil
+            && !hasActiveRuntimeWork
             && anyIdleDuration < idleTimeoutSeconds
             && idleDuration >= noSemanticProgressTimeoutSeconds
         lock.unlock()
@@ -2054,7 +1916,52 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             return true
         }
 
-        if hasMetadataOnlyActivity && idleDuration >= noSemanticProgressTimeoutSeconds {
+        if let stalledManagedWorkspaceJob {
+            let reason = "provider_workspace_job_stalled"
+            let lastObservedAge = max(0, Int(now.timeIntervalSince(stalledManagedWorkspaceJob.lastObservedAt)))
+            let message = """
+            ASTRA stopped the provider because managed workspace job \(stalledManagedWorkspaceJob.id) stopped producing a fresh heartbeat for \(lastObservedAge) seconds.
+            Long-running Docker workspace commands can run for hours, but ASTRA requires the managed job heartbeat or result file to keep changing so hangs remain detectable.
+            """
+            AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: [
+                "reason": reason,
+                "job_id": stalledManagedWorkspaceJob.id,
+                "job_status": stalledManagedWorkspaceJob.status,
+                "last_observed_age_seconds": String(lastObservedAge),
+                "limit_seconds": String(Int(managedWorkspaceJobIdleTimeoutSeconds))
+            ], level: .error)
+            lock.lock()
+            if _runtimeStopReason == nil {
+                _runtimeStopReason = reason
+                _runtimeStopMessage = message
+            }
+            lock.unlock()
+            terminate()
+            return true
+        }
+
+        if hasActiveToolUse && anyIdleDuration >= activeToolIdleTimeoutSeconds {
+            let reason = "provider_active_tool_stalled"
+            let message = """
+            ASTRA stopped the provider because a tool call was still running but produced no provider event or tool output for \(Int(anyIdleDuration)) seconds.
+            Long-running commands should stream periodic output or finish within \(Int(activeToolIdleTimeoutSeconds)) seconds.
+            """
+            AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: [
+                "reason": reason,
+                "active_tool_idle_seconds": String(Int(anyIdleDuration)),
+                "limit_seconds": String(Int(activeToolIdleTimeoutSeconds))
+            ], level: .error)
+            lock.lock()
+            if _runtimeStopReason == nil {
+                _runtimeStopReason = reason
+                _runtimeStopMessage = message
+            }
+            lock.unlock()
+            terminate()
+            return true
+        }
+
+        if !hasActiveRuntimeWork && hasMetadataOnlyActivity && idleDuration >= noSemanticProgressTimeoutSeconds {
             let reason = "provider_no_semantic_progress"
             let message = """
             ASTRA stopped the provider because it emitted startup or lifecycle metadata but never produced semantic progress such as text, tool use, tool output, usage, or a result.
@@ -2076,7 +1983,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             return true
         }
 
-        if hasProviderLivenessOnlyActivity && idleDuration >= noSemanticProgressTimeoutSeconds {
+        if !hasActiveRuntimeWork && hasProviderLivenessOnlyActivity && idleDuration >= noSemanticProgressTimeoutSeconds {
             let reason = "provider_no_actionable_progress"
             let message = """
             ASTRA stopped the provider because it streamed provider-side liveness such as partial thinking or accounting, but never produced visible text, tool use, tool output, a file change, or a result.
@@ -2120,7 +2027,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             return true
         }
 
-        if anyIdleDuration >= idleTimeoutSeconds {
+        if !hasActiveRuntimeWork && anyIdleDuration >= idleTimeoutSeconds {
             AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: [
                 "idle_seconds": String(Int(anyIdleDuration)),
                 "semantic_idle_seconds": String(Int(idleDuration)),
@@ -2134,6 +2041,49 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         }
 
         return false
+    }
+
+    private func refreshManagedWorkspaceJobs(now: Date) -> ManagedWorkspaceJobContext? {
+        var stalledJob: ManagedWorkspaceJobContext?
+        for (jobID, var job) in activeManagedWorkspaceJobs {
+            if let resultPath = job.resultPath,
+               let result = Self.managedWorkspaceJobFileState(atPath: resultPath),
+               let status = result.status {
+                job.status = status
+                if let timestamp = result.timestamp, timestamp > job.lastObservedAt {
+                    job.lastObservedAt = timestamp
+                }
+                if job.isTerminal {
+                    activeManagedWorkspaceJobs.removeValue(forKey: jobID)
+                    continue
+                }
+            }
+
+            if let heartbeatPath = job.heartbeatPath,
+               let heartbeat = Self.managedWorkspaceJobFileState(atPath: heartbeatPath) {
+                if let status = heartbeat.status {
+                    job.status = status
+                }
+                if let timestamp = heartbeat.timestamp {
+                    job.lastHeartbeatAt = timestamp
+                    job.lastObservedAt = timestamp
+                } else if let modificationDate = Self.fileModificationDate(atPath: heartbeatPath),
+                          modificationDate > job.lastObservedAt {
+                    job.lastObservedAt = modificationDate
+                }
+                if job.isTerminal {
+                    activeManagedWorkspaceJobs.removeValue(forKey: jobID)
+                    continue
+                }
+            }
+
+            activeManagedWorkspaceJobs[jobID] = job
+            if now.timeIntervalSince(job.lastObservedAt) >= managedWorkspaceJobIdleTimeoutSeconds {
+                stalledJob = job
+                break
+            }
+        }
+        return stalledJob
     }
 
     static func progressKind(for parsed: ParsedEvent) -> RuntimeProgressKind {

@@ -487,6 +487,27 @@ struct AgentRuntimeStreamDebugTests {
         #expect(snapshot.fields["unknown_json_shapes"] == "1")
         #expect(snapshot.fields["event_types"]?.contains("unknown:assistant.new_event:1") == true)
     }
+
+    @Test("Stream debug samples and stderr tails are redacted")
+    func streamDebugRedactsSensitiveSamples() {
+        let capture = AgentRuntimeStreamDebugCapture(
+            maxRawSamples: 2,
+            maxUnknownJSONShapes: 1,
+            maxSampleLength: 300,
+            maxStderrTailLength: 300
+        )
+
+        capture.recordLine("login user@example.edu token=super-secret-token-value", parsesJSONLines: false)
+        capture.recordStderr("Authorization: Bearer abcdefghijklmnopqrstuvwxyz1234567890ABCDEFGHIJ")
+
+        let snapshot = capture.snapshot()
+        let combined = (snapshot.rawSamples + [snapshot.stderrTail ?? ""]).joined(separator: " ")
+        #expect(!combined.contains("user@example.edu"))
+        #expect(!combined.contains("super-secret-token-value"))
+        #expect(!combined.contains("abcdefghijklmnopqrstuvwxyz1234567890ABCDEFGHIJ"))
+        #expect(combined.contains("[redacted-email]"))
+        #expect(combined.contains("[redacted-secret]") || combined.contains("[redacted-token]"))
+    }
 }
 
 @Suite("Agent Runtime Failure Diagnostics")
@@ -1101,6 +1122,37 @@ struct CopilotCLICommandPlanningTests {
         #expect(allowedEntries.contains("glob"))
         #expect(allowedEntries.contains("fetch_copilot_cli_documentation"))
         #expect(allowedEntries.contains("report_intent"))
+    }
+
+    @Test("Restricted command planning maps MCP tools to Copilot-native names")
+    func restrictedCommandPlanningMapsMCPToolsToCopilotNativeNames() {
+        let capabilities = CopilotCLICapabilities(
+            helpText: "--allow-tool --available-tools --excluded-tools --output-format --stream --no-ask-user"
+        )
+        let plan = CopilotCLIRuntime.buildCommand(
+            executablePath: "/bin/copilot",
+            prompt: "Run a workspace command",
+            model: "gpt-5",
+            workspacePath: "/tmp/ws",
+            additionalPaths: [],
+            permissionPolicy: .restricted,
+            allowedTools: ["mcp__astra_workspace__workspace_shell"],
+            timeoutSeconds: 60,
+            capabilities: capabilities,
+            taskEnvironment: [:],
+            copilotHome: "/tmp/copilot-home",
+            runtimeSupportTools: ["fetch_copilot_cli_documentation", "report_intent"]
+        )
+
+        let allowedEntries = Set(Self.argumentValues(after: "--allow-tool", in: plan.arguments))
+        let availableEntries = Set(Self.argumentValues(after: "--available-tools", in: plan.arguments))
+
+        #expect(allowedEntries.contains("astra_workspace(workspace_shell)"))
+        #expect(!allowedEntries.contains("mcp__astra_workspace__workspace_shell"))
+        #expect(availableEntries.contains("astra_workspace-workspace_shell"))
+        #expect(!availableEntries.contains("mcp__astra_workspace__workspace_shell"))
+        #expect(availableEntries.contains("fetch_copilot_cli_documentation"))
+        #expect(availableEntries.contains("report_intent"))
     }
 
     @Test("Restricted command planning hides Copilot task delegation unless allowed")

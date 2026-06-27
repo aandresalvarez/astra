@@ -268,6 +268,7 @@ struct RailCapabilityItem: Identifiable {
     let skillNames: [String]
     let connectorNames: [String]
     let toolNames: [String]
+    let mcpServerNames: [String]
     let browserAdapterNames: [String]
     let templateNames: [String]
     let requirementNames: [String]

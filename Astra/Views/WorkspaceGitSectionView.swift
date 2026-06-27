@@ -46,6 +46,8 @@ struct WorkspaceGitTransientPresentationState: Equatable {
 }
 
 struct WorkspaceGitSectionView: View {
+    private static let viewUpdateDeferralNanoseconds: UInt64 = 1_000_000
+
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
     @StateObject var viewModel = WorkspaceGitViewModel()
@@ -73,6 +75,85 @@ struct WorkspaceGitSectionView: View {
     private static let repositoryRowMinHeight = WorkspaceGitPanelPresentation.repositorySelectorRowMinHeight
 
     var body: some View {
+        panelContent
+            .task(id: repositorySetupSignature) {
+                await setupRepositoryPanelAfterViewUpdate()
+            }
+            .task(id: workspace.id) {
+                await restoreRepositoryDetailsModeAfterViewUpdate()
+            }
+            .onDisappear {
+                viewModel.pauseRefresh()
+            }
+            .onChange(of: repositoryDetailsMode) { _, mode in
+                RailDisclosureStore.setBool(
+                    mode == .details,
+                    workspace.id.uuidString,
+                    .repositoryShowsDetails
+                )
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                if newPhase == .active {
+                    viewModel.resumeRefresh()
+                } else {
+                    viewModel.pauseRefresh()
+                }
+            }
+            .onChange(of: viewModel.prDraft) { _, newValue in
+                showPRDraftSheet = newValue != nil
+            }
+            .sheet(isPresented: $showPRDraftSheet, onDismiss: {
+                viewModel.dismissPRDraft()
+            }) {
+                if let draft = viewModel.prDraft {
+                    PRDraftSheet(
+                        draft: draft,
+                        onCreate: { edited in
+                            viewModel.createPullRequest(with: edited)
+                            showPRDraftSheet = false
+                        },
+                        onOpenInBrowser: { edited in
+                            viewModel.openPullRequestURL(with: edited)
+                            showPRDraftSheet = false
+                        },
+                        onCancel: {
+                            viewModel.dismissPRDraft()
+                            showPRDraftSheet = false
+                        }
+                    )
+                }
+            }
+            .sheet(isPresented: $showCommitSheet) {
+                CommitSheet(viewModel: viewModel, onDismiss: {
+                    showCommitSheet = false
+                })
+            }
+            .sheet(item: $viewModel.selectedFileDiff, onDismiss: {
+                viewModel.clearSelectedFileDiff()
+            }) { diff in
+                ChangedFileDiffSheet(
+                    diff: diff,
+                    isLoading: viewModel.isLoadingFileDiff,
+                    onOpenFile: { openChangedFileInShelf(diff.file) },
+                    onCopyDiff: { copyDiff(diff.diff) },
+                    onApplyHunk: { patch in viewModel.applyDiffHunk(patch, from: diff) },
+                    onStageToggle: {
+                        if diff.file.isStaged {
+                            viewModel.unstage(file: diff.file)
+                        } else {
+                            viewModel.stage(file: diff.file)
+                        }
+                        viewModel.clearSelectedFileDiff()
+                    },
+                    onDismiss: { viewModel.clearSelectedFileDiff() }
+                )
+            }
+            .sheet(isPresented: $viewModel.isManagingWorktrees) {
+                WorktreeSheet(viewModel: viewModel)
+            }
+    }
+
+    private var panelContent: some View {
         VStack(
             alignment: .leading,
             spacing: isCompact
@@ -92,93 +173,42 @@ struct WorkspaceGitSectionView: View {
                 repositorySummaryRow
             }
         }
-        .onAppear {
-            viewModel.setup(for: workspace, selectedTask: selectedTask)
-            clearTransientRepositoryPresentation()
-            // Restore whether this workspace's repository card was left expanded.
-            repositoryDetailsMode = RailDisclosureStore.bool(
-                workspace.id.uuidString,
-                .repositoryShowsDetails,
-                default: !WorkspaceGitPanelPresentation.startsCollapsed
-            ) ? .details : .summary
+    }
+
+    private var repositorySetupSignature: String {
+        [
+            workspace.id.uuidString,
+            selectedTask?.id.uuidString ?? "none",
+            selectedTask?.executionRootPath ?? "none"
+        ].joined(separator: "\u{1E}")
+    }
+
+    @MainActor
+    private func setupRepositoryPanelAfterViewUpdate() async {
+        do {
+            try await Task.sleep(nanoseconds: Self.viewUpdateDeferralNanoseconds)
+        } catch {
+            return
         }
-        .onDisappear {
-            viewModel.pauseRefresh()
+        guard !Task.isCancelled else { return }
+        viewModel.setup(for: workspace, selectedTask: selectedTask)
+        clearTransientRepositoryPresentation()
+    }
+
+    @MainActor
+    private func restoreRepositoryDetailsModeAfterViewUpdate() async {
+        do {
+            try await Task.sleep(nanoseconds: Self.viewUpdateDeferralNanoseconds)
+        } catch {
+            return
         }
-        .onChange(of: repositoryDetailsMode) { _, mode in
-            RailDisclosureStore.setBool(
-                mode == .details,
-                workspace.id.uuidString,
-                .repositoryShowsDetails
-            )
-        }
-        .onChange(of: scenePhase) { _, newPhase in
-            if newPhase == .active {
-                viewModel.resumeRefresh()
-            } else {
-                viewModel.pauseRefresh()
-            }
-        }
-        .onChange(of: selectedTask?.id) {
-            viewModel.setup(for: workspace, selectedTask: selectedTask)
-            clearTransientRepositoryPresentation()
-        }
-        .onChange(of: selectedTask?.executionRootPath) {
-            viewModel.setup(for: workspace, selectedTask: selectedTask)
-            clearTransientRepositoryPresentation()
-        }
-        .onChange(of: viewModel.prDraft) { _, newValue in
-            showPRDraftSheet = newValue != nil
-        }
-        .sheet(isPresented: $showPRDraftSheet, onDismiss: {
-            viewModel.dismissPRDraft()
-        }) {
-            if let draft = viewModel.prDraft {
-                PRDraftSheet(
-                    draft: draft,
-                    onCreate: { edited in
-                        viewModel.createPullRequest(with: edited)
-                        showPRDraftSheet = false
-                    },
-                    onOpenInBrowser: { edited in
-                        viewModel.openPullRequestURL(with: edited)
-                        showPRDraftSheet = false
-                    },
-                    onCancel: {
-                        viewModel.dismissPRDraft()
-                        showPRDraftSheet = false
-                    }
-                )
-            }
-        }
-        .sheet(isPresented: $showCommitSheet) {
-            CommitSheet(viewModel: viewModel, onDismiss: {
-                showCommitSheet = false
-            })
-        }
-        .sheet(item: $viewModel.selectedFileDiff, onDismiss: {
-            viewModel.clearSelectedFileDiff()
-        }) { diff in
-            ChangedFileDiffSheet(
-                diff: diff,
-                isLoading: viewModel.isLoadingFileDiff,
-                onOpenFile: { openChangedFileInShelf(diff.file) },
-                onCopyDiff: { copyDiff(diff.diff) },
-                onApplyHunk: { patch in viewModel.applyDiffHunk(patch, from: diff) },
-                onStageToggle: {
-                    if diff.file.isStaged {
-                        viewModel.unstage(file: diff.file)
-                    } else {
-                        viewModel.stage(file: diff.file)
-                    }
-                    viewModel.clearSelectedFileDiff()
-                },
-                onDismiss: { viewModel.clearSelectedFileDiff() }
-            )
-        }
-        .sheet(isPresented: $viewModel.isManagingWorktrees) {
-            WorktreeSheet(viewModel: viewModel)
-        }
+        guard !Task.isCancelled else { return }
+        // Restore whether this workspace's repository card was left expanded.
+        repositoryDetailsMode = RailDisclosureStore.bool(
+            workspace.id.uuidString,
+            .repositoryShowsDetails,
+            default: !WorkspaceGitPanelPresentation.startsCollapsed
+        ) ? .details : .summary
     }
 
     // MARK: - Header

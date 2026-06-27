@@ -13,9 +13,16 @@ final class TaskLifecycleCoordinator {
     }
 
     /// Canonical follow-up message sent when the user resumes a previously
-    /// session-backed task. Kept as a named constant so the resume contract is
-    /// traceable and independently testable.
-    static let resumeContinuationMessage = "Continue where you left off. Complete the original goal."
+    /// session-backed task. The task-specific variant appends ASTRA's resolved
+    /// active objective so stale original goals do not re-anchor long threads.
+    static let resumeContinuationMessage = "Continue where you left off. Continue the current objective."
+
+    static func resumeContinuationMessage(for task: AgentTask) -> String {
+        let objective = TaskContextStateManager.activeObjectiveText(for: task)
+        guard !objective.isEmpty else { return resumeContinuationMessage }
+        let base = resumeContinuationMessage.trimmingCharacters(in: CharacterSet(charactersIn: ". "))
+        return "\(base): \(boundedResumeObjective(objective))"
+    }
 
     // MARK: - Task Lifecycle
 
@@ -32,6 +39,9 @@ final class TaskLifecycleCoordinator {
         }
         Task {
             await taskQueue.processQueue(modelContext: modelContext)
+            // B2-live: resume any Workspace App workflow run whose awaited agent
+            // task just finished in the queue.
+            WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: modelContext)
         }
     }
 
@@ -49,6 +59,8 @@ final class TaskLifecycleCoordinator {
             AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
                 "status": task.status.rawValue
             ])
+            // B2-live: resume any Workspace App workflow awaiting this agent task.
+            WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: modelContext)
         }
     }
 
@@ -144,7 +156,11 @@ final class TaskLifecycleCoordinator {
         modelContext.insert(event)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         return Task {
-            let didStart = await taskQueue.continueSession(task: task, message: Self.resumeContinuationMessage, modelContext: modelContext)
+            let didStart = await taskQueue.continueSession(
+                task: task,
+                message: Self.resumeContinuationMessage(for: task),
+                modelContext: modelContext
+            )
             finishContinuationLaunch(
                 task,
                 didStart: didStart,
@@ -892,30 +908,25 @@ final class TaskLifecycleCoordinator {
         return string
     }
 
+    private static func boundedResumeObjective(_ value: String) -> String {
+        let collapsed = value
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard collapsed.count > 240 else { return collapsed }
+        return String(collapsed.prefix(240)) + "..."
+    }
+
     // MARK: - Migration
 
-    func migrateConnectorCredentials(workspaces: [Workspace]) {
-        for ws in workspaces {
-            for connector in ws.connectors {
-                connector.migrateToKeychain()
-                // Move any secrets older versions stored in the login keychain
-                // into ASTRA's dedicated keychain. Idempotent; runs once at launch
-                // (not on every Connector instantiation), enumerating by service
-                // so it covers every credential/OAuth key without naming them.
-                KeychainService.migrateConnectorFromLoginKeychain(connectorID: connector.id)
-            }
-        }
+    func migrateConnectorCredentials(workspaces: [Workspace], globalConnectors: [Connector] = []) {
+        StartupCredentialMigrationService.migrateConnectorCredentials(
+            workspaces: workspaces,
+            globalConnectors: globalConnectors
+        )
     }
 
     func migrateSkillSecrets(skills: [Skill]) {
-        for skill in skills {
-            skill.migrateSecretsToKeychain()
-            // See migrateConnectorCredentials: relocate legacy login-keychain
-            // secrets into ASTRA's dedicated keychain. Done here rather than in
-            // Skill.migrateSecretsToKeychain() (which Skill.init() calls on every
-            // instantiation) to keep the per-init path free of keychain queries.
-            KeychainService.migrateSkillFromLoginKeychain(skillID: skill.id)
-        }
+        StartupCredentialMigrationService.migrateSkillSecrets(skills: skills)
     }
 
     // MARK: - Seeding

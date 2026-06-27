@@ -169,12 +169,42 @@ struct TaskLifecycleResumeTests {
         #expect(task.events.filter { $0.type == "error" }.count == 1)
     }
 
-    @Test("Resume continuation uses the canonical continue message")
-    func resumeContinuationMessageIsStable() {
-        #expect(
-            TaskLifecycleCoordinator.resumeContinuationMessage
-                == "Continue where you left off. Complete the original goal."
+    @Test("Resume continuation follows the active objective instead of the original goal")
+    func resumeContinuationMessageFollowsActiveObjective() throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+
+        let workspace = Workspace(name: "Resume Objective", primaryPath: env.root)
+        let task = AgentTask(
+            title: "List active sprint stories",
+            goal: "List my stories for the active sprint in the STAR Jira project",
+            workspace: workspace
         )
+        env.context.insert(workspace)
+        env.context.insert(task)
+
+        let first = TaskEvent(
+            task: task,
+            type: "user.message",
+            payload: "List my stories for the active sprint in the STAR Jira project"
+        )
+        first.timestamp = Date(timeIntervalSince1970: 1)
+        env.context.insert(first)
+
+        let correction = TaskEvent(
+            task: task,
+            type: "user.message",
+            payload: "no your goal is to complete the plan.md document"
+        )
+        correction.timestamp = Date(timeIntervalSince1970: 2)
+        env.context.insert(correction)
+
+        #expect(TaskLifecycleCoordinator.resumeContinuationMessage == "Continue where you left off. Continue the current objective.")
+        #expect(
+            TaskLifecycleCoordinator.resumeContinuationMessage(for: task)
+                == "Continue where you left off. Continue the current objective: complete the plan.md document"
+        )
+        #expect(!TaskLifecycleCoordinator.resumeContinuationMessage(for: task).contains("original goal"))
     }
 
     @Test("Retry replays the latest actionable follow-up instead of the original task seed")

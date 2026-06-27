@@ -370,6 +370,8 @@ struct ChatPanelView: View {
     var onManageSkills: (() -> Void)?
     var isPlanCanvasVisible = false
     var onOpenPlan: ((AgentTask) -> Void)?
+    var onStartWorkspaceAppStudio: ((String?) -> Void)?
+    var onStartMCPInstallReview: ((MCPInstallChatRequest) -> Void)?
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -554,7 +556,7 @@ struct ChatPanelView: View {
 
     private var isSlashCommandInput: Bool {
         let lower = messageText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return ["/skill", "/tool", "/connector", "/template", "/routine", "/schedule", "/remember", "/recap"].contains { command in
+        return ["/skill", "/tool", "/connector", "/template", "/routine", "/schedule", "/remember", "/recap", "/app"].contains { command in
             lower == command || lower.hasPrefix(command + " ")
         }
     }
@@ -578,6 +580,8 @@ struct ChatPanelView: View {
                        title: "Create Connector", description: "Set up auth for Jira, GitHub, Slack, or APIs"),
             SlashOption(id: "template", command: "/template", icon: "rectangle.3.group", color: Stanford.poppy,
                        title: "Use Template", description: "Create a multi-phase task from a template"),
+            SlashOption(id: "app", command: "/app", icon: "square.grid.2x2", color: Stanford.lagunita,
+                       title: "Open App Studio", description: "Design a governed local app with storage, views, and actions"),
             SlashOption(id: "schedule", command: "/routine", icon: "arrow.triangle.2.circlepath", color: Stanford.poppy,
                        title: "Create Routine", description: "Automate recurring work with instructions and capabilities"),
             SlashOption(id: "remember", command: "/remember", icon: "text.badge.checkmark", color: Stanford.lagunita,
@@ -1568,6 +1572,17 @@ struct ChatPanelView: View {
             // will be injected into the system prompt
         }
 
+        if let mcpRequest = MCPInstallChatCommand.installRequest(input: input) {
+            messages.append(ChatMessage(role: "user", content: input)); messageText = ""
+            guard workspace != nil else { messages.append(ChatMessage(role: "assistant", content: "Select a workspace first - MCP capabilities are workspace-scoped.")); return }
+            messages.append(ChatMessage(role: "assistant", content: "I found an MCP install target. Review it before ASTRA saves or enables anything."))
+            onStartMCPInstallReview?(mcpRequest); return
+        }
+        if let appStudioRequest = WorkspaceAppChatCommand.launchRequest(input: input) {
+            messages.append(ChatMessage(role: "user", content: input)); messageText = ""
+            guard workspace != nil else { messages.append(ChatMessage(role: "assistant", content: "Select a workspace first — Workspace Apps are workspace-scoped.")); return }
+            onStartWorkspaceAppStudio?(appStudioRequest.initialPrompt); return
+        }
         // /recap — one-shot prose summary for resuming later. Injected into skillCtx
         // for this message only; does not use activeSlashContext (no ongoing wizard).
         let recapContext: String? = (lower == "/recap" || lower.hasPrefix("/recap "))

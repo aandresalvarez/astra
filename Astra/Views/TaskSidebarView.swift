@@ -3,6 +3,7 @@ import SwiftData
 
 struct TaskSidebarContainerView: View {
     @Query(sort: \AgentTask.queuePosition) private var tasks: [AgentTask]
+    @Query(sort: \WorkspaceApp.name) private var workspaceApps: [WorkspaceApp]
 
     @Binding var selectedTask: AgentTask?
     let taskQueue: TaskQueue
@@ -23,6 +24,9 @@ struct TaskSidebarContainerView: View {
     var onRenameWorkspace: ((Workspace) -> Void)?
     var onNewSchedule: (() -> Void)?
     var onEditSchedule: ((TaskSchedule) -> Void)?
+    var onNewApp: (() -> Void)?
+    var onOpenWorkspaceApp: ((WorkspaceApp) -> Void)?
+    var selectedWorkspaceApp: WorkspaceApp?
 
     var body: some View {
         TaskSidebarView(
@@ -45,7 +49,11 @@ struct TaskSidebarContainerView: View {
             onDeleteWorkspace: onDeleteWorkspace,
             onRenameWorkspace: onRenameWorkspace,
             onNewSchedule: onNewSchedule,
-            onEditSchedule: onEditSchedule
+            onEditSchedule: onEditSchedule,
+            onNewApp: onNewApp,
+            workspaceApps: workspaceApps,
+            onOpenWorkspaceApp: onOpenWorkspaceApp,
+            selectedWorkspaceApp: selectedWorkspaceApp
         )
     }
 }
@@ -276,6 +284,12 @@ struct TaskSidebarView: View {
     var onRenameWorkspace: ((Workspace) -> Void)?
     var onNewSchedule: (() -> Void)?
     var onEditSchedule: ((TaskSchedule) -> Void)?
+    var onNewApp: (() -> Void)?
+    /// The workspace's published apps, surfaced inline under each workspace alongside
+    /// its chats. Empty (and the rows are suppressed) when no open handler is wired.
+    var workspaceApps: [WorkspaceApp] = []
+    var onOpenWorkspaceApp: ((WorkspaceApp) -> Void)?
+    var selectedWorkspaceApp: WorkspaceApp?
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -374,6 +388,20 @@ struct TaskSidebarView: View {
                 .padding(.bottom, 10)
                 .popover(isPresented: newTaskNudgePresentation, arrowEdge: .leading) {
                     NewTaskNudgePopover(onDismiss: dismissNewTaskNudge)
+                }
+
+                if let onNewApp {
+                    Button(action: onNewApp) {
+                        Label("New App", systemImage: "square.grid.2x2")
+                            .font(Stanford.ui(13, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
+                    .help("Create a Workspace App in App Studio (⌘⇧A)")
                 }
             }
 
@@ -912,7 +940,7 @@ struct TaskSidebarView: View {
                     for: workspace,
                     matchingSearch: true,
                     workspaceMatchesSearch: false
-                ).isEmpty == false
+                ).isEmpty == false || workspaceHasMatchingApp(workspace)
             }
         }
     }
@@ -1045,15 +1073,28 @@ struct TaskSidebarView: View {
             totalTasks: workspaceTasks.count,
             visibleTasks: visibleTasks.count
         )
+        let workspaceAppRows = appsForWorkspace(workspace)
+        let showGroupLabels = !workspaceAppRows.isEmpty && hasTasks  // label groups only when both exist
 
         VStack(spacing: 0) {
             workspaceRow(for: workspace, using: taskIndex)
 
             if isExpanded {
                 VStack(alignment: .leading, spacing: 2) {
-                    if !hasTasks && !hasAny {
+                    // Apps sit atop the drawer, above the collapsible chat list, so they never hide behind "Show more".
+                    if showGroupLabels { SidebarGroupLabel(text: "Apps") }
+                    ForEach(workspaceAppRows) { app in
+                        SidebarWorkspaceAppRow(
+                            app: app,
+                            isSelected: selectedWorkspaceApp?.id == app.id,
+                            contentLeadingPadding: SidebarLeanPresentation.childTaskContentLeadingPadding,
+                            onOpen: { onOpenWorkspaceApp?(app) }
+                        )
+                    }
+                    if !hasTasks && !hasAny && workspaceAppRows.isEmpty {
                         emptyWorkspaceRow(for: workspace)
                     } else if hasTasks {
+                        if showGroupLabels { SidebarGroupLabel(text: "Tasks") }
                         ForEach(visibleTasks) { task in
                             compactTaskRow(
                                 for: task,
@@ -1464,7 +1505,8 @@ struct TaskSidebarView: View {
 
         return selectedWorkspace?.id == workspace.id ||
             expandedWorkspaceIDs.contains(workspace.id) ||
-            (!searchText.isEmpty && !tasksForWorkspace(workspace, matchingSearch: true, using: taskIndex).isEmpty)
+            (!searchText.isEmpty && !tasksForWorkspace(workspace, matchingSearch: true, using: taskIndex).isEmpty) ||
+            workspaceHasMatchingApp(workspace)
     }
 
     private func toggleWorkspaceExpansion(_ workspace: Workspace, using taskIndex: SidebarTaskIndex) {
@@ -1489,6 +1531,22 @@ struct TaskSidebarView: View {
 
     private func hasAnyTask(in workspace: Workspace, using taskIndex: SidebarTaskIndex) -> Bool {
         taskIndex.hasAnyTask(in: workspace)
+    }
+
+    /// The apps belonging to a workspace, name-sorted and search-filtered like chat rows.
+    /// Empty when no open handler is wired, so the rows never appear inert.
+    private func appsForWorkspace(_ workspace: Workspace) -> [WorkspaceApp] {
+        guard onOpenWorkspaceApp != nil else { return [] }
+        return SidebarWorkspaceAppFilter.apps(
+            workspaceApps,
+            in: workspace,
+            searchText: searchText,
+            workspaceMatchesSearch: workspaceMatchesSearch(workspace)
+        )
+    }
+
+    private func workspaceHasMatchingApp(_ workspace: Workspace) -> Bool {
+        onOpenWorkspaceApp != nil && SidebarWorkspaceAppFilter.hasMatch(workspaceApps, in: workspace, searchText: searchText)
     }
 
     private func workspaceMatchesSearch(_ workspace: Workspace) -> Bool {

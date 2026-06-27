@@ -454,4 +454,43 @@ struct CompactionTests {
         #expect(summary.payload.contains("User preferences:"))
         #expect(summary.payload.contains("regression tests for every bug fix"))
     }
+
+    @Test("Compaction preserves bounded output presentation anchors")
+    func preservesBoundedOutputPresentationAnchors() throws {
+        let container = try makeCompactionTestContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "T", goal: "G")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        let progress = TaskEvent(task: task, type: "agent.response", payload: "Let me check progress.", run: run)
+        progress.timestamp = Date(timeIntervalSince1970: 5)
+        context.insert(progress)
+        let boundary = TaskEvent(task: task, type: "tool.use", payload: "Using tool: Bash", run: run)
+        boundary.timestamp = Date(timeIntervalSince1970: 6)
+        context.insert(boundary)
+        let finalOne = TaskEvent(task: task, type: "agent.response", payload: "Final answer part one.", run: run)
+        finalOne.timestamp = Date(timeIntervalSince1970: 7)
+        context.insert(finalOne)
+        let finalTwo = TaskEvent(task: task, type: "agent.response", payload: "Final answer part two.", run: run)
+        finalTwo.timestamp = Date(timeIntervalSince1970: 8)
+        context.insert(finalTwo)
+
+        for index in 0..<230 {
+            let event = TaskEvent(task: task, type: "agent.response", payload: "filler \(index)")
+            event.timestamp = Date(timeIntervalSince1970: Double(100 + index))
+            context.insert(event)
+        }
+
+        AgentEventCompactor.compactEvents(for: task, modelContext: context)
+        try context.save()
+
+        let remaining = try context.fetch(FetchDescriptor<TaskEvent>())
+        #expect(!remaining.contains { $0.id == progress.id })
+        #expect(remaining.contains { $0.id == boundary.id })
+        #expect(remaining.contains { $0.id == finalOne.id })
+        #expect(remaining.contains { $0.id == finalTwo.id })
+        #expect(remaining.contains { $0.type == "activity.compacted" })
+    }
 }

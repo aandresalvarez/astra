@@ -313,6 +313,82 @@ struct RealProviderSmokeTests {
         #expect(TaskDeliverableExpectation.hasArtifact(for: task, run: run))
     }
 
+    @Test(
+        "Real providers run Docker workspace command with projected GCP ADC",
+        .enabled(if: realProviderSmokeEnabled, "Set RUN_REAL_PROVIDERS=1 to run account-backed provider smoke tests")
+    )
+    func realProvidersRunDockerWorkspaceCommandWithProjectedGCPADC() async throws {
+        let configuredImage = ProcessInfo.processInfo.environment["REAL_PROVIDER_DOCKER_IMAGE"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let image = configuredImage.isEmpty ? "astra-starr-data-lake:latest" : configuredImage
+        let imageID = try Self.requireDockerImage(image)
+        let gcloudHostPath = try Self.requireHostADC()
+        let runtimes = try Self.dockerProviderRuntimes()
+
+        for runtime in runtimes {
+            let executable = try #require(Self.findExecutable(runtime.executableName))
+            let harness = try RealProviderHarness()
+            defer { harness.cleanup() }
+
+            let secret = "ASTRA_DOCKER_ADC_OK_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+            try Self.writeDockerCredentialWorkspaceFixtures(
+                workspaceURL: harness.workspaceURL,
+                secret: secret
+            )
+            let worker = harness.makeWorker(for: runtime.id, executablePath: executable)
+            worker.timeoutSeconds = TimeInterval(ProcessInfo.processInfo.environment["REAL_PROVIDER_DOCKER_TIMEOUT"] ?? "")
+                ?? 180
+            let model = runtime.model
+            let task = harness.makeTask(
+                runtime: runtime.id,
+                goal: """
+                Use only the ASTRA workspace shell MCP tool to run exactly this command from the workspace root:
+                test -r /root/.config/gcloud/application_default_credentials.json && cat /workspace/.astra-docker-secret.txt
+
+                Reply with exactly the command output and nothing else.
+                Do not use native Bash, native shell, or Codex command_execution.
+                Tool names: Claude/Codex `mcp__astra_workspace__workspace_shell`; Copilot `astra_workspace-workspace_shell`.
+                """,
+                model: model,
+                workspaceConfiguration: { workspace in
+                    workspace.activeExecutionEnvironmentJSON = ExecutionEnvironmentStore.encode(
+                        WorkspaceExecutionEnvironment(
+                            id: "image:\(image)",
+                            kind: .dockerImage,
+                            displayName: "Real Docker Image",
+                            sourcePath: harness.workspaceURL.path,
+                            image: image,
+                            imageDigest: imageID,
+                            credentialProjections: [
+                                ExecutionEnvironmentCredentialProjection.gcpADC(hostPath: gcloudHostPath)
+                            ]
+                        )
+                    )
+                }
+            )
+
+            _ = try await harness.execute(task: task, worker: worker)
+            let run = try #require(task.runs.first)
+            Self.printRunSummary(label: "real \(runtime.id.rawValue) docker credential projection", task: task, run: run)
+
+            #expect(run.runtimeID == runtime.id.rawValue)
+            #expect(run.typedStopReason != .credentialProjectionRequired)
+            #expect(run.status == .completed)
+            #expect(run.output.contains(secret))
+            let launchSignature = task.events.first { $0.type == "astra.provider_launch_signature" }?.payload ?? ""
+            let signature = try Self.providerLaunchSignaturePayload(launchSignature)
+            let mcpServerIDs = try #require(signature["mcpServerIDs"] as? [String])
+            let runtimeSupportTools = try #require(signature["runtimeSupportTools"] as? [String])
+            let environmentKeyNames = try #require(signature["environmentKeyNames"] as? [String])
+            let credentialLabels = try #require(signature["credentialLabels"] as? [String])
+            #expect(mcpServerIDs.contains("astra-builtin:astra_workspace"))
+            #expect(runtimeSupportTools.contains { $0.contains(DockerWorkspaceMCPProjection.providerToolPermission) })
+            #expect(environmentKeyNames.contains("CLOUDSDK_CONFIG"))
+            #expect(environmentKeyNames.contains("GOOGLE_APPLICATION_CREDENTIALS"))
+            #expect(credentialLabels.contains("docker:GCP Application Default Credentials:ro:/root/.config/gcloud"))
+        }
+    }
+
     // MARK: - Multi-turn conversation continuity (real provider output)
 
     @Test(
@@ -558,6 +634,118 @@ struct RealProviderSmokeTests {
 
     private static func antigravityModel() -> String {
         liveConfig.antigravityModel
+    }
+
+    private struct DockerProviderRuntime {
+        var id: AgentRuntimeID
+        var executableName: String
+        var model: String
+    }
+
+    private enum RealProviderSmokeFailure: Error, CustomStringConvertible {
+        case noDockerProviderRuntimes
+        case unknownRuntime(String)
+        case commandFailed(String)
+        case missingADC(String)
+
+        var description: String {
+            switch self {
+            case .noDockerProviderRuntimes:
+                "No installed Docker-capable real provider runtimes were found."
+            case .unknownRuntime(let raw):
+                "Unknown REAL_PROVIDER_DOCKER_RUNTIMES entry: \(raw)."
+            case .commandFailed(let message):
+                message
+            case .missingADC(let path):
+                "Missing host Application Default Credentials at \(path). Run `gcloud auth application-default login` before this real-provider Docker smoke."
+            }
+        }
+    }
+
+    private static func dockerProviderRuntimes() throws -> [DockerProviderRuntime] {
+        let all = [
+            DockerProviderRuntime(id: .claudeCode, executableName: "claude", model: liveConfig.claudeModel),
+            DockerProviderRuntime(id: .copilotCLI, executableName: "copilot", model: liveConfig.copilotModel),
+            DockerProviderRuntime(
+                id: .codexCLI,
+                executableName: "codex",
+                model: AgentRuntimeAdapterRegistry.defaultModel(for: .codexCLI)
+            )
+        ]
+
+        if let configured = ProcessInfo.processInfo.environment["REAL_PROVIDER_DOCKER_RUNTIMES"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !configured.isEmpty {
+            return try configured
+                .split(separator: ",")
+                .map { raw in
+                    let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard let runtime = all.first(where: { $0.id.rawValue == value || $0.executableName == value }) else {
+                        throw RealProviderSmokeFailure.unknownRuntime(value)
+                    }
+                    return runtime
+                }
+        }
+
+        let installed = all.filter { findExecutable($0.executableName) != nil }
+        guard !installed.isEmpty else {
+            throw RealProviderSmokeFailure.noDockerProviderRuntimes
+        }
+        return installed
+    }
+
+    private static func requireDockerImage(_ image: String) throws -> String {
+        let result = try run(["docker", "image", "inspect", image, "--format", "{{.Id}}"])
+        guard result.exitCode == 0 else {
+            throw RealProviderSmokeFailure.commandFailed(
+                "Docker image \(image) is not available for the real-provider Docker smoke. Evidence: \(redacted(result.output))"
+            )
+        }
+        return result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func requireHostADC() throws -> String {
+        let gcloudHostPath = ExecutionEnvironmentCredentialProjection.defaultGCPADCHostPath(
+            homeDirectory: FileManager.default.homeDirectoryForCurrentUser.path
+        )
+        let adcFile = (gcloudHostPath as NSString)
+            .appendingPathComponent(ExecutionEnvironmentCredentialProjection.gcpADCFileName)
+        guard FileManager.default.fileExists(atPath: adcFile) else {
+            throw RealProviderSmokeFailure.missingADC(adcFile)
+        }
+        return gcloudHostPath
+    }
+
+    private static func providerLaunchSignaturePayload(_ payload: String) throws -> [String: Any] {
+        let data = try #require(payload.data(using: .utf8))
+        return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    private static func writeDockerCredentialWorkspaceFixtures(
+        workspaceURL: URL,
+        secret: String
+    ) throws {
+        let dbtDirectory = workspaceURL.appendingPathComponent("dbt", isDirectory: true)
+        try FileManager.default.createDirectory(at: dbtDirectory, withIntermediateDirectories: true)
+        try """
+        default:
+          target: dev
+          outputs:
+            dev:
+              type: bigquery
+              method: oauth
+              project: astra-real-provider-smoke
+              dataset: astra_smoke
+        """.write(
+            to: dbtDirectory.appendingPathComponent("profiles.yml"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "\(secret)\n".write(
+            to: workspaceURL.appendingPathComponent(".astra-docker-secret.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
     }
 
     /// Randomized fact/question pair for a two-turn recall probe. The expected
@@ -818,8 +1006,14 @@ private final class RealProviderHarness {
         try? FileManager.default.removeItem(at: rootURL)
     }
 
-    func makeTask(runtime: AgentRuntimeID, goal: String, model: String) -> AgentTask {
+    func makeTask(
+        runtime: AgentRuntimeID,
+        goal: String,
+        model: String,
+        workspaceConfiguration: ((Workspace) throws -> Void)? = nil
+    ) rethrows -> AgentTask {
         let workspace = Workspace(name: "Real Provider Smoke", primaryPath: workspaceURL.path)
+        try workspaceConfiguration?(workspace)
         context.insert(workspace)
 
         let task = AgentTask(
@@ -839,6 +1033,7 @@ private final class RealProviderHarness {
     func makeWorker(
         claudePath: String? = nil,
         copilotPath: String? = nil,
+        codexPath: String? = nil,
         antigravityPath: String? = nil
     ) -> AgentRuntimeWorker {
         let worker = AgentRuntimeWorker()
@@ -849,6 +1044,9 @@ private final class RealProviderHarness {
             worker.copilotPath = copilotPath
             worker.copilotHome = rootURL.appendingPathComponent("copilot-home", isDirectory: true).path
         }
+        if let codexPath {
+            worker.setExecutablePath(codexPath, for: .codexCLI)
+        }
         if let antigravityPath {
             worker.setExecutablePath(antigravityPath, for: .antigravityCLI)
         }
@@ -856,6 +1054,25 @@ private final class RealProviderHarness {
             ?? 120
         worker.permissionPolicy = .restricted
         return worker
+    }
+
+    func makeWorker(for runtime: AgentRuntimeID, executablePath: String) -> AgentRuntimeWorker {
+        switch runtime {
+        case .claudeCode:
+            makeWorker(claudePath: executablePath)
+        case .copilotCLI:
+            makeWorker(copilotPath: executablePath)
+        case .codexCLI:
+            makeWorker(codexPath: executablePath)
+        case .antigravityCLI:
+            makeWorker(antigravityPath: executablePath)
+        default:
+            {
+                let worker = makeWorker()
+                worker.setExecutablePath(executablePath, for: runtime)
+                return worker
+            }()
+        }
     }
 
     func execute(task: AgentTask, worker: AgentRuntimeWorker) async throws -> [ParsedEvent] {

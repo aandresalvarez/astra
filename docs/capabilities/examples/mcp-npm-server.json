@@ -1,0 +1,98 @@
+{
+  "author": "Local",
+  "browserAdapters": [],
+  "category": "MCP",
+  "connectors": [],
+  "description": "Example npm-backed stdio MCP server with install-source metadata.",
+  "formatVersion": 2,
+  "governance": {
+    "allowedRoles": [],
+    "allowedWorkspaceTags": [],
+    "approvalStatus": "draft",
+    "approvedAt": null,
+    "approvedBy": null,
+    "dataAccess": [
+      "workspaceFiles",
+      "network"
+    ],
+    "externalEffects": [
+      "readOnly"
+    ],
+    "policyNotes": "Npm MCP package pending local review. Exact package version is declared; review the package source before approval.",
+    "requiresAdminApproval": true,
+    "requiresExplicitUserConsent": true,
+    "reviewTicketURL": null,
+    "riskLevel": "high",
+    "visibility": "adminOnly"
+  },
+  "icon": "server.rack",
+  "id": "local.example-mcp-npm",
+  "localTools": [],
+  "mcpServers": [
+    {
+      "allowedTools": [
+        "files.read"
+      ],
+      "arguments": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem@0.6.2",
+        "/tmp"
+      ],
+      "command": "npx",
+      "connectorBindings": [],
+      "displayName": "Filesystem MCP",
+      "environmentKeys": [],
+      "excludedTools": [],
+      "id": "filesystem",
+      "installSource": {
+        "documentationURL": "https://www.npmjs.com/package/@modelcontextprotocol/server-filesystem",
+        "identifier": "@modelcontextprotocol/server-filesystem",
+        "installMode": "npx",
+        "kind": "npm",
+        "packageManagerArguments": [
+          "-y"
+        ],
+        "registryURL": "https://registry.npmjs.org/",
+        "riskNotes": [
+          "Example only; scope filesystem roots before approving for real work."
+        ],
+        "version": "0.6.2"
+      },
+      "promptsEnabled": false,
+      "resourcesEnabled": true,
+      "transport": "stdio",
+      "trustLevel": "high",
+      "url": null
+    }
+  ],
+  "name": "Example npm MCP",
+  "prerequisites": [
+    {
+      "authHint": null,
+      "binary": "npx",
+      "displayName": "npx",
+      "installHint": "Install Node.js/npm so npx can launch @modelcontextprotocol/server-filesystem@0.6.2.",
+      "installURL": "https://nodejs.org/",
+      "livenessArgs": [
+        "--version"
+      ],
+      "purpose": "Launches the npm-backed MCP server.",
+      "semantic": null
+    }
+  ],
+  "setupGuide": "Review the npm package source, adjust filesystem roots, then approve and enable this capability locally.",
+  "skills": [],
+  "sourceMetadata": {
+    "displayName": "Local Capability Library",
+    "id": "local",
+    "kind": "local",
+    "trustLevel": "local"
+  },
+  "tags": [
+    "mcp",
+    "npm",
+    "example"
+  ],
+  "templates": [],
+  "version": "1.0.0"
+}

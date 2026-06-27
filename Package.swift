@@ -9,6 +9,8 @@ let package = Package(
         .executable(name: "ASTRA", targets: ["ASTRAExecutable"]),
         .executable(name: "astra-browser", targets: ["AstraBrowserTool"]),
         .executable(name: "astra-local-model", targets: ["AstraLocalModelTool"]),
+        .executable(name: "astra-host-control", targets: ["AstraHostControlTool"]),
+        .executable(name: "astra-workspace", targets: ["AstraWorkspaceTool"]),
         .executable(name: "stanford-mail", targets: ["StanfordMailTool"]),
         .executable(name: "stanford-apple-mail", targets: ["StanfordAppleMailTool"]),
         .executable(name: "stanford-graph-mail", targets: ["StanfordGraphMailTool"])
@@ -36,6 +38,14 @@ let package = Package(
             name: "MailToolSupport",
             path: "Tools/MailToolSupport"
         ),
+        .target(
+            name: "WorkspaceToolSupport",
+            path: "Tools/WorkspaceToolSupport"
+        ),
+        .target(
+            name: "HostControlToolSupport",
+            path: "Tools/HostControlToolSupport"
+        ),
         .executableTarget(
             name: "AstraBrowserTool",
             dependencies: ["ASTRACore"],
@@ -45,6 +55,16 @@ let package = Package(
             name: "AstraLocalModelTool",
             dependencies: ["ASTRACore"],
             path: "Tools/AstraLocalModelTool"
+        ),
+        .executableTarget(
+            name: "AstraHostControlTool",
+            dependencies: ["HostControlToolSupport"],
+            path: "Tools/AstraHostControlTool"
+        ),
+        .executableTarget(
+            name: "AstraWorkspaceTool",
+            dependencies: ["WorkspaceToolSupport"],
+            path: "Tools/AstraWorkspaceTool"
         ),
         .executableTarget(
             name: "StanfordMailTool",
@@ -86,7 +106,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ASTRATests",
-            dependencies: ["ASTRA", "ASTRACore", "ASTRAGitContracts"],
+            dependencies: ["ASTRA", "ASTRACore", "ASTRAGitContracts", "HostControlToolSupport", "WorkspaceToolSupport"],
             path: "Tests"
         )
     ]

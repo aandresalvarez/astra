@@ -22,7 +22,6 @@ public enum BrowserToolCommandParser {
         "--click-role",
         "--control",
         "--control-id",
-        "--dangerous",
         "--debug",
         "--file",
         "--find",

@@ -1423,6 +1423,136 @@ struct RunPermissionManifestTests {
         #expect(manifestEvent?.payload.contains("\"fetch_copilot_cli_documentation\"") == true)
     }
 
+    @Test("Docker preflight manifest exposes workspace executor and projected credential state")
+    func dockerPreflightManifestExposesWorkspaceExecutorAndProjectedCredentialState() throws {
+        for runtime in [AgentRuntimeID.claudeCode, .copilotCLI, .codexCLI] {
+            let container = try makeAgentPolicyContainer()
+            let context = container.mainContext
+            let root = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("astra-docker-manifest-\(runtime.rawValue)-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+            let package = PluginPackage(
+                id: "host-control-plane",
+                name: "Host Control Plane",
+                icon: "server.rack",
+                description: "Host capability server",
+                author: "Tests",
+                category: "Tests",
+                tags: [],
+                version: "1.0.0",
+                skills: [],
+                connectors: [],
+                localTools: [],
+                mcpServers: [
+                    PluginMCPServer(
+                        id: "github",
+                        displayName: "GitHub MCP",
+                        transport: .stdio,
+                        command: "github-mcp-server",
+                        allowedTools: ["pull_requests.read"],
+                        trustLevel: .high
+                    )
+                ],
+                templates: [],
+                governance: .builtInApproved(riskLevel: .high)
+            )
+            let workspace = Workspace(name: "Docker Manifest", primaryPath: root.path)
+            workspace.enabledCapabilityIDs = [package.id]
+            let task = AgentTask(
+                title: "Docker",
+                goal: "Check dbt inside Docker",
+                workspace: workspace,
+                model: "test-model",
+                runtime: runtime
+            )
+            let shellSkill = Skill(name: "Shell", allowedTools: ["Read", "Bash"])
+            shellSkill.workspace = workspace
+            task.skills = [shellSkill]
+            task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+                id: "image:starr",
+                kind: .dockerImage,
+                displayName: "starr Image",
+                image: "astra-starr-data-lake:latest",
+                credentialProjections: [
+                    ExecutionEnvironmentCredentialProjection.gcpADC(
+                        hostPath: root.appendingPathComponent(".config/gcloud", isDirectory: true).path
+                    )
+                ]
+            ))
+            let run = TaskRun(task: task)
+            context.insert(workspace)
+            context.insert(shellSkill)
+            context.insert(task)
+            context.insert(run)
+
+            let manifest = AgentPolicyManifestService.recordPreflightManifest(
+                task: task,
+                run: run,
+                runtime: runtime,
+                model: "test-model",
+                workspacePath: workspace.primaryPath,
+                phase: "test",
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+                capabilityPackages: [package],
+                modelContext: context
+            )
+
+            #expect(manifest.environmentKeyNames.contains("CLOUDSDK_CONFIG"))
+            #expect(manifest.environmentKeyNames.contains("GOOGLE_APPLICATION_CREDENTIALS"))
+            #expect(manifest.credentialLabels.contains("docker:GCP Application Default Credentials:ro:/root/.config/gcloud"))
+            #expect(manifest.mcpServers.contains { server in
+                server.packageID == "astra-builtin"
+                    && server.id == DockerWorkspaceMCPProjection.serverID
+                    && server.allowedTools == DockerWorkspaceMCPProjection.toolNames
+            })
+            #expect(manifest.mcpServers.contains { server in
+                server.packageID == "astra-builtin"
+                    && server.id == HostControlPlaneMCPProjection.serverID
+                    && server.allowedTools == HostControlPlaneMCPProjection.toolNames
+            })
+            #expect(manifest.mcpServers.contains { server in
+                server.packageID == package.id
+                    && server.id == "github"
+                    && server.allowedTools == ["pull_requests.read"]
+            })
+            #expect(manifest.providerRender.runtimeSupportTools.contains { descriptor in
+                descriptor.name == DockerWorkspaceMCPProjection.providerToolPermission
+                    && descriptor.allowedInputKeys.contains("command")
+            })
+            #expect(manifest.providerRender.runtimeSupportTools.contains { descriptor in
+                descriptor.name == DockerWorkspaceMCPProjection.providerToolPermission(for: "workspace_job_start")
+                    && descriptor.allowedInputKeys.contains("command")
+                    && descriptor.allowedInputKeys.contains("progress_probe")
+            })
+            #expect(manifest.providerRender.runtimeSupportTools.contains { descriptor in
+                descriptor.name == DockerWorkspaceMCPProjection.providerToolPermission(for: "workspace_job_status")
+                    && descriptor.allowedInputKeys == ["job_id"]
+            })
+            #expect(manifest.providerRender.runtimeSupportTools.contains { descriptor in
+                descriptor.name == HostControlPlaneMCPProjection.providerToolPermission(for: "gcloud")
+                    && descriptor.allowedInputKeys == ["arguments", "timeout_seconds"]
+            })
+            #expect(manifest.providerRender.runtimeSupportTools.contains { descriptor in
+                descriptor.name == HostControlPlaneMCPProjection.providerToolPermission(for: "jira")
+                    && descriptor.allowedInputKeys.contains("operation")
+                    && descriptor.allowedInputKeys.contains("path")
+            })
+            #expect(manifest.providerRender.diagnostics.contains { diagnostic in
+                diagnostic.id == "container.host-control-plane-routing"
+                    && diagnostic.message.contains("Host services such as GitHub, Jira, Google Cloud, SSH, browser, and Keychain")
+                    && diagnostic.remediation?.contains("Enable or repair the relevant capability") == true
+            })
+            #expect(!manifest.providerRender.allowedTools.contains { tool in
+                let lower = tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                return lower == "bash" || lower == "shell" || lower.hasPrefix("bash(") || lower.hasPrefix("shell(")
+            })
+        }
+    }
+
     @Test("Preflight manifest allows exact connector manifest shell probe when connectors are projected")
     func preflightManifestAllowsExactConnectorManifestShellProbeWhenConnectorsAreProjected() throws {
         let container = try makeAgentPolicyContainer()
@@ -1610,6 +1740,141 @@ struct RunPermissionManifestTests {
         #expect(object["deniedCount"] as? Int == 1)
         #expect(deniedActions.contains { $0.contains("provider_sandbox_blocked_write") })
         #expect(deniedActions.contains { $0.contains("/Users/alvaro/Documents/Code/flujo/flujo/test.sh") })
+    }
+
+    @MainActor
+    @Test("Preflight manifest declares Git credential projection for network Git intent")
+    func preflightManifestDeclaresGitCredentialProjection() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Git Projection", primaryPath: "/tmp/astra-git-projection")
+        let task = AgentTask(title: "Git Projection", goal: "Prepare branch", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .claudeCode,
+            model: "auto",
+            workspacePath: workspace.primaryPath,
+            phase: "resume",
+            permissionPolicy: .autonomous,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.autonomous.rawValue,
+            contextText: "ok lets pull the latest code from main, then create a new branch",
+            modelContext: context
+        )
+
+        #expect(manifest.credentialLabels.contains("git:credential-context:read-only"))
+        #expect(manifest.providerRender.diagnostics.contains { $0.id == "git.credential-projection" })
+    }
+
+    @MainActor
+    @Test("Post-run summary records OS sandbox read denials")
+    func postRunSummaryRecordsOSSandboxReadDenials() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "OS Sandbox Summary", primaryPath: "/Users/alvaro/Documents/Code/monorepo")
+        let task = AgentTask(title: "OS Sandbox Summary", goal: "Pull main", workspace: workspace)
+        task.runtimeID = AgentRuntimeID.claudeCode.rawValue
+        let run = TaskRun(task: task)
+        run.status = .failed
+        run.stopReason = "os_sandbox_file_read_denied"
+        run.completedAt = Date()
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        _ = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .claudeCode,
+            model: "auto",
+            workspacePath: workspace.primaryPath,
+            phase: "resume",
+            permissionPolicy: .autonomous,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.autonomous.rawValue,
+            contextText: "pull the latest code from main",
+            modelContext: context
+        )
+        context.insert(TaskEvent(
+            task: task,
+            type: "tool.result",
+            payload: "Exit code 128\nfatal: unable to access '/Users/alvaro1/.gitconfig': Operation not permitted",
+            run: run
+        ))
+        try context.save()
+
+        AgentPolicyManifestService.recordPostRunSummary(task: task, run: run, modelContext: context)
+        try context.save()
+
+        let summaryEvent = try #require(task.events.last { $0.type == AgentPolicyManifestService.summaryEventType })
+        let object = try #require(JSONSerialization.jsonObject(with: Data(summaryEvent.payload.utf8)) as? [String: Any])
+        let deniedActions = try #require(object["deniedActions"] as? [String])
+
+        #expect(object["deniedCount"] as? Int == 1)
+        #expect(deniedActions.contains { $0.contains("os_sandbox_blocked_read") })
+        #expect(deniedActions.contains { $0.contains("/Users/alvaro1/.gitconfig") })
+    }
+
+    @MainActor
+    @Test("Post-run summary ignores nonfatal Git sandbox warnings in successful output")
+    func postRunSummaryIgnoresNonfatalGitSandboxWarnings() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Git Sandbox", primaryPath: "/Users/alvaro1/Documents/Coral/Code/starr-data-lake")
+        let task = AgentTask(title: "Git Sandbox", goal: "Pull latest", workspace: workspace)
+        task.runtimeID = AgentRuntimeID.claudeCode.rawValue
+        let run = TaskRun(task: task)
+        run.status = .completed
+        run.completedAt = Date()
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        _ = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .claudeCode,
+            model: "auto",
+            workspacePath: workspace.primaryPath,
+            phase: "resume",
+            permissionPolicy: .autonomous,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.autonomous.rawValue,
+            contextText: "git fetch origin && git pull origin main",
+            modelContext: context
+        )
+        context.insert(TaskEvent(
+            task: task,
+            type: "tool.result",
+            payload: """
+            warning: unable to access '/Users/alvaro1/.config/git/ignore': Operation not permitted
+            From github.com:susom/starr-data-lake
+             * branch              main       -> FETCH_HEAD
+            warning: unable to access '/Users/alvaro1/.config/git/ignore': Operation not permitted
+            Updating ec0d2206..d5088969
+            Fast-forward
+             dbt/configs/omop_atropos_phi/common | 1 +
+             create mode 120000 dbt/configs/omop_atropos_phi/common
+            """,
+            run: run
+        ))
+        try context.save()
+
+        AgentPolicyManifestService.recordPostRunSummary(task: task, run: run, modelContext: context)
+        try context.save()
+
+        let summaryEvent = try #require(task.events.last { $0.type == AgentPolicyManifestService.summaryEventType })
+        let object = try #require(JSONSerialization.jsonObject(with: Data(summaryEvent.payload.utf8)) as? [String: Any])
+        let deniedActions = try #require(object["deniedActions"] as? [String])
+
+        #expect(object["deniedCount"] as? Int == 0)
+        #expect(deniedActions.isEmpty)
     }
 
     @Test("Preflight manifest replays task-scoped broker grants through the active provider adapter")

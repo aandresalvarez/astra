@@ -84,8 +84,10 @@ enum AuditEvent: String, CaseIterable {
     case runtimeFailureDiagnostic = "runtime.failure_diagnostic"
     case runtimePersistenceSummary = "runtime.persistence_summary"
     case runtimeProgressState = "runtime.progress_state"
+    case runtimeResourcesPlanned = "runtime.resources_planned"
     case runtimeStreamDebug = "runtime.stream_debug"
     case runtimeStreamDebugSample = "runtime.stream_debug_sample"
+    case remoteWorkspacePreflight = "remote_workspace.preflight"
     case contextStateUpdated = "context.state_updated"
     case contextPromptDiagnostics = "context.prompt_diagnostics"
 
@@ -217,6 +219,7 @@ enum AuditEvent: String, CaseIterable {
     case gitActiveRepositoryChanged = "git.active_repository_changed"
     case gitChangedFileOpenedInShelf = "git.changed_file_opened_in_shelf"
     case gitChangedFileDiffViewed = "git.changed_file_diff_viewed"
+    case executionEnvironmentChanged = "execution_environment.changed"
 
     case schedulerStarted = "scheduler.started"
     case schedulerStopped = "scheduler.stopped"
@@ -250,7 +253,7 @@ enum AppLogCategory {
         "App", "Audit", "Worker", "Queue", "UI", "Isolation", "Validation",
         "Reflection", "SSH", "Persistence", "PluginCatalog", "Scheduler",
         "Keychain", "Updater", "Performance", "Capabilities", "Browser",
-        "Diagnostics", "Plan", "Git", "General"
+        "Diagnostics", "Plan", "Git", "WorkspaceApps", "General"
     ]
 }
 

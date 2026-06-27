@@ -83,7 +83,9 @@ struct MissionControlPanelView: View {
                 metric("Assertions", "\(presentation.assertionRows.count)")
                 metric("Files", "\(presentation.changedFileCount) changed")
                 metric("Artifacts", "\(presentation.artifactCount)")
-                metric("Budget", presentation.budgetSummary)
+                if let budgetSummary = presentation.budgetSummary {
+                    metric("Budget", budgetSummary)
+                }
             }
             VStack(alignment: .leading, spacing: 6) {
                 metric("Assertions", "\(presentation.assertionRows.count)")
@@ -91,7 +93,9 @@ struct MissionControlPanelView: View {
                     metric("Files", "\(presentation.changedFileCount) changed")
                     metric("Artifacts", "\(presentation.artifactCount)")
                 }
-                metric("Budget", presentation.budgetSummary)
+                if let budgetSummary = presentation.budgetSummary {
+                    metric("Budget", budgetSummary)
+                }
             }
         }
     }

@@ -1138,6 +1138,70 @@ class GitService: GitRepositoryOperating {
         }
     }
 
+    /// Read-only PR listing for a Workspace App `pullRequest.read` connector (`astra.read`). Builds a
+    /// FIXED `gh search prs --author=@me` (or `gh pr list --repo` for one repo) argument vector — the
+    /// only caller-influenced inputs are `state` (validated to a fixed set), an optional `repo`
+    /// (validated to `owner/name`, rejected otherwise so a hostile value can't act as a `gh` flag), and a
+    /// clamped `limit`. Uses the user's own `gh` auth; no token is read or returned, only the `--json`
+    /// stdout. The HTML page never reaches this directly — it goes through the governed executor +
+    /// dependency binding; this is just the gh transport. Throws `GitHubCLIError`.
+    func workspaceAppPullRequestJSON(
+        repo: String?,
+        state: String,
+        limit: Int,
+        ghPathOverride: String? = nil
+    ) async throws -> String {
+        let ghPath = ghPathOverride ?? RuntimePathResolver.detectExecutablePath(named: "gh")
+        guard !ghPath.isEmpty, FileManager.default.isExecutableFile(atPath: ghPath) else {
+            throw GitHubCLIError.notInstalled
+        }
+        let allowedStates: Set<String> = ["open", "closed", "merged", "all"]
+        let normalizedState = allowedStates.contains(state) ? state : "open"
+        let clampedLimit = min(max(1, limit), 100)
+        var arguments: [String]
+        if let repo, Self.isValidRepoSlug(repo) {
+            // `gh pr list` is scoped to one repo, so its --json schema has no `repository` field.
+            arguments = ["pr", "list", "--repo", repo, "--state", normalizedState,
+                         "--json", "number,title,url,state,isDraft,updatedAt,author",
+                         "--limit", "\(clampedLimit)"]
+        } else {
+            // No repo: list the authenticated user's own PRs across repos, so include `repository`.
+            // `gh search prs --state` accepts only open|closed; merged/all omit the state filter.
+            arguments = ["search", "prs", "--author", "@me",
+                         "--json", "number,title,url,state,isDraft,updatedAt,author,repository",
+                         "--limit", "\(clampedLimit)"]
+            if normalizedState == "open" || normalizedState == "closed" {
+                arguments += ["--state", normalizedState]
+            }
+        }
+        do {
+            return try await runProcess(
+                executableURL: URL(fileURLWithPath: ghPath),
+                arguments: arguments,
+                environment: RuntimeProcessEnvironment.enriched(),
+                timeout: 45,
+                label: "gh workspace-app pr read"
+            )
+        } catch {
+            let detail = error.localizedDescription.lowercased()
+            if detail.contains("auth") || detail.contains("logged in") {
+                throw GitHubCLIError.notAuthenticated(error.localizedDescription)
+            }
+            throw GitHubCLIError.commandFailed(error.localizedDescription)
+        }
+    }
+
+    /// `owner/name` slug validator for the PR-read connector: exactly one `/`, each segment non-empty,
+    /// drawn only from `[A-Za-z0-9._-]`, and not starting with `-` (so it can never be read as a flag).
+    static func isValidRepoSlug(_ repo: String) -> Bool {
+        let parts = repo.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 2 else { return false }
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
+        return parts.allSatisfy { part in
+            !part.isEmpty && part.first != "-" && part.unicodeScalars.allSatisfy { allowed.contains($0) }
+        }
+    }
+
     /// Fetches recent PR conversation comments and unresolved review-thread
     /// comments for the Repository panel. This is intentionally read-only and
     /// uses `gh api graphql` so inline review threads are available even when

@@ -50,6 +50,23 @@ struct BrowserToolArgumentTests {
         }
     }
 
+    @Test("Provider controlled dangerous action flag is rejected")
+    func providerControlledDangerousFlagIsRejected() throws {
+        do {
+            _ = try BrowserToolCommandParser.sanitizedArguments([
+                "click",
+                "--selector",
+                "button[type=submit]",
+                "--dangerous"
+            ])
+            Issue.record("Expected --dangerous to be rejected")
+        } catch let error as BrowserToolArgumentError {
+            #expect(error == .unknownFlag("--dangerous"))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
     @Test("Page read options are allowed")
     func pageReadOptionsAreAllowed() throws {
         let sanitized = try BrowserToolCommandParser.sanitizedArguments([

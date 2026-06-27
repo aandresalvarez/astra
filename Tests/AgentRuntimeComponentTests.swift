@@ -22,6 +22,24 @@ private actor RuntimeComponentCompletionRecorder {
     }
 }
 
+private actor RecordingDockerImageAvailabilityChecker: DockerImageAvailabilityChecking {
+    private let result: Result<DockerImageAvailability, DockerImageAvailabilityError>
+    private var images: [String] = []
+
+    init(result: Result<DockerImageAvailability, DockerImageAvailabilityError>) {
+        self.result = result
+    }
+
+    func checkedImages() -> [String] {
+        images
+    }
+
+    func checkImageAvailability(_ image: String) async -> Result<DockerImageAvailability, DockerImageAvailabilityError> {
+        images.append(image)
+        return result
+    }
+}
+
 @Suite("Agent Runtime Async Work")
 @MainActor
 struct AgentRuntimeAsyncWorkTests {
@@ -392,6 +410,8 @@ struct AgentRuntimeLaunchPreflightTests {
         #expect(!result.didPass)
         #expect(result.reason == "capability_runtime_resources_missing")
         #expect(result.auditFields["diagnostic_result"] == "capabilityRuntimeResourcesMissing")
+        #expect(result.auditFields["app_bundle_path"]?.isEmpty == false)
+        #expect(result.auditFields["app_executable_path"]?.isEmpty == false)
         #expect(task.status == .failed)
         #expect(run.stopReason == "capability_runtime_resources_missing")
         #expect(task.events.contains { $0.type == "error" && $0.payload.contains("Jira") && $0.payload.contains("connector") })
@@ -465,6 +485,248 @@ struct AgentRuntimeLaunchPreflightTests {
         #expect(run.status == .running)
         #expect(run.stopReason.isEmpty)
         #expect(!task.events.contains { $0.type == "error" && $0.payload.contains("GitHub") })
+    }
+
+    @Test("Docker workspace preflight blocks when bundled workspace helper is missing")
+    func dockerWorkspacePreflightBlocksMissingWorkspaceHelper() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-docker-preflight-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Docker", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Summarize",
+            goal: "Summarize files",
+            workspace: workspace,
+            runtime: .claudeCode
+        )
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:workspace",
+            kind: .dockerImage,
+            displayName: "Workspace Image",
+            image: "astra/workspace:latest"
+        ))
+        task.status = .running
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let result = AgentRuntimeLaunchPreflight.preflightCapabilitiesBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "run",
+            mcpIsExecutableFile: { path in
+                path != (RuntimePathResolver.astraToolsPath as NSString).appendingPathComponent("astra-workspace")
+            }
+        )
+
+        #expect(result.status == .capabilityRuntimeResourcesMissing)
+        #expect(!result.didPass)
+        #expect(result.reason == "mcp_server_executable_missing")
+        #expect(result.detail?.contains("astra_workspace") == true)
+        #expect(result.detail?.contains("astra-workspace") == true)
+        #expect(task.status == .failed)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "mcp_server_executable_missing")
+        #expect(task.events.contains { $0.type == "error" && $0.payload.contains("astra-workspace") })
+    }
+
+    @Test("Docker image preflight skips Host tasks without probing Docker")
+    func dockerImagePreflightSkipsHostTasks() async throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Host", primaryPath: NSTemporaryDirectory())
+        let task = AgentTask(title: "Host task", goal: "Inspect files", workspace: workspace, runtime: .claudeCode)
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(.host)
+        task.status = .running
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        let checker = RecordingDockerImageAvailabilityChecker(result: .failure(.missingImage("unused:latest")))
+
+        let result = await AgentRuntimeLaunchPreflight.preflightDockerImageBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "run",
+            imageAvailabilityChecker: checker
+        )
+
+        #expect(result.didPass)
+        #expect(result.status == .dockerImageAvailabilityPassed)
+        #expect(result.auditFields["result"] == "skipped_host_environment")
+        #expect(await checker.checkedImages().isEmpty)
+        #expect(task.status == .running)
+        #expect(run.status == .running)
+        #expect(run.stopReason.isEmpty)
+    }
+
+    @Test("Docker image preflight blocks missing selected image before provider launch")
+    func dockerImagePreflightBlocksMissingImage() async throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Docker", primaryPath: NSTemporaryDirectory())
+        let task = AgentTask(title: "Docker task", goal: "Inspect files", workspace: workspace, runtime: .claudeCode)
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:missing",
+            kind: .dockerImage,
+            displayName: "Missing Image",
+            image: "astra/missing:latest"
+        ))
+        task.status = .running
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        let checker = RecordingDockerImageAvailabilityChecker(result: .failure(.missingImage("astra/missing:latest")))
+
+        let result = await AgentRuntimeLaunchPreflight.preflightDockerImageBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "run",
+            imageAvailabilityChecker: checker
+        )
+
+        #expect(!result.didPass)
+        #expect(result.status == .dockerImageAvailabilityFailed)
+        #expect(result.reason == TaskRunStopReason.dockerImageUnavailable.rawValue)
+        #expect(result.auditFields["result"] == "image_missing")
+        #expect(await checker.checkedImages() == ["astra/missing:latest"])
+        #expect(task.status == .failed)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == TaskRunStopReason.dockerImageUnavailable.rawValue)
+        #expect(task.events.contains {
+            $0.type == "error" &&
+                $0.payload.contains("Docker image preflight stopped this task") &&
+                $0.payload.contains("astra/missing:latest") &&
+                $0.payload.contains("Build the workspace image")
+        })
+    }
+
+    @Test("Docker image preflight passes when selected image is loaded")
+    func dockerImagePreflightPassesAvailableImage() async throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Docker", primaryPath: NSTemporaryDirectory())
+        let task = AgentTask(title: "Docker task", goal: "Inspect files", workspace: workspace, runtime: .claudeCode)
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:loaded",
+            kind: .dockerImage,
+            displayName: "Loaded Image",
+            image: "astra/loaded:latest"
+        ))
+        task.status = .running
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        let checker = RecordingDockerImageAvailabilityChecker(result: .success(DockerImageAvailability(
+            image: "astra/loaded:latest",
+            imageID: "sha256:abc"
+        )))
+
+        let result = await AgentRuntimeLaunchPreflight.preflightDockerImageBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "run",
+            imageAvailabilityChecker: checker
+        )
+
+        #expect(result.didPass)
+        #expect(result.status == .dockerImageAvailabilityPassed)
+        #expect(result.auditFields["result"] == "image_available")
+        #expect(result.auditFields["container_image"] == "astra/loaded:latest")
+        #expect(result.auditFields["container_image_id"] == "sha256:abc")
+        #expect(await checker.checkedImages() == ["astra/loaded:latest"])
+        #expect(task.status == .running)
+        #expect(run.status == .running)
+        #expect(run.stopReason.isEmpty)
+    }
+
+    @Test("Remote workspace preflight records SSH diagnostic event")
+    func remoteWorkspacePreflightRecordsSSHDiagnosticEvent() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-remote-preflight-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        SSHConnectionManager.save([
+            SSHConnection(
+                name: "alvaro-pcornet-backup",
+                host: "alvaro-pcornet-backup-20250117-004956",
+                user: "alvaro1",
+                keyPath: "~/.ssh/google_compute_engine",
+                configAlias: "alvaro-pcornet-backup"
+            )
+        ], workspacePath: root.path)
+
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "PCORnet", primaryPath: root.path)
+        let task = AgentTask(title: "Start server", goal: "Start the remote server", workspace: workspace, runtime: .copilotCLI)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let result = AgentRuntimeLaunchPreflight.preflightRemoteWorkspaceBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "run",
+            runtime: .copilotCLI
+        )
+
+        #expect(result.didPass)
+        #expect(result.status == .remoteWorkspacePreflightPassed)
+        #expect(result.auditFields["result"] == "ssh_connections_detected")
+        #expect(result.auditFields["ssh_connection_count"] == "1")
+        #expect(result.auditFields["ssh_config_alias_count"] == "1")
+        #expect(result.auditFields["provider_path_access_expected"] == "true")
+
+        let events = try context.fetch(FetchDescriptor<TaskEvent>())
+        let infoEvent = try #require(events.first { $0.type == TaskEventTypes.System.info.rawValue })
+        #expect(infoEvent.payload.contains("Remote workspace preflight"))
+        #expect(infoEvent.payload.contains("alvaro-pcornet-backup"))
+        #expect(infoEvent.payload.contains("gcloud auth list"))
+        #expect(infoEvent.payload.contains("VM is running"))
+    }
+
+    @Test("Remote workspace preflight is silent for local-only workspaces")
+    func remoteWorkspacePreflightIsSilentForLocalOnlyWorkspaces() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-local-preflight-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Local", primaryPath: root.path)
+        let task = AgentTask(title: "Local task", goal: "Inspect local files", workspace: workspace, runtime: .copilotCLI)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let result = AgentRuntimeLaunchPreflight.preflightRemoteWorkspaceBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "run",
+            runtime: .copilotCLI
+        )
+
+        #expect(result.didPass)
+        #expect(result.status == .remoteWorkspacePreflightPassed)
+        #expect(result.auditFields["result"] == "no_ssh_connections")
+        #expect(try context.fetch(FetchDescriptor<TaskEvent>()).isEmpty)
     }
 }
 
@@ -717,6 +979,19 @@ struct AgentRuntimeBudgetPolicyTests {
         ))
     }
 
+    @Test("Disabled budgets ignore budget result flags")
+    func disabledBudgetsIgnoreBudgetResultFlags() {
+        let disabledBudget = AgentRuntimeBudgetSnapshot(effectiveTokenBudget: Int.max, tokensUsed: 1_000_000)
+        let result = AgentProcessResult(exitCode: 1, budgetExceeded: true)
+
+        #expect(!disabledBudget.hasReportedTokensAboveBudget)
+        #expect(!AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
+            result: result,
+            budget: disabledBudget,
+            budgetEnforcementMode: .hardStop
+        ))
+    }
+
     @Test("Final warning records budget warning event")
     func finalWarningRecordsBudgetWarningEvent() throws {
         let container = try makeRuntimeComponentContainer()
@@ -736,6 +1011,28 @@ struct AgentRuntimeBudgetPolicyTests {
         )
 
         #expect(task.events.contains { $0.type == "budget.warning" && $0.run?.id == run.id })
+    }
+
+    @Test("Disabled budgets suppress final budget warnings")
+    func disabledBudgetsSuppressFinalBudgetWarnings() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Budget", goal: "Goal", tokenBudget: 0)
+        task.tokensUsed = 1_000_000
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        AgentRuntimeBudgetPolicy.recordFinalBudgetWarningIfNeeded(
+            result: AgentProcessResult(exitCode: 0, budgetWarning: true),
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "run",
+            budgetEnforcementMode: .warning
+        )
+
+        #expect(!task.events.contains { $0.type == "budget.warning" })
     }
 }
 

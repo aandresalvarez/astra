@@ -124,7 +124,7 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
     var readScope: ExecutionSandboxReadScope
 
     /// Providers without a native OS sandbox today — wrapped by default.
-    static let defaultWrappedRuntimes: Set<AgentRuntimeID> = [.claudeCode, .copilotCLI]
+    static let defaultWrappedRuntimes: Set<AgentRuntimeID> = [.claudeCode, .copilotCLI, .openCodeCLI]
 
     /// Providers that ship their own OS sandbox (enforced via per-run flags).
     /// Excluded by default to avoid double-confinement breakage; the user can
@@ -280,36 +280,6 @@ enum ExecutionSandboxDecision: Equatable {
 enum ExecutionSandbox {
     static let sandboxExecPath = "/usr/bin/sandbox-exec"
 
-    /// Directories under the provider HOME that CLIs need to write (config,
-    /// session, and cache state). Without these the provider breaks on launch.
-    static let sharedHomeWritableRelativePaths: [String] = [
-        ".config",
-        ".cache",
-        ".npm",
-        ".local/share",
-        ".local/state",
-        "Library/Caches"
-    ]
-
-    static let claudeHomeWritableRelativePaths: [String] = [
-        ".claude",
-        ".claude.json",
-        "Library/Application Support/Claude"
-    ]
-
-    static let codexHomeWritableRelativePaths: [String] = [
-        ".codex"
-    ]
-
-    static let cursorHomeWritableRelativePaths: [String] = [
-        ".cursor"
-    ]
-
-    static let antigravityHomeWritableRelativePaths: [String] = [
-        ".antigravity",
-        ".gemini"
-    ]
-
     /// System and toolchain roots providers commonly need to execute CLIs,
     /// dynamic libraries, developer tools, Homebrew installs, and shell support
     /// files. User data locations such as `/Applications`, `~/Pictures`, and
@@ -322,9 +292,20 @@ enum ExecutionSandbox {
         "/usr/local",
         "/opt/homebrew",
         "/opt/local",
+        "/Library/Frameworks",
         "/Library/Developer",
         "/Library/Apple",
+        // Network-capable host CLIs (gcloud, ssh helpers, provider CLIs) consult
+        // system DNS, proxy, and managed-preference state while resolving hosts.
+        // These are system configuration roots, not user document locations.
+        "/Library/Managed Preferences",
+        "/Library/Preferences",
+        "/Applications/Xcode.app",
         "/private/etc",
+        // macOS resolves `/bin/sh` through this selector on some systems.
+        // Shell-script CLIs such as `gcloud` can fail before their own code runs
+        // if Seatbelt cannot read the selector symlink.
+        "/private/var/select",
         // /var/run holds host runtime state — the mDNSResponder name-resolution
         // socket, other system daemon sockets, lock/pid files — that network-
         // capable provider CLIs reach (e.g. to resolve hostnames). Read-only
@@ -335,12 +316,96 @@ enum ExecutionSandbox {
         "/dev"
     ]
 
+    // MARK: - Developer toolchain
+
+    /// The active developer directory (full Xcode or the standalone Command Line
+    /// Tools), resolved the way Apple's tool shims (`/usr/bin/git`, `clang`, `make`)
+    /// resolve it: an explicit `DEVELOPER_DIR`, then the `xcode-select` link, then
+    /// the standalone CLT. Sandboxed providers run those shims constantly (e.g.
+    /// `git` for repo context); if the profile can't read this directory the shim
+    /// falls back to the system "install the command line developer tools" dialog
+    /// even though the tools are installed — and when `xcode-select` points at
+    /// `/Applications/Xcode.app`, the privacy deny on `/Applications` is exactly
+    /// what blocks it. Resolved without spawning a process (cheap, side-effect free).
+    static func activeDeveloperDirectory(
+        environment: [String: String],
+        fileManager: FileManager = .default
+    ) -> String? {
+        // 1. Respect an explicit, existing DEVELOPER_DIR — a deliberate override wins.
+        if let explicit = environment["DEVELOPER_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !explicit.isEmpty, fileManager.fileExists(atPath: explicit) {
+            return explicit
+        }
+        // 2. Prefer the standalone Command Line Tools. It lives in an already-readable,
+        //    non-privacy-protected root (`/Library/Developer`) and — unlike full Xcode —
+        //    needs no license acceptance, so the sandboxed git/clang shims just work
+        //    without re-allowing `/Applications` or tripping the Xcode license gate.
+        let commandLineTools = "/Library/Developer/CommandLineTools"
+        if fileManager.fileExists(atPath: commandLineTools) {
+            return commandLineTools
+        }
+        // 3. Fall back to whatever `xcode-select` points at (typically Xcode under
+        //    `/Applications`), which the read-allow + protected re-allow below expose.
+        if let linked = try? fileManager.destinationOfSymbolicLink(atPath: "/var/db/xcode_select_link"),
+           linked.hasPrefix("/"), fileManager.fileExists(atPath: linked) {
+            return linked
+        }
+        return nil
+    }
+
+    /// The directory the sandbox must grant read access to so Apple's tool shims can
+    /// both *resolve* and *validate* the toolchain. A full Xcode shim stats the app
+    /// bundle's `Info.plist`/`version.plist` (siblings of `Contents/Developer`), so
+    /// the whole `.app` bundle is granted; the standalone Command Line Tools need
+    /// only their own directory. Granting the read-only Xcode bundle is safe — it is
+    /// system tooling, not user data, and already world-readable outside the sandbox.
+    static func developerToolchainGrantRoot(_ developerDirectory: String) -> String {
+        if let appRange = developerDirectory.range(of: ".app/", options: [.caseInsensitive]) {
+            return String(developerDirectory[..<appRange.lowerBound]) + ".app"
+        }
+        return developerDirectory
+    }
+
+    /// The active developer toolchain as canonical sandbox path spellings, for the
+    /// read allowlist and the protected-read re-allow. Empty when none resolves.
+    static func developerDirectoryRoots(
+        environment: [String: String],
+        fileManager: FileManager = .default
+    ) -> [String] {
+        guard let directory = activeDeveloperDirectory(environment: environment, fileManager: fileManager),
+              let canonical = canonicalize(developerToolchainGrantRoot(directory)) else { return [] }
+        var seen: Set<String> = []
+        return sandboxPathSpellings(canonical).filter { seen.insert($0).inserted }
+    }
+
+    /// `DEVELOPER_DIR` to pin into a wrapped provider's environment so toolchain
+    /// shims resolve deterministically without reading `/var/db/xcode_select_link`
+    /// (which the restricted read scope deliberately does not expose). Empty when
+    /// none resolves or the plan already sets it (a deliberate value is respected).
+    static func developerDirectoryEnvironment(
+        plan: AgentRuntimeProcessLaunchPlan,
+        fileManager: FileManager = .default
+    ) -> [String: String] {
+        if plan.environment["DEVELOPER_DIR"]?.isEmpty == false { return [:] }
+        guard let directory = activeDeveloperDirectory(environment: plan.environment, fileManager: fileManager) else {
+            return [:]
+        }
+        return ["DEVELOPER_DIR": directory]
+    }
+
+    /// `base` with the entries of `extra` not already present appended, order preserved.
+    private static func appendingUnique(_ base: [String], _ extra: [String]) -> [String] {
+        var seen = Set(base)
+        return base + extra.filter { seen.insert($0).inserted }
+    }
+
     // MARK: - Decision
 
     static func decide(
         plan: AgentRuntimeProcessLaunchPlan,
         providerHomeDirectory: String,
         additionalWritablePaths: [String] = [],
+        additionalReadablePaths: [String]? = nil,
         settings: ExecutionSandboxSettings,
         fileManager: FileManager = .default
     ) -> ExecutionSandboxDecision {
@@ -383,25 +448,39 @@ enum ExecutionSandbox {
             return unavailable("no_writable_roots")
         }
 
+        let readAdditionalPaths = additionalReadablePaths ?? additionalWritablePaths
         let explicitReadRoots = explicitlyGrantedReadableRoots(
             plan: plan,
-            additionalReadablePaths: additionalWritablePaths,
+            additionalReadablePaths: readAdditionalPaths,
             canonicalWorkspace: workspace
         )
+        // The active developer toolchain must stay readable wherever it lives, or
+        // the providers' `git`/`clang` shims hit the system "install command line
+        // developer tools" dialog. Folded into the read allowlist (so restricted
+        // scope allows it regardless of location) and, below, into the protected
+        // re-allow (so a toolchain under `/Applications` survives the privacy deny).
+        let developerRoots = developerDirectoryRoots(environment: plan.environment, fileManager: fileManager)
         let readableRoots = settings.readScope == .open
             ? []
-            : readableRoots(
-                plan: plan,
-                providerHomeDirectory: providerHomeDirectory,
-                additionalReadablePaths: additionalWritablePaths,
-                canonicalWorkspace: workspace
+            : appendingUnique(
+                readableRoots(
+                    plan: plan,
+                    providerHomeDirectory: providerHomeDirectory,
+                    additionalReadablePaths: readAdditionalPaths,
+                    canonicalWorkspace: workspace
+                ),
+                developerRoots
             )
         let readableMetadataRoots = settings.readScope == .open
             ? []
             : readableMetadataRoots(for: readableRoots)
         let protectedReadRoots = protectedReadRoots()
         let explicitProtectedReadAllowRoots = protectedReadAllowRoots(
-            explicitReadRoots: explicitReadRoots,
+            // Toolchain dirs under a protected root (Xcode at `/Applications/Xcode.app`)
+            // are re-allowed in every scope; the filter drops toolchain dirs that
+            // aren't under a protected root (e.g. the standalone CLT), which need no
+            // re-allow.
+            explicitReadRoots: explicitReadRoots + developerRoots,
             protectedReadRoots: protectedReadRoots
         )
         let protectedWriteDenyRoots = protectedWriteDenyRoots(plan: plan, writableRoots: roots)
@@ -426,7 +505,12 @@ enum ExecutionSandbox {
             executablePath: plan.executablePath,
             arguments: plan.arguments
         )
-        let wrapped = rewrite(plan, executablePath: sandboxExecPath, arguments: arguments)
+        let wrapped = rewrite(
+            plan,
+            executablePath: sandboxExecPath,
+            arguments: arguments,
+            extraEnvironment: developerDirectoryEnvironment(plan: plan, fileManager: fileManager)
+        )
         return .applied(plan: wrapped, writableRoots: roots)
     }
 
@@ -515,15 +599,20 @@ enum ExecutionSandbox {
         let trimmedHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedHome.isEmpty {
             raw.append(trimmedHome)
-        }
-
-        // Only anchor the provider config/cache subpaths on a real home; a home
-        // that is itself an overly broad root (e.g. "/") would just yield junk
-        // top-level paths like "/.claude".
-        let home = effectiveHome(plan: plan, providerHomeDirectory: trimmedHome)
-        if !home.isEmpty, let canonicalHome = canonicalize(home), !isOverlyBroadRoot(canonicalHome) {
-            for relative in homeWritableRelativePaths(for: plan.runtime) {
-                raw.append((home as NSString).appendingPathComponent(relative))
+            if let canonicalHome = canonicalize(trimmedHome), !isOverlyBroadRoot(canonicalHome) {
+                for relative in plan.sandboxHomeStateAccess.explicitHomeWritableRelativePaths {
+                    raw.append((trimmedHome as NSString).appendingPathComponent(relative))
+                }
+            }
+        } else if let envHome = plan.environment["HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !envHome.isEmpty,
+                  let canonicalHome = canonicalize(envHome),
+                  !isOverlyBroadRoot(canonicalHome) {
+            // If the provider runtime intentionally launches with a HOME, allow
+            // only that provider's own state under it. Do not grant the HOME
+            // root or generic shared cache/config roots from an inherited home.
+            for relative in plan.sandboxHomeStateAccess.inheritedHomeWritableRelativePaths {
+                raw.append((envHome as NSString).appendingPathComponent(relative))
             }
         }
 
@@ -665,29 +754,25 @@ enum ExecutionSandbox {
         providerHomeDirectory: String
     ) -> [String] {
         let trimmedHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
-        let home = effectiveHome(plan: plan, providerHomeDirectory: trimmedHome)
+        let home: String
+        let relativePaths: [String]
+        if !trimmedHome.isEmpty {
+            home = trimmedHome
+            relativePaths = plan.sandboxHomeStateAccess.explicitHomeWritableRelativePaths
+        } else if let envHome = plan.environment["HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !envHome.isEmpty {
+            home = envHome
+            relativePaths = plan.sandboxHomeStateAccess.inheritedHomeWritableRelativePaths
+        } else {
+            return []
+        }
         guard !home.isEmpty,
               let canonicalHome = canonicalize(home),
               !isOverlyBroadRoot(canonicalHome) else {
             return []
         }
-        return homeWritableRelativePaths(for: plan.runtime).map { relative in
+        return relativePaths.map { relative in
             (home as NSString).appendingPathComponent(relative)
-        }
-    }
-
-    private static func homeWritableRelativePaths(for runtime: AgentRuntimeID) -> [String] {
-        switch runtime {
-        case .claudeCode:
-            return sharedHomeWritableRelativePaths + claudeHomeWritableRelativePaths
-        case .codexCLI:
-            return sharedHomeWritableRelativePaths + codexHomeWritableRelativePaths
-        case .cursorCLI:
-            return sharedHomeWritableRelativePaths + cursorHomeWritableRelativePaths
-        case .antigravityCLI:
-            return sharedHomeWritableRelativePaths + antigravityHomeWritableRelativePaths
-        default:
-            return sharedHomeWritableRelativePaths
         }
     }
 
@@ -699,9 +784,9 @@ enum ExecutionSandbox {
         path == root || path.hasPrefix(root + "/")
     }
 
-    /// The HOME the spawned CLI will actually see: an explicit provider home if
-    /// configured, otherwise the HOME baked into the launch environment, falling
-    /// back to the process home.
+    /// The HOME ASTRA can safely reason about for provider-owned state. A caller
+    /// must pass an explicit provider home or set HOME in the launch plan; ASTRA
+    /// never falls back to its own process home for sandbox grants.
     static func effectiveHome(plan: AgentRuntimeProcessLaunchPlan, providerHomeDirectory: String) -> String {
         if !providerHomeDirectory.isEmpty {
             return providerHomeDirectory
@@ -710,7 +795,7 @@ enum ExecutionSandbox {
            !envHome.isEmpty {
             return envHome
         }
-        return NSHomeDirectory()
+        return ""
     }
 
     // MARK: - Profile generation
@@ -955,23 +1040,31 @@ enum ExecutionSandbox {
     private static func rewrite(
         _ plan: AgentRuntimeProcessLaunchPlan,
         executablePath: String,
-        arguments: [String]
+        arguments: [String],
+        extraEnvironment: [String: String] = [:]
     ) -> AgentRuntimeProcessLaunchPlan {
         AgentRuntimeProcessLaunchPlan(
             runtime: plan.runtime,
             executablePath: executablePath,
             arguments: arguments,
             currentDirectory: plan.currentDirectory,
-            environment: plan.environment,
+            // Merge keeps any value the plan already set (a deliberate DEVELOPER_DIR
+            // wins over the resolved one).
+            environment: extraEnvironment.isEmpty
+                ? plan.environment
+                : plan.environment.merging(extraEnvironment) { current, _ in current },
             browserShimDirectory: plan.browserShimDirectory,
             providerVersion: plan.providerVersion,
             parsesJSONLines: plan.parsesJSONLines,
             directoriesToCreate: plan.directoriesToCreate,
             sandboxReadablePaths: plan.sandboxReadablePaths,
+            sandboxHomeStateAccess: plan.sandboxHomeStateAccess,
             sandboxProtectedWriteDenyPaths: plan.sandboxProtectedWriteDenyPaths,
             providerDetectedFields: plan.providerDetectedFields,
             commandPlannedFields: plan.commandPlannedFields,
-            interactiveAsk: plan.interactiveAsk
+            interactiveAsk: plan.interactiveAsk,
+            pathMapper: plan.pathMapper,
+            executionEnvironment: plan.executionEnvironment
         )
     }
 }

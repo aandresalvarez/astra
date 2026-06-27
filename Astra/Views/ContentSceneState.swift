@@ -11,6 +11,16 @@ enum ContentSelectionResolver {
     static func effectiveWorkspace(selectedTask: AgentTask?, selectedWorkspace: Workspace?) -> Workspace? {
         selectedTask?.workspace ?? selectedWorkspace
     }
+
+    static func workspace(for app: WorkspaceApp?, in workspaces: [Workspace]) -> Workspace? {
+        guard let app else { return nil }
+        return workspace(id: app.workspaceID, in: workspaces)
+    }
+
+    static func workspace(id: UUID?, in workspaces: [Workspace]) -> Workspace? {
+        guard let id else { return nil }
+        return workspaces.first { $0.id == id }
+    }
 }
 
 enum ContentWorkspaceSelectionResolver {
@@ -36,6 +46,8 @@ enum ContentWorkspaceSelectionResolver {
 enum ContentDetailPresentation: Equatable {
     case draftTask
     case existingTask
+    case workspaceApp
+    case workspaceAppStudio
     case newTaskComposer
     case workspaceHome
     case noWorkspace
@@ -43,7 +55,9 @@ enum ContentDetailPresentation: Equatable {
     static func resolve(
         selectedTask: AgentTask?,
         effectiveWorkspace: Workspace?,
-        isComposingTask: Bool
+        isComposingTask: Bool,
+        selectedWorkspaceApp: WorkspaceApp? = nil,
+        isComposingWorkspaceApp: Bool = false
     ) -> ContentDetailPresentation {
         if let selectedTask {
             return selectedTask.status == .draft ? .draftTask : .existingTask
@@ -53,7 +67,19 @@ enum ContentDetailPresentation: Equatable {
             return .noWorkspace
         }
 
-        if isComposingTask || effectiveWorkspace.tasks.isEmpty {
+        if isComposingWorkspaceApp {
+            return .workspaceAppStudio
+        }
+
+        if isComposingTask {
+            return .newTaskComposer
+        }
+
+        if let selectedWorkspaceApp {
+            return selectedWorkspaceApp.lifecycleStatus == .draft ? .workspaceAppStudio : .workspaceApp
+        }
+
+        if effectiveWorkspace.tasks.isEmpty {
             return .newTaskComposer
         }
 
@@ -166,6 +192,14 @@ struct ContentSceneCoordinator {
 
     var effectiveWorkspaceID: UUID? {
         effectiveWorkspace?.id
+    }
+
+    func workspace(for app: WorkspaceApp?) -> Workspace? {
+        ContentSelectionResolver.workspace(for: app, in: workspaces)
+    }
+
+    func workspace(id: UUID?) -> Workspace? {
+        ContentSelectionResolver.workspace(id: id, in: workspaces)
     }
 
     var workspaceSelectionSignature: String {
