@@ -259,7 +259,7 @@ struct PluginCatalogView: View {
             )
         }
         .sheet(item: $installingPackage) { package in
-            PluginInstallSheet(
+            CapabilityInstallSheetRouter(
                 package: package,
                 workspace: workspace,
                 policyContext: catalogPolicyContext,

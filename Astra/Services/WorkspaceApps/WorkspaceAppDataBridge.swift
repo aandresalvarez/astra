@@ -406,7 +406,7 @@ enum WorkspaceAppDataBridge {
                 guard let resolved = resolveRead(request, in: manifest) else {
                     return .error("Source '\(request.sourceId)' is not readable by this app.")
                 }
-                do { return .rows(try await execute(resolved.action, manifest, resolved.input).rows) }
+                do { return .rows(connectorRows(try await execute(resolved.action, manifest, resolved.input).rows)) }
                 catch { return .error(String(describing: error)) }
             }
         }
@@ -447,6 +447,25 @@ enum WorkspaceAppDataBridge {
 
     static func jsRows(_ rows: [[String: WorkspaceAppStorageValue]]) -> [[String: Any]] {
         rows.map { row in row.mapValues(jsValue) }
+    }
+
+    /// Connector reads cross an external-service boundary. The connector contract should never return
+    /// credentials, but this defense-in-depth filter keeps credential-shaped fields out of JS even if a
+    /// backend or fake resolver accidentally includes them in row data.
+    static func connectorRows(_ rows: [[String: WorkspaceAppStorageValue]]) -> [[String: WorkspaceAppStorageValue]] {
+        rows.map { row in
+            row.filter { key, _ in !isCredentialKey(key) }
+        }
+    }
+
+    static func jsConnectorRows(_ rows: [[String: WorkspaceAppStorageValue]]) -> [[String: Any]] {
+        jsRows(connectorRows(rows))
+    }
+
+    private static func isCredentialKey(_ key: String) -> Bool {
+        let normalized = key.lowercased().filter { $0.isLetter || $0.isNumber }
+        let markers = ["token", "secret", "password", "credential", "authorization", "bearer", "oauth"]
+        return markers.contains { normalized.contains($0) }
     }
 
     static func jsValue(_ value: WorkspaceAppStorageValue) -> Any {

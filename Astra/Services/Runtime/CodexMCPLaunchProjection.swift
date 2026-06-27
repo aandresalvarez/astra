@@ -119,7 +119,7 @@ enum CodexMCPConfigRenderer {
         for resolved: MCPRuntimeProjection.ResolvedServer,
         availableEnvironment: [String: String]
     ) -> String? {
-        let server = resolved.server
+        let server = RemoteMCPGatewayProjection.providerFacingServer(for: resolved)
         guard MCPEnvironmentKeyPolicy.isValidPermissionName(server.id) else {
             AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
                 "source": "codex_mcp_projection",

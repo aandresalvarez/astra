@@ -7,6 +7,7 @@ struct CapabilitiesTabContent: View {
     var onCatalogChanged: () -> Void = {}
     var onPackageFocusChanged: (String?) -> Void = { _ in }
     var onEditElement: (ConfigureTab, UUID) -> Void = { _, _ in }
+
     @State private var catalog = PluginCatalog()
 
     var body: some View {

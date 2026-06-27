@@ -26,6 +26,20 @@ struct AppBundlePackagingTests {
         #expect(try index(of: toolCopy, in: script) < index(of: signingCommand, in: script))
     }
 
+    @Test("build script can provision managed Google OAuth client in Info.plist")
+    func buildScriptCanProvisionManagedGoogleOAuthClient() throws {
+        let script = try String(contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"), encoding: .utf8)
+        let validation = #"if [[ -n "$GOOGLE_MANAGED_OAUTH_CLIENT_ID" ]] && ! validate_google_managed_oauth_client_id "$GOOGLE_MANAGED_OAUTH_CLIENT_ID"; then"#
+        let plistWrite = #"<string>$GOOGLE_MANAGED_OAUTH_CLIENT_ID</string>"#
+
+        #expect(script.contains("ASTRA_GOOGLE_MANAGED_OAUTH_CLIENT_ID"))
+        #expect(script.contains("validate_google_managed_oauth_client_id()"))
+        #expect(script.contains("Invalid ASTRA_GOOGLE_MANAGED_OAUTH_CLIENT_ID"))
+        #expect(script.contains("<key>ASTRAGoogleOAuthClientID</key>"))
+        #expect(script.contains(plistWrite))
+        #expect(try index(of: validation, in: script) < index(of: plistWrite, in: script))
+    }
+
     @Test("Host app sandbox entitlement stays disabled while runtime Seatbelt wrapping is active")
     func hostAppSandboxEntitlementStaysDisabledWhileRuntimeSeatbeltWrappingIsActive() throws {
         let entitlementsURL = repoRoot.appendingPathComponent("script/ASTRA.entitlements")

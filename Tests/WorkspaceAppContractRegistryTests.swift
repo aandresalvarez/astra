@@ -30,6 +30,58 @@ struct WorkspaceAppContractRegistryTests {
         #expect(registry.implementation(id: "redcap-form-schema-native")?.transport == .native)
     }
 
+    @Test("built-in registry defines stable Google Workspace read and gated write contracts")
+    func builtInRegistryDefinesGoogleWorkspaceContracts() throws {
+        let registry = WorkspaceAppContractRegistry()
+
+        let readContracts: [String: String] = [
+            "gmail.thread.read": "getThread",
+            "drive.file.read": "readFileContents",
+            "calendar.event.read": "listEvents",
+            "docs.document.read": "readDocument",
+            "sheets.range.read": "readRange"
+        ]
+        for (contractID, operation) in readContracts {
+            let family = try #require(registry.family(id: contractID))
+            #expect(family.operations.contains {
+                $0.name == operation && $0.effect == .read && !$0.requiresApproval
+            })
+        }
+
+        let gatedContracts: [String: String] = [
+            "gmail.message.write": "sendMessage",
+            "drive.file.write": "updateFile",
+            "calendar.event.write": "updateEvent",
+            "docs.document.write": "replaceDocument",
+            "sheets.range.write": "updateRange"
+        ]
+        for (contractID, operation) in gatedContracts {
+            let family = try #require(registry.family(id: contractID))
+            #expect(family.operations.contains {
+                $0.name == operation && $0.effect == .externalWrite && $0.requiresApproval
+            })
+        }
+        #expect(registry.family(id: "drive.file.write")?.operations.contains {
+            $0.name == "trashFile" && $0.effect == .destructive && $0.requiresApproval
+        } == true)
+    }
+
+    @Test("Google Workspace contracts have no production implementation until the remote MCP backend is wired")
+    func googleWorkspaceContractsStayUnmappedWithoutBackend() {
+        let registry = WorkspaceAppContractRegistry()
+        let requirement = WorkspaceAppRequirement(
+            id: "gmail",
+            contract: "gmail.thread.read",
+            operations: ["getThread"],
+            providerHint: "googleWorkspace"
+        )
+
+        let resolution = registry.resolve(requirement)
+
+        #expect(!resolution.isSatisfied)
+        #expect(resolution.implementations.isEmpty)
+    }
+
     @Test("provider hint orders compatible implementations without filtering alternates")
     func providerHintOrdersCompatibleImplementationsWithoutFilteringAlternates() {
         let registry = WorkspaceAppContractRegistry(
