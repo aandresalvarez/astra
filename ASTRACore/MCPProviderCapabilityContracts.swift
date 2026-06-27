@@ -76,19 +76,20 @@ public struct MCPProviderCapability: Codable, Equatable, Sendable, Identifiable 
         if contractID.rawValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             violations.append(.contractIDRequired)
         }
-        for ref in requiredAuthProfileRefs.map(Self.trimmedNonEmpty) where !declaredAuthProfileRefs.contains(ref) {
+        for ref in requiredAuthProfileRefs.compactMap(Self.trimmedNonEmpty) where !declaredAuthProfileRefs.contains(ref) {
             violations.append(.undeclaredAuthProfileRef(ref))
         }
-        for ref in requiredSecretRefs.map(Self.trimmedNonEmpty) where !declaredSecretRefs.contains(ref) {
+        for ref in requiredSecretRefs.compactMap(Self.trimmedNonEmpty) where !declaredSecretRefs.contains(ref) {
             violations.append(.undeclaredSecretRef(ref))
         }
-        for ref in requiredConfigRefs.map(Self.trimmedNonEmpty) where !declaredConfigRefs.contains(ref) {
+        for ref in requiredConfigRefs.compactMap(Self.trimmedNonEmpty) where !declaredConfigRefs.contains(ref) {
             violations.append(.undeclaredConfigRef(ref))
         }
         return violations
     }
 
-    private static func trimmedNonEmpty(_ value: String) -> String {
-        value.trimmingCharacters(in: .whitespacesAndNewlines)
+    private static func trimmedNonEmpty(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
