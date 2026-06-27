@@ -1572,11 +1572,11 @@ struct ChatPanelView: View {
             // will be injected into the system prompt
         }
 
-        if let mcpRequest = MCPInstallChatCommand.installRequest(input: input) {
+        if let mcpTurn = MCPInstallChatCommand.installTurnOutcome(input: input, hasWorkspace: workspace != nil) {
             messages.append(ChatMessage(role: "user", content: input)); messageText = ""
-            guard workspace != nil else { messages.append(ChatMessage(role: "assistant", content: "Select a workspace first - MCP capabilities are workspace-scoped.")); return }
-            messages.append(ChatMessage(role: "assistant", content: "I found an MCP install target. Review it before ASTRA saves or enables anything."))
-            onStartMCPInstallReview?(mcpRequest); return
+            messages.append(ChatMessage(role: "assistant", content: mcpTurn.assistantMessage))
+            if let request = mcpTurn.request { onStartMCPInstallReview?(request) }
+            return
         }
         if let appStudioRequest = WorkspaceAppChatCommand.launchRequest(input: input) {
             messages.append(ChatMessage(role: "user", content: input)); messageText = ""
