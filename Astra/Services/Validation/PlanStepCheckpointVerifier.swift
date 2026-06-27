@@ -219,7 +219,7 @@ enum PlanStepCheckpointVerifier {
                 outcome.unverifiableScopeCount += 1
                 continue
             }
-            if resolved.contains(where: { evidenceExists(at: $0, kind: check.kind, fileManager: fileManager) }) {
+            if resolved.contains(where: { evidenceExists(at: $0, kind: check.kind, roots: check.roots, fileManager: fileManager) }) {
                 outcome.verifiedPaths.append(check.path)
             } else {
                 outcome.missingRequiredPaths.append(check.path)
@@ -231,10 +231,15 @@ enum PlanStepCheckpointVerifier {
     private static func evidenceExists(
         at path: String,
         kind: TaskPlanArtifactKind,
+        roots: [String],
         fileManager: FileManager
     ) -> Bool {
+        guard let root = containingRoot(for: path, roots: roots) else { return false }
+        let hostFileAccess = HostFileAccessBroker(fileManager: fileManager)
+        let accessIntent = HostFileAccessIntent.astraManagedStorage(root: URL(fileURLWithPath: root, isDirectory: true))
+        let url = URL(fileURLWithPath: path, isDirectory: kind == .directory)
         var isDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory) else { return false }
+        guard hostFileAccess.fileExists(at: url, isDirectory: &isDirectory, intent: accessIntent) else { return false }
         guard kind == .directory else {
             // A directory at a path declared as a file is not the declared
             // output (the preflight may have mkdir'd it).
@@ -243,7 +248,19 @@ enum PlanStepCheckpointVerifier {
         // Required directories are pre-created empty by the artifact preflight,
         // so bare existence proves nothing — content does.
         guard isDirectory.boolValue else { return false }
-        return ((try? fileManager.contentsOfDirectory(atPath: path)) ?? []).isEmpty == false
+        return ((try? hostFileAccess.contentsOfDirectory(at: url, intent: accessIntent)) ?? []).isEmpty == false
+    }
+
+    private static func containingRoot(for path: String, roots: [String]) -> String? {
+        let resolvedPath = URL(fileURLWithPath: path)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+            .path
+        return roots
+            .map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath).resolvingSymlinksInPath().standardizedFileURL.path }
+            .first { root in
+                resolvedPath == root || resolvedPath.hasPrefix(root.hasSuffix("/") ? root : root + "/")
+            }
     }
 
     /// Mirrors TaskExecutionArtifactPreparer's directory detection for

@@ -10,6 +10,114 @@ private func makeContainer() throws -> ModelContainer {
     return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
 }
 
+@Suite("Provider launch capability scope")
+struct ProviderLaunchCapabilityScopeTests {
+
+    @Test("Worker capability launch records use provider launch context")
+    func workerCapabilityLaunchRecordsUseProviderLaunchContext() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let workerURL = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Runtime")
+            .appendingPathComponent("AgentRuntimeWorker.swift")
+        let auditURL = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Runtime")
+            .appendingPathComponent("AgentRuntimeCapabilityLaunchAudit.swift")
+        let workerSource = try String(contentsOf: workerURL, encoding: .utf8)
+        let auditSource = try String(contentsOf: auditURL, encoding: .utf8)
+
+        #expect(sourceContains(workerSource, "AgentRuntimeCapabilityLaunchAudit.logResolution("))
+        #expect(sourceContains(workerSource, "AgentRuntimeCapabilityLaunchAudit.logGitHubCLIPreflightIfNeeded("))
+        #expect(sourceContains(workerSource, "contextText: providerLaunchContextText"))
+        #expect(sourceContains(
+            workerSource,
+            """
+            Self.providerLaunchSignature(
+                for: task,
+                manifest: manifest,
+                contextText: providerLaunchContextText
+            )
+            """
+        ))
+        #expect(auditSource.contains("TaskCapabilityResolver(task: task).promptScope(contextText: contextText)"))
+        #expect(!auditSource.contains("promptScope()"))
+    }
+
+    @Test("GitHub CLI preflight labels distinguish generic exits from auth failures")
+    func githubCLIPreflightLabelsDistinguishGenericExitsFromAuthFailures() {
+        let failedVersion = RunResult.exited(code: 2, stdout: "", stderr: "bad flag")
+        let failedAuth = RunResult.exited(code: 1, stdout: "", stderr: "not logged in")
+
+        #expect(AgentRuntimeCapabilityLaunchAudit.runResultLabel(failedVersion) == "exit_2")
+        #expect(AgentRuntimeCapabilityLaunchAudit.runResultLabel(
+            failedAuth,
+            nonZeroExitLabel: "auth_failed"
+        ) == "auth_failed")
+        #expect(AgentRuntimeCapabilityLaunchAudit.runResultLabel(
+            RunResult.exited(code: 0, stdout: "ok", stderr: "")
+        ) == "success")
+    }
+
+    @Test("Credential projection preflight runs in shared worker path before provider launch")
+    func credentialProjectionPreflightRunsBeforeProviderLaunch() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let workerURL = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Runtime")
+            .appendingPathComponent("AgentRuntimeWorker.swift")
+        let workerSource = try String(contentsOf: workerURL, encoding: .utf8)
+        let preflight = "AgentRuntimeLaunchPreflight.preflightCredentialProjectionBeforeLaunch("
+        let promptBuild = "let prompt = promptOverride ?? buildPrompt(for: task)"
+        let providerLaunch = "processRunner.runRuntimeProcess"
+        let preflightRange = try #require(workerSource.range(of: preflight))
+        let promptBuildRange = try #require(workerSource.range(of: promptBuild))
+        let providerLaunchRange = try #require(workerSource.range(of: providerLaunch))
+
+        #expect(sourceContains(workerSource, preflight))
+        #expect(preflightRange.lowerBound < promptBuildRange.lowerBound)
+        #expect(preflightRange.lowerBound < providerLaunchRange.lowerBound)
+    }
+
+    @Test("Docker image preflight runs before credential projection and provider launch")
+    func dockerImagePreflightRunsBeforeCredentialProjectionAndProviderLaunch() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let workerURL = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Runtime")
+            .appendingPathComponent("AgentRuntimeWorker.swift")
+        let workerSource = try String(contentsOf: workerURL, encoding: .utf8)
+        let dockerPreflight = "AgentRuntimeLaunchPreflight.preflightDockerImageBeforeLaunch("
+        let credentialPreflight = "AgentRuntimeLaunchPreflight.preflightCredentialProjectionBeforeLaunch("
+        let providerLaunch = "processRunner.runRuntimeProcess"
+        let dockerRange = try #require(workerSource.range(of: dockerPreflight))
+        let credentialRange = try #require(workerSource.range(of: credentialPreflight))
+        let providerLaunchRange = try #require(workerSource.range(of: providerLaunch))
+
+        #expect(sourceContains(workerSource, dockerPreflight))
+        #expect(dockerRange.lowerBound < credentialRange.lowerBound)
+        #expect(dockerRange.lowerBound < providerLaunchRange.lowerBound)
+    }
+
+    private func sourceContains(_ source: String, _ expected: String) -> Bool {
+        normalizeWhitespace(source).contains(normalizeWhitespace(expected))
+    }
+
+    private func normalizeWhitespace(_ text: String) -> String {
+        text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+}
+
 // MARK: - Cancel
 
 @Suite("AgentRuntimeWorker Cancel")
@@ -208,6 +316,57 @@ struct TaskDeliverableExpectationTests {
         )
 
         #expect(TaskDeliverableExpectation.requiresStandaloneArtifact(task))
+        #expect(TaskDeliverableExpectation.requiresDeliverableArtifact(task))
+    }
+
+    @Test("Named deliverables require artifact evidence without action words")
+    func namedDeliverablesRequireArtifactEvidenceWithoutActionWords() {
+        let task = AgentTask(
+            title: "Report",
+            goal: """
+            Final deliverables:
+            - ./results.txt
+            """
+        )
+
+        #expect(!TaskDeliverableExpectation.requiresStandaloneArtifact(task))
+        #expect(TaskDeliverableExpectation.requiredOutputFilenames(task) == ["results.txt"])
+        #expect(TaskDeliverableExpectation.requiresDeliverableArtifact(task))
+    }
+
+    @Test("Input and example lists do not require output artifacts")
+    func inputAndExampleListsDoNotRequireOutputArtifacts() {
+        let task = AgentTask(
+            title: "Analyze inputs",
+            goal: """
+            Use these files as inputs:
+            - ./data.csv
+            - ./examples.json
+
+            Reference examples:
+            1. ./sample.txt
+            2. ./notes.md
+
+            Summarize the answer in chat.
+            """
+        )
+
+        #expect(TaskDeliverableExpectation.requiredOutputFilenames(task).isEmpty)
+        #expect(!TaskDeliverableExpectation.requiresDeliverableArtifact(task))
+    }
+
+    @Test("Required input prose does not require output artifacts")
+    func requiredInputProseDoesNotRequireOutputArtifacts() {
+        let task = AgentTask(
+            title: "Analyze input",
+            goal: """
+            Required input: ./data.csv
+            Summarize the answer in chat.
+            """
+        )
+
+        #expect(TaskDeliverableExpectation.requiredOutputFilenames(task).isEmpty)
+        #expect(!TaskDeliverableExpectation.requiresDeliverableArtifact(task))
     }
 
     @Test("Artifact detector ignores ASTRA scaffold around informational file context")
@@ -516,6 +675,7 @@ struct BuildPromptTests {
             .nativeContinuation,
             .conversationHistory,
             .changedFiles,
+            .workspaceEnvironment,
             .taskOutputFolder,
             .followUpContext,
             .capabilities,
@@ -650,8 +810,10 @@ struct BuildPromptTests {
             #expect(prompt.contains("For informational tasks, summaries, reviews, lookups, and status checks, return the useful answer in chat"))
             #expect(prompt.contains("Artifact first-action requirement:"))
             #expect(prompt.contains("Your first provider-visible action should be to create or update a useful baseline deliverable"))
+            #expect(prompt.contains("A text reply such as \"I'll create it\" does not satisfy this requirement"))
             #expect(prompt.contains("Artifact delivery contract:"))
             #expect(prompt.contains("Create the first useful deliverable promptly"))
+            #expect(prompt.contains("text promises do not count as delivery"))
             #expect(prompt.contains("preferably as index.html"))
             #expect(prompt.contains("Do not spend an extended period perfecting design, puzzle mechanics, algorithms, or research before writing the initial artifact"))
             #expect(prompt.contains("If a tool permission is needed to create the artifact, request that tool permission instead of continuing hidden planning"))
@@ -682,6 +844,45 @@ struct BuildPromptTests {
         #expect(prompt.contains("Task Output Folder:"))
         #expect(!prompt.contains("Artifact delivery contract:"))
         #expect(!prompt.contains("Create the first useful deliverable promptly"))
+    }
+
+    @Test("Prompt explains SSH config aliases for remote workspaces")
+    func promptExplainsSSHConfigAliasesForRemoteWorkspaces() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-prompt-ssh-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        SSHConnectionManager.save([
+            SSHConnection(
+                name: "deid-jsn-workbench",
+                host: "deid-as-service-jsn",
+                user: "alvaro1_stanford_edu",
+                remotePath: "/home/jupyter/users/alvaro1_stanford_edu/project",
+                keyPath: "~/.ssh/google_compute_engine",
+                configAlias: "deid-jsn-workbench"
+            )
+        ], workspacePath: root.path)
+
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "JSL", primaryPath: root.path)
+        ctx.insert(ws)
+        let task = AgentTask(
+            title: "Deploy",
+            goal: "Deploy files to the remote",
+            workspace: ws
+        )
+        ctx.insert(task)
+        try ctx.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(prompt.contains("Connect with: ssh deid-jsn-workbench"))
+        #expect(prompt.contains("requires ~/.ssh/config"))
+        #expect(prompt.contains("ProxyCommand/IAP"))
+        #expect(prompt.contains("Identity file: ~/.ssh/google_compute_engine"))
+        #expect(prompt.contains("prefer the alias over the raw hostname"))
     }
 
     @Test("OpenCode prompt steers task state reads to inline context")
@@ -882,6 +1083,7 @@ struct BuildPromptTests {
         let worker = AgentRuntimeWorker.scenarioWorker()
         let prompt = worker.buildPrompt(for: task)
         #expect(prompt.contains("Create an agent team with 3 teammates"))
+        #expect(prompt.contains("Do not produce the final answer or final artifact until teammate results have been collected"))
         #expect(prompt.contains("Focus on security"))
     }
 
@@ -901,6 +1103,26 @@ struct BuildPromptTests {
         #expect(prompt.contains("Astra Run Protocol v1:"))
         #expect(prompt.contains("ASTRA_EVENT {\"v\":1,\"type\":\"todo.replace\""))
         #expect(prompt.contains("ASTRA_EVENT {\"v\":1,\"type\":\"complete\""))
+    }
+
+    @Test("Prompt warns sandboxed runtimes not to claim full access")
+    func promptWarnsSandboxedRuntimesNotToClaimFullAccess() throws {
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Test", primaryPath: "/tmp/prompt-sandbox-language")
+        ctx.insert(ws)
+        let task = AgentTask(title: "T", goal: "G", workspace: ws)
+        task.runtimeID = AgentRuntimeID.cursorCLI.rawValue
+        ctx.insert(task)
+        try ctx.save()
+
+        let initialPrompt = AgentPromptBuilder.buildPrompt(for: task)
+        let followUpPrompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: "Continue", task: task)
+
+        for prompt in [initialPrompt, followUpPrompt] {
+            #expect(prompt.contains("Do not describe sandbox retries as full access"))
+            #expect(prompt.contains("If a file read or write is blocked by policy or sandboxing"))
+        }
     }
 
     @Test("Follow-up prompt includes the same Astra Run Protocol instructions")
@@ -992,6 +1214,41 @@ struct BuildPromptTests {
         #expect(manifest.sections.contains { section in
             section.sourcePointers.contains(PromptContextSourcePointer(label: "test transcript", target: "memory"))
         })
+    }
+
+    @Test("Docker follow-up prompt preserves workspace executor instructions")
+    func dockerFollowUpPromptPreservesWorkspaceExecutorInstructions() throws {
+        let root = NSTemporaryDirectory() + "docker-followup-prompt-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Docker Followup", primaryPath: root)
+        ctx.insert(ws)
+        let task = AgentTask(title: "T", goal: "Inspect dbt", workspace: ws)
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:starr",
+            kind: .dockerImage,
+            displayName: "starr-data-lake Image",
+            image: "astra-starr-data-lake:latest"
+        ))
+        ctx.insert(task)
+        try ctx.save()
+        _ = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
+            message: "is dbt installed and working correctly?",
+            task: task
+        )
+
+        #expect(prompt.contains("Execution Environment: starr-data-lake Image"))
+        #expect(prompt.contains("Provider placement: host macOS"))
+        #expect(prompt.contains("mcp__astra_workspace__workspace_shell"))
+        #expect(prompt.contains("astra_workspace-workspace_shell"))
+        #expect(prompt.contains("command -v dbt && dbt --version"))
+        #expect(prompt.contains("Do not use host-created virtual environments"))
+        #expect(prompt.contains("User's follow-up request:\nis dbt installed and working correctly?"))
     }
 
     @Test("Prompt IO snapshot loader owns turn output and session history reads")
@@ -1532,7 +1789,8 @@ struct BuildPromptTests {
         let prompt = AgentPromptBuilder.buildPrompt(for: task)
 
         #expect(prompt.contains("Shelf Browser Session:"))
-        #expect(prompt.contains("Use the provider-neutral `astra-browser` command"))
+        #expect(prompt.contains("Use ASTRA's browser bridge only"))
+        #expect(prompt.contains("Shell-capable runtimes can run `astra-browser ...`"))
         #expect(prompt.contains("ASTRA_BROWSER_URL"))
         #expect(prompt.contains(task.id.uuidString))
         #expect(prompt.contains("https://outlook.office.com/mail/"))

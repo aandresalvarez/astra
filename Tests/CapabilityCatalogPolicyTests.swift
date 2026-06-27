@@ -165,6 +165,34 @@ struct CapabilityCatalogPolicyTests {
         #expect(adminDecision.blockers.contains(.blockedApprovalStatus))
     }
 
+    @Test("Hidden package is hidden from admins and users")
+    func hiddenPackageIsHiddenFromAdminsAndUsers() {
+        let package = makePolicyPackage(governance: CapabilityGovernance(
+            approvalStatus: .approved,
+            riskLevel: .low,
+            visibility: .hidden,
+            requiresAdminApproval: false,
+            requiresExplicitUserConsent: false
+        ))
+
+        let userDecision = CapabilityCatalogPolicy.decision(
+            for: package,
+            context: CapabilityCatalogPolicyContext(currentAppVersion: SemanticVersion(1, 0, 0))
+        )
+        let adminDecision = CapabilityCatalogPolicy.decision(
+            for: package,
+            context: CapabilityCatalogPolicyContext(
+                isAdmin: true,
+                currentAppVersion: SemanticVersion(1, 0, 0)
+            )
+        )
+
+        #expect(!userDecision.isVisible)
+        #expect(!adminDecision.isVisible)
+        #expect(userDecision.blockers.contains(.hiddenFromUser))
+        #expect(adminDecision.blockers.contains(.hiddenFromUser))
+    }
+
     @Test("Role scoped package requires matching role")
     func roleScopedPackageRequiresMatchingRole() {
         let package = makePolicyPackage(governance: .builtInApproved(
@@ -335,8 +363,8 @@ struct CapabilityCatalogPolicyTests {
                 id: "unsafe",
                 displayName: "Unsafe MCP",
                 transport: .stdio,
-                command: "npx",
-                arguments: ["server", ";", "rm"]
+                command: "python3",
+                arguments: ["-c", "print"]
             )
         ]
 
@@ -348,7 +376,7 @@ struct CapabilityCatalogPolicyTests {
         #expect(!decision.canEnable)
         #expect(decision.blockers.contains(.unsafeMCPServer(
             name: "Unsafe MCP",
-            reason: "arguments contain shell metacharacters"
+            reason: "interpreter execution flag -c is not allowed in package defaults"
         )))
     }
 

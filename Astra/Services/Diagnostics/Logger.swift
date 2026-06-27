@@ -84,8 +84,10 @@ enum AuditEvent: String, CaseIterable {
     case runtimeFailureDiagnostic = "runtime.failure_diagnostic"
     case runtimePersistenceSummary = "runtime.persistence_summary"
     case runtimeProgressState = "runtime.progress_state"
+    case runtimeResourcesPlanned = "runtime.resources_planned"
     case runtimeStreamDebug = "runtime.stream_debug"
     case runtimeStreamDebugSample = "runtime.stream_debug_sample"
+    case remoteWorkspacePreflight = "remote_workspace.preflight"
     case contextStateUpdated = "context.state_updated"
     case contextPromptDiagnostics = "context.prompt_diagnostics"
 
@@ -189,6 +191,7 @@ enum AuditEvent: String, CaseIterable {
 
     case keychainSaveFailed = "keychain.save_failed"
     case keychainDeleteFailed = "keychain.delete_failed"
+    case keychainSecretsMigrated = "keychain.secrets_migrated"
 
     case isolationPrepared = "isolation.prepared"
     case isolationCleanedUp = "isolation.cleaned_up"
@@ -216,6 +219,7 @@ enum AuditEvent: String, CaseIterable {
     case gitActiveRepositoryChanged = "git.active_repository_changed"
     case gitChangedFileOpenedInShelf = "git.changed_file_opened_in_shelf"
     case gitChangedFileDiffViewed = "git.changed_file_diff_viewed"
+    case executionEnvironmentChanged = "execution_environment.changed"
 
     case schedulerStarted = "scheduler.started"
     case schedulerStopped = "scheduler.stopped"
@@ -249,7 +253,7 @@ enum AppLogCategory {
         "App", "Audit", "Worker", "Queue", "UI", "Isolation", "Validation",
         "Reflection", "SSH", "Persistence", "PluginCatalog", "Scheduler",
         "Keychain", "Updater", "Performance", "Capabilities", "Browser",
-        "Diagnostics", "Plan", "Git", "General"
+        "Diagnostics", "Plan", "Git", "WorkspaceApps", "General"
     ]
 }
 
@@ -542,11 +546,19 @@ enum AppLogger {
 
     static func readTaskLog(taskID: UUID) -> String {
         let path = taskLogFile(taskID: taskID)
-        return (try? String(contentsOf: path, encoding: .utf8)) ?? ""
+        return readLogText(at: path) ?? ""
     }
 
     static func readBreadcrumbs(maxLines: Int = 100) -> String {
         tailLines(from: breadcrumbLogFile, maxLines: maxLines).joined(separator: "\n")
+    }
+
+    private static func readLogText(at url: URL) -> String? {
+        try? HostFileAccessBroker().readString(
+            at: url,
+            encoding: .utf8,
+            intent: .astraManagedStorage(root: url.deletingLastPathComponent())
+        )
     }
 
     // MARK: - Log Rotation
@@ -677,7 +689,7 @@ enum AppLogger {
 
     private static func tailLines(from url: URL, maxLines: Int) -> [String] {
         guard maxLines > 0,
-              let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+              let text = readLogText(at: url) else { return [] }
         return text
             .split(separator: "\n", omittingEmptySubsequences: false)
             .suffix(maxLines)
@@ -688,7 +700,7 @@ enum AppLogger {
     /// Trim a log-like file to the last N lines. Must be called on `fileQueue`.
     private static func trimFile(_ url: URL, maxLines: Int) {
         guard maxLines > 0,
-              let text = try? String(contentsOf: url, encoding: .utf8) else { return }
+              let text = readLogText(at: url) else { return }
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
         guard lines.count > maxLines else { return }
         let trimmed = lines.suffix(maxLines).map(String.init).joined(separator: "\n") + "\n"
@@ -730,9 +742,10 @@ enum AppLogger {
     }
 
     private static func cleanupOldLogs(now: Date = Date()) {
-        guard let files = try? FileManager.default.contentsOfDirectory(
+        guard let files = try? HostFileAccessBroker().contentsOfDirectory(
             at: logDir,
-            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey]
+            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+            intent: .astraManagedStorage(root: logDir)
         ) else { return }
         let retentionSeconds = TimeInterval(configuredRetentionDays) * 24 * 60 * 60
         let cutoff = now.addingTimeInterval(-retentionSeconds)

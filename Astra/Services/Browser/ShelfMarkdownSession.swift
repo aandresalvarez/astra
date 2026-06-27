@@ -349,7 +349,10 @@ final class ShelfMarkdownSession: ObservableObject {
                 )
             }
 
-            let data = try Data(contentsOf: url)
+            let data = try HostFileAccessBroker().readData(
+                at: url,
+                intent: .explicitUserSelection
+            )
             guard let decoded = String(data: data, encoding: .utf8) else {
                 return ShelfMarkdownDocument(
                     id: url.path,

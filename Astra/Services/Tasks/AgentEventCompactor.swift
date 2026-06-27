@@ -50,8 +50,20 @@ enum AgentEventCompactor {
 
     @MainActor
     static func compactEvents(for task: AgentTask, modelContext: ModelContext) {
+        let start = DispatchTime.now().uptimeNanoseconds
         let events = task.events.sorted { $0.timestamp < $1.timestamp }
-        guard events.count > threshold else { return }
+        guard events.count > threshold else {
+            logCompactionIfNeeded(
+                start: start,
+                taskID: task.id,
+                eventCount: events.count,
+                compactedCount: 0,
+                keptCount: events.count,
+                reconstructionCriticalCount: 0,
+                summaryEventInserted: false
+            )
+            return
+        }
 
         let cutoff = events.count - keepCount
         let compactionCandidates = events
@@ -62,8 +74,21 @@ enum AgentEventCompactor {
         // (see latestReconstructedEventIDs for the per-key rules). Bounded by the
         // number of distinct keys, so high-volume plan.step.* streams still compact.
         let reconstructionCriticalIDs = latestReconstructedEventIDs(in: compactionCandidates)
-        let toCompact = compactionCandidates.filter { !reconstructionCriticalIDs.contains($0.id) }
-        guard !toCompact.isEmpty else { return }
+        let outputPresentationAnchorIDs = latestOutputPresentationAnchorIDs(in: compactionCandidates)
+        let preservedIDs = reconstructionCriticalIDs.union(outputPresentationAnchorIDs)
+        let toCompact = compactionCandidates.filter { !preservedIDs.contains($0.id) }
+        guard !toCompact.isEmpty else {
+            logCompactionIfNeeded(
+                start: start,
+                taskID: task.id,
+                eventCount: events.count,
+                compactedCount: 0,
+                keptCount: events.count,
+                reconstructionCriticalCount: reconstructionCriticalIDs.count,
+                summaryEventInserted: false
+            )
+            return
+        }
 
         var typeCounts: [String: Int] = [:]
         for event in toCompact {
@@ -74,7 +99,7 @@ enum AgentEventCompactor {
             .sorted { $0.value > $1.value }
             .map { "\($0.value) \($0.key)" }
             .joined(separator: ", ")
-        let semanticLines = semanticSummaryLines(from: toCompact)
+        let semanticLines = semanticSummaryLines(from: compactionCandidates)
         var payload = "Compacted \(toCompact.count) earlier events. Breakdown: \(summary)"
         if !semanticLines.isEmpty {
             payload += "\nCompacted detail index:\n" + semanticLines.joined(separator: "\n")
@@ -99,6 +124,39 @@ enum AgentEventCompactor {
             "compacted_count": String(toCompact.count),
             "kept_count": String(keepCount)
         ])
+        logCompactionIfNeeded(
+            start: start,
+            taskID: task.id,
+            eventCount: events.count,
+            compactedCount: toCompact.count,
+            keptCount: events.count - toCompact.count,
+            reconstructionCriticalCount: reconstructionCriticalIDs.count,
+            summaryEventInserted: true
+        )
+    }
+
+    private static func logCompactionIfNeeded(
+        start: UInt64,
+        taskID: UUID,
+        eventCount: Int,
+        compactedCount: Int,
+        keptCount: Int,
+        reconstructionCriticalCount: Int,
+        summaryEventInserted: Bool
+    ) {
+        PerformanceTelemetry.logIfNeeded(
+            "event_compaction",
+            start: start,
+            thresholdMilliseconds: PerformanceTelemetry.backgroundThresholdMilliseconds,
+            fields: [
+                "task_id": PerformanceTelemetryFields.abbreviatedID(taskID),
+                "event_count": PerformanceTelemetryFields.count(eventCount),
+                "compacted_count": PerformanceTelemetryFields.count(compactedCount),
+                "kept_count": PerformanceTelemetryFields.count(keptCount),
+                "reconstruction_critical_count": PerformanceTelemetryFields.count(reconstructionCriticalCount),
+                "summary_event_inserted": PerformanceTelemetryFields.bool(summaryEventInserted)
+            ]
+        )
     }
 
     /// IDs of the most recent reconstructed-lifecycle event for each grouping key
@@ -125,6 +183,45 @@ enum AgentEventCompactor {
             latestByKey[key] = event
         }
         return Set(latestByKey.values.map(\.id))
+    }
+
+    private static func latestOutputPresentationAnchorIDs(in events: [TaskEvent]) -> Set<UUID> {
+        let grouped = Dictionary(grouping: events.filter { isOutputPresentationEvent($0) }) { event in
+            event.run?.id.uuidString ?? "task"
+        }
+        var output = Set<UUID>()
+        for runEvents in grouped.values {
+            let sorted = runEvents.sorted { $0.timestamp < $1.timestamp }
+            guard let latestBoundaryIndex = sorted.lastIndex(where: isOutputPresentationBoundaryEvent) else {
+                if let latestResponse = sorted.last(where: { $0.type == "agent.response" }) {
+                    output.insert(latestResponse.id)
+                }
+                continue
+            }
+
+            output.insert(sorted[latestBoundaryIndex].id)
+            let finalResponses = sorted
+                .dropFirst(latestBoundaryIndex + 1)
+                .filter { $0.type == "agent.response" }
+                .suffix(3)
+            for event in finalResponses {
+                output.insert(event.id)
+            }
+        }
+        return output
+    }
+
+    private static func isOutputPresentationEvent(_ event: TaskEvent) -> Bool {
+        event.type == "agent.response" || isOutputPresentationBoundaryEvent(event)
+    }
+
+    private static func isOutputPresentationBoundaryEvent(_ event: TaskEvent) -> Bool {
+        switch event.type {
+        case "tool.use", "tool.result", "permission.denied", "permission.approval.requested":
+            return true
+        default:
+            return false
+        }
     }
 
     private static func isReconstructedLifecycleEvent(_ event: TaskEvent) -> Bool {

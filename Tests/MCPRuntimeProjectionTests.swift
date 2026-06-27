@@ -125,7 +125,8 @@ struct MCPRuntimeProjectionTests {
             environmentKeys: ["FILES_TOKEN"]
         )
         let data = try #require(MCPRuntimeProjection.claudeConfigJSON(
-            servers: [.init(packageID: "p", server: server)]
+            servers: [.init(packageID: "p", server: server)],
+            availableEnvironment: ["FILES_TOKEN": "secret"]
         ))
         let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let serversDict = try #require(object["mcpServers"] as? [String: Any])
@@ -205,6 +206,105 @@ struct MCPRuntimeProjectionTests {
         ])
     }
 
+    @Test("Preflight message includes MCP install source when executable is missing")
+    func preflightMessageIncludesInstallSource() throws {
+        let server = PluginMCPServer(
+            id: "github",
+            displayName: "GitHub MCP",
+            transport: .stdio,
+            command: "npx",
+            arguments: ["-y", "@acme/github-mcp@1.0.0"],
+            installSource: PluginMCPInstallSource(
+                kind: .npm,
+                identifier: "@acme/github-mcp",
+                version: "1.0.0",
+                installMode: .npx
+            )
+        )
+
+        let issue = try #require(MCPRuntimeProjection.preflightIssues(
+            servers: [MCPRuntimeProjection.ResolvedServer(packageID: "p", server: server)],
+            detectExecutable: { _ in "" }
+        ).first)
+
+        #expect(issue.message.contains("@acme/github-mcp@1.0.0"))
+        #expect(issue.message.contains("npx"))
+    }
+
+    @Test("Preflight message uses install mode for pipx MCP install source")
+    func preflightMessageUsesInstallModeForPipxSource() throws {
+        let server = PluginMCPServer(
+            id: "python",
+            displayName: "Python MCP",
+            transport: .stdio,
+            command: "pipx",
+            arguments: ["run", "example-mcp==2.1.0"],
+            installSource: PluginMCPInstallSource(
+                kind: .pypi,
+                identifier: "example-mcp",
+                version: "2.1.0",
+                installMode: .pipx
+            )
+        )
+
+        let issue = try #require(MCPRuntimeProjection.preflightIssues(
+            servers: [MCPRuntimeProjection.ResolvedServer(packageID: "p", server: server)],
+            detectExecutable: { _ in "" }
+        ).first)
+
+        #expect(issue.message.contains("example-mcp==2.1.0"))
+        #expect(issue.message.contains("pipx"))
+        #expect(!issue.message.contains("uvx"))
+    }
+
+    @Test("Preflight message uses Docker tag syntax for Docker MCP install source")
+    func preflightMessageUsesDockerTagSyntaxForDockerSource() throws {
+        let server = PluginMCPServer(
+            id: "docker",
+            displayName: "Docker MCP",
+            transport: .stdio,
+            command: "docker",
+            arguments: ["run", "--rm", "-i", "ghcr.io/acme/mcp-server:1.0.0"],
+            installSource: PluginMCPInstallSource(
+                kind: .dockerImage,
+                identifier: "ghcr.io/acme/mcp-server",
+                version: "1.0.0",
+                installMode: .dockerRun
+            )
+        )
+
+        let issue = try #require(MCPRuntimeProjection.preflightIssues(
+            servers: [MCPRuntimeProjection.ResolvedServer(packageID: "p", server: server)],
+            detectExecutable: { _ in "" }
+        ).first)
+
+        #expect(issue.message.contains("Docker image ghcr.io/acme/mcp-server:1.0.0"))
+        #expect(!issue.message.contains("ghcr.io/acme/mcp-server@1.0.0"))
+    }
+
+    @Test("Preflight message uses manual install mode without package manager guess")
+    func preflightMessageUsesManualInstallModeWithoutPackageManagerGuess() throws {
+        let server = PluginMCPServer(
+            id: "manual",
+            displayName: "Manual MCP",
+            transport: .stdio,
+            command: "manual-mcp",
+            installSource: PluginMCPInstallSource(
+                kind: .npm,
+                identifier: "@acme/manual-mcp",
+                installMode: .manual
+            )
+        )
+
+        let issue = try #require(MCPRuntimeProjection.preflightIssues(
+            servers: [MCPRuntimeProjection.ResolvedServer(packageID: "p", server: server)],
+            detectExecutable: { _ in "" }
+        ).first)
+
+        #expect(issue.message.contains("MCP source @acme/manual-mcp manually"))
+        #expect(!issue.message.contains("npx"))
+    }
+
     @Test("Rendered stdio config launches a server that completes an MCP initialize handshake")
     func renderedConfigHandshake() throws {
         let root = try mcpTempDirectory(named: "astra-mcp-handshake")
@@ -224,7 +324,8 @@ struct MCPRuntimeProjectionTests {
         let server = stdioServer(id: "stub", command: stub.path, environmentKeys: ["STUB_MARKER"])
         let configURL = try #require(MCPRuntimeProjection.writeClaudeConfig(
             servers: [.init(packageID: "p", server: server)],
-            taskID: UUID()
+            taskID: UUID(),
+            availableEnvironment: ["STUB_MARKER": "marker-42"]
         ))
         defer { try? FileManager.default.removeItem(at: configURL) }
 
@@ -274,23 +375,78 @@ struct MCPRuntimeProjectionTests {
         // The env indirection round-tripped from process environment.
         #expect(serverInfo["version"] as? String == "marker-42")
     }
+
+    @Test("Claude config omits declared env keys that ASTRA did not project")
+    func claudeConfigOmitsUnavailableEnvironmentKeys() throws {
+        let server = stdioServer(
+            id: "secret-server",
+            command: "/bin/cat",
+            environmentKeys: ["AWS_SECRET_ACCESS_KEY", "EXPLICIT_TOKEN"]
+        )
+        let data = try #require(MCPRuntimeProjection.claudeConfigJSON(
+            servers: [.init(
+                packageID: "p",
+                server: server,
+                permittedEnvironmentKeys: ["AWS_SECRET_ACCESS_KEY", "EXPLICIT_TOKEN"]
+            )],
+            availableEnvironment: ["EXPLICIT_TOKEN": "projected"]
+        ))
+        let rendered = String(decoding: data, as: UTF8.self)
+
+        #expect(rendered.contains("EXPLICIT_TOKEN"))
+        #expect(!rendered.contains("AWS_SECRET_ACCESS_KEY"))
+        #expect(!rendered.contains("projected"))
+    }
+
+    @Test("Codex MCP config only renders env vars from explicit ASTRA environment")
+    func codexMCPConfigFiltersUnavailableEnvironmentKeys() {
+        let server = stdioServer(
+            id: "codex-secret-server",
+            command: "/bin/cat",
+            environmentKeys: ["AWS_SECRET_ACCESS_KEY", "EXPLICIT_TOKEN"]
+        )
+        let resolved = MCPRuntimeProjection.ResolvedServer(
+            packageID: "p",
+            server: server,
+            permittedEnvironmentKeys: ["AWS_SECRET_ACCESS_KEY", "EXPLICIT_TOKEN"]
+        )
+
+        let withoutExplicitSecret = CodexMCPConfigRenderer.configArguments(
+            servers: [resolved],
+            availableEnvironment: ["EXPLICIT_TOKEN": "projected"]
+        ).joined(separator: " ")
+        #expect(withoutExplicitSecret.contains("EXPLICIT_TOKEN"))
+        #expect(!withoutExplicitSecret.contains("AWS_SECRET_ACCESS_KEY"))
+        #expect(!withoutExplicitSecret.contains("projected"))
+
+        let withExplicitSecret = CodexMCPConfigRenderer.configArguments(
+            servers: [resolved],
+            availableEnvironment: [
+                "EXPLICIT_TOKEN": "projected",
+                "AWS_SECRET_ACCESS_KEY": "explicitly-projected"
+            ]
+        ).joined(separator: " ")
+        #expect(withExplicitSecret.contains("AWS_SECRET_ACCESS_KEY"))
+        #expect(!withExplicitSecret.contains("explicitly-projected"))
+    }
 }
 
 @Suite("MCP Runtime Parity")
 @MainActor
 struct MCPRuntimeParityTests {
 
-    @Test("Claude Code is the only runtime declaring MCP support today")
-    func claudeDeclaresMCPSupport() {
+    @Test("Claude Code, Copilot, and Codex declare MCP support")
+    func claudeCopilotAndCodexDeclareMCPSupport() {
         let descriptors = CapabilityRuntimeSupportPresentation.allRuntimeDescriptors()
         let supporting = CapabilityRuntimeSupportPresentation.mcpSupportingRuntimes(descriptors: descriptors)
-        #expect(supporting.map(\.id) == [.claudeCode])
+        #expect(supporting.map(\.id) == [.claudeCode, .copilotCLI, .codexCLI])
     }
 
     @Test("Catalog subtitle names the delivering runtimes")
     func catalogSubtitleNamesRuntimes() {
         let subtitle = CapabilityRuntimeSupportPresentation.mcpSupportSubtitle()
         #expect(subtitle.contains("Claude Code"))
+        #expect(subtitle.contains("GitHub Copilot CLI"))
         #expect(subtitle.contains("skip"))
     }
 

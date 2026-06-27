@@ -3,142 +3,10 @@ import SwiftData
 import ASTRACore
 import AppKit
 
-/// Layout-level artifacts shown in the docked Shelf column.
-/// Future cases can choose wider sizing for browser or file previews.
-enum WorkspaceCanvasItem: String, Equatable {
-    case plan
-    case markdown
-    case browser
-    case query
-    var minWidth: CGFloat {
-        switch self {
-        case .plan: 400
-        case .markdown: PanelLayoutGeometry.filesShelfMinReadableWidth
-        case .browser: PanelLayoutGeometry.browserShelfMinWidth
-        case .query: 460
-        }
-    }
-    var idealWidth: CGFloat {
-        switch self {
-        case .plan: 520
-        case .markdown: 620
-        case .browser: 440
-        case .query: 640
-        }
-    }
-    var maxWidth: CGFloat {
-        switch self {
-        case .plan: 1040
-        case .markdown: 980
-        case .browser: 1120
-        case .query: 1180
-        }
-    }
-    var title: String {
-        switch self {
-        case .plan: "Plan"
-        case .markdown: "Files"
-        case .browser: "Browser"
-        case .query: "Query"
-        }
-    }
-    var closesWhenDraggedBelowMinimum: Bool {
-        self == .markdown
-    }
-}
+// `WorkspaceCanvasItem`, `WorkspaceRightPanel`, and the shelf-boundary metrics live in
+// WorkspaceCanvasItem.swift (extracted to keep this file within its line budget).
 
-private enum WorkspaceRightPanel: Equatable {
-    case canvas(WorkspaceCanvasItem)
-    case context(UUID)
-    var isContext: Bool {
-        if case .context = self { return true }
-        return false
-    }
-}
-
-private struct ShelfBoundaryMetrics: Equatable {
-    var width: CGFloat = 0
-    var isVisible = false
-    var isResizing = false
-    static let hidden = ShelfBoundaryMetrics()
-}
-
-private struct ShelfBoundaryMetricsPreferenceKey: PreferenceKey {
-    static var defaultValue = ShelfBoundaryMetrics.hidden
-
-    static func reduce(value: inout ShelfBoundaryMetrics, nextValue: () -> ShelfBoundaryMetrics) {
-        let next = nextValue()
-        if next.isVisible {
-            value = next
-        }
-    }
-}
-
-/// Reports window width and right-panel presence to `SidebarPresentationModel`.
-/// A background `GeometryReader` measures the full content width; both signals are
-/// pure proposals — the model alone turns them into sidebar visibility.
-private struct SidebarLayoutObserver: ViewModifier {
-    let hasRightSidePanel: Bool
-    let onWidthChanged: (CGFloat) -> Void
-    let onRightSidePanelChanged: (Bool) -> Void
-
-    func body(content: Content) -> some View {
-        content
-            .background {
-                GeometryReader { proxy in
-                    Color.clear
-                        .onAppear {
-                            onWidthChanged(proxy.size.width)
-                            onRightSidePanelChanged(hasRightSidePanel)
-                        }
-                        .onChange(of: proxy.size.width) {
-                            onWidthChanged(proxy.size.width)
-                        }
-                        .onChange(of: hasRightSidePanel) {
-                            onRightSidePanelChanged(hasRightSidePanel)
-                        }
-                }
-            }
-    }
-}
-
-private struct ShelfBoundaryOverlayModifier: ViewModifier {
-    func body(content: Content) -> some View {
-        content.overlayPreferenceValue(ShelfBoundaryMetricsPreferenceKey.self) { metrics in
-            ShelfBoundaryOverlay(metrics: metrics)
-        }
-    }
-}
-
-private struct ShelfBoundaryOverlay: View {
-    let metrics: ShelfBoundaryMetrics
-
-    var body: some View {
-        if metrics.isVisible {
-            HStack(spacing: 0) {
-                Spacer(minLength: 0)
-                HStack(spacing: 0) {
-                    Rectangle()
-                        .fill(borderColor)
-                        .frame(width: borderWidth)
-                    Spacer(minLength: 0)
-                }
-                .frame(width: metrics.width)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .ignoresSafeArea(.all, edges: .top)
-            .allowsHitTesting(false)
-        }
-    }
-
-    private var borderColor: Color {
-        metrics.isResizing ? Stanford.lagunita.opacity(0.95) : Color.primary.opacity(0.12)
-    }
-
-    private var borderWidth: CGFloat {
-        metrics.isResizing ? 3 : 1
-    }
-}
+// The shelf-boundary overlay views live in WorkspaceCanvasItem.swift (extracted for budget).
 
 private extension View {
     func shelfBoundaryOverlay() -> some View {
@@ -182,31 +50,6 @@ struct NewWorkspaceDraft: Equatable {
     }
 }
 
-/// Leaf observer that watches the task queue's update-safety signal in
-/// isolation. Reading `taskQueue.isProcessing/activeCount/activeTasks` here —
-/// rather than in `ContentView.body` — keeps queue churn (task start/exit)
-/// from invalidating ContentView's very large body. See the UI responsiveness
-/// audit (Cluster 1): this is the only body-level reader of those fields.
-private struct UpdateSafetyObserver: View {
-    let taskQueue: TaskQueue
-    let runningTaskCount: Int
-    let onChange: () -> Void
-
-    private var signature: String {
-        [
-            String(taskQueue.isProcessing),
-            String(taskQueue.activeCount),
-            String(taskQueue.activeTasks.count),
-            String(runningTaskCount)
-        ].joined(separator: "|")
-    }
-
-    var body: some View {
-        Color.clear
-            .onChange(of: signature) { onChange() }
-    }
-}
-
 struct ContentView: View {
     @ObservedObject var appUpdateController: AppUpdateController
     let runtime: AppRuntimeController
@@ -215,10 +58,16 @@ struct ContentView: View {
     @Query(sort: \Workspace.name) private var workspaces: [Workspace]
     @State private var selectedTask: AgentTask?
     @State private var selectedWorkspace: Workspace?
+    // F7: Workspace App surfaces. selectedWorkspaceApp renders the app detail;
+    // isComposingWorkspaceApp renders the App Studio builder. Mutually exclusive
+    // with task selection (set/cleared together).
+    @State private var selectedWorkspaceApp: WorkspaceApp?
+    @State private var isComposingWorkspaceApp = false
     @State private var showingConfigure = false
     @State private var configureInitialTab: ConfigureTab = .capabilities
     @State private var configureFocusItemID: UUID?
     @State private var configureFocusCapabilityPackageID: String?
+    @State private var pendingMCPInstallRequest: MCPInstallChatRequest?
     @State private var showingWorkspaceEditor = false
     @State private var showingNewWorkspace = false
     @State private var showingSSHEditor = false
@@ -229,6 +78,9 @@ struct ContentView: View {
     @StateObject private var browserSessionStore = ShelfBrowserSessionStore()
     @StateObject private var markdownSessionStore = ShelfMarkdownSessionStore()
     @StateObject private var querySession = ShelfQuerySession()
+    // App Studio is a conversation (center) + a docked live preview (the .appPreview shelf);
+    // both observe this one session, so a chat turn updates the preview.
+    @StateObject private var workspaceAppStudioSession = WorkspaceAppStudioSession()
     @StateObject private var externalRouteStore = AstraExternalRouteStore.shared
     @State private var showingNewSchedule = false
     @State private var editingSchedule: TaskSchedule?
@@ -280,6 +132,7 @@ struct ContentView: View {
     /// the ~3s deferral scheduled exactly once. (The controller also guards the
     /// actual probe via hasProbedForUpdates, so this is belt-and-suspenders.)
     @State private var didScheduleUpdateProbe = false
+    @State private var didLogStoreScaleSnapshot = false
     @State private var generatedHTMLDiscoveryTask: Task<Void, Never>?
     @State private var markdownAvailabilityTask: Task<Void, Never>?
     @State private var queryAvailabilityTask: Task<Void, Never>?
@@ -316,6 +169,13 @@ struct ContentView: View {
 
     private var effectiveWorkspaceID: UUID? {
         sceneCoordinator.effectiveWorkspaceID
+    }
+
+    private var workspaceAppStudioWorkspace: Workspace? {
+        guard let workspaceID = workspaceAppStudioSession.workspaceID else {
+            return effectiveWorkspace
+        }
+        return sceneCoordinator.workspace(id: workspaceID)
     }
 
     private var queryUtilityRuntime: AgentUtilityRuntimeConfiguration {
@@ -369,6 +229,13 @@ struct ContentView: View {
         Binding(
             get: { selectedTask },
             set: { setSelectedTask($0) }
+        )
+    }
+
+    private var selectedWorkspaceBinding: Binding<Workspace?> {
+        Binding(
+            get: { selectedWorkspace },
+            set: { selectWorkspaceFromSidebar($0) }
         )
     }
 
@@ -461,6 +328,7 @@ struct ContentView: View {
             canShowTextShelf: effectiveWorkspace != nil || activeWorkspaceCanvasItem == .markdown,
             canShowBrowserShelf: hasOpenTaskThread,
             canShowQueryShelf: hasOpenTaskThread && hasQueryShelfAffordance,
+            canShowAppPreviewShelf: isComposingWorkspaceApp,
             activeCanvasItem: activeWorkspaceCanvasItem,
             browserEngine: browserToolbarEngine,
             isRightRailVisible: isWorkspaceRightRailVisible
@@ -546,7 +414,7 @@ struct ContentView: View {
             selectedTask: selectedTaskBinding,
             taskQueue: runtime.taskQueue,
             workspaces: workspaces,
-            selectedWorkspace: $selectedWorkspace,
+            selectedWorkspace: selectedWorkspaceBinding,
             onNewTask: startComposingTask,
             onRunQueue: runQueue,
             onRunTask: runSingleTask,
@@ -561,7 +429,10 @@ struct ContentView: View {
             onDeleteWorkspace: deleteWorkspace,
             onRenameWorkspace: beginRenamingWorkspace,
             onNewSchedule: showNewSchedule,
-            onEditSchedule: beginEditingSchedule
+            onEditSchedule: beginEditingSchedule,
+            onNewApp: { startWorkspaceAppStudio() },
+            onOpenWorkspaceApp: setSelectedWorkspaceApp,
+            selectedWorkspaceApp: selectedWorkspaceApp
         )
     }
 
@@ -604,7 +475,31 @@ struct ContentView: View {
         )
     }
 
+    @ViewBuilder
     private var detailArea: some View {
+        switch detailPresentation {
+        case .workspaceApp:
+            if let app = selectedWorkspaceApp {
+                workspaceAppDetailArea(app: app)
+            } else {
+                taskAndHomeDetailArea
+            }
+        default:
+            taskAndHomeDetailArea
+        }
+    }
+
+    private var detailPresentation: ContentDetailPresentation {
+        ContentDetailPresentation.resolve(
+            selectedTask: selectedTask,
+            effectiveWorkspace: sceneCoordinator.workspace(for: selectedWorkspaceApp) ?? effectiveWorkspace,
+            isComposingTask: isComposingTask,
+            selectedWorkspaceApp: selectedWorkspaceApp,
+            isComposingWorkspaceApp: isComposingWorkspaceApp
+        )
+    }
+
+    private var taskAndHomeDetailArea: some View {
         ContentDetailAreaView(
             selectedTask: selectedTask,
             effectiveWorkspace: effectiveWorkspace,
@@ -635,6 +530,7 @@ struct ContentView: View {
             onForkTask: setSelectedTask,
             onCreateTask: startComposingTask,
             onCreateApp: startWorkspaceAppStudioTask,
+            onOpenWorkspaceApp: setSelectedWorkspaceApp,
             onOpenTask: openExistingTask,
             onDeleteTask: requestDeleteTask,
             onSetDoneState: setDoneState,
@@ -651,8 +547,177 @@ struct ContentView: View {
             onCreateWorkspace: createWorkspace,
             onImportWorkspace: importWorkspace,
             onOpenGeneratedFile: openGeneratedFile,
-            onOpenWorkspaceFile: openWorkspaceFileInShelf
+            onOpenWorkspaceFile: openWorkspaceFileInShelf,
+            isComposingWorkspaceApp: isComposingWorkspaceApp,
+            studioSession: workspaceAppStudioSession,
+            onStartWorkspaceAppStudio: { prompt in startWorkspaceAppStudio(initialPrompt: prompt) },
+            onStartMCPInstallReview: { request in pendingMCPInstallRequest = request },
+            onPublishApp: { seed in publishWorkspaceAppFromStudio(seedSampleData: seed) },
+            onDraftChanged: { WorkspaceAppStudioDraftAutosaveCoordinator.autosave(session: workspaceAppStudioSession, preferredWorkspace: effectiveWorkspace, modelContext: modelContext) },
+            onCancelStudio: { cancelWorkspaceAppStudio() }
         )
+    }
+
+    // MARK: - F7 Workspace App surfaces
+
+    @ViewBuilder
+    private func workspaceAppDetailArea(app: WorkspaceApp) -> some View {
+        let appWorkspace = sceneCoordinator.workspace(for: app)
+        WorkspaceAppDetailView(
+            app: app,
+            workspace: appWorkspace,
+            onOpenStudio: { manifest in startWorkspaceAppStudio(existingManifest: manifest, workspace: appWorkspace) },
+            onRefresh: {},
+            onExportPackage: {
+                guard let workspace = appWorkspace else { throw WorkspaceAppUIError.exportUnavailableFromDetail }
+                return try WorkspaceAppPackageExporter().exportTemplatePackage(app: app, workspace: workspace).packageURL
+            },
+            onRunAction: { action, manifest, input in
+                try runWorkspaceAppAction(app: app, action: action, manifest: manifest, input: input)
+            }, onDeleted: { selectedWorkspaceApp = nil }
+        )
+        .id(app.id)
+    }
+
+    private func startWorkspaceAppStudio(
+        existingManifest: WorkspaceAppManifest? = nil,
+        initialPrompt: String? = nil,
+        workspace targetWorkspace: Workspace? = nil
+    ) {
+        if let targetWorkspace { selectedWorkspace = targetWorkspace }
+        selectedTask = nil
+        selectedWorkspaceApp = nil
+        isComposingTask = false
+        isComposingWorkspaceApp = true
+        isWorkspaceRightRailVisible = false
+        if let workspace = targetWorkspace ?? effectiveWorkspace {
+            workspaceAppStudioSession.reset(for: workspace, existingManifest: existingManifest, initialPrompt: initialPrompt)
+        }
+        setActiveWorkspaceCanvasItem(.appPreview, remember: false)
+    }
+
+    /// Leave the Studio without publishing: drop the composer, collapse the preview, cancel gen.
+    private func cancelWorkspaceAppStudio() {
+        workspaceAppStudioSession.cancelGeneration()
+        isComposingWorkspaceApp = false
+        if activeWorkspaceCanvasItem == .appPreview {
+            setActiveWorkspaceCanvasItem(nil, remember: false)
+        }
+    }
+
+    private func toggleAppPreviewCanvas() {
+        if activeWorkspaceCanvasItem == .appPreview {
+            animatePanelChange {
+                setActiveWorkspaceCanvasItem(nil, remember: false)
+            }
+        } else {
+            animatePanelChange {
+                isWorkspaceRightRailVisible = false
+                setActiveWorkspaceCanvasItem(.appPreview, remember: false)
+            }
+        }
+    }
+
+    /// Publish the session's current draft (called from the chat header's Publish button).
+    private func publishWorkspaceAppFromStudio(seedSampleData: Bool) {
+        guard let workspace = workspaceAppStudioWorkspace,
+              let draft = workspaceAppStudioSession.draft else { return }
+        do {
+            try publishWorkspaceApp(draft, seedSampleData: seedSampleData, workspace: workspace)
+        } catch {
+            AppLogger.error("App Studio publish failed: \(error)", category: "WorkspaceApps")
+            workspaceAppStudioSession.notePublishFailure((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+        }
+    }
+
+    private func setSelectedWorkspaceApp(_ app: WorkspaceApp?) {
+        let draftResolution = WorkspaceAppStudioDraftOpenResolver.resolve(app: app, workspaces: workspaces, fallbackWorkspace: effectiveWorkspace)
+        if case .routed(let route) = draftResolution {
+            startWorkspaceAppStudio(existingManifest: route.manifest, workspace: route.workspace)
+            return
+        }
+        if case .failed(let failure) = draftResolution {
+            selectedTask = nil
+            selectedWorkspaceApp = nil
+            isComposingTask = false
+            isComposingWorkspaceApp = false
+            if let workspace = failure.workspace ?? effectiveWorkspace {
+                startWorkspaceAppStudio(workspace: workspace)
+                workspaceAppStudioSession.noteDraftOpenFailure(appName: app?.name ?? "this draft app", detail: failure.detail)
+            } else if activeWorkspaceCanvasItem == .appPreview {
+                setActiveWorkspaceCanvasItem(nil, remember: false)
+            }
+            return
+        }
+        selectedTask = nil
+        isComposingTask = false
+        isComposingWorkspaceApp = false
+        if activeWorkspaceCanvasItem == .appPreview {
+            setActiveWorkspaceCanvasItem(nil, remember: false)
+        }
+        selectedWorkspaceApp = app
+    }
+
+    private func runWorkspaceAppAction(
+        app: WorkspaceApp,
+        action: WorkspaceAppActionSpec,
+        manifest: WorkspaceAppManifest,
+        input: WorkspaceAppActionInput
+    ) throws -> WorkspaceAppActionExecutionResult {
+        guard let workspace = sceneCoordinator.workspace(for: app) else {
+            throw WorkspaceAppUIError.noWorkspace
+        }
+        let appID = app.id
+        let bindings = (try? modelContext.fetch(
+            FetchDescriptor<WorkspaceAppDependencyBinding>()
+        ))?.filter { $0.appID == appID } ?? []
+        return try WorkspaceAppActionExecutor().execute(
+            actionID: action.id,
+            app: app,
+            workspace: workspace,
+            manifest: manifest,
+            dependencyBindings: bindings,
+            input: input,
+            modelContext: modelContext
+        )
+    }
+
+    private func publishWorkspaceApp(_ draft: WorkspaceAppStudioDraft, seedSampleData: Bool = false, workspace: Workspace) throws {
+        let allApps = (try? modelContext.fetch(FetchDescriptor<WorkspaceApp>())) ?? []
+        let service = WorkspaceAppService()
+        let result: WorkspaceAppCreationResult
+        let isNewApp: Bool
+        let target: Workspace   // the workspace the published app actually lives in
+        if let editingID = workspaceAppStudioSession.editingAppLogicalID {
+            // Editing: update the app IN ITS OWN workspace (found by logical id, preferring the
+            // session's workspace) — NOT the currently-selected one, which may differ. Version in place,
+            // no forked sibling. If it's truly gone, fail loudly rather than recreating it empty.
+            let sessionWS = workspaceAppStudioSession.workspaceID
+            guard let existing = allApps.first(where: { $0.logicalID == editingID && $0.workspaceID == sessionWS }) ?? allApps.first(where: { $0.logicalID == editingID }),
+                  let appWorkspace = ((try? modelContext.fetch(FetchDescriptor<Workspace>())) ?? []).first(where: { $0.id == existing.workspaceID }) else {
+                throw WorkspaceAppServiceError.fileOperationFailed("The app you were editing no longer exists. Use Save as a Copy to keep your changes.")
+            }
+            let isDraftFirstPublish = existing.lifecycleStatus == .draft && existing.latestVersionNumber == 0
+            target = appWorkspace
+            result = try service.updateApp(existing, manifest: draft.manifest, in: appWorkspace, modelContext: modelContext, status: .published)
+            isNewApp = isDraftFirstPublish
+        } else {
+            // New app: create in the selected workspace, deduping the logical id within it.
+            target = workspace
+            let manifest = WorkspaceAppStudioBuilder.manifestForPublishing(draft.manifest, existingLogicalIDs: Set(allApps.filter { $0.workspaceID == workspace.id }.map(\.logicalID)))
+            result = try service.createApp(manifest: manifest, in: workspace, modelContext: modelContext, status: .published)
+            isNewApp = true
+        }
+        // Flush the build journal + snapshot the version (best-effort) into the app's OWN workspace.
+        WorkspaceAppStudioJournalService().save(workspaceAppStudioSession.journal, appID: result.app.logicalID, workspacePath: target.primaryPath)
+        workspaceAppStudioSession.cancelGeneration()
+        do {
+            let publishedData = try WorkspaceAppService.encodeManifest(result.manifest)
+            try WorkspaceAppVersionService().recordPublish(app: result.app, manifestData: publishedData, validated: true, workspacePath: target.primaryPath, modelContext: modelContext)
+        } catch { AppLogger.error("Workspace app published but version snapshot failed: \(error)", category: "WorkspaceApps") }
+        if seedSampleData, isNewApp { WorkspaceAppSampleSeeder.seed(manifest: result.manifest, workspacePath: target.primaryPath, appID: result.app.logicalID) }
+        isComposingWorkspaceApp = false
+        setSelectedWorkspaceApp(result.app)
     }
 
     /// Keeps ⌘F toggling search even though the visible search button lives in
@@ -666,6 +731,19 @@ struct ContentView: View {
             .keyboardShortcut("f", modifiers: .command)
             .opacity(0)
             .accessibilityHidden(true)
+    }
+
+    // F7: ⌘⇧A opens the Workspace App Studio (New App). Hidden hotkey mirroring
+    // searchHotkey so it registers without threading a button through the detail
+    // view hierarchy; only active when a workspace is selected.
+    private var newWorkspaceAppHotkey: some View {
+        Button(action: { if effectiveWorkspace != nil { startWorkspaceAppStudio() } }) {
+            Color.clear.frame(width: 0, height: 0)
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut("a", modifiers: [.command, .shift])
+        .opacity(0)
+        .accessibilityHidden(true)
     }
 
     // Split out of `body` so each modifier chain stays small enough for the
@@ -683,6 +761,7 @@ struct ContentView: View {
             isSidebarHidden: presentation.isSidebarHidden
         )
         .background(searchHotkey)
+        .background(newWorkspaceAppHotkey)
         .astraHiddenToolbarBackground()
         // Right-rail toggle. Attached to the NavigationSplitView root so
         // .primaryAction lands at the WINDOW's trailing edge — past the
@@ -708,6 +787,7 @@ struct ContentView: View {
                         onTogglePlan: toggleWorkspaceCanvas,
                         onToggleText: toggleMarkdownCanvas,
                         onToggleQuery: toggleQueryCanvas,
+                        onToggleAppPreview: toggleAppPreviewCanvas,
                         onToggleControlPanel: toggleRightRail
                     )
                 }
@@ -758,6 +838,12 @@ struct ContentView: View {
                 if activeWorkspaceCanvasItem == .markdown, effectiveWorkspace != nil {
                     return
                 }
+                // The live preview belongs to the App Studio composer, not a task
+                // thread. "New App" nils the selected task (collapsing the thread)
+                // right after docking .appPreview — don't let that close it.
+                if activeWorkspaceCanvasItem == .appPreview, isComposingWorkspaceApp {
+                    return
+                }
                 animatePanelChange {
                     setActiveWorkspaceCanvasItem(nil, remember: false)
                 }
@@ -785,6 +871,11 @@ struct ContentView: View {
                 )
             }
         }
+        .mcpInstallReviewSheet(
+            request: $pendingMCPInstallRequest,
+            workspace: effectiveWorkspace,
+            onInstalled: openCapabilityPackage
+        )
         .sheet(isPresented: $showingWorkspaceEditor) {
             if let ws = effectiveWorkspace {
                 WorkspaceDetailView(workspace: ws, onDelete: {
@@ -1122,6 +1213,8 @@ struct ContentView: View {
             return hasOpenTaskThread
         case .query:
             return hasOpenTaskThread && hasQueryShelfAffordance
+        case .appPreview:
+            return isComposingWorkspaceApp
         }
     }
 
@@ -1146,6 +1239,9 @@ struct ContentView: View {
             if querySession.selectedDocument?.sourcePath != url.path {
                 querySession.loadFile(url)
             }
+        case .appPreview:
+            // The studio session is already bound when the Studio opens — nothing to prepare.
+            return
         }
     }
 
@@ -1622,60 +1718,29 @@ struct ContentView: View {
         if pinnedToTask { refreshMarkdownShelfAvailabilityForSelectedTask() }
     }
 
+    private func selectWorkspaceFromSidebar(_ workspace: Workspace?) {
+        selectedWorkspace = workspace
+        clearWorkspaceAppSurfaceSelection()
+    }
+
+    private func clearWorkspaceAppSurfaceSelection() {
+        selectedWorkspaceApp = nil
+        if isComposingWorkspaceApp {
+            cancelWorkspaceAppStudio()
+        } else if activeWorkspaceCanvasItem == .appPreview {
+            setActiveWorkspaceCanvasItem(nil, remember: false)
+        }
+    }
+
     private func startComposingTask() {
+        clearWorkspaceAppSurfaceSelection()
         setSelectedTask(nil)
         isComposingTask = true
         presentRightRail(rememberShelfState: false)
     }
 
     private func startWorkspaceAppStudioTask() {
-        guard let workspace = effectiveWorkspace else { return }
-        let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
-        let model = RuntimeModelAvailability.normalizedModel(defaultModel, for: runtime)
-        let draft = WorkspaceAppStudioGenerationTaskBuilder.draft(workspace: workspace)
-        let task = AgentTask(
-            title: draft.title,
-            goal: draft.goal,
-            workspace: workspace,
-            tokenBudget: defaultBudget,
-            model: model,
-            runtime: runtime
-        )
-        task.status = .draft
-        task.inputs = draft.inputs
-        task.constraints = draft.constraints
-        task.acceptanceCriteria = draft.acceptanceCriteria
-        TaskCapabilitySnapshotter.capture(for: task)
-
-        modelContext.insert(task)
-        let policyLevel = AgentPolicyDefaults.effectiveLevel(
-            workspace: workspace,
-            globalDefaultRaw: defaultAgentPolicyLevelRaw,
-            skipPermissions: skipPermissions
-        )
-        TaskPolicyStore.recordSelection(
-            level: policyLevel,
-            task: task,
-            modelContext: modelContext,
-            source: "workspace_app_studio"
-        )
-        TaskRoleProfileStore.recordSelected(
-            TaskRoleProfileStore.selection(
-                for: .worker,
-                task: task,
-                defaultRuntimeID: runtime.rawValue,
-                defaultModel: model,
-                defaultBudget: defaultBudget,
-                defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
-                providerSettings: providerSettingsSnapshot.providerSettings
-            ),
-            task: task,
-            modelContext: modelContext
-        )
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
-        setSelectedTask(task)
-        isComposingTask = false
-        presentRightRail(rememberShelfState: false)
+        startWorkspaceAppStudio()
     }
 
     private func handleQuickRunTask(_ task: AgentTask) {
@@ -1989,11 +2054,24 @@ struct ContentView: View {
     private func setSelectedTask(_ task: AgentTask?) {
         let previousTaskID = selectedTask?.id
         if previousTaskID != task?.id {
-            setActiveWorkspaceCanvasItem(nil, remember: false)
+            let nextCanvasItem = WorkspaceCanvasItemSelectionTransition.itemAfterTaskSelectionChange(
+                currentItem: activeWorkspaceCanvasItem,
+                previousTaskID: previousTaskID,
+                nextTaskID: task?.id,
+                isComposingTask: isComposingTask
+            )
+            if nextCanvasItem != activeWorkspaceCanvasItem {
+                setActiveWorkspaceCanvasItem(nextCanvasItem, remember: false)
+            }
         }
         if let taskWorkspace = task?.workspace,
            selectedWorkspace?.id != taskWorkspace.id {
             selectedWorkspace = taskWorkspace
+        }
+        if task != nil {
+            // Workspace App surfaces and task selection are mutually exclusive.
+            selectedWorkspaceApp = nil
+            isComposingWorkspaceApp = false
         }
         selectedTask = task
         if previousTaskID != task?.id {
@@ -2119,18 +2197,6 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Migration
-
-    private func migrateConnectorCredentials() {
-        coordinator.migrateConnectorCredentials(workspaces: workspaces)
-    }
-
-    private func migrateSkillSecrets() {
-        let descriptor = FetchDescriptor<Skill>(sortBy: [SortDescriptor(\.name)])
-        let skills = (try? modelContext.fetch(descriptor)) ?? []
-        coordinator.migrateSkillSecrets(skills: skills)
-    }
-
     private func runStoreMaintenanceIfNeeded() {
         runtime.runStoreMaintenanceIfNeeded(
             modelContext: modelContext,
@@ -2156,6 +2222,8 @@ struct ContentView: View {
         if selectedTask != nil, taskWorkspaceID != selectedWorkspaceID {
             setSelectedTask(nil)
         }
+        // Switching workspaces exits App Studio (its session is bound to the start workspace).
+        clearWorkspaceAppSurfaceSelection()
         if isUITestingSeededLaunch {
             setSelectedTask(nil)
             isComposingTask = selectedWorkspace != nil
@@ -2179,12 +2247,11 @@ struct ContentView: View {
         applySecurityGateDefaultIfNeeded()
         applySettings()
         seedTestDataIfNeeded()
-        migrateConnectorCredentials()
-        migrateSkillSecrets()
         // Run the destructive store maintenance (draft prune + import dedup)
         // BEFORE restoring selection, so it can never delete the task that
         // `restoreWorkspaceSelection` is about to point `selectedTask` at.
         runStoreMaintenanceIfNeeded()
+        logStoreScaleSnapshotIfNeeded()
         restoreWorkspaceSelection()
         refreshMarkdownShelfAvailabilityForSelectedTask()
         refreshQueryShelfAvailabilityForSelectedTask()
@@ -2216,6 +2283,15 @@ struct ContentView: View {
         Task { @MainActor in
             ASTRAApp.runDeferredStartupWork(modelContext: modelContext)
             refreshRunningTaskCount()
+        }
+    }
+
+    private func logStoreScaleSnapshotIfNeeded() {
+        guard !didLogStoreScaleSnapshot else { return }
+        didLogStoreScaleSnapshot = true
+        Task { @MainActor in
+            await Task.yield()
+            StoreScalePerformanceSnapshot.log(modelContext: modelContext)
         }
     }
 
@@ -2374,6 +2450,7 @@ private struct WorkspaceTopRightActions: Equatable {
     let canShowTextShelf: Bool
     let canShowBrowserShelf: Bool
     let canShowQueryShelf: Bool
+    let canShowAppPreviewShelf: Bool
     let activeCanvasItem: WorkspaceCanvasItem?
     let browserEngine: ShelfBrowserEngine
     let isRightRailVisible: Bool
@@ -2382,9 +2459,10 @@ private struct WorkspaceTopRightActions: Equatable {
     var isTextShelfVisible: Bool { activeCanvasItem == .markdown }
     var isBrowserShelfVisible: Bool { activeCanvasItem == .browser }
     var isQueryShelfVisible: Bool { activeCanvasItem == .query }
+    var isAppPreviewShelfVisible: Bool { activeCanvasItem == .appPreview }
 
     var hasShelfControls: Bool {
-        canShowPlanShelf || canShowTextShelf || canShowQueryShelf || canShowBrowserShelf
+        canShowPlanShelf || canShowTextShelf || canShowQueryShelf || canShowBrowserShelf || canShowAppPreviewShelf
     }
 }
 
@@ -2397,6 +2475,7 @@ private struct WorkspaceTopRightToolbar: View {
     let onTogglePlan: () -> Void
     let onToggleText: () -> Void
     let onToggleQuery: () -> Void
+    let onToggleAppPreview: () -> Void
     let onToggleControlPanel: () -> Void
 
     @State private var browserMenuAnchor: NSView?
@@ -2442,6 +2521,17 @@ private struct WorkspaceTopRightToolbar: View {
 
     @ViewBuilder
     private var shelfControls: some View {
+        if actions.canShowAppPreviewShelf {
+            shelfToolbarButton(
+                title: actions.isAppPreviewShelfVisible ? "Hide Live Preview" : "Show Live Preview",
+                label: "Preview",
+                systemImage: "play.rectangle",
+                isActive: actions.isAppPreviewShelfVisible,
+                action: onToggleAppPreview
+            )
+            .accessibilityLabel("Live preview shelf")
+        }
+
         if actions.canShowPlanShelf {
             shelfToolbarButton(
                 title: actions.isPlanShelfVisible ? "Hide Plan Shelf" : "Show Plan Shelf",
@@ -2554,6 +2644,7 @@ private struct WorkspaceTopRightToolbar: View {
 
     private var shelfControlWidths: [CGFloat] {
         var widths: [CGFloat] = []
+        if actions.canShowAppPreviewShelf { widths.append(AstraToolbarCommandMetrics.labeledControlMinWidth) }
         if actions.canShowPlanShelf { widths.append(AstraToolbarCommandMetrics.labeledControlMinWidth) }
         if actions.canShowTextShelf { widths.append(AstraToolbarCommandMetrics.labeledControlMinWidth) }
         if actions.canShowQueryShelf { widths.append(AstraToolbarCommandMetrics.labeledControlMinWidth) }
@@ -2580,6 +2671,13 @@ private struct WorkspaceTopRightToolbar: View {
 
     private var activeShelfIndicator: ShelfActiveIndicator? {
         var offset = AstraToolbarCommandMetrics.clusterHorizontalPadding
+
+        if actions.canShowAppPreviewShelf {
+            if actions.isAppPreviewShelfVisible {
+                return ShelfActiveIndicator(key: "appPreview", offset: offset, width: AstraToolbarCommandMetrics.labeledControlMinWidth)
+            }
+            offset += AstraToolbarCommandMetrics.labeledControlMinWidth + AstraToolbarCommandMetrics.clusterSpacing
+        }
 
         if actions.canShowPlanShelf {
             if actions.isPlanShelfVisible {
@@ -2742,6 +2840,7 @@ private struct ContentDetailAreaView: View {
     @AppStorage(AppStorageKeys.browserShelfWidth) private var browserShelfStoredWidth = Double(WorkspaceCanvasItem.browser.idealWidth)
     @AppStorage(AppStorageKeys.markdownShelfWidth) private var markdownShelfStoredWidth = Double(WorkspaceCanvasItem.markdown.idealWidth)
     @AppStorage(AppStorageKeys.queryShelfWidth) private var queryShelfStoredWidth = Double(WorkspaceCanvasItem.query.idealWidth)
+    @AppStorage(AppStorageKeys.appPreviewShelfWidth) private var appPreviewShelfStoredWidth = Double(WorkspaceCanvasItem.appPreview.idealWidth)
     @AppStorage(AppStorageKeys.rightRailWidth) private var rightRailStoredWidth = 0.0
     @State private var shelfDragStartWidth: CGFloat?
     @State private var shelfTransientWidth: CGFloat?
@@ -2766,6 +2865,7 @@ private struct ContentDetailAreaView: View {
     let onForkTask: (AgentTask) -> Void
     let onCreateTask: () -> Void
     let onCreateApp: () -> Void
+    var onOpenWorkspaceApp: ((WorkspaceApp) -> Void)?
     let onOpenTask: (AgentTask) -> Void
     let onDeleteTask: (AgentTask) -> Void
     let onSetDoneState: (AgentTask, Bool) -> Void
@@ -2783,6 +2883,13 @@ private struct ContentDetailAreaView: View {
     let onImportWorkspace: () -> Void
     let onOpenGeneratedFile: (String) -> Void
     let onOpenWorkspaceFile: (String) -> Void
+    let isComposingWorkspaceApp: Bool
+    @ObservedObject var studioSession: WorkspaceAppStudioSession
+    let onStartWorkspaceAppStudio: (String?) -> Void
+    let onStartMCPInstallReview: (MCPInstallChatRequest) -> Void
+    let onPublishApp: (_ seedSampleData: Bool) -> Void
+    let onDraftChanged: () -> Void
+    let onCancelStudio: () -> Void
 
     private static let contentMinWidth: CGFloat = 480
 
@@ -3032,6 +3139,8 @@ private struct ContentDetailAreaView: View {
             storedWidth = CGFloat(browserShelfStoredWidth)
         case .query:
             storedWidth = CGFloat(queryShelfStoredWidth)
+        case .appPreview:
+            storedWidth = CGFloat(appPreviewShelfStoredWidth)
         }
         return clampedShelfWidth(storedWidth, for: item, availableWidth: availableWidth)
     }
@@ -3067,6 +3176,8 @@ private struct ContentDetailAreaView: View {
             browserShelfStoredWidth = Double(clampedWidth)
         case .query:
             queryShelfStoredWidth = Double(clampedWidth)
+        case .appPreview:
+            appPreviewShelfStoredWidth = Double(clampedWidth)
         }
     }
 
@@ -3135,6 +3246,7 @@ private struct ContentDetailAreaView: View {
             onForkTask: onForkTask,
             onCreateTask: onCreateTask,
             onCreateApp: onCreateApp,
+            onOpenWorkspaceApp: onOpenWorkspaceApp,
             onOpenTask: onOpenTask,
             onDeleteTask: onDeleteTask,
             onSetDoneState: onSetDoneState,
@@ -3145,7 +3257,14 @@ private struct ContentDetailAreaView: View {
             onManageCapabilities: onManageCapabilities,
             onCreateWorkspace: onCreateWorkspace,
             onImportWorkspace: onImportWorkspace,
-            onOpenGeneratedFile: onOpenGeneratedFile
+            onOpenGeneratedFile: onOpenGeneratedFile,
+            isComposingWorkspaceApp: isComposingWorkspaceApp,
+            studioSession: studioSession,
+            onStartWorkspaceAppStudio: onStartWorkspaceAppStudio,
+            onStartMCPInstallReview: onStartMCPInstallReview,
+            onPublishApp: onPublishApp,
+            onDraftChanged: onDraftChanged,
+            onCancelStudio: onCancelStudio
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -3180,6 +3299,11 @@ private struct ContentDetailAreaView: View {
                 task: selectedTask,
                 utilityRuntime: queryUtilityRuntime,
                 isPresented: canvasPresentedBinding(for: .query)
+            )
+        case .appPreview:
+            ShelfWorkspaceAppPreviewView(
+                session: studioSession,
+                workspace: effectiveWorkspace
             )
         }
     }
@@ -3220,6 +3344,7 @@ private struct ContentDetailContentView: View {
     let onForkTask: (AgentTask) -> Void
     let onCreateTask: () -> Void
     let onCreateApp: () -> Void
+    var onOpenWorkspaceApp: ((WorkspaceApp) -> Void)?
     let onOpenTask: (AgentTask) -> Void
     let onDeleteTask: (AgentTask) -> Void
     let onSetDoneState: (AgentTask, Bool) -> Void
@@ -3231,12 +3356,20 @@ private struct ContentDetailContentView: View {
     let onCreateWorkspace: () -> Void
     let onImportWorkspace: () -> Void
     let onOpenGeneratedFile: (String) -> Void
+    let isComposingWorkspaceApp: Bool
+    @ObservedObject var studioSession: WorkspaceAppStudioSession
+    let onStartWorkspaceAppStudio: (String?) -> Void
+    let onStartMCPInstallReview: (MCPInstallChatRequest) -> Void
+    let onPublishApp: (_ seedSampleData: Bool) -> Void
+    let onDraftChanged: () -> Void
+    let onCancelStudio: () -> Void
 
     var body: some View {
         switch ContentDetailPresentation.resolve(
             selectedTask: selectedTask,
             effectiveWorkspace: effectiveWorkspace,
-            isComposingTask: isComposingTask
+            isComposingTask: isComposingTask,
+            isComposingWorkspaceApp: isComposingWorkspaceApp
         ) {
         case .draftTask:
             if let task = selectedTask {
@@ -3250,7 +3383,9 @@ private struct ContentDetailContentView: View {
                     onAddSSHConnection: onAddSSHConnection,
                     onManageSkills: onManageSkills,
                     isPlanCanvasVisible: isPlanCanvasVisible,
-                    onOpenPlan: onOpenPlan
+                    onOpenPlan: onOpenPlan,
+                    onStartWorkspaceAppStudio: onStartWorkspaceAppStudio,
+                    onStartMCPInstallReview: onStartMCPInstallReview
                 )
                 .id(task.id)
             }
@@ -3285,7 +3420,9 @@ private struct ContentDetailContentView: View {
                 onAddSSHConnection: onAddSSHConnection,
                 onManageSkills: onManageSkills,
                 isPlanCanvasVisible: isPlanCanvasVisible,
-                onOpenPlan: onOpenPlan
+                onOpenPlan: onOpenPlan,
+                onStartWorkspaceAppStudio: onStartWorkspaceAppStudio,
+                onStartMCPInstallReview: onStartMCPInstallReview
             )
         case .workspaceHome:
             if let workspace = effectiveWorkspace {
@@ -3301,7 +3438,20 @@ private struct ContentDetailContentView: View {
                     onConfigure: onConfigure,
                     onNewSchedule: onNewSchedule,
                     onEditSchedule: onEditSchedule,
-                    onManageCapabilities: onManageCapabilities
+                    onManageCapabilities: onManageCapabilities,
+                    onOpenWorkspaceApp: onOpenWorkspaceApp
+                )
+            }
+        case .workspaceApp:
+            EmptyView()
+        case .workspaceAppStudio:
+            if let workspace = effectiveWorkspace {
+                WorkspaceAppStudioChatView(
+                    session: studioSession,
+                    workspace: workspace,
+                    onPublish: onPublishApp,
+                    onDraftChanged: onDraftChanged,
+                    onCancel: onCancelStudio
                 )
             }
         case .noWorkspace:
@@ -4686,56 +4836,6 @@ struct WorkspaceSetupForm: View {
     }
 }
 
-private struct WorkspaceEmptyStateView: View {
-    let onCreateWorkspace: () -> Void
-    let onImportWorkspace: () -> Void
-
-    var body: some View {
-        VStack(spacing: 24) {
-            Image(systemName: "folder.badge.plus")
-                .font(Stanford.ui(48))
-                .foregroundStyle(Stanford.cardinalRed)
-
-            VStack(spacing: 8) {
-                Text("Pick a Workspace")
-                    .font(Stanford.heading(24))
-                    .foregroundStyle(Stanford.black)
-
-                Text("Tasks always belong to a workspace. Create a new one or import an existing folder — ASTRA will reopen it automatically next time.")
-                    .font(Stanford.body(15))
-                    .foregroundStyle(Stanford.coolGrey)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 460)
-            }
-
-            HStack(spacing: 12) {
-                Button {
-                    onCreateWorkspace()
-                } label: {
-                    Label("New Workspace", systemImage: "plus")
-                }
-                .buttonStyle(StanfordButtonStyle())
-                .accessibilityIdentifier("OnboardingNewWorkspaceButton")
-
-                Button {
-                    onImportWorkspace()
-                } label: {
-                    Label("Import Workspace", systemImage: "square.and.arrow.down")
-                }
-                .buttonStyle(StanfordButtonStyle(isPrimary: false))
-
-                SettingsLink {
-                    Label("Settings", systemImage: "gear")
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(24)
-        .background(Stanford.panelBackground)
-    }
-}
-
 private struct LinkedScheduleWarning: Identifiable {
     enum Action {
         case markDone
@@ -4769,111 +4869,4 @@ private struct LinkedScheduleWarning: Identifiable {
         let names = schedules.map(\.name).joined(separator: ", ")
         return "This task is the same-thread conversation source for active routines: \(names). Continuing will pause those routines first so future runs do not lose their thread."
     }
-}
-
-// Resize handle for the canvas shelf (Plan / Browser).
-//
-// The hit area is a 14pt-wide invisible rectangle straddling the panel's leading edge
-// (offset -7) so the cursor changes a few pixels before and after the visible boundary —
-// this is what makes the divider feel "sticky." On hover and during drag we paint a
-// thin lagunita line at the boundary so the user has a clear visual to lock onto.
-//
-// Cursor management uses AppKit's window-level cursor rect (addCursorRect via
-// CursorRectView) instead of NSCursor.push/pop on hover. push/pop is fragile during
-// SwiftUI gestures because the hover state ends when the drag begins, popping the
-// cursor mid-drag. A registered cursor rect keeps the resize cursor for the entire
-// time the pointer is over the area, including throughout drags.
-private struct ShelfResizeHandle: View {
-    let isResizing: Bool
-    let helpText: String
-    let onChanged: (CGSize) -> Void
-    let onEnded: () -> Void
-
-    @State private var isHovered = false
-
-    var body: some View {
-        ZStack(alignment: .leading) {
-            // Visible divider accent — hidden at rest, lagunita on hover, brighter while dragging.
-            Rectangle()
-                .fill(Stanford.lagunita.opacity(indicatorOpacity))
-                .frame(width: 2)
-                .offset(x: 6) // center the 2pt bar on the canvas's leading edge
-                .allowsHitTesting(false)
-
-            // Invisible hit target.
-            //
-            // coordinateSpace: .global is critical. With the default .local space, translation
-            // is measured against the handle's own coord space — but the handle is anchored to
-            // the canvas's leading edge, which moves as the panel resizes. That creates a
-            // feedback loop: panel grows → handle moves with it → translation collapses back
-            // to 0 → panel shrinks → translation reappears → panel grows… visible as a
-            // side-to-side shake. Measuring translation against the screen breaks the loop.
-            Rectangle()
-                .fill(Color.clear)
-                .frame(width: 14)
-                .contentShape(Rectangle())
-                .background(CursorRectView(cursor: .resizeLeftRight))
-                .gesture(
-                    DragGesture(minimumDistance: 0, coordinateSpace: .global)
-                        .onChanged { value in onChanged(value.translation) }
-                        .onEnded { _ in onEnded() }
-                )
-        }
-        .frame(maxHeight: .infinity)
-        .offset(x: -7) // straddle the boundary: 7pt outside panel, 7pt inside
-        .onContinuousHover { phase in
-            switch phase {
-            case .active: isHovered = true
-            case .ended: isHovered = false
-            }
-        }
-        .animation(.easeOut(duration: 0.12), value: isHovered)
-        .animation(.easeOut(duration: 0.12), value: isResizing)
-        .help(helpText)
-    }
-
-    private var indicatorOpacity: Double {
-        if isResizing { return 0.55 }
-        if isHovered { return 0.30 }
-        return 0
-    }
-}
-
-// AppKit-backed cursor rect — survives SwiftUI drags. Unlike NSCursor.push/pop on
-// SwiftUI's onHover (which ends the moment a drag begins), addCursorRect registers
-// the cursor at the window level so macOS keeps showing it for as long as the
-// pointer is in the rect, regardless of what gesture is active.
-private struct CursorRectView: NSViewRepresentable {
-    let cursor: NSCursor
-
-    func makeNSView(context: Context) -> NSView {
-        CursorRectNSView(cursor: cursor)
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        guard let view = nsView as? CursorRectNSView else { return }
-        if view.cursor !== cursor {
-            view.cursor = cursor
-            view.window?.invalidateCursorRects(for: view)
-        }
-    }
-}
-
-private final class CursorRectNSView: NSView {
-    var cursor: NSCursor
-
-    init(cursor: NSCursor) {
-        self.cursor = cursor
-        super.init(frame: .zero)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: cursor)
-    }
-
-    // Don't intercept mouse events — the SwiftUI DragGesture above handles them.
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }

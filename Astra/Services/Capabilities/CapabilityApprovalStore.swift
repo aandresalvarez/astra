@@ -2,6 +2,14 @@ import CryptoKit
 import Foundation
 import ASTRACore
 
+extension Notification.Name {
+    /// Posted after the approval store persists a record, so live UI that caches
+    /// approval state (the workspace right rail reads records once into `@State`
+    /// to stay off the per-body filesystem path) can refresh instead of going
+    /// stale until it is recreated.
+    static let capabilityApprovalsChanged = Notification.Name("astra.capabilityApprovalsChanged")
+}
+
 struct CapabilityApprovalRecord: Codable, Equatable, Identifiable, Sendable {
     var packageID: String
     var packageVersion: String
@@ -85,9 +93,12 @@ struct CapabilityApprovalStore {
     }
 
     func records() -> [CapabilityApprovalRecord] {
-        guard let files = try? fileManager.contentsOfDirectory(
+        let hostFileAccess = HostFileAccessBroker(fileManager: fileManager)
+        let accessIntent = HostFileAccessIntent.astraManagedStorage(root: directory)
+        guard let files = try? hostFileAccess.contentsOfDirectory(
             at: directory,
-            includingPropertiesForKeys: nil
+            includingPropertiesForKeys: nil,
+            intent: accessIntent
         ) else {
             return []
         }
@@ -96,7 +107,7 @@ struct CapabilityApprovalStore {
         return files
             .filter { $0.pathExtension == "json" }
             .compactMap { url in
-                guard let data = try? Data(contentsOf: url) else { return nil }
+                guard let data = try? hostFileAccess.readData(at: url, intent: accessIntent) else { return nil }
                 return try? decoder.decode(CapabilityApprovalRecord.self, from: data)
             }
             .sorted {
@@ -138,6 +149,7 @@ struct CapabilityApprovalStore {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(record)
         try data.write(to: recordURL(for: record), options: [.atomic])
+        NotificationCenter.default.post(name: .capabilityApprovalsChanged, object: nil)
         return record
     }
 

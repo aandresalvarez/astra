@@ -28,22 +28,43 @@ final class FullScreenSafeHostingView<Content: View>: NSHostingView<Content> {
     private var retryScheduled = false
     private var trappedCount = 0
 
+    override func layout() {
+        let raised = AstraExceptionTrap.catching {
+            super.layout()
+        }
+        guard let raised else { return }
+        scheduleDeferredConstraintInvalidation(raised: raised)
+    }
+
+    func performSafeLayoutSubtreeIfNeeded() {
+        let raised = AstraExceptionTrap.catching {
+            super.layoutSubtreeIfNeeded()
+        }
+        guard let raised else { return }
+        scheduleDeferredConstraintInvalidation(raised: raised)
+    }
+
     override var needsUpdateConstraints: Bool {
         get { super.needsUpdateConstraints }
         set {
             let raised = AstraExceptionTrap.catching {
                 super.needsUpdateConstraints = newValue
             }
-            guard let raised, newValue, !retryScheduled else { return }
-            trappedCount += 1
-            // Visible in Console: a steadily climbing count means something is
-            // invalidating constraints mid-display-cycle in a loop, not a
-            // one-off full-screen transition.
-            fullScreenSafeHostingTrapLogger.warning("Titlebar accessory constraint invalidation trapped (count \(self.trappedCount, privacy: .public)): \(raised.name.rawValue, privacy: .public)")
-            retryScheduled = true
-            Task { @MainActor [weak self] in
-                self?.retryDeferredConstraintInvalidation()
-            }
+            guard let raised, newValue else { return }
+            scheduleDeferredConstraintInvalidation(raised: raised)
+        }
+    }
+
+    private func scheduleDeferredConstraintInvalidation(raised: NSException) {
+        guard !retryScheduled else { return }
+        trappedCount += 1
+        // Visible in Console: a steadily climbing count means something is
+        // invalidating constraints mid-display-cycle in a loop, not a
+        // one-off full-screen transition.
+        fullScreenSafeHostingTrapLogger.warning("Titlebar accessory constraint/layout invalidation trapped (count \(self.trappedCount, privacy: .public)): \(raised.name.rawValue, privacy: .public)")
+        retryScheduled = true
+        Task { @MainActor [weak self] in
+            self?.retryDeferredConstraintInvalidation()
         }
     }
 

@@ -44,16 +44,47 @@ struct SSHConnection: Codable, Identifiable, Hashable {
 
 /// Manages SSH connections stored as a JSON file in the workspace folder.
 enum SSHConnectionManager {
+    private static let emptyConnectionsFileMaximumByteCount = 4
 
     static func connectionsFilePath(for workspacePath: String) -> String {
         WorkspaceFileLayout.sshConnectionsFile(for: workspacePath)
     }
 
+    static func hasStoredConnections(workspacePath: String) -> Bool {
+        guard !workspacePath.isEmpty else { return false }
+        let broker = HostFileAccessBroker()
+        let workspaceRoot = URL(fileURLWithPath: workspacePath, isDirectory: true)
+        return connectionFilePaths(for: workspacePath).contains { path in
+            let url = URL(fileURLWithPath: path)
+            guard let fileSize = broker.fileSize(
+                at: url,
+                intent: .astraManagedStorage(root: workspaceRoot)
+            ) else {
+                return false
+            }
+            return fileSize > emptyConnectionsFileMaximumByteCount
+        }
+    }
+
     static func load(workspacePath: String) -> [SSHConnection] {
         migrateLegacyConnectionsIfNeeded(workspacePath: workspacePath)
         let path = connectionsFilePath(for: workspacePath)
-        guard let data = FileManager.default.contents(atPath: path) else { return [] }
+        let hostFileAccess = HostFileAccessBroker()
+        guard let data = try? hostFileAccess.readData(
+            at: URL(fileURLWithPath: path),
+            intent: .astraManagedStorage(root: URL(fileURLWithPath: workspacePath, isDirectory: true))
+        ) else { return [] }
         return (try? JSONDecoder().decode([SSHConnection].self, from: data)) ?? []
+    }
+
+    private static func connectionFilePaths(for workspacePath: String) -> [String] {
+        [
+            WorkspaceFileLayout.sshConnectionsFile(for: workspacePath),
+            WorkspaceFileLayout.legacySSHConnectionsFile(for: workspacePath)
+        ].reduce(into: []) { paths, path in
+            guard !path.isEmpty, !paths.contains(path) else { return }
+            paths.append(path)
+        }
     }
 
     static func save(_ connections: [SSHConnection], workspacePath: String) {
@@ -105,7 +136,11 @@ enum SSHConnectionManager {
     /// Parse hosts from an SSH config file (e.g., ~/.ssh/config).
     static func parseSSHConfig(at path: String) -> [SSHConfigHost] {
         let expandedPath = (path as NSString).expandingTildeInPath
-        guard let content = try? String(contentsOfFile: expandedPath, encoding: .utf8) else { return [] }
+        guard let content = try? HostFileAccessBroker().readString(
+            at: URL(fileURLWithPath: expandedPath),
+            encoding: .utf8,
+            intent: .explicitUserSelection
+        ) else { return [] }
         return parseSSHConfig(from: content)
     }
 

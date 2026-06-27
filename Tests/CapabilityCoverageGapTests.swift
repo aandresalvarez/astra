@@ -16,6 +16,7 @@ struct BrowserBridgeEnvGuardTests {
         #expect(AgentRuntimeProcessRunner.isBrowserBridgeEnvKeyAllowed("ASTRA_BROWSER_URL"))
         #expect(AgentRuntimeProcessRunner.isBrowserBridgeEnvKeyAllowed("ASTRA_BROWSER_TOKEN"))
         #expect(AgentRuntimeProcessRunner.isBrowserBridgeEnvKeyAllowed("ASTRA_BROWSER_DEBUG_CAPTURE"))
+        #expect(AgentRuntimeProcessRunner.isBrowserBridgeEnvKeyAllowed("ASTRA_BROWSER_REQUIRED_ENGINE"))
         // The trailing underscore is required: a delimiter-less prefix match
         // would let an unrelated future ASTRA_BROWSER* key through.
         for hostile in ["PATH", "HOME", "DYLD_INSERT_LIBRARIES", "ANTHROPIC_API_KEY", "ASTRA_CONNECTORS", "ASTRA_BROWSERX", "ASTRA_BROWSER"] {
@@ -94,12 +95,18 @@ struct MCPServersFactValueTests {
         )
         #expect(value.contains("files"))
         #expect(!value.contains("skipped"))
+
+        let copilotValue = PolicySummaryPresentation.mcpServersFactValue(
+            manifest(providerID: .copilotCLI, servers: [server(id: "files")])
+        )
+        #expect(copilotValue.contains("files"))
+        #expect(!copilotValue.contains("skipped"))
     }
 
     @Test("Servers on a non-supporting runtime read as skipped, never active")
     func nonSupportingRuntimeSkips() {
         let value = PolicySummaryPresentation.mcpServersFactValue(
-            manifest(providerID: .copilotCLI, servers: [server(id: "files"), server(id: "db")])
+            manifest(providerID: .antigravityCLI, servers: [server(id: "files"), server(id: "db")])
         )
         #expect(value.contains("2 skipped"))
         #expect(value.contains("doesn't support MCP"))

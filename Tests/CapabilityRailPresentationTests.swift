@@ -1,5 +1,6 @@
 import Testing
 @testable import ASTRA
+import ASTRACore
 
 @Suite("Capability Rail Presentation")
 struct CapabilityRailPresentationTests {
@@ -80,6 +81,61 @@ struct CapabilityRailPresentationTests {
 
         #expect(presentation.scopeValues == ["Enabled for this workspace"])
         #expect(presentation.rowSubtitle == "Capability available to tasks")
+    }
+
+    @Test("capability composition summary includes MCP servers")
+    func capabilityCompositionSummaryIncludesMCPServers() {
+        let package = PluginPackage(
+            id: "mcp-visible",
+            name: "MCP Visible",
+            icon: "server.rack",
+            description: "MCP package",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            mcpServers: [
+                PluginMCPServer(
+                    id: "github",
+                    displayName: "GitHub MCP",
+                    transport: .stdio,
+                    command: "github-mcp-server"
+                )
+            ],
+            templates: [],
+            governance: .builtInApproved()
+        )
+        let item = RailCapabilityItem(
+            id: "package:mcp-visible",
+            name: "MCP Visible",
+            icon: "server.rack",
+            summary: "MCP package",
+            color: Stanford.lagunita,
+            isEnabled: true,
+            readiness: .ready,
+            presentation: CapabilityRailPackagePresentation.make(
+                isEnabled: true,
+                readinessLevel: .ready,
+                workspaceName: "Workspace",
+                sharedResourceCount: 0,
+                workspaceResourceCount: 0,
+                declaredResourceCount: 1,
+                contentSummary: "1 MCP server"
+            ),
+            source: .package(package),
+            skillNames: [],
+            connectorNames: [],
+            toolNames: [],
+            mcpServerNames: ["GitHub MCP"],
+            browserAdapterNames: [],
+            templateNames: [],
+            requirementNames: []
+        )
+
+        #expect(WorkspaceRightRailPresentation.compositionSummary(for: item) == "1 MCP server")
     }
 
     @Test("workspace context uses desktop inspector density")
@@ -239,6 +295,7 @@ struct CapabilityRailPresentationTests {
         #expect(WorkspaceSetupChecklistPresentation.summary(configured: 0, total: 4) == "Empty")
         #expect(WorkspaceSetupChecklistPresentation.summary(configured: 1, total: 4) == "1 of 4 configured")
         #expect(WorkspaceSetupChecklistPresentation.State.configured.label == "Configured")
+        #expect(WorkspaceSetupChecklistPresentation.State.reference.label == "Reference")
         #expect(WorkspaceSetupChecklistPresentation.State.missing.label == "Missing")
     }
 
@@ -246,6 +303,7 @@ struct CapabilityRailPresentationTests {
     func workspaceSetupRowsDiscloseConfigurationDetailsInline() {
         #expect(WorkspaceSetupChecklistPresentation.sectionTitle == "Workspace setup")
         #expect(WorkspaceSetupChecklistPresentation.missingGroupTitle == "Needs setup")
+        #expect(WorkspaceSetupChecklistPresentation.referenceGroupTitle == "Reference")
         #expect(WorkspaceSetupChecklistPresentation.configuredGroupTitle == "Configured")
         #expect(WorkspaceSetupChecklistPresentation.supportsInlineExpansion == true)
         #expect(WorkspaceSetupChecklistPresentation.supportsInlineEditing == true)
@@ -298,5 +356,267 @@ struct CapabilityRailPresentationTests {
                 plural: "folders"
             ) == nil
         )
+    }
+
+    @Test("workspace instruction editor distinguishes draft from saved guidance")
+    func workspaceInstructionEditorDistinguishesDraftFromSavedGuidance() {
+        #expect(WorkspaceInstructionEditorPresentation.saveActionTitle == "Save")
+        #expect(WorkspaceInstructionEditorPresentation.clearActionTitle == "Clear")
+        #expect(WorkspaceInstructionEditorPresentation.savedStatusTitle == "Saved")
+        #expect(WorkspaceInstructionEditorPresentation.unsavedStatusTitle == "Unsaved changes")
+        #expect(
+            WorkspaceInstructionEditorPresentation.hasUnsavedChanges(
+                draft: "  Run focused tests before full suites.  ",
+                persisted: ""
+            ) == true
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.persistedInstructions(
+                fromDraft: "  Run focused tests before full suites.  "
+            ) == "Run focused tests before full suites."
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.hasUnsavedChanges(
+                draft: "Run focused tests before full suites.",
+                persisted: "Run focused tests before full suites."
+            ) == false
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.statusTitle(
+                draft: "Run focused tests before full suites.",
+                persisted: "Run focused tests before full suites.",
+                didRecentlySave: true
+            ) == "Saved"
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.statusTitle(
+                draft: "Prefer root-cause fixes.",
+                persisted: "Run focused tests before full suites.",
+                didRecentlySave: true
+            ) == "Unsaved changes"
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.statusTitle(
+                draft: "",
+                persisted: "",
+                didRecentlySave: false
+            ) == nil
+        )
+    }
+
+    @Test("workspace instruction editor renders persisted instructions before draft sync")
+    func workspaceInstructionEditorRendersPersistedInstructionsBeforeDraftSync() {
+        #expect(
+            WorkspaceInstructionEditorPresentation.effectiveDraft(
+                localDraft: "",
+                persisted: "Existing workspace guidance",
+                isSynced: false
+            ) == "Existing workspace guidance"
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.hasUnsavedChanges(
+                localDraft: "",
+                persisted: "Existing workspace guidance",
+                isSynced: false
+            ) == false
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.statusTitle(
+                localDraft: "",
+                persisted: "Existing workspace guidance",
+                isSynced: false,
+                didRecentlySave: false
+            ) == "Saved"
+        )
+
+        #expect(
+            WorkspaceInstructionEditorPresentation.effectiveDraft(
+                localDraft: "",
+                persisted: "Existing workspace guidance",
+                isSynced: true
+            ) == ""
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.hasUnsavedChanges(
+                localDraft: "",
+                persisted: "Existing workspace guidance",
+                isSynced: true
+            ) == true
+        )
+    }
+
+    @Test("workspace instruction editor shows clear action for visible persisted draft before sync")
+    func workspaceInstructionEditorShowsClearActionForVisiblePersistedDraftBeforeSync() {
+        #expect(
+            WorkspaceInstructionEditorPresentation.shouldShowClearAction(
+                localDraft: "",
+                persisted: "Existing workspace guidance",
+                isSynced: false
+            ) == true
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.shouldShowClearAction(
+                localDraft: "",
+                persisted: "Existing workspace guidance",
+                isSynced: true
+            ) == false
+        )
+        #expect(
+            WorkspaceInstructionEditorPresentation.shouldShowClearAction(
+                localDraft: "Draft guidance",
+                persisted: "",
+                isSynced: true
+            ) == true
+        )
+    }
+
+    @Test("workspace folder setup treats primary path as reference")
+    func workspaceFolderSetupTreatsPrimaryPathAsReference() {
+        #expect(WorkspaceSetupChecklistPresentation.folderAccessTitle == "Folder access")
+        #expect(WorkspaceSetupChecklistPresentation.addFolderActionTitle == "Add folder")
+        #expect(WorkspaceSetupChecklistPresentation.workspaceRootReferenceTitle == "Workspace root")
+        #expect(WorkspaceSetupChecklistPresentation.workspaceRootReferenceRole == "Reference")
+        #expect(WorkspaceSetupChecklistPresentation.userConfiguredFolderCount([]) == 0)
+        #expect(WorkspaceSetupChecklistPresentation.userConfiguredFolderCount(["  "]) == 0)
+        #expect(WorkspaceSetupChecklistPresentation.folderState(
+            primaryPath: "/Users/alvaro/Documents/Astra Dev/Workspaces/pr",
+            additionalPaths: []
+        ) == .reference)
+        #expect(WorkspaceSetupChecklistPresentation.folderSubtitle(
+            primaryPath: "/Users/alvaro/Documents/Astra Dev/Workspaces/pr",
+            additionalPaths: []
+        ) == "Workspace root only")
+    }
+
+    @Test("workspace folder detail rows show folder names instead of paths")
+    func workspaceFolderDetailRowsShowFolderNamesInsteadOfPaths() {
+        let rootDescriptor = WorkspacePathPresentation.descriptors(
+            primaryPath: "/Users/alvaro/Documents/Astra Dev/Workspaces/git",
+            additionalPaths: []
+        )[0]
+        let rootRow = WorkspaceSetupChecklistPresentation.folderDetailRow(for: rootDescriptor)
+
+        #expect(rootRow.title == "git")
+        #expect(rootRow.subtitle == "Workspace root")
+        #expect(rootRow.path == "/Users/alvaro/Documents/Astra Dev/Workspaces/git")
+        #expect(rootRow.copyPathHelp == "Copy folder path")
+        #expect(rootRow.canRemove == false)
+        #expect(rootRow.showsPathInBody == false)
+
+        let additionalDescriptor = WorkspaceSetupChecklistPresentation.userConfiguredFolderDescriptors([
+            "/Users/alvaro/Documents/Code/MacTools"
+        ])[0]
+        let additionalRow = WorkspaceSetupChecklistPresentation.folderDetailRow(for: additionalDescriptor)
+
+        #expect(additionalRow.title == "MacTools")
+        #expect(additionalRow.subtitle == "Additional folder")
+        #expect(additionalRow.path == "/Users/alvaro/Documents/Code/MacTools")
+        #expect(additionalRow.copyPathHelp == "Copy folder path")
+        #expect(additionalRow.canRemove == true)
+        #expect(additionalRow.showsPathInBody == false)
+    }
+
+    @Test("workspace folder setup counts only added paths")
+    func workspaceFolderSetupCountsOnlyAddedPaths() {
+        #expect(WorkspaceSetupChecklistPresentation.userConfiguredFolderCount([
+            "/Users/alvaro/Documents/Code/astra",
+            " /Users/alvaro/Documents/Code/artana-evidence-platform "
+        ]) == 2)
+        #expect(WorkspaceSetupChecklistPresentation.folderState(
+            primaryPath: "/Users/alvaro/Documents/Astra Dev/Workspaces/pr",
+            additionalPaths: ["/Users/alvaro/Documents/Code/astra"]
+        ) == .configured)
+        #expect(WorkspaceSetupChecklistPresentation.folderSubtitle(
+            primaryPath: "/Users/alvaro/Documents/Astra Dev/Workspaces/pr",
+            additionalPaths: ["/Users/alvaro/Documents/Code/astra"]
+        ) == "1 added folder")
+        #expect(WorkspaceSetupChecklistPresentation.folderSubtitle(
+            primaryPath: "/Users/alvaro/Documents/Astra Dev/Workspaces/pr",
+            additionalPaths: [
+                "/Users/alvaro/Documents/Code/astra",
+                "/Users/alvaro/Documents/Code/artana-evidence-platform"
+            ]
+        ) == "2 added folders")
+    }
+
+    @Test("workspace folder setup normalizes added paths before counting")
+    func workspaceFolderSetupNormalizesAddedPathsBeforeCounting() {
+        #expect(WorkspaceSetupChecklistPresentation.userConfiguredFolderCount([
+            "/tmp/astra-review/docs",
+            "/tmp/astra-review/./docs",
+            " /tmp/astra-review/docs/ "
+        ]) == 1)
+        #expect(WorkspaceSetupChecklistPresentation.folderSubtitle(
+            primaryPath: "/Users/alvaro/Documents/Astra Dev/Workspaces/pr",
+            additionalPaths: [
+                "/tmp/astra-review/docs",
+                "/tmp/astra-review/./docs",
+                " /tmp/astra-review/docs/ "
+            ]
+        ) == "1 added folder")
+    }
+
+    @Test("workspace folder setup ignores additional paths matching root")
+    func workspaceFolderSetupIgnoresAdditionalPathsMatchingRoot() {
+        let primaryPath = "/tmp/astra-review"
+        let descriptors = WorkspaceSetupChecklistPresentation.userConfiguredFolderDescriptors(
+            primaryPath: primaryPath,
+            additionalPaths: [
+                "/tmp/astra-review",
+                "/tmp/astra-review/./",
+                " /tmp/astra-review/docs/ "
+            ]
+        )
+
+        #expect(descriptors.map(\.path) == ["/tmp/astra-review/docs"])
+        #expect(WorkspaceSetupChecklistPresentation.userConfiguredFolderCount(
+            primaryPath: primaryPath,
+            additionalPaths: [
+                "/tmp/astra-review",
+                "/tmp/astra-review/./"
+            ]
+        ) == 0)
+        #expect(WorkspaceSetupChecklistPresentation.folderState(
+            primaryPath: primaryPath,
+            additionalPaths: [
+                "/tmp/astra-review",
+                "/tmp/astra-review/./"
+            ]
+        ) == .reference)
+        #expect(WorkspaceSetupChecklistPresentation.folderSubtitle(
+            primaryPath: primaryPath,
+            additionalPaths: [
+                "/tmp/astra-review",
+                "/tmp/astra-review/./"
+            ]
+        ) == "Workspace root only")
+    }
+
+    @Test("workspace folder removal drops every normalized duplicate path")
+    func workspaceFolderRemovalDropsEveryNormalizedDuplicatePath() {
+        let remaining = WorkspaceSetupChecklistPresentation.remainingAdditionalPaths(
+            afterRemovingFolderMatching: "/tmp/astra-review/docs",
+            from: [
+                "/tmp/astra-review/docs",
+                "/tmp/astra-review/./docs",
+                " /tmp/astra-review/docs/ ",
+                "/tmp/astra-review/notes"
+            ]
+        )
+
+        #expect(remaining == ["/tmp/astra-review/notes"])
+    }
+
+    @Test("workspace folder setup surfaces missing root even with added paths")
+    func workspaceFolderSetupSurfacesMissingRootEvenWithAddedPaths() {
+        #expect(WorkspaceSetupChecklistPresentation.shouldShowWorkspaceRootMissingMessage(primaryPath: " ") == true)
+        #expect(WorkspaceSetupChecklistPresentation.folderState(
+            primaryPath: " ",
+            additionalPaths: ["/Users/alvaro/Documents/Code/astra"]
+        ) == .missing)
+        #expect(WorkspaceSetupChecklistPresentation.folderSubtitle(
+            primaryPath: " ",
+            additionalPaths: ["/Users/alvaro/Documents/Code/astra"]
+        ) == "No workspace root selected.")
     }
 }

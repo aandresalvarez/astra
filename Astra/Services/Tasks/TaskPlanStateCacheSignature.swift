@@ -18,9 +18,12 @@ struct TaskPlanStateCacheSignature: Equatable {
     let runFingerprint: UInt64
 
     init(task: AgentTask) {
+        let start = DispatchTime.now().uptimeNanoseconds
+        let events = task.events
+        let runs = task.runs
         var eventAccumulator = FingerprintAccumulator()
         var planEventCount = 0
-        for event in task.events {
+        for event in events {
             guard let eventCode = TaskPlanService.stateMutationCode(for: event.type) else {
                 continue
             }
@@ -34,7 +37,9 @@ struct TaskPlanStateCacheSignature: Equatable {
         }
 
         var runAccumulator = FingerprintAccumulator()
-        for (index, run) in task.runs.enumerated() {
+        var maxRunOutputChars = 0
+        for (index, run) in runs.enumerated() {
+            maxRunOutputChars = max(maxRunOutputChars, run.output.utf8.count)
             runAccumulator.include(index)
             runAccumulator.include(run.id)
             runAccumulator.include(Self.code(for: run.status))
@@ -54,8 +59,20 @@ struct TaskPlanStateCacheSignature: Equatable {
             status: task.status,
             planEventCount: planEventCount,
             planEventFingerprint: eventAccumulator.value,
-            runCount: task.runs.count,
+            runCount: runs.count,
             runFingerprint: runAccumulator.value
+        )
+        PerformanceTelemetry.logIfNeeded(
+            "plan_state_signature",
+            start: start,
+            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            fields: [
+                "task_id": PerformanceTelemetryFields.abbreviatedID(task.id),
+                "event_count": PerformanceTelemetryFields.count(events.count),
+                "run_count": PerformanceTelemetryFields.count(runs.count),
+                "plan_event_count": PerformanceTelemetryFields.count(planEventCount),
+                "max_run_output_bucket": PerformanceTelemetryFields.byteBucket(maxRunOutputChars)
+            ]
         )
     }
 

@@ -157,6 +157,106 @@ struct TaskCapabilityResolverTests {
         #expect(prompt.contains("[Jira Agent]:"))
     }
 
+    @Test("Provider launch connector scope follows active objective instead of stale task goal")
+    func providerLaunchConnectorScopeFollowsActiveObjective() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let jiraPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+
+        let workspace = Workspace(name: "Starr Data Lake", primaryPath: "/tmp/starr-data-lake")
+        workspace.enabledCapabilityIDs = [jiraPackage.id]
+        context.insert(workspace)
+
+        let jiraSkill = Skill(
+            name: "Jira Agent",
+            allowedTools: ["Bash"],
+            behaviorInstructions: "Use Jira only for sprint story work."
+        )
+        jiraSkill.isGlobal = true
+        context.insert(jiraSkill)
+
+        let jiraConnector = Connector(
+            name: "Jira-new",
+            serviceType: "jira",
+            connectorDescription: "Jira sprint story connector",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "basic"
+        )
+        jiraConnector.isGlobal = true
+        jiraConnector.skill = jiraSkill
+        jiraConnector.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        context.insert(jiraConnector)
+
+        let gcpConnector = Connector(
+            name: "Google Cloud",
+            serviceType: "gcp",
+            connectorDescription: "Google Cloud BigQuery credentials for dbt regression tests",
+            baseURL: "https://bigquery.googleapis.com",
+            authMethod: "adc"
+        )
+        gcpConnector.isGlobal = true
+        gcpConnector.credentialKeys = ["GOOGLE_APPLICATION_CREDENTIALS"]
+        context.insert(gcpConnector)
+
+        workspace.enabledGlobalConnectorIDs = [
+            jiraConnector.id.uuidString,
+            gcpConnector.id.uuidString
+        ]
+
+        let task = AgentTask(
+            title: "List active sprint stories",
+            goal: "List my stories for the active sprint in the STAR Jira project",
+            workspace: workspace
+        )
+        context.insert(task)
+
+        let first = TaskEvent(
+            task: task,
+            type: "user.message",
+            payload: "List my stories for the active sprint in the STAR Jira project"
+        )
+        first.timestamp = Date(timeIntervalSince1970: 1)
+        context.insert(first)
+
+        let correction = TaskEvent(
+            task: task,
+            type: "user.message",
+            payload: "no your goal is to complete the plan.md document"
+        )
+        correction.timestamp = Date(timeIntervalSince1970: 2)
+        context.insert(correction)
+        try context.save()
+
+        let scope = TaskCapabilityResolver(task: task).promptScope(
+            contextText: "Continue Phase 5 from plan.md: run dbt tests against BigQuery in Docker."
+        )
+
+        #expect(scope.behaviorSkills.map(\.name).contains("Jira Agent") == false)
+        #expect(scope.connectors.map(\.name) == ["Google Cloud"])
+        #expect(scope.resolver.resolvedEnvironmentVariables.keys.contains { $0.contains("JIRA") } == false)
+
+        let providerLaunchIssues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [jiraPackage],
+            checkExecutables: false,
+            scope: .providerLaunch(contextText: "Continue Phase 5 from plan.md: run dbt tests against BigQuery in Docker."),
+            secretStore: MockSecretStore()
+        )
+        #expect(providerLaunchIssues.isEmpty)
+
+        let fullInventoryIssues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [jiraPackage],
+            checkExecutables: false,
+            scope: .fullInventory,
+            secretStore: MockSecretStore()
+        )
+        #expect(fullInventoryIssues.contains {
+            $0.resourceKind == .credential &&
+                $0.message.contains("Jira-new is missing Keychain value")
+        })
+    }
+
     @Test("Multiple same-service connectors project namespaced env vars without legacy collision")
     func multipleSameServiceConnectorsProjectNamespacedEnvVarsWithoutLegacyCollision() throws {
         let container = try makeTaskCapabilityResolverContainer()
@@ -317,8 +417,8 @@ struct TaskCapabilityResolverTests {
         #expect(prompt.contains("ASTRA_CONNECTORS"))
     }
 
-    @Test("Single same-service connector keeps legacy env vars during deprecation window")
-    func singleSameServiceConnectorKeepsLegacyEnvVarsDuringDeprecationWindow() throws {
+    @Test("Single same-service connector uses namespaced env vars by default")
+    func singleSameServiceConnectorUsesNamespacedEnvVarsByDefault() throws {
         let container = try makeTaskCapabilityResolverContainer()
         let context = container.mainContext
 
@@ -347,7 +447,7 @@ struct TaskCapabilityResolverTests {
 
         let env = TaskCapabilityResolver(task: task).resolver.resolvedEnvironmentVariables
         #expect(env["REDCAP_STUDY_A_SOURCE_API_URL"] == "https://redcap.example.edu/api/source")
-        #expect(env["REDCAP_API_URL"] == "https://redcap.example.edu/api/source")
+        #expect(env["REDCAP_API_URL"] == nil)
     }
 
     @Test("Projection namespaces duplicate connector credentials")
@@ -398,7 +498,7 @@ struct TaskCapabilityResolverTests {
         ).environmentVariables()
 
         #expect(env["JIRA_JIRA_EMAIL"] == "user@example.edu")
-        #expect(env["JIRA_EMAIL"] == "user@example.edu")
+        #expect(env["JIRA_EMAIL"] == nil)
         #expect(env["JIRA_JIRA_API_TOKEN"] == nil)
         #expect(env["JIRA_API_TOKEN"] == nil)
 
@@ -600,7 +700,7 @@ struct TaskCapabilityResolverTests {
         let env = ConnectorRuntimeProjection(connectors: [connector]).environmentVariables()
 
         #expect(env["JIRA_JIRA_BASE_URL"] == "https://jira.example.edu")
-        #expect(env["JIRA_BASE_URL"] == "https://jira.example.edu")
+        #expect(env["JIRA_BASE_URL"] == nil)
         #expect(env["JIRA_JIRA_PROJECTS"] == nil)
         #expect(env["JIRA_PROJECTS"] == nil)
         #expect(env["JIRA_JIRA_REGION"] == nil)
@@ -673,6 +773,189 @@ struct TaskCapabilityResolverTests {
         let prompt = AgentPromptBuilder.buildPrompt(for: task)
         #expect(prompt.contains("[Jira Agent]:"))
         #expect(prompt.contains("https://stanfordmed.atlassian.net"))
+    }
+
+    @Test("Provider launch keeps connector owned by selected skill")
+    func providerLaunchKeepsConnectorOwnedBySelectedSkill() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Jira Issue Review", primaryPath: "/tmp/jira-issue-review")
+        context.insert(workspace)
+
+        let jiraSkill = Skill(
+            name: "Jira Agent",
+            skillDescription: "Review support issues and ticket queues",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use Jira REST APIs to review issues before answering."
+        )
+        jiraSkill.isGlobal = true
+        context.insert(jiraSkill)
+
+        let jiraConnector = Connector(
+            name: "Jira-new",
+            serviceType: "jira",
+            connectorDescription: "Atlassian Jira REST API v3",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "basic"
+        )
+        jiraConnector.isGlobal = true
+        jiraConnector.skill = jiraSkill
+        jiraConnector.configKeys = ["JIRA_BASE_URL", "JIRA_PROJECTS"]
+        jiraConnector.configValues = ["https://stanfordmed.atlassian.net", "SS"]
+        context.insert(jiraConnector)
+
+        let gcloudSkill = Skill(
+            name: "GCloud Agent",
+            skillDescription: "Inspect Google Cloud projects",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use gcloud for cloud inventory."
+        )
+        gcloudSkill.isGlobal = true
+        context.insert(gcloudSkill)
+
+        let gcloudConnector = Connector(
+            name: "Google Cloud",
+            serviceType: "gcloud",
+            connectorDescription: "Google Cloud API",
+            baseURL: "https://cloud.google.com",
+            authMethod: "none"
+        )
+        gcloudConnector.isGlobal = true
+        gcloudConnector.skill = gcloudSkill
+        context.insert(gcloudConnector)
+
+        workspace.enabledGlobalConnectorIDs = [jiraConnector.id.uuidString, gcloudConnector.id.uuidString]
+
+        let task = AgentTask(
+            title: "review if i have open issues to address",
+            goal: "review if i have open issues to address",
+            workspace: workspace
+        )
+        task.skills = [jiraSkill]
+        context.insert(task)
+        try context.save()
+
+        let scope = TaskCapabilityResolver(task: task)
+            .resolvedScope(.providerLaunch(contextText: task.goal))
+
+        #expect(scope.prunedForBrowserTask)
+        #expect(scope.behaviorSkills.map(\.name) == ["Jira Agent"])
+        #expect(scope.connectors.map(\.id) == [jiraConnector.id])
+        #expect(scope.excludedSkillNames.contains("GCloud Agent"))
+
+        let env = scope.resolver.resolvedEnvironmentVariables
+        #expect(env["JIRA_JIRA_NEW_BASE_URL"] == "https://stanfordmed.atlassian.net")
+        #expect(env["JIRA_JIRA_NEW_PROJECTS"] == "SS")
+        #expect(env["JIRA_PROJECTS"] == nil)
+        #expect(env["ASTRA_CONNECTORS"]?.contains(#""name":"Jira-new""#) == true)
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        #expect(prompt.contains("[Jira Agent]:"))
+        #expect(prompt.contains("Jira-new"))
+        #expect(prompt.contains("ASTRA_CONNECTORS"))
+        #expect(!prompt.contains("[GCloud Agent]:"))
+    }
+
+    @Test("Provider launch includes every connector of a kept skill, but none of an excluded skill")
+    func providerLaunchOverShareBoundaryIsSkillMembershipNotConnectorText() throws {
+        // Pins the intentional credential-scope boundary established when the
+        // per-connector text gate was removed: a connector ships iff its OWNING
+        // skill is kept — even a connector whose own text is irrelevant to the
+        // task (over-share within a kept skill is accepted in the single-user
+        // trust model) — while connectors of excluded skills never ship.
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Issue Review", primaryPath: "/tmp/issue-review-overshare")
+        context.insert(workspace)
+
+        let jiraSkill = Skill(
+            name: "Jira Agent",
+            skillDescription: "Review support issues and ticket queues",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use Jira and Confluence REST APIs to review issues."
+        )
+        jiraSkill.isGlobal = true
+        context.insert(jiraSkill)
+
+        // Task-relevant connector owned by the kept skill.
+        let jiraConnector = Connector(
+            name: "Jira-new",
+            serviceType: "jira",
+            connectorDescription: "Atlassian Jira REST API v3",
+            baseURL: "https://stanfordmed.atlassian.net",
+            authMethod: "basic"
+        )
+        jiraConnector.isGlobal = true
+        jiraConnector.skill = jiraSkill
+        context.insert(jiraConnector)
+
+        // Task-IRRELEVANT connector owned by the SAME kept skill. Its text does
+        // not match "open issues" — pre-fix it was pruned, post-fix it ships
+        // because the owning skill is kept.
+        let confluenceConnector = Connector(
+            name: "Confluence Wiki",
+            serviceType: "confluence",
+            connectorDescription: "Atlassian Confluence wiki page authoring",
+            baseURL: "https://wiki.example.com",
+            authMethod: "basic"
+        )
+        confluenceConnector.isGlobal = true
+        confluenceConnector.skill = jiraSkill
+        context.insert(confluenceConnector)
+
+        // Connector owned by a skill the task does NOT keep — must stay excluded.
+        let gcloudSkill = Skill(
+            name: "GCloud Agent",
+            skillDescription: "Inspect Google Cloud projects",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use gcloud for cloud inventory."
+        )
+        gcloudSkill.isGlobal = true
+        context.insert(gcloudSkill)
+
+        let gcloudConnector = Connector(
+            name: "Google Cloud",
+            serviceType: "gcloud",
+            connectorDescription: "Google Cloud API",
+            baseURL: "https://cloud.google.com",
+            authMethod: "none"
+        )
+        gcloudConnector.isGlobal = true
+        gcloudConnector.skill = gcloudSkill
+        context.insert(gcloudConnector)
+
+        workspace.enabledGlobalConnectorIDs = [
+            jiraConnector.id.uuidString,
+            confluenceConnector.id.uuidString,
+            gcloudConnector.id.uuidString
+        ]
+
+        let task = AgentTask(
+            title: "review if i have open issues to address",
+            goal: "review if i have open issues to address",
+            workspace: workspace
+        )
+        task.skills = [jiraSkill]
+        context.insert(task)
+        try context.save()
+
+        let scope = TaskCapabilityResolver(task: task)
+            .resolvedScope(.providerLaunch(contextText: task.goal))
+
+        let connectorIDs = Set(scope.connectors.map(\.id))
+        // Both connectors of the kept skill ship (intentional over-share)...
+        #expect(connectorIDs.contains(jiraConnector.id))
+        #expect(connectorIDs.contains(confluenceConnector.id))
+        // ...the excluded skill's connector never does (the security boundary).
+        #expect(!connectorIDs.contains(gcloudConnector.id))
+        #expect(scope.excludedSkillNames.contains("GCloud Agent"))
+
+        let connectorsEnv = scope.resolver.resolvedEnvironmentVariables["ASTRA_CONNECTORS"] ?? ""
+        #expect(connectorsEnv.contains(#""name":"Jira-new""#))
+        #expect(connectorsEnv.contains(#""name":"Confluence Wiki""#))
+        #expect(!connectorsEnv.contains(#""name":"Google Cloud""#))
     }
 
     @Test("Enabled package uses matched local tool owner when package skill name changed")
@@ -1099,6 +1382,149 @@ struct TaskCapabilityResolverTests {
 
         #expect(issues.map(\.resourceKind) == [.policy])
         #expect(issues.first?.message.contains("catalog policy blocks runtime activation") == true)
+    }
+
+    // Shared setup: an enabled github-workflow capability whose workspace skill +
+    // tool instances exist but carry MINIMAL text, so launch-time pruning drops
+    // them for any task that doesn't literally mention "github"/"gh". The package
+    // definition itself stays rich, so packageMatchesTaskIntent can still fire.
+    private func makeGitHubEnabledWorkspace(in context: ModelContext, name: String) throws -> (Workspace, PluginPackage) {
+        let githubPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "github-workflow" })
+        let workspace = Workspace(name: name, primaryPath: "/tmp/\(name)")
+        workspace.enabledCapabilityIDs = [githubPackage.id]
+        context.insert(workspace)
+
+        let githubSkill = Skill(
+            name: "GitHub Agent",
+            skillDescription: "x",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "x"
+        )
+        githubSkill.workspace = workspace
+        context.insert(githubSkill)
+
+        let githubTool = LocalTool(
+            name: "gh — GitHub CLI",
+            toolDescription: "x",
+            toolType: "cli",
+            command: "gh"
+        )
+        githubTool.workspace = workspace
+        context.insert(githubTool)
+        return (workspace, githubPackage)
+    }
+
+    @Test("Launch pruning drops an enabled capability that an unrelated task doesn't need")
+    func enabledCapabilityPrunedFromUnrelatedTaskScope() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let (workspace, _) = try makeGitHubEnabledWorkspace(in: context, name: "github-prune")
+
+        let task = AgentTask(
+            title: "Bake a cake",
+            goal: "Bake a chocolate sponge cake and write the recipe",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let scope = TaskCapabilityResolver(task: task)
+            .resolvedScope(.providerLaunch(contextText: task.goal))
+
+        // Advisory pruning (focus): the enabled capability is reachable in the
+        // workspace but, since this task doesn't need it, its verbose instructions
+        // and tool are kept out of the launch scope — least privilege by default.
+        #expect(scope.prunedForBrowserTask)
+        #expect(!scope.behaviorSkills.map(\.name).contains("GitHub Agent"))
+        #expect(!scope.localTools.contains { $0.command == "gh" })
+        #expect(scope.excludedSkillNames.contains("GitHub Agent"))
+    }
+
+    @Test("Provider launch context activates CLI tools for follow-up scoped requests")
+    func providerLaunchContextActivatesCLIToolsForFollowUpScopedRequests() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let (workspace, _) = try makeGitHubEnabledWorkspace(in: context, name: "github-followup-scope")
+
+        let task = AgentTask(
+            title: "Bake a cake",
+            goal: "Bake a chocolate sponge cake and write the recipe",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        #expect(AgentRuntimeProcessRunner.runtimeLocalToolCommands(for: task).isEmpty)
+        #expect(!AgentRuntimeProcessRunner.hasActiveCLITools(task))
+
+        let followUpContext = "Use GitHub to list the open pull requests for this repository."
+        #expect(AgentRuntimeProcessRunner.runtimeLocalToolCommands(for: task, contextText: followUpContext) == ["gh"])
+        #expect(AgentRuntimeProcessRunner.hasActiveCLITools(task, contextText: followUpContext))
+    }
+
+    @Test("A pruned-but-existing enabled capability is not a launch failure")
+    func prunedEnabledCapabilityIsNotALaunchFailure() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let (workspace, githubPackage) = try makeGitHubEnabledWorkspace(in: context, name: "github-integrity")
+
+        // Matches the github-workflow package intent ("pull requests") but NOT the
+        // minimal workspace skill/tool text — so the package is enforced while its
+        // skill + tool get pruned from scope. This is the exact shape that used to
+        // hard-fail with capability_runtime_resources_missing.
+        let task = AgentTask(
+            title: "List pull requests",
+            goal: "list open pull requests for me",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        // Precondition: the skill + tool really are pruned from the launch scope.
+        let scope = TaskCapabilityResolver(task: task)
+            .resolvedScope(.providerLaunch(contextText: task.goal))
+        #expect(!scope.behaviorSkills.map(\.name).contains("GitHub Agent"))
+        #expect(!scope.localTools.contains { $0.command == "gh" })
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [githubPackage],
+            checkExecutables: false,
+            scope: .providerLaunch(contextText: task.goal)
+        )
+
+        // The regression: the real failure reported missing resource_kinds=skill,
+        // local_tool. Because the skill + tool exist in the workspace (reachable),
+        // pruning them for focus must not be reported as missing.
+        #expect(!issues.contains { $0.resourceKind == .skill })
+        #expect(!issues.contains { $0.resourceKind == .localTool })
+    }
+
+    @Test("Capability roster advertises enabled capabilities with an invocation hint")
+    func capabilityRosterAdvertisesEnabledCapabilities() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "github-roster", primaryPath: "/tmp/github-roster")
+        workspace.enabledCapabilityIDs = ["github-workflow"]
+        context.insert(workspace)
+        try context.save()
+
+        let roster = try #require(CapabilityRosterBuilder.roster(for: workspace))
+        #expect(roster.contains("GitHub"))
+        #expect(roster.contains("`gh`"))
+        // Awareness must instruct the agent to surface, not silently skip, gaps.
+        #expect(roster.lowercased().contains("do not silently skip"))
+    }
+
+    @Test("Capability roster is nil when no capabilities are enabled")
+    func capabilityRosterNilWhenNothingEnabled() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "empty-roster", primaryPath: "/tmp/empty-roster")
+        context.insert(workspace)
+        try context.save()
+
+        #expect(CapabilityRosterBuilder.roster(for: workspace) == nil)
     }
 
     @Test("Runtime integrity checks MCP stdio command readiness")
@@ -1632,6 +2058,39 @@ struct TaskCapabilityResolverTests {
         let prompt = ShelfBrowserBridgeRegistry.shared.promptContext(for: task.id)
         #expect(prompt?.contains("Enabled browser site adapters: googleDrive") == true)
         #expect(prompt?.contains("astra-browser google-drive-open") == true)
+    }
+
+    @Test("Hidden adapter-only browser state does not expose browser bridge to unrelated tasks")
+    func hiddenAdapterOnlyBrowserStateDoesNotExposeBrowserBridgeToUnrelatedTasks() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Docker Browser Adapter Workspace", primaryPath: "/tmp/docker-browser-adapter-workspace")
+        context.insert(workspace)
+
+        let task = AgentTask(
+            title: "Summarize folder contents",
+            goal: "summarize the contents of this folder using the configured Docker image",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: nil,
+            currentTitle: nil,
+            taskID: task.id,
+            isPresented: false,
+            isEnabled: true,
+            enabledBrowserAdapters: [BrowserSiteAdapterID.github]
+        )
+        defer { ShelfBrowserBridgeRegistry.shared.reset() }
+
+        let contextText = "summarize the contents of this folder using the configured Docker image"
+
+        #expect(!TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText))
+        #expect(AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: task, contextText: contextText)["ASTRA_BROWSER_URL"] == nil)
     }
 
     @Test("Browser adapters require runnable catalog policy")

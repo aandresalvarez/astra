@@ -127,6 +127,8 @@ enum WorkspaceConfigManager {
         /// repository root. Travels with the workspace; it is re-validated on
         /// import and reset to root when the worktree is absent on this machine.
         var activeWorkingPath: String? = nil
+        /// JSON-encoded workspace execution-environment default. Nil means host.
+        var activeExecutionEnvironmentJSON: String? = nil
         var lastUsedSkillNames: [String]?
         var enabledGlobalSkillIDs: [String]?
         var enabledGlobalConnectorIDs: [String]?
@@ -313,6 +315,7 @@ enum WorkspaceConfigManager {
         var skillIDs: [String]?
         var skillNames: [String]
         var skillSnapshots: [SkillSnapshotConfig]?
+        var executionEnvironmentSnapshotJSON: String?
     }
 
     struct RunConfig: Codable, Sendable {
@@ -326,6 +329,7 @@ enum WorkspaceConfigManager {
         var runtimeID: String?
         var providerSessionId: String?
         var providerVersion: String?
+        var executionEnvironmentSnapshotJSON: String?
         var exitCode: Int?
         var output: String
         var costUSD: Double
@@ -411,6 +415,7 @@ enum WorkspaceConfigManager {
             instructions: workspace.instructions,
             isStarred: workspace.isStarred ? true : nil,
             activeWorkingPath: workspace.activeWorkingPath,
+            activeExecutionEnvironmentJSON: workspace.activeExecutionEnvironmentJSON,
             lastUsedSkillNames: workspace.lastUsedSkillNames,
             enabledGlobalSkillIDs: workspace.enabledGlobalSkillIDs,
             enabledGlobalConnectorIDs: workspace.enabledGlobalConnectorIDs,
@@ -565,29 +570,41 @@ enum WorkspaceConfigManager {
 
     // MARK: - Import
 
-    static func loadConfig(from url: URL) throws -> WorkspaceConfig {
-        let data = try Data(contentsOf: url)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return try decoder.decode(WorkspaceConfig.self, from: data)
+    static func loadConfig(
+        from url: URL,
+        accessIntent: HostFileAccessIntent = .explicitUserSelection
+    ) throws -> WorkspaceConfig {
+        let data = try readConfigData(from: url, accessIntent: accessIntent)
+        return try workspaceConfigDecoder().decode(WorkspaceConfig.self, from: data)
     }
 
-    static func loadConfigResult(from url: URL) -> WorkspaceConfigLoadResult {
+    static func loadConfigResult(
+        from url: URL,
+        accessIntent: HostFileAccessIntent = .explicitUserSelection
+    ) -> WorkspaceConfigLoadResult {
         let data: Data
         do {
-            data = try Data(contentsOf: url)
+            data = try readConfigData(from: url, accessIntent: accessIntent)
         } catch {
             return loadResult(status: .unreadableFile, url: url, config: nil, error: error)
         }
 
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
         do {
-            let config = try decoder.decode(WorkspaceConfig.self, from: data)
+            let config = try workspaceConfigDecoder().decode(WorkspaceConfig.self, from: data)
             return loadResult(status: .loaded, url: url, config: config, error: nil)
         } catch {
             return loadResult(status: .decodeFailed, url: url, config: nil, error: error)
         }
+    }
+
+    private static func readConfigData(from url: URL, accessIntent: HostFileAccessIntent) throws -> Data {
+        try HostFileAccessBroker().readData(at: url, intent: accessIntent)
+    }
+
+    private static func workspaceConfigDecoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
     }
 
     /// Create a new Workspace + Skills + Connectors + Tools + Templates from a config.
@@ -614,6 +631,7 @@ enum WorkspaceConfigManager {
         workspace.enabledCapabilityIDs = config.enabledCapabilityIDs ?? []
         workspace.memories = config.memories ?? []
         workspace.isStarred = config.isStarred ?? false
+        workspace.activeExecutionEnvironmentJSON = sanitizedExecutionEnvironmentJSON(config.activeExecutionEnvironmentJSON)
         // Only restore the worktree focus when the worktree actually exists on
         // this machine; otherwise reset to root so new chats don't pin to a
         // path that isn't here.
@@ -983,6 +1001,7 @@ enum WorkspaceConfigManager {
                 runtimeID: run.runtimeID,
                 providerSessionId: run.providerSessionId,
                 providerVersion: run.providerVersion,
+                executionEnvironmentSnapshotJSON: run.executionEnvironmentSnapshotJSON,
                 exitCode: run.exitCode,
                 output: run.output,
                 costUSD: run.costUSD,
@@ -1046,7 +1065,8 @@ enum WorkspaceConfigManager {
             artifacts: task.artifacts.map(ArtifactConfig.init(artifact:)),
             skillIDs: task.skills.map { $0.id.uuidString },
             skillNames: task.skills.map(\.name),
-            skillSnapshots: snapshots
+            skillSnapshots: snapshots,
+            executionEnvironmentSnapshotJSON: sanitizedExecutionEnvironmentJSON(task.executionEnvironmentSnapshotJSON, preservingHost: true)
         )
     }
 
@@ -1060,6 +1080,13 @@ enum WorkspaceConfigManager {
             result.append(value)
         }
         return result
+    }
+
+    private static func sanitizedExecutionEnvironmentJSON(_ json: String?, preservingHost: Bool = false) -> String? {
+        let environment = ExecutionEnvironmentStore.decode(json)
+        return preservingHost
+            ? ExecutionEnvironmentStore.encodeSnapshot(environment)
+            : ExecutionEnvironmentStore.encode(environment)
     }
 
     // MARK: - Import Helpers
@@ -1499,6 +1526,10 @@ enum WorkspaceConfigManager {
         }
         task.templateHooksJSON = config.templateHooksJSON ?? ""
         task.skillSnapshots = config.skillSnapshots ?? []
+        task.executionEnvironmentSnapshotJSON = sanitizedExecutionEnvironmentJSON(
+            config.executionEnvironmentSnapshotJSON,
+            preservingHost: true
+        )
         modelContext.insert(task)
 
         linkSkills(
@@ -1534,6 +1565,10 @@ enum WorkspaceConfigManager {
             run.runtimeID = rc.runtimeID ?? task.runtimeID
             run.providerSessionId = rc.providerSessionId
             run.providerVersion = rc.providerVersion
+            run.executionEnvironmentSnapshotJSON = sanitizedExecutionEnvironmentJSON(
+                rc.executionEnvironmentSnapshotJSON,
+                preservingHost: true
+            )
             run.exitCode = rc.exitCode
             run.output = rc.output
             run.costUSD = rc.costUSD

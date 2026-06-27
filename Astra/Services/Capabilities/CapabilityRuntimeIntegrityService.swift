@@ -38,7 +38,8 @@ enum CapabilityRuntimeIntegrityService {
         checkExecutables: Bool = true,
         prerequisiteStatuses: [String: HealthStatus] = [:],
         policyContext: CapabilityCatalogPolicyContext? = nil,
-        scope requestedScope: TaskCapabilityResolutionScope = .fullInventory
+        scope requestedScope: TaskCapabilityResolutionScope = .fullInventory,
+        secretStore: SecretStore = KeychainSecretStore()
     ) -> [CapabilityRuntimeIntegrityIssue] {
         guard let workspace = task.workspace else { return [] }
 
@@ -50,6 +51,19 @@ enum CapabilityRuntimeIntegrityService {
         let resolvedConnectors = resolvedScope.connectors
         let resolvedTools = resolvedScope.localTools
         let enabledBrowserAdapters = Set(resolvedScope.enabledBrowserAdapters)
+        // Resource EXISTENCE is judged against the full workspace inventory (before
+        // focus-pruning), not the pruned launch scope. A workspace-enabled skill/
+        // tool/connector that exists but was pruned for focus is still reachable —
+        // the agent learns about it from the prompt's capability roster and can
+        // invoke it under the permission gate — so it must not be reported as
+        // "missing", which previously hard-failed the launch
+        // (capability_runtime_resources_missing). Genuinely absent instances and
+        // host problems (executable/auth/policy) below still surface only when
+        // their package has a concrete runtime resource in the provider launch
+        // scope.
+        let reachableSkills = resolver.allBehaviorSkills
+        let reachableConnectors = resolver.allConnectors
+        let reachableTools = resolver.allLocalTools
         let selectedSkillNames = liveSelectedPackageSkillNames(
             for: task,
             resolvedSkills: resolvedSkills,
@@ -97,13 +111,14 @@ enum CapabilityRuntimeIntegrityService {
             issues += resourceIssues(
                 package: package,
                 source: source,
-                resolvedSkills: resolvedSkills,
-                resolvedConnectors: resolvedConnectors,
+                reachableSkills: reachableSkills,
+                reachableConnectors: reachableConnectors,
                 availableConnectors: availableConnectors,
-                resolvedTools: resolvedTools,
+                reachableTools: reachableTools,
                 enabledBrowserAdapters: enabledBrowserAdapters,
                 prerequisiteStatuses: prerequisiteStatuses,
-                checkExecutables: checkExecutables
+                checkExecutables: checkExecutables,
+                secretStore: secretStore
             )
         }
         return issues
@@ -135,13 +150,14 @@ enum CapabilityRuntimeIntegrityService {
     private static func resourceIssues(
         package: PluginPackage,
         source: CapabilityRuntimeIntegrityIssue.Source,
-        resolvedSkills: [Skill],
-        resolvedConnectors: [Connector],
+        reachableSkills: [Skill],
+        reachableConnectors: [Connector],
         availableConnectors: [Connector],
-        resolvedTools: [LocalTool],
+        reachableTools: [LocalTool],
         enabledBrowserAdapters: Set<String>,
         prerequisiteStatuses: [String: HealthStatus],
-        checkExecutables: Bool
+        checkExecutables: Bool,
+        secretStore: SecretStore
     ) -> [CapabilityRuntimeIntegrityIssue] {
         var issues: [CapabilityRuntimeIntegrityIssue] = []
 
@@ -149,22 +165,22 @@ enum CapabilityRuntimeIntegrityService {
             for pluginSkill in package.skills where !isPackageSkillResolved(
                 pluginSkill,
                 package: package,
-                resolvedSkills: resolvedSkills,
-                resolvedConnectors: resolvedConnectors,
-                resolvedTools: resolvedTools
+                resolvedSkills: reachableSkills,
+                resolvedConnectors: reachableConnectors,
+                resolvedTools: reachableTools
             ) {
                 issues.append(issue(
                     package: package,
                     source: source,
                     kind: .skill,
                     name: pluginSkill.name,
-                    message: "skill \(pluginSkill.name) is not active for this task"
+                    message: "skill \(pluginSkill.name) is not installed for this workspace"
                 ))
             }
         }
 
         for pluginConnector in package.connectors {
-            let matches = resolvedConnectors.filter {
+            let matches = reachableConnectors.filter {
                 CapabilityRuntimeResourceMatcher.connectorMatches(pluginConnector, connector: $0)
             }
             if matches.isEmpty {
@@ -176,29 +192,38 @@ enum CapabilityRuntimeIntegrityService {
                     message: inactiveConnectorMessage(
                         for: pluginConnector,
                         availableConnectors: availableConnectors,
-                        resolvedConnectors: resolvedConnectors
+                        resolvedConnectors: reachableConnectors
                     )
                 ))
                 continue
             }
 
-            let hasUsableCredentialSet = matches.contains { connector in
-                connector.authMethod == "none" || connector.missingCredentialKeys().isEmpty
+            let credentialGaps = connectorCredentialGaps(
+                for: matches,
+                secretStore: secretStore
+            )
+            let hasUsableCredentialSet = matches.contains {
+                connectorHasUsableCredentials($0, secretStore: secretStore)
             }
             if !hasUsableCredentialSet {
-                let missing = Set(matches.flatMap { $0.missingCredentialKeys() }).sorted()
                 issues.append(issue(
                     package: package,
                     source: source,
                     kind: .credential,
-                    name: pluginConnector.name,
-                    message: "connector \(pluginConnector.name) is missing \(missing.joined(separator: ", "))"
+                    name: credentialIssueResourceName(
+                        pluginConnector: pluginConnector,
+                        gaps: credentialGaps
+                    ),
+                    message: credentialIssueMessage(
+                        pluginConnector: pluginConnector,
+                        gaps: credentialGaps
+                    )
                 ))
             }
         }
 
         for pluginTool in package.localTools {
-            let matches = resolvedTools.filter {
+            let matches = reachableTools.filter {
                 CapabilityRuntimeResourceMatcher.toolMatches(pluginTool, tool: $0)
             }
             if matches.isEmpty {
@@ -288,6 +313,117 @@ enum CapabilityRuntimeIntegrityService {
         }
 
         return issues
+    }
+
+    private struct ConnectorCredentialGap {
+        let connector: Connector
+        let missingKeys: [String]
+        let hasDeclaredKeys: Bool
+    }
+
+    private struct ConnectorCredentialRequirements {
+        let declaredKeys: [String]
+        let missingKeys: [String]
+    }
+
+    private static func connectorHasUsableCredentials(
+        _ connector: Connector,
+        secretStore: SecretStore
+    ) -> Bool {
+        guard connector.authMethod != "none" else { return true }
+        let requirements = connectorCredentialRequirements(for: connector, secretStore: secretStore)
+        guard !requirements.declaredKeys.isEmpty else { return false }
+        return requirements.missingKeys.isEmpty
+    }
+
+    private static func connectorCredentialGaps(
+        for connectors: [Connector],
+        secretStore: SecretStore
+    ) -> [ConnectorCredentialGap] {
+        connectors.compactMap { connector in
+            guard connector.authMethod != "none" else { return nil }
+            let requirements = connectorCredentialRequirements(for: connector, secretStore: secretStore)
+            guard !requirements.declaredKeys.isEmpty else {
+                return ConnectorCredentialGap(
+                    connector: connector,
+                    missingKeys: [],
+                    hasDeclaredKeys: false
+                )
+            }
+            guard !requirements.missingKeys.isEmpty else { return nil }
+            return ConnectorCredentialGap(
+                connector: connector,
+                missingKeys: requirements.missingKeys,
+                hasDeclaredKeys: true
+            )
+        }
+    }
+
+    private static func connectorCredentialRequirements(
+        for connector: Connector,
+        secretStore: SecretStore
+    ) -> ConnectorCredentialRequirements {
+        let declaredKeys = normalizedCredentialKeys(for: connector)
+        let entityIDs = KeychainSecretStore.connectorEntityIDs(for: connector)
+        let missingKeys = declaredKeys.filter { key in
+            !entityIDs.contains { entityID in
+                let value = secretStore.load(key: key, entityID: entityID)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return !value.isEmpty
+            }
+        }
+        return ConnectorCredentialRequirements(
+            declaredKeys: declaredKeys,
+            missingKeys: missingKeys
+        )
+    }
+
+    private static func normalizedCredentialKeys(for connector: Connector) -> [String] {
+        connector.credentialKeys
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private static func credentialIssueResourceName(
+        pluginConnector: PluginConnector,
+        gaps: [ConnectorCredentialGap]
+    ) -> String {
+        guard gaps.count == 1 else { return pluginConnector.name }
+        return connectorDisplayName(gaps[0].connector, fallback: pluginConnector.name)
+    }
+
+    private static func credentialIssueMessage(
+        pluginConnector: PluginConnector,
+        gaps: [ConnectorCredentialGap]
+    ) -> String {
+        guard !gaps.isEmpty else {
+            return "connector \(pluginConnector.name) is missing credentials"
+        }
+        if gaps.count == 1 {
+            let gap = gaps[0]
+            let name = connectorDisplayName(gap.connector, fallback: pluginConnector.name)
+            guard gap.hasDeclaredKeys else {
+                return "connector \(name) has no credentials configured"
+            }
+            return "connector \(name) is missing Keychain value: \(gap.missingKeys.joined(separator: ", "))"
+        }
+
+        let names = CapabilityAudit.compactNames(
+            gaps.map { connectorDisplayName($0.connector, fallback: pluginConnector.name) }
+        )
+        let missing = Set(gaps.flatMap(\.missingKeys)).sorted()
+        if missing.isEmpty {
+            return "matching connectors \(names) have no credentials configured"
+        }
+        return "matching connectors \(names) are missing Keychain values: \(missing.joined(separator: ", "))"
+    }
+
+    private static func connectorDisplayName(
+        _ connector: Connector,
+        fallback: String
+    ) -> String {
+        let name = connector.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? fallback : name
     }
 
     private static func resourceKind(
@@ -427,18 +563,14 @@ enum CapabilityRuntimeIntegrityService {
         task: AgentTask,
         contextText: String
     ) -> Bool {
-        let taskText = normalizedSearchText([
-            task.title,
-            task.goal,
-            task.inputs.joined(separator: " "),
-            task.constraints.joined(separator: " "),
-            task.acceptanceCriteria.joined(separator: " "),
-            contextText
-        ].joined(separator: " "))
+        let taskText = TaskContextStateManager.capabilitySearchText(
+            for: task,
+            contextText: contextText
+        )
         let taskTokens = searchTokens(taskText)
         guard !taskTokens.isEmpty else { return false }
 
-        let packageText = normalizedSearchText([
+        let packageText = [
             package.id,
             package.name,
             package.description,
@@ -449,16 +581,11 @@ enum CapabilityRuntimeIntegrityService {
             package.localTools.map { "\($0.name) \($0.command) \($0.description)" }.joined(separator: " "),
             package.mcpServers.map { "\($0.id) \($0.displayName) \($0.command ?? "") \($0.url?.absoluteString ?? "")" }.joined(separator: " "),
             package.browserAdapters.joined(separator: " ")
-        ].joined(separator: " "))
+        ].joined(separator: " ")
         let packageTokens = searchTokens(packageText)
         guard !packageTokens.isEmpty else { return false }
 
-        if !taskTokens.isDisjoint(with: packageTokens) {
-            return true
-        }
-        return packageTokens.contains { token in
-            token.count >= 4 && taskText.contains(token)
-        }
+        return !taskTokens.isDisjoint(with: packageTokens)
     }
 
     private static func searchTokens(_ text: String) -> Set<String> {
@@ -523,6 +650,7 @@ enum CapabilityRuntimeIntegrityService {
         "page",
         "plugin",
         "prototype",
+        "query",
         "resource",
         "resources",
         "service",

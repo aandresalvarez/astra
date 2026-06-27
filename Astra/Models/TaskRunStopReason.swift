@@ -23,7 +23,14 @@ struct TaskRunStopReason: RawRepresentable, Codable, Sendable, Hashable, Express
     static let capabilityRuntimeResourcesMissing: TaskRunStopReason = "capability_runtime_resources_missing"
     static let completed: TaskRunStopReason = "completed"
     static let connectorPreflightFailed: TaskRunStopReason = "connector_preflight_failed"
+    static let credentialProjectionRequired: TaskRunStopReason = "credential_projection_required"
     static let deliverableVerificationFailed: TaskRunStopReason = "deliverable_verification_failed"
+    static let dockerDaemonUnavailable: TaskRunStopReason = "docker_daemon_unavailable"
+    static let dockerContextUnapproved: TaskRunStopReason = "docker_context_unapproved"
+    static let dockerImageUnavailable: TaskRunStopReason = "docker_image_unavailable"
+    static let dockerLaunchFailed: TaskRunStopReason = "docker_launch_failed"
+    static let dockerMountFailed: TaskRunStopReason = "docker_mount_failed"
+    static let dockerProviderExecutableMissing: TaskRunStopReason = "docker_provider_executable_missing"
     static let failed: TaskRunStopReason = "failed"
     static let inferredValidationFailed: TaskRunStopReason = "inferred_validation_failed"
     static let isolationFailed: TaskRunStopReason = "isolation_failed"
@@ -35,6 +42,9 @@ struct TaskRunStopReason: RawRepresentable, Codable, Sendable, Hashable, Express
     static let policyViolation: TaskRunStopReason = "policy_violation"
     static let providerNoActionableProgress: TaskRunStopReason = "provider_no_actionable_progress"
     static let providerNoSemanticProgress: TaskRunStopReason = "provider_no_semantic_progress"
+    static let providerSemanticProgressStalled: TaskRunStopReason = "provider_semantic_progress_stalled"
+    static let providerActiveToolStalled: TaskRunStopReason = "provider_active_tool_stalled"
+    static let providerWorkspaceJobStalled: TaskRunStopReason = "provider_workspace_job_stalled"
     static let providerPermissionDeniedAfterApproval: TaskRunStopReason = "provider_permission_denied_after_approval"
     static let providerPermissionDeniedBroadPermissions: TaskRunStopReason = "provider_permission_denied_broad_permissions"
     static let providerPermissionUnresumable: TaskRunStopReason = "provider_permission_unresumable"
@@ -46,6 +56,10 @@ struct TaskRunStopReason: RawRepresentable, Codable, Sendable, Hashable, Express
 
     var isPolicyBlocked: Bool {
         rawValue.lowercased().contains("policy")
+    }
+
+    var isDockerRuntimeBlocked: Bool {
+        rawValue.lowercased().hasPrefix("docker_")
     }
 }
 

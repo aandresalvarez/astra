@@ -1,6 +1,7 @@
 import Testing
 import AppKit
 import SwiftUI
+import Darwin
 @testable import ASTRA
 import ASTRACore
 
@@ -12,14 +13,29 @@ extension TaskThreadSnapshotTests {
         let nested = root.appendingPathComponent("nested")
         let outputs = root.appendingPathComponent("outputs")
         let runtimeBin = root.appendingPathComponent(".runtime-bin")
+        let dockerClient = root
+            .appendingPathComponent(".runtime", isDirectory: true)
+            .appendingPathComponent("docker-client", isDirectory: true)
+            .appendingPathComponent("client-1", isDirectory: true)
+        let job = root
+            .appendingPathComponent("jobs", isDirectory: true)
+            .appendingPathComponent("job-1", isDirectory: true)
 
         try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: outputs, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: runtimeBin, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: dockerClient, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: job, withIntermediateDirectories: true)
         try "visible".write(to: root.appendingPathComponent("visible.txt"), atomically: true, encoding: .utf8)
+        try "# Plan".write(to: root.appendingPathComponent("plan.md"), atomically: true, encoding: .utf8)
+        try "# Guidelines".write(to: root.appendingPathComponent("guidelines.md"), atomically: true, encoding: .utf8)
         try "internal".write(to: root.appendingPathComponent("session_history.md"), atomically: true, encoding: .utf8)
         try "output".write(to: outputs.appendingPathComponent("result.txt"), atomically: true, encoding: .utf8)
         try "shim".write(to: runtimeBin.appendingPathComponent("astra-browser"), atomically: true, encoding: .utf8)
+        try "{}".write(to: dockerClient.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
+        for name in ["command.sh", "heartbeat.json", "job.json", "pid", "result.json", "stdout.log", "stderr.log", "timeout"] {
+            try "diagnostic".write(to: job.appendingPathComponent(name), atomically: true, encoding: .utf8)
+        }
         try "nested".write(to: nested.appendingPathComponent("session_history.md"), atomically: true, encoding: .utf8)
 
         defer { try? FileManager.default.removeItem(at: root) }
@@ -27,10 +43,14 @@ extension TaskThreadSnapshotTests {
         let paths = Set(TaskGeneratedFiles.files(in: root.path))
 
         #expect(paths.contains(root.appendingPathComponent("visible.txt").path))
+        #expect(paths.contains(root.appendingPathComponent("plan.md").path))
+        #expect(paths.contains(root.appendingPathComponent("guidelines.md").path))
         #expect(paths.contains(nested.appendingPathComponent("session_history.md").path))
         #expect(!paths.contains(root.appendingPathComponent("session_history.md").path))
         #expect(!paths.contains(outputs.appendingPathComponent("result.txt").path))
         #expect(!paths.contains(runtimeBin.appendingPathComponent("astra-browser").path))
+        #expect(!paths.contains(dockerClient.appendingPathComponent("config.json").path))
+        #expect(!paths.contains(job.appendingPathComponent("stdout.log").path))
     }
 
     @Test("Generated file scan can run asynchronously")
@@ -54,10 +74,14 @@ extension TaskThreadSnapshotTests {
 
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: root.appendingPathComponent(".runtime-bin"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".runtime/docker-client/client-1"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("jobs/job-1"), withIntermediateDirectories: true)
         try "# Summary".write(to: root.appendingPathComponent("summary.md"), atomically: true, encoding: .utf8)
         try "<h1>Preview</h1>".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
         try "select 1".write(to: root.appendingPathComponent("query.sql"), atomically: true, encoding: .utf8)
         try "shim".write(to: root.appendingPathComponent(".runtime-bin/astra-browser"), atomically: true, encoding: .utf8)
+        try "{}".write(to: root.appendingPathComponent(".runtime/docker-client/client-1/config.json"), atomically: true, encoding: .utf8)
+        try "out".write(to: root.appendingPathComponent("jobs/job-1/stdout.log"), atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: root) }
 
         let files = TaskFileIndex.scanTaskFolder(root.path)
@@ -67,6 +91,125 @@ extension TaskThreadSnapshotTests {
         #expect(destinations["index.html"] == .browser)
         #expect(destinations["query.sql"] == .query)
         #expect(!files.contains { $0.path.hasSuffix(".runtime-bin/astra-browser") })
+        #expect(!files.contains { $0.path.hasSuffix(".runtime/docker-client/client-1/config.json") })
+        #expect(!files.contains { $0.path.hasSuffix("jobs/job-1/stdout.log") })
+    }
+
+    @Test("Task file header count excludes task-folder diagnostics")
+    func taskFileHeaderCountExcludesTaskFolderDiagnostics() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-task-file-header-\(UUID().uuidString)")
+        let report = root.appendingPathComponent("status_report.md")
+        let config = root.appendingPathComponent(".runtime/docker-client/client-1/config.json")
+        let stdout = root.appendingPathComponent("jobs/job-1/stdout.log")
+
+        try FileManager.default.createDirectory(at: config.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: stdout.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "# Status".write(to: report, atomically: true, encoding: .utf8)
+        try "{}".write(to: config, atomically: true, encoding: .utf8)
+        try "log".write(to: stdout, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let run = TaskRunSnapshot(input: TaskRunSnapshotInput(run: {
+            let task = makeTask()
+            let run = TaskRun(task: task)
+            run.appendFileChange(StoredFileChange(from: FileChange(
+                path: report.path,
+                changeType: .write,
+                content: nil,
+                oldString: nil,
+                newString: nil,
+                timestamp: Date()
+            )))
+            run.appendFileChange(StoredFileChange(from: FileChange(
+                path: config.path,
+                changeType: .write,
+                content: nil,
+                oldString: nil,
+                newString: nil,
+                timestamp: Date()
+            )))
+            run.appendFileChange(StoredFileChange(from: FileChange(
+                path: stdout.path,
+                changeType: .write,
+                content: nil,
+                oldString: nil,
+                newString: nil,
+                timestamp: Date()
+            )))
+            return run
+        }()))
+
+        let items = TaskFileIndex.headerItems(
+            runs: [run],
+            generatedFilePaths: [],
+            inputs: [],
+            taskFolder: root.path
+        )
+
+        #expect(items.map(\.path) == [report.path])
+    }
+
+    @Test("Diagnostics index groups hidden runtime files")
+    func diagnosticsIndexGroupsHiddenRuntimeFiles() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-diagnostics-index-\(UUID().uuidString)")
+        let config = root.appendingPathComponent(".runtime/docker-client/client-1/config.json")
+        let stdout = root.appendingPathComponent("jobs/job-1/stdout.log")
+        let state = root.appendingPathComponent("current_state.json")
+        let plan = root.appendingPathComponent("plan.md")
+
+        try FileManager.default.createDirectory(at: config.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: stdout.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "{}".write(to: config, atomically: true, encoding: .utf8)
+        try "log".write(to: stdout, atomically: true, encoding: .utf8)
+        try "{}".write(to: state, atomically: true, encoding: .utf8)
+        try "# Plan".write(to: plan, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let groups = TaskDiagnosticsIndex.groups(in: root.path)
+        let diagnosticPaths = Set(groups.flatMap(\.items).map(\.relativePath))
+
+        #expect(diagnosticPaths.contains(".runtime/docker-client/client-1/config.json"))
+        #expect(diagnosticPaths.contains("jobs/job-1/stdout.log"))
+        #expect(diagnosticPaths.contains("current_state.json"))
+        #expect(!diagnosticPaths.contains("plan.md"))
+        #expect(groups.contains { $0.group == .runtimeEnvironment })
+        #expect(groups.contains { $0.group == .jobLogs })
+        #expect(groups.contains { $0.group == .runs })
+    }
+
+    @Test("Task file index ignores non-regular entries")
+    func taskFileIndexIgnoresNonRegularEntries() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-task-file-index-nonregular-\(UUID().uuidString)")
+        let pipe = root.appendingPathComponent("stream.md")
+
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        #expect(mkfifo(pipe.path, S_IRUSR | S_IWUSR) == 0)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let files = TaskFileIndex.scanTaskFolder(root.path)
+
+        #expect(!files.contains { $0.path == pipe.path })
+    }
+
+    @Test("Task detail artifact scan ignores non-regular entries")
+    func taskDetailArtifactScanIgnoresNonRegularEntries() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-task-detail-artifacts-nonregular-\(UUID().uuidString)")
+        let report = root.appendingPathComponent("report.md")
+        let pipe = root.appendingPathComponent("stream.md")
+
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try "# Report".write(to: report, atomically: true, encoding: .utf8)
+        #expect(mkfifo(pipe.path, S_IRUSR | S_IWUSR) == 0)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let files = TaskDetailArtifactScanner.scanTaskFolder(root.path)
+
+        #expect(files.contains { $0.path == report.path })
+        #expect(!files.contains { $0.path == pipe.path })
     }
 
     @Test("Task file index merges visible files without duplicates")
@@ -514,6 +657,42 @@ extension TaskThreadSnapshotTests {
         #expect(hiddenPaths.contains(".claude/settings.json"))
         #expect(!hiddenPaths.contains(".astra/tasks"))
         #expect(!hiddenPaths.contains(".astra/tasks/ABC12345/current_state.md"))
+    }
+
+    @Test("Workspace file scan skips privacy-sensitive user media folders")
+    func workspaceFileScanSkipsPrivacySensitiveUserMediaFolders() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-workspace-privacy-folders-\(UUID().uuidString)")
+        let sources = root.appendingPathComponent("Sources", isDirectory: true)
+        let pictures = root.appendingPathComponent("Pictures", isDirectory: true)
+        let music = root.appendingPathComponent("Music", isDirectory: true)
+
+        try FileManager.default.createDirectory(at: sources, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: pictures, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: music, withIntermediateDirectories: true)
+        try "swift".write(to: sources.appendingPathComponent("App.swift"), atomically: true, encoding: .utf8)
+        try "photo-metadata".write(to: pictures.appendingPathComponent("library.txt"), atomically: true, encoding: .utf8)
+        try "music-metadata".write(to: music.appendingPathComponent("library.txt"), atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let rootModel = WorkspaceFileRoot(
+            id: "primary:\(root.standardizedFileURL.path)",
+            kind: .primary,
+            title: "Primary",
+            path: root.standardizedFileURL.path,
+            isDirectory: true
+        )
+
+        let paths = Set(WorkspaceFileIndexService.scanSync(
+            roots: [rootModel],
+            privacyHomeDirectory: root
+        ).nodes.map(\.relativePath))
+
+        #expect(paths.contains("Sources/App.swift"))
+        #expect(!paths.contains("Pictures"))
+        #expect(!paths.contains("Pictures/library.txt"))
+        #expect(!paths.contains("Music"))
+        #expect(!paths.contains("Music/library.txt"))
     }
 
     @Test("Workspace file scan hides task folder runtime documents")

@@ -19,6 +19,26 @@ struct LogDiagnosticsTests {
         #expect(report.markdown.contains("No actionable issue signals were found"))
     }
 
+    @Test("Remote workspace preflight is retained as diagnostic context")
+    func remoteWorkspacePreflightNotice() {
+        let taskID = UUID(uuidString: "56D6BA0F-AF57-4D33-855F-D90F84642CA5")!
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .info,
+                category: "Worker",
+                message: "remote_workspace.preflight source=remote_workspace_preflight result=ssh_connections_detected runtime=copilot_cli app_git_commit=83768b3a1234 workspace_id=pcornet ssh_config_alias_count=1",
+                taskID: taskID
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 0))
+
+        #expect(report.issueCount == 0)
+        #expect(report.notices.count == 1)
+        #expect(report.notices.first?.title == "Remote workspace preflight was recorded")
+        #expect(report.markdown.contains("remote_workspace.preflight"))
+        #expect(report.markdown.contains("56D6BA0F"))
+        #expect(report.markdown.contains("SSH-aware launch path"))
+    }
+
     @Test("Report groups runtime failure diagnostics and redacts evidence")
     func runtimeFailureReport() {
         let taskID = UUID(uuidString: "437BF453-D7D2-48AC-B316-971AF314ADB4")!
@@ -135,6 +155,7 @@ struct LogDiagnosticsTests {
         try extractZip(archive.url, to: extractDirectory)
         let bundleRoot = extractDirectory.appendingPathComponent(archive.url.deletingPathExtension().lastPathComponent, isDirectory: true)
         let manifest = try String(contentsOf: bundleRoot.appendingPathComponent("manifest.json"), encoding: .utf8)
+        let readme = try String(contentsOf: bundleRoot.appendingPathComponent("README.txt"), encoding: .utf8)
         let analyzedLog = try String(
             contentsOf: bundleRoot.appendingPathComponent("logs/analyzed-log-entries.jsonl"),
             encoding: .utf8
@@ -148,6 +169,12 @@ struct LogDiagnosticsTests {
         #expect(FileManager.default.fileExists(atPath: bundleRoot.appendingPathComponent("logs/last-actions.jsonl").path))
         #expect(FileManager.default.fileExists(atPath: bundleRoot.appendingPathComponent("crashes/ASTRA Dev-2023-11-14-120000.ips").path))
         #expect(manifest.contains("browser_flight_logs_when_present"))
+        #expect(manifest.contains("macos_crash_reports_when_present"))
+        #expect(manifest.contains("macos_crash_hang_reports_when_present"))
+        #expect(manifest.contains("macos_diagnostic_reports_when_present"))
+        #expect(manifest.contains(#""kind" : "crash""#))
+        #expect(readme.contains("*.ips, *.crash, *.hang, or *.spin"))
+        #expect(readme.contains("macOS diagnostic reports"))
         #expect(analyzedLog.contains("app.started"))
         #expect(!analyzedLog.contains("stale.failure"))
     }
@@ -190,15 +217,132 @@ struct LogDiagnosticsTests {
         #expect(reports.allSatisfy { $0.sizeBytes > 0 })
     }
 
-    @Test("Report includes crash report retrieval details")
-    func reportIncludesCrashReports() {
+    @Test("Diagnostic report locator classifies hang and crash reports")
+    func diagnosticReportLocatorClassifiesHangAndCrashReports() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-diagnostic-report-kinds-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let hang = directory.appendingPathComponent("ASTRA Dev-2023-11-14-120000.ips")
+        let crash = directory.appendingPathComponent("ASTRA Dev-2023-11-14-115900.ips")
+        let legacyCrash = directory.appendingPathComponent("ASTRA Dev-2023-11-14-115800.crash")
+        let hangExtension = directory.appendingPathComponent("ASTRA Dev-2023-11-14-115700.hang")
+        let spinExtension = directory.appendingPathComponent("ASTRA Dev-2023-11-14-115600.spin")
+        let crashAfterUnknownEvent = directory.appendingPathComponent("ASTRA Dev-2023-11-14-115500.ips")
+
+        try """
+        {"app_name":"ASTRA Dev","timestamp":"2023-11-14 12:00:00.00 -0500"}
+        Event: hang
+        Duration: 1.35s
+        """.write(to: hang, atomically: true, encoding: .utf8)
+        try """
+        {"app_name":"ASTRA Dev","timestamp":"2023-11-14 11:59:00.00 -0500","bug_type":"309"}
+        {
+          "exception" : { "type" : "EXC_CRASH", "signal" : "SIGABRT" },
+          "termination" : { "namespace" : "SIGNAL", "code" : 6 }
+        }
+        """.write(to: crash, atomically: true, encoding: .utf8)
+        try """
+        Process: ASTRA Dev [12345]
+        Exception Type: EXC_CRASH (SIGABRT)
+        """.write(to: legacyCrash, atomically: true, encoding: .utf8)
+        try Data().write(to: hangExtension)
+        try Data().write(to: spinExtension)
+        try """
+        {"app_name":"ASTRA Dev","timestamp":"2023-11-14 11:55:00.00 -0500","bug_type":"309"}
+        Event: process-exit
+        {
+          "exception" : { "type" : "EXC_CRASH", "signal" : "SIGABRT" }
+        }
+        """.write(to: crashAfterUnknownEvent, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-60)], ofItemAtPath: hang.path)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-120)], ofItemAtPath: crash.path)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-180)], ofItemAtPath: legacyCrash.path)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-240)], ofItemAtPath: hangExtension.path)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-300)], ofItemAtPath: spinExtension.path)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-360)], ofItemAtPath: crashAfterUnknownEvent.path)
+
+        let reports = CrashDiagnosticsService.recentReports(
+            limit: 10,
+            withinDays: 30,
+            prefixes: ["ASTRA Dev"],
+            searchDirectories: [directory],
+            now: now
+        )
+
+        #expect(reports.map(\.fileName) == [
+            "ASTRA Dev-2023-11-14-120000.ips",
+            "ASTRA Dev-2023-11-14-115900.ips",
+            "ASTRA Dev-2023-11-14-115800.crash",
+            "ASTRA Dev-2023-11-14-115700.hang",
+            "ASTRA Dev-2023-11-14-115600.spin",
+            "ASTRA Dev-2023-11-14-115500.ips"
+        ])
+        #expect(reports.map(\.kind) == [.hang, .crash, .crash, .hang, .spin, .crash])
+    }
+
+    @Test("Diagnostic report locator classifies only selected limited reports")
+    func diagnosticReportLocatorClassifiesOnlySelectedLimitedReports() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-diagnostic-report-limit-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let newest = directory.appendingPathComponent("ASTRA Dev-2023-11-14-120000.ips")
+        let middle = directory.appendingPathComponent("ASTRA Dev-2023-11-14-115900.ips")
+        let oldest = directory.appendingPathComponent("ASTRA Dev-2023-11-14-115800.ips")
+
+        for file in [newest, middle, oldest] {
+            try #"{"app_name":"ASTRA Dev"}"#.write(to: file, atomically: true, encoding: .utf8)
+        }
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-60)], ofItemAtPath: newest.path)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-120)], ofItemAtPath: middle.path)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-180)], ofItemAtPath: oldest.path)
+
+        var classifiedFileNames: [String] = []
+        let reports = CrashDiagnosticsService.reports(
+            limit: 2,
+            modifiedIn: nil,
+            prefixes: ["ASTRA Dev"],
+            searchDirectories: [directory],
+            kindForReport: { url in
+                classifiedFileNames.append(url.lastPathComponent)
+                return .unknown
+            }
+        )
+
+        #expect(reports.map(\.fileName) == [
+            "ASTRA Dev-2023-11-14-120000.ips",
+            "ASTRA Dev-2023-11-14-115900.ips"
+        ])
+        #expect(classifiedFileNames == [
+            "ASTRA Dev-2023-11-14-120000.ips",
+            "ASTRA Dev-2023-11-14-115900.ips"
+        ])
+    }
+
+    @Test("Report includes crash and hang report retrieval details")
+    func reportIncludesCrashAndHangReports() {
         let crashURL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs/DiagnosticReports/ASTRA Dev-2023-11-14-120000.ips")
+        let hangURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/DiagnosticReports/ASTRA Dev-2023-11-14-121500.ips")
         let crash = CrashReportSummary(
             url: crashURL,
             appName: "ASTRA Dev",
             modifiedAt: Date(timeIntervalSince1970: 1_700_000_000),
-            sizeBytes: 42_000
+            sizeBytes: 42_000,
+            kind: .crash
+        )
+        let hang = CrashReportSummary(
+            url: hangURL,
+            appName: "ASTRA Dev",
+            modifiedAt: Date(timeIntervalSince1970: 1_700_000_900),
+            sizeBytes: 12_000,
+            kind: .hang
         )
 
         let report = LogDiagnosticsService.makeReport(
@@ -206,14 +350,18 @@ struct LogDiagnosticsTests {
                 LogEntry(level: .info, category: "App", message: "app.started channel=dev")
             ],
             generatedAt: Date(timeIntervalSince1970: 1_700_000_100),
-            crashReports: [crash]
+            crashReports: [hang, crash]
         )
 
-        #expect(report.crashReports == [crash])
-        #expect(report.markdown.contains("## Crash Reports"))
+        #expect(report.crashReports == [hang, crash])
+        #expect(report.markdown.contains("- Diagnostic reports found: 2"))
+        #expect(!report.markdown.contains("Crash / hang reports found"))
+        #expect(report.markdown.contains("## Diagnostic Reports"))
+        #expect(report.markdown.contains("Hang report: `ASTRA Dev-2023-11-14-121500.ips`"))
+        #expect(report.markdown.contains("Crash report: `ASTRA Dev-2023-11-14-120000.ips`"))
         #expect(report.markdown.contains("ASTRA Dev-2023-11-14-120000.ips"))
         #expect(report.markdown.contains("$HOME/Library/Logs/DiagnosticReports"))
-        #expect(report.markdown.contains("Crashes button"))
+        #expect(report.markdown.contains("Diagnostic Reports button"))
     }
 
     @Test("Collects persisted app and task log entries")
@@ -523,6 +671,40 @@ struct LogDiagnosticsTests {
         #expect(report.markdown.contains("workspace_enabled_capabilities_count=1"))
     }
 
+    @Test("Pruned capability scopes are not reported as missing capability context")
+    func prunedCapabilityScopesAreNotReportedAsMissingCapabilityContext() {
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .debug,
+                category: "Worker",
+                message: "capability.chat_context source=connector_preflight_candidates capability_scope=provider_launch scope_pruned=true scope_excluded_skill_names=GitHub Agent workspace_enabled_capabilities_count=1 workspace_enabled_global_skills_count=1 workspace_enabled_global_connectors_count=0 workspace_enabled_global_tools_count=0 selected_skill_count=0 resolved_skill_count=0 task_skill_count=0 connector_count=0 local_tool_count=0"
+            ),
+            LogEntry(
+                level: .debug,
+                category: "Worker",
+                message: "capability.resolved capability_scope=provider_launch scope_pruned=true scope_excluded_skill_names=GitHub Agent workspace_enabled_capabilities_count=1 workspace_enabled_global_skills_count=1 workspace_enabled_global_connectors_count=0 workspace_enabled_global_tools_count=0 resolved_skill_count=0 connector_count=0 local_tool_count=0"
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 0))
+
+        #expect(!report.issues.contains { $0.title == "Chat had no active capability context" })
+        #expect(!report.issues.contains { $0.title == "Task resolved no capability resources" })
+        #expect(report.notices.contains { $0.title == "Chat capability context was captured" })
+        #expect(report.notices.contains { $0.title == "Task capability context was resolved" })
+    }
+
+    @Test("Unpruned capability resolution gap is reported")
+    func unprunedCapabilityResolutionGapIsReported() {
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .debug,
+                category: "Worker",
+                message: "capability.resolved capability_scope=provider_launch scope_pruned=false scope_excluded_skill_names=none workspace_enabled_capabilities_count=1 workspace_enabled_global_skills_count=1 workspace_enabled_global_connectors_count=0 workspace_enabled_global_tools_count=0 resolved_skill_count=0 connector_count=0 local_tool_count=0"
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 0))
+
+        #expect(report.issues.contains { $0.title == "Task resolved no capability resources" })
+    }
+
     @Test("Successful capability interactions are retained as notices")
     func successfulCapabilityInteractionsAreRetainedAsNotices() {
         let report = LogDiagnosticsService.makeReport(entries: [
@@ -589,6 +771,79 @@ struct LogDiagnosticsTests {
 
         #expect(report.issues.contains { $0.title == "Capability runtime resources are missing" })
         #expect(report.markdown.contains("capability.runtime_integrity result=missing_resources"))
+    }
+
+    @Test("Optional browser behavior validation failure is non-actionable when assertion is skipped")
+    func optionalBrowserBehaviorValidationFailureIsNonActionableWhenAssertionIsSkipped() {
+        let planID = "52E2B9EE-258F-43A2-88B4-D1A4447D2E1E"
+        let assertionID = "browser-3-index-html"
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .warning,
+                category: "Validation",
+                message: "validation.behavior.failed action_count=0 assertion_id=\(assertionID) evidence_path=/tmp/evidence.md failure_reason=expected_text_missing path=/tmp/index.html plan_id=\(planID) screenshot_path=none url=file:///tmp/index.html",
+                timestamp: Date(timeIntervalSince1970: 1_000)
+            ),
+            LogEntry(
+                level: .info,
+                category: "Validation",
+                message: "validation.assertion.skipped assertion_id=\(assertionID) assertion_method=browser_behavior assertion_scope=plan exit_code=none failure_reason=expected_text_missing path=/tmp/index.html plan_id=\(planID) required=false result=skipped run_id=RUN",
+                timestamp: Date(timeIntervalSince1970: 1_001)
+            ),
+            LogEntry(
+                level: .info,
+                category: "Validation",
+                message: "validation.contract.passed failed_required= plan_id=\(planID) required_passed=1 required_total=1 run_id=RUN",
+                timestamp: Date(timeIntervalSince1970: 1_002)
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 1_100))
+
+        #expect(report.issueCount == 0)
+        #expect(report.notices.contains { $0.title == "Optional browser behavior validation was skipped" })
+        #expect(!report.markdown.contains("Application warning"))
+    }
+
+    @Test("Required browser behavior validation failure is reported specifically")
+    func requiredBrowserBehaviorValidationFailureIsReportedSpecifically() {
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .warning,
+                category: "Validation",
+                message: "validation.behavior.failed action_count=0 assertion_id=browser-required evidence_path=/tmp/evidence.md failure_reason=expected_text_missing path=/tmp/index.html plan_id=PLAN screenshot_path=none url=file:///tmp/index.html",
+                timestamp: Date(timeIntervalSince1970: 1_000)
+            ),
+            LogEntry(
+                level: .warning,
+                category: "Validation",
+                message: "validation.assertion.failed assertion_id=browser-required assertion_method=browser_behavior assertion_scope=plan exit_code=none failure_reason=expected_text_missing path=/tmp/index.html plan_id=PLAN required=true result=failed run_id=RUN",
+                timestamp: Date(timeIntervalSince1970: 1_001)
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 1_100))
+
+        #expect(report.issues.contains { $0.title == "Browser behavior validation failed" })
+        #expect(!report.markdown.contains("Application warning"))
+    }
+
+    @Test("Browser behavior failure remains actionable when skip outcome is not optional")
+    func browserBehaviorFailureRemainsActionableWhenSkipOutcomeIsNotOptional() {
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .warning,
+                category: "Validation",
+                message: "validation.behavior.failed action_count=0 assertion_id=browser-required evidence_path=/tmp/evidence.md failure_reason=expected_text_missing path=/tmp/index.html plan_id=PLAN screenshot_path=none url=file:///tmp/index.html",
+                timestamp: Date(timeIntervalSince1970: 1_000)
+            ),
+            LogEntry(
+                level: .info,
+                category: "Validation",
+                message: "validation.assertion.skipped assertion_id=browser-required assertion_method=browser_behavior assertion_scope=plan exit_code=none failure_reason=expected_text_missing path=/tmp/index.html plan_id=PLAN required=true result=skipped run_id=RUN",
+                timestamp: Date(timeIntervalSince1970: 1_001)
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 1_100))
+
+        #expect(report.issues.contains { $0.title == "Browser behavior validation failed" })
+        #expect(!report.notices.contains { $0.title == "Optional browser behavior validation was skipped" })
+        #expect(!report.markdown.contains("Application warning"))
     }
 
     @Test("Trace IDs group capability and connector attempts")

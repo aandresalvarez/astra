@@ -3,6 +3,7 @@ import SwiftData
 
 struct TaskSidebarContainerView: View {
     @Query(sort: \AgentTask.queuePosition) private var tasks: [AgentTask]
+    @Query(sort: \WorkspaceApp.name) private var workspaceApps: [WorkspaceApp]
 
     @Binding var selectedTask: AgentTask?
     let taskQueue: TaskQueue
@@ -23,6 +24,9 @@ struct TaskSidebarContainerView: View {
     var onRenameWorkspace: ((Workspace) -> Void)?
     var onNewSchedule: (() -> Void)?
     var onEditSchedule: ((TaskSchedule) -> Void)?
+    var onNewApp: (() -> Void)?
+    var onOpenWorkspaceApp: ((WorkspaceApp) -> Void)?
+    var selectedWorkspaceApp: WorkspaceApp?
 
     var body: some View {
         TaskSidebarView(
@@ -45,7 +49,11 @@ struct TaskSidebarContainerView: View {
             onDeleteWorkspace: onDeleteWorkspace,
             onRenameWorkspace: onRenameWorkspace,
             onNewSchedule: onNewSchedule,
-            onEditSchedule: onEditSchedule
+            onEditSchedule: onEditSchedule,
+            onNewApp: onNewApp,
+            workspaceApps: workspaceApps,
+            onOpenWorkspaceApp: onOpenWorkspaceApp,
+            selectedWorkspaceApp: selectedWorkspaceApp
         )
     }
 }
@@ -243,23 +251,6 @@ private struct SidebarTopToolbar: View {
     }
 }
 
-enum SidebarTaskIndexInvalidation {
-    static func signature(for tasks: [AgentTask]) -> Int {
-        tasks.reduce(into: 0) { acc, task in
-            acc ^= task.id.hashValue
-            acc ^= task.workspace?.id.hashValue ?? 0
-            acc ^= task.title.hashValue
-            acc ^= task.goal.hashValue
-            acc ^= task.status.rawValue.hashValue
-            acc ^= task.isPinned ? 1 : 0
-            acc ^= task.isDone ? 2 : 0
-            acc ^= task.shouldShowUnread ? 4 : 0
-            acc &+= Int(task.updatedAt.timeIntervalSince1970)
-            acc &+= Int(task.unreadAt?.timeIntervalSince1970 ?? 0)
-        }
-    }
-}
-
 enum SidebarWorkspaceTaskList {
     static let collapsedLimit = 6
 
@@ -293,6 +284,12 @@ struct TaskSidebarView: View {
     var onRenameWorkspace: ((Workspace) -> Void)?
     var onNewSchedule: (() -> Void)?
     var onEditSchedule: ((TaskSchedule) -> Void)?
+    var onNewApp: (() -> Void)?
+    /// The workspace's published apps, surfaced inline under each workspace alongside
+    /// its chats. Empty (and the rows are suppressed) when no open handler is wired.
+    var workspaceApps: [WorkspaceApp] = []
+    var onOpenWorkspaceApp: ((WorkspaceApp) -> Void)?
+    var selectedWorkspaceApp: WorkspaceApp?
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -344,7 +341,7 @@ struct TaskSidebarView: View {
     // Lightweight fingerprint of task fields that the sidebar index cares about.
     // Avoids rebuilding the index when unrelated fields (output, tokens) change.
     private var sidebarTasksVersion: Int {
-        SidebarTaskIndexInvalidation.signature(for: tasks)
+        SidebarTaskIndexInvalidation.signature(for: tasks, searchText: searchText)
     }
 
     private var schedulesVersion: Int {
@@ -392,17 +389,22 @@ struct TaskSidebarView: View {
                 .popover(isPresented: newTaskNudgePresentation, arrowEdge: .leading) {
                     NewTaskNudgePopover(onDismiss: dismissNewTaskNudge)
                 }
+
+                if let onNewApp {
+                    Button(action: onNewApp) {
+                        Label("New App", systemImage: "square.grid.2x2")
+                            .font(Stanford.ui(13, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
+                    .help("Create a Workspace App in App Studio (⌘⇧A)")
+                }
             }
 
-            // Was `List { ... }.listStyle(.sidebar)`. Switched to a
-            // ScrollView + LazyVStack because List on macOS is backed by
-            // NSTableView, which manages its own row insertion/removal
-            // animations and ignores SwiftUI `.transition` modifiers on
-            // its rows. That made the workspace expand/collapse animation
-            // impossible to drive through SwiftUI — tasks snapped in even
-            // inside `withAnimation`. With a plain LazyVStack the tasks
-            // are regular SwiftUI views again, transitions fire, and the
-            // workspace row stays put while children animate.
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     pinnedSection(using: taskIndex)
@@ -412,6 +414,8 @@ struct TaskSidebarView: View {
                 }
                 .padding(.bottom, 12)
             }
+
+            appAccessFooter
         }
         .onAppear {
             loadSidebarDisclosure()
@@ -452,6 +456,17 @@ struct TaskSidebarView: View {
         } message: {
             Text("Enter a new name for this task.")
         }
+    }
+
+    private var appAccessFooter: some View {
+        VStack(spacing: 0) {
+            Divider()
+                .opacity(0.35)
+            AppAccessMenu()
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+        }
+        .accessibilityIdentifier("AppAccessSidebarFooter")
     }
 
     // MARK: - Pinned Section
@@ -901,17 +916,32 @@ struct TaskSidebarView: View {
     // MARK: - Workspace Section
 
     private func visibleWorkspaces(using taskIndex: SidebarTaskIndex) -> [Workspace] {
-        WorkspaceSidebarFilter.visibleWorkspaces(
-            workspaces,
-            showStarredOnly: showStarredWorkspacesOnly,
-            searchText: searchText,
-            workspaceMatchesSearch: workspaceMatchesSearch
-        ) { workspace in
-            taskIndex.reviewTasks(
-                for: workspace,
-                matchingSearch: true,
-                workspaceMatchesSearch: false
-            ).isEmpty == false
+        PerformanceTelemetry.measure(
+            "sidebar_visible_workspaces",
+            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            fields: [
+                "task_count": PerformanceTelemetryFields.count(tasks.count),
+                "workspace_count": PerformanceTelemetryFields.count(workspaces.count),
+                "search_active": PerformanceTelemetryFields.bool(!searchText.isEmpty)
+            ],
+            resultFields: { visibleWorkspaces in
+                [
+                    "visible_workspace_count": PerformanceTelemetryFields.count(visibleWorkspaces.count)
+                ]
+            }
+        ) {
+            WorkspaceSidebarFilter.visibleWorkspaces(
+                workspaces,
+                showStarredOnly: showStarredWorkspacesOnly,
+                searchText: searchText,
+                workspaceMatchesSearch: workspaceMatchesSearch
+            ) { workspace in
+                taskIndex.reviewTasks(
+                    for: workspace,
+                    matchingSearch: true,
+                    workspaceMatchesSearch: false
+                ).isEmpty == false || workspaceHasMatchingApp(workspace)
+            }
         }
     }
 
@@ -1043,15 +1073,28 @@ struct TaskSidebarView: View {
             totalTasks: workspaceTasks.count,
             visibleTasks: visibleTasks.count
         )
+        let workspaceAppRows = appsForWorkspace(workspace)
+        let showGroupLabels = !workspaceAppRows.isEmpty && hasTasks  // label groups only when both exist
 
         VStack(spacing: 0) {
             workspaceRow(for: workspace, using: taskIndex)
 
             if isExpanded {
                 VStack(alignment: .leading, spacing: 2) {
-                    if !hasTasks && !hasAny {
+                    // Apps sit atop the drawer, above the collapsible chat list, so they never hide behind "Show more".
+                    if showGroupLabels { SidebarGroupLabel(text: "Apps") }
+                    ForEach(workspaceAppRows) { app in
+                        SidebarWorkspaceAppRow(
+                            app: app,
+                            isSelected: selectedWorkspaceApp?.id == app.id,
+                            contentLeadingPadding: SidebarLeanPresentation.childTaskContentLeadingPadding,
+                            onOpen: { onOpenWorkspaceApp?(app) }
+                        )
+                    }
+                    if !hasTasks && !hasAny && workspaceAppRows.isEmpty {
                         emptyWorkspaceRow(for: workspace)
                     } else if hasTasks {
+                        if showGroupLabels { SidebarGroupLabel(text: "Tasks") }
                         ForEach(visibleTasks) { task in
                             compactTaskRow(
                                 for: task,
@@ -1292,31 +1335,23 @@ struct TaskSidebarView: View {
         persistSidebarDisclosure()
     }
 
-    // Persist section and per-workspace expand/collapse choices so the sidebar
-    // reopens the way the user left it. Momentary state (drops, rename, nudge)
-    // stays ephemeral. UserDefaults-backed, not @AppStorage (fitness ratchet).
     private func loadSidebarDisclosure() {
-        let defaults = UserDefaults.standard
-        if defaults.object(forKey: "taskSidebar.pinnedExpanded") != nil {
-            isPinnedExpanded = defaults.bool(forKey: "taskSidebar.pinnedExpanded")
-        }
-        if defaults.object(forKey: "taskSidebar.workspacesExpanded") != nil {
-            isWorkspacesExpanded = defaults.bool(forKey: "taskSidebar.workspacesExpanded")
-        }
-        if defaults.object(forKey: "taskSidebar.schedulesExpanded") != nil {
-            isSchedulesExpanded = defaults.bool(forKey: "taskSidebar.schedulesExpanded")
-        }
-        collapsedWorkspaceIDs = Set((defaults.array(forKey: "taskSidebar.collapsedWorkspaceIDs") as? [String] ?? []).compactMap(UUID.init))
-        expandedWorkspaceIDs = Set((defaults.array(forKey: "taskSidebar.expandedWorkspaceIDs") as? [String] ?? []).compactMap(UUID.init))
+        let state = TaskSidebarDisclosureStore.load()
+        isPinnedExpanded = state.isPinnedExpanded
+        isWorkspacesExpanded = state.isWorkspacesExpanded
+        isSchedulesExpanded = state.isSchedulesExpanded
+        collapsedWorkspaceIDs = state.collapsedWorkspaceIDs
+        expandedWorkspaceIDs = state.expandedWorkspaceIDs
     }
 
     private func persistSidebarDisclosure() {
-        let defaults = UserDefaults.standard
-        defaults.set(isPinnedExpanded, forKey: "taskSidebar.pinnedExpanded")
-        defaults.set(isWorkspacesExpanded, forKey: "taskSidebar.workspacesExpanded")
-        defaults.set(isSchedulesExpanded, forKey: "taskSidebar.schedulesExpanded")
-        defaults.set(collapsedWorkspaceIDs.map(\.uuidString), forKey: "taskSidebar.collapsedWorkspaceIDs")
-        defaults.set(expandedWorkspaceIDs.map(\.uuidString), forKey: "taskSidebar.expandedWorkspaceIDs")
+        TaskSidebarDisclosureStore.save(TaskSidebarDisclosureState(
+            isPinnedExpanded: isPinnedExpanded,
+            isWorkspacesExpanded: isWorkspacesExpanded,
+            isSchedulesExpanded: isSchedulesExpanded,
+            collapsedWorkspaceIDs: collapsedWorkspaceIDs,
+            expandedWorkspaceIDs: expandedWorkspaceIDs
+        ))
     }
 
     private func sidebarShowMoreButton(title: String, action: @escaping () -> Void) -> some View {
@@ -1470,7 +1505,8 @@ struct TaskSidebarView: View {
 
         return selectedWorkspace?.id == workspace.id ||
             expandedWorkspaceIDs.contains(workspace.id) ||
-            (!searchText.isEmpty && !tasksForWorkspace(workspace, matchingSearch: true, using: taskIndex).isEmpty)
+            (!searchText.isEmpty && !tasksForWorkspace(workspace, matchingSearch: true, using: taskIndex).isEmpty) ||
+            workspaceHasMatchingApp(workspace)
     }
 
     private func toggleWorkspaceExpansion(_ workspace: Workspace, using taskIndex: SidebarTaskIndex) {
@@ -1495,6 +1531,22 @@ struct TaskSidebarView: View {
 
     private func hasAnyTask(in workspace: Workspace, using taskIndex: SidebarTaskIndex) -> Bool {
         taskIndex.hasAnyTask(in: workspace)
+    }
+
+    /// The apps belonging to a workspace, name-sorted and search-filtered like chat rows.
+    /// Empty when no open handler is wired, so the rows never appear inert.
+    private func appsForWorkspace(_ workspace: Workspace) -> [WorkspaceApp] {
+        guard onOpenWorkspaceApp != nil else { return [] }
+        return SidebarWorkspaceAppFilter.apps(
+            workspaceApps,
+            in: workspace,
+            searchText: searchText,
+            workspaceMatchesSearch: workspaceMatchesSearch(workspace)
+        )
+    }
+
+    private func workspaceHasMatchingApp(_ workspace: Workspace) -> Bool {
+        onOpenWorkspaceApp != nil && SidebarWorkspaceAppFilter.hasMatch(workspaceApps, in: workspace, searchText: searchText)
     }
 
     private func workspaceMatchesSearch(_ workspace: Workspace) -> Bool {
@@ -2216,31 +2268,19 @@ struct SearchPanelOverlay: View {
     }
 
     private var recentTasks: [AgentTask] {
-        Array(tasks.sorted { $0.updatedAt > $1.updatedAt }.prefix(9))
+        SearchPanelOverlayResults.recentTasks(tasks, workspaces: workspaces)
     }
 
     private var filteredTasks: [AgentTask] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return recentTasks }
-        return tasks.filter {
-            $0.title.localizedCaseInsensitiveContains(query) ||
-            $0.goal.localizedCaseInsensitiveContains(query) ||
-            ($0.workspace?.name.localizedCaseInsensitiveContains(query) ?? false) ||
-            ($0.workspace?.primaryPath.localizedCaseInsensitiveContains(query) ?? false)
-        }
-        .sorted { $0.updatedAt > $1.updatedAt }
-        .prefix(12)
-        .map { $0 }
+        SearchPanelOverlayResults.filteredTasks(searchText: searchText, tasks: tasks, workspaces: workspaces)
     }
 
     private var filteredWorkspaces: [Workspace] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return [] }
-        return workspaces.filter {
-            $0.name.localizedCaseInsensitiveContains(query) ||
-            $0.primaryPath.localizedCaseInsensitiveContains(query)
-        }
-        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        SearchPanelOverlayResults.filteredWorkspaces(
+            searchText: searchText,
+            workspaces: workspaces,
+            taskCount: tasks.count
+        )
     }
 
     private func toggleStarred(for workspace: Workspace) {

@@ -114,6 +114,7 @@ struct AgentRuntimePolicyGuard: Sendable {
     private let manifest: RunPermissionManifest
     private let allowedPathRoots: [String]
     private let taskOutputPathRoots: [String]
+    private let pathMapper: ExecutionEnvironmentPathMapper?
 
     var providerID: AgentRuntimeID {
         manifest.providerID
@@ -123,8 +124,9 @@ struct AgentRuntimePolicyGuard: Sendable {
         manifest.providerRender.usesBroadProviderPermissions
     }
 
-    init(manifest: RunPermissionManifest) {
+    init(manifest: RunPermissionManifest, pathMapper: ExecutionEnvironmentPathMapper? = nil) {
         self.manifest = manifest
+        self.pathMapper = pathMapper
         let roots = [manifest.workspacePath] + manifest.additionalPaths
         let baseRoots = roots
             .map(Self.standardizedAbsolutePath)
@@ -238,12 +240,21 @@ struct AgentRuntimePolicyGuard: Sendable {
             return violation
         }
 
+        let matchesAllowedShellPattern = observed.command.map { command in
+            isShellTool(toolName)
+                && shellCommandAllowedByPatterns(
+                    command,
+                    patterns: manifest.providerRender.allowedShellPatterns
+                )
+        } ?? false
+
         let matchesAllowedTool = toolMatches(
             toolName,
             command: observed.command,
             candidates: manifest.providerRender.allowedTools,
             shellMatchMode: .allActionableSegments
-        ) || matchesTaskOutputFileMutation(observed, toolName: toolName)
+        ) || matchesAllowedShellPattern
+            || matchesTaskOutputFileMutation(observed, toolName: toolName)
 
         if !matchesAllowedTool,
            requiresApproval(toolName: toolName, command: observed.command) {
@@ -295,8 +306,27 @@ struct AgentRuntimePolicyGuard: Sendable {
 
     private func runtimeSupportToolDescriptor(for toolName: String) -> ProviderRuntimeSupportToolDescriptor? {
         let normalized = Self.normalizedToolName(toolName)
-        return manifest.providerRender.runtimeSupportTools.first {
-            Self.normalizedToolName($0.name) == normalized
+        if let canonicalWorkspaceTool = DockerWorkspaceMCPProjection.canonicalToolName(
+            fromObservedToolName: toolName,
+            runtime: manifest.providerID
+        ) {
+            let permission = DockerWorkspaceMCPProjection.providerToolPermission(for: canonicalWorkspaceTool)
+            return manifest.providerRender.runtimeSupportTools.first { descriptor in
+                Self.normalizedToolName(descriptor.name) == Self.normalizedToolName(permission)
+            }
+        }
+        if let canonicalHostTool = HostControlPlaneMCPProjection.canonicalToolName(
+            fromObservedToolName: toolName,
+            runtime: manifest.providerID
+        ) {
+            let permission = HostControlPlaneMCPProjection.providerToolPermission(for: canonicalHostTool)
+            return manifest.providerRender.runtimeSupportTools.first { descriptor in
+                Self.normalizedToolName(descriptor.name) == Self.normalizedToolName(permission)
+            }
+        }
+        return manifest.providerRender.runtimeSupportTools.first { descriptor in
+            Self.normalizedToolName(descriptor.name) == normalized
+                || descriptor.providerNativePermission.map(Self.normalizedToolName) == normalized
         }
     }
 
@@ -305,9 +335,10 @@ struct AgentRuntimePolicyGuard: Sendable {
         observed: PolicyObservedEvent,
         toolName: String
     ) -> AgentRuntimePolicyViolation? {
-        if observed.command != nil || observed.path != nil || observed.url != nil {
+        let allowedKeys = Set(descriptor.allowedInputKeys)
+        if let field = disallowedRuntimeSupportActionField(observed, allowedKeys: allowedKeys) {
             return AgentRuntimePolicyViolation(
-                reason: "The provider support tool carried action-like input outside its safe runtime schema",
+                reason: "The provider support tool carried action-like input outside its safe runtime schema: \(field)",
                 toolName: toolName,
                 detail: observed.summary,
                 violationCategory: "runtime_support_tool_action_field"
@@ -326,7 +357,6 @@ struct AgentRuntimePolicyGuard: Sendable {
             )
         }
 
-        let allowedKeys = Set(descriptor.allowedInputKeys)
         let unsupportedKeys = observedKeys.subtracting(allowedKeys).sorted()
         if !unsupportedKeys.isEmpty {
             return AgentRuntimePolicyViolation(
@@ -347,6 +377,29 @@ struct AgentRuntimePolicyGuard: Sendable {
             )
         }
 
+        return nil
+    }
+
+    private func disallowedRuntimeSupportActionField(
+        _ observed: PolicyObservedEvent,
+        allowedKeys: Set<String>
+    ) -> String? {
+        if observed.command != nil,
+           !allowedKeys.contains("command"),
+           !allowedKeys.contains("cmd") {
+            return "command"
+        }
+        if observed.path != nil,
+           !allowedKeys.contains("path"),
+           !allowedKeys.contains("file_path"),
+           !allowedKeys.contains("filepath") {
+            return "path"
+        }
+        if observed.url != nil,
+           !allowedKeys.contains("url"),
+           !allowedKeys.contains("uri") {
+            return "url"
+        }
         return nil
     }
 
@@ -586,6 +639,7 @@ struct AgentRuntimePolicyGuard: Sendable {
     }
 
     private func isPathInScope(_ rawPath: String) -> Bool {
+        let rawPath = translatedPath(rawPath)
         let candidate: String
         if rawPath.hasPrefix("/") {
             candidate = Self.standardizedAbsolutePath(rawPath)
@@ -611,6 +665,7 @@ struct AgentRuntimePolicyGuard: Sendable {
     }
 
     private func taskOutputRelativePath(_ rawPath: String) -> String? {
+        let rawPath = translatedPath(rawPath)
         let candidate: String
         if rawPath.hasPrefix("/") {
             candidate = Self.standardizedAbsolutePath(rawPath)
@@ -628,6 +683,14 @@ struct AgentRuntimePolicyGuard: Sendable {
             }
         }
         return nil
+    }
+
+    private func translatedPath(_ rawPath: String) -> String {
+        guard rawPath.hasPrefix("/"),
+              let hostPath = pathMapper?.hostPath(forContainerPath: rawPath) else {
+            return rawPath
+        }
+        return hostPath
     }
 
     private func requiresApproval(toolName: String, command: String?) -> Bool {
@@ -773,8 +836,10 @@ struct AgentRuntimePolicyGuard: Sendable {
         if patterns.contains("*") { return true }
         let segments = Self.actionableShellSegments(command)
         let normalizedCommand = Self.normalizedShellText(command)
-        if segments.count <= 1,
-           patterns.contains(where: { matchesFullShellCommand(normalizedCommand, pattern: $0) }) {
+        if patterns.contains(where: {
+            canMatchFullShellCommand(pattern: $0, segmentCount: segments.count)
+                && matchesFullShellCommand(normalizedCommand, pattern: $0)
+        }) {
             return true
         }
         guard !segments.isEmpty else { return false }
@@ -787,7 +852,7 @@ struct AgentRuntimePolicyGuard: Sendable {
     private func shellCommandAllowedByPattern(_ command: String, pattern: String) -> Bool {
         let segments = Self.actionableShellSegments(command)
         let normalizedCommand = Self.normalizedShellText(command)
-        if segments.count <= 1,
+        if canMatchFullShellCommand(pattern: pattern, segmentCount: segments.count),
            matchesFullShellCommand(normalizedCommand, pattern: pattern) {
             return true
         }
@@ -816,6 +881,17 @@ struct AgentRuntimePolicyGuard: Sendable {
     private func matchesFullShellCommand(_ normalizedCommand: String, pattern: String) -> Bool {
         let normalizedPattern = normalizedShellPattern(pattern)
         return Self.wildcardMatch(normalizedCommand, pattern: normalizedPattern)
+    }
+
+    private func canMatchFullShellCommand(pattern: String, segmentCount: Int) -> Bool {
+        guard segmentCount > 1 else { return true }
+        let normalizedPattern = normalizedShellPattern(pattern)
+        return normalizedPattern.contains("|")
+            || normalizedPattern.contains(";")
+            || normalizedPattern.contains("&&")
+            || normalizedPattern.contains("||")
+            || normalizedPattern.contains("$(")
+            || normalizedPattern.contains("`")
     }
 
     private func matchesShellSegment(_ segment: String, pattern: String) -> Bool {

@@ -24,6 +24,7 @@ final class TaskRun {
     var runtimeID: String?
     var providerSessionId: String?
     var providerVersion: String?
+    var executionEnvironmentSnapshotJSON: String?
     var exitCode: Int?
     var output: String
     var costUSD: Double
@@ -41,6 +42,14 @@ final class TaskRun {
         self.runtimeID = task.runtimeID
         self.providerSessionId = task.sessionId
         self.providerVersion = nil
+        let snapshot = task.executionEnvironmentSnapshotJSON
+            ?? ExecutionEnvironmentStore.encodeSnapshot(
+                ExecutionEnvironmentStore.decode(task.workspace?.activeExecutionEnvironmentJSON)
+            )
+        self.executionEnvironmentSnapshotJSON = snapshot
+        if task.executionEnvironmentSnapshotJSON == nil {
+            task.executionEnvironmentSnapshotJSON = snapshot
+        }
         self.output = ""
         self.costUSD = 0
         self.fileChangesJSON = "[]"
@@ -73,7 +82,7 @@ final class TaskRun {
 
     func appendFileChange(_ change: StoredFileChange) {
         var changes = fileChanges
-        changes.append(change)
+        changes.append(change.translated(using: ExecutionEnvironmentStore.decode(executionEnvironmentSnapshotJSON)))
         fileChangesJSON = TaskEvent.payloadString(changes, fallback: fileChangesJSON)
     }
 }
@@ -132,6 +141,24 @@ struct StoredFileChange: Codable, Identifiable, Hashable, Sendable {
 
     var kind: StoredFileChangeKind {
         StoredFileChangeKind(changeType: changeType)
+    }
+
+    func translated(using environment: WorkspaceExecutionEnvironment) -> StoredFileChange {
+        guard environment.isContainerized else { return self }
+        let mapper = ExecutionEnvironmentPathMapper(mounts: environment.mounts)
+        guard let hostPath = mapper.hostPath(forContainerPath: path),
+              hostPath != path else {
+            return self
+        }
+        return StoredFileChange(
+            id: id,
+            path: hostPath,
+            changeType: changeType,
+            content: content,
+            oldString: oldString,
+            newString: newString,
+            timestamp: timestamp
+        )
     }
 }
 

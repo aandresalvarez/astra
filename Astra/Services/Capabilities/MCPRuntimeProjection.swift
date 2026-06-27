@@ -145,7 +145,10 @@ enum MCPRuntimeProjection {
     /// Renders the `--mcp-config` JSON for Claude Code:
     /// `{"mcpServers": {"<id>": {"type": ..., "command"/"url": ..., "env": {...}}}}`.
     /// Returns nil when there is nothing to deliver.
-    static func claudeConfigJSON(servers: [ResolvedServer]) -> Data? {
+    static func claudeConfigJSON(
+        servers: [ResolvedServer],
+        availableEnvironment: [String: String] = [:]
+    ) -> Data? {
         guard !servers.isEmpty else { return nil }
         var entries: [String: [String: Any]] = [:]
         for resolved in servers {
@@ -162,13 +165,14 @@ enum MCPRuntimeProjection {
                 guard let url = server.url else { continue }
                 entry["url"] = url.absoluteString
             }
-            let envKeys = server.environmentKeys.filter { resolved.permittedEnvironmentKeys.contains($0) }
+            let envKeys = server.environmentKeys
+                .filter { resolved.permittedEnvironmentKeys.contains($0) }
+                .filter { availableEnvironment[$0]?.isEmpty == false }
             if !envKeys.isEmpty {
                 // ${KEY} indirection: the value comes from the runtime's
-                // process environment at expansion time, so the config file
-                // on disk never contains credential material. Only
-                // package-declared keys are rendered (MCPEnvironmentKeyPolicy)
-                // so a server can't request arbitrary host secrets.
+                // explicit ASTRA-projected launch environment, so the config
+                // file on disk never contains credential material and a server
+                // cannot request arbitrary inherited host secrets.
                 entry["env"] = Dictionary(
                     uniqueKeysWithValues: envKeys.map { ($0, "${\($0)}") }
                 )
@@ -189,10 +193,11 @@ enum MCPRuntimeProjection {
     static func writeClaudeConfig(
         servers: [ResolvedServer],
         taskID: UUID,
+        availableEnvironment: [String: String] = [:],
         allowEmpty: Bool = false
     ) -> URL? {
         let emptyConfig = Data(#"{"mcpServers":{}}"#.utf8)
-        guard let data = claudeConfigJSON(servers: servers) ?? (allowEmpty ? emptyConfig : nil) else { return nil }
+        guard let data = claudeConfigJSON(servers: servers, availableEnvironment: availableEnvironment) ?? (allowEmpty ? emptyConfig : nil) else { return nil }
 
         // Preferred: a private 0700 subdir that can be pruned. Fallback: the
         // temp-dir root, so a stale file blocking the subdir (or a subdir
@@ -252,9 +257,10 @@ enum MCPRuntimeProjection {
         olderThan interval: TimeInterval = 24 * 60 * 60
     ) {
         let cutoff = Date().addingTimeInterval(-interval)
-        let urls = (try? FileManager.default.contentsOfDirectory(
+        let urls = (try? HostFileAccessBroker().contentsOfDirectory(
             at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey]
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            intent: .astraManagedStorage(root: directory)
         )) ?? []
         for url in urls where url.pathExtension == "json" {
             let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
@@ -292,11 +298,14 @@ enum MCPRuntimeProjection {
 
     enum PreflightIssue: Equatable {
         case missingExecutable(serverID: String, command: String)
+        case missingExecutableWithInstallSource(serverID: String, command: String, source: PluginMCPInstallSource)
 
         var message: String {
             switch self {
             case .missingExecutable(let serverID, let command):
                 return "MCP server \(serverID) needs \(command), which was not found. Install it or disable the capability that provides this server."
+            case .missingExecutableWithInstallSource(let serverID, let command, let source):
+                return "MCP server \(serverID) needs \(command), which was not found. Install \(MCPInstallSourceFormatter.installDescription(for: source)) or disable the capability that provides this server."
             }
         }
     }
@@ -306,7 +315,8 @@ enum MCPRuntimeProjection {
     /// runtime fail opaquely mid-run, so it fails fast here instead.
     static func preflightIssues(
         servers: [ResolvedServer],
-        detectExecutable: (String) -> String = { RuntimePathResolver.detectExecutablePath(named: $0) }
+        detectExecutable: (String) -> String = { RuntimePathResolver.detectExecutablePath(named: $0) },
+        isExecutableFile: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
     ) -> [PreflightIssue] {
         servers.compactMap { resolved in
             let server = resolved.server
@@ -314,13 +324,24 @@ enum MCPRuntimeProjection {
                 return nil
             }
             if command.hasPrefix("/") {
-                return FileManager.default.isExecutableFile(atPath: command)
+                return isExecutableFile(command)
                     ? nil
-                    : .missingExecutable(serverID: server.id, command: command)
+                    : missingExecutableIssue(for: server, command: command)
             }
             return detectExecutable(command).isEmpty
-                ? .missingExecutable(serverID: server.id, command: command)
+                ? missingExecutableIssue(for: server, command: command)
                 : nil
         }
     }
+
+    private static func missingExecutableIssue(
+        for server: PluginMCPServer,
+        command: String
+    ) -> PreflightIssue {
+        if let source = server.installSource {
+            return .missingExecutableWithInstallSource(serverID: server.id, command: command, source: source)
+        }
+        return .missingExecutable(serverID: server.id, command: command)
+    }
+
 }

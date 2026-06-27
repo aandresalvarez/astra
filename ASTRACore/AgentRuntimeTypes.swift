@@ -126,6 +126,7 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
 }
 
 public enum AgentEvent: Sendable, Equatable {
+    case control(type: String)
     case started(sessionID: String?, model: String?)
     case thinking(text: String)
     case text(text: String)

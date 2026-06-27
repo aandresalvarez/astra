@@ -236,6 +236,8 @@ struct CapabilityRailSnapshot {
     let draftItems: [RailCapabilityItem]
     let needsSetupCount: Int
 
+    static let empty = CapabilityRailSnapshot(items: [], isDraft: { _ in false })
+
     init(
         items: [RailCapabilityItem],
         isDraft: (RailCapabilityItem) -> Bool
@@ -266,6 +268,7 @@ struct RailCapabilityItem: Identifiable {
     let skillNames: [String]
     let connectorNames: [String]
     let toolNames: [String]
+    let mcpServerNames: [String]
     let browserAdapterNames: [String]
     let templateNames: [String]
     let requirementNames: [String]

@@ -19,6 +19,7 @@ struct CapabilityPackageState {
     let package: PluginPackage
     let workspace: Workspace
     let capabilities: WorkspaceCapabilities
+    var secretStore: SecretStore = KeychainSecretStore()
 
     var linkedSkills: [Skill] {
         uniqueSkills(directlyLinkedSkills + directlyLinkedConnectors.compactMap(\.skill) + directlyLinkedTools.compactMap(\.skill))
@@ -172,19 +173,15 @@ struct CapabilityPackageState {
             if !connector.hasConfiguredOutlookTenantDomain {
                 messages.append("\(name): missing tenant domain")
             }
-            if !connector.hasOutlookRefreshToken {
-                messages.append("\(name): not signed in")
-            }
             return messages
-        }
-
-        let missing = connector.missingCredentialKeys()
-        if !missing.isEmpty {
-            return ["\(name): missing \(missing.joined(separator: ", "))"]
         }
 
         if connector.credentialKeys.isEmpty {
             return ["\(name): no credentials configured"]
+        }
+        let missingKeys = connector.missingCredentialKeys(store: secretStore)
+        if !missingKeys.isEmpty {
+            return ["\(name): missing Keychain value: \(missingKeys.joined(separator: ", "))"]
         }
 
         return []

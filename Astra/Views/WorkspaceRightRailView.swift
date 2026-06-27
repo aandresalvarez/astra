@@ -37,9 +37,19 @@ private enum WorkspaceSetupItem: Hashable {
     case routines
 }
 
+struct WorkspaceFolderDetailRowPresentation: Equatable {
+    let title: String
+    let subtitle: String
+    let path: String
+    let copyPathHelp: String
+    let canRemove: Bool
+    let showsPathInBody: Bool
+}
+
 enum WorkspaceSetupChecklistPresentation {
     static let sectionTitle = "Workspace setup"
     static let missingGroupTitle = "Needs setup"
+    static let referenceGroupTitle = "Reference"
     static let configuredGroupTitle = "Configured"
     static let configuredSummaryTitle = "Configured items"
     static let configuredSummaryActionTitle = "Show all"
@@ -54,14 +64,26 @@ enum WorkspaceSetupChecklistPresentation {
     static let collapsedDisclosureIcon = "chevron.right"
     static let expandedDisclosureIcon = "chevron.down"
     static let detailPreviewLimit = 4
+    static let folderAccessTitle = "Folder access"
+    static let addFolderActionTitle = "Add folder"
+    static let workspaceRootReferenceTitle = "Workspace root"
+    static let workspaceRootReferenceRole = "Reference"
+    static let workspaceRootFolderSubtitle = "Workspace root"
+    static let additionalFolderSubtitle = "Additional folder"
+    static let copyFolderPathHelp = "Copy folder path"
+    static let showsFolderPathInDetailRows = false
+    static let missingWorkspaceRootSubtitle = "No workspace root selected."
+    static let referenceOnlyFolderSubtitle = "Workspace root only"
 
     enum State: Equatable {
         case configured
+        case reference
         case missing
 
         var label: String {
             switch self {
             case .configured: "Configured"
+            case .reference: "Reference"
             case .missing: "Missing"
             }
         }
@@ -69,6 +91,72 @@ enum WorkspaceSetupChecklistPresentation {
 
     static func summary(configured: Int, total: Int) -> String {
         configured == 0 ? "Empty" : "\(configured) of \(total) configured"
+    }
+
+    static func shouldShowWorkspaceRootMissingMessage(primaryPath: String) -> Bool {
+        WorkspacePathPresentation.standardizedPath(primaryPath).isEmpty
+    }
+
+    static func userConfiguredFolderDescriptors(_ additionalPaths: [String]) -> [WorkspacePathDescriptor] {
+        userConfiguredFolderDescriptors(primaryPath: "", additionalPaths: additionalPaths)
+    }
+
+    static func userConfiguredFolderDescriptors(
+        primaryPath: String,
+        additionalPaths: [String]
+    ) -> [WorkspacePathDescriptor] {
+        let rootPath = WorkspacePathPresentation.standardizedPath(primaryPath)
+        let folderPaths = additionalPaths.filter { rawPath in
+            let folderPath = WorkspacePathPresentation.standardizedPath(rawPath)
+            return rootPath.isEmpty || folderPath != rootPath
+        }
+        return WorkspacePathPresentation.descriptors(primaryPath: "", additionalPaths: folderPaths)
+    }
+
+    static func userConfiguredFolderCount(_ additionalPaths: [String]) -> Int {
+        userConfiguredFolderDescriptors(additionalPaths).count
+    }
+
+    static func userConfiguredFolderCount(primaryPath: String, additionalPaths: [String]) -> Int {
+        userConfiguredFolderDescriptors(primaryPath: primaryPath, additionalPaths: additionalPaths).count
+    }
+
+    static func remainingAdditionalPaths(
+        afterRemovingFolderMatching path: String,
+        from additionalPaths: [String]
+    ) -> [String] {
+        let removedPath = WorkspacePathPresentation.standardizedPath(path)
+        guard !removedPath.isEmpty else { return additionalPaths }
+        return additionalPaths.filter { rawPath in
+            WorkspacePathPresentation.standardizedPath(rawPath) != removedPath
+        }
+    }
+
+    static func folderDetailRow(for descriptor: WorkspacePathDescriptor) -> WorkspaceFolderDetailRowPresentation {
+        WorkspaceFolderDetailRowPresentation(
+            title: descriptor.title,
+            subtitle: descriptor.role == .primary ? workspaceRootFolderSubtitle : additionalFolderSubtitle,
+            path: descriptor.path,
+            copyPathHelp: copyFolderPathHelp,
+            canRemove: descriptor.role == .additional,
+            showsPathInBody: showsFolderPathInDetailRows
+        )
+    }
+
+    static func folderState(primaryPath: String, additionalPaths: [String]) -> State {
+        guard !shouldShowWorkspaceRootMissingMessage(primaryPath: primaryPath) else { return .missing }
+        return userConfiguredFolderCount(primaryPath: primaryPath, additionalPaths: additionalPaths) > 0
+            ? State.configured
+            : State.reference
+    }
+
+    static func folderSubtitle(primaryPath: String, additionalPaths: [String]) -> String {
+        guard !shouldShowWorkspaceRootMissingMessage(primaryPath: primaryPath) else {
+            return missingWorkspaceRootSubtitle
+        }
+        let count = userConfiguredFolderCount(primaryPath: primaryPath, additionalPaths: additionalPaths)
+        guard count > 0 else { return referenceOnlyFolderSubtitle }
+        return "\(count) added \(count == 1 ? "folder" : "folders")"
     }
 
     /// Count metadata shown beneath the noun-first configured summary title.
@@ -155,17 +243,23 @@ struct WorkspaceRightRailView: View {
     @State private var isConfiguredWorkspaceSetupExpanded = false
     @State private var newMemoryText = ""
     @State private var isMemoryComposerVisible = false
+    @State private var draftWorkspaceInstructions = ""
+    @State private var draftWorkspaceInstructionsWorkspaceID: UUID?
+    @State private var didRecentlySaveWorkspaceInstructions = false
     @State private var expandedWorkspaceSetupItems: Set<WorkspaceSetupItem> = []
     // Removing a configured folder or saved memory is destructive and was
     // previously one stray tap away with no undo — gate both behind a confirm.
     @State private var pendingRailDeletion: PendingRailDeletion?
     @State private var approvedCapabilityPackages: [PluginPackage] = PluginCatalog.builtInPackages
+    @State private var approvedCapabilityRecords: [CapabilityApprovalRecord] = []
+    @State private var capabilityRailSnapshotCache = CapabilityRailSnapshotCache()
     @State private var capabilityError: String?
     @State private var capabilityPrerequisiteStatuses: [String: HealthStatus] = [:]
     @State private var scrollMetrics = RightRailScrollMetrics()
     @State private var isReadyCapabilitiesExpanded = false
     @State private var isDraftCapabilitiesExpanded = false
     @State private var hasGitRepositories = false
+    @State private var hasDockerEnvironments = false
 
     private static let shortDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -175,18 +269,24 @@ struct WorkspaceRightRailView: View {
     }()
 
     private var capabilities: WorkspaceCapabilities {
+        // Inject the catalog already cached in view state so `body`-path
+        // capability resolution never re-scans the Capabilities directory.
         WorkspaceCapabilities(
             workspace: workspace,
             globalSkills: globalSkills,
             globalConnectors: globalConnectors,
-            globalTools: globalTools
+            globalTools: globalTools,
+            packageDefinitions: approvedCapabilityPackages
         )
     }
 
     private var catalogPolicyContext: CapabilityCatalogPolicyContext {
+        // Reads from the records cached in view state — see
+        // refreshApprovedCapabilities — so policy resolution does not scan the
+        // CapabilityApprovals directory on every body re-evaluation.
         CapabilityCatalogPolicyContext.currentUser(
             workspace: workspace,
-            approvalRecords: CapabilityApprovalStore().records()
+            approvalRecords: approvedCapabilityRecords
         )
     }
 
@@ -340,7 +440,8 @@ struct WorkspaceRightRailView: View {
     // MARK: - Unified Configure Panel
 
     private var configurePanel: some View {
-        let snapshot = capabilityRailSnapshot
+        let signature = capabilityRailSnapshotSignature
+        let snapshot = capabilityRailSnapshotCache.snapshot(for: signature) ?? .empty
 
         // Once setup is complete the panel leads with the capabilities the
         // workspace actually uses; while setup is pending it stays directly under
@@ -363,6 +464,16 @@ struct WorkspaceRightRailView: View {
                 }
             }
 
+            if hasDockerEnvironments {
+                floatingContextSection {
+                    WorkspaceDockerSectionView(
+                        workspace: workspace,
+                        selectedTask: selectedTask,
+                        isCompact: isCompact
+                    )
+                }
+            }
+
             if leadWithCapabilities {
                 capabilityHealthPanel(snapshot)
                 floatingContextSection {
@@ -380,20 +491,52 @@ struct WorkspaceRightRailView: View {
             loadSSHConnections()
             refreshApprovedCapabilities()
             refreshCapabilityPrerequisiteStatuses()
+            rebuildCapabilityRailSnapshot(for: capabilityRailSnapshotSignature)
             applyConfigureDefaults()
             checkGitRepositories()
+            checkDockerEnvironments()
+        }
+        .task(id: signature) {
+            rebuildCapabilityRailSnapshot(for: signature)
         }
         .onChange(of: workspace.primaryPath) {
             loadSSHConnections()
             checkGitRepositories()
+            checkDockerEnvironments()
+        }
+        .onChange(of: workspace.id) {
+            syncInstructionDraftFromWorkspace()
+        }
+        .onChange(of: workspace.instructions) { oldValue, newValue in
+            guard !WorkspaceInstructionEditorPresentation.hasUnsavedChanges(
+                localDraft: draftWorkspaceInstructions,
+                persisted: oldValue,
+                isSynced: isWorkspaceInstructionDraftSynced
+            ) else { return }
+            draftWorkspaceInstructions = newValue
+            draftWorkspaceInstructionsWorkspaceID = workspace.id
+            didRecentlySaveWorkspaceInstructions = false
         }
         .onChange(of: workspace.additionalPaths) {
             checkGitRepositories()
+            checkDockerEnvironments()
+        }
+        .onChange(of: workspace.activeExecutionEnvironmentJSON) {
+            checkDockerEnvironments()
         }
         .onChange(of: sshReloadTrigger) {
             loadSSHConnections()
             if !sshConnections.isEmpty {
                 isAccessCollapsed = false
+            }
+        }
+        // Approval state is cached into @State (see refreshApprovedCapabilities)
+        // to keep it off the per-body filesystem path. Re-sync when an approval
+        // is written from any surface (catalog/configure) while the rail stays
+        // mounted, so policy visibility decisions never go stale.
+        .onReceive(NotificationCenter.default.publisher(for: .capabilityApprovalsChanged)) { _ in
+            DispatchQueue.main.async {
+                refreshApprovedCapabilities()
             }
         }
         .onChange(of: isConfiguredWorkspaceSetupExpanded) { _, value in
@@ -797,29 +940,8 @@ struct WorkspaceRightRailView: View {
 
     private func capabilityListSubtitle(for item: RailCapabilityItem) -> String {
         let source = isWorkspaceAuthoredCapability(item) ? "Custom" : "Built-in"
-        let composition = capabilityCompositionSummary(for: item)
+        let composition = WorkspaceRightRailPresentation.compositionSummary(for: item)
         return "\(source): \(composition)"
-    }
-
-    private func capabilityCompositionSummary(for item: RailCapabilityItem) -> String {
-        var parts: [String] = []
-        appendCount(item.skillNames.count, singular: "skill", plural: "skills", to: &parts)
-        appendCount(item.connectorNames.count, singular: "connector", plural: "connectors", to: &parts)
-        appendCount(item.toolNames.count, singular: "tool", plural: "tools", to: &parts)
-        appendCount(item.browserAdapterNames.count, singular: "browser adapter", plural: "browser adapters", to: &parts)
-        appendCount(item.templateNames.count, singular: "template", plural: "templates", to: &parts)
-
-        if !parts.isEmpty {
-            return parts.joined(separator: ", ")
-        }
-
-        let fallback = item.presentation.rowSubtitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        return fallback.isEmpty ? "No resources" : fallback
-    }
-
-    private func appendCount(_ count: Int, singular: String, plural: String, to parts: inout [String]) {
-        guard count > 0 else { return }
-        parts.append("\(count) \(count == 1 ? singular : plural)")
     }
 
     private func isWorkspaceAuthoredCapability(_ item: RailCapabilityItem) -> Bool {
@@ -832,38 +954,91 @@ struct WorkspaceRightRailView: View {
         }
     }
 
-    private var capabilityRailSnapshot: CapabilityRailSnapshot {
-        PerformanceTelemetry.measure(
+    private var capabilityRailSnapshotSignature: CapabilityRailSnapshotSignature {
+        CapabilityRailSnapshotSignature(
+            workspace: workspace,
+            globalSkills: globalSkills,
+            globalConnectors: globalConnectors,
+            globalTools: globalTools,
+            packages: approvedCapabilityPackages,
+            approvalRecords: approvedCapabilityRecords,
+            prerequisiteStatuses: capabilityPrerequisiteStatuses
+        )
+    }
+
+    private var capabilityRailTelemetryFields: [String: String] {
+        [
+            "workspace_id": PerformanceTelemetryFields.abbreviatedID(workspace.id),
+            "package_count": PerformanceTelemetryFields.count(approvedCapabilityPackages.count)
+        ]
+    }
+
+    private func rebuildCapabilityRailSnapshot(for signature: CapabilityRailSnapshotSignature) {
+        guard signature == capabilityRailSnapshotSignature else { return }
+        guard !capabilityRailSnapshotCache.matches(signature) else { return }
+
+        let snapshot = PerformanceTelemetry.measure(
             "workspace_right_rail_capability_snapshot",
             thresholdMilliseconds: 20,
-            fields: [
-                "workspace_id": workspace.id.uuidString,
-                "package_count": String(approvedCapabilityPackages.count)
-            ]
+            fields: capabilityRailTelemetryFields.merging(["cache_state": "miss"], uniquingKeysWith: { _, new in new })
         ) {
-            let currentCapabilities = capabilities
-            var cachedStates: [String: CapabilityPackageState] = [:]
+            makeCapabilityRailSnapshot()
+        }
+        capabilityRailSnapshotCache.store(snapshot, for: signature)
+    }
 
-            func state(for package: PluginPackage) -> CapabilityPackageState {
-                if let cached = cachedStates[package.id] {
-                    return cached
-                }
-                let state = CapabilityPackageState(
-                    package: package,
-                    workspace: workspace,
-                    capabilities: currentCapabilities
-                )
-                cachedStates[package.id] = state
-                return state
+    private func makeCapabilityRailSnapshot() -> CapabilityRailSnapshot {
+        let telemetryFields = capabilityRailTelemetryFields
+        let currentCapabilities = capabilities
+        let resourceIndex = PerformanceTelemetry.measure(
+            "workspace_right_rail_capability_resource_index",
+            thresholdMilliseconds: 20,
+            fields: telemetryFields
+        ) {
+            CapabilityRailWorkspaceResourceIndex(
+                workspace: workspace,
+                capabilities: currentCapabilities
+            )
+        }
+        var cachedStates: [String: CapabilityRailPackageSnapshotState] = [:]
+
+        func state(for package: PluginPackage) -> CapabilityRailPackageSnapshotState {
+            if let cached = cachedStates[package.id] {
+                return cached
             }
+            let state = PerformanceTelemetry.measure(
+                "workspace_right_rail_capability_package_state",
+                thresholdMilliseconds: 20,
+                fields: telemetryFields.merging(["package_id": package.id], uniquingKeysWith: { _, new in new })
+            ) {
+                CapabilityRailPackageSnapshotState(
+                    package: package,
+                    index: resourceIndex
+                )
+            }
+            cachedStates[package.id] = state
+            return state
+        }
 
-            let catalogPackages = CapabilityCatalogInventory.packages(
+        let catalogPackages = PerformanceTelemetry.measure(
+            "workspace_right_rail_capability_catalog_inventory",
+            thresholdMilliseconds: 20,
+            fields: telemetryFields
+        ) {
+            CapabilityCatalogInventory.packages(
                 catalogPackages: approvedCapabilityPackages,
                 capabilities: currentCapabilities,
                 policyContext: catalogPolicyContext
             )
+        }
 
-            let items = catalogPackages
+        let items = PerformanceTelemetry.measure(
+            "workspace_right_rail_capability_items",
+            thresholdMilliseconds: 20,
+            fields: telemetryFields,
+            resultFields: { ["item_count": PerformanceTelemetryFields.count($0.count)] }
+        ) {
+            catalogPackages
                 .compactMap { package -> RailCapabilityItem? in
                     let packageState = state(for: package)
                     guard packageState.isEnabled else { return nil }
@@ -874,12 +1049,12 @@ struct WorkspaceRightRailView: View {
                     )
                 }
                 .sorted(by: sortRailCapabilityItems)
-
-            return CapabilityRailSnapshot(
-                items: items,
-                isDraft: isDraftCapability
-            )
         }
+
+        return CapabilityRailSnapshot(
+            items: items,
+            isDraft: isDraftCapability
+        )
     }
 
     private func sortRailCapabilityItems(_ lhs: RailCapabilityItem, _ rhs: RailCapabilityItem) -> Bool {
@@ -916,20 +1091,16 @@ struct WorkspaceRightRailView: View {
 
     private func makePackageCapabilityItem(
         _ package: PluginPackage,
-        state: CapabilityPackageState,
+        state: CapabilityRailPackageSnapshotState,
         prerequisiteStatuses: [String: HealthStatus]
     ) -> RailCapabilityItem {
+        let packageSummary = CapabilityPackageResourceSummary(package: package)
         let sharedResourceCount = state.linkedSkills.filter(\.isGlobal).count
             + state.linkedConnectors.filter(\.isGlobal).count
             + state.linkedTools.filter(\.isGlobal).count
         let workspaceResourceCount = state.linkedSkills.filter { !$0.isGlobal }.count
             + state.linkedConnectors.filter { !$0.isGlobal }.count
             + state.linkedTools.filter { !$0.isGlobal }.count
-        let declaredResourceCount = package.skills.count
-            + package.connectors.count
-            + package.localTools.count
-            + package.templates.count
-            + package.browserAdapters.count
         let readiness = readiness(
             for: package,
             stateReadiness: state.readiness,
@@ -941,8 +1112,8 @@ struct WorkspaceRightRailView: View {
             workspaceName: workspace.name,
             sharedResourceCount: sharedResourceCount,
             workspaceResourceCount: workspaceResourceCount,
-            declaredResourceCount: declaredResourceCount,
-            contentSummary: package.contentSummary
+            declaredResourceCount: packageSummary.declaredResourceCount,
+            contentSummary: packageSummary.contentSummary(separator: ", ")
         )
 
         return RailCapabilityItem(
@@ -958,6 +1129,7 @@ struct WorkspaceRightRailView: View {
             skillNames: RailStringList.uniqueSorted(package.skills.map(\.name) + state.linkedSkills.map(\.name)),
             connectorNames: RailStringList.uniqueSorted(package.connectors.map(\.name) + state.linkedConnectors.map { $0.name.isEmpty ? "Untitled Connector" : $0.name }),
             toolNames: RailStringList.uniqueSorted(package.localTools.map(\.name) + state.linkedTools.map { $0.name.isEmpty ? "Untitled Tool" : $0.name }),
+            mcpServerNames: packageSummary.mcpServerNames,
             browserAdapterNames: RailStringList.uniqueSorted(package.browserAdapters.map(browserAdapterDisplayName)),
             templateNames: RailStringList.uniqueSorted(package.templates.map(\.name)),
             requirementNames: RailStringList.uniqueSorted(package.prerequisites.map(\.displayName))
@@ -1008,13 +1180,21 @@ struct WorkspaceRightRailView: View {
     }
 
     private func refreshApprovedCapabilities() {
-        let packages = PerformanceTelemetry.measure(
+        // The only synchronous capability-storage scan in this view, run once on
+        // appear rather than on every body re-evaluation. Both the installed
+        // catalog and the approval records are cached into view state and read
+        // back by `capabilities` / `catalogPolicyContext`.
+        let snapshot = PerformanceTelemetry.measure(
             "workspace_right_rail_capability_load",
             thresholdMilliseconds: 20
         ) {
-            CapabilityLibrary().installedPackages()
+            (
+                packages: CapabilityLibrary().installedPackages(),
+                records: CapabilityApprovalStore().records()
+            )
         }
-        approvedCapabilityPackages = packages.isEmpty ? PluginCatalog.builtInPackages : packages
+        approvedCapabilityPackages = snapshot.packages.isEmpty ? PluginCatalog.builtInPackages : snapshot.packages
+        approvedCapabilityRecords = snapshot.records
     }
 
     private func refreshCapabilityPrerequisiteStatuses() {
@@ -1084,6 +1264,12 @@ struct WorkspaceRightRailView: View {
                 if workspaceSetupMissingCount > 0 {
                     workspaceSetupGroup(WorkspaceSetupChecklistPresentation.missingGroupTitle) {
                         workspaceSetupRows(for: .missing)
+                    }
+                }
+
+                if workspaceSetupReferenceCount > 0 {
+                    workspaceSetupGroup(WorkspaceSetupChecklistPresentation.referenceGroupTitle) {
+                        workspaceSetupRows(for: .reference)
                     }
                 }
 
@@ -1205,7 +1391,7 @@ struct WorkspaceRightRailView: View {
         case .memory:
             return "Memory"
         case .folders:
-            return "Folders"
+            return WorkspaceSetupChecklistPresentation.folderAccessTitle
         case .remoteAccess:
             return "Remote access"
         case .routines:
@@ -1220,7 +1406,10 @@ struct WorkspaceRightRailView: View {
         case .memory:
             workspace.memories.isEmpty ? .missing : .configured
         case .folders:
-            workspaceFolderCount > 0 ? .configured : .missing
+            WorkspaceSetupChecklistPresentation.folderState(
+                primaryPath: workspace.primaryPath,
+                additionalPaths: workspace.additionalPaths
+            )
         case .remoteAccess:
             sshConnections.isEmpty ? .missing : .configured
         case .routines:
@@ -1270,12 +1459,13 @@ struct WorkspaceRightRailView: View {
             workspaceSetupChecklistRow(
                 item: .folders,
                 icon: "folder",
-                title: "Folders",
-                subtitle: workspace.primaryPath.isEmpty
-                    ? "No folder selected"
-                    : "Primary \(compactPath(workspace.primaryPath))",
+                title: WorkspaceSetupChecklistPresentation.folderAccessTitle,
+                subtitle: WorkspaceSetupChecklistPresentation.folderSubtitle(
+                    primaryPath: workspace.primaryPath,
+                    additionalPaths: workspace.additionalPaths
+                ),
                 state: workspaceSetupState(for: .folders),
-                actionTitle: workspaceFolderCount > 0 ? "Add" : "Choose…",
+                actionTitle: "Add",
                 action: {
                     withAnimation(disclosureAnimation) {
                         _ = expandedWorkspaceSetupItems.insert(.folders)
@@ -1411,7 +1601,7 @@ struct WorkspaceRightRailView: View {
     private var instructionsSetupDetails: some View {
         VStack(alignment: .leading, spacing: 8) {
             ZStack(alignment: .topLeading) {
-                if workspace.instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if effectiveDraftWorkspaceInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Text("Add guidance for how tasks in this workspace should run...")
                         .font(Stanford.caption(12))
                         .foregroundStyle(.tertiary)
@@ -1420,7 +1610,7 @@ struct WorkspaceRightRailView: View {
                         .allowsHitTesting(false)
                 }
 
-                TextEditor(text: workspaceInstructionsBinding)
+                TextEditor(text: draftWorkspaceInstructionsBinding)
                     .font(Stanford.caption(12))
                     .scrollContentBackground(.hidden)
                     .frame(minHeight: 78, maxHeight: 140)
@@ -1434,23 +1624,44 @@ struct WorkspaceRightRailView: View {
             )
 
             HStack(spacing: 8) {
-                Text("Included in every new task prompt.")
+                let hasUnsavedChanges = hasUnsavedWorkspaceInstructions
+
+                Text(WorkspaceInstructionEditorPresentation.includedInPromptHint)
                     .font(Stanford.caption(10))
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
 
                 Spacer(minLength: 0)
 
-                if hasWorkspaceInstructions {
+                if let statusTitle = workspaceInstructionStatusTitle {
+                    Text(statusTitle)
+                        .font(Stanford.caption(10).weight(.medium))
+                        .foregroundStyle(hasUnsavedChanges ? Stanford.poppy : Stanford.paloAltoGreen)
+                        .lineLimit(1)
+                }
+
+                Button {
+                    saveWorkspaceInstructions()
+                } label: {
+                    Text(WorkspaceInstructionEditorPresentation.saveActionTitle)
+                        .font(Stanford.caption(11).weight(.semibold))
+                        .foregroundStyle(hasUnsavedChanges ? Stanford.lagunita : Stanford.sandstone)
+                }
+                .buttonStyle(.plain)
+                .disabled(!hasUnsavedChanges)
+                .help(hasUnsavedChanges ? "Save workspace instructions" : "Workspace instructions are saved")
+                .accessibilityLabel("Save workspace instructions")
+
+                if shouldShowClearWorkspaceInstructionsAction {
                     Button {
-                        workspace.instructions = ""
-                        markWorkspaceConfigurationChanged()
+                        clearDraftWorkspaceInstructions()
                     } label: {
-                        Text("Clear")
+                        Text(WorkspaceInstructionEditorPresentation.clearActionTitle)
                             .font(Stanford.caption(11).weight(.medium))
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
+                    .help("Clear instruction draft")
                 }
             }
         }
@@ -1475,23 +1686,34 @@ struct WorkspaceRightRailView: View {
 
     private var foldersSetupDetails: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if workspaceFolderCount == 0 {
-                setupEmptyDetail("No workspace folder selected.")
-            } else {
-                let descriptors = WorkspacePathPresentation.descriptors(
+            let isWorkspaceRootMissing = WorkspaceSetupChecklistPresentation
+                .shouldShowWorkspaceRootMissingMessage(primaryPath: workspace.primaryPath)
+            let rootDescriptor = WorkspacePathPresentation.descriptors(
+                primaryPath: workspace.primaryPath,
+                additionalPaths: []
+            ).first
+            let additionalDescriptors = WorkspaceSetupChecklistPresentation
+                .userConfiguredFolderDescriptors(
                     primaryPath: workspace.primaryPath,
                     additionalPaths: workspace.additionalPaths
                 )
-                ForEach(descriptors) { descriptor in
-                    let canRemove = descriptor.role == .additional
-                    setupFolderRow(
-                        title: descriptor.title,
-                        roleLabel: descriptor.roleLabel,
-                        path: descriptor.path,
-                        canRemove: canRemove,
-                        removeAction: canRemove ? { removeAdditionalPath(at: descriptor.index - 1) } : nil
-                    )
-                }
+
+            if isWorkspaceRootMissing {
+                setupEmptyDetail(WorkspaceSetupChecklistPresentation.missingWorkspaceRootSubtitle)
+            }
+
+            if !isWorkspaceRootMissing, let rootDescriptor {
+                setupFolderRow(
+                    WorkspaceSetupChecklistPresentation.folderDetailRow(for: rootDescriptor),
+                    removeAction: nil
+                )
+            }
+
+            ForEach(additionalDescriptors) { descriptor in
+                setupFolderRow(
+                    WorkspaceSetupChecklistPresentation.folderDetailRow(for: descriptor),
+                    removeAction: { removeAdditionalPaths(matching: descriptor.path) }
+                )
             }
 
             Button {
@@ -1500,7 +1722,7 @@ struct WorkspaceRightRailView: View {
                 HStack(spacing: 5) {
                     Image(systemName: "plus")
                         .font(Stanford.ui(10, weight: .semibold))
-                    Text("Add path")
+                    Text(WorkspaceSetupChecklistPresentation.addFolderActionTitle)
                         .font(Stanford.caption(11).weight(.medium))
                 }
                 .foregroundStyle(Stanford.lagunita)
@@ -1570,12 +1792,13 @@ struct WorkspaceRightRailView: View {
         return remotePath.isEmpty ? target : "\(target)  \(remotePath)"
     }
 
-    private var workspaceInstructionsBinding: Binding<String> {
+    private var draftWorkspaceInstructionsBinding: Binding<String> {
         Binding(
-            get: { workspace.instructions },
+            get: { effectiveDraftWorkspaceInstructions },
             set: { value in
-                workspace.instructions = value
-                markWorkspaceConfigurationChanged()
+                draftWorkspaceInstructions = value
+                draftWorkspaceInstructionsWorkspaceID = workspace.id
+                didRecentlySaveWorkspaceInstructions = false
             }
         )
     }
@@ -1623,41 +1846,40 @@ struct WorkspaceRightRailView: View {
     }
 
     private func setupFolderRow(
-        title: String,
-        roleLabel: String,
-        path: String,
-        canRemove: Bool = false,
+        _ row: WorkspaceFolderDetailRowPresentation,
         removeAction: (() -> Void)? = nil
     ) -> some View {
         HStack(alignment: .center, spacing: 7) {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
-                    Text(title)
-                        .font(Stanford.caption(10).weight(.semibold))
-                        .foregroundStyle(.secondary)
+                    Text(row.title)
+                        .font(Stanford.caption(11).weight(.semibold))
+                        .foregroundStyle(.primary)
                         .lineLimit(1)
                         .truncationMode(.middle)
 
-                    Text(roleLabel)
+                    Text(row.subtitle)
                         .font(Stanford.caption(9).weight(.medium))
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                 }
 
-                Text(compactPath(path))
-                    .font(Stanford.mono(10))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(path)
+                if row.showsPathInBody {
+                    Text(compactPath(row.path))
+                        .font(Stanford.mono(10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
             .layoutPriority(1)
+            .help(row.path)
 
             Spacer(minLength: 0)
 
             Button {
                 NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(path, forType: .string)
+                NSPasteboard.general.setString(row.path, forType: .string)
             } label: {
                 Image(systemName: "doc.on.doc")
                     .font(Stanford.ui(10))
@@ -1665,13 +1887,13 @@ struct WorkspaceRightRailView: View {
                     .frame(width: 18, height: 22)
             }
             .buttonStyle(.plain)
-            .help("Copy path")
+            .help(row.copyPathHelp)
 
-            if canRemove, let removeAction {
+            if row.canRemove, let removeAction {
                 Button {
                     pendingRailDeletion = PendingRailDeletion(
                         title: "Remove folder?",
-                        message: "\(compactPath(path)) will no longer be available to the agent. The folder itself is not deleted.",
+                        message: "\(compactPath(row.path)) will no longer be available to the agent. The folder itself is not deleted.",
                         confirmTitle: "Remove",
                         perform: removeAction
                     )
@@ -1682,7 +1904,7 @@ struct WorkspaceRightRailView: View {
                         .frame(width: 18, height: 22)
                 }
                 .buttonStyle(.plain)
-                .help("Remove path")
+                .help("Remove folder")
             }
         }
         .padding(.horizontal, 7)
@@ -1754,27 +1976,16 @@ struct WorkspaceRightRailView: View {
         Stanford.lagunita
     }
 
-    private var workspaceFolderCount: Int {
-        (workspace.primaryPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 1)
-            + workspace.additionalPaths.count
+    private var workspaceSetupConfiguredCount: Int {
+        workspaceSetupRowItems(for: .configured).count
     }
 
-    private var workspaceSetupConfiguredCount: Int {
-        var count = 0
-        if hasWorkspaceInstructions { count += 1 }
-        if !workspace.memories.isEmpty { count += 1 }
-        if workspaceFolderCount > 0 { count += 1 }
-        if !sshConnections.isEmpty { count += 1 }
-        if !workspace.schedules.isEmpty { count += 1 }
-        return count
+    private var workspaceSetupReferenceCount: Int {
+        workspaceSetupRowItems(for: .reference).count
     }
 
     private var workspaceSetupMissingCount: Int {
-        workspaceSetupTotalCount - workspaceSetupConfiguredCount
-    }
-
-    private var workspaceSetupTotalCount: Int {
-        4 + (workspace.schedules.isEmpty ? 0 : 1)
+        workspaceSetupRowItems(for: .missing).count
     }
 
     // MARK: - Access Section
@@ -1788,9 +1999,85 @@ struct WorkspaceRightRailView: View {
         WorkspacePersistenceCoordinator.scheduleAutoExport(workspace: workspace, modelContext: modelContext)
     }
 
-    private func removeAdditionalPath(at index: Int) {
-        guard workspace.additionalPaths.indices.contains(index) else { return }
-        workspace.additionalPaths.remove(at: index)
+    private func syncInstructionDraftFromWorkspace() {
+        draftWorkspaceInstructions = workspace.instructions
+        draftWorkspaceInstructionsWorkspaceID = workspace.id
+        didRecentlySaveWorkspaceInstructions = false
+    }
+
+    private var isWorkspaceInstructionDraftSynced: Bool {
+        draftWorkspaceInstructionsWorkspaceID == workspace.id
+    }
+
+    private var effectiveDraftWorkspaceInstructions: String {
+        WorkspaceInstructionEditorPresentation.effectiveDraft(
+            localDraft: draftWorkspaceInstructions,
+            persisted: workspace.instructions,
+            isSynced: isWorkspaceInstructionDraftSynced
+        )
+    }
+
+    private var hasUnsavedWorkspaceInstructions: Bool {
+        WorkspaceInstructionEditorPresentation.hasUnsavedChanges(
+            localDraft: draftWorkspaceInstructions,
+            persisted: workspace.instructions,
+            isSynced: isWorkspaceInstructionDraftSynced
+        )
+    }
+
+    private var workspaceInstructionStatusTitle: String? {
+        WorkspaceInstructionEditorPresentation.statusTitle(
+            localDraft: draftWorkspaceInstructions,
+            persisted: workspace.instructions,
+            isSynced: isWorkspaceInstructionDraftSynced,
+            didRecentlySave: didRecentlySaveWorkspaceInstructions
+        )
+    }
+
+    private var shouldShowClearWorkspaceInstructionsAction: Bool {
+        WorkspaceInstructionEditorPresentation.shouldShowClearAction(
+            localDraft: draftWorkspaceInstructions,
+            persisted: workspace.instructions,
+            isSynced: isWorkspaceInstructionDraftSynced
+        )
+    }
+
+    private func saveWorkspaceInstructions() {
+        let savedInstructions = WorkspaceInstructionEditorPresentation.persistedInstructions(
+            fromDraft: effectiveDraftWorkspaceInstructions
+        )
+        guard savedInstructions != workspace.instructions.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            draftWorkspaceInstructions = savedInstructions
+            draftWorkspaceInstructionsWorkspaceID = workspace.id
+            didRecentlySaveWorkspaceInstructions = true
+            return
+        }
+
+        workspace.instructions = savedInstructions
+        draftWorkspaceInstructions = savedInstructions
+        draftWorkspaceInstructionsWorkspaceID = workspace.id
+        didRecentlySaveWorkspaceInstructions = true
+        markWorkspaceConfigurationChanged()
+
+        withAnimation(disclosureAnimation) {
+            _ = expandedWorkspaceSetupItems.insert(.instructions)
+            isConfiguredWorkspaceSetupExpanded = !savedInstructions.isEmpty
+        }
+    }
+
+    private func clearDraftWorkspaceInstructions() {
+        draftWorkspaceInstructions = ""
+        draftWorkspaceInstructionsWorkspaceID = workspace.id
+        didRecentlySaveWorkspaceInstructions = false
+    }
+
+    private func removeAdditionalPaths(matching path: String) {
+        let remaining = WorkspaceSetupChecklistPresentation.remainingAdditionalPaths(
+            afterRemovingFolderMatching: path,
+            from: workspace.additionalPaths
+        )
+        guard remaining.count != workspace.additionalPaths.count else { return }
+        workspace.additionalPaths = remaining
         markWorkspaceConfigurationChanged()
     }
 
@@ -1822,6 +2109,15 @@ struct WorkspaceRightRailView: View {
         }
     }
 
+    private func checkDockerEnvironments() {
+        let candidates = DockerWorkspaceDiscoveryService.candidates(
+            primaryPath: workspace.primaryPath,
+            additionalPaths: workspace.additionalPaths
+        )
+        let active = ExecutionEnvironmentStore.decode(workspace.activeExecutionEnvironmentJSON)
+        hasDockerEnvironments = active.isContainerized || !candidates.isEmpty
+    }
+
     private var workspaceDisclosureID: String {
         workspace.id.uuidString
     }
@@ -1833,6 +2129,7 @@ struct WorkspaceRightRailView: View {
         isToolsExpanded = false
         isTemplatesExpanded = false
         isMemoryComposerVisible = false
+        syncInstructionDraftFromWorkspace()
         expandedWorkspaceSetupItems = []
 
         // Restore the section expand/collapse choices the user made last time in

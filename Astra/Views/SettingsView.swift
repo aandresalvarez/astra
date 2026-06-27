@@ -7,12 +7,6 @@ struct SettingsView: View {
     @AppStorage(AppStorageKeys.defaultModel) private var defaultModel = TaskExecutionDefaults.model
     @AppStorage(AppStorageKeys.defaultTokenBudget) private var defaultTokenBudget = TaskExecutionDefaults.tokenBudget
     @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var defaultAgentPolicyLevelRaw = AgentPolicyLevel.review.rawValue
-    @AppStorage(AppStorageKeys.budgetEnforcementMode) private var budgetEnforcementModeRaw = TaskExecutionDefaults.budgetEnforcementMode.rawValue
-    // Defaults derive from ExecutionSandboxSettings so the UI's initial state and
-    // the resolved (current()) behavior share one source of truth and can't drift.
-    @AppStorage(AppStorageKeys.sandboxEnforcement) private var sandboxEnforcementRaw = ExecutionSandboxSettings.defaultEnforcement.rawValue
-    @AppStorage(AppStorageKeys.sandboxAllowNetwork) private var sandboxAllowNetwork = ExecutionSandboxSettings.defaultAllowNetwork
-    @AppStorage(AppStorageKeys.sandboxLayerNativeProviders) private var sandboxLayerNativeProviders = ExecutionSandboxSettings.defaultLayerNativeProviders
     @AppStorage(AppStorageKeys.defaultRuntimeID) private var defaultRuntimeID = TaskExecutionDefaults.runtime.rawValue
     @AppStorage(AppStorageKeys.claudePath) private var claudePath = ""
     @AppStorage(AppStorageKeys.copilotPath) private var copilotPath = ""
@@ -29,27 +23,13 @@ struct SettingsView: View {
     @AppStorage(AppStorageKeys.browserAutoPromoteGoogleWorkspace) private var browserAutoPromoteGoogleWorkspace = false
     @AppStorage(AppStorageKeys.hasCompletedOnboarding) private var hasCompletedOnboarding = false
     @AppStorage(AppearancePreference.storageKey) private var appearanceRaw = AppearancePreference.system.rawValue
-    @AppStorage(AppStorageKeys.claudeProvider) private var claudeProviderRaw = ClaudeProvider.anthropic.rawValue
-    @AppStorage(AppStorageKeys.claudeVertexProjectID) private var claudeVertexProjectID = ""
-    @AppStorage(AppStorageKeys.claudeVertexRegion) private var claudeVertexRegion = ""
-    @AppStorage(AppStorageKeys.claudeVertexOpusModel) private var claudeVertexOpusModel = ""
-    @AppStorage(AppStorageKeys.claudeVertexSonnetModel) private var claudeVertexSonnetModel = ""
-    @AppStorage(AppStorageKeys.claudeVertexHaikuModel) private var claudeVertexHaikuModel = ""
     @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
     @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
     @AppStorage(AppStorageKeys.runtimeModelCacheRevision) private var runtimeModelCacheRevision = 0
 
     private let budgetPresets = TaskExecutionDefaults.budgetPresets
 
-    @State private var detectedPath = ""
-    @State private var detectedCopilotPath = ""
-    @State private var providerPathDrafts: [AgentRuntimeID: String] = [:]
-    @State private var detectedProviderPaths: [AgentRuntimeID: String] = [:]
-    @State private var expandedProviderRuntime: AgentRuntimeID?
     @State private var roleProfileDrafts: [TaskRoleID: TaskRoleProfile] = [:]
-    @State private var readinessReport: RuntimeReadinessReport?
-    @State private var isCheckingReadiness = false
-    @State private var readinessCheckedAt: Date?
     @StateObject private var macOSPermissions = MacOSPermissionsViewModel()
 
     @MainActor
@@ -98,18 +78,7 @@ struct SettingsView: View {
         .navigationTitle("Settings")
         .scenePadding()
         .onAppear {
-            loadProviderPathDrafts()
             loadRoleProfileDrafts()
-            detectClaudeCLI()
-            detectCopilotCLI()
-            if expandedProviderRuntime == nil {
-                expandedProviderRuntime = restoredExpandedProviderRuntime()
-            }
-            Task { await refreshRuntimeReadiness() }
-        }
-        .onChange(of: readinessSignature) {
-            readinessReport = nil
-            readinessCheckedAt = nil
         }
         .onChange(of: claudeAvailableModels) {
             alignDefaultModelsWithRuntime()
@@ -121,9 +90,7 @@ struct SettingsView: View {
             alignDefaultModelsWithRuntime()
         }
         .onChange(of: runtimeProviderSettingsRevision) {
-            loadProviderPathDrafts()
-            readinessReport = nil
-            readinessCheckedAt = nil
+            loadRoleProfileDrafts()
         }
         .onChange(of: roleProfileRevision) {
             loadRoleProfileDrafts()
@@ -134,428 +101,19 @@ struct SettingsView: View {
     }
 
     private var runtimeSettingsTab: some View {
-        Form {
-            Section("Provider Selection") {
-                Picker("Default Provider", selection: $defaultRuntimeID) {
-                    ForEach(AgentRuntimeAdapterRegistry.runtimeIDs) { runtime in
-                        Text(runtime.displayName).tag(runtime.rawValue)
-                    }
-                }
-                .onChange(of: defaultRuntimeID) {
-                    alignDefaultModelsWithRuntime(resetToRuntimeSuggestion: true)
-                    expandedProviderRuntime = selectedRuntime
-                    ProviderDisclosureStore.expandedRuntimeID = selectedRuntime.rawValue
-                    readinessReport = nil
-                    readinessCheckedAt = nil
-                }
-                Text("New tasks use this provider. Existing tasks keep the provider they were created with.")
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Providers") {
-                ForEach(AgentRuntimeAdapterRegistry.runtimeIDs) { runtime in
-                    providerDisclosureRow(runtime)
-                }
-            }
-
-            Section("Default Provider Readiness") {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack(alignment: .center, spacing: 12) {
-                        readinessSummary
-                        Spacer()
-                        Button {
-                            Task { await refreshRuntimeReadiness() }
-                        } label: {
-                            if isCheckingReadiness {
-                                ProgressView()
-                                    .controlSize(.small)
-                            } else {
-                                Label("Check Now", systemImage: "checkmark.seal")
-                            }
-                        }
-                        .disabled(isCheckingReadiness)
-                    }
-
-                    if let readinessReport {
-                        LazyVGrid(columns: readinessColumns, alignment: .leading, spacing: 8) {
-                            ForEach(readinessReport.checks) { check in
-                                readinessTile(check)
-                            }
-                        }
-                    } else {
-                        Text("Run a readiness check to verify the default provider, authentication, provider route, and required local tools.")
-                            .font(Stanford.caption(12))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-
-            Section("Runtime Guardrails") {
-                Picker("Default Budget", selection: $defaultTokenBudget) {
-                    ForEach(budgetPresets, id: \.self) { b in
-                        Text(b == 0 ? "Unlimited" : "\(b / 1000)k tokens").tag(b)
-                    }
-                }
-
-                Picker("Budget Enforcement", selection: $budgetEnforcementModeRaw) {
-                    ForEach(BudgetEnforcementMode.allCases) { mode in
-                        Text(mode.label).tag(mode.rawValue)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                Text(selectedBudgetEnforcementMode.helpText)
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(.secondary)
-
-                Picker("Default Policy", selection: defaultPolicySelectionBinding) {
-                    ForEach(AgentPolicyLevel.primaryCases) { level in
-                        Label(level.displayName, systemImage: level.symbolName)
-                            .tag(level.rawValue)
-                    }
-                }
-
-                Text(selectedDefaultPolicyLevel.shortDescription)
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(.secondary)
-
-                Picker("Execution Sandbox", selection: sandboxEnforcementSelectionBinding) {
-                    ForEach(ExecutionSandboxEnforcement.allCases) { mode in
-                        Text(mode.displayName).tag(mode.rawValue)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                Text(selectedSandboxEnforcement.helpText)
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(.secondary)
-
-                Toggle("Allow Network In Sandbox", isOn: $sandboxAllowNetwork)
-                    .disabled(selectedSandboxEnforcement == .off)
-
-                Text(sandboxAllowNetwork
-                    ? "Sandboxed agents can reach the network — required for the provider's model API and online tools."
-                    : "Offline: the sandbox blocks all outbound network. Use only for fully local tasks; most agent runs will fail to reach their model.")
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(.secondary)
-
-                Toggle("Also Sandbox Providers With Built-In Sandboxes", isOn: $sandboxLayerNativeProviders)
-                    .disabled(selectedSandboxEnforcement == .off)
-
-                Text("Layer ASTRA's sandbox over Codex, Cursor, and Antigravity for defense-in-depth. Off by default — these providers already self-sandbox, and double-confinement can break them.")
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .formStyle(.grouped)
-    }
-
-    private func providerDisclosureRow(_ runtime: AgentRuntimeID) -> some View {
-        DisclosureGroup(isExpanded: expandedProviderBinding(for: runtime)) {
-            providerConnectionDetails(runtime)
-                .padding(.top, 8)
-        } label: {
-            providerSummaryLabel(runtime)
-        }
-    }
-
-    private func providerSummaryLabel(_ runtime: AgentRuntimeID) -> some View {
-        let status = providerConnectionStatus(for: runtime)
-
-        let descriptor = AgentRuntimeAdapterRegistry.descriptor(for: runtime)
-
-        return HStack(alignment: .center, spacing: 10) {
-            CapabilityLeadingIcon(
-                systemImage: providerIcon(for: runtime),
-                brand: providerBrand(for: runtime),
-                pointSize: 16
-            )
-            .foregroundStyle(.secondary)
-            .frame(width: 22)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(descriptor.displayName)
-                    .font(Stanford.body(14).weight(.semibold))
-                Text(status.detail)
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .help(status.detail)
-            }
-
-            Spacer()
-
-            if runtime == selectedRuntime {
-                providerChip("Default", tint: Stanford.statusInfo)
-            }
-
-            providerChip(status.label, tint: status.tint)
-        }
-    }
-
-    @ViewBuilder
-    private func providerConnectionDetails(_ runtime: AgentRuntimeID) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            providerPathRow(
-                title: "CLI path",
-                path: providerPathBinding(for: runtime),
-                prompt: "Auto-detected",
-                detectedPath: detectedProviderPath(for: runtime),
-                detectAction: { detectCLI(for: runtime) },
-                saveAction: runtime == .claudeCode || runtime == .copilotCLI
-                    ? nil
-                    : { saveProviderPathDraft(for: runtime) },
-                hasUnsavedChanges: hasUnsavedProviderPathDraft(for: runtime)
-            )
-
-            if runtime == .claudeCode {
-                claudeRouteSettings
-            } else {
-                let descriptor = AgentRuntimeAdapterRegistry.descriptor(for: runtime)
-                if !descriptor.authHint.isEmpty {
-                    Text(descriptor.authHint)
-                        .font(Stanford.caption(12))
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                }
-            }
-
-            if runtime != selectedRuntime {
-                Button {
-                    defaultRuntimeID = runtime.rawValue
-                } label: {
-                    Label("Make Default", systemImage: "checkmark.circle")
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var claudeRouteSettings: some View {
-        Picker("Route through", selection: $claudeProviderRaw) {
-            ForEach(ClaudeProvider.allCases) { provider in
-                Label(provider.label, systemImage: provider.symbolName)
-                    .tag(provider.rawValue)
-            }
-        }
-
-        if selectedClaudeProvider == .vertex {
-            TextField(
-                "GCP Project ID",
-                text: $claudeVertexProjectID,
-                prompt: Text("my-gcp-project")
-            )
-            TextField(
-                "Region",
-                text: $claudeVertexRegion,
-                prompt: Text("us-east5 or global")
-            )
-
-            Text("Vertex model aliases")
-                .font(Stanford.caption(12).weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.top, 2)
-            Text("Use Vertex IDs such as `claude-opus-4-6@default`; plain Anthropic model names do not resolve on Vertex.")
-                .font(Stanford.caption(12))
-                .foregroundStyle(.secondary)
-
-            TextField(
-                "Opus alias",
-                text: $claudeVertexOpusModel,
-                prompt: Text("claude-opus-4-6@default")
-            )
-            TextField(
-                "Sonnet alias",
-                text: $claudeVertexSonnetModel,
-                prompt: Text("claude-sonnet-4-6@default")
-            )
-            TextField(
-                "Haiku alias",
-                text: $claudeVertexHaikuModel,
-                prompt: Text("claude-haiku-4-5@20251001")
-            )
-
-            Text("ASTRA injects the Vertex project, region, and model alias environment variables when it starts Claude Code. Authentication comes from `gcloud auth application-default login`.")
-                .font(Stanford.caption(12))
-                .foregroundStyle(.secondary)
-        } else {
-            Text("Anthropic routing uses the Claude Code CLI session on this Mac. Authenticate or refresh the account with `claude /login`.")
-                .font(Stanford.caption(12))
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private func providerChip(_ text: String, tint: Color) -> some View {
-        Text(text)
-            .font(Stanford.caption(11).weight(.semibold))
-            .foregroundStyle(tint)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(Capsule().fill(tint.opacity(0.10)))
-    }
-
-    /// The real brand mark for a provider when one ships, so recognizable
-    /// services (GitHub Copilot, Claude Code) lead with their glyph and the
-    /// generic SF Symbol from `providerIcon` is only a fallback (ICO).
-    private func providerBrand(for runtime: AgentRuntimeID) -> BrandMark? {
-        let descriptor = AgentRuntimeAdapterRegistry.descriptor(for: runtime)
-        return BrandMark.resolve(id: runtime.rawValue, name: descriptor.displayName)
-    }
-
-    private func providerIcon(for runtime: AgentRuntimeID) -> String {
-        switch runtime {
-        case .claudeCode: "terminal"
-        case .copilotCLI: "person.crop.circle"
-        case .antigravityCLI: "sparkles"
-        case .codexCLI: "curlybraces.square"
-        case .cursorCLI: "cursorarrow.rays"
-        case .openCodeCLI: "chevron.left.forwardslash.chevron.right"
-        default: "terminal"
-        }
-    }
-
-    private func providerConnectionStatus(
-        for runtime: AgentRuntimeID
-    ) -> (label: String, detail: String, symbol: String, tint: Color) {
-        let descriptor = AgentRuntimeAdapterRegistry.descriptor(for: runtime)
-
-        if runtime == selectedRuntime {
-            if isCheckingReadiness {
-                return (
-                    "Checking",
-                    "Checking path, account, and model access.",
-                    "arrow.triangle.2.circlepath",
-                    Stanford.statusInfo
-                )
-            }
-
-            switch readinessReport?.state {
-            case .ready:
-                return (
-                    "Ready",
-                    "\(descriptor.displayName) passed the latest readiness check.",
-                    "checkmark.circle.fill",
-                    Stanford.statusHealthy
-                )
-            case .warning:
-                return (
-                    "Review",
-                    readinessReport?.summary ?? "The default provider is usable, with one item to review.",
-                    "exclamationmark.triangle.fill",
-                    Stanford.statusWarn
-                )
-            case .blocked:
-                return (
-                    "Blocked",
-                    readinessReport?.summary ?? "Resolve provider setup before starting new tasks.",
-                    "xmark.octagon.fill",
-                    Stanford.statusError
-                )
-            case .none:
-                return (
-                    "Selected",
-                    "Default for new tasks. Run Check Now to verify local setup.",
-                    "circle.dotted",
-                    Stanford.statusInfo
-                )
-            }
-        }
-
-        if !configuredProviderPath(for: runtime).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return (
-                "Configured",
-                "CLI path saved for \(descriptor.displayName).",
-                "checkmark.circle.fill",
-                Stanford.statusHealthy
-            )
-        }
-
-        let detected = detectedProviderPath(for: runtime).trimmingCharacters(in: .whitespacesAndNewlines)
-        if !detected.isEmpty {
-            return (
-                "Detected",
-                detected,
-                "checkmark.circle.fill",
-                Stanford.statusHealthy
-            )
-        }
-
-        return (
-            "Needs setup",
-            descriptor.installHint.isEmpty ? "Configure the CLI path before using this provider." : descriptor.installHint,
-            "circle",
-            Stanford.coolGrey
+        SettingsRuntimeTab(
+            defaultModel: $defaultModel,
+            defaultTokenBudget: $defaultTokenBudget,
+            defaultAgentPolicyLevelRaw: $defaultAgentPolicyLevelRaw,
+            defaultRuntimeID: $defaultRuntimeID,
+            claudePath: $claudePath,
+            copilotPath: $copilotPath,
+            runtimeProviderSettingsRevision: $runtimeProviderSettingsRevision,
+            claudeAvailableModels: $claudeAvailableModels,
+            copilotAvailableModels: $copilotAvailableModels,
+            runtimeModelCacheRevision: $runtimeModelCacheRevision,
+            validationModel: $validationModel
         )
-    }
-
-    /// The provider row to open when Settings first appears: the value the user
-    /// last left (including an explicit "all collapsed"), falling back to the
-    /// default provider only when nothing has been stored yet.
-    private func restoredExpandedProviderRuntime() -> AgentRuntimeID? {
-        guard let stored = ProviderDisclosureStore.expandedRuntimeID else {
-            return selectedRuntime
-        }
-        // An empty stored value is the sentinel for "user collapsed every row".
-        guard !stored.isEmpty else { return nil }
-        return AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: stored)
-    }
-
-    private func expandedProviderBinding(for runtime: AgentRuntimeID) -> Binding<Bool> {
-        Binding(
-            get: { expandedProviderRuntime == runtime },
-            set: {
-                let next: AgentRuntimeID? = $0 ? runtime : nil
-                expandedProviderRuntime = next
-                ProviderDisclosureStore.expandedRuntimeID = next?.rawValue
-            }
-        )
-    }
-
-    private func providerPathRow(
-        title: String,
-        path: Binding<String>,
-        prompt: String,
-        detectedPath: String,
-        detectAction: @escaping () -> Void,
-        saveAction: (() -> Void)? = nil,
-        hasUnsavedChanges: Bool = false
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .center, spacing: 12) {
-                Text(title)
-                Spacer()
-                TextField(title, text: path, prompt: Text(prompt))
-                    .textFieldStyle(.roundedBorder)
-                    .multilineTextAlignment(.trailing)
-                    .frame(minWidth: 280, maxWidth: 420)
-                    .textSelection(.enabled)
-                    .onSubmit {
-                        saveAction?()
-                    }
-                if let saveAction {
-                    Button("Save") {
-                        saveAction()
-                    }
-                    .disabled(!hasUnsavedChanges)
-                }
-                Button {
-                    detectAction()
-                } label: {
-                    Label("Detect", systemImage: "magnifyingglass")
-                }
-            }
-
-            if !detectedPath.isEmpty {
-                Label {
-                    Text("Detected: \(detectedPath)")
-                        .font(Stanford.caption(12))
-                } icon: {
-                    Image(systemName: "checkmark.circle.fill")
-                }
-                .foregroundStyle(.secondary)
-            }
-        }
     }
 
     private var permissionsSettingsTab: some View {
@@ -640,7 +198,7 @@ struct SettingsView: View {
             HStack {
                 Picker("Budget", selection: roleBudgetBinding(for: role)) {
                     ForEach(budgetPresets, id: \.self) { budget in
-                        Text(budget == 0 ? "Unlimited" : "\(budget / 1000)k tokens").tag(budget)
+                        Text(RuntimeBudgetPresentation.settingsLabel(for: budget)).tag(budget)
                     }
                 }
                 Picker("Policy", selection: rolePolicyBinding(for: role)) {
@@ -864,10 +422,6 @@ struct SettingsView: View {
         AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
     }
 
-    private var selectedClaudeProvider: ClaudeProvider {
-        ClaudeProvider(rawValue: claudeProviderRaw) ?? .anthropic
-    }
-
     private var runtimeModels: [String] {
         RuntimeModelAvailability.models(
             for: selectedRuntime,
@@ -889,65 +443,6 @@ struct SettingsView: View {
             cachedClaudeModelsJSON: claudeAvailableModels,
             cachedCopilotModelsJSON: copilotAvailableModels
         )
-    }
-
-    private var selectedBudgetEnforcementMode: BudgetEnforcementMode {
-        BudgetEnforcementMode(rawValue: budgetEnforcementModeRaw) ?? TaskExecutionDefaults.budgetEnforcementMode
-    }
-
-    private var selectedSandboxEnforcement: ExecutionSandboxEnforcement {
-        ExecutionSandboxEnforcement.normalized(sandboxEnforcementRaw)
-    }
-
-    /// Normalizing binding so the segmented Picker always reads/writes a canonical
-    /// raw value. A legacy/unknown stored value (which `normalized` tolerates)
-    /// therefore still maps to a valid segment instead of leaving the control with
-    /// no selection.
-    private var sandboxEnforcementSelectionBinding: Binding<String> {
-        Binding(
-            get: { ExecutionSandboxEnforcement.normalized(sandboxEnforcementRaw).rawValue },
-            set: { sandboxEnforcementRaw = ExecutionSandboxEnforcement.normalized($0).rawValue }
-        )
-    }
-
-    private var selectedDefaultPolicyLevel: AgentPolicyLevel {
-        AgentPolicyLevel.normalized(defaultAgentPolicyLevelRaw).userFacingLevel
-    }
-
-    private var defaultPolicySelectionBinding: Binding<String> {
-        Binding(
-            get: { AgentPolicyLevel.normalized(defaultAgentPolicyLevelRaw).userFacingLevel.rawValue },
-            set: { defaultAgentPolicyLevelRaw = AgentPolicyLevel.normalized($0).userFacingLevel.rawValue }
-        )
-    }
-
-    private var readinessConfiguration: RuntimeReadinessConfiguration {
-        RuntimeReadinessConfiguration(
-            runtime: AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID),
-            providerSettings: providerSettingsForReadiness,
-            claudeProvider: ClaudeProvider(rawValue: claudeProviderRaw) ?? .anthropic,
-            vertexProjectID: claudeVertexProjectID,
-            vertexRegion: claudeVertexRegion,
-            vertexOpusModel: claudeVertexOpusModel,
-            vertexSonnetModel: claudeVertexSonnetModel,
-            vertexHaikuModel: claudeVertexHaikuModel
-        )
-    }
-
-    private var readinessSignature: String {
-        [
-            defaultRuntimeID,
-            claudePath,
-            copilotPath,
-            String(runtimeProviderSettingsRevision),
-            RuntimeProviderSettingsStore.signature(),
-            claudeProviderRaw,
-            claudeVertexProjectID,
-            claudeVertexRegion,
-            claudeVertexOpusModel,
-            claudeVertexSonnetModel,
-            claudeVertexHaikuModel
-        ].joined(separator: "\u{1F}")
     }
 
     private var providerSettingsForReadiness: AgentRuntimeProviderSettings {
@@ -972,9 +467,8 @@ struct SettingsView: View {
                         selection.wrappedValue = model
                     } label: {
                         ModelMenuItemLabel(
-                            model: model,
-                            displayName: RuntimeModelAvailability.displayName(
-                                for: model,
+                            presentation: RuntimeModelMenuOptionPresentation(
+                                model: model,
                                 runtime: selectedRuntime,
                                 cache: runtimeModelCache
                             ),
@@ -1014,9 +508,8 @@ struct SettingsView: View {
                         roleModelBinding(for: role).wrappedValue = model
                     } label: {
                         ModelMenuItemLabel(
-                            model: model,
-                            displayName: RuntimeModelAvailability.displayName(
-                                for: model,
+                            presentation: RuntimeModelMenuOptionPresentation(
+                                model: model,
                                 runtime: runtime,
                                 cache: runtimeModelCache
                             ),
@@ -1125,112 +618,6 @@ struct SettingsView: View {
         )
     }
 
-    private var readinessSummary: some View {
-        HStack(spacing: 8) {
-            if isCheckingReadiness {
-                ProgressView()
-                    .controlSize(.small)
-                    .frame(width: 16, height: 16)
-            } else {
-                Image(systemName: readinessSummarySymbol)
-                    .foregroundStyle(readinessSummaryColor)
-                    .frame(width: 16)
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(readinessReport?.summary ?? "Not checked")
-                    .font(Stanford.body(14).weight(.medium))
-                Text(readinessSubtitle)
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private var readinessSubtitle: String {
-        if isCheckingReadiness { return "Checking local tools and provider auth..." }
-        guard let readinessCheckedAt else { return "Checks are local and sanitized." }
-        return "Last checked \(readinessCheckedAt.formatted(date: .omitted, time: .shortened))"
-    }
-
-    private var readinessSummarySymbol: String {
-        switch readinessReport?.state {
-        case .ready: "checkmark.circle.fill"
-        case .warning: "exclamationmark.triangle.fill"
-        case .blocked: "xmark.octagon.fill"
-        case .none: "circle.dotted"
-        }
-    }
-
-    private var readinessSummaryColor: Color {
-        switch readinessReport?.state {
-        case .ready: Stanford.statusHealthy
-        case .warning: Stanford.statusWarn
-        case .blocked: Stanford.statusError
-        case .none: Stanford.coolGrey
-        }
-    }
-
-    private var readinessColumns: [GridItem] {
-        [
-            GridItem(.flexible(minimum: 220), spacing: 8),
-            GridItem(.flexible(minimum: 220), spacing: 8)
-        ]
-    }
-
-    private func readinessTile(_ check: RuntimeReadinessCheck) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
-
-        return HStack(alignment: .top, spacing: 8) {
-            Image(systemName: readinessSymbol(for: check.state))
-                .foregroundStyle(readinessColor(for: check.state))
-                .font(Stanford.ui(13))
-                .frame(width: 16, height: 18)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(check.title)
-                    .font(Stanford.caption(12).weight(.semibold))
-                    .lineLimit(1)
-                Text(check.detail)
-                    .font(Stanford.caption(11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .textSelection(.enabled)
-                if let remediation = check.remediation, !remediation.isEmpty {
-                    Text(remediation)
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(readinessColor(for: check.state))
-                        .lineLimit(2)
-                        .textSelection(.enabled)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, minHeight: 64, alignment: .topLeading)
-        .background(shape.fill(Color.primary.opacity(0.018)))
-        .overlay {
-            shape.stroke(Color.primary.opacity(0.055), lineWidth: 1)
-        }
-        .clipShape(shape)
-    }
-
-    private func readinessSymbol(for state: RuntimeReadinessState) -> String {
-        switch state {
-        case .ready: "checkmark.circle.fill"
-        case .warning: "exclamationmark.triangle.fill"
-        case .blocked: "xmark.octagon.fill"
-        }
-    }
-
-    private func readinessColor(for state: RuntimeReadinessState) -> Color {
-        switch state {
-        case .ready: Stanford.statusHealthy
-        case .warning: Stanford.statusWarn
-        case .blocked: Stanford.statusError
-        }
-    }
-
     private func dataLocationRow(_ title: String, path: String, canOpen: Bool = true) -> some View {
         // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
         // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
@@ -1252,111 +639,6 @@ struct SettingsView: View {
                 .disabled(!FileManager.default.fileExists(atPath: path))
             }
         }
-    }
-
-    private func detectClaudeCLI() {
-        let path = RuntimePathResolver.detectClaudePath()
-        if FileManager.default.isExecutableFile(atPath: path) {
-            detectedPath = path
-            if claudePath.isEmpty { claudePath = path }
-        }
-    }
-
-    private func detectCopilotCLI() {
-        let detected = CopilotCLIRuntime.detectPath()
-        if !detected.isEmpty {
-            detectedCopilotPath = detected
-            if copilotPath.isEmpty { copilotPath = detected }
-        }
-    }
-
-    private func providerPathBinding(for runtime: AgentRuntimeID) -> Binding<String> {
-        switch runtime {
-        case .claudeCode:
-            return Binding(
-                get: { claudePath },
-                set: { value in
-                    claudePath = value
-                    providerPathDrafts[runtime] = value
-                }
-            )
-        case .copilotCLI:
-            return Binding(
-                get: { copilotPath },
-                set: { value in
-                    copilotPath = value
-                    providerPathDrafts[runtime] = value
-                }
-            )
-        default:
-            break
-        }
-
-        return Binding(
-            get: {
-                providerPathDrafts[runtime] ?? RuntimeProviderSettingsStore.executablePath(for: runtime)
-            },
-            set: { value in
-                providerPathDrafts[runtime] = value
-            }
-        )
-    }
-
-    private func loadProviderPathDrafts() {
-        for runtime in AgentRuntimeAdapterRegistry.runtimeIDs {
-            providerPathDrafts[runtime] = RuntimeProviderSettingsStore.executablePath(for: runtime)
-        }
-    }
-
-    private func detectProviderCLI(_ runtime: AgentRuntimeID) {
-        let descriptor = AgentRuntimeAdapterRegistry.descriptor(for: runtime)
-        let detected = RuntimePathResolver.detectExecutablePath(named: descriptor.executableName)
-        guard !detected.isEmpty else { return }
-        detectedProviderPaths[runtime] = detected
-        if providerPathDrafts[runtime, default: ""].isEmpty {
-            providerPathDrafts[runtime] = detected
-            RuntimeProviderSettingsStore.setExecutablePath(detected, for: runtime)
-        }
-    }
-
-    private func saveProviderPathDraft(for runtime: AgentRuntimeID) {
-        let value = providerPathDrafts[runtime] ?? ""
-        RuntimeProviderSettingsStore.setExecutablePath(value, for: runtime)
-    }
-
-    private func hasUnsavedProviderPathDraft(for runtime: AgentRuntimeID) -> Bool {
-        ProviderPathPersistenceState.hasUnsavedDraft(
-            draft: providerPathDrafts[runtime],
-            persisted: RuntimeProviderSettingsStore.executablePath(for: runtime)
-        )
-    }
-
-    private func detectCLI(for runtime: AgentRuntimeID) {
-        switch runtime {
-        case .claudeCode:
-            detectClaudeCLI()
-        case .copilotCLI:
-            detectCopilotCLI()
-        default:
-            detectProviderCLI(runtime)
-        }
-    }
-
-    private func detectedProviderPath(for runtime: AgentRuntimeID) -> String {
-        switch runtime {
-        case .claudeCode: detectedPath
-        case .copilotCLI: detectedCopilotPath
-        default: detectedProviderPaths[runtime] ?? ""
-        }
-    }
-
-    private func configuredProviderPath(for runtime: AgentRuntimeID) -> String {
-        ProviderPathPersistenceState.persistedPath(
-            for: runtime,
-            claudePath: claudePath,
-            copilotPath: copilotPath,
-            providerPath: RuntimeProviderSettingsStore.executablePath(for: runtime)
-        )
     }
 
     private func browseFolder() {
@@ -1381,27 +663,6 @@ struct SettingsView: View {
                 NSWorkspace.shared.open(parent)
             }
         }
-    }
-
-    private func refreshRuntimeReadiness() async {
-        isCheckingReadiness = true
-        defer { isCheckingReadiness = false }
-
-        let service = RuntimeReadinessService()
-        var report = await service.check(configuration: readinessConfiguration)
-        if report.checks.contains(where: { $0.id == readinessConfiguration.runtimeReadinessCheckID && $0.state == .ready }) {
-            let modelCheck = await refreshModelAvailability(for: readinessConfiguration)
-            report = RuntimeReadinessReport(checks: report.checks + [modelCheck])
-            alignDefaultModelsWithRuntime()
-        }
-        readinessReport = report
-        readinessCheckedAt = Date()
-    }
-
-    private func refreshModelAvailability(for configuration: RuntimeReadinessConfiguration) async -> RuntimeReadinessCheck {
-        await AgentRuntimeAdapterRegistry
-            .adapter(for: configuration.runtime)
-            .modelAvailabilityCheck(configuration: configuration)
     }
 
     private func alignDefaultModelsWithRuntime(resetToRuntimeSuggestion: Bool = false) {
@@ -1441,32 +702,5 @@ struct SettingsView: View {
             "validation_model": validationModel,
             "validation_model_changed": String(previousValidationModel != validationModel)
         ], level: previousDefaultModel == defaultModel && previousValidationModel == validationModel ? .debug : .info)
-    }
-}
-
-private extension RuntimeReadinessConfiguration {
-    var runtimeReadinessCheckID: String {
-        AgentRuntimeAdapterRegistry.adapter(for: runtime).readinessCheckID
-    }
-}
-
-/// Remembers which provider disclosure row was last expanded so reopening
-/// Settings restores the user's layout. Backed by `UserDefaults` directly — not
-/// `@AppStorage` — to stay off the architecture-fitness `@AppStorage` ratchet,
-/// mirroring `RailDisclosureStore`. Settings is a single global surface, so the
-/// key is not workspace-scoped. `nil` means "never touched" (seed the default
-/// provider); an empty string is the sentinel for "user collapsed every row".
-enum ProviderDisclosureStore {
-    private static let key = "settings.providers.expandedRuntimeID"
-
-    static var expandedRuntimeID: String? {
-        get { UserDefaults.standard.string(forKey: key) }
-        set {
-            if let newValue {
-                UserDefaults.standard.set(newValue, forKey: key)
-            } else {
-                UserDefaults.standard.set("", forKey: key)
-            }
-        }
     }
 }

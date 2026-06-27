@@ -3,7 +3,7 @@ import Testing
 @testable import ASTRA
 import ASTRACore
 
-@Suite("Agent Runtime Adapters")
+@Suite("Agent Runtime Adapters", .serialized)
 struct AgentRuntimeAdapterTests {
     @Test("Every runtime has one registered adapter")
     func everyRuntimeHasOneRegisteredAdapter() {
@@ -108,6 +108,27 @@ struct AgentRuntimeAdapterTests {
         #expect(!source.contains("Task { await AgentRuntimeSharedStateGate.shared.release(sharedStateKey) }"))
     }
 
+    @Test("SSH launch presence helper avoids loading full connection payloads")
+    func sshLaunchPresenceHelperAvoidsLoadingFullConnectionPayloads() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let runnerURL = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Runtime")
+            .appendingPathComponent("AgentRuntimeProcessRunner.swift")
+        let source = try String(contentsOf: runnerURL, encoding: .utf8)
+        let signature = "static func hasWorkspaceSSHConnections(for task: AgentTask) -> Bool"
+        let marker = "    /// Namespace invariant"
+        let signatureRange = try #require(source.range(of: signature))
+        let markerRange = try #require(source[signatureRange.upperBound...].range(of: marker))
+        let helperSource = source[signatureRange.lowerBound..<markerRange.lowerBound]
+
+        #expect(helperSource.contains("SSHConnectionManager.hasStoredConnections"))
+        #expect(!helperSource.contains("SSHConnectionManager.load"))
+    }
+
     @Test("Adapters own model cache storage keys")
     func adaptersOwnModelCacheStorageKeys() {
         let claude = AgentRuntimeAdapterRegistry.adapter(for: .claudeCode)
@@ -131,6 +152,84 @@ struct AgentRuntimeAdapterTests {
         #expect(openCode.descriptor.defaultModels.first == "opencode/big-pickle")
         #expect(Set(AgentRuntimeAdapterRegistry.allAdapters.map(\.availableModelsStorageKey)).count == AgentRuntimeAdapterRegistry.allAdapters.count)
         #expect(Set(AgentRuntimeAdapterRegistry.allAdapters.map(\.modelsCheckedAtStorageKey)).count == AgentRuntimeAdapterRegistry.allAdapters.count)
+    }
+
+    @Test("Adapters own sandbox home-state contracts")
+    func adaptersOwnSandboxHomeStateContracts() throws {
+        let expectedInherited: [AgentRuntimeID: [String]] = [
+            .claudeCode: [".claude", ".claude.json", "Library/Application Support/Claude"],
+            .copilotCLI: [".copilot", "Library/Caches/copilot"],
+            .antigravityCLI: [".antigravity", ".gemini"],
+            .codexCLI: [".codex"],
+            .cursorCLI: [".cursor"],
+            .openCodeCLI: [".config/opencode", ".cache/opencode", ".local/share/opencode", ".local/state/opencode"]
+        ]
+
+        #expect(Set(expectedInherited.keys) == Set(AgentRuntimeAdapterRegistry.runtimeIDs))
+        for runtime in AgentRuntimeAdapterRegistry.runtimeIDs {
+            let access = AgentRuntimeAdapterRegistry.homeStateAccess(for: runtime)
+            let expected = try #require(expectedInherited[runtime])
+            #expect(access.inheritedHomeWritableRelativePaths == expected)
+            #expect(!access.isEmpty)
+            for relativePath in access.explicitHomeWritableRelativePaths + access.inheritedHomeWritableRelativePaths {
+                #expect(!relativePath.hasPrefix("/"))
+                #expect(!relativePath.contains("\n"))
+            }
+        }
+
+        let futureRuntime = try #require(AgentRuntimeID(rawValue: "future_cli"))
+        #expect(AgentRuntimeAdapterRegistry.homeStateAccess(for: futureRuntime).isEmpty)
+    }
+
+    @Test("Launch plan enrichments preserve execution environment metadata")
+    func launchPlanEnrichmentsPreserveExecutionEnvironmentMetadata() {
+        let mount = ExecutionEnvironmentMount(
+            hostPath: "/tmp/astra-workspace",
+            containerPath: "/workspace",
+            access: .readWrite,
+            role: .workspace
+        )
+        let mapper = ExecutionEnvironmentPathMapper(mounts: [mount])
+        let environment = WorkspaceExecutionEnvironment(
+            id: "test-docker-workspace",
+            kind: .dockerImage,
+            displayName: "Test Docker Workspace",
+            image: "astra-test:latest",
+            providerPlacement: .host,
+            mounts: [mount]
+        )
+        let plan = AgentRuntimeProcessLaunchPlan(
+            runtime: .codexCLI,
+            executablePath: "/opt/homebrew/bin/codex",
+            arguments: ["--skip-git-repo-check", "run"],
+            currentDirectory: "/tmp/astra-workspace",
+            environment: ["HOME": "/tmp/astra-home"],
+            browserShimDirectory: nil,
+            providerVersion: nil,
+            parsesJSONLines: true,
+            sandboxReadablePaths: ["/tmp/astra-readable"],
+            commandPlannedFields: ["supports_allow_all_paths": "true"],
+            pathMapper: mapper,
+            executionEnvironment: environment
+        )
+        let gitContext = GitCredentialSandboxContext(
+            readablePaths: ["/tmp/astra-gitconfig"],
+            writablePaths: ["/tmp/astra-external-gitdir"],
+            transports: [.ssh],
+            diagnostics: []
+        )
+
+        let enriched = plan.addingGitCredentialContext(gitContext)
+            .enablingProviderNativeGitCredentialReads(
+                for: gitContext,
+                permissionPolicy: .restricted
+            )
+
+        #expect(enriched.pathMapper == mapper)
+        #expect(enriched.executionEnvironment == environment)
+        #expect(enriched.sandboxHomeStateAccess == plan.sandboxHomeStateAccess)
+        #expect(enriched.sandboxReadablePaths.contains("/tmp/astra-gitconfig"))
+        #expect(enriched.arguments.contains("sandbox_permissions=[\"disk-full-read-access\"]"))
     }
 
     @Test("Registry rejects unregistered provider IDs without losing the raw value")
@@ -545,6 +644,18 @@ struct AgentRuntimeAdapterTests {
         #expect(claudePlan.commandPlannedFields["uses_native_continuation"] == "false")
         #expect(claudePlan.parsesJSONLines)
         #expect(claudePlan.providerVersion == nil)
+        #expect(claudePlan.arguments.contains("--strict-mcp-config"))
+        if let configIndex = claudePlan.arguments.firstIndex(of: "--mcp-config"),
+           claudePlan.arguments.indices.contains(configIndex + 1) {
+            let configDirectory = (claudePlan.arguments[configIndex + 1] as NSString).deletingLastPathComponent
+            #expect(claudePlan.sandboxReadablePaths.contains(configDirectory))
+        } else {
+            Issue.record("Claude launch plan should include a governed MCP config file")
+        }
+        let keychainRoot = (FileManager.default.homeDirectoryForCurrentUser.path as NSString)
+            .appendingPathComponent("Library/Keychains")
+        #expect(claudePlan.sandboxReadablePaths.contains("\(keychainRoot)/login.keychain-db"))
+        #expect(!claudePlan.sandboxReadablePaths.contains("\(keychainRoot)/metadata.keychain-db"))
         #expect(claudeResumePlan.arguments.starts(with: ["-p", "hello", "--resume", "claude-session-1"]))
         #expect(claudeResumePlan.commandPlannedFields["phase"] == "resume")
         #expect(claudeResumePlan.commandPlannedFields["uses_native_continuation"] == "true")
@@ -553,7 +664,31 @@ struct AgentRuntimeAdapterTests {
         #expect(copilotPlan.runtime == .copilotCLI)
         #expect(copilotPlan.executablePath == "/bin/copilot-not-present")
         #expect(copilotPlan.arguments.starts(with: ["--prompt", "hello", "--model"]))
-        #expect(copilotPlan.directoriesToCreate == ["/tmp/astra-provider-home"])
+        #expect(copilotPlan.directoriesToCreate.contains("/tmp/astra-provider-home"))
+        #expect(copilotPlan.directoriesToCreate.contains("/tmp/astra-provider-home/logs"))
+        #expect(copilotPlan.directoriesToCreate.contains(CopilotCLIRuntime.defaultHome()))
+        #expect(copilotPlan.directoriesToCreate.contains(
+            (FileManager.default.homeDirectoryForCurrentUser.path as NSString).appendingPathComponent("Library/Caches/copilot")
+        ))
+        #expect(copilotPlan.sandboxReadablePaths.contains(CopilotCLIRuntime.defaultHome()))
+        #expect(copilotPlan.sandboxReadablePaths.contains(
+            (FileManager.default.homeDirectoryForCurrentUser.path as NSString).appendingPathComponent(".config/gh")
+        ))
+        #expect(copilotPlan.sandboxReadablePaths.contains("\(keychainRoot)/login.keychain-db"))
+        // metadata.keychain-db is intentionally NOT granted: it is unnecessary for
+        // token retrieval and would leak the names of every stored credential.
+        #expect(!copilotPlan.sandboxReadablePaths.contains("\(keychainRoot)/metadata.keychain-db"))
+        // The shared-home injection-sensitive config files are carved out as read-only.
+        #expect(copilotPlan.sandboxProtectedWriteDenyPaths.contains(
+            (CopilotCLIRuntime.defaultHome() as NSString).appendingPathComponent("config.json")
+        ))
+        #expect(copilotPlan.sandboxProtectedWriteDenyPaths.contains(
+            (CopilotCLIRuntime.defaultHome() as NSString).appendingPathComponent("mcp-config.json")
+        ))
+        #expect(copilotPlan.environment["COPILOT_HOME"] == CopilotCLIRuntime.defaultHome())
+        #expect(copilotPlan.environment["HOME"] == FileManager.default.homeDirectoryForCurrentUser.path)
+        #expect(copilotPlan.environment["XDG_CACHE_HOME"] == "/tmp/astra-provider-home/.cache")
+        #expect(copilotPlan.environment["XDG_CONFIG_HOME"] == "/tmp/astra-provider-home/.config")
         #expect(copilotPlan.providerDetectedFields["runtime"] == AgentRuntimeID.copilotCLI.rawValue)
 
         #expect(antigravityPlan.runtime == .antigravityCLI)
@@ -577,14 +712,21 @@ struct AgentRuntimeAdapterTests {
         #expect(codexPlan.arguments.contains(workspace.primaryPath))
         #expect(codexPlan.arguments.contains("--sandbox"))
         #expect(codexPlan.arguments.contains("workspace-write"))
+        #expect(codexPlan.arguments.contains(#"approval_policy="never""#))
         #expect(codexPlan.arguments.contains("--ask-for-approval") == false)
         #expect(codexPlan.arguments.last == "hello")
         #expect(codexPlan.parsesJSONLines)
         #expect(codexPlan.environment["CODEX_HOME"] == "/tmp/astra-codex-home")
         #expect(codexPlan.directoriesToCreate == ["/tmp/astra-codex-home"])
+        #expect(codexPlan.sandboxReadablePaths.contains("/tmp/astra-codex-home"))
+        #expect(codexPlan.sandboxReadablePaths.contains("/etc/codex"))
+        #if os(macOS)
+        #expect(codexPlan.sandboxReadablePaths.contains("/Library/Managed Preferences"))
+        #endif
         #expect(codexPlan.providerDetectedFields["runtime"] == AgentRuntimeID.codexCLI.rawValue)
         #expect(codexPlan.providerDetectedFields["provider_home_configured"] == "true")
         #expect(codexPlan.commandPlannedFields["permission_policy"] == PermissionPolicy.restricted.rawValue)
+        #expect(codexPlan.commandPlannedFields["sandbox_readable_path_count"] == String(codexPlan.sandboxReadablePaths.count))
 
         #expect(cursorPlan.runtime == .cursorCLI)
         #expect(cursorPlan.executablePath == "/bin/cursor-agent-not-present")
@@ -616,6 +758,112 @@ struct AgentRuntimeAdapterTests {
         #expect(openCodePlan.directoriesToCreate == [])
         #expect(openCodePlan.providerDetectedFields["runtime"] == AgentRuntimeID.openCodeCLI.rawValue)
         #expect(openCodePlan.commandPlannedFields["permission_policy"] == PermissionPolicy.restricted.rawValue)
+    }
+
+    @Test("Claude Vertex launch plan grants ADC readable roots")
+    @MainActor
+    func claudeVertexLaunchPlanGrantsADCReadableRoots() {
+        let defaults = UserDefaults.standard
+        let keys = [
+            AppStorageKeys.claudeProvider,
+            AppStorageKeys.claudeVertexProjectID,
+            AppStorageKeys.claudeVertexRegion,
+            AppStorageKeys.claudeVertexOpusModel,
+            AppStorageKeys.claudeVertexSonnetModel,
+            AppStorageKeys.claudeVertexHaikuModel
+        ]
+        let previous = keys.map { key in (key, defaults.object(forKey: key)) }
+        defer {
+            for (key, value) in previous {
+                if let value {
+                    defaults.set(value, forKey: key)
+                } else {
+                    defaults.removeObject(forKey: key)
+                }
+            }
+        }
+
+        defaults.set(ClaudeProvider.vertex.rawValue, forKey: AppStorageKeys.claudeProvider)
+        defaults.set("test-project", forKey: AppStorageKeys.claudeVertexProjectID)
+        defaults.set("us-east5", forKey: AppStorageKeys.claudeVertexRegion)
+        defaults.removeObject(forKey: AppStorageKeys.claudeVertexOpusModel)
+        defaults.removeObject(forKey: AppStorageKeys.claudeVertexSonnetModel)
+        defaults.removeObject(forKey: AppStorageKeys.claudeVertexHaikuModel)
+
+        let workspace = Workspace(name: "Adapter", primaryPath: "/tmp/astra-adapter")
+        let task = AgentTask(
+            title: "Claude",
+            goal: "Say hi",
+            workspace: workspace,
+            model: "claude-sonnet-4-6",
+            runtime: .claudeCode
+        )
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .claudeCode)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/claude",
+                providerHomeDirectory: "",
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30
+            ))
+        let gcloudConfig = ExecutionEnvironmentCredentialProjection.defaultGCPADCHostPath()
+        let adcFile = (gcloudConfig as NSString).appendingPathComponent(
+            ExecutionEnvironmentCredentialProjection.gcpADCFileName
+        )
+
+        #expect(plan.environment["CLAUDE_CODE_USE_VERTEX"] == "1")
+        #expect(plan.sandboxReadablePaths.contains(gcloudConfig))
+        #expect(plan.sandboxReadablePaths.contains(adcFile))
+        #expect(plan.commandPlannedFields["claude_vertex_adc_readable"] == "true")
+    }
+
+    @Test("Codex launch allows external read-only SSH config access for SSH workspaces")
+    @MainActor
+    func codexLaunchAllowsExternalReadOnlySSHConfigAccess() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-codex-ssh-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "SSH", primaryPath: root.path)
+        SSHConnectionManager.save([
+            SSHConnection(
+                name: "deid-jsn-workbench",
+                host: "deid-as-service-jsn",
+                user: "alvaro1_stanford_edu",
+                keyPath: "~/.ssh/google_compute_engine",
+                configAlias: "deid-jsn-workbench"
+            )
+        ], workspacePath: root.path)
+        let task = AgentTask(
+            title: "SSH task",
+            goal: "Check the remote server",
+            workspace: workspace,
+            model: "gpt-5.5",
+            runtime: .codexCLI
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .codexCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "ssh deid-jsn-workbench 'echo OK'",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/codex-not-present",
+                providerHomeDirectory: "/tmp/astra-codex-home",
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30
+            ))
+
+        #expect(plan.arguments.contains("--config"))
+        #expect(plan.arguments.contains("sandbox_permissions=[\"disk-full-read-access\"]"))
     }
 
     @Test("Copilot launch audit separates task and runtime support tools")
@@ -710,9 +958,24 @@ struct AgentRuntimeAdapterTests {
             workspace: workspace,
             runtime: .copilotCLI
         )
+        let namedDeliverableTask = AgentTask(
+            title: "Report",
+            goal: """
+            Final deliverables:
+            - ./results.txt
+            """,
+            workspace: workspace,
+            runtime: .copilotCLI
+        )
 
         #expect(ProviderArtifactBootstrapPolicy.launchTools(
             task: artifactTask,
+            permissionPolicy: .restricted,
+            providerAllowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Write", "Edit", "Bash"]
+        ) == ["Write"])
+        #expect(ProviderArtifactBootstrapPolicy.launchTools(
+            task: namedDeliverableTask,
             permissionPolicy: .restricted,
             providerAllowedTools: ["Read", "Glob", "Grep"],
             askFirstTools: ["Write", "Edit", "Bash"]
@@ -777,22 +1040,29 @@ struct AgentRuntimeAdapterTests {
 
         let allowedEntries = Set(Self.argumentValues(after: "--allow-tool", in: plan.arguments))
         let availableEntries = Set(Self.argumentValues(after: "--available-tools", in: plan.arguments))
+        let effortIndex = try #require(plan.arguments.firstIndex(of: "--effort"))
 
         #expect(plan.commandPlannedFields["allowed_tools_count"] == "1")
         #expect(plan.commandPlannedFields["provider_launch_allowed_tool_count"] == "2")
         #expect(plan.commandPlannedFields["artifact_bootstrap_profile"] == "true")
         #expect(plan.commandPlannedFields["artifact_bootstrap_tool_count"] == "1")
         #expect(plan.commandPlannedFields["artifact_bootstrap_tool_names"] == "Write")
+        #expect(plan.commandPlannedFields["surfaced_ask_first_tool_count"] == "4")
+        #expect(plan.commandPlannedFields["supports_reasoning_effort"] == "true")
+        #expect(plan.commandPlannedFields["uses_reasoning_effort"] == "true")
+        #expect(plan.arguments[plan.arguments.index(after: effortIndex)] == "none")
         #expect(allowedEntries.contains("view"))
         #expect(allowedEntries.contains("grep"))
         #expect(allowedEntries.contains("glob"))
         #expect(allowedEntries.contains("write"))
         #expect(!allowedEntries.contains("create"))
         #expect(!allowedEntries.contains("edit"))
-        #expect(availableEntries.contains("apply_patch"))
         #expect(availableEntries.contains("create"))
         #expect(availableEntries.contains("edit"))
-        #expect(availableEntries.contains("rg"))
+        #expect(availableEntries.contains("bash"))
+        #expect(!availableEntries.contains("apply_patch"))
+        #expect(!availableEntries.contains("rg"))
+        #expect(!availableEntries.contains("shell"))
     }
 
     @Test("Copilot informational launch does not get artifact bootstrap write")
@@ -840,11 +1110,16 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.commandPlannedFields["provider_launch_allowed_tool_count"] == "1")
         #expect(plan.commandPlannedFields["artifact_bootstrap_profile"] == "false")
         #expect(plan.commandPlannedFields["artifact_bootstrap_tool_count"] == "0")
+        #expect(plan.commandPlannedFields["surfaced_ask_first_tool_count"] == "4")
+        #expect(plan.commandPlannedFields["uses_reasoning_effort"] == "false")
+        #expect(!plan.arguments.contains("--effort"))
         #expect(!allowedEntries.contains("write"))
-        #expect(availableEntries.contains("apply_patch"))
         #expect(availableEntries.contains("create"))
         #expect(availableEntries.contains("edit"))
-        #expect(availableEntries.contains("rg"))
+        #expect(availableEntries.contains("bash"))
+        #expect(!availableEntries.contains("apply_patch"))
+        #expect(!availableEntries.contains("rg"))
+        #expect(!availableEntries.contains("shell"))
     }
 
     @Test("Claude launch surfaces ask-first tools without counting them as allowed task tools")
@@ -1047,6 +1322,107 @@ struct AgentRuntimeAdapterTests {
         #expect(!plan.arguments.contains("--effort"))
     }
 
+    @Test("Live approvals withhold ask-first tools from the Claude allow-list but keep them visible")
+    @MainActor
+    func liveApprovalsWithholdAskFirstToolsFromAllowListButKeepVisible() throws {
+        let workspaceURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-claude-live-approvals-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: workspaceURL) }
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Claude Live Approvals", primaryPath: workspaceURL.path)
+        let task = AgentTask(
+            title: "Status",
+            goal: "explain who you are",
+            workspace: workspace,
+            model: "claude-sonnet-4-6",
+            runtime: .claudeCode
+        )
+        let providerRender = ProviderPolicyRender(
+            providerID: .claudeCode,
+            adapterVersion: 1,
+            policyLevel: .review,
+            configOwnership: .generated,
+            permissionMode: PermissionPolicy.restricted.rawValue,
+            allowedTools: ["Read"],
+            runtimeSupportTools: [],
+            askFirstTools: ["Write", "Edit", "Bash"],
+            deniedTools: [],
+            allowedShellPatterns: [],
+            askFirstShellPatterns: [],
+            deniedShellPatterns: [],
+            allowedURLPatterns: [],
+            deniedURLPatterns: [],
+            cliArgumentsSummary: [],
+            settingsSummary: "test",
+            generatedConfigPreview: "",
+            enforcementTiers: [.providerNative, .astraBrokered],
+            diagnostics: [],
+            usesBroadProviderPermissions: false
+        )
+        let manifest = RunPermissionManifest(
+            taskID: task.id,
+            runID: UUID(),
+            phase: "test",
+            providerID: .claudeCode,
+            providerVersion: nil,
+            model: "claude-sonnet-4-6",
+            policyLevel: .review,
+            policyScope: .builtInDefault,
+            providerRender: providerRender,
+            workspacePath: workspace.primaryPath,
+            additionalPaths: [],
+            environmentKeyNames: [],
+            credentialLabels: [],
+            approvalsGranted: [],
+            approvalGrants: []
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .claudeCode)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/claude",
+                providerHomeDirectory: "",
+                permissionPolicy: .restricted,
+                executionPolicy: .approvedPlan(runtime: .claudeCode, currentPermissionPolicy: .restricted, allowedTools: ["Read"]),
+                permissionManifest: manifest,
+                timeoutSeconds: 30,
+                liveApprovalsEnabled: true
+            ))
+
+        // The provider is launched for live approvals…
+        #expect(plan.arguments.contains("--permission-prompt-tool"))
+        // …ask-first tools stay visible so the model can still invoke them…
+        let toolsFlagIndex = try #require(plan.arguments.firstIndex(of: "--tools"))
+        #expect(plan.arguments[toolsFlagIndex + 1] == "Bash,Edit,Read,Write")
+        // …but are NOT pre-allowed (separate --allowedTools args), so the
+        // provider must ask before running them. Read stays allowed.
+        #expect(plan.arguments.contains("--allowedTools"))
+        #expect(plan.arguments.contains("Read"))
+        #expect(!plan.arguments.contains("Bash"))
+        #expect(!plan.arguments.contains("Edit"))
+        #expect(!plan.arguments.contains("Write"))
+        #expect(plan.commandPlannedFields["provider_launch_allowed_tool_count"] == "1")
+        #expect(plan.commandPlannedFields["uses_live_approvals"] == "true")
+
+        // The generated settings.local.json must not pre-allow ask-first tools
+        // either — that was the floor hole that bypassed the live channel.
+        let settingsURL = workspaceURL
+            .appendingPathComponent(".claude", isDirectory: true)
+            .appendingPathComponent("settings.local.json")
+        let data = try Data(contentsOf: settingsURL)
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let permissions = try #require(json["permissions"] as? [String: Any])
+        let allow = try #require(permissions["allow"] as? [String])
+        #expect(allow.contains("Read(*)"))
+        #expect(!allow.contains("Bash(*)"))
+        #expect(!allow.contains("Write(*)"))
+        #expect(!allow.contains("Edit(*)"))
+    }
+
     @Test("Antigravity declares shared launch state and suggestion-only model availability")
     func antigravityDeclaresSharedLaunchStateAndSuggestionModelAvailability() {
         let adapter = AgentRuntimeAdapterRegistry.adapter(for: .antigravityCLI)
@@ -1075,6 +1451,372 @@ struct AgentRuntimeAdapterTests {
         #expect(adapter.sharedLaunchStateKey(context: context)?.rawValue.contains("/tmp/astra-antigravity-home/.gemini/antigravity-cli/settings.json") == true)
         #expect(AgentRuntimeAdapterRegistry.adapter(for: .claudeCode).sharedLaunchStateKey(context: context) == nil)
         #expect(AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI).sharedLaunchStateKey(context: context) == nil)
+    }
+
+    @Test("Claude Docker workspace mode routes native shell through ASTRA MCP helper")
+    @MainActor
+    func claudeDockerWorkspaceModeRoutesNativeShellThroughAstraMCPHelper() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-claude-docker-workspace-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Docker Workspace", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Summarize",
+            goal: "Summarize files",
+            workspace: workspace,
+            model: "claude-sonnet-4-6",
+            runtime: .claudeCode
+        )
+        let shellSkill = Skill(name: "Shell", allowedTools: ["Read", "Bash"])
+        shellSkill.workspace = workspace
+        task.skills = [shellSkill]
+        let executionEnvironment = WorkspaceExecutionEnvironment(
+            id: "image:workspace",
+            kind: .dockerImage,
+            displayName: "Workspace Image",
+            image: "astra/workspace:latest",
+            credentialProjections: [
+                ExecutionEnvironmentCredentialProjection.gcpADC(
+                    hostPath: root.appendingPathComponent(".config/gcloud").path
+                )
+            ]
+        )
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(executionEnvironment)
+        let runID = UUID(uuidString: "5EB2B3FA-CB19-4B0D-8BB2-D0673C49B113")
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .claudeCode)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "summarize",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/claude",
+                providerHomeDirectory: "",
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30,
+                runID: runID
+            ))
+
+        #expect(plan.executablePath == "/bin/claude")
+        #expect(plan.environment["ASTRA_WORKSPACE_DOCKER_IMAGE"] == "astra/workspace:latest")
+        #expect(plan.environment["ASTRA_WORKSPACE_DOCKER_CONTAINER"] == DockerWorkspaceMCPProjection.containerName(taskID: task.id, runID: runID))
+        #expect(plan.environment["ASTRA_WORKSPACE_DOCKER_WORKDIR"] == "/workspace")
+        #expect(plan.environment["ASTRA_WORKSPACE_DOCKER_ENV"]?.contains("GOOGLE_APPLICATION_CREDENTIALS") == true)
+        let dockerConfigDirectory = try #require(plan.environment["DOCKER_CONFIG"])
+        #expect(dockerConfigDirectory.contains("/.astra/tasks/"))
+        #expect(dockerConfigDirectory.contains("/.runtime/docker-client/"))
+        #expect(!dockerConfigDirectory.contains("/.docker"))
+        #expect(FileManager.default.fileExists(atPath: (dockerConfigDirectory as NSString).appendingPathComponent("config.json")))
+        #expect(plan.commandPlannedFields["docker_workspace_executor"] == "true")
+        #expect(plan.commandPlannedFields["docker_workspace_tool"] == DockerWorkspaceMCPProjection.providerToolPermission)
+        #expect(plan.commandPlannedFields["docker_workspace_credential_projection_count"] == "1")
+        #expect(plan.commandPlannedFields["native_shell_removed_for_workspace_executor"] == "true")
+        #expect(plan.commandPlannedFields["host_control_plane_supported"] == "true")
+        #expect(plan.environment["ASTRA_HOST_CONTROL_GCLOUD_EXECUTABLE"]?.isEmpty == false)
+        #expect(plan.environment["ASTRA_HOST_CONTROL_DIAGNOSTICS_HOST"]?.contains("/.astra/tasks/") == true)
+
+        let visibleToolsIndex = try #require(plan.arguments.firstIndex(of: "--tools"))
+        let visibleTools = Set(plan.arguments[visibleToolsIndex + 1].split(separator: ",").map(String.init))
+        #expect(visibleTools.contains(DockerWorkspaceMCPProjection.providerToolPermission))
+        #expect(!visibleTools.contains("Bash"))
+
+        let allowedTools = Self.argumentValues(after: "--allowedTools", in: plan.arguments)
+        #expect(allowedTools.contains(DockerWorkspaceMCPProjection.providerToolPermission))
+        #expect(allowedTools.contains(HostControlPlaneMCPProjection.providerToolPermission(for: "gcloud")))
+        #expect(allowedTools.contains(HostControlPlaneMCPProjection.providerToolPermission(for: "ssh")))
+        #expect(allowedTools.contains("Read"))
+        #expect(!allowedTools.contains("Bash"))
+
+        let deniedTools = Self.argumentValues(after: "--disallowedTools", in: plan.arguments)
+        #expect(deniedTools.contains("Bash"))
+
+        let mcpConfigIndex = try #require(plan.arguments.firstIndex(of: "--mcp-config"))
+        let mcpConfigURL = URL(fileURLWithPath: plan.arguments[mcpConfigIndex + 1])
+        let data = try Data(contentsOf: mcpConfigURL)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let servers = try #require(object["mcpServers"] as? [String: Any])
+        let workspaceServer = try #require(servers[DockerWorkspaceMCPProjection.serverID] as? [String: Any])
+        #expect(workspaceServer["command"] as? String == (RuntimePathResolver.astraToolsPath as NSString).appendingPathComponent("astra-workspace"))
+        let env = try #require(workspaceServer["env"] as? [String: String])
+        #expect(env["ASTRA_WORKSPACE_DOCKER_IMAGE"] == "${ASTRA_WORKSPACE_DOCKER_IMAGE}")
+        #expect(env["ASTRA_WORKSPACE_DOCKER_ENV"] == "${ASTRA_WORKSPACE_DOCKER_ENV}")
+        #expect(env["DOCKER_CONFIG"] == "${DOCKER_CONFIG}")
+        let hostServer = try #require(servers[HostControlPlaneMCPProjection.serverID] as? [String: Any])
+        #expect(hostServer["command"] as? String == (RuntimePathResolver.astraToolsPath as NSString).appendingPathComponent("astra-host-control"))
+        let hostEnv = try #require(hostServer["env"] as? [String: String])
+        #expect(hostEnv["ASTRA_HOST_CONTROL_GCLOUD_EXECUTABLE"] == "${ASTRA_HOST_CONTROL_GCLOUD_EXECUTABLE}")
+        #expect(hostEnv["ASTRA_HOST_CONTROL_DIAGNOSTICS_HOST"] == "${ASTRA_HOST_CONTROL_DIAGNOSTICS_HOST}")
+    }
+
+    @Test("Copilot Docker workspace mode routes native shell through ASTRA MCP helper")
+    @MainActor
+    func copilotDockerWorkspaceModeRoutesNativeShellThroughAstraMCPHelper() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-docker-workspace-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let copilotPath = try Self.writeFakeCopilotExecutable(in: root)
+
+        let workspace = Workspace(name: "Docker Workspace", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Summarize",
+            goal: "Summarize files",
+            workspace: workspace,
+            model: "claude-sonnet-4.6",
+            runtime: .copilotCLI
+        )
+        let shellSkill = Skill(name: "Shell", allowedTools: ["Read", "Bash"])
+        shellSkill.workspace = workspace
+        task.skills = [shellSkill]
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:workspace",
+            kind: .dockerImage,
+            displayName: "Workspace Image",
+            image: "astra/workspace:latest",
+            credentialProjections: [
+                ExecutionEnvironmentCredentialProjection.gcpADC(
+                    hostPath: root.appendingPathComponent(".config/gcloud").path
+                )
+            ]
+        ))
+        let runID = UUID(uuidString: "D7818CE9-3F7A-4E75-82DB-C0E8D2D2E916")
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .copilotCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "summarize",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: copilotPath,
+                providerHomeDirectory: root.appendingPathComponent("copilot-home", isDirectory: true).path,
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30,
+                runID: runID
+            ))
+
+        #expect(plan.executablePath == copilotPath)
+        #expect(plan.environment["ASTRA_WORKSPACE_DOCKER_IMAGE"] == "astra/workspace:latest")
+        #expect(plan.environment["ASTRA_WORKSPACE_DOCKER_CONTAINER"] == DockerWorkspaceMCPProjection.containerName(taskID: task.id, runID: runID))
+        #expect(plan.environment["ASTRA_WORKSPACE_DOCKER_ENV"]?.contains("GOOGLE_APPLICATION_CREDENTIALS") == true)
+        let dockerConfigDirectory = try #require(plan.environment["DOCKER_CONFIG"])
+        #expect(dockerConfigDirectory.contains("/.astra/tasks/"))
+        #expect(dockerConfigDirectory.contains("/.runtime/docker-client/"))
+        #expect(!dockerConfigDirectory.contains("/.docker"))
+        #expect(FileManager.default.fileExists(atPath: (dockerConfigDirectory as NSString).appendingPathComponent("config.json")))
+        #expect(plan.commandPlannedFields["docker_workspace_executor"] == "true")
+        #expect(plan.commandPlannedFields["docker_workspace_executor_supported"] == "true")
+        #expect(plan.commandPlannedFields["docker_workspace_tool"] == DockerWorkspaceMCPProjection.providerToolPermission)
+        #expect(plan.commandPlannedFields["docker_workspace_credential_projection_count"] == "1")
+        #expect(plan.commandPlannedFields["host_control_plane_supported"] == "true")
+        #expect(plan.environment["ASTRA_HOST_CONTROL_GCLOUD_EXECUTABLE"]?.isEmpty == false)
+        #expect(plan.commandPlannedFields["uses_additional_mcp_config"] == "true")
+
+        let configIndex = try #require(plan.arguments.firstIndex(of: "--additional-mcp-config"))
+        #expect(plan.arguments.indices.contains(configIndex + 1))
+        let configArg = plan.arguments[configIndex + 1]
+        #expect(configArg.hasPrefix("@"))
+        let mcpConfigURL = URL(fileURLWithPath: String(configArg.dropFirst()))
+        let data = try Data(contentsOf: mcpConfigURL)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let servers = try #require(object["mcpServers"] as? [String: Any])
+        let workspaceServer = try #require(servers[DockerWorkspaceMCPProjection.serverID] as? [String: Any])
+        #expect(workspaceServer["command"] as? String == (RuntimePathResolver.astraToolsPath as NSString).appendingPathComponent("astra-workspace"))
+        let env = try #require(workspaceServer["env"] as? [String: String])
+        #expect(env["ASTRA_WORKSPACE_DOCKER_IMAGE"] == "${ASTRA_WORKSPACE_DOCKER_IMAGE}")
+        #expect(env["ASTRA_WORKSPACE_DOCKER_ENV"] == "${ASTRA_WORKSPACE_DOCKER_ENV}")
+        #expect(env["DOCKER_CONFIG"] == "${DOCKER_CONFIG}")
+        let hostServer = try #require(servers[HostControlPlaneMCPProjection.serverID] as? [String: Any])
+        #expect(hostServer["command"] as? String == (RuntimePathResolver.astraToolsPath as NSString).appendingPathComponent("astra-host-control"))
+        let hostEnv = try #require(hostServer["env"] as? [String: String])
+        #expect(hostEnv["ASTRA_HOST_CONTROL_GCLOUD_EXECUTABLE"] == "${ASTRA_HOST_CONTROL_GCLOUD_EXECUTABLE}")
+
+        let allowTools = Self.argumentValues(after: "--allow-tool", in: plan.arguments)
+        #expect(allowTools.contains("astra_workspace(workspace_shell)"))
+        #expect(allowTools.contains("astra_host(gcloud)"))
+        #expect(!allowTools.contains(DockerWorkspaceMCPProjection.providerToolPermission))
+        #expect(!allowTools.contains { $0.contains("shell(") })
+        let availableTools = Self.argumentValues(after: "--available-tools", in: plan.arguments)
+        #expect(availableTools.contains("astra_workspace-workspace_shell"))
+        #expect(availableTools.contains("astra_host-gcloud"))
+        #expect(!availableTools.contains(DockerWorkspaceMCPProjection.providerToolPermission))
+        #expect(!availableTools.contains("bash"))
+    }
+
+    @Test("Codex Docker workspace mode routes native shell through ASTRA MCP helper")
+    @MainActor
+    func codexDockerWorkspaceModeRoutesNativeShellThroughAstraMCPHelper() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-codex-docker-workspace-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Docker Workspace", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Summarize",
+            goal: "Summarize files",
+            workspace: workspace,
+            model: "gpt-5.5",
+            runtime: .codexCLI
+        )
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:workspace",
+            kind: .dockerImage,
+            displayName: "Workspace Image",
+            image: "astra/workspace:latest",
+            credentialProjections: [
+                ExecutionEnvironmentCredentialProjection.gcpADC(
+                    hostPath: root.appendingPathComponent(".config/gcloud").path
+                )
+            ]
+        ))
+        let runID = UUID(uuidString: "F34F4B79-4906-4F26-BD27-F902D3EAC391")
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .codexCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "summarize",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/codex-not-present",
+                providerHomeDirectory: root.appendingPathComponent("codex-home", isDirectory: true).path,
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30,
+                runID: runID
+            ))
+
+        #expect(plan.executablePath == "/bin/codex-not-present")
+        #expect(plan.environment["ASTRA_WORKSPACE_DOCKER_IMAGE"] == "astra/workspace:latest")
+        #expect(plan.environment["ASTRA_WORKSPACE_DOCKER_CONTAINER"] == DockerWorkspaceMCPProjection.containerName(taskID: task.id, runID: runID))
+        #expect(plan.environment["ASTRA_WORKSPACE_DOCKER_ENV"]?.contains("GOOGLE_APPLICATION_CREDENTIALS") == true)
+        let dockerConfigDirectory = try #require(plan.environment["DOCKER_CONFIG"])
+        #expect(dockerConfigDirectory.contains("/.astra/tasks/"))
+        #expect(dockerConfigDirectory.contains("/.runtime/docker-client/"))
+        #expect(!dockerConfigDirectory.contains("/.docker"))
+        #expect(FileManager.default.fileExists(atPath: (dockerConfigDirectory as NSString).appendingPathComponent("config.json")))
+        #expect(plan.commandPlannedFields["docker_workspace_executor"] == "true")
+        #expect(plan.commandPlannedFields["docker_workspace_executor_supported"] == "true")
+        #expect(plan.commandPlannedFields["docker_workspace_tool"] == DockerWorkspaceMCPProjection.providerToolPermission)
+        #expect(plan.commandPlannedFields["docker_workspace_credential_projection_count"] == "1")
+        #expect(plan.commandPlannedFields["host_control_plane_supported"] == "true")
+        #expect(plan.commandPlannedFields["uses_mcp_config_overrides"] == "true")
+        #expect(plan.commandPlannedFields["mcp_server_ids"]?.contains(DockerWorkspaceMCPProjection.serverID) == true)
+        #expect(plan.commandPlannedFields["mcp_server_ids"]?.contains(HostControlPlaneMCPProjection.serverID) == true)
+        #expect(plan.environment["ASTRA_HOST_CONTROL_GCLOUD_EXECUTABLE"]?.isEmpty == false)
+
+        let configValues = Self.argumentValues(after: "-c", in: plan.arguments)
+        let mcpConfig = try #require(configValues.first { $0.hasPrefix("mcp_servers=") })
+        #expect(mcpConfig.contains("\"astra_workspace\"={"))
+        #expect(mcpConfig.contains("command=\"\((RuntimePathResolver.astraToolsPath as NSString).appendingPathComponent("astra-workspace"))\""))
+        #expect(mcpConfig.contains("\"astra_host\"={"))
+        #expect(mcpConfig.contains("command=\"\((RuntimePathResolver.astraToolsPath as NSString).appendingPathComponent("astra-host-control"))\""))
+        #expect(mcpConfig.contains("args=[]"))
+        for toolName in DockerWorkspaceMCPProjection.toolNames {
+            #expect(mcpConfig.contains("\"\(toolName)\""))
+        }
+        for toolName in HostControlPlaneMCPProjection.toolNames {
+            #expect(mcpConfig.contains("\"\(toolName)\""))
+        }
+        #expect(mcpConfig.contains("default_tools_enabled=false"))
+        #expect(mcpConfig.contains("default_tools_approval_mode=\"approve\""))
+        let envVars = mcpConfig
+        #expect(envVars.contains("ASTRA_WORKSPACE_DOCKER_IMAGE"))
+        #expect(envVars.contains("ASTRA_WORKSPACE_DOCKER_ENV"))
+        #expect(envVars.contains("ASTRA_WORKSPACE_TASK_ID"))
+        #expect(envVars.contains("ASTRA_HOST_CONTROL_GCLOUD_EXECUTABLE"))
+        #expect(envVars.contains("DOCKER_CONFIG"))
+    }
+
+    @Test("Docker workspace executor support follows MCP runtime capability")
+    func dockerWorkspaceExecutorSupportFollowsMCPRuntimeCapability() {
+        for descriptor in AgentRuntimeAdapterRegistry.descriptors {
+            #expect(
+                DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: descriptor.id)
+                    == descriptor.supportsMCPServers
+            )
+            #expect(
+                HostControlPlaneMCPProjection.supportsHostControlPlane(runtime: descriptor.id)
+                    == descriptor.supportsMCPServers
+            )
+        }
+    }
+
+    @Test("Copilot Docker workspace mode avoids broad native shell in Auto policy")
+    @MainActor
+    func copilotDockerWorkspaceModeAvoidsBroadNativeShellInAutoPolicy() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-docker-auto-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let copilotPath = root.appendingPathComponent("copilot")
+        try """
+        #!/bin/sh
+        if [ "$1" = "help" ]; then
+          cat <<'HELP'
+        --allow-all --allow-all-tools --allow-all-paths --allow-all-urls --allow-tool TOOL --available-tools=TOOLS --excluded-tools=TOOLS --output-format=FORMAT --stream=MODE --no-ask-user --effort LEVEL --additional-mcp-config CONFIG
+        HELP
+          exit 0
+        fi
+        if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+          echo "copilot fake 1.0"
+          exit 0
+        fi
+        exit 0
+        """.write(to: copilotPath, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: copilotPath.path)
+
+        let workspace = Workspace(name: "Docker Workspace", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Inspect dbt",
+            goal: "Check dbt in the configured Docker image",
+            workspace: workspace,
+            model: "claude-sonnet-4.6",
+            runtime: .copilotCLI
+        )
+        let shellSkill = Skill(name: "Shell", allowedTools: ["Read", "Bash"])
+        shellSkill.workspace = workspace
+        task.skills = [shellSkill]
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:workspace",
+            kind: .dockerImage,
+            displayName: "Workspace Image",
+            image: "astra/workspace:latest"
+        ))
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .copilotCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "check dbt",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: copilotPath.path,
+                providerHomeDirectory: root.appendingPathComponent("copilot-home", isDirectory: true).path,
+                permissionPolicy: .autonomous,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30,
+                runID: UUID(uuidString: "7F2F42AD-F221-49A7-AC04-4434F0F03881")
+            ))
+
+        #expect(plan.commandPlannedFields["docker_workspace_executor"] == "true")
+        #expect(plan.commandPlannedFields["permission_policy"] == PermissionPolicy.restricted.rawValue)
+        #expect(!plan.arguments.contains("--allow-all"))
+        #expect(!plan.arguments.contains("--allow-all-tools"))
+        let allowTools = Self.argumentValues(after: "--allow-tool", in: plan.arguments)
+        #expect(allowTools.contains("astra_workspace(workspace_shell)"))
+        #expect(!allowTools.contains(DockerWorkspaceMCPProjection.providerToolPermission))
+        #expect(!allowTools.contains { $0.contains("shell(") })
+        let availableTools = Self.argumentValues(after: "--available-tools", in: plan.arguments)
+        #expect(availableTools.contains("astra_workspace-workspace_shell"))
+        #expect(!availableTools.contains(DockerWorkspaceMCPProjection.providerToolPermission))
+        #expect(!availableTools.contains("bash"))
     }
 
     @Test("Adapters own provider stream parsing")
@@ -1158,6 +1900,203 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.browserShimDirectory?.hasSuffix(".runtime-bin") == true)
     }
 
+    @Test("Copilot browser bridge launch plan records missing shell execution support")
+    @MainActor
+    func copilotBrowserBridgeLaunchPlanRecordsMissingShellExecutionSupport() throws {
+        ShelfBrowserBridgeRegistry.shared.reset()
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-browser-shell-gap-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            ShelfBrowserBridgeRegistry.shared.reset()
+            try? FileManager.default.removeItem(at: root)
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Browser Shell Gap", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Use browser",
+            goal: "Use the browser shelf",
+            workspace: workspace,
+            model: "gpt-5",
+            runtime: .copilotCLI
+        )
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: nil,
+            currentTitle: nil,
+            taskID: task.id,
+            isPresented: false,
+            isEnabled: true
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .copilotCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "Use the browser shelf",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/copilot-not-present",
+                providerHomeDirectory: root.appendingPathComponent("copilot-home").path,
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30,
+                phase: "run",
+                contextText: "Use the browser shelf to inspect the current page."
+            ))
+
+        #expect(plan.environment["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+        #expect(plan.commandPlannedFields["browser_bridge_shell_tool_supported"] == "false")
+        #expect(plan.commandPlannedFields["browser_bridge_launch_block_reason"] == "provider_missing_browser_control_tool")
+    }
+
+    @Test("Copilot browser bridge launch plan uses ASTRA browser MCP tool when supported")
+    @MainActor
+    func copilotBrowserBridgeLaunchPlanUsesAstraBrowserMCPToolWhenSupported() throws {
+        ShelfBrowserBridgeRegistry.shared.reset()
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-browser-mcp-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            ShelfBrowserBridgeRegistry.shared.reset()
+            try? FileManager.default.removeItem(at: root)
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let copilotPath = try Self.writeFakeCopilotExecutable(in: root)
+
+        let workspace = Workspace(name: "Browser MCP", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Use browser",
+            goal: "Use the browser shelf",
+            workspace: workspace,
+            model: "gpt-5",
+            runtime: .copilotCLI
+        )
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: nil,
+            currentTitle: nil,
+            taskID: task.id,
+            accessToken: "browser-token",
+            isPresented: false,
+            isEnabled: true
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .copilotCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "Use the browser shelf",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: copilotPath,
+                providerHomeDirectory: root.appendingPathComponent("copilot-home").path,
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30,
+                phase: "run",
+                contextText: "Use the browser shelf to inspect the current page."
+            ))
+
+        #expect(plan.environment["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+        #expect(plan.commandPlannedFields["browser_bridge_shell_tool_supported"] == "false")
+        #expect(plan.commandPlannedFields["browser_bridge_mcp_tool_supported"] == "true")
+        #expect(plan.commandPlannedFields["browser_bridge_tool_transport"] == "mcp")
+        #expect(plan.commandPlannedFields["browser_bridge_launch_block_reason"] == "none")
+        #expect(plan.commandPlannedFields["browser_bridge_mcp_tool"] == BrowserBridgeMCPProjection.providerToolPermission)
+
+        let configIndex = try #require(plan.arguments.firstIndex(of: "--additional-mcp-config"))
+        #expect(plan.arguments.indices.contains(configIndex + 1))
+        let configArg = plan.arguments[configIndex + 1]
+        #expect(configArg.hasPrefix("@"))
+        let mcpConfigURL = URL(fileURLWithPath: String(configArg.dropFirst()))
+        let data = try Data(contentsOf: mcpConfigURL)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let servers = try #require(object["mcpServers"] as? [String: Any])
+        let browserServer = try #require(servers[BrowserBridgeMCPProjection.serverID] as? [String: Any])
+        #expect(browserServer["command"] as? String == (RuntimePathResolver.astraToolsPath as NSString).appendingPathComponent("astra-browser"))
+        #expect(browserServer["args"] as? [String] == ["mcp"])
+        let env = try #require(browserServer["env"] as? [String: String])
+        #expect(env["ASTRA_BROWSER_URL"] == "${ASTRA_BROWSER_URL}")
+        #expect(env["ASTRA_BROWSER_TOKEN"] == "${ASTRA_BROWSER_TOKEN}")
+
+        let allowTools = Self.argumentValues(after: "--allow-tool", in: plan.arguments)
+        #expect(allowTools.contains("astra_browser(browser)"))
+        #expect(!allowTools.contains(BrowserBridgeMCPProjection.providerToolPermission))
+        let availableTools = Self.argumentValues(after: "--available-tools", in: plan.arguments)
+        #expect(availableTools.contains("astra_browser-browser"))
+        #expect(!availableTools.contains(BrowserBridgeMCPProjection.providerToolPermission))
+    }
+
+    @Test("CDP-only browser tasks inject required controlled engine into browser environment")
+    @MainActor
+    func cdpOnlyBrowserTasksInjectRequiredControlledEngineIntoBrowserEnvironment() throws {
+        ShelfBrowserBridgeRegistry.shared.reset()
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-controlled-browser-required-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            ShelfBrowserBridgeRegistry.shared.reset()
+            try? FileManager.default.removeItem(at: root)
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Controlled Browser Requirement", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Use controlled browser",
+            goal: "Use the ASTRA Controlled Browser / CDP browser automation engine. Do not use the embedded WebKit browser path.",
+            workspace: workspace,
+            model: "claude-sonnet-4-6",
+            runtime: .claudeCode
+        )
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "https://example.com",
+            currentTitle: "Example",
+            taskID: task.id,
+            isPresented: true,
+            isEnabled: true
+        )
+
+        let env = AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: task)
+
+        #expect(env["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+        #expect(env["ASTRA_BROWSER_REQUIRED_ENGINE"] == "controlled-cdp")
+    }
+
+    @Test("Generic browser tasks do not inject a required engine")
+    @MainActor
+    func genericBrowserTasksDoNotInjectRequiredEngine() throws {
+        ShelfBrowserBridgeRegistry.shared.reset()
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-generic-browser-required-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            ShelfBrowserBridgeRegistry.shared.reset()
+            try? FileManager.default.removeItem(at: root)
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Generic Browser", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Use browser",
+            goal: "Use the browser shelf to inspect the current page.",
+            workspace: workspace,
+            model: "claude-sonnet-4-6",
+            runtime: .claudeCode
+        )
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "https://example.com",
+            currentTitle: "Example",
+            taskID: task.id,
+            isPresented: true,
+            isEnabled: true
+        )
+
+        let env = AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: task)
+
+        #expect(env["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+        #expect(env["ASTRA_BROWSER_REQUIRED_ENGINE"] == nil)
+    }
+
     private static func copilotManifest(
         task: AgentTask,
         workspacePath: String,
@@ -1211,7 +2150,7 @@ struct AgentRuntimeAdapterTests {
         #!/bin/sh
         if [ "$1" = "help" ]; then
           cat <<'HELP'
-        --allow-tool TOOL --available-tools=TOOLS --excluded-tools=TOOLS --output-format=FORMAT --stream=MODE --no-ask-user
+        --allow-tool TOOL --available-tools=TOOLS --excluded-tools=TOOLS --output-format=FORMAT --stream=MODE --no-ask-user --effort LEVEL --additional-mcp-config CONFIG
         HELP
           exit 0
         fi

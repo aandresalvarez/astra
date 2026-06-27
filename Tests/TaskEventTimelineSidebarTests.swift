@@ -300,6 +300,49 @@ struct SidebarGroupingTests {
         #expect(index.reviewTasks(for: workspace).map(\.id) == [task.id])
     }
 
+    @Test("Sidebar task index invalidation ignores searchable text when search is inactive")
+    func sidebarTaskIndexInvalidationIgnoresSearchableTextWithoutSearch() {
+        let workspace = makeWorkspace(name: "Slow Workspace")
+        let longGoal = String(repeating: "long goal text ", count: 20_000)
+        let task = makeTask(
+            title: "Original title",
+            goal: longGoal,
+            status: .completed,
+            workspace: workspace
+        )
+        task.updatedAt = Date(timeIntervalSince1970: 400)
+
+        let before = SidebarTaskIndexInvalidation.signature(for: [task], searchText: "")
+
+        task.title = "Changed title"
+        task.goal = String(repeating: "changed goal text ", count: 20_000)
+
+        let after = SidebarTaskIndexInvalidation.signature(for: [task], searchText: "")
+
+        #expect(before == after)
+    }
+
+    @Test("Sidebar task index invalidates searchable text when search is active")
+    func sidebarTaskIndexInvalidationIncludesSearchableTextDuringSearch() {
+        let workspace = makeWorkspace(name: "Search Workspace")
+        let task = makeTask(
+            title: "Deploy report",
+            goal: "Summarize report updates",
+            status: .completed,
+            workspace: workspace
+        )
+        task.updatedAt = Date(timeIntervalSince1970: 400)
+
+        let before = SidebarTaskIndexInvalidation.signature(for: [task], searchText: "report")
+
+        task.title = "Archive report"
+        task.goal = "Summarize archive updates"
+
+        let after = SidebarTaskIndexInvalidation.signature(for: [task], searchText: "report")
+
+        #expect(before != after)
+    }
+
     @Test("TaskThreadSnapshotTrigger ignores unrelated task metadata updates")
     func taskThreadSnapshotTriggerIgnoresUpdatedAtOnlyChanges() {
         let task = makeTask(status: .running)

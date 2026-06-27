@@ -284,6 +284,58 @@ struct CapabilityLibraryTests {
         #expect(secondIDs.contains(second.id))
     }
 
+    @Test("in-memory enabledPackages filters to enabled ids, merges built-ins, and de-dupes")
+    func enabledPackagesInMemoryOverloadResolvesWithoutFilesystem() throws {
+        let builtInID = try #require(PluginCatalog.builtInPackages.first?.id)
+
+        let enabledLocal = makeTestPackage(id: "local.test/enabled", name: "Enabled Local")
+        let disabledLocal = makeTestPackage(id: "local.test/disabled", name: "Disabled Local")
+
+        let workspace = Workspace(name: "Matcher", primaryPath: "/tmp/matcher")
+        workspace.enabledCapabilityIDs = [enabledLocal.id, builtInID]
+
+        // The list intentionally repeats `enabledLocal` to exercise de-dupe and
+        // omits the built-in entirely so it can only appear via the merge.
+        let definitions = [enabledLocal, enabledLocal, disabledLocal]
+        let ids = CapabilityRuntimeResourceMatcher
+            .enabledPackages(for: workspace, in: definitions)
+            .map(\.id)
+
+        // enabled-id filtering: only enabled ids, never the disabled one.
+        #expect(Set(ids) == [enabledLocal.id, builtInID])
+        #expect(!ids.contains(disabledLocal.id))
+        // de-dupe: the duplicated injected package resolves exactly once.
+        #expect(ids.filter { $0 == enabledLocal.id }.count == 1)
+        // built-in merge: an enabled built-in resolves even when not injected.
+        #expect(ids.contains(builtInID))
+    }
+
+    @Test("in-memory enabledPackages returns empty when nothing is enabled or workspace is nil")
+    func enabledPackagesInMemoryOverloadHandlesEmptyCases() {
+        let workspace = Workspace(name: "Empty", primaryPath: "/tmp/empty")
+        let definitions = [makeTestPackage(id: "local.test/unused", name: "Unused")]
+
+        #expect(CapabilityRuntimeResourceMatcher.enabledPackages(for: workspace, in: definitions).isEmpty)
+        #expect(CapabilityRuntimeResourceMatcher.enabledPackages(for: nil, in: PluginCatalog.builtInPackages).isEmpty)
+    }
+
+    private func makeTestPackage(id: String, name: String) -> PluginPackage {
+        PluginPackage(
+            id: id,
+            name: name,
+            icon: "folder",
+            description: "",
+            author: "Test",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: []
+        )
+    }
+
     @Test("package URLs stay inside library for malicious IDs")
     func packageURLStaysInsideLibraryForMaliciousIDs() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -630,6 +682,7 @@ struct CapabilityLibraryTests {
             "github-workflow",
             "google-drive-browser",
             "jira-workflow",
+            "mcp-smoke-test",
             "redcap-workflow",
             "security-auditor",
             "stanford-apple-mail",
@@ -687,6 +740,50 @@ struct CapabilityLibraryTests {
         #expect(installed.iconDescriptor.fallbackSystemName == package.icon)
         #expect(installed.sourceMetadata?.kind == "built-in")
         #expect(installed.sourceMetadata?.url?.resolvingSymlinksInPath() == manifest.resolvingSymlinksInPath())
+    }
+
+    @Test("seed approved packages repairs matching built-in manifest with missing icon asset")
+    func seedApprovedPackagesRepairsMissingBundledIconAsset() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-repair-missing-asset-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = CapabilityLibrary(directory: root)
+        let package = try #require(ApprovedCapabilityBundle.packages().first { $0.id == "gcloud-workflow" })
+
+        try library.syncApprovedPackages([package])
+        let manifest = library.packageManifestURL(for: package.id)
+        let icon = manifest.deletingLastPathComponent().appendingPathComponent("assets/google-cloud.svg")
+        #expect(FileManager.default.fileExists(atPath: icon.path))
+
+        try FileManager.default.removeItem(at: icon)
+        try library.syncApprovedPackages([package])
+
+        let repaired = try #require(library.installedPackage(id: package.id, trustedBuiltInIDs: [package.id]))
+        #expect(FileManager.default.fileExists(atPath: icon.path))
+        #expect(repaired.iconDescriptor.kind == .asset)
+        #expect(repaired.iconDescriptor.value == "assets/google-cloud.svg")
+        #expect(repaired.sourceMetadata?.url?.resolvingSymlinksInPath() == manifest.resolvingSymlinksInPath())
+    }
+
+    @Test("reinstalling installed asset package preserves its icon asset")
+    func reinstallingInstalledAssetPackagePreservesIconAsset() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-reinstall-asset-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = CapabilityLibrary(directory: root)
+        let package = try #require(ApprovedCapabilityBundle.packages().first { $0.id == "gcloud-workflow" })
+
+        try library.syncApprovedPackages([package])
+        let installed = try #require(library.installedPackage(id: package.id, trustedBuiltInIDs: [package.id]))
+        let manifest = library.packageManifestURL(for: package.id)
+        let icon = manifest.deletingLastPathComponent().appendingPathComponent("assets/google-cloud.svg")
+        #expect(FileManager.default.fileExists(atPath: icon.path))
+
+        try library.install(installed)
+
+        let reloaded = try #require(library.installedPackage(id: package.id, trustedBuiltInIDs: [package.id]))
+        #expect(FileManager.default.fileExists(atPath: icon.path))
+        #expect(reloaded.sourceMetadata?.url?.resolvingSymlinksInPath() == manifest.resolvingSymlinksInPath())
     }
 
     @Test("sync approved packages removes stale built-in package folders")

@@ -67,7 +67,7 @@ struct CapabilityLibrary {
     func installedPackages(
         trustedBuiltInIDs: Set<String> = CapabilityLibrary.trustedBuiltInPackageIDs
     ) -> [PluginPackage] {
-        guard let entries = try? fileManager.contentsOfDirectory(
+        guard let entries = libraryContents(
             at: directory,
             includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey]
         ) else {
@@ -181,10 +181,12 @@ struct CapabilityLibrary {
             at: destinationAssetURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        if fileManager.fileExists(atPath: destinationAssetURL.path) {
-            try fileManager.removeItem(at: destinationAssetURL)
+        if !sameFile(sourceAssetURL, destinationAssetURL) {
+            if fileManager.fileExists(atPath: destinationAssetURL.path) {
+                try fileManager.removeItem(at: destinationAssetURL)
+            }
+            try fileManager.copyItem(at: sourceAssetURL, to: destinationAssetURL)
         }
-        try fileManager.copyItem(at: sourceAssetURL, to: destinationAssetURL)
 
         storedPackage.sourceMetadata?.url = manifestURL
         let encoder = JSONEncoder()
@@ -199,9 +201,9 @@ struct CapabilityLibrary {
         for package in packages {
             let approved = approvedPackage(package)
             let url = packageStorageURL(for: package.id)
-            if let data = try? Data(contentsOf: url),
+            if let data = readLibraryData(at: url),
                let existing = try? decoder.decode(PluginPackage.self, from: data),
-               shouldPreserveExistingPackage(existing, insteadOf: approved) {
+               shouldPreserveExistingPackage(existing, insteadOf: approved, storageURL: url) {
                 continue
             }
 
@@ -214,10 +216,10 @@ struct CapabilityLibrary {
 
         let approvedIDs = Set(packages.map(\.id))
         let decoder = JSONDecoder()
-        let files = (try? fileManager.contentsOfDirectory(
+        let files = libraryContents(
             at: directory,
             includingPropertiesForKeys: nil
-        )) ?? []
+        ) ?? []
 
         for url in files {
             let manifestURL: URL
@@ -232,7 +234,7 @@ struct CapabilityLibrary {
                 continue
             }
 
-            guard let data = try? Data(contentsOf: manifestURL),
+            guard let data = readLibraryData(at: manifestURL),
                   let package = try? decoder.decode(PluginPackage.self, from: data),
                   package.sourceMetadata?.kind == "built-in",
                   !approvedIDs.contains(package.id) else {
@@ -248,7 +250,7 @@ struct CapabilityLibrary {
         trustedBuiltInIDs: Set<String> = CapabilityLibrary.trustedBuiltInPackageIDs
     ) throws -> PluginPackage {
         let url = installedPackageStorageURL(for: id)
-        guard let data = try? Data(contentsOf: url) else {
+        guard let data = readLibraryData(at: url) else {
             throw RemovalError.notInstalled(id)
         }
 
@@ -374,6 +376,26 @@ struct CapabilityLibrary {
         return packageURL(for: id)
     }
 
+    private func readLibraryData(at url: URL) -> Data? {
+        try? HostFileAccessBroker(fileManager: fileManager).readData(
+            at: url,
+            intent: .astraManagedStorage(root: directory)
+        )
+    }
+
+    private func libraryContents(
+        at url: URL,
+        includingPropertiesForKeys keys: [URLResourceKey]?,
+        options mask: FileManager.DirectoryEnumerationOptions = []
+    ) -> [URL]? {
+        try? HostFileAccessBroker(fileManager: fileManager).contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: keys,
+            options: mask,
+            intent: .astraManagedStorage(root: directory)
+        )
+    }
+
     private func assetRootURL(from url: URL?) -> URL? {
         guard let url else { return nil }
         let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
@@ -384,7 +406,7 @@ struct CapabilityLibrary {
         at url: URL,
         trustedBuiltInIDs: Set<String>
     ) -> PluginPackage? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
+        guard let data = readLibraryData(at: url) else { return nil }
         guard var package = try? JSONDecoder().decode(PluginPackage.self, from: data) else { return nil }
         if package.sourceMetadata == nil {
             package.sourceMetadata = .localLibrary()
@@ -413,8 +435,17 @@ struct CapabilityLibrary {
         (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
     }
 
-    private func shouldPreserveExistingPackage(_ existing: PluginPackage, insteadOf approved: PluginPackage) -> Bool {
+    private func shouldPreserveExistingPackage(
+        _ existing: PluginPackage,
+        insteadOf approved: PluginPackage,
+        storageURL: URL
+    ) -> Bool {
         if approved.sourceMetadata?.kind == "built-in", existing.sourceMetadata?.kind != "built-in" {
+            return false
+        }
+
+        if approved.iconDescriptor.kind == .asset,
+           !storedIconAssetIsValid(for: existing, storageURL: storageURL) {
             return false
         }
 
@@ -431,6 +462,21 @@ struct CapabilityLibrary {
         }
 
         return canonicalPackageData(existing) == canonicalPackageData(approved)
+    }
+
+    private func storedIconAssetIsValid(for package: PluginPackage, storageURL: URL) -> Bool {
+        guard package.iconDescriptor.kind == .asset else { return true }
+        let packageRoot = storageURL.deletingLastPathComponent()
+        return (try? CapabilityIconAssetPolicy.validatedAssetURL(
+            relativePath: package.iconDescriptor.value,
+            rootURL: packageRoot,
+            fileManager: fileManager
+        )) != nil
+    }
+
+    private func sameFile(_ lhs: URL, _ rhs: URL) -> Bool {
+        lhs.resolvingSymlinksInPath().standardizedFileURL.path ==
+            rhs.resolvingSymlinksInPath().standardizedFileURL.path
     }
 
     private func canonicalPackageData(_ package: PluginPackage) -> Data? {

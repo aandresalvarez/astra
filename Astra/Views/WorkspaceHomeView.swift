@@ -271,8 +271,12 @@ struct WorkspaceHomeContainerView: View {
     var onNewSchedule: (() -> Void)?
     var onEditSchedule: ((TaskSchedule) -> Void)?
     var onManageCapabilities: (() -> Void)?
+    var onOpenWorkspaceApp: ((WorkspaceApp) -> Void)?
 
     @Query private var tasks: [AgentTask]
+    @Query private var workspaceApps: [WorkspaceApp]
+    @State private var isImportingApp = false
+    @State private var isBrowsingLibrary = false
 
     init(
         workspace: Workspace,
@@ -286,7 +290,8 @@ struct WorkspaceHomeContainerView: View {
         onConfigure: @escaping () -> Void,
         onNewSchedule: (() -> Void)? = nil,
         onEditSchedule: ((TaskSchedule) -> Void)? = nil,
-        onManageCapabilities: (() -> Void)? = nil
+        onManageCapabilities: (() -> Void)? = nil,
+        onOpenWorkspaceApp: ((WorkspaceApp) -> Void)? = nil
     ) {
         self.workspace = workspace
         self.taskQueue = taskQueue
@@ -300,6 +305,7 @@ struct WorkspaceHomeContainerView: View {
         self.onNewSchedule = onNewSchedule
         self.onEditSchedule = onEditSchedule
         self.onManageCapabilities = onManageCapabilities
+        self.onOpenWorkspaceApp = onOpenWorkspaceApp
 
         let workspaceID = workspace.id
         _tasks = Query(
@@ -307,6 +313,12 @@ struct WorkspaceHomeContainerView: View {
                 task.workspace?.id == workspaceID
             },
             sort: \AgentTask.queuePosition
+        )
+        _workspaceApps = Query(
+            filter: #Predicate<WorkspaceApp> { app in
+                app.workspaceID == workspaceID
+            },
+            sort: \WorkspaceApp.name
         )
     }
 
@@ -317,6 +329,7 @@ struct WorkspaceHomeContainerView: View {
             // work, so drafts (in-composition chats) are never surfaced. A task
             // appears here the moment it's queued/run.
             tasks: tasks.filter { !TaskHygiene.isHiddenFromBoard($0) },
+            workspaceApps: workspaceApps,
             onCreateTask: onCreateTask,
             onCreateApp: onCreateApp,
             onOpenTask: onOpenTask,
@@ -325,14 +338,38 @@ struct WorkspaceHomeContainerView: View {
             onConfigure: onConfigure,
             onNewSchedule: onNewSchedule,
             onEditSchedule: onEditSchedule,
-            onManageCapabilities: onManageCapabilities
+            onManageCapabilities: onManageCapabilities,
+            onOpenWorkspaceApp: onOpenWorkspaceApp,
+            onImportWorkspaceApp: { isImportingApp = true },
+            onBrowseLibrary: { isBrowsingLibrary = true }
         )
+        .sheet(isPresented: $isImportingApp) {
+            WorkspaceAppImportReviewView(
+                workspace: workspace,
+                onInstalled: { app in
+                    isImportingApp = false
+                    onOpenWorkspaceApp?(app)
+                },
+                onCancel: { isImportingApp = false }
+            )
+        }
+        .sheet(isPresented: $isBrowsingLibrary) {
+            WorkspaceAppPackageLibraryView(
+                workspace: workspace,
+                onInstalled: { app in
+                    isBrowsingLibrary = false
+                    onOpenWorkspaceApp?(app)
+                },
+                onCancel: { isBrowsingLibrary = false }
+            )
+        }
     }
 }
 
 struct WorkspaceHomeView: View {
     let workspace: Workspace
     let tasks: [AgentTask]
+    var workspaceApps: [WorkspaceApp] = []
     let onCreateTask: () -> Void
     let onCreateApp: () -> Void
     let onOpenTask: (AgentTask) -> Void
@@ -342,6 +379,9 @@ struct WorkspaceHomeView: View {
     var onNewSchedule: (() -> Void)?
     var onEditSchedule: ((TaskSchedule) -> Void)?
     var onManageCapabilities: (() -> Void)?
+    var onOpenWorkspaceApp: ((WorkspaceApp) -> Void)?
+    var onImportWorkspaceApp: (() -> Void)?
+    var onBrowseLibrary: (() -> Void)?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isEditingInstructions = false
@@ -488,8 +528,66 @@ struct WorkspaceHomeView: View {
             workspaceDivider
 
             appStudioSummaryRow
+
+            if onImportWorkspaceApp != nil || (onOpenWorkspaceApp != nil && !workspaceApps.isEmpty) {
+                workspaceDivider
+
+                appsSummaryRow
+            }
         }
         .workspaceSectionPanel()
+    }
+
+    // F7: lists the workspace's published apps so they can be re-opened. Only
+    // shown when a host has provided an open handler and at least one app exists.
+    private var appsSummaryRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "square.grid.2x2")
+                    .font(Stanford.ui(13, weight: .semibold))
+                    .foregroundStyle(Stanford.lagunita)
+                Text("Apps")
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if let onBrowseLibrary {
+                    Button(action: onBrowseLibrary) {
+                        Label("Library", systemImage: "books.vertical")
+                            .font(Stanford.caption(11))
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Browse a shared folder of ASTRA app packages")
+                }
+                if let onImportWorkspaceApp {
+                    Button(action: onImportWorkspaceApp) {
+                        Label("Import", systemImage: "square.and.arrow.down")
+                            .font(Stanford.caption(11))
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Import an ASTRA app package (.astra-app)")
+                }
+            }
+            ForEach(workspaceApps) { app in
+                Button {
+                    onOpenWorkspaceApp?(app)
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: app.icon.isEmpty ? "square.grid.2x2" : app.icon)
+                            .font(Stanford.ui(12))
+                            .foregroundStyle(Stanford.lagunita)
+                        Text(app.name)
+                            .font(Stanford.body(13))
+                            .foregroundStyle(Stanford.black)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(Stanford.ui(11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
     }
 
     @ViewBuilder

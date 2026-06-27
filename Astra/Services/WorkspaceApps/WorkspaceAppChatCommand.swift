@@ -1,0 +1,34 @@
+import Foundation
+
+struct WorkspaceAppStudioLaunchRequest: Equatable {
+    let initialPrompt: String?
+
+    init(initialPrompt: String?) {
+        self.initialPrompt = Self.normalizedPrompt(initialPrompt)
+    }
+
+    static func normalizedPrompt(_ prompt: String?) -> String? {
+        let trimmed = (prompt ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+/// `/app` is only a chat affordance for launching the real App Studio owner.
+/// Generation, validation, and publishing stay inside `WorkspaceAppStudioSession`
+/// plus the Publish callback owned by `ContentView`.
+enum WorkspaceAppChatCommand {
+    private static let commandToken = "/app"
+
+    static func launchRequest(input: String) -> WorkspaceAppStudioLaunchRequest? {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let commandEnd = trimmed.firstIndex(where: isCommandSeparator) ?? trimmed.endIndex
+        let token = String(trimmed[..<commandEnd]).lowercased()
+        guard token == commandToken else { return nil }
+
+        return WorkspaceAppStudioLaunchRequest(initialPrompt: String(trimmed[commandEnd...]))
+    }
+
+    private static func isCommandSeparator(_ character: Character) -> Bool {
+        character.unicodeScalars.allSatisfy { CharacterSet.whitespacesAndNewlines.contains($0) }
+    }
+}

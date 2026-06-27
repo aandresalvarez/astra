@@ -170,7 +170,7 @@ enum AgentPromptBuilder {
     }
 
     private static func initialArtifactActionContract(for task: AgentTask) -> String {
-        guard TaskDeliverableExpectation.requiresStandaloneArtifact(task) else { return "" }
+        guard TaskDeliverableExpectation.requiresDeliverableArtifact(task) else { return "" }
 
         let taskDir = TaskWorkspaceAccess(task: task).taskFolder
         let relativePath = relativeTaskFolderPath(for: task, taskDir: taskDir) ?? taskDir
@@ -179,6 +179,7 @@ enum AgentPromptBuilder {
 
         Artifact first-action requirement:
         The user asked for a generated artifact. Your first provider-visible action should be to create or update a useful baseline deliverable in \(relativePath), preferably \(suggestedFile) when that fits the request.
+        A text reply such as "I'll create it" does not satisfy this requirement. The first meaningful action must be a file write/create/update for the deliverable itself.
         Do not spend an extended period on hidden planning before creating the baseline artifact. Create the baseline first, then improve it.
         If file-write permission is required, request that permission immediately instead of continuing hidden planning.
         """
@@ -229,6 +230,8 @@ enum AgentPromptBuilder {
             sshBlock += "\n- Name: \(conn.displayLabel)"
             sshBlock += "\n- Connect with: ssh \(alias)"
             sshBlock += "\n- Remote path: \(conn.remotePath)"
+            if !conn.configAlias.isEmpty { sshBlock += "\n- SSH config: this alias requires ~/.ssh/config and may include ProxyCommand/IAP settings; prefer the alias over the raw hostname." }
+            if !conn.keyPath.isEmpty { sshBlock += "\n- Identity file: \(conn.keyPath)" }
             sshBlock += "\nWhen the user says \"the server\", \"the remote\", \"this connection\", or \"it\" in the context of SSH, they mean this server."
             sshBlock += "\nTo run commands: ssh \(alias) '<command>'"
             sshBlock += "\nTo run commands in a specific directory: ssh \(alias) 'cd \(conn.remotePath) && <command>'"
@@ -243,9 +246,8 @@ enum AgentPromptBuilder {
             for conn in connections {
                 let alias = conn.configAlias.isEmpty ? conn.sshTarget : conn.configAlias
                 sshBlock += "\n- \(conn.displayLabel): ssh \(alias) (remote path: \(conn.remotePath))"
-                if !conn.configAlias.isEmpty {
-                    sshBlock += " [uses ~/.ssh/config alias]"
-                }
+                if !conn.configAlias.isEmpty { sshBlock += " [uses ~/.ssh/config alias; may include ProxyCommand/IAP]" }
+                if !conn.keyPath.isEmpty { sshBlock += " [identity: \(conn.keyPath)]" }
             }
             sshBlock += "\nTo run commands on a remote server, use: ssh <alias> '<command>'"
             appendSection(
@@ -256,10 +258,10 @@ enum AgentPromptBuilder {
             )
         }
     }
-
     private static func appendWorkspacePaths(for task: AgentTask, to sections: inout [PromptContextSection]) {
-        guard let ws = task.workspace, !ws.additionalPaths.isEmpty else { return }
         let codeDir = TaskWorkspaceAccess(task: task).codeWorkingDirectory
+        if let section = AgentPromptExecutionEnvironmentSection.section(for: task, codeDir: codeDir) { sections.append(section) }
+        guard let ws = task.workspace, !ws.additionalPaths.isEmpty else { return }
         if codeDir != TaskWorkspaceAccess(task: task).effectiveWorkspacePath {
             appendSection(
                 "WORKING DIRECTORY: Your process is running in \(codeDir). This is the primary code directory for this workspace. All relative paths resolve from here.",
@@ -333,13 +335,14 @@ enum AgentPromptBuilder {
         relativePath: String?,
         taskDir: String
     ) -> String {
-        guard TaskDeliverableExpectation.requiresStandaloneArtifact(task) else { return "" }
+        guard TaskDeliverableExpectation.requiresDeliverableArtifact(task) else { return "" }
 
         let location = relativePath ?? taskDir
         let suggestedFile = suggestedStandaloneArtifactFilename(for: task)
         return """
         Artifact delivery contract:
         The user asked for a generated artifact. Create the first useful deliverable promptly in \(location), preferably as \(suggestedFile) when that fits the request.
+        Do not send a visible text reply such as "I'll create it" before the file exists; text promises do not count as delivery. The first meaningful action must be a file write/create/update for the deliverable itself.
         Do not spend an extended period perfecting design, puzzle mechanics, algorithms, or research before writing the initial artifact. Write a working baseline first, then improve it.
         If a tool permission is needed to create the artifact, request that tool permission instead of continuing hidden planning.
         """
@@ -384,24 +387,7 @@ enum AgentPromptBuilder {
 
     private static func appendInputs(for task: AgentTask, to sections: inout [PromptContextSection]) {
         guard !task.inputs.isEmpty else { return }
-        var contextParts: [String] = []
-        for input in task.inputs {
-            if input.hasPrefix("/") || input.hasPrefix("~") {
-                let path = (input as NSString).expandingTildeInPath
-                var isDirectory: ObjCBool = false
-                if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
-                   isDirectory.boolValue {
-                    contextParts.append("Folder: \(path)\nUse this folder as routine context when needed.")
-                } else if let content = try? String(contentsOfFile: path, encoding: .utf8) {
-                    let truncated = content.count > 5000 ? String(content.prefix(5000)) + "\n... (truncated)" : content
-                    contextParts.append("File: \(input)\n```\n\(truncated)\n```")
-                } else {
-                    contextParts.append("Context: \(input)")
-                }
-            } else {
-                contextParts.append("Context: \(input)")
-            }
-        }
+        let contextParts = PromptInputContextReader.contextParts(for: task.inputs)
         appendSection(
             "Context/Inputs:\n" + contextParts.joined(separator: "\n\n"),
             kind: .supportingContext,
@@ -442,249 +428,14 @@ enum AgentPromptBuilder {
         }
     }
 
-    private static func appendConnectorContext(from capabilityScope: TaskCapabilityPromptScope, to sections: inout [PromptContextSection]) {
-        let projection = ConnectorRuntimeProjection(connectors: capabilityScope.connectors)
-        let aliasesByID = projection.aliasesByConnectorID
-        let bindingsByConnectorID = Dictionary(grouping: projection.environmentBindings(), by: \.connectorID)
-
-        let connectorDescriptions = capabilityScope.connectors.map { conn in
-            let alias = aliasesByID[conn.id] ?? ConnectorRuntimeProjection.alias(for: conn)
-            let bindings = bindingsByConnectorID[conn.id] ?? []
-            let credentialBindings = bindings.filter {
-                $0.kind == .credential && !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            }
-            let configBindings = bindings.filter { $0.kind == .config }
-            let configuredCredentialKeys = Set(credentialBindings.map(\.originalKey))
-            let missingCredentialKeys = conn.credentialKeys.filter { !configuredCredentialKeys.contains($0) }
-
-            var desc = "[\(conn.name)] \(conn.serviceType) - \(conn.connectorDescription)"
-            desc += "\n  Alias: \(alias)"
-            if !conn.baseURL.isEmpty { desc += "\n  Base URL: \(conn.baseURL)" }
-            if !configBindings.isEmpty {
-                let configs = configBindings
-                    .sorted { $0.envKey < $1.envKey }
-                    .map { "\($0.originalKey): \($0.value)" }
-                    .joined(separator: ", ")
-                desc += "\n  Config: \(configs)"
-            }
-            if !bindings.isEmpty {
-                let rendered = bindings
-                    .sorted { $0.envKey < $1.envKey }
-                    .map { "\($0.logicalName): $\($0.envKey)" }
-                    .joined(separator: ", ")
-                desc += "\n  Connector env vars: \(rendered)"
-            }
-            if !credentialBindings.isEmpty {
-                let rendered = credentialBindings
-                    .sorted { $0.envKey < $1.envKey }
-                    .map(\.envKey)
-                    .joined(separator: ", ")
-                desc += "\n  Credentials ALREADY SET in your environment: \(rendered) - use os.environ[\"KEY\"] directly, do NOT ask the user for these"
-            }
-            if !missingCredentialKeys.isEmpty {
-                desc += "\n  Credentials NOT configured (ask user to fill them in workspace settings): \(missingCredentialKeys.joined(separator: ", "))"
-            }
-            if !configBindings.isEmpty {
-                let rendered = configBindings
-                    .sorted { $0.envKey < $1.envKey }
-                    .map(\.envKey)
-                    .joined(separator: ", ")
-                desc += "\n  Config env vars: \(rendered)"
-            }
-            if let example = connectorRuntimeExample(for: conn, bindings: bindings) {
-                desc += "\n  Runtime example: \(example)"
-            }
-            desc += "\n  Auth: \(conn.authMethod)"
-            if !conn.notes.isEmpty { desc += "\n  Notes: \(conn.notes)" }
-            return desc
+    private static func appendConnectorContext(
+        from capabilityScope: TaskCapabilityPromptScope,
+        task: AgentTask,
+        to sections: inout [PromptContextSection]
+    ) {
+        if let section = AgentPromptConnectorContextBuilder.section(from: capabilityScope, task: task) {
+            sections.append(section)
         }
-        guard !connectorDescriptions.isEmpty else { return }
-
-        appendSection("""
-        Available Connectors (credentials are pre-loaded into your process environment — use them directly, never ask the user to provide them again):
-        \(connectorDescriptions.joined(separator: "\n\n"))
-
-        The connector env vars listed above and the ASTRA_CONNECTORS JSON manifest are authoritative for this run. When more than one connector of the same service is available, use the connector name or alias to pick the right env vars. If behavioral instructions mention bare legacy env names, use those names only when they are explicitly listed above or in ASTRA_CONNECTORS. If the user request is ambiguous, ask which connector to use before calling external APIs.
-
-        IMPORTANT: To call authenticated APIs, use Bash with curl/python and the env var tokens — NOT WebFetch. \
-        WebFetch cannot handle SSO, session cookies, or token-based auth headers. Prefer the per-connector runtime examples above, or in Python use os.environ["ENV_KEY_LISTED_ABOVE"] to read the credential.
-        """, kind: .tools, to: &sections, sourcePointers: connectorSourcePointers(capabilityScope.connectors))
-    }
-
-    private static func connectorRuntimeExample(
-        for connector: Connector,
-        bindings: [ConnectorRuntimeProjection.EnvironmentBinding]
-    ) -> String? {
-        let serviceType = connector.serviceType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        switch serviceType {
-        case "jira":
-            return jiraRuntimeExample(for: connector, bindings: bindings)
-        case "redcap":
-            return redcapRuntimeExample(for: connector, bindings: bindings)
-        case "gcloud", "google_cloud", "googlecloud", "gcp":
-            return gcloudRuntimeExample(bindings: bindings)
-        default:
-            return nil
-        }
-    }
-
-    private static func jiraRuntimeExample(
-        for connector: Connector,
-        bindings: [ConnectorRuntimeProjection.EnvironmentBinding]
-    ) -> String? {
-        guard let baseURL = runtimeURLBase(
-            bindings: bindings,
-            logicalNames: ["baseURL", "jiraBaseURL", "url"],
-            originalKeys: ["JIRA_BASE_URL", "BASE_URL", "URL"],
-            keyFragments: ["BASE_URL"]
-        ) else {
-            return nil
-        }
-        guard let email = runtimeEnvValue(
-            bindings: bindings,
-            logicalNames: ["email", "jiraEmail", "username"],
-            originalKeys: ["JIRA_EMAIL", "EMAIL", "USERNAME"],
-            keyFragments: ["EMAIL", "USERNAME"],
-            preferredKind: .credential
-        ),
-              let token = runtimeEnvValue(
-            bindings: bindings,
-            logicalNames: ["apiToken", "token", "jiraAPIToken"],
-            originalKeys: ["JIRA_API_TOKEN", "API_TOKEN", "TOKEN"],
-            keyFragments: ["API_TOKEN", "TOKEN"],
-            preferredKind: .credential
-        ) else {
-            return nil
-        }
-        let url = shellQuote("\(baseURL)/rest/api/3/mypermissions?permissions=BROWSE_PROJECTS")
-        return #"curl -s -u "\#(email):\#(token)" -H "Content-Type: application/json" "\#(url)""#
-    }
-
-    private static func redcapRuntimeExample(
-        for connector: Connector,
-        bindings: [ConnectorRuntimeProjection.EnvironmentBinding]
-    ) -> String? {
-        guard let url = runtimeURLBase(
-            bindings: bindings,
-            logicalNames: ["apiURL", "baseURL", "url"],
-            originalKeys: ["REDCAP_API_URL", "API_URL", "BASE_URL", "URL"],
-            keyFragments: ["API_URL", "BASE_URL"]
-        ) else {
-            return nil
-        }
-        guard let token = runtimeEnvValue(
-            bindings: bindings,
-            logicalNames: ["apiToken", "token", "redcapAPIToken"],
-            originalKeys: ["REDCAP_API_TOKEN", "API_TOKEN", "TOKEN"],
-            keyFragments: ["API_TOKEN", "TOKEN"],
-            preferredKind: .credential
-        ) else {
-            return nil
-        }
-        let quotedURL = shellQuote(url)
-        return #"curl -sS -H "Content-Type: application/x-www-form-urlencoded" -H "Accept: application/json" -X POST --data-urlencode "token=\#(token)" --data-urlencode "content=project" --data-urlencode "format=json" --data-urlencode "returnFormat=json" "\#(quotedURL)""#
-    }
-
-    private static func gcloudRuntimeExample(
-        bindings: [ConnectorRuntimeProjection.EnvironmentBinding]
-    ) -> String? {
-        let project = runtimeEnvValue(
-            bindings: bindings,
-            logicalNames: ["project", "gcpProject", "projectID"],
-            originalKeys: ["GCP_PROJECT", "PROJECT", "PROJECT_ID"],
-            keyFragments: ["PROJECT"],
-            preferredKind: .config
-        )
-        let region = runtimeEnvValue(
-            bindings: bindings,
-            logicalNames: ["region", "gcpRegion"],
-            originalKeys: ["GCP_REGION", "REGION"],
-            keyFragments: ["REGION"],
-            preferredKind: .config
-        )
-
-        if let project, let region {
-            return #"gcloud run services list --project "\#(project)" --region "\#(region)" --format=json"#
-        } else if let project {
-            return #"gcloud projects describe "\#(project)" --format=json"#
-        } else if let region {
-            return #"gcloud run services list --region "\#(region)" --format=json"#
-        }
-        return nil
-    }
-
-    private static func runtimeEnvValue(
-        bindings: [ConnectorRuntimeProjection.EnvironmentBinding],
-        logicalNames: Set<String>,
-        originalKeys: Set<String>,
-        keyFragments: [String],
-        preferredKind: ConnectorRuntimeProjection.BindingKind
-    ) -> String? {
-        guard let binding = matchingBinding(
-            in: bindings,
-            logicalNames: logicalNames,
-            originalKeys: originalKeys,
-            keyFragments: keyFragments,
-            preferredKind: preferredKind
-        ) else {
-            return nil
-        }
-        return "$\(binding.envKey)"
-    }
-
-    private static func runtimeURLBase(
-        bindings: [ConnectorRuntimeProjection.EnvironmentBinding],
-        logicalNames: Set<String>,
-        originalKeys: Set<String>,
-        keyFragments: [String]
-    ) -> String? {
-        if let binding = matchingBinding(
-            in: bindings,
-            logicalNames: logicalNames,
-            originalKeys: originalKeys,
-            keyFragments: keyFragments,
-            preferredKind: .config
-        ) {
-            return "${\(binding.envKey)}"
-        }
-        return nil
-    }
-
-    private static func matchingBinding(
-        in bindings: [ConnectorRuntimeProjection.EnvironmentBinding],
-        logicalNames: Set<String>,
-        originalKeys: Set<String>,
-        keyFragments: [String],
-        preferredKind: ConnectorRuntimeProjection.BindingKind
-    ) -> ConnectorRuntimeProjection.EnvironmentBinding? {
-        let preferred = bindings.filter { $0.kind == preferredKind }
-        return firstMatchingBinding(in: preferred, logicalNames: logicalNames, originalKeys: originalKeys, keyFragments: keyFragments)
-            ?? firstMatchingBinding(in: bindings, logicalNames: logicalNames, originalKeys: originalKeys, keyFragments: keyFragments)
-    }
-
-    private static func firstMatchingBinding(
-        in bindings: [ConnectorRuntimeProjection.EnvironmentBinding],
-        logicalNames: Set<String>,
-        originalKeys: Set<String>,
-        keyFragments: [String]
-    ) -> ConnectorRuntimeProjection.EnvironmentBinding? {
-        let normalizedLogicalNames = Set(logicalNames.map { $0.lowercased() })
-        let normalizedOriginalKeys = Set(originalKeys.map { $0.uppercased() })
-        let normalizedFragments = keyFragments.map { $0.uppercased() }
-        return bindings
-            .sorted { $0.envKey < $1.envKey }
-            .first { binding in
-                let logicalName = binding.logicalName.lowercased()
-                let originalKey = binding.originalKey.uppercased()
-                return normalizedLogicalNames.contains(logicalName)
-                    || normalizedOriginalKeys.contains(originalKey)
-                    || normalizedFragments.contains { originalKey.contains($0) }
-            }
-    }
-
-    private static func shellQuote(_ value: String) -> String {
-        value.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
     }
 
     private static func appendToolContext(from capabilityScope: TaskCapabilityPromptScope, to sections: inout [PromptContextSection]) {
@@ -894,7 +645,7 @@ enum AgentPromptBuilder {
         ) {
             let task = context.task
             guard task.useAgentTeam else { return }
-            var teamBlock = "Create an agent team with \(task.teamSize) teammates to accomplish the goal below. Coordinate them to work in parallel and synthesize their results."
+            var teamBlock = "Create an agent team with \(task.teamSize) teammates to accomplish the goal below. Coordinate them to work in parallel and synthesize their results. Do not produce the final answer or final artifact until teammate results have been collected and incorporated."
             if !task.teamInstructions.isEmpty {
                 teamBlock += "\n\(task.teamInstructions)"
             }
@@ -1238,9 +989,12 @@ enum AgentPromptBuilder {
             to sections: inout [PromptContextSection]
         ) {
             if context.mode == .initialRun {
+                if let roster = CapabilityRosterBuilder.roster(for: context.task.workspace) {
+                    appendSection(roster, kind: .tools, to: &sections, sourcePointers: [sourcePointer(label: "enabled capabilities", target: "workspace")])
+                }
                 appendSkillInstructions(from: context.capabilityScope, to: &sections)
             }
-            appendConnectorContext(from: context.capabilityScope, to: &sections)
+            appendConnectorContext(from: context.capabilityScope, task: context.task, to: &sections)
             if context.mode == .initialRun {
                 appendToolContext(from: context.capabilityScope, to: &sections)
             }
@@ -1610,19 +1364,25 @@ enum AgentPromptBuilder {
     }
 
     private static func listTaskFolderFiles(_ folder: String) -> [String] {
-        let fm = FileManager.default
         let rootURL = URL(fileURLWithPath: folder)
             .resolvingSymlinksInPath()
             .standardizedFileURL
         let rootPath = rootURL.path.hasSuffix("/") ? rootURL.path : rootURL.path + "/"
-        guard let enumerator = fm.enumerator(
+        let hostFileAccess = HostFileAccessBroker()
+        let accessIntent = HostFileAccessIntent.astraManagedStorage(root: rootURL)
+        guard let enumerator = hostFileAccess.enumerator(
             at: rootURL,
             includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
+            options: [.skipsHiddenFiles],
+            intent: accessIntent
         ) else { return [] }
 
         var files: [String] = []
         while let url = enumerator.nextObject() as? URL {
+            guard !hostFileAccess.shouldSkip(url, intent: accessIntent) else {
+                enumerator.skipDescendants()
+                continue
+            }
             guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
             let itemURL = url
                 .resolvingSymlinksInPath()
@@ -1660,6 +1420,12 @@ enum AgentPromptBuilder {
     }
 
     private static func appendAstraRunProtocolInstructions(to sections: inout [PromptContextSection]) {
+        appendSection("""
+        Runtime permission language:
+        If a file read or write is blocked by policy or sandboxing, say it was blocked and name the path when known.
+        Do not describe sandbox retries as full access, elevated access, or broad access unless ASTRA explicitly granted that permission for this run.
+        """, kind: .tools, to: &sections, sourcePointers: [sourcePointer(label: "runtime permissions", target: "sandbox reporting contract")])
+
         appendSection("""
         Astra Run Protocol v1:
         Emit structured progress markers only when useful, each on its own line and outside code fences.
@@ -2120,12 +1886,6 @@ enum AgentPromptBuilder {
 
     private static func pathSourcePointers(_ paths: [String]) -> [PromptContextSourcePointer] {
         paths.map { sourcePointer(label: "workspace path", target: $0) }
-    }
-
-    private static func connectorSourcePointers(_ connectors: [Connector]) -> [PromptContextSourcePointer] {
-        connectors.map { connector in
-            sourcePointer(label: "connector \(connector.name)", target: "\(connector.serviceType) \(connector.id.uuidString)")
-        } + [sourcePointer(label: "connector runtime manifest", target: "ASTRA_CONNECTORS environment")]
     }
 
     private static func toolSourcePointers(_ tools: [LocalTool]) -> [PromptContextSourcePointer] {

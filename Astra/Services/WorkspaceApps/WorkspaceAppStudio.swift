@@ -1,0 +1,1420 @@
+import Foundation
+
+struct WorkspaceAppStudioDraft: Identifiable, Sendable, Equatable {
+    var id: UUID
+    var workspaceID: UUID
+    var intent: String
+    var manifest: WorkspaceAppManifest
+    var validationReport: WorkspaceAppManifestValidationReport
+
+    var canPublish: Bool {
+        validationReport.isValid
+    }
+}
+
+struct WorkspaceAppStudioManifestPatchOperation: Codable, Sendable, Equatable {
+    var op: String
+    var path: String
+    var value: WorkspaceAppStudioPatchValue?
+
+    enum CodingKeys: String, CodingKey {
+        case op
+        case path
+        case value
+    }
+
+    init(op: String, path: String, value: WorkspaceAppStudioPatchValue? = nil) {
+        self.op = op
+        self.path = path
+        self.value = value
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        op = try container.decode(String.self, forKey: .op)
+        path = try container.decode(String.self, forKey: .path)
+        guard container.contains(.value) else {
+            value = nil
+            return
+        }
+
+        let parts = path.split(separator: "/").map(String.init)
+        if parts == ["app", "name"] || parts == ["app", "description"] || parts == ["app", "icon"] {
+            value = .string(try container.decode(String.self, forKey: .value))
+        } else if parts == ["app", "tags"] || parts == ["app", "archetypes"] {
+            value = .stringArray(try container.decode([String].self, forKey: .value))
+        } else if parts == ["permissions"] {
+            value = .permissions(try container.decode(WorkspaceAppPermissions.self, forKey: .value))
+        } else if parts.count == 3 && parts[0] == "storage" && parts[1] == "tables" {
+            value = .storageTable(try container.decode(WorkspaceAppStorageTable.self, forKey: .value))
+        } else if parts.count == 2 && parts[0] == "views" {
+            value = .view(try container.decode(WorkspaceAppViewSpec.self, forKey: .value))
+        } else if parts.count == 2 && parts[0] == "actions" {
+            value = .action(try container.decode(WorkspaceAppActionSpec.self, forKey: .value))
+        } else if parts.count == 2 && parts[0] == "automations" {
+            value = .automation(try container.decode(WorkspaceAppAutomationSpec.self, forKey: .value))
+        } else {
+            value = try container.decode(WorkspaceAppStudioPatchValue.self, forKey: .value)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(op, forKey: .op)
+        try container.encode(path, forKey: .path)
+        try container.encodeIfPresent(value, forKey: .value)
+    }
+}
+
+enum WorkspaceAppStudioPatchValue: Codable, Sendable, Equatable {
+    case string(String)
+    case stringArray([String])
+    case storageTable(WorkspaceAppStorageTable)
+    case view(WorkspaceAppViewSpec)
+    case action(WorkspaceAppActionSpec)
+    case automation(WorkspaceAppAutomationSpec)
+    case permissions(WorkspaceAppPermissions)
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? container.decode([String].self) {
+            self = .stringArray(value)
+        } else if let value = try? container.decode(WorkspaceAppStorageTable.self), !value.name.isEmpty {
+            self = .storageTable(value)
+        } else if let value = try? container.decode(WorkspaceAppViewSpec.self) {
+            self = .view(value)
+        } else if let value = try? container.decode(WorkspaceAppActionSpec.self) {
+            self = .action(value)
+        } else if let value = try? container.decode(WorkspaceAppAutomationSpec.self) {
+            self = .automation(value)
+        } else {
+            self = .permissions(try container.decode(WorkspaceAppPermissions.self))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let value):
+            try container.encode(value)
+        case .stringArray(let value):
+            try container.encode(value)
+        case .storageTable(let value):
+            try container.encode(value)
+        case .view(let value):
+            try container.encode(value)
+        case .action(let value):
+            try container.encode(value)
+        case .automation(let value):
+            try container.encode(value)
+        case .permissions(let value):
+            try container.encode(value)
+        }
+    }
+}
+
+struct WorkspaceAppStudioPatchResult: Sendable, Equatable {
+    var manifest: WorkspaceAppManifest
+    var rejectedManifest: WorkspaceAppManifest?
+    var validationReport: WorkspaceAppManifestValidationReport
+    var accepted: Bool
+
+    var canPublish: Bool {
+        accepted && validationReport.isValid
+    }
+}
+
+/// One surgical edit to an HTML app's UI body: replace a VERBATIM, uniquely-occurring snippet
+/// (`find`) of the current HTML with `replace`. The blob analogue of a manifest patch op — it lets
+/// the model change one handler/button without re-emitting (and risking regressing) the whole UI,
+/// so edits compound turn over turn. The unique-occurrence rule is the safety contract: an anchor
+/// that matches zero or many times is rejected, never applied to the wrong place.
+struct WorkspaceAppStudioHTMLEdit: Codable, Sendable, Equatable {
+    var find: String
+    var replace: String
+}
+
+/// Outcome of applying a list of `WorkspaceAppStudioHTMLEdit`s to an HTML body.
+enum WorkspaceAppStudioHTMLEditResult: Equatable {
+    /// The edited HTML, plus how many edits were SKIPPED (their anchor couldn't be placed) — the apply
+    /// is resilient: it keeps the edits that landed instead of discarding the whole turn on one miss.
+    /// `skipped == 0` is a clean full apply; `> 0` is a partial apply the chat surfaces as a warning.
+    case applied(String, skipped: Int)
+    /// A repair-actionable message naming WHY NOTHING could be applied (every anchor missing/ambiguous,
+    /// or a no-op), so the repair loop and the user get something to act on.
+    case failure(String)
+}
+
+enum WorkspaceAppStudioStructuredOutputKind: String, Sendable, Equatable {
+    case manifest
+    case patch
+}
+
+struct WorkspaceAppStudioStructuredOutputResult: Sendable, Equatable {
+    var kind: WorkspaceAppStudioStructuredOutputKind?
+    var manifest: WorkspaceAppManifest
+    var rejectedManifest: WorkspaceAppManifest?
+    var validationReport: WorkspaceAppManifestValidationReport
+    var accepted: Bool
+
+    var canPublish: Bool {
+        accepted && validationReport.isValid
+    }
+}
+
+enum WorkspaceAppStudioBuilder {
+    static let defaultIntent = "Build me a database app to store my groceries."
+
+    static func draft(
+        intent rawIntent: String,
+        workspace: Workspace,
+        existingManifest: WorkspaceAppManifest? = nil
+    ) -> WorkspaceAppStudioDraft {
+        let intent = normalizedIntent(rawIntent)
+        let manifest = existingManifest ?? manifest(for: intent)
+        let report = WorkspaceAppManifestValidator.validate(manifest)
+
+        return WorkspaceAppStudioDraft(
+            id: UUID(),
+            workspaceID: workspace.id,
+            intent: intent,
+            manifest: manifest,
+            validationReport: report
+        )
+    }
+
+    static func manifestForPublishing(
+        _ manifest: WorkspaceAppManifest,
+        existingLogicalIDs: Set<String>
+    ) -> WorkspaceAppManifest {
+        guard existingLogicalIDs.contains(manifest.app.id) else {
+            return manifest
+        }
+
+        var copy = manifest
+        let baseID = manifest.app.id
+        var suffix = 2
+        while existingLogicalIDs.contains("\(baseID)-\(suffix)") {
+            suffix += 1
+        }
+        copy.app.id = "\(baseID)-\(suffix)"
+        copy.app.name = "\(manifest.app.name) \(suffix)"
+        return copy
+    }
+
+    /// Apply surgical `{find, replace}` edits to an HTML body, in order. Each `find` must locate a
+    /// UNIQUE span — first by EXACT match, then (when exact fails) by a WHITESPACE-TOLERANT match, so
+    /// the dominant LLM error (indentation/whitespace drift in a copied anchor) no longer breaks the
+    /// edit while precision is preserved (the non-whitespace content must still match exactly once).
+    /// Edits compound (a later `find` sees earlier `replace`s).
+    ///
+    /// The apply is RESILIENT, not all-or-nothing: an edit whose anchor can't be uniquely placed is
+    /// SKIPPED (and counted) rather than discarding the whole turn — a partial restyle that lands 3 of
+    /// 4 changes beats keeping the app unchanged. Only when NOTHING lands does it fail, steering the
+    /// repair loop to a full `ASTRA_APP_HTML` rewrite (the reliable channel for a model that can't
+    /// reproduce exact anchors). A batch that leaves the HTML byte-identical is still rejected as a
+    /// no-op so a "fix it" turn can't silently change nothing.
+    /// The most edits one turn may carry — a real refinement is a handful; a flood is pathological
+    /// input. Each `find`/`replace` is also length-capped, and the running body is bounded by the
+    /// validator's HTML size limit so a batch can't burn CPU/memory before validation runs.
+    static let maxHTMLEdits = 100
+    static let maxHTMLEditFieldBytes = 64 * 1024
+    /// Mirrors `WorkspaceAppManifestValidator`'s HTML-body cap; the validator stays authoritative,
+    /// this is just the early-bail guard so we never grow a multi-MB string only to reject it.
+    static let maxHTMLEditBodyBytes = 256 * 1024
+
+    static func applyHTMLEdits(
+        _ edits: [WorkspaceAppStudioHTMLEdit],
+        to html: String
+    ) -> WorkspaceAppStudioHTMLEditResult {
+        guard !edits.isEmpty else {
+            return .failure("ASTRA_APP_HTML_EDIT had no edits — send at least one { \"find\", \"replace\" } edit, or a full ASTRA_APP_HTML block for a rewrite.")
+        }
+        guard edits.count <= maxHTMLEdits else {
+            return .failure("ASTRA_APP_HTML_EDIT had \(edits.count) edits — at most \(maxHTMLEdits) per turn. Make a focused change or send a full ASTRA_APP_HTML block for a rewrite.")
+        }
+        var current = html
+        var applied = 0
+        var skipped = 0
+        for (index, edit) in edits.enumerated() {
+            guard !edit.find.isEmpty else {
+                return .failure("edit[\(index)] has an empty \"find\" — it must be a snippet copied verbatim from the current HTML that occurs exactly once.")
+            }
+            guard edit.find.utf8.count <= maxHTMLEditFieldBytes, edit.replace.utf8.count <= maxHTMLEditFieldBytes else {
+                return .failure("edit[\(index)] is too large — \"find\" and \"replace\" are each capped at \(maxHTMLEditFieldBytes / 1024) KB. Use a smaller, targeted snippet.")
+            }
+            // Tolerant locate: exact first, then whitespace-normalized. A non-unique anchor (missing or
+            // ambiguous) is SKIPPED, not fatal — the remaining edits still apply.
+            guard let range = locateUniqueAnchor(edit.find, in: current) else {
+                skipped += 1
+                continue
+            }
+            current.replaceSubrange(range, with: edit.replace)
+            applied += 1
+            guard current.utf8.count <= maxHTMLEditBodyBytes else {
+                return .failure("edit[\(index)] grew the HTML past the \(maxHTMLEditBodyBytes / 1024) KB limit. Keep the UI small and focused.")
+            }
+        }
+        guard applied > 0 else {
+            // Nothing matched — the model's anchors didn't line up with the current HTML at all. Steer
+            // recovery to the reliable channel (a full rewrite) rather than another doomed anchor try.
+            return .failure("none of the \(edits.count) edits could be placed — their \"find\" anchors don't match the current HTML (whitespace, quotes, or escaping differ). Don't retry surgical edits; send a full ASTRA_APP_HTML block with the change applied to the CURRENT_HTML shown to you.")
+        }
+        guard current != html else {
+            return .failure("the edits left the HTML unchanged — \"find\" and \"replace\" were identical. Make the actual change the request asked for.")
+        }
+        if skipped > 0 {
+            AppLogger.info("app_studio.html_edit_partial applied=\(applied) skipped=\(skipped) of=\(edits.count)", category: "WorkspaceApps")
+        }
+        return .applied(current, skipped: skipped)
+    }
+
+    /// Locate `find` as a UNIQUE span of `text`, returning its range or nil (absent OR ambiguous —
+    /// either way the caller skips it). Tries an EXACT match first (today's strict behavior when the
+    /// model nails the anchor), then a WHITESPACE-TOLERANT match: the non-whitespace tokens of `find`
+    /// must appear in order separated by ANY whitespace. That absorbs indentation/newline drift — the
+    /// #1 reason a copied anchor fails — without losing precision, since the match must still be unique.
+    static func locateUniqueAnchor(_ find: String, in text: String) -> Range<String.Index>? {
+        // 1. Exact, unique.
+        let exactCount = text.components(separatedBy: find).count - 1
+        if exactCount == 1 { return text.range(of: find) }
+        if exactCount > 1 { return nil }   // ambiguous → skip (never place in the wrong spot)
+        // 2. Whitespace-tolerant, unique.
+        guard let regex = whitespaceTolerantAnchorRegex(for: find) else { return nil }
+        let nsText = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+        guard matches.count == 1 else { return nil }   // 0 → not found; >1 → ambiguous; both skip
+        return Range(matches[0].range, in: text)
+    }
+
+    /// Build a regex that matches `find` literally EXCEPT every run of whitespace becomes `\s+` (and
+    /// leading/trailing whitespace is dropped). No nested quantifiers, so no catastrophic backtracking;
+    /// nil when `find` has no non-whitespace content.
+    ///
+    /// Word-boundary guards bracket the pattern when an edge token is a word char, so a fragment can
+    /// NEVER match inside a larger identifier — `btn red` must not match inside `btn redish`. With the
+    /// caller's exactly-one-match requirement, this keeps the safety contract ("never place in the
+    /// wrong span") that exact matching had: a fragment can't sneak in, and a genuine duplicate token
+    /// sequence is >1 match ⇒ ambiguous ⇒ skipped.
+    static func whitespaceTolerantAnchorRegex(for find: String) -> NSRegularExpression? {
+        let rawTokens = find.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        guard let first = rawTokens.first, let last = rawTokens.last else { return nil }
+        func isWordChar(_ c: Character?) -> Bool { guard let c else { return false }; return c.isLetter || c.isNumber || c == "_" }
+        let leadingGuard = isWordChar(first.first) ? "(?<![A-Za-z0-9_])" : ""
+        let trailingGuard = isWordChar(last.last) ? "(?![A-Za-z0-9_])" : ""
+        let body = rawTokens.map { NSRegularExpression.escapedPattern(for: $0) }.joined(separator: "\\s+")
+        return try? NSRegularExpression(pattern: leadingGuard + body + trailingGuard, options: [.dotMatchesLineSeparators])
+    }
+
+    static func applyPatch(
+        _ operations: [WorkspaceAppStudioManifestPatchOperation],
+        html: String? = nil,
+        to manifest: WorkspaceAppManifest
+    ) -> WorkspaceAppStudioPatchResult {
+        do {
+            var patched = manifest
+            for operation in operations {
+                try apply(operation, to: &patched)
+            }
+            // Progressive HTML-app refinement: a fresh ASTRA_APP_HTML block REPLACES the UI body
+            // (a blob can't be field-patched), while the manifest change rides the small op list.
+            // Absent ⇒ the patched manifest keeps the base's existing html — a manifest-only edit
+            // leaves the UI untouched.
+            if let html { patched.html = html }
+            let report = WorkspaceAppManifestValidator.validate(patched)
+            guard report.isValid else {
+                return WorkspaceAppStudioPatchResult(
+                    manifest: manifest,
+                    rejectedManifest: patched,
+                    validationReport: report,
+                    accepted: false
+                )
+            }
+            return WorkspaceAppStudioPatchResult(
+                manifest: patched,
+                rejectedManifest: nil,
+                validationReport: report,
+                accepted: true
+            )
+        } catch let error as WorkspaceAppStudioPatchError {
+            return WorkspaceAppStudioPatchResult(
+                manifest: manifest,
+                rejectedManifest: nil,
+                validationReport: WorkspaceAppManifestValidationReport(issues: [
+                    WorkspaceAppManifestValidationReport.Issue(
+                        severity: .blocker,
+                        path: error.path,
+                        message: error.message
+                    )
+                ]),
+                accepted: false
+            )
+        } catch {
+            return WorkspaceAppStudioPatchResult(
+                manifest: manifest,
+                rejectedManifest: nil,
+                validationReport: WorkspaceAppManifestValidationReport(issues: [
+                    WorkspaceAppManifestValidationReport.Issue(
+                        severity: .blocker,
+                        path: "/patch",
+                        message: "Could not apply manifest patch: \(error.localizedDescription)"
+                    )
+                ]),
+                accepted: false
+            )
+        }
+    }
+
+    static func applyStructuredOutput(
+        _ output: String,
+        to manifest: WorkspaceAppManifest
+    ) -> WorkspaceAppStudioStructuredOutputResult {
+        let manifestBlock = structuredBlock(
+            named: "ASTRA_APP_MANIFEST",
+            in: output
+        )
+        let patchBlock = structuredBlock(
+            named: "ASTRA_APP_PATCH",
+            in: output
+        )
+        // Phase 1 dynamic apps: the model can ALSO emit a separate ASTRA_APP_HTML block carrying
+        // the app's inner UI (easier than JSON-escaping a large blob inside the manifest). A
+        // present-but-malformed block is a hard failure so the repair loop fixes it rather than
+        // silently shipping a UI-less app. The HTML rides the MANIFEST path only — an HTML app
+        // always re-emits a full manifest (not a patch), so a declarative patch never sets html.
+        let htmlBlock = structuredBlock(named: "ASTRA_APP_HTML", in: output)
+        let html: String?
+        switch htmlBlock {
+        case .success(let payload): html = payload
+        case .notFound: html = nil
+        case .failure(let message):
+            return structuredOutputFailure(
+                preserving: manifest,
+                path: "/structuredOutput/ASTRA_APP_HTML",
+                message: message
+            )
+        }
+
+        // Progressive HTML refinement: surgical {find,replace} edits to the EXISTING UI body — the
+        // delta analogue of ASTRA_APP_PATCH for the blob that can't be field-patched. Handled before
+        // the manifest/patch matrix: it composes with a manifest patch but is mutually exclusive with
+        // a full manifest or a full HTML re-emission (those replace what the edits would target).
+        let htmlEditBlock = structuredBlock(named: "ASTRA_APP_HTML_EDIT", in: output)
+        switch htmlEditBlock {
+        case .failure(let message):
+            return structuredOutputFailure(
+                preserving: manifest,
+                path: "/structuredOutput/ASTRA_APP_HTML_EDIT",
+                message: message
+            )
+        case .success(let editPayload):
+            let manifestPresent: Bool
+            if case .notFound = manifestBlock { manifestPresent = false } else { manifestPresent = true }
+            return applyHTMLEditPayload(
+                editPayload,
+                patchBlock: patchBlock,
+                fullHTMLPresent: html != nil,
+                manifestPresent: manifestPresent,
+                to: manifest
+            )
+        case .notFound:
+            break
+        }
+
+        switch (manifestBlock, patchBlock) {
+        case (.success(let manifestPayload), .notFound):
+            return applyManifestPayload(manifestPayload, html: html, preserving: manifest)
+        case (.notFound, .success(let patchPayload)):
+            // Progressive refinement: a small manifest patch, plus (for an HTML app) a fresh
+            // ASTRA_APP_HTML block carrying the new UI. The html rides the patch path the same way
+            // it rides the manifest path — a blob can't be field-patched, but it replaces the body
+            // while the structured change stays a tiny, robust delta.
+            return applyPatchPayload(patchPayload, html: html, to: manifest)
+        case (.notFound, .notFound):
+            return structuredOutputFailure(
+                preserving: manifest,
+                path: "/structuredOutput",
+                message: "No ASTRA app manifest or patch block was found."
+            )
+        case (.success, .success):
+            return structuredOutputFailure(
+                preserving: manifest,
+                path: "/structuredOutput",
+                message: "Structured output must include either ASTRA_APP_MANIFEST or ASTRA_APP_PATCH, not both."
+            )
+        case (.failure(let message), _):
+            return structuredOutputFailure(
+                preserving: manifest,
+                path: "/structuredOutput/ASTRA_APP_MANIFEST",
+                message: message
+            )
+        case (_, .failure(let message)):
+            return structuredOutputFailure(
+                preserving: manifest,
+                path: "/structuredOutput/ASTRA_APP_PATCH",
+                message: message
+            )
+        }
+    }
+
+    private static func manifest(for intent: String) -> WorkspaceAppManifest {
+        // A "show my GitHub PRs" intent routes to the deterministic connector-read app (live data via
+        // astra.read) — it's not expressible by any archetype recipe, and a reliable floor matters since
+        // the model can time out. Everything else goes through the archetype classifier.
+        if isGitHubPullRequestIntent(intent) {
+            return githubPullRequestsHTMLManifest(intent: intent)
+        }
+        // Route free-text intent to the best-fitting archetype recipe instead of collapsing
+        // every non-"database" intent into a read-only operational surface.
+        return WorkspaceAppStudioRecipes.manifest(for: WorkspaceAppArchetype.classify(intent), intent: intent)
+    }
+
+    /// The deterministic template manifest for a free-text intent.
+    ///
+    /// `WorkspaceAppStudioGenerator` uses this both as the graceful fallback when
+    /// the model is unavailable or never produces a valid manifest, and as the
+    /// valid few-shot example embedded in the generation prompt. It is the only
+    /// manifest-only entry point — `draft(intent:workspace:)` additionally needs a
+    /// `Workspace` to build a draft, which the value-typed generator must not require.
+    static func baseManifest(intent: String) -> WorkspaceAppManifest {
+        manifest(for: normalizedIntent(intent))
+    }
+
+    private static func applyManifestPayload(
+        _ payload: String,
+        html: String?,
+        preserving manifest: WorkspaceAppManifest
+    ) -> WorkspaceAppStudioStructuredOutputResult {
+        do {
+            var decoded = try JSONDecoder().decode(
+                WorkspaceAppManifest.self,
+                from: Data(payload.utf8)
+            )
+            // A separate ASTRA_APP_HTML block wins over any inline `html` in the JSON (the cleaner
+            // channel for a large blob); attach it BEFORE validation so the HTML-app rules run.
+            if let html { decoded.html = html }
+            let report = WorkspaceAppManifestValidator.validate(decoded)
+            guard report.isValid else {
+                return WorkspaceAppStudioStructuredOutputResult(
+                    kind: .manifest,
+                    manifest: manifest,
+                    rejectedManifest: decoded,
+                    validationReport: report,
+                    accepted: false
+                )
+            }
+            return WorkspaceAppStudioStructuredOutputResult(
+                kind: .manifest,
+                manifest: decoded,
+                rejectedManifest: nil,
+                validationReport: report,
+                accepted: true
+            )
+        } catch {
+            return structuredOutputFailure(
+                preserving: manifest,
+                path: "/structuredOutput/ASTRA_APP_MANIFEST",
+                message: "Could not decode app manifest block: \(decodeFailureMessage(error))"
+            )
+        }
+    }
+
+    private static func applyPatchPayload(
+        _ payload: String,
+        html: String?,
+        to manifest: WorkspaceAppManifest
+    ) -> WorkspaceAppStudioStructuredOutputResult {
+        do {
+            let operations = try JSONDecoder().decode(
+                [WorkspaceAppStudioManifestPatchOperation].self,
+                from: Data(payload.utf8)
+            )
+            let patchResult = applyPatch(operations, html: html, to: manifest)
+            return WorkspaceAppStudioStructuredOutputResult(
+                kind: .patch,
+                manifest: patchResult.manifest,
+                rejectedManifest: patchResult.rejectedManifest,
+                validationReport: patchResult.validationReport,
+                accepted: patchResult.accepted
+            )
+        } catch {
+            return structuredOutputFailure(
+                preserving: manifest,
+                path: "/structuredOutput/ASTRA_APP_PATCH",
+                message: "Could not decode app patch block: \(decodeFailureMessage(error))"
+            )
+        }
+    }
+
+    /// Apply an `ASTRA_APP_HTML_EDIT` block: surgical edits to the current app's HTML body, plus an
+    /// OPTIONAL `ASTRA_APP_PATCH` that rides alongside (e.g. rename the app + tweak its UI in one
+    /// turn). Rejected when paired with a full manifest or a full HTML block (ambiguous intent), or
+    /// when the app has no HTML body to edit. The resulting HTML flows through the same `applyPatch`
+    /// validation path as every other channel, so HTML-app sandbox rules still gate it.
+    private static func applyHTMLEditPayload(
+        _ payload: String,
+        patchBlock: WorkspaceAppStudioStructuredBlock,
+        fullHTMLPresent: Bool,
+        manifestPresent: Bool,
+        to manifest: WorkspaceAppManifest
+    ) -> WorkspaceAppStudioStructuredOutputResult {
+        if manifestPresent {
+            return structuredOutputFailure(
+                preserving: manifest,
+                path: "/structuredOutput",
+                message: "ASTRA_APP_HTML_EDIT makes surgical edits to the CURRENT app — it can't be combined with a full ASTRA_APP_MANIFEST. Send edits, or a full manifest, not both."
+            )
+        }
+        if fullHTMLPresent {
+            return structuredOutputFailure(
+                preserving: manifest,
+                path: "/structuredOutput",
+                message: "Send either ASTRA_APP_HTML_EDIT (surgical edits) or ASTRA_APP_HTML (full UI replacement), not both."
+            )
+        }
+        guard let currentHTML = manifest.html else {
+            return structuredOutputFailure(
+                preserving: manifest,
+                path: "/structuredOutput/ASTRA_APP_HTML_EDIT",
+                message: "This app has no HTML body to edit. Send a full ASTRA_APP_MANIFEST with an ASTRA_APP_HTML block instead."
+            )
+        }
+        let edits: [WorkspaceAppStudioHTMLEdit]
+        do {
+            edits = try JSONDecoder().decode([WorkspaceAppStudioHTMLEdit].self, from: Data(payload.utf8))
+        } catch {
+            return structuredOutputFailure(
+                preserving: manifest,
+                path: "/structuredOutput/ASTRA_APP_HTML_EDIT",
+                message: "Could not decode app HTML edits: \(decodeFailureMessage(error))"
+            )
+        }
+        let newHTML: String
+        let skippedEdits: Int
+        switch applyHTMLEdits(edits, to: currentHTML) {
+        case let .applied(updated, skipped):
+            newHTML = updated
+            skippedEdits = skipped
+        case .failure(let message):
+            return structuredOutputFailure(
+                preserving: manifest,
+                path: "/structuredOutput/ASTRA_APP_HTML_EDIT",
+                message: message
+            )
+        }
+        // An optional manifest patch may accompany the UI edit. Absent ⇒ a pure UI change.
+        let operations: [WorkspaceAppStudioManifestPatchOperation]
+        switch patchBlock {
+        case .success(let patchPayload):
+            do {
+                operations = try JSONDecoder().decode(
+                    [WorkspaceAppStudioManifestPatchOperation].self,
+                    from: Data(patchPayload.utf8)
+                )
+            } catch {
+                return structuredOutputFailure(
+                    preserving: manifest,
+                    path: "/structuredOutput/ASTRA_APP_PATCH",
+                    message: "Could not decode app patch block: \(decodeFailureMessage(error))"
+                )
+            }
+        case .notFound:
+            operations = []
+        case .failure(let message):
+            return structuredOutputFailure(
+                preserving: manifest,
+                path: "/structuredOutput/ASTRA_APP_PATCH",
+                message: message
+            )
+        }
+        let patchResult = applyPatch(operations, html: newHTML, to: manifest)
+        // Surface a PARTIAL apply (some anchors couldn't be placed) as a non-blocking warning, so the
+        // chat says "valid (1 warning)" and the inspector names the skipped edits — instead of pretending
+        // the whole change landed. Warnings never block publishing.
+        let report: WorkspaceAppManifestValidationReport
+        if skippedEdits > 0, patchResult.accepted {
+            let warning = WorkspaceAppManifestValidationReport.Issue(
+                severity: .warning,
+                path: "/structuredOutput/ASTRA_APP_HTML_EDIT",
+                message: "Applied a PARTIAL change — \(skippedEdits) edit\(skippedEdits == 1 ? "" : "s") couldn't be placed (their anchor didn't match the current HTML), so the result may be incomplete. Check the preview; if it looks wrong, ask again for just those parts or request a full rewrite."
+            )
+            report = WorkspaceAppManifestValidationReport(issues: patchResult.validationReport.issues + [warning])
+        } else {
+            report = patchResult.validationReport
+        }
+        return WorkspaceAppStudioStructuredOutputResult(
+            kind: .patch,
+            manifest: patchResult.manifest,
+            rejectedManifest: patchResult.rejectedManifest,
+            validationReport: report,
+            accepted: patchResult.accepted
+        )
+    }
+
+    /// Turn a `DecodingError` into a precise, repair-actionable message.
+    ///
+    /// `DecodingError.localizedDescription` collapses every shape — a missing key, a null value,
+    /// a type mismatch — into the SAME opaque string ("The data couldn't be read because it is
+    /// missing." / "...isn't in the correct format.") and drops the coding path entirely. That
+    /// message rides the validation report straight into the repair prompt, so the model is asked
+    /// to fix a manifest without being told WHICH field is wrong — it can't, and all repair turns
+    /// fail to the "kept your app unchanged" fallback. Naming the field + JSON path (e.g.
+    /// "required field 'type' is missing in actions[2]") is what lets the repair loop self-correct.
+    static func decodeFailureMessage(_ error: Error) -> String {
+        guard let decodingError = error as? DecodingError else { return error.localizedDescription }
+        func describe(_ codingPath: [CodingKey]) -> String {
+            var out = ""
+            for key in codingPath {
+                if let index = key.intValue {
+                    out += "[\(index)]"
+                } else {
+                    out += out.isEmpty ? key.stringValue : ".\(key.stringValue)"
+                }
+            }
+            return out
+        }
+        switch decodingError {
+        case let .keyNotFound(key, context):
+            let parent = describe(context.codingPath)
+            return "required field '\(key.stringValue)' is missing" + (parent.isEmpty ? "" : " in \(parent)")
+        case let .valueNotFound(_, context):
+            let location = describe(context.codingPath)
+            return "required field '\(location.isEmpty ? "value" : location)' is null — it must have a value"
+        case let .typeMismatch(type, context):
+            let location = describe(context.codingPath)
+            return "field '\(location.isEmpty ? "value" : location)' has the wrong type (expected \(type))"
+        case let .dataCorrupted(context):
+            let location = describe(context.codingPath)
+            return "malformed JSON" + (location.isEmpty ? "" : " at \(location)") + ": \(context.debugDescription)"
+        @unknown default:
+            return error.localizedDescription
+        }
+    }
+
+    private static func structuredOutputFailure(
+        preserving manifest: WorkspaceAppManifest,
+        path: String,
+        message: String
+    ) -> WorkspaceAppStudioStructuredOutputResult {
+        WorkspaceAppStudioStructuredOutputResult(
+            kind: nil,
+            manifest: manifest,
+            rejectedManifest: nil,
+            validationReport: WorkspaceAppManifestValidationReport(issues: [
+                WorkspaceAppManifestValidationReport.Issue(
+                    severity: .blocker,
+                    path: path,
+                    message: message
+                )
+            ]),
+            accepted: false
+        )
+    }
+
+    private static func structuredBlock(
+        named name: String,
+        in output: String
+    ) -> WorkspaceAppStudioStructuredBlock {
+        let endMarker = "END_\(name)"
+        let lines = output.components(separatedBy: .newlines)
+        let startIndexes = lines.indices.filter { lines[$0].trimmingCharacters(in: .whitespacesAndNewlines) == name }
+        guard let startIndex = startIndexes.first else {
+            return .notFound
+        }
+        guard startIndexes.count == 1 else {
+            return .failure("Structured output includes multiple \(name) blocks.")
+        }
+        guard let endIndex = lines.indices[(startIndex + 1)...].first(where: {
+            lines[$0].trimmingCharacters(in: .whitespacesAndNewlines) == endMarker
+        }) else {
+            return .failure("Structured output is missing \(endMarker).")
+        }
+        let payload = lines[(startIndex + 1)..<endIndex]
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !payload.isEmpty else {
+            return .failure("Structured output \(name) block is empty.")
+        }
+        return .success(payload)
+    }
+
+    private static func apply(
+        _ operation: WorkspaceAppStudioManifestPatchOperation,
+        to manifest: inout WorkspaceAppManifest
+    ) throws {
+        let parts = operation.path.split(separator: "/").map(String.init)
+        switch operation.op {
+        case "add":
+            try add(operation.value, at: parts, path: operation.path, manifest: &manifest)
+        case "replace":
+            try replace(operation.value, at: parts, path: operation.path, manifest: &manifest)
+        case "remove":
+            try remove(at: parts, path: operation.path, manifest: &manifest)
+        default:
+            throw WorkspaceAppStudioPatchError(path: operation.path, message: "Unsupported patch operation '\(operation.op)'.")
+        }
+    }
+
+    private static func add(
+        _ value: WorkspaceAppStudioPatchValue?,
+        at parts: [String],
+        path: String,
+        manifest: inout WorkspaceAppManifest
+    ) throws {
+        if parts == ["storage", "tables", "-"] {
+            let table = try storageTableValue(value, path: path)
+            if manifest.storage == nil {
+                manifest.storage = WorkspaceAppStorageSchema()
+            }
+            manifest.storage?.tables.append(table)
+        } else if parts == ["views", "-"] {
+            manifest.views.append(try viewValue(value, path: path))
+        } else if parts == ["actions", "-"] {
+            manifest.actions.append(try actionValue(value, path: path))
+        } else if parts == ["automations", "-"] {
+            manifest.automations.append(try automationValue(value, path: path))
+        } else {
+            throw WorkspaceAppStudioPatchError(path: path, message: "Unsupported add patch path.")
+        }
+    }
+
+    private static func replace(
+        _ value: WorkspaceAppStudioPatchValue?,
+        at parts: [String],
+        path: String,
+        manifest: inout WorkspaceAppManifest
+    ) throws {
+        if parts == ["app", "name"] {
+            manifest.app.name = try stringValue(value, path: path)
+        } else if parts == ["app", "description"] {
+            manifest.app.description = try stringValue(value, path: path)
+        } else if parts == ["app", "icon"] {
+            manifest.app.icon = try stringValue(value, path: path)
+        } else if parts == ["app", "tags"] {
+            manifest.app.tags = try stringArrayValue(value, path: path)
+        } else if parts == ["app", "archetypes"] {
+            manifest.app.archetypes = try stringArrayValue(value, path: path)
+        } else if parts == ["permissions"] {
+            manifest.permissions = try permissionsValue(value, path: path)
+        } else if parts.count == 3 && parts[0] == "storage" && parts[1] == "tables" {
+            guard manifest.storage != nil else {
+                throw WorkspaceAppStudioPatchError(path: path, message: "Cannot replace a storage table when the manifest has no storage schema.")
+            }
+            let index = parts[2]
+            let resolved = try existingIndex(index, count: manifest.storage?.tables.count ?? 0, path: path)
+            manifest.storage?.tables[resolved] = try storageTableValue(value, path: path)
+        } else if parts.count == 2 && parts[0] == "views" {
+            let index = parts[1]
+            manifest.views[try existingIndex(index, count: manifest.views.count, path: path)] = try viewValue(value, path: path)
+        } else if parts.count == 2 && parts[0] == "actions" {
+            let index = parts[1]
+            manifest.actions[try existingIndex(index, count: manifest.actions.count, path: path)] = try actionValue(value, path: path)
+        } else if parts.count == 2 && parts[0] == "automations" {
+            let index = parts[1]
+            manifest.automations[try existingIndex(index, count: manifest.automations.count, path: path)] = try automationValue(value, path: path)
+        } else {
+            throw WorkspaceAppStudioPatchError(path: path, message: "Unsupported replace patch path.")
+        }
+    }
+
+    private static func remove(
+        at parts: [String],
+        path: String,
+        manifest: inout WorkspaceAppManifest
+    ) throws {
+        if parts.count == 3 && parts[0] == "storage" && parts[1] == "tables" {
+            guard var storage = manifest.storage else {
+                throw WorkspaceAppStudioPatchError(path: path, message: "Cannot remove a storage table when the manifest has no storage schema.")
+            }
+            let index = parts[2]
+            storage.tables.remove(at: try existingIndex(index, count: storage.tables.count, path: path))
+            manifest.storage = storage
+        } else if parts.count == 2 && parts[0] == "views" {
+            let index = parts[1]
+            manifest.views.remove(at: try existingIndex(index, count: manifest.views.count, path: path))
+        } else if parts.count == 2 && parts[0] == "actions" {
+            let index = parts[1]
+            manifest.actions.remove(at: try existingIndex(index, count: manifest.actions.count, path: path))
+        } else if parts.count == 2 && parts[0] == "automations" {
+            let index = parts[1]
+            manifest.automations.remove(at: try existingIndex(index, count: manifest.automations.count, path: path))
+        } else {
+            throw WorkspaceAppStudioPatchError(path: path, message: "Unsupported remove patch path.")
+        }
+    }
+
+    private static func stringValue(_ value: WorkspaceAppStudioPatchValue?, path: String) throws -> String {
+        guard case .string(let string) = value else {
+            throw WorkspaceAppStudioPatchError(path: path, message: "Patch value must be a string.")
+        }
+        return string
+    }
+
+    private static func stringArrayValue(_ value: WorkspaceAppStudioPatchValue?, path: String) throws -> [String] {
+        guard case .stringArray(let strings) = value else {
+            throw WorkspaceAppStudioPatchError(path: path, message: "Patch value must be a string array.")
+        }
+        return strings
+    }
+
+    private static func storageTableValue(_ value: WorkspaceAppStudioPatchValue?, path: String) throws -> WorkspaceAppStorageTable {
+        guard case .storageTable(let table) = value else {
+            throw WorkspaceAppStudioPatchError(path: path, message: "Patch value must be a storage table.")
+        }
+        return table
+    }
+
+    private static func viewValue(_ value: WorkspaceAppStudioPatchValue?, path: String) throws -> WorkspaceAppViewSpec {
+        guard case .view(let view) = value else {
+            throw WorkspaceAppStudioPatchError(path: path, message: "Patch value must be a view.")
+        }
+        return view
+    }
+
+    private static func actionValue(_ value: WorkspaceAppStudioPatchValue?, path: String) throws -> WorkspaceAppActionSpec {
+        guard case .action(let action) = value else {
+            throw WorkspaceAppStudioPatchError(path: path, message: "Patch value must be an action.")
+        }
+        return action
+    }
+
+    private static func automationValue(_ value: WorkspaceAppStudioPatchValue?, path: String) throws -> WorkspaceAppAutomationSpec {
+        guard case .automation(let automation) = value else {
+            throw WorkspaceAppStudioPatchError(path: path, message: "Patch value must be an automation.")
+        }
+        return automation
+    }
+
+    private static func permissionsValue(_ value: WorkspaceAppStudioPatchValue?, path: String) throws -> WorkspaceAppPermissions {
+        guard case .permissions(let permissions) = value else {
+            throw WorkspaceAppStudioPatchError(path: path, message: "Patch value must be app permissions.")
+        }
+        return permissions
+    }
+
+    private static func existingIndex(_ rawValue: String, count: Int, path: String) throws -> Int {
+        guard let index = Int(rawValue), index >= 0, index < count else {
+            throw WorkspaceAppStudioPatchError(path: path, message: "Patch index is outside the current manifest collection.")
+        }
+        return index
+    }
+
+    static func localDatabaseManifest(intent: String) -> WorkspaceAppManifest {
+        WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(
+                id: "grocery-tracker",
+                name: "Grocery Tracker",
+                icon: "cart",
+                description: "Track grocery items, shopping lists, stores, and purchases from a local app database.",
+                tags: ["local-storage", "database"],
+                archetypes: ["Local Database App", "Action Panel"]
+            ),
+            storage: WorkspaceAppStorageSchema(tables: [
+                WorkspaceAppStorageTable(name: "items", columns: [
+                    WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true),
+                    WorkspaceAppStorageColumn(name: "name", type: "text", required: true),
+                    WorkspaceAppStorageColumn(name: "category", type: "text"),
+                    WorkspaceAppStorageColumn(name: "preferred_store", type: "text"),
+                    WorkspaceAppStorageColumn(name: "last_price", type: "double"),
+                    WorkspaceAppStorageColumn(name: "in_stock", type: "bool")
+                ]),
+                WorkspaceAppStorageTable(name: "shopping_lists", columns: [
+                    WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true),
+                    WorkspaceAppStorageColumn(name: "name", type: "text", required: true),
+                    WorkspaceAppStorageColumn(name: "status", type: "text", required: true)
+                ]),
+                WorkspaceAppStorageTable(name: "purchases", columns: [
+                    WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true),
+                    WorkspaceAppStorageColumn(name: "item_id", type: "text", required: true),
+                    WorkspaceAppStorageColumn(name: "store", type: "text"),
+                    WorkspaceAppStorageColumn(name: "price", type: "double"),
+                    WorkspaceAppStorageColumn(name: "purchased_at", type: "date")
+                ])
+            ]),
+            sources: [
+                WorkspaceAppSource(id: "local_grocery_tables", mode: "read", sourceRef: "appStorage")
+            ],
+            views: [
+                WorkspaceAppViewSpec(id: "items_table", type: "table", title: "Items", table: "items"),
+                WorkspaceAppViewSpec(id: "shopping_list", type: "form", title: "Shopping List"),
+                WorkspaceAppViewSpec(
+                    id: "spend_metrics",
+                    type: "dashboard",
+                    title: "Spend Metrics",
+                    table: "purchases",
+                    widgets: [
+                        WorkspaceAppWidgetSpec(
+                            id: "item_count",
+                            type: "metric",
+                            label: "Tracked items",
+                            table: "items",
+                            aggregation: "count"
+                        ),
+                        WorkspaceAppWidgetSpec(
+                            id: "total_spend",
+                            type: "metric",
+                            label: "Total spend",
+                            field: "price",
+                            aggregation: "sum"
+                        ),
+                        WorkspaceAppWidgetSpec(
+                            id: "spend_by_store",
+                            type: "chart",
+                            label: "Spend by store",
+                            field: "price",
+                            groupBy: "store",
+                            aggregation: "sum"
+                        )
+                    ]
+                )
+            ],
+            actions: [
+                WorkspaceAppActionSpec(id: "list_items", type: "appStorage.query", label: "List Items", table: "items"),
+                WorkspaceAppActionSpec(id: "add_item", type: "appStorage.insert", label: "Add Item", table: "items"),
+                WorkspaceAppActionSpec(id: "update_item", type: "appStorage.update", label: "Update Item", table: "items"),
+                WorkspaceAppActionSpec(id: "delete_item", type: "appStorage.delete", label: "Delete Item", table: "items"),
+                WorkspaceAppActionSpec(
+                    id: "create_shopping_task",
+                    type: "task.createDraft",
+                    label: "Create Shopping Task",
+                    taskTitle: "Plan next grocery trip",
+                    taskGoal: "Review the grocery tracker records and draft a focused shopping plan for the next trip."
+                ),
+                WorkspaceAppActionSpec(
+                    id: "export_items",
+                    type: "artifact.export",
+                    label: "Export Items",
+                    table: "items",
+                    exportFormat: "csv"
+                )
+            ],
+            permissions: WorkspaceAppPermissions(
+                reads: ["appStorage.records"],
+                writes: ["appStorage.records"],
+                defaultMode: .draftOnly
+            )
+        )
+    }
+
+    /// True only for genuinely grocery intents — gates the fixed grocery template so other
+    /// "track X / database" intents don't all collapse to a grocery app.
+    static func isGroceryIntent(_ intent: String) -> Bool {
+        let text = intent.lowercased()
+        return ["grocer", "shopping", "pantry", "food"].contains { text.contains($0) }
+    }
+
+    /// The deterministic, RESILIENT fallback for an `.htmlApp` intent: a real, working, intent-matched
+    /// interactive HTML app drawn from `WorkspaceAppHTMLTemplate` (calculator / checklist / board /
+    /// dashboard / form / generic). Used when the model is unavailable, times out, or never produces
+    /// a valid app — so a UI intent ALWAYS lands on a genuine dynamic UI (not a placeholder, never a
+    /// `records` data shell). The model still authors a more bespoke UI when it succeeds; this is the
+    /// guaranteed floor beneath it.
+    static func htmlAppScaffoldManifest(intent: String) -> WorkspaceAppManifest {
+        let name = title(from: intent)
+        let appName = name == "Workspace App" ? "Interactive Tool" : name
+        return WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(
+                id: slug(from: appName),
+                name: appName,
+                icon: "macwindow",
+                description: "A self-contained interactive tool.",
+                tags: ["html-app"],
+                archetypes: ["HTML App"]
+            ),
+            permissions: WorkspaceAppPermissions(defaultMode: .draftOnly),
+            html: WorkspaceAppHTMLTemplate.classify(intent).html(title: appName)
+        )
+    }
+
+    /// Phase 3: a DATA-BACKED HTML app — the deterministic surface for a record-tracking data app
+    /// (track/list/store X). A single `records` table the user CRUDs through a real HTML UI wired to
+    /// the `astra.*` bridge, instead of the static native records-table shell. Still fully governed:
+    /// the bridge routes every read/write through the action executor (permission + audit + app-scoped
+    /// DB). This is the data-app analogue of the pure-UI `WorkspaceAppHTMLTemplate` floor.
+    static func dataBackedHTMLManifest(intent: String) -> WorkspaceAppManifest {
+        let titled = title(from: intent)
+        let name = titled == "Workspace App" ? "Records" : titled
+        let table = "records"
+        let columns = [
+            WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true),
+            WorkspaceAppStorageColumn(name: "name", type: "text", required: true),
+            WorkspaceAppStorageColumn(name: "status", type: "text"),
+            WorkspaceAppStorageColumn(name: "notes", type: "text")
+        ]
+        return WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(
+                id: slug(from: name),
+                name: name,
+                icon: "tablecells",
+                description: "A dynamic local app for tracking your records.",
+                tags: ["local-storage", "html-app"],
+                archetypes: ["Local Database App", "HTML App"]
+            ),
+            storage: WorkspaceAppStorageSchema(tables: [WorkspaceAppStorageTable(name: table, columns: columns)]),
+            // The appStorage actions ARE the data-bridge allowlist (each names the table).
+            actions: [
+                WorkspaceAppActionSpec(id: "list_records", type: "appStorage.query", label: "List", table: table),
+                WorkspaceAppActionSpec(id: "add_record", type: "appStorage.insert", label: "Add", table: table),
+                WorkspaceAppActionSpec(id: "update_record", type: "appStorage.update", label: "Update", table: table)
+            ],
+            permissions: WorkspaceAppPermissions(
+                reads: ["appStorage.records"], writes: ["appStorage.records"], defaultMode: .draftOnly
+            ),
+            html: WorkspaceAppDataHTMLTemplate.html(title: name, table: table, columns: columns, primaryKey: "id")
+        )
+    }
+
+    /// Connector-read recipe: a CONNECTOR-READ HTML app over the user's REAL GitHub pull requests
+    /// (`pullRequest.read`, always available via gh). Declares the requirement + read source + the
+    /// `capability.read` action whose `sourceRef` matches the source id (the bridge's read allowlist),
+    /// and an HTML UI that reads live rows through `astra.read`. The binding auto-maps to
+    /// `github-pr-read-native` on publish, so a published app shows live PRs with no manual setup.
+    static func githubPullRequestsHTMLManifest(intent: String) -> WorkspaceAppManifest {
+        let titled = title(from: intent)
+        let name = titled == "Workspace App" ? "My Pull Requests" : titled
+        let sourceID = "myPullRequests"
+        return WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(
+                id: slug(from: name),
+                name: name,
+                icon: "arrow.triangle.pull",
+                description: "Your live GitHub pull requests (read-only, via your gh sign-in).",
+                tags: ["github", "html-app", "connector-read"],
+                archetypes: ["HTML App"]
+            ),
+            requirements: [
+                WorkspaceAppRequirement(
+                    id: "github",
+                    contract: "pullRequest.read",
+                    operations: ["listMyPullRequests"],
+                    providerHint: "github",
+                    optional: false,
+                    reason: "Read the signed-in user's GitHub pull requests."
+                )
+            ],
+            sources: [
+                WorkspaceAppSource(
+                    id: sourceID,
+                    requirementRef: "github",
+                    operation: "listMyPullRequests",
+                    mode: "read"
+                )
+            ],
+            actions: [
+                WorkspaceAppActionSpec(
+                    id: "read_my_prs", type: "capability.read",
+                    label: "My Pull Requests", sourceRef: sourceID
+                )
+            ],
+            permissions: WorkspaceAppPermissions(reads: ["pullRequest.read"], defaultMode: .draftOnly),
+            html: WorkspaceAppGitHubPRTemplate.html(title: name, sourceId: sourceID)
+        )
+    }
+
+    /// True when the intent reads as "show my GitHub pull requests" — routes to the deterministic
+    /// connector-read builder so a PR intent reliably produces a working live-data app (rather than a
+    /// generic data shell) even when the model is unavailable. Tight: requires a github/PR signal AND
+    /// not an unrelated data verb that happens to mention github (e.g. "log github issues locally").
+    static func isGitHubPullRequestIntent(_ intent: String) -> Bool {
+        let text = intent.lowercased()
+        let prSignals = ["pull request", "pull-request", "open pr", "open prs", " prs", "my prs",
+                         "pullrequest"]
+        let hasPR = prSignals.contains(where: { text.contains($0) })
+        let hasGitHub = text.contains("github") || text.contains("gh ")
+        // "my pull requests" alone (no provider named) still means GitHub here — it's the only PR
+        // provider we read. Require either an explicit github mention or a PR phrase.
+        return hasPR || (hasGitHub && text.contains("pr"))
+    }
+
+    // MARK: - Phase 5: WORKFLOW / DASHBOARD HTML apps
+
+    /// Shared base for a WORKFLOW or DASHBOARD HTML app — a `review_items` table the user CRUDs
+    /// through the HTML, plus the `appStorage.{query,insert,update}` actions that form the data-bridge
+    /// allowlist. Workflow actions (gate/pipeline/export/task) are appended by the per-archetype
+    /// builders below. No native `views`/`sources` (the HTML renders the UI; reads go through the
+    /// astra bridge). `mode` is the permission mode: draftOnly for read/list+approve flows,
+    /// approvalRequired where a pipeline gates an external write (export, agent task).
+    private static func workflowHTMLBase(
+        intent: String,
+        icon: String,
+        archetypes: [String],
+        mode: WorkspaceAppPermissionMode,
+        extraWrites: [String] = []
+    ) -> WorkspaceAppManifest {
+        let name = title(from: intent)
+        let table = "review_items"
+        let columns = [
+            WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true),
+            WorkspaceAppStorageColumn(name: "title", type: "text", required: true),
+            WorkspaceAppStorageColumn(name: "status", type: "text"),
+            WorkspaceAppStorageColumn(name: "notes", type: "text")
+        ]
+        return WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(
+                id: slug(from: name),
+                name: name,
+                icon: icon,
+                description: "A dynamic local workflow app.",
+                tags: ["local-storage", "html-app"],
+                archetypes: archetypes
+            ),
+            storage: WorkspaceAppStorageSchema(tables: [WorkspaceAppStorageTable(name: table, columns: columns)]),
+            actions: [
+                WorkspaceAppActionSpec(id: "list_review_items", type: "appStorage.query", label: "List", table: table),
+                WorkspaceAppActionSpec(id: "add_review_item", type: "appStorage.insert", label: "Add", table: table),
+                WorkspaceAppActionSpec(id: "update_review_item", type: "appStorage.update", label: "Update", table: table)
+            ],
+            permissions: WorkspaceAppPermissions(
+                reads: ["appStorage.review_items"],
+                writes: ["appStorage.review_items"] + extraWrites,
+                defaultMode: mode
+            )
+        )
+    }
+
+    private static func htmlTableSpecs(_ manifest: WorkspaceAppManifest) -> [WorkspaceAppWorkflowHTMLTemplate.TableSpec] {
+        (manifest.storage?.tables ?? []).map { table in
+            let pk = table.columns.first(where: { $0.primaryKey })?.name ?? "id"
+            return WorkspaceAppWorkflowHTMLTemplate.TableSpec(name: table.name, columns: table.columns, primaryKey: pk)
+        }
+    }
+
+    /// Render the workflow HTML onto a manifest. `buttonIDs` are the actions shown as top-level "Run"
+    /// buttons (the pipelines/exports) — deliberately explicit, not every runnable action, so a
+    /// pipeline's internal task/gate steps don't each become a standalone button. (The bridge's
+    /// allowlist is the security boundary; this is just which buttons the UI offers.)
+    private static func applyWorkflowHTML(
+        _ manifest: inout WorkspaceAppManifest,
+        buttonIDs: [String],
+        chart: WorkspaceAppWorkflowHTMLTemplate.ChartSpec? = nil
+    ) {
+        let buttons = buttonIDs
+            .compactMap { id in manifest.actions.first { $0.id == id } }
+            .map { WorkspaceAppWorkflowHTMLTemplate.ActionSpec(id: $0.id, label: $0.label ?? $0.id) }
+        manifest.html = WorkspaceAppWorkflowHTMLTemplate.html(
+            title: manifest.app.name,
+            tables: htmlTableSpecs(manifest),
+            actions: buttons,
+            chart: chart
+        )
+    }
+
+    /// A dashboard data app rendered as HTML: records CRUD + count metrics + a by-status bar chart,
+    /// all client-side from `astra.query`. No workflow actions.
+    static func dashboardHTMLManifest(intent: String) -> WorkspaceAppManifest {
+        var manifest = workflowHTMLBase(intent: intent, icon: "chart.bar.xaxis", archetypes: ["Dashboard", "HTML App"], mode: .draftOnly)
+        applyWorkflowHTML(
+            &manifest,
+            buttonIDs: [],
+            chart: WorkspaceAppWorkflowHTMLTemplate.ChartSpec(table: "review_items", groupBy: "status", title: "Items by status")
+        )
+        return manifest
+    }
+
+    /// A review queue rendered as HTML: records CRUD + a triage pipeline (list → human approval).
+    /// Triggering the pipeline suspends at the approval gate, which a human resolves in the native
+    /// attention queue rendered around this surface.
+    static func reviewQueueHTMLManifest(intent: String) -> WorkspaceAppManifest {
+        var manifest = workflowHTMLBase(intent: intent, icon: "checklist", archetypes: ["Review Queue", "HTML App"], mode: .draftOnly)
+        manifest.actions.append(contentsOf: [
+            WorkspaceAppActionSpec(id: "approve_batch", type: "gate.humanApproval", label: "Approve Batch",
+                                   approvalPrompt: "Proceed with the reviewed items?", approvalDecisions: ["approve", "reject"]),
+            WorkspaceAppActionSpec(id: "run_review", type: "pipeline.run", label: "Run Review",
+                                   steps: ["list_review_items", "approve_batch"])
+        ])
+        applyWorkflowHTML(&manifest, buttonIDs: ["run_review"], chart: WorkspaceAppWorkflowHTMLTemplate.ChartSpec(table: "review_items", groupBy: "status", title: "Items by status"))
+        return manifest
+    }
+
+    /// A pipeline rendered as HTML: records CRUD + a multi-step pipeline (list → human approval →
+    /// notify). The gate suspends to the native approval queue; the notify step runs on resume.
+    static func pipelineHTMLManifest(intent: String) -> WorkspaceAppManifest {
+        var manifest = workflowHTMLBase(intent: intent, icon: "arrow.triangle.branch", archetypes: ["Pipeline", "HTML App"], mode: .draftOnly)
+        manifest.actions.append(contentsOf: [
+            WorkspaceAppActionSpec(id: "approve_batch", type: "gate.humanApproval", label: "Approve Batch",
+                                   approvalPrompt: "Proceed with the reviewed items?", approvalDecisions: ["approve", "reject"]),
+            WorkspaceAppActionSpec(id: "notify_done", type: "notification.show", label: "Notify",
+                                   notificationTitle: "Pipeline complete", notificationBody: "The review pipeline finished."),
+            WorkspaceAppActionSpec(id: "run_pipeline", type: "pipeline.run", label: "Run Pipeline",
+                                   steps: ["list_review_items", "approve_batch", "notify_done"])
+        ])
+        applyWorkflowHTML(&manifest, buttonIDs: ["run_pipeline"])
+        return manifest
+    }
+
+    /// A report generator rendered as HTML: records CRUD + a pipeline that gates a CSV export behind
+    /// human approval (list → approve → export). approvalRequired so the external-write export is
+    /// permitted only after the gate sets confirmedApproval on resume.
+    static func reportHTMLManifest(intent: String) -> WorkspaceAppManifest {
+        var manifest = workflowHTMLBase(intent: intent, icon: "doc.text", archetypes: ["Report Generator", "HTML App"], mode: .approvalRequired, extraWrites: ["artifact.exports"])
+        manifest.actions.append(contentsOf: [
+            WorkspaceAppActionSpec(id: "approve_export", type: "gate.humanApproval", label: "Approve Export",
+                                   approvalPrompt: "Export the current records as a report?", approvalDecisions: ["approve", "reject"]),
+            WorkspaceAppActionSpec(id: "export_report", type: "artifact.export", label: "Export Report",
+                                   table: "review_items", exportFormat: "csv"),
+            WorkspaceAppActionSpec(id: "run_report", type: "pipeline.run", label: "Generate Report",
+                                   steps: ["list_review_items", "approve_export", "export_report"])
+        ])
+        applyWorkflowHTML(&manifest, buttonIDs: ["run_report"])
+        return manifest
+    }
+
+    /// An agentic workflow rendered as HTML: records CRUD + a governed agent pipeline (analyze task →
+    /// agent recommendation gate → human approval gate → implement task), chained by a `pipeline.run`.
+    /// Triggering the pipeline suspends at the gates for the native queue; the agent tasks run only
+    /// after approval (approvalRequired keeps the external task writes gated).
+    static func agenticWorkflowHTMLManifest(intent: String) -> WorkspaceAppManifest {
+        var manifest = workflowHTMLBase(intent: intent, icon: "cpu", archetypes: ["Agentic Workflow", "HTML App"], mode: .approvalRequired, extraWrites: ["task.runs"])
+        manifest.actions.append(contentsOf: [
+            WorkspaceAppActionSpec(id: "analyze", type: "task.createAndRun", label: "Analyze",
+                                   taskTitle: "Analyze the records",
+                                   taskGoal: "Analyze the app's review items and produce findings the implementation step can act on.",
+                                   outputBinding: WorkspaceAppActionOutputBinding(field: "summary", capture: "text", table: nil)),
+            WorkspaceAppActionSpec(id: "agent_review", type: "gate.agentRecommendation", label: "Agent review",
+                                   agentPrompt: "Review the analysis and recommend whether to continue to implementation, revise, or stop.",
+                                   agentDecisions: ["continue", "revise", "stop"],
+                                   agentPolicyMode: "approvalRequired", agentTokenBudget: 20_000, agentRequiresApproval: true),
+            WorkspaceAppActionSpec(id: "human_approval", type: "gate.humanApproval", label: "Human approval",
+                                   approvalPrompt: "Approve the agent's recommendation before the workflow acts?",
+                                   approvalDecisions: ["approve", "reject"]),
+            WorkspaceAppActionSpec(id: "implement", type: "task.createAndRun", label: "Implement",
+                                   taskTitle: "Implement the approved plan",
+                                   taskGoal: "Implement the approved plan from the analysis and record the outcome.",
+                                   inputBinding: WorkspaceAppActionInputBinding(source: "boundRows", table: nil, label: "Analysis findings", limit: nil)),
+            WorkspaceAppActionSpec(id: "run_workflow", type: "pipeline.run", label: "Run Workflow",
+                                   steps: ["list_review_items", "analyze", "agent_review", "human_approval", "implement"])
+        ])
+        applyWorkflowHTML(&manifest, buttonIDs: ["run_workflow"])
+        return manifest
+    }
+
+    static func operationalSurfaceManifest(intent: String) -> WorkspaceAppManifest {
+        let name = title(from: intent)
+        let id = slug(from: name)
+        return WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(
+                id: id,
+                name: name,
+                icon: "rectangle.3.group",
+                description: "Draft operational app surface generated from the requested workflow.",
+                tags: ["draft", "workspace-app"],
+                archetypes: ["Dashboard", "Action Panel"]
+            ),
+            storage: WorkspaceAppStorageSchema(tables: [
+                WorkspaceAppStorageTable(name: "review_items", columns: [
+                    WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true),
+                    WorkspaceAppStorageColumn(name: "title", type: "text", required: true),
+                    WorkspaceAppStorageColumn(name: "status", type: "text", required: true),
+                    WorkspaceAppStorageColumn(name: "notes", type: "text")
+                ])
+            ]),
+            sources: [
+                WorkspaceAppSource(id: "workspace_context", mode: "read", sourceRef: "workspace")
+            ],
+            views: [
+                WorkspaceAppViewSpec(
+                    id: "overview",
+                    type: "dashboard",
+                    title: "Overview",
+                    table: "review_items",
+                    widgets: [
+                        WorkspaceAppWidgetSpec(
+                            id: "review_item_count",
+                            type: "metric",
+                            label: "Review items",
+                            aggregation: "count"
+                        ),
+                        WorkspaceAppWidgetSpec(
+                            id: "review_status_chart",
+                            type: "chart",
+                            label: "Items by status",
+                            groupBy: "status",
+                            aggregation: "count"
+                        )
+                    ]
+                ),
+                WorkspaceAppViewSpec(id: "review_queue", type: "table", title: "Review Queue", table: "review_items")
+            ],
+            actions: [
+                WorkspaceAppActionSpec(id: "list_review_items", type: "appStorage.query", label: "List Review Items", table: "review_items"),
+                // A populating path: the Add action renders an inline record form so the app can
+                // fill its own storage. Without this the dashboard/table render over an empty table
+                // the user can never fill (the read-only-shell defect).
+                WorkspaceAppActionSpec(id: "add_review_item", type: "appStorage.insert", label: "Add Item", table: "review_items"),
+                WorkspaceAppActionSpec(id: "update_review_item", type: "appStorage.update", label: "Update Item", table: "review_items"),
+                WorkspaceAppActionSpec(id: "delete_review_item", type: "appStorage.delete", label: "Delete Item", table: "review_items"),
+                WorkspaceAppActionSpec(
+                    id: "create_review_task",
+                    type: "task.createDraft",
+                    label: "Create Review Task",
+                    taskTitle: "Review workspace app items",
+                    taskGoal: "Review the current app records, identify the next manual decision, and summarize recommended follow-up."
+                )
+            ],
+            permissions: WorkspaceAppPermissions(
+                reads: ["workspace.context", "appStorage.records"],
+                writes: ["appStorage.records", "task.drafts"],
+                defaultMode: .draftOnly
+            )
+        )
+    }
+
+    private static func normalizedIntent(_ rawIntent: String) -> String {
+        let trimmed = rawIntent.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? defaultIntent : trimmed
+    }
+
+    private static func title(from intent: String) -> String {
+        // Stop the name at the first connector once we have a couple of content words, so
+        // "triage incoming issues by status" reads as "Triage Incoming Issues", not "...Issues By".
+        let connectors: Set<String> = ["by", "with", "and", "to", "of", "for", "the", "a", "an", "in", "on", "from", "that"]
+        let raw = intent.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
+        var kept: [String] = []
+        for word in raw {
+            if kept.count >= 2 && connectors.contains(word.lowercased()) { break }
+            kept.append(word)
+            if kept.count >= 4 { break }
+        }
+        while let last = kept.last, kept.count > 1, connectors.contains(last.lowercased()) {
+            kept.removeLast()
+        }
+        let title = kept.enumerated()
+            .map { index, word -> String in
+                // Preserve known acronyms ("AI", not "Ai"); keep mid-name connectors lowercase
+                // ("Orchestrate an AI Agent", not "Orchestrate An Ai Agent"); always cap the first word.
+                if nameAcronyms.contains(word.lowercased()) { return word.uppercased() }
+                if index > 0 && connectors.contains(word.lowercased()) { return word.lowercased() }
+                return word.prefix(1).uppercased() + word.dropFirst().lowercased()
+            }
+            .joined(separator: " ")
+        return title.isEmpty ? "Workspace App" : title
+    }
+
+    /// Acronyms the deterministic name generator keeps fully uppercased instead of title-casing
+    /// to "Ai"/"Api". Lowercased for matching.
+    private static let nameAcronyms: Set<String> = [
+        "ai", "api", "id", "ui", "ux", "url", "csv", "pdf", "sql", "kpi", "crm", "faq", "qa", "ocr", "llm"
+    ]
+
+    private static func slug(from title: String) -> String {
+        let parts = title
+            .lowercased()
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .map(String.init)
+        let slug = parts.joined(separator: "-")
+        return slug.isEmpty ? "workspace-app" : slug
+    }
+}
+
+private struct WorkspaceAppStudioPatchError: Error, Equatable {
+    var path: String
+    var message: String
+}
+
+private enum WorkspaceAppStudioStructuredBlock: Equatable {
+    case success(String)
+    case notFound
+    case failure(String)
+}

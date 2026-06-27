@@ -203,15 +203,16 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         \(adapterLine)
         \(pageLine)
 
-        Use the provider-neutral `astra-browser` command. It talks to ASTRA_BROWSER_URL and returns compact JSON without curl progress noise:
+        Use ASTRA's browser bridge only. Shell-capable runtimes can run `astra-browser ...`; MCP-capable runtimes can call `\(BrowserBridgeMCPProjection.providerToolPermission)` with `command` plus optional `arguments`, using the same command names shown below. The bridge talks to ASTRA_BROWSER_URL and returns compact JSON without curl progress noise:
         - List supported actions: `astra-browser actions`
-        - Inspect compact navigation/action diagnostics: `astra-browser trace`; failed actions retain a screenshot thumbnail, compact tree, and console/navigation/network events when Browser Debug Capture is enabled in Settings > Appearance > Privacy & Logging. Prefix one command with `ASTRA_BROWSER_DEBUG_CAPTURE=0` to suppress capture for that command.
+        - Inspect provider-safe navigation/action diagnostics: `astra-browser trace`; it is compact by default. Use `astra-browser trace --full` only for intentional deep debugging because full mode can include retained screenshots, compact trees, and console/navigation/network events when Browser Debug Capture is enabled in Settings > Appearance > Privacy & Logging. Prefix one command with `ASTRA_BROWSER_DEBUG_CAPTURE=0` to suppress capture for that command.
         - Build a deterministic action map: `astra-browser analyze` or `astra-browser analyze --query "Save"`; v2 semantic controlRefs/source evidence are the default.
         - Inspect every discovered control when debugging: `astra-browser analyze --full --debug`
         - Validate a cached action without executing it: `astra-browser preflight --analysis ana_... --control ctl_... --action click`
         - Prefer control IDs from analyze when acting: `astra-browser click --analysis ana_... --control ctl_...`; action responses include actionability and postActionWait diagnostics.
         - Open an analyzed control through its primary open behavior: `astra-browser open --analysis ana_... --control ctl_...`
         - Double-click an analyzed control when that is the listed action: `astra-browser double-click --analysis ana_... --control ctl_...`
+        - In Controlled Browser mode, mutating actions include `cdpSettlement`; if `settled` is false or `errors` is non-empty, inspect `astra-browser trace` and switch strategy instead of repeating the same action.
         - After a controlID action, read `goalSatisfied`, `observedOutcome`, and `suggestedNextActions`; `ok` only means the browser command executed.
         - Fill analyzed fields by ID: `astra-browser fill --analysis ana_... --control ctl_... --text 'user@example.com'`
         - Read current page content with coverage/frame warnings: `astra-browser read-page --format markdown --limit 50000`

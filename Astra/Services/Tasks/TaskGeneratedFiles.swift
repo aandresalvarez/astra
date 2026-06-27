@@ -49,50 +49,52 @@ enum TaskGeneratedFiles {
     ]
 
     static func files(in folder: String, fileManager: FileManager = .default) -> [String] {
-        guard !folder.isEmpty, fileManager.fileExists(atPath: folder) else { return [] }
-        guard let enumerator = fileManager.enumerator(atPath: folder) else { return [] }
+        guard !folder.isEmpty else { return [] }
+        let rootURL = URL(fileURLWithPath: folder)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let rootPath = rootURL.path.hasSuffix("/") ? rootURL.path : rootURL.path + "/"
+        let hostFileAccess = HostFileAccessBroker(fileManager: fileManager)
+        let accessIntent = HostFileAccessIntent.astraManagedStorage(root: rootURL)
+        var rootIsDirectory: ObjCBool = false
+        guard hostFileAccess.fileExists(at: rootURL, isDirectory: &rootIsDirectory, intent: accessIntent),
+              rootIsDirectory.boolValue,
+              let enumerator = hostFileAccess.enumerator(
+                at: rootURL,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                intent: accessIntent
+              ) else {
+            return []
+        }
 
         var files: [String] = []
-        while let rel = enumerator.nextObject() as? String {
+        while let url = enumerator.nextObject() as? URL {
+            guard !hostFileAccess.shouldSkip(url, intent: accessIntent) else {
+                enumerator.skipDescendants()
+                continue
+            }
+            let itemURL = url
+                .resolvingSymlinksInPath()
+                .standardizedFileURL
+            guard itemURL.path.hasPrefix(rootPath) else { continue }
+            let rel = String(itemURL.path.dropFirst(rootPath.count))
             guard shouldDisplayTaskFolderFile(relativePath: rel) else { continue }
-            let full = (folder as NSString).appendingPathComponent(rel)
             var isDir: ObjCBool = false
-            fileManager.fileExists(atPath: full, isDirectory: &isDir)
+            guard hostFileAccess.fileExists(at: itemURL, isDirectory: &isDir, intent: accessIntent) else {
+                continue
+            }
             if !isDir.boolValue {
-                files.append(full)
+                files.append(itemURL.path)
             }
         }
         return files.sorted()
     }
 
     static func shouldDisplayTaskFolderFile(relativePath: String) -> Bool {
-        let rel = relativePath.replacingOccurrences(of: "\\", with: "/")
-        let name = (rel as NSString).lastPathComponent.lowercased()
-        if rel == "session_history.md" || rel == "outputs" || rel.hasPrefix("outputs/") {
-            return false
-        }
-        if rel == ".runtime-bin" || rel.hasPrefix(".runtime-bin/") {
-            return false
-        }
-        if rel == "turns" || rel.hasPrefix("turns/") {
-            return false
-        }
-        if rel == "diagnostics" || rel.hasPrefix("diagnostics/") {
-            return false
-        }
-        if rel == "fork_sources/history" || rel.hasPrefix("fork_sources/history/") {
-            return false
-        }
-        if name == "current_state.json" || name == "current_state.md" {
-            return false
-        }
-        if name == TaskForkManifest.fileName {
-            return false
-        }
-        if name.hasPrefix("turn_") && name.hasSuffix(".md") {
-            return false
-        }
-        return true
+        TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(
+            relativePath,
+            context: .taskFolder
+        ) != nil
     }
 
     static func filesAsync(in folder: String) async -> [String] {

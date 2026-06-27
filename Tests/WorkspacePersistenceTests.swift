@@ -555,6 +555,34 @@ struct WorkspacePersistenceTests {
         #expect(workspaces.first?.tasks.first?.isDone == true)
     }
 
+    @Test("automatic recovery skips privacy-sensitive user media folders")
+    func recoverySkipsPrivacySensitiveUserMediaFolders() throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_recovery_privacy_\(UUID().uuidString)")
+        let ordinaryWorkspace = root.appendingPathComponent("Projects/safe-project", isDirectory: true)
+        let photosWorkspace = root.appendingPathComponent("Pictures/photo-project", isDirectory: true)
+        let musicWorkspace = root.appendingPathComponent("Music/music-project", isDirectory: true)
+        try FileManager.default.createDirectory(at: ordinaryWorkspace, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: photosWorkspace, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: musicWorkspace, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try Data("{}".utf8).write(to: ordinaryWorkspace.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName))
+        try Data("{}".utf8).write(to: photosWorkspace.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName))
+        try Data("{}".utf8).write(to: musicWorkspace.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName))
+
+        let configs = WorkspaceRecoveryService.discoverWorkspaceConfigFiles(
+            extraRoots: [root.path],
+            includeDefaultRoots: false,
+            privacyHomeDirectory: root
+        )
+        let discoveredParents = Set(configs.map { $0.deletingLastPathComponent().path })
+
+        #expect(discoveredParents.count == 1)
+        #expect(discoveredParents.first?.hasSuffix("/Projects/safe-project") == true)
+        #expect(!discoveredParents.contains { $0.hasSuffix("/Pictures/photo-project") })
+        #expect(!discoveredParents.contains { $0.hasSuffix("/Music/music-project") })
+    }
+
     @Test("auto-export skips unavailable workspace paths")
     func autoExportTargetSkipsUnavailableWorkspacePaths() {
         let missing = "/tmp/astra_missing_workspace_\(UUID().uuidString)"
@@ -766,6 +794,41 @@ struct WorkspacePersistenceTests {
         SSHConnectionManager.save(loaded, workspacePath: root.path)
         #expect(FileManager.default.fileExists(atPath: canonicalSSH.path))
         #expect(!FileManager.default.fileExists(atPath: legacySSH.path))
+    }
+
+    @Test("SSH connection presence uses a lightweight persisted file predicate")
+    func sshConnectionPresenceUsesLightweightPredicate() throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_ssh_presence_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        #expect(SSHConnectionManager.hasStoredConnections(workspacePath: root.path) == false)
+
+        SSHConnectionManager.save([], workspacePath: root.path)
+        #expect(SSHConnectionManager.hasStoredConnections(workspacePath: root.path) == false)
+
+        SSHConnectionManager.save([
+            SSHConnection(name: "dev", host: "example.test", user: "agent")
+        ], workspacePath: root.path)
+        #expect(SSHConnectionManager.hasStoredConnections(workspacePath: root.path) == true)
+    }
+
+    @Test("SSH connection presence recognizes legacy files without migrating them")
+    func sshConnectionPresenceRecognizesLegacyFilesWithoutMigratingThem() throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_ssh_presence_legacy_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let legacySSH = root.appendingPathComponent(WorkspaceFileLayout.sshConnectionsFileName)
+        let canonicalSSH = URL(fileURLWithPath: WorkspaceFileLayout.sshConnectionsFile(for: root.path))
+        let data = try JSONEncoder().encode([
+            SSHConnection(name: "legacy", host: "example.test", user: "agent")
+        ])
+        try data.write(to: legacySSH)
+
+        #expect(SSHConnectionManager.hasStoredConnections(workspacePath: root.path) == true)
+        #expect(FileManager.default.fileExists(atPath: legacySSH.path))
+        #expect(!FileManager.default.fileExists(atPath: canonicalSSH.path))
     }
 
     @Test("same-thread schedule results merge back into the source task")

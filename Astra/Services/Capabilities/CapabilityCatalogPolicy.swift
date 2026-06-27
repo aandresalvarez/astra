@@ -197,9 +197,7 @@ enum CapabilityCatalogPolicy {
         case .everyone:
             break
         case .hidden:
-            if !context.isAdmin {
-                visibilityBlockers.append(.hiddenFromUser)
-            }
+            visibilityBlockers.append(.hiddenFromUser)
         case .adminOnly:
             if !context.isAdmin {
                 visibilityBlockers.append(.adminOnly)
@@ -253,9 +251,7 @@ enum CapabilityCatalogPolicy {
         }
 
         for tool in package.localTools {
-            if let reason = LocalToolSecurityPolicy.unsafeCommandReason(tool.command) {
-                operationalBlockers.append(.unsafeLocalTool(name: displayName(tool.name, fallback: tool.command), reason: reason))
-            } else if let reason = LocalToolSecurityPolicy.unsafeArgumentsReason(tool.arguments) {
+            if let reason = LocalToolSecurityPolicy.unsafeInvocationReason(command: tool.command, arguments: tool.arguments) {
                 operationalBlockers.append(.unsafeLocalTool(name: displayName(tool.name, fallback: tool.command), reason: reason))
             }
         }
@@ -383,10 +379,10 @@ enum CapabilityCatalogPolicy {
         switch server.transport {
         case .stdio:
             let command = (server.command ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            if let reason = LocalToolSecurityPolicy.unsafeCommandReason(command) {
-                return reason
-            }
-            if let reason = LocalToolSecurityPolicy.unsafeArgumentsReason(server.arguments.joined(separator: " ")) {
+            if let reason = LocalToolSecurityPolicy.unsafeInvocationReason(
+                command: command,
+                arguments: server.arguments.joined(separator: " ")
+            ) {
                 return reason
             }
         case .http, .sse:

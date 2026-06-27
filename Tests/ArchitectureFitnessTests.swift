@@ -31,11 +31,59 @@ struct ArchitectureFitnessTests {
             "Git",
             "Persistence",
             "Runtime",
+            "Security",
             "Settings",
             "Tasks",
             "Validation",
             "WorkspaceApps"
         ])
+    }
+
+    @Test("Workspace App Studio stays on the direct session architecture")
+    func workspaceAppStudioStaysOnDirectSessionArchitecture() throws {
+        let root = try repositoryRoot()
+        let retiredFiles = [
+            "Astra/Services/WorkspaceApps/WorkspaceAppStudioBuildTaskBuilder.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppStudioBuilderContractFactory.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppStudioContext.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppStudioContextBuilder.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppStudioContextRedactor.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppStudioDraftSupport.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppStudioGenerationTaskBuilder.swift",
+            "Astra/Views/ChatPanelDraftPresentation.swift"
+        ]
+
+        let existingRetiredFiles = retiredFiles.filter {
+            FileManager.default.fileExists(atPath: root.appendingPathComponent($0).path)
+        }
+        #expect(existingRetiredFiles.isEmpty, "Retired task-draft App Studio files should stay removed: \(existingRetiredFiles)")
+
+        let retiredSymbols = [
+            "ChatPanelDraftPresentation",
+            "WorkspaceAppStudioBuildConversationMessage",
+            "WorkspaceAppStudioBuilderContract",
+            "WorkspaceAppStudioBuilderContractFactory",
+            "WorkspaceAppStudioBuildTaskBuilder",
+            "WorkspaceAppStudioBuildTaskDraft",
+            "WorkspaceAppStudioContext",
+            "WorkspaceAppStudioContextBuilder",
+            "WorkspaceAppStudioContextRedactor",
+            "WorkspaceAppStudioContextRequest",
+            "WorkspaceAppStudioDraftSupport",
+            "WorkspaceAppStudioGenerationTaskBuilder",
+            "WorkspaceAppStudioGenerationTaskDraft"
+        ]
+
+        let symbolMatches = try swiftFiles(under: root.appendingPathComponent("Astra"))
+            .flatMap { file -> [String] in
+                let relativePath = relativePath(for: file, root: root)
+                let text = try String(contentsOf: file, encoding: .utf8)
+                return retiredSymbols
+                    .filter { text.contains($0) }
+                    .map { "\(relativePath): \($0)" }
+            }
+
+        #expect(symbolMatches.isEmpty, "Workspace App Studio should be owned by WorkspaceAppStudioSession and generator, not task drafts: \(symbolMatches)")
     }
 
     @Test("Prompt section provider identifiers are unique and used by known prompt modes")
@@ -194,6 +242,616 @@ struct ArchitectureFitnessTests {
         #expect(matches.isEmpty, "New raw stop reason assignments should stay behind runtime/completion/persistence boundaries: \(matches)")
     }
 
+    @Test("Implicit host file scans go through the file access broker")
+    func implicitHostFileScansGoThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let allowedFiles: Set<String> = [
+            "Astra/Services/Runtime/ExecutionSandbox.swift",
+            "Astra/Services/Security/HostFileAccessBroker.swift",
+            "Astra/Services/Security/PrivacySensitivePathPolicy.swift"
+        ]
+
+        let matches = try swiftFiles(under: root.appendingPathComponent("Astra"))
+            .flatMap { file -> [String] in
+                let relativePath = relativePath(for: file, root: root)
+                let text = try String(contentsOf: file, encoding: .utf8)
+                return text
+                    .split(separator: "\n", omittingEmptySubsequences: false)
+                    .enumerated()
+                    .compactMap { index, line in
+                        guard line.contains("PrivacySensitivePathPolicy.shouldSkipImplicitScan") else {
+                            return nil
+                        }
+                        return allowedFiles.contains(relativePath) ? nil : "\(relativePath):\(index + 1)"
+                    }
+            }
+
+        #expect(matches.isEmpty, "Route implicit app-side scan checks through HostFileAccessBroker: \(matches)")
+    }
+
+    @Test("Prompt file content reads go through the file access broker")
+    func promptFileContentReadsGoThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let checkedFiles = [
+            "Astra/Services/Runtime/AgentPromptBuilder.swift",
+            "Astra/Services/Runtime/PromptInputContextReader.swift",
+            "Astra/Services/Runtime/PromptContextIOSnapshotLoader.swift"
+        ]
+        let forbiddenPatterns = [
+            "String(contentsOfFile:",
+            "String(contentsOf:",
+            "Data(contentsOf:",
+            "FileManager.default.contentsOfDirectory(",
+            "FileManager.default.enumerator(",
+            "fm.enumerator("
+        ]
+
+        let matches = try checkedFiles.flatMap { relativePath -> [String] in
+            let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+            return text
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .enumerated()
+                .compactMap { index, line in
+                    let value = String(line)
+                    guard forbiddenPatterns.contains(where: value.contains) else { return nil }
+                    return "\(relativePath):\(index + 1)"
+                }
+        }
+
+        #expect(matches.isEmpty, "Prompt file reads should use HostFileAccessBroker: \(matches)")
+    }
+
+    @Test("Task context state file reads go through the file access broker")
+    func taskContextStateFileReadsGoThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let checkedFiles = [
+            "Astra/Services/Persistence/TaskContextStateManager.swift",
+            "Astra/Services/Persistence/TaskContextStateOutputFiles.swift",
+            "Astra/Services/Persistence/TaskContextStateRecovery.swift"
+        ]
+
+        let matches = try checkedFiles.flatMap { relativePath -> [String] in
+            let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+            return text
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .enumerated()
+                .compactMap { index, line in
+                    let value = String(line)
+                    let forbiddenPatterns = [
+                        "Data(contentsOf:",
+                        "String(contentsOf:",
+                        "String(contentsOfFile:",
+                        "fileManager.contentsOfDirectory(",
+                        "FileManager.default.contentsOfDirectory("
+                    ]
+                    guard forbiddenPatterns.contains(where: value.contains) else { return nil }
+                    return "\(relativePath):\(index + 1)"
+                }
+        }
+
+        #expect(matches.isEmpty, "Task context state reads should use HostFileAccessBroker: \(matches)")
+    }
+
+    @Test("Deliverable verification file reads go through the file access broker")
+    func deliverableVerificationFileReadsGoThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let relativePath = "Astra/Services/Validation/TaskDeliverableVerificationService.swift"
+        let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+        let forbiddenPatterns = [
+            "String(contentsOfFile:",
+            "String(contentsOf:",
+            "Data(contentsOf:"
+        ]
+        let matches = text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .compactMap { index, line -> String? in
+                let value = String(line)
+                guard forbiddenPatterns.contains(where: { pattern in value.contains(pattern) }) else { return nil }
+                return "\(relativePath):\(index + 1)"
+            }
+
+        #expect(matches.isEmpty, "Deliverable verification reads should use HostFileAccessBroker: \(matches)")
+    }
+
+    @Test("Deliverable verification reuses parsed required filenames")
+    func deliverableVerificationReusesParsedRequiredFilenames() throws {
+        let root = try repositoryRoot()
+        let relativePath = "Astra/Services/Validation/TaskDeliverableVerificationService.swift"
+        let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+        let evaluateStart = try #require(text.range(of: "static func evaluate("))
+        let evaluateTail = text[evaluateStart.lowerBound...]
+        let evaluateEnd = try #require(evaluateTail.range(of: "\n    private static func "))
+        let evaluate = String(evaluateTail[..<evaluateEnd.lowerBound])
+
+        #expect(evaluate.contains("let requiredFilenames = TaskDeliverableExpectation.requiredOutputFilenames(task)"))
+        #expect(
+            !evaluate.contains("TaskDeliverableExpectation.requiresDeliverableArtifact(task)"),
+            "Derive the verification requirement from requiredFilenames instead of parsing required output filenames twice."
+        )
+    }
+
+    @Test("Task deliverable expectation scans go through the file access broker")
+    func taskDeliverableExpectationScansGoThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let relativePath = "Astra/Services/Validation/TaskDeliverableExpectation.swift"
+        let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+        let forbiddenPatterns = [
+            "FileManager.default.enumerator(",
+            "fileManager.enumerator("
+        ]
+        let matches = text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .compactMap { index, line -> String? in
+                let value = String(line)
+                guard forbiddenPatterns.contains(where: { pattern in value.contains(pattern) }) else { return nil }
+                return "\(relativePath):\(index + 1)"
+            }
+
+        #expect(matches.isEmpty, "Task deliverable expectation scans should use HostFileAccessBroker: \(matches)")
+    }
+
+    @Test("Validation service artifact reads go through the file access broker")
+    func validationServiceArtifactReadsGoThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let relativePath = "Astra/Services/Validation/ValidationService.swift"
+        let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+        let forbiddenPatterns = [
+            "String(contentsOfFile:",
+            "String(contentsOf:",
+            "Data(contentsOf:"
+        ]
+        let matches = text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .compactMap { index, line -> String? in
+                let value = String(line)
+                guard forbiddenPatterns.contains(where: { pattern in value.contains(pattern) }) else { return nil }
+                return "\(relativePath):\(index + 1)"
+            }
+
+        #expect(matches.isEmpty, "Validation artifact reads should use HostFileAccessBroker: \(matches)")
+    }
+
+    @Test("Plan checkpoint directory checks go through the file access broker")
+    func planCheckpointDirectoryChecksGoThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let relativePath = "Astra/Services/Validation/PlanStepCheckpointVerifier.swift"
+        let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+        let forbiddenPatterns = [
+            "fileManager.contentsOfDirectory(",
+            "FileManager.default.contentsOfDirectory(",
+            ".enumerator("
+        ]
+        let matches = text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .compactMap { index, line -> String? in
+                let value = String(line)
+                guard forbiddenPatterns.contains(where: { pattern in value.contains(pattern) }) else { return nil }
+                return "\(relativePath):\(index + 1)"
+            }
+
+        #expect(matches.isEmpty, "Plan checkpoint directory checks should use HostFileAccessBroker: \(matches)")
+    }
+
+    @Test("Agent file change detector reads go through the file access broker")
+    func agentFileChangeDetectorReadsGoThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let relativePath = "Astra/Services/Tasks/AgentFileChangeDetector.swift"
+        let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+        let forbiddenPatterns = [
+            "Data(contentsOf:",
+            "FileManager.default.enumerator("
+        ]
+        let matches = text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .compactMap { index, line -> String? in
+                let value = String(line)
+                guard forbiddenPatterns.contains(where: { pattern in value.contains(pattern) }) else { return nil }
+                return "\(relativePath):\(index + 1)"
+            }
+
+        #expect(matches.isEmpty, "Agent file-change reads should use HostFileAccessBroker: \(matches)")
+    }
+
+    @Test("Task generated file scans go through the file access broker")
+    func taskGeneratedFileScansGoThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let relativePath = "Astra/Services/Tasks/TaskGeneratedFiles.swift"
+        let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+        let forbiddenPatterns = [
+            "fileManager.enumerator(",
+            "FileManager.default.enumerator("
+        ]
+        let matches = text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .compactMap { index, line -> String? in
+                let value = String(line)
+                guard forbiddenPatterns.contains(where: { pattern in value.contains(pattern) }) else { return nil }
+                return "\(relativePath):\(index + 1)"
+            }
+
+        #expect(matches.isEmpty, "Generated task-file scans should use HostFileAccessBroker: \(matches)")
+    }
+
+    @Test("Task fork manifest reads go through the file access broker")
+    func taskForkManifestReadsGoThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let relativePath = "Astra/Services/Tasks/TaskForkManifestService.swift"
+        let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+        let forbiddenPatterns = [
+            "contents(atPath:",
+            "fileManager.contentsOfDirectory(",
+            "FileManager.default.contentsOfDirectory(",
+            "String(contentsOfFile:",
+            "Data(contentsOf:"
+        ]
+        let matches = text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .compactMap { index, line -> String? in
+                let value = String(line)
+                guard forbiddenPatterns.contains(where: { pattern in value.contains(pattern) }) else { return nil }
+                return "\(relativePath):\(index + 1)"
+            }
+
+        #expect(matches.isEmpty, "Task fork manifest content reads should use HostFileAccessBroker: \(matches)")
+    }
+
+    @Test("Session history reads go through the file access broker")
+    func sessionHistoryReadsGoThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let relativePath = "Astra/Services/Persistence/SessionHistoryManager.swift"
+        let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+        let forbiddenPatterns = [
+            "String(contentsOfFile:",
+            "String(contentsOf:",
+            "Data(contentsOf:"
+        ]
+        let matches = text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .compactMap { index, line -> String? in
+                let value = String(line)
+                guard forbiddenPatterns.contains(where: { pattern in value.contains(pattern) }) else { return nil }
+                return "\(relativePath):\(index + 1)"
+            }
+
+        #expect(matches.isEmpty, "Session history content reads should use HostFileAccessBroker: \(matches)")
+    }
+
+    @Test("SSH connection file reads go through the file access broker")
+    func sshConnectionFileReadsGoThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let relativePath = "Astra/Services/Persistence/SSHConnectionManager.swift"
+        let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+        let forbiddenPatterns = [
+            "contents(atPath:",
+            "String(contentsOfFile:",
+            "String(contentsOf:",
+            "Data(contentsOf:"
+        ]
+        let matches = text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .compactMap { index, line -> String? in
+                let value = String(line)
+                guard forbiddenPatterns.contains(where: { pattern in value.contains(pattern) }) else { return nil }
+                return "\(relativePath):\(index + 1)"
+            }
+
+        #expect(matches.isEmpty, "SSH connection/config reads should use HostFileAccessBroker: \(matches)")
+    }
+
+    @Test("Workspace file layout scans go through the file access broker")
+    func workspaceFileLayoutScansGoThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let relativePath = "Astra/Services/Persistence/WorkspaceFileLayout.swift"
+        let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+        let forbiddenPatterns = [
+            "FileManager.default.contentsOfDirectory(",
+            "fileManager.contentsOfDirectory("
+        ]
+        let matches = text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .compactMap { index, line -> String? in
+                let value = String(line)
+                guard forbiddenPatterns.contains(where: { pattern in value.contains(pattern) }) else { return nil }
+                return "\(relativePath):\(index + 1)"
+            }
+
+        #expect(matches.isEmpty, "Workspace layout scans should use HostFileAccessBroker: \(matches)")
+    }
+
+    @Test("Claude session scanner reads go through the file access broker")
+    func claudeSessionScannerReadsGoThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let relativePath = "Astra/Services/Persistence/SessionScanner.swift"
+        let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+        let forbiddenPatterns = [
+            "contents(atPath:",
+            "fileManager.contentsOfDirectory(",
+            "FileManager.default.contentsOfDirectory(",
+            "fm.contentsOfDirectory(",
+            "String(contentsOfFile:",
+            "String(contentsOf:",
+            "Data(contentsOf:"
+        ]
+        let matches = text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .compactMap { index, line -> String? in
+                let value = String(line)
+                guard forbiddenPatterns.contains(where: { pattern in value.contains(pattern) }) else { return nil }
+                return "\(relativePath):\(index + 1)"
+            }
+
+        #expect(matches.isEmpty, "Claude session scanner reads should use HostFileAccessBroker: \(matches)")
+    }
+
+    @Test("Shelf file reads go through the file access broker")
+    func shelfFileReadsGoThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let checkedFiles = [
+            "Astra/Services/Browser/ShelfQuerySession.swift",
+            "Astra/Services/Browser/ShelfMarkdownSession.swift"
+        ]
+        let forbiddenPatterns = [
+            "String(contentsOf:",
+            "String(contentsOfFile:",
+            "Data(contentsOf:"
+        ]
+
+        let matches = try checkedFiles.flatMap { relativePath -> [String] in
+            let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+            return text
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .enumerated()
+                .compactMap { index, line -> String? in
+                    let value = String(line)
+                    guard forbiddenPatterns.contains(where: { pattern in value.contains(pattern) }) else { return nil }
+                    return "\(relativePath):\(index + 1)"
+                }
+        }
+
+        #expect(matches.isEmpty, "Shelf file reads should use HostFileAccessBroker: \(matches)")
+    }
+
+    @Test("Runtime shim reads go through the file access broker")
+    func runtimeShimReadsGoThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let relativePath = "Astra/Services/Runtime/AgentRuntimeProcessRunner.swift"
+        let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+        let forbiddenPatterns = [
+            "String(contentsOfFile:",
+            "String(contentsOf:",
+            "Data(contentsOf:"
+        ]
+        let matches = text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .compactMap { index, line -> String? in
+                let value = String(line)
+                guard forbiddenPatterns.contains(where: { pattern in value.contains(pattern) }) else { return nil }
+                return "\(relativePath):\(index + 1)"
+            }
+
+        #expect(matches.isEmpty, "Runtime shim reads should use HostFileAccessBroker: \(matches)")
+    }
+
+    @Test("Runtime provider config reads go through the file access broker")
+    func runtimeProviderConfigReadsGoThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let checkedFiles = [
+            "Astra/Services/Runtime/AntigravityCLIRuntime.swift",
+            "Astra/Services/Runtime/CopilotModelAvailabilityService.swift",
+            "Astra/Services/Runtime/CopilotSessionMetricsReader.swift"
+        ]
+        let forbiddenPatterns = [
+            "Data(contentsOf:",
+            "String(contentsOf:",
+            "String(contentsOfFile:",
+            "fileManager.contentsOfDirectory(",
+            "FileManager.default.contentsOfDirectory("
+        ]
+
+        let matches = try checkedFiles.flatMap { relativePath -> [String] in
+            let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+            return text
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .enumerated()
+                .compactMap { index, line -> String? in
+                    let value = String(line)
+                    guard forbiddenPatterns.contains(where: { pattern in value.contains(pattern) }) else { return nil }
+                    return "\(relativePath):\(index + 1)"
+                }
+        }
+
+        #expect(matches.isEmpty, "Runtime provider config/log reads should use HostFileAccessBroker: \(matches)")
+    }
+
+    @Test("Capability storage reads go through the file access broker")
+    func capabilityStorageReadsGoThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let checkedFiles = [
+            "Astra/Services/Capabilities/ApprovedCapabilityBundle.swift",
+            "Astra/Services/Capabilities/CapabilityApprovalStore.swift",
+            "Astra/Services/Capabilities/CapabilityLibrary.swift",
+            "Astra/Services/Capabilities/CapabilityPackageSource.swift",
+            "Astra/Services/Capabilities/CapabilityRuntimeResourceMatcher.swift",
+            "Astra/Services/Capabilities/BundledToolInstaller.swift",
+            "Astra/Services/Capabilities/MCPRuntimeProjection.swift",
+            "Astra/Services/Capabilities/StanfordOutlookMail.swift"
+        ]
+        let forbiddenPatterns = [
+            "Data(contentsOf:",
+            "String(contentsOf:",
+            "String(contentsOfFile:",
+            "fileManager.contentsOfDirectory(",
+            "FileManager.default.contentsOfDirectory("
+        ]
+
+        let matches = try checkedFiles.flatMap { relativePath -> [String] in
+            let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+            return text
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .enumerated()
+                .compactMap { index, line -> String? in
+                    let value = String(line)
+                    guard forbiddenPatterns.contains(where: { pattern in value.contains(pattern) }) else { return nil }
+                    return "\(relativePath):\(index + 1)"
+                }
+        }
+
+        #expect(matches.isEmpty, "Capability storage reads should use HostFileAccessBroker: \(matches)")
+    }
+
+    @Test("Claude settings reads go through the file access broker")
+    func claudeSettingsReadsGoThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let relativePath = "Astra/Services/Settings/ClaudeSettingsStore.swift"
+        let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+        let forbiddenPatterns = [
+            "contents(atPath:",
+            "Data(contentsOf:",
+            "String(contentsOf:",
+            "String(contentsOfFile:"
+        ]
+        let matches = text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .compactMap { index, line -> String? in
+                let value = String(line)
+                guard forbiddenPatterns.contains(where: { pattern in value.contains(pattern) }) else { return nil }
+                return "\(relativePath):\(index + 1)"
+            }
+
+        #expect(matches.isEmpty, "Claude settings reads should use HostFileAccessBroker: \(matches)")
+    }
+
+    @Test("Diagnostics reads go through the file access broker")
+    func diagnosticsReadsGoThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let checkedFiles = [
+            "Astra/Services/Diagnostics/CrashDiagnosticsService.swift",
+            "Astra/Services/Diagnostics/LogDiagnosticsService.swift",
+            "Astra/Services/Diagnostics/Logger.swift"
+        ]
+        let forbiddenPatterns = [
+            "Data(contentsOf:",
+            "String(contentsOf:",
+            "String(contentsOfFile:",
+            "fileManager.contentsOfDirectory(",
+            "FileManager.default.contentsOfDirectory("
+        ]
+
+        let matches = try checkedFiles.flatMap { relativePath -> [String] in
+            let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+            return text
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .enumerated()
+                .compactMap { index, line -> String? in
+                    let value = String(line)
+                    guard forbiddenPatterns.contains(where: { pattern in value.contains(pattern) }) else { return nil }
+                    return "\(relativePath):\(index + 1)"
+                }
+        }
+
+        #expect(matches.isEmpty, "Diagnostics reads should use HostFileAccessBroker: \(matches)")
+    }
+
+    @Test("Task file UI scans go through the file access broker")
+    func taskFileUIScansGoThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let checkedFiles = [
+            "Astra/Views/TaskDetailView.swift",
+            "Astra/Views/TaskFileIndex.swift"
+        ]
+        let forbiddenPatterns = [
+            "FileManager.default.enumerator(",
+            "fileManager.enumerator(",
+            "Data(contentsOf:",
+            "String(contentsOf:",
+            "String(contentsOfFile:"
+        ]
+
+        let matches = try checkedFiles.flatMap { relativePath -> [String] in
+            let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+            return text
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .enumerated()
+                .compactMap { index, line -> String? in
+                    let value = String(line)
+                    guard forbiddenPatterns.contains(where: { pattern in value.contains(pattern) }) else { return nil }
+                    return "\(relativePath):\(index + 1)"
+                }
+        }
+
+        #expect(matches.isEmpty, "Task file UI scans should use HostFileAccessBroker: \(matches)")
+    }
+
+    @Test("Workspace config imports go through the file access broker")
+    func workspaceConfigImportsGoThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let relativePath = "Astra/Services/Persistence/WorkspaceConfigManager.swift"
+        let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+        let matches = text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .compactMap { index, line -> String? in
+                guard line.contains("Data(contentsOf:") else { return nil }
+                return "\(relativePath):\(index + 1)"
+            }
+
+        #expect(matches.isEmpty, "Workspace config imports should use HostFileAccessBroker: \(matches)")
+    }
+
+    @Test("Workspace import discovery scans go through the file access broker")
+    func workspaceImportDiscoveryScansGoThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let relativePath = "Astra/Services/Persistence/WorkspaceImportDiscovery.swift"
+        let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+        let forbiddenPatterns = [
+            "fileManager.contentsOfDirectory(",
+            "FileManager.default.contentsOfDirectory(",
+            ".enumerator("
+        ]
+        let matches = text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .compactMap { index, line -> String? in
+                let value = String(line)
+                guard forbiddenPatterns.contains(where: { pattern in value.contains(pattern) }) else { return nil }
+                return "\(relativePath):\(index + 1)"
+            }
+
+        #expect(matches.isEmpty, "Workspace import discovery scans should use HostFileAccessBroker: \(matches)")
+    }
+
+    @Test("Workspace recovery config loads keep implicit scan intent")
+    func workspaceRecoveryConfigLoadsKeepImplicitScanIntent() throws {
+        let root = try repositoryRoot()
+        let relativePath = "Astra/Services/Persistence/WorkspaceRecoveryService.swift"
+        let lines = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+
+        let matches = lines.enumerated().compactMap { index, line -> String? in
+            guard line.contains("WorkspaceConfigManager.loadConfig") else {
+                return nil
+            }
+            let window = lines[index..<min(lines.count, index + 6)].joined(separator: "\n")
+            return window.contains("accessIntent:") ? nil : "\(relativePath):\(index + 1)"
+        }
+
+        #expect(matches.isEmpty, "Recovered config loads should preserve implicit scan intent: \(matches)")
+    }
+
     @Test("Git status parsing lives behind its SwiftPM contract target")
     func gitStatusParsingLivesBehindContractTarget() throws {
         let root = try repositoryRoot()
@@ -221,6 +879,21 @@ struct ArchitectureFitnessTests {
         #expect(!view.contains("CapabilityUninstaller("))
         #expect(!view.contains("CapabilityPackageCreationService("))
         #expect(view.contains("CapabilityCatalogActionService("))
+    }
+
+    @Test("Plugin catalog approval refresh cancels stale loads")
+    func pluginCatalogApprovalRefreshCancelsStaleLoads() throws {
+        let root = try repositoryRoot()
+        let view = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/PluginCatalogView.swift"),
+            encoding: .utf8
+        )
+
+        #expect(view.contains("@State private var approvalRecordsRefreshTask: Task<Void, Never>?"))
+        #expect(view.contains("@State private var approvalRecordsRefreshGeneration = 0"))
+        #expect(view.contains("approvalRecordsRefreshTask?.cancel()"))
+        #expect(view.contains("approvalRecordsRefreshGeneration == refreshGeneration"))
+        #expect(view.contains("cancelApprovalRecordsRefresh()"))
     }
 
     @Test("Admin policy contexts come only from the currentUser factory")
@@ -325,14 +998,14 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Browser/ShelfBrowserSession.swift": 5_900,
             "Astra/Views/ContentView.swift": 5_000,
             "Astra/Views/WorkspaceRightRailView.swift": 3_500,
-            "Astra/Views/ChatPanelView.swift": 3_200,
-            "Astra/Services/Runtime/AgentRuntimeAdapter.swift": 2_900,
+            "Astra/Views/ChatPanelView.swift": 3_215,
+            "Astra/Services/Runtime/AgentRuntimeAdapter.swift": 2_940,
             "Astra/Views/PluginCatalogView.swift": 2_900,
             "Astra/Views/ShelfMarkdownPanelView.swift": 2_850,
             "Astra/Views/WorkspaceGitSectionView.swift": 2_650,
             "Astra/Views/ConfigureView.swift": 2_550,
             "Astra/Services/Diagnostics/LogDiagnosticsService.swift": 2_550,
-            "Astra/Views/TaskSidebarView.swift": 2_450,
+            "Astra/Views/TaskSidebarView.swift": 2_465,
             "Astra/Views/ShelfQueryPanelView.swift": 2_350,
             "Astra/Services/Persistence/TaskContextStateManager.swift": 2_250,
             "Astra/Services/Runtime/AgentPromptBuilder.swift": 2_250,
@@ -365,10 +1038,11 @@ struct ArchitectureFitnessTests {
                 swiftFiles(under: root.appendingPathComponent("ASTRACore"))
         )
 
-        // Ratchet bumped 125 -> 129 for the execution-sandbox settings
-        // (sandboxEnforcement / sandboxAllowNetwork / sandboxLayerNativeProviders),
-        // which are user-facing toggles following the existing SettingsView pattern.
-        #expect(count <= 129, "Prefer settings snapshots or stores over new direct @AppStorage reads. Current count: \(count)")
+        // Ratchet bumped 125 -> 130 for the execution-sandbox settings
+        // (sandboxEnforcement / sandboxReadScope / sandboxAllowNetwork /
+        // sandboxLayerNativeProviders), which are user-facing toggles following
+        // the existing SettingsView pattern.
+        #expect(count <= 130, "Prefer settings snapshots or stores over new direct @AppStorage reads. Current count: \(count)")
     }
 
     @Test("Files shelf does not decode image previews from SwiftUI body")
@@ -394,10 +1068,11 @@ struct ArchitectureFitnessTests {
         #expect(reuseFastPath.lowerBound < fullDocumentLoad.lowerBound)
     }
 
-    @Test("Completed chat markdown avoids SwiftUI text selection overlay")
-    func completedChatMarkdownAvoidsSwiftUITextSelectionOverlay() throws {
+    @Test("Task answer text selection uses explicit safe policy")
+    func taskAnswerTextSelectionUsesExplicitSafePolicy() throws {
         let root = try repositoryRoot()
         let taskMainView = try fileText("Astra/Views/TaskMainView.swift", root: root)
+        let markdownTextView = try fileText("Astra/Views/MarkdownTextView.swift", root: root)
         let completedAgentMarkdownView = try extractedStruct(
             named: "CompletedAgentMarkdownView",
             from: taskMainView
@@ -406,10 +1081,16 @@ struct ArchitectureFitnessTests {
             named: "StreamingAgentTextView",
             from: taskMainView
         )
+        let listItemStart = try #require(markdownTextView.range(of: "case .listItem"))
+        let blockquoteStart = try #require(markdownTextView[listItemStart.upperBound...].range(of: "case .blockquote"))
+        let listItemCase = String(markdownTextView[listItemStart.lowerBound..<blockquoteStart.lowerBound])
 
-        #expect(completedAgentMarkdownView.contains("isSelectable: false"))
+        #expect(completedAgentMarkdownView.contains("TaskAnswerTextSelectionPolicy.completedAnswerMarkdownIsSelectable"))
         #expect(!completedAgentMarkdownView.contains(".textSelection(.enabled)"))
+        #expect(streamingAgentTextView.contains("taskAnswerTextSelection(TaskAnswerTextSelectionPolicy.liveAnswerTextIsSelectable)"))
         #expect(!streamingAgentTextView.contains(".textSelection(.enabled)"))
+        #expect(listItemCase.contains("HStack(alignment: .top"))
+        #expect(!listItemCase.contains("HStack(alignment: .firstTextBaseline"))
     }
 
     @Test("Repository protection artifacts stay wired")

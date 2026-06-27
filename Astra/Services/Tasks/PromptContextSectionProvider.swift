@@ -53,6 +53,7 @@ enum PromptContextSectionProviderRegistry {
                 .nativeContinuation,
                 .conversationHistory,
                 .changedFiles,
+                .workspaceEnvironment,
                 .taskOutputFolder,
                 .followUpContext,
                 .capabilities,

@@ -68,6 +68,9 @@ final class AgentTask {
     /// thread always lands in the same checkout regardless of how the
     /// workspace's active location later changes.
     var executionRootPath: String?
+    /// JSON-encoded immutable execution environment for this thread. Nil means
+    /// host unless the first run snapshots the workspace default.
+    var executionEnvironmentSnapshotJSON: String?
     var createdAt: Date
     var updatedAt: Date
     var completedAt: Date?
@@ -127,6 +130,9 @@ final class AgentTask {
         // it always runs in the same checkout/repository, even if the workspace
         // later switches its default.
         self.executionRootPath = workspace?.isUsingWorktree == true ? workspace?.activeWorkingPath : nil
+        self.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(
+            ExecutionEnvironmentStore.decode(workspace?.activeExecutionEnvironmentJSON)
+        )
         self.createdAt = Date()
         self.updatedAt = Date()
     }
@@ -193,7 +199,11 @@ final class AgentTask {
             return messageCount
         }
 
-        return goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 1
+        return Self.fallbackThreadMessageCount(forGoal: goal)
+    }
+
+    static func fallbackThreadMessageCount(forGoal goal: String) -> Int {
+        goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 1
     }
 
     var statusColor: String {

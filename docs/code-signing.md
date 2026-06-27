@@ -37,6 +37,9 @@ ACL is bound to the **Designated Requirement (DR)** of the app that created it.
 | `prod` / `beta`, with identity | Developer ID | `--force --deep --entitlements --timestamp --options runtime` | Distribution; notarizable |
 
 All modes sign with `--entitlements script/ASTRA.entitlements` (apple-events only); the dev/prod difference is the identity plus `--timestamp --options runtime`.
+Do not add `com.apple.security.app-sandbox` without also replacing or preserving
+ASTRA's runtime Seatbelt launcher; see
+`docs/security/host-app-sandbox-assessment.md`.
 
 The dev build **auto-detects** a code-signing identity literally named
 `ASTRA Local Dev` and signs with it; otherwise it falls back to ad-hoc. Hardened

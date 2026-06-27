@@ -13,9 +13,16 @@ final class TaskLifecycleCoordinator {
     }
 
     /// Canonical follow-up message sent when the user resumes a previously
-    /// session-backed task. Kept as a named constant so the resume contract is
-    /// traceable and independently testable.
-    static let resumeContinuationMessage = "Continue where you left off. Complete the original goal."
+    /// session-backed task. The task-specific variant appends ASTRA's resolved
+    /// active objective so stale original goals do not re-anchor long threads.
+    static let resumeContinuationMessage = "Continue where you left off. Continue the current objective."
+
+    static func resumeContinuationMessage(for task: AgentTask) -> String {
+        let objective = TaskContextStateManager.activeObjectiveText(for: task)
+        guard !objective.isEmpty else { return resumeContinuationMessage }
+        let base = resumeContinuationMessage.trimmingCharacters(in: CharacterSet(charactersIn: ". "))
+        return "\(base): \(boundedResumeObjective(objective))"
+    }
 
     // MARK: - Task Lifecycle
 
@@ -32,6 +39,9 @@ final class TaskLifecycleCoordinator {
         }
         Task {
             await taskQueue.processQueue(modelContext: modelContext)
+            // B2-live: resume any Workspace App workflow run whose awaited agent
+            // task just finished in the queue.
+            WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: modelContext)
         }
     }
 
@@ -49,6 +59,8 @@ final class TaskLifecycleCoordinator {
             AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
                 "status": task.status.rawValue
             ])
+            // B2-live: resume any Workspace App workflow awaiting this agent task.
+            WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: modelContext)
         }
     }
 
@@ -125,14 +137,17 @@ final class TaskLifecycleCoordinator {
         }
     }
 
-    func resumeTask(_ task: AgentTask) {
+    @discardableResult
+    func resumeTask(_ task: AgentTask) -> Task<Void, Never>? {
         guard task.hasProviderSession else {
             AppLogger.audit(.workerSessionCleared, category: "UI", taskID: task.id, fields: [
                 "reason": "missing_session_id"
             ], level: .warning)
-            return
+            return nil
         }
         AppLogger.audit(.taskResumed, category: "UI", taskID: task.id)
+        let previousStatus = task.status
+        let previousCompletedAt = task.completedAt
         task.status = .running
         task.updatedAt = Date()
         task.completedAt = nil
@@ -140,13 +155,71 @@ final class TaskLifecycleCoordinator {
         let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.resumed, payload: "Resuming previous session — continuing where the agent left off.")
         modelContext.insert(event)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
-        Task {
-            await taskQueue.continueSession(task: task, message: Self.resumeContinuationMessage, modelContext: modelContext)
+        return Task {
+            let didStart = await taskQueue.continueSession(
+                task: task,
+                message: Self.resumeContinuationMessage(for: task),
+                modelContext: modelContext
+            )
+            finishContinuationLaunch(
+                task,
+                didStart: didStart,
+                revertingTo: previousStatus,
+                previousCompletedAt: previousCompletedAt,
+                source: "resume"
+            )
+        }
+    }
+
+    /// Reverts an optimistic `.running` transition when the queue could not admit
+    /// the continuation. `continueSession` returns `false` before any worker runs
+    /// (no available worker, resource-lock wait cancelled, or task-folder prep
+    /// failure); without restoring status the task is stranded in `.running` with
+    /// no worker, so it appears active forever and the user can't act on it.
+    private func finishContinuationLaunch(
+        _ task: AgentTask,
+        didStart: Bool,
+        revertingTo previousStatus: TaskStatus,
+        previousCompletedAt: Date?,
+        source: String
+    ) {
+        guard !didStart else {
             AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
                 "status": task.status.rawValue,
-                "source": "resume"
+                "source": source
             ])
+            return
         }
+        // continueSession can return false *after* already moving the task to a
+        // terminal state — prepareTaskFolder sets `.failed`, records its own error
+        // event, and marks unread. Only roll back the optimistic transition if it
+        // is still in place; otherwise respect the failure the queue recorded
+        // rather than overwriting it (and double-recording an error).
+        guard task.status == .running else {
+            AppLogger.audit(.workerBlocked, category: "UI", taskID: task.id, fields: [
+                "reason": "continuation_not_admitted",
+                "preserved_status": task.status.rawValue,
+                "source": source
+            ], level: .debug)
+            return
+        }
+        task.status = previousStatus
+        task.completedAt = previousCompletedAt
+        task.updatedAt = Date()
+        // Surface the failure: keep the task unread for its restored status so the
+        // user notices the inserted error rather than silently clearing it.
+        task.markUnreadForCurrentStatus()
+        modelContext.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.System.error,
+            payload: "Couldn't continue this task — it couldn't be started right now. Try again in a moment."
+        ))
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+        AppLogger.audit(.workerBlocked, category: "UI", taskID: task.id, fields: [
+            "reason": "continuation_not_admitted",
+            "restored_status": previousStatus.rawValue,
+            "source": source
+        ], level: .warning)
     }
 
     @discardableResult
@@ -274,6 +347,8 @@ final class TaskLifecycleCoordinator {
             "runtime": runtime.rawValue,
             "grant_count": String(taskScopedGrants.count)
         ])
+        let previousStatus = task.status
+        let previousCompletedAt = task.completedAt
         task.status = .running
         task.updatedAt = Date()
         task.completedAt = nil
@@ -301,16 +376,19 @@ final class TaskLifecycleCoordinator {
             scopeDescription: "task-scoped runtime permission for similar requests in this task"
         )
         return Task {
-            await taskQueue.continueSession(
+            let didStart = await taskQueue.continueSession(
                 task: task,
                 message: resumeMessage,
                 modelContext: modelContext,
                 executionPolicy: .default
             )
-            AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
-                "status": task.status.rawValue,
-                "source": "runtime_permission_task_approval"
-            ])
+            finishContinuationLaunch(
+                task,
+                didStart: didStart,
+                revertingTo: previousStatus,
+                previousCompletedAt: previousCompletedAt,
+                source: "runtime_permission_task_approval"
+            )
         }
     }
 
@@ -319,6 +397,8 @@ final class TaskLifecycleCoordinator {
             "approval_type": "runtime_permission",
             "runtime": task.resolvedRuntimeID.rawValue
         ])
+        let previousStatus = task.status
+        let previousCompletedAt = task.completedAt
         task.status = .running
         task.updatedAt = Date()
         task.completedAt = nil
@@ -346,16 +426,19 @@ final class TaskLifecycleCoordinator {
         let executionPolicy = PermissionBroker.executionPolicy(forRuntime: runtime, grants: approvedGrants)
         let resumeMessage = Self.runtimePermissionApprovalResumeMessage(for: task, grants: approvedGrants)
         return Task {
-            await taskQueue.continueSession(
+            let didStart = await taskQueue.continueSession(
                 task: task,
                 message: resumeMessage,
                 modelContext: modelContext,
                 executionPolicy: executionPolicy
             )
-            AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
-                "status": task.status.rawValue,
-                "source": "runtime_permission_approval"
-            ])
+            finishContinuationLaunch(
+                task,
+                didStart: didStart,
+                revertingTo: previousStatus,
+                previousCompletedAt: previousCompletedAt,
+                source: "runtime_permission_approval"
+            )
         }
     }
 
@@ -825,20 +908,25 @@ final class TaskLifecycleCoordinator {
         return string
     }
 
+    private static func boundedResumeObjective(_ value: String) -> String {
+        let collapsed = value
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard collapsed.count > 240 else { return collapsed }
+        return String(collapsed.prefix(240)) + "..."
+    }
+
     // MARK: - Migration
 
-    func migrateConnectorCredentials(workspaces: [Workspace]) {
-        for ws in workspaces {
-            for connector in ws.connectors {
-                connector.migrateToKeychain()
-            }
-        }
+    func migrateConnectorCredentials(workspaces: [Workspace], globalConnectors: [Connector] = []) {
+        StartupCredentialMigrationService.migrateConnectorCredentials(
+            workspaces: workspaces,
+            globalConnectors: globalConnectors
+        )
     }
 
     func migrateSkillSecrets(skills: [Skill]) {
-        for skill in skills {
-            skill.migrateSecretsToKeychain()
-        }
+        StartupCredentialMigrationService.migrateSkillSecrets(skills: skills)
     }
 
     // MARK: - Seeding

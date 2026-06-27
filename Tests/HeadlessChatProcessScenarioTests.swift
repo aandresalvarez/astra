@@ -132,7 +132,7 @@ extension HeadlessChatScenarioTests {
         let claudePath = try harness.writeExecutable(
             named: "claude",
             script: Self.claudeScript(body: """
-            printf 'launched\\n' > '\(launchMarker.path)'
+            printf 'launched\\n' > \(Self.shQuoteSandboxPath(launchMarker.path))
             printf '%s\\n' '{"type":"system","subtype":"init","session_id":"session-timeout","model":"claude-sonnet-4-6"}'
             sleep 60
             exit 0
@@ -143,7 +143,17 @@ extension HeadlessChatScenarioTests {
         let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath)
         worker.timeoutSeconds = 2
 
-        _ = await harness.execute(task: task, worker: worker)
+        let executeTask = Task { @MainActor in
+            await harness.execute(task: task, worker: worker)
+        }
+
+        for _ in 0..<50 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            if FileManager.default.fileExists(atPath: launchMarker.path) { break }
+        }
+        #expect(FileManager.default.fileExists(atPath: launchMarker.path), "Process should have launched")
+
+        _ = await executeTask.value
 
         let run = try #require(task.runs.first)
         #expect(FileManager.default.fileExists(atPath: launchMarker.path))

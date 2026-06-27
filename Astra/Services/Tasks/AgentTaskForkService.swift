@@ -30,6 +30,7 @@ enum AgentTaskForkService {
         // A fork continues the source's line of work, so it stays in the same
         // worktree the source was pinned to.
         forked.executionRootPath = source.executionRootPath
+        forked.executionEnvironmentSnapshotJSON = source.executionEnvironmentSnapshotJSON
 
         let sortedRuns = source.runs.sorted { $0.startedAt < $1.startedAt }
         guard let cutoffIndex = sortedRuns.firstIndex(where: { $0.id == targetRun.id }) else {
@@ -57,6 +58,7 @@ enum AgentTaskForkService {
             newRun.output = sourceRun.output
             newRun.costUSD = sourceRun.costUSD
             newRun.fileChangesJSON = sourceRun.fileChangesJSON
+            newRun.executionEnvironmentSnapshotJSON = sourceRun.executionEnvironmentSnapshotJSON
             newRun.stopReason = sourceRun.stopReason
             newRun.exitCode = sourceRun.exitCode
             context.insert(newRun)

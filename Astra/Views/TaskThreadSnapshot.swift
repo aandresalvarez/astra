@@ -150,6 +150,7 @@ struct TaskThreadSnapshotInput: Sendable {
     let omittedRunCount: Int
 
     init(task: AgentTask, maxRuns: Int = 50) {
+        let start = DispatchTime.now().uptimeNanoseconds
         let window = TaskThreadSnapshotWindow(events: task.events, runs: task.runs, maxRuns: maxRuns)
         self.init(
             goal: task.goal,
@@ -160,6 +161,21 @@ struct TaskThreadSnapshotInput: Sendable {
             omittedEventCount: window.omittedEventCount,
             totalRunCount: window.totalRunCount,
             omittedRunCount: window.omittedRunCount
+        )
+        PerformanceTelemetry.logIfNeeded(
+            "thread_snapshot_input",
+            start: start,
+            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            fields: [
+                "task_id": PerformanceTelemetryFields.abbreviatedID(task.id),
+                "event_count": PerformanceTelemetryFields.count(window.totalEventCount),
+                "run_count": PerformanceTelemetryFields.count(window.totalRunCount),
+                "snapshot_input_events": PerformanceTelemetryFields.count(events.count),
+                "snapshot_input_runs": PerformanceTelemetryFields.count(runs.count),
+                "omitted_events": PerformanceTelemetryFields.count(omittedEventCount),
+                "omitted_runs": PerformanceTelemetryFields.count(omittedRunCount),
+                "max_runs": PerformanceTelemetryFields.count(maxRuns)
+            ]
         )
     }
 
@@ -211,6 +227,7 @@ private struct TaskThreadSnapshotWindow {
     let omittedRunCount: Int
 
     init(events allEvents: [TaskEvent], runs allRuns: [TaskRun], maxRuns: Int = defaultMaxRuns) {
+        let start = DispatchTime.now().uptimeNanoseconds
         totalEventCount = allEvents.count
         totalRunCount = allRuns.count
 
@@ -228,6 +245,20 @@ private struct TaskThreadSnapshotWindow {
 
         omittedEventCount = max(0, totalEventCount - events.count)
         omittedRunCount = max(0, totalRunCount - runs.count)
+        PerformanceTelemetry.logIfNeeded(
+            "thread_snapshot_window",
+            start: start,
+            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            fields: [
+                "event_count": PerformanceTelemetryFields.count(totalEventCount),
+                "run_count": PerformanceTelemetryFields.count(totalRunCount),
+                "snapshot_input_events": PerformanceTelemetryFields.count(events.count),
+                "snapshot_input_runs": PerformanceTelemetryFields.count(runs.count),
+                "omitted_events": PerformanceTelemetryFields.count(omittedEventCount),
+                "omitted_runs": PerformanceTelemetryFields.count(omittedRunCount),
+                "max_runs": PerformanceTelemetryFields.count(maxRuns)
+            ]
+        )
     }
 
     private static func capToolResults(_ events: [TaskEvent]) -> [TaskEvent] {
@@ -395,8 +426,9 @@ struct TaskRunOutputPresentation: Hashable, Sendable {
         }
 
         guard let latestWorkIndex = events.lastIndex(where: Self.isOutputBoundaryEvent) else {
-            displayText = run.output
-            progressMessages = []
+            let presentation = Self.rawOutputPresentation(for: run)
+            displayText = presentation.displayText
+            progressMessages = presentation.progressMessages
             return
         }
 
@@ -408,19 +440,21 @@ struct TaskRunOutputPresentation: Hashable, Sendable {
             }
 
         guard !finalResponseEvents.isEmpty else {
-            displayText = run.output
-            progressMessages = []
+            let presentation = Self.rawOutputPresentation(for: run)
+            displayText = presentation.displayText
+            progressMessages = presentation.progressMessages
             return
         }
 
         let finalText = Self.joinResponsePayloads(finalResponseEvents)
         guard !finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            displayText = run.output
-            progressMessages = []
+            let presentation = Self.rawOutputPresentation(for: run)
+            displayText = presentation.displayText
+            progressMessages = presentation.progressMessages
             return
         }
 
-        displayText = finalText
+        displayText = TaskRunAnswerPresentationPolicy.presentation(rawText: finalText).answerText
         progressMessages = Self.progressMessages(from: responseEvents.filter { event in
             !finalResponseEvents.contains(where: { $0.id == event.id })
         })
@@ -435,19 +469,58 @@ struct TaskRunOutputPresentation: Hashable, Sendable {
         }
     }
 
+    private static func rawOutputPresentation(for run: TaskRunSnapshot) -> TaskRunOutputPresentation {
+        let presentation = TaskRunAnswerPresentationPolicy.presentation(rawText: run.output)
+        return TaskRunOutputPresentation(
+            displayText: presentation.answerText,
+            progressMessages: progressMessages(from: presentation.progressMessages, run: run),
+            rawText: run.output
+        )
+    }
+
     private static func progressMessages(from events: [TaskEventSnapshot]) -> [TaskRunProgressMessage] {
-        events.map {
-            TaskRunProgressMessage(
-                id: $0.id,
-                text: $0.payload.trimmingCharacters(in: .whitespacesAndNewlines),
-                timestamp: $0.timestamp
+        var previousKey: String?
+        return events.compactMap { event -> TaskRunProgressMessage? in
+            guard let progress = TaskRunAnswerPresentationPolicy.normalizedProgressText(event.payload),
+                  progress.comparisonKey != previousKey else {
+                return nil
+            }
+            previousKey = progress.comparisonKey
+            return TaskRunProgressMessage(
+                id: event.id,
+                text: progress.text,
+                timestamp: event.timestamp
             )
         }
-        .filter { !$0.text.isEmpty }
+    }
+
+    private static func progressMessages(from texts: [String], run: TaskRunSnapshot) -> [TaskRunProgressMessage] {
+        let timestamp = run.completedAt ?? run.startedAt
+        return texts.enumerated().map { index, text in
+            TaskRunProgressMessage(
+                id: derivedProgressMessageID(runID: run.id, index: index),
+                text: text,
+                timestamp: timestamp
+            )
+        }
+    }
+
+    private static func derivedProgressMessageID(runID: UUID, index: Int) -> UUID {
+        let source = runID.uuidString.replacingOccurrences(of: "-", with: "")
+        let suffix = String(format: "%012llx", CUnsignedLongLong(index))
+        let hex = String(source.prefix(20)) + suffix
+        let chunks = [
+            String(hex.prefix(8)),
+            String(hex.dropFirst(8).prefix(4)),
+            String(hex.dropFirst(12).prefix(4)),
+            String(hex.dropFirst(16).prefix(4)),
+            String(hex.dropFirst(20).prefix(12))
+        ]
+        return UUID(uuidString: chunks.joined(separator: "-")) ?? UUID()
     }
 
     private static func joinResponsePayloads(_ events: [TaskEventSnapshot]) -> String {
-        events.map(\.payload).joined()
+        TaskRunAnswerPresentationPolicy.joinedResponsePayloads(events.map(\.payload))
     }
 }
 
@@ -527,7 +600,14 @@ struct TaskThreadSnapshot: Sendable {
             PerformanceTelemetry.measure(
                 "thread_snapshot_build",
                 thresholdMilliseconds: 8,
-                fields: fields
+                fields: fields,
+                resultFields: { snapshot in
+                    [
+                        "conversation_item_count": PerformanceTelemetryFields.count(snapshot.conversationItems.count),
+                        "snapshot_event_count": PerformanceTelemetryFields.count(snapshot.sortedEvents.count),
+                        "snapshot_run_count": PerformanceTelemetryFields.count(snapshot.sortedRuns.count)
+                    ]
+                }
             ) {
                 PerformanceSignposts.buildThreadSnapshot {
                     TaskThreadSnapshot(input: input)
@@ -945,19 +1025,37 @@ struct TaskThreadSnapshotTrigger: Equatable {
     let latestRunOutputCount: Int
 
     init(task: AgentTask) {
+        let start = DispatchTime.now().uptimeNanoseconds
         let events = task.events
-        let latestRun = task.runs.max { $0.startedAt < $1.startedAt }
+        let runs = task.runs
+        let latestRun = runs.max { $0.startedAt < $1.startedAt }
         taskID = task.id
         eventCount = events.count
         visibleEventCount = events.reduce(0) { count, event in
             Self.highFrequencyEventTypes.contains(event.type) ? count : count + 1
         }
-        runCount = task.runs.count
+        runCount = runs.count
         status = task.status
         latestRunID = latestRun?.id
         latestRunStatus = latestRun?.status
         latestRunOutputCount = latestRun?.output.utf8.count ?? 0
         latestRunOutputBucket = Self.outputBucket(for: latestRunOutputCount)
+        PerformanceTelemetry.logIfNeeded(
+            "thread_snapshot_trigger",
+            start: start,
+            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            fields: [
+                "task_id": PerformanceTelemetryFields.abbreviatedID(task.id),
+                "event_count": PerformanceTelemetryFields.count(eventCount),
+                "visible_event_count": PerformanceTelemetryFields.count(visibleEventCount),
+                "run_count": PerformanceTelemetryFields.count(runCount),
+                "status": status.rawValue,
+                "latest_run_status": latestRunStatus?.rawValue ?? "none",
+                "latest_run_output_bucket": PerformanceTelemetryFields.count(latestRunOutputBucket),
+                "latest_run_output_chars": PerformanceTelemetryFields.count(latestRunOutputCount),
+                "latest_run_output_byte_bucket": PerformanceTelemetryFields.byteBucket(latestRunOutputCount)
+            ]
+        )
     }
 
     static func == (lhs: TaskThreadSnapshotTrigger, rhs: TaskThreadSnapshotTrigger) -> Bool {
@@ -973,6 +1071,157 @@ struct TaskThreadSnapshotTrigger: Equatable {
     private static func outputBucket(for byteCount: Int) -> Int {
         guard byteCount > 0 else { return 0 }
         return ((byteCount - 1) / liveOutputBucketSize) + 1
+    }
+}
+
+struct TaskThreadSnapshotCacheKey: Hashable, Sendable {
+    let taskID: UUID
+    let status: TaskStatus
+    let goalHash: UInt64
+    let createdAt: Date
+    let completedAt: Date?
+    let maxRuns: Int
+    let eventCount: Int
+    let runCount: Int
+    let latestRunID: UUID?
+    let latestRunStatus: RunStatus?
+    let eventSignatures: [TaskThreadEventCacheSignature]
+    let runSignatures: [TaskThreadRunCacheSignature]
+
+    init?(
+        task: AgentTask,
+        trigger: TaskThreadSnapshotTrigger,
+        maxRuns: Int
+    ) {
+        guard Self.isCacheable(trigger) else { return nil }
+        taskID = task.id
+        status = task.status
+        goalHash = Self.stableHash(task.goal)
+        createdAt = task.createdAt
+        completedAt = task.completedAt
+        self.maxRuns = maxRuns
+        eventCount = task.events.count
+        runCount = task.runs.count
+        latestRunID = trigger.latestRunID
+        latestRunStatus = trigger.latestRunStatus
+        eventSignatures = task.events.map(TaskThreadEventCacheSignature.init(event:)).sorted()
+        runSignatures = task.runs.map(TaskThreadRunCacheSignature.init(run:)).sorted()
+    }
+
+    private static func stableHash(_ value: String) -> UInt64 {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return hash
+    }
+
+    private static func isCacheable(_ trigger: TaskThreadSnapshotTrigger) -> Bool {
+        switch trigger.status {
+        case .running, .queued:
+            return false
+        default:
+            return trigger.latestRunStatus != .running
+        }
+    }
+}
+
+struct TaskThreadEventCacheSignature: Hashable, Comparable, Sendable {
+    let id: UUID
+    let runID: UUID?
+    let type: String
+    let payloadByteCount: Int
+    let timestamp: Date
+
+    init(event: TaskEvent) {
+        id = event.id
+        runID = event.run?.id
+        type = event.type
+        payloadByteCount = event.payload.utf8.count
+        timestamp = event.timestamp
+    }
+
+    static func < (lhs: TaskThreadEventCacheSignature, rhs: TaskThreadEventCacheSignature) -> Bool {
+        if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
+        return lhs.id.uuidString < rhs.id.uuidString
+    }
+}
+
+struct TaskThreadRunCacheSignature: Hashable, Comparable, Sendable {
+    let id: UUID
+    let status: RunStatus
+    let startedAt: Date
+    let completedAt: Date?
+    let outputByteCount: Int
+    let fileChangesByteCount: Int
+    let stopReason: String
+
+    init(run: TaskRun) {
+        id = run.id
+        status = run.status
+        startedAt = run.startedAt
+        completedAt = run.completedAt
+        outputByteCount = run.output.utf8.count
+        fileChangesByteCount = run.fileChangesJSON.utf8.count
+        stopReason = run.stopReason
+    }
+
+    static func < (lhs: TaskThreadRunCacheSignature, rhs: TaskThreadRunCacheSignature) -> Bool {
+        if lhs.startedAt != rhs.startedAt { return lhs.startedAt < rhs.startedAt }
+        return lhs.id.uuidString < rhs.id.uuidString
+    }
+}
+
+struct TaskThreadSnapshotCache {
+    struct Stats: Equatable {
+        var hitCount = 0
+        var missCount = 0
+        var entryCount = 0
+    }
+
+    private let maxEntries: Int
+    private var entries: [TaskThreadSnapshotCacheKey: TaskThreadSnapshot] = [:]
+    private var recentKeys: [TaskThreadSnapshotCacheKey] = []
+    private(set) var stats = Stats()
+
+    init(maxEntries: Int = 12) {
+        self.maxEntries = max(1, maxEntries)
+    }
+
+    mutating func snapshot(for key: TaskThreadSnapshotCacheKey) -> TaskThreadSnapshot? {
+        guard let snapshot = entries[key] else {
+            stats.missCount += 1
+            return nil
+        }
+        stats.hitCount += 1
+        markRecentlyUsed(key)
+        return snapshot
+    }
+
+    mutating func store(_ snapshot: TaskThreadSnapshot, for key: TaskThreadSnapshotCacheKey) {
+        entries[key] = snapshot
+        markRecentlyUsed(key)
+        trimIfNeeded()
+        stats.entryCount = entries.count
+    }
+
+    mutating func removeAll() {
+        entries.removeAll()
+        recentKeys.removeAll()
+        stats = Stats()
+    }
+
+    private mutating func markRecentlyUsed(_ key: TaskThreadSnapshotCacheKey) {
+        recentKeys.removeAll { $0 == key }
+        recentKeys.append(key)
+    }
+
+    private mutating func trimIfNeeded() {
+        while recentKeys.count > maxEntries {
+            let evicted = recentKeys.removeFirst()
+            entries.removeValue(forKey: evicted)
+        }
     }
 }
 

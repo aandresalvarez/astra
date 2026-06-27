@@ -33,6 +33,86 @@ enum WorkspaceRightRailPresentation {
     /// Kept here rather than borrowing the git panel's constant so the rail and
     /// git presentation layers stay independent.
     static let hideActionTitle = "Hide"
+
+    static func compositionSummary(for item: RailCapabilityItem) -> String {
+        var parts: [String] = []
+        appendCount(item.skillNames.count, singular: "skill", plural: "skills", to: &parts)
+        appendCount(item.connectorNames.count, singular: "connector", plural: "connectors", to: &parts)
+        appendCount(item.toolNames.count, singular: "tool", plural: "tools", to: &parts)
+        appendCount(item.mcpServerNames.count, singular: "MCP server", plural: "MCP servers", to: &parts)
+        appendCount(item.browserAdapterNames.count, singular: "browser adapter", plural: "browser adapters", to: &parts)
+        appendCount(item.templateNames.count, singular: "template", plural: "templates", to: &parts)
+
+        if !parts.isEmpty {
+            return parts.joined(separator: ", ")
+        }
+
+        let fallback = item.presentation.rowSubtitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        return fallback.isEmpty ? "No resources" : fallback
+    }
+
+    private static func appendCount(_ count: Int, singular: String, plural: String, to parts: inout [String]) {
+        guard count > 0 else { return }
+        parts.append("\(count) \(count == 1 ? singular : plural)")
+    }
+}
+
+enum WorkspaceInstructionEditorPresentation {
+    static let saveActionTitle = "Save"
+    static let clearActionTitle = "Clear"
+    static let savedStatusTitle = "Saved"
+    static let unsavedStatusTitle = "Unsaved changes"
+    static let includedInPromptHint = "Included in every new task prompt."
+
+    static func persistedInstructions(fromDraft draft: String) -> String {
+        draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func hasUnsavedChanges(draft: String, persisted: String) -> Bool {
+        persistedInstructions(fromDraft: draft) != persistedInstructions(fromDraft: persisted)
+    }
+
+    static func effectiveDraft(localDraft: String, persisted: String, isSynced: Bool) -> String {
+        isSynced ? localDraft : persisted
+    }
+
+    static func hasUnsavedChanges(localDraft: String, persisted: String, isSynced: Bool) -> Bool {
+        hasUnsavedChanges(
+            draft: effectiveDraft(localDraft: localDraft, persisted: persisted, isSynced: isSynced),
+            persisted: persisted
+        )
+    }
+
+    static func shouldShowClearAction(localDraft: String, persisted: String, isSynced: Bool) -> Bool {
+        !persistedInstructions(
+            fromDraft: effectiveDraft(localDraft: localDraft, persisted: persisted, isSynced: isSynced)
+        ).isEmpty
+    }
+
+    static func statusTitle(draft: String, persisted: String, didRecentlySave: Bool) -> String? {
+        if hasUnsavedChanges(draft: draft, persisted: persisted) {
+            return unsavedStatusTitle
+        }
+
+        if didRecentlySave || !persistedInstructions(fromDraft: persisted).isEmpty {
+            return savedStatusTitle
+        }
+
+        return nil
+    }
+
+    static func statusTitle(
+        localDraft: String,
+        persisted: String,
+        isSynced: Bool,
+        didRecentlySave: Bool
+    ) -> String? {
+        statusTitle(
+            draft: effectiveDraft(localDraft: localDraft, persisted: persisted, isSynced: isSynced),
+            persisted: persisted,
+            didRecentlySave: didRecentlySave
+        )
+    }
 }
 
 enum CapabilityRailLayout {

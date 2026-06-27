@@ -10,6 +10,7 @@ struct SidebarTaskIndex {
     let unreadTasks: [AgentTask]
 
     init(tasks: [AgentTask], searchText: String) {
+        let start = DispatchTime.now().uptimeNanoseconds
         self.searchText = searchText
 
         var reviewGroups: [UUID: [AgentTask]] = [:]
@@ -17,6 +18,7 @@ struct SidebarTaskIndex {
         var workspaceIDs = Set<UUID>()
         var pinned: [AgentTask] = []
         var unread: [AgentTask] = []
+        var reviewTaskCount = 0
 
         for task in tasks {
             guard let workspaceID = task.workspace?.id else { continue }
@@ -24,6 +26,7 @@ struct SidebarTaskIndex {
 
             guard Self.isSidebarReviewTask(task) else { continue }
 
+            reviewTaskCount += 1
             reviewGroups[workspaceID, default: []].append(task)
             if task.isPinned {
                 pinned.append(task)
@@ -50,6 +53,19 @@ struct SidebarTaskIndex {
         unreadTasks = unread.sorted {
             ($0.unreadAt ?? $0.updatedAt) > ($1.unreadAt ?? $1.updatedAt)
         }
+        PerformanceTelemetry.logIfNeeded(
+            "sidebar_index_build",
+            start: start,
+            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            fields: [
+                "task_count": PerformanceTelemetryFields.count(tasks.count),
+                "workspace_count": PerformanceTelemetryFields.count(workspaceIDs.count),
+                "review_task_count": PerformanceTelemetryFields.count(reviewTaskCount),
+                "pinned_task_count": PerformanceTelemetryFields.count(pinned.count),
+                "unread_task_count": PerformanceTelemetryFields.count(unread.count),
+                "search_active": PerformanceTelemetryFields.bool(!searchText.isEmpty)
+            ]
+        )
     }
 
     func reviewTasks(

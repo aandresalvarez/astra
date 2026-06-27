@@ -115,4 +115,70 @@ struct BrowserFlightRecorderTests {
         #expect(diagnostics.flightSnapshot["totalSteps"] as? Int == 0)
         #expect(diagnostics.lastDebugCapture == nil)
     }
+
+    @Test("Trace response is compact by default for provider-safe reporting")
+    func traceResponseIsCompactByDefaultForProviderSafeReporting() throws {
+        var diagnostics = BrowserDiagnosticsSessionState()
+        let longDataURL = "data:text/html," + String(repeating: "x", count: 3_000)
+        let before = BrowserFlightPageSnapshot(url: longDataURL, title: "Before", pageType: "web")
+        let after = BrowserFlightPageSnapshot(url: longDataURL, title: "After", pageType: "web")
+        let request = BrowserBridgeRequest(
+            method: "POST",
+            path: "/fill",
+            headers: [:],
+            queryItems: [:],
+            body: Data(#"{"controlID":"ctl_name","text":"Astra CDP"}"#.utf8)
+        )
+        diagnostics.rememberDebugCapture([
+            "enabled": true,
+            "screenshot": ["base64": String(repeating: "A", count: 20_000)]
+        ])
+        _ = diagnostics.recordFlightStep(
+            request: request,
+            statusCode: 200,
+            before: before,
+            after: after,
+            duration: 0.42,
+            result: [
+                "ok": true,
+                "goalSatisfied": true,
+                "observedOutcome": "valueChanged"
+            ],
+            lastBrowserTraceID: "btrace_1",
+            debugCapture: ["screenshot": ["base64": String(repeating: "B", count: 20_000)]]
+        )
+
+        let trace = diagnostics.traceResponse(lastBrowserTrace: [
+            "id": "btrace_1",
+            "engine": "controlled",
+            "backend": "controlled Chromium profile",
+            "beforeFingerprint": String(repeating: "f", count: 20_000),
+            "afterFingerprint": String(repeating: "g", count: 20_000),
+            "observedOutcome": "valueChanged",
+            "goalSatisfied": true,
+            "outcomeVerified": true,
+            "cdpSettlement": [
+                "settled": true,
+                "errors": [],
+                "signals": ["accessibility.refreshed"]
+            ]
+        ])
+        let flight = try #require(trace["flight"] as? [String: Any])
+        let compactTrace = try #require(trace["trace"] as? [String: Any])
+        let encoded = try jsonString(trace)
+
+        #expect(flight["totalSteps"] as? Int == 1)
+        #expect(flight["firstSteps"] == nil)
+        #expect(flight["recentSteps"] == nil)
+        #expect(compactTrace["observedOutcome"] as? String == "valueChanged")
+        #expect((compactTrace["cdpSettlement"] as? [String: Any])?["settled"] as? Bool == true)
+        #expect(encoded.count < 8_000)
+        #expect(!encoded.contains(String(repeating: "A", count: 200)))
+        #expect(!encoded.contains(String(repeating: "f", count: 200)))
+    }
+
+    private func jsonString(_ object: [String: Any]) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        return String(data: data, encoding: .utf8) ?? ""
+    }
 }

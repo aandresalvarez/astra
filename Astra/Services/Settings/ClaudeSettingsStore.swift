@@ -114,7 +114,7 @@ enum ClaudeSettingsStore {
 
         let path = settingsPath(for: workspacePath)
         guard !path.isEmpty else { return nil }
-        let backup = fileManager.contents(atPath: path)
+        let backup = readSettingsData(at: path, workspacePath: workspacePath, fileManager: fileManager)
         var settings = loadSettings(workspacePath: workspacePath, fileManager: fileManager)
 
         var existingHooks = settings["hooks"] as? [String: [[String: Any]]] ?? [:]
@@ -185,11 +185,25 @@ enum ClaudeSettingsStore {
     ) -> [String: Any] {
         let path = settingsPath(for: workspacePath)
         guard !path.isEmpty,
-              let data = fileManager.contents(atPath: path),
+              let data = readSettingsData(at: path, workspacePath: workspacePath, fileManager: fileManager),
               let settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return [:]
         }
         return settings
+    }
+
+    private static func readSettingsData(
+        at path: String,
+        workspacePath: String,
+        fileManager: FileManager
+    ) -> Data? {
+        let workspaceRoot = URL(fileURLWithPath: workspacePath, isDirectory: true)
+        let settingsURL = URL(fileURLWithPath: path)
+        let broker = HostFileAccessBroker(fileManager: fileManager)
+        return try? broker.readData(
+            at: settingsURL,
+            intent: .astraManagedStorage(root: workspaceRoot)
+        )
     }
 
     private static func parseSettings(data: Data) -> [String: Any]? {

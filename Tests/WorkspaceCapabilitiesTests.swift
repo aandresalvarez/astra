@@ -217,9 +217,9 @@ struct WorkspaceCapabilitiesTests {
         #expect(capabilities.activeTools.map(\.name) == ["Attached Tool", "Local Tool", "Shared Tool"])
     }
 
-    @Test("package state treats enabled linked elements as enabled capability")
+    @Test("package state flags enabled linked connector with missing keychain values")
     @MainActor
-    func packageStateDetectsEnabledLinkedElements() {
+    func packageStateFlagsMissingKeychainValues() {
         let workspace = Workspace(name: "Package State", primaryPath: "/tmp/package-state")
 
         let connector = Connector(name: "Jira", serviceType: "jira")
@@ -276,7 +276,8 @@ struct WorkspaceCapabilitiesTests {
         let state = CapabilityPackageState(
             package: package,
             workspace: workspace,
-            capabilities: capabilities
+            capabilities: capabilities,
+            secretStore: MockSecretStore()
         )
 
         #expect(state.isEnabled)
@@ -285,7 +286,48 @@ struct WorkspaceCapabilitiesTests {
         #expect(state.skillIDStrings == [skill.id.uuidString])
         #expect(state.connectorIDStrings == [connector.id.uuidString])
         #expect(state.readiness.level == .needsAttention)
-        #expect(state.readiness.messages == ["Jira: missing JIRA_EMAIL, JIRA_API_TOKEN"])
+        #expect(state.readiness.messages == [
+            "Jira: missing Keychain value: JIRA_EMAIL, JIRA_API_TOKEN"
+        ])
+    }
+
+    @Test("package state treats enabled linked connector as ready when keychain values load")
+    @MainActor
+    func packageStateReadyWhenKeychainValuesLoad() {
+        let workspace = Workspace(name: "Package State Ready", primaryPath: "/tmp/package-state-ready")
+
+        let connector = Connector(name: "Jira", serviceType: "jira")
+        connector.isGlobal = true
+        connector.authMethod = "basic"
+        connector.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+
+        let skill = Skill(name: "Jira Agent", allowedTools: ["Read"])
+        skill.isGlobal = true
+        skill.connectors = [connector]
+        workspace.enabledGlobalSkillIDs = [skill.id.uuidString]
+        workspace.enabledGlobalConnectorIDs = [connector.id.uuidString]
+
+        let package = makeCapabilityPackage(id: "jira-workflow", skillName: "Jira Agent")
+        let capabilities = WorkspaceCapabilities(
+            workspace: workspace,
+            globalSkills: [skill],
+            globalConnectors: [connector]
+        )
+        let store = MockSecretStore()
+        let entityID = KeychainSecretStore.connectorEntityID(for: connector.id)
+        store.save(key: "JIRA_EMAIL", value: "user@example.com", entityID: entityID, label: nil)
+        store.save(key: "JIRA_API_TOKEN", value: "token", entityID: entityID, label: nil)
+
+        let state = CapabilityPackageState(
+            package: package,
+            workspace: workspace,
+            capabilities: capabilities,
+            secretStore: store
+        )
+
+        #expect(state.isEnabled)
+        #expect(state.readiness.level == .ready)
+        #expect(state.readiness.messages == ["Ready"])
     }
 
     @Test("package state prefers origin metadata over name matches")

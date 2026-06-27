@@ -21,6 +21,7 @@ struct CapabilityPackageValidationIssue: Equatable, Identifiable {
         case unsafeConnector
         case unknownBrowserAdapter
         case unsafeMCPServer
+        case mcpInstallSourcePolicy
         case missingPrerequisite
         case emptyPayload
         case packageUpdate
@@ -441,21 +442,15 @@ enum CapabilityPackageValidator {
     ) {
         for tool in tools {
             let name = displayName(tool.name, fallback: tool.command)
-            if let reason = LocalToolSecurityPolicy.unsafeCommandReason(tool.command) {
+            if let reason = LocalToolSecurityPolicy.unsafeInvocationReason(
+                command: tool.command,
+                arguments: tool.arguments
+            ) {
                 issues.append(issue(
                     .blocker,
                     .unsafeLocalTool,
                     "Unsafe local tool",
-                    "\(name) has an unsafe command: \(reason).",
-                    component: name
-                ))
-            }
-            if let reason = LocalToolSecurityPolicy.unsafeArgumentsReason(tool.arguments) {
-                issues.append(issue(
-                    .blocker,
-                    .unsafeLocalTool,
-                    "Unsafe local tool arguments",
-                    "\(name) has unsafe default arguments: \(reason).",
+                    "\(name) has an unsafe command or default arguments: \(reason).",
                     component: name
                 ))
             }
@@ -536,7 +531,46 @@ enum CapabilityPackageValidator {
                     component: name
                 ))
             }
+            validateMCPInstallSource(server, issues: &issues)
         }
+    }
+
+    private static func validateMCPInstallSource(
+        _ server: PluginMCPServer,
+        issues: inout [CapabilityPackageValidationIssue]
+    ) {
+        guard server.installSource != nil else { return }
+        let name = displayName(server.displayName, fallback: server.id)
+        let intent = MCPInstallIntent(
+            rawInput: server.installSource?.identifier ?? server.id,
+            kind: server.transport == .stdio ? .stdioCommand : .remoteURL,
+            serverID: server.id,
+            displayName: server.displayName,
+            transport: server.transport,
+            command: server.command,
+            arguments: server.arguments,
+            url: server.url,
+            installSource: server.installSource
+        )
+        let decision = MCPInstallPolicy.decision(for: intent)
+        issues.append(contentsOf: decision.blockers.map { message in
+            issue(
+                .blocker,
+                .mcpInstallSourcePolicy,
+                "MCP install source blocked",
+                "\(name): \(message)",
+                component: name
+            )
+        })
+        issues.append(contentsOf: decision.warnings.map { message in
+            issue(
+                .warning,
+                .mcpInstallSourcePolicy,
+                "MCP install source needs review",
+                "\(name): \(message)",
+                component: name
+            )
+        })
     }
 
     private static func validatePrerequisites(
@@ -546,22 +580,15 @@ enum CapabilityPackageValidator {
         issues: inout [CapabilityPackageValidationIssue]
     ) {
         for prerequisite in prerequisites {
-            if let reason = LocalToolSecurityPolicy.unsafeCommandReason(prerequisite.binary) {
+            if let reason = LocalToolSecurityPolicy.unsafeInvocationReason(
+                command: prerequisite.binary,
+                arguments: prerequisite.livenessArgs.joined(separator: " ")
+            ) {
                 issues.append(issue(
                     .blocker,
                     .unsafeLocalTool,
                     "Unsafe prerequisite",
-                    "\(prerequisite.displayName) declares an unsafe binary name: \(reason).",
-                    component: prerequisite.displayName
-                ))
-                continue
-            }
-            if let reason = LocalToolSecurityPolicy.unsafeArgumentsReason(prerequisite.livenessArgs.joined(separator: " ")) {
-                issues.append(issue(
-                    .blocker,
-                    .unsafeLocalTool,
-                    "Unsafe prerequisite arguments",
-                    "\(prerequisite.displayName) declares unsafe liveness arguments: \(reason).",
+                    "\(prerequisite.displayName) declares an unsafe binary or liveness arguments: \(reason).",
                     component: prerequisite.displayName
                 ))
                 continue
@@ -583,10 +610,10 @@ enum CapabilityPackageValidator {
         switch server.transport {
         case .stdio:
             let command = (server.command ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            if let reason = LocalToolSecurityPolicy.unsafeCommandReason(command) {
-                return reason
-            }
-            if let reason = LocalToolSecurityPolicy.unsafeArgumentsReason(server.arguments.joined(separator: " ")) {
+            if let reason = LocalToolSecurityPolicy.unsafeInvocationReason(
+                command: command,
+                arguments: server.arguments.joined(separator: " ")
+            ) {
                 return reason
             }
         case .http, .sse:

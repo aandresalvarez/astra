@@ -20,7 +20,11 @@ struct AgentRuntimeBudgetSnapshot: Equatable, Sendable {
     }
 
     var hasReportedTokensAboveBudget: Bool {
-        effectiveTokenBudget != Int.max && tokensUsed > effectiveTokenBudget
+        hasEnabledBudget && tokensUsed > effectiveTokenBudget
+    }
+
+    var hasEnabledBudget: Bool {
+        effectiveTokenBudget != Int.max
     }
 }
 
@@ -38,19 +42,37 @@ enum AgentRuntimeBudgetPolicy {
         let tokenBudget = AgentRuntimeProcessRunner.effectiveTokenBudget(for: task)
         guard tokenBudget != Int.max else { return true }
 
-        let estimatedInputTokens = AgentRuntimeProcessRunner.estimatedLaunchInputTokens(prompt: prompt, runtime: runtime)
+        let promptTokens = AgentProcessMonitor.estimatedTokenCount(for: prompt)
+        let launchOverhead = AgentRuntimeProcessRunner.launchOverheadTokens(for: runtime)
+        let estimatedInputTokens = promptTokens + launchOverhead
         guard estimatedInputTokens > tokenBudget else { return true }
+
+        // The launch overhead models the provider's fixed billed runtime context
+        // (e.g. Claude Code's system prompt + tool schemas), not task work the user
+        // can trim. When the prompt itself fits the budget and only the fixed floor
+        // pushes the estimate over, an advisory Warning-mode notice would fire on
+        // essentially every task with no actionable remedy — so we suppress the
+        // user-facing warning and keep only a debug breadcrumb. Hard-stop still
+        // blocks below: a budget under the provider's fixed floor cannot complete.
+        let isLaunchOverheadFloor = tokenBudget <= launchOverhead && promptTokens <= tokenBudget
 
         let fields = [
             "phase": phase,
             "reason": "prompt_budget_estimate_exceeded",
             "estimated_input_tokens": String(estimatedInputTokens),
-            "launch_overhead_tokens": String(AgentRuntimeProcessRunner.launchOverheadTokens(for: runtime)),
+            "prompt_estimate_tokens": String(promptTokens),
+            "launch_overhead_tokens": String(launchOverhead),
+            "launch_overhead_floor": String(isLaunchOverheadFloor),
             "runtime": runtime.rawValue,
             "token_budget": String(tokenBudget),
             "configured_task_budget": String(task.tokenBudget),
             "enforcement": budgetEnforcementMode.rawValue
         ]
+
+        if budgetEnforcementMode == .warning && isLaunchOverheadFloor {
+            AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: task.id, fields: fields, level: .debug)
+            return true
+        }
 
         if budgetEnforcementMode == .warning {
             let message = "Launch estimate exceeds the task budget before launch (\(estimatedInputTokens)/\(tokenBudget)). ASTRA started the provider because Budget Enforcement is set to Warning Only."
@@ -87,7 +109,8 @@ enum AgentRuntimeBudgetPolicy {
         budget: AgentRuntimeBudgetSnapshot,
         budgetEnforcementMode: BudgetEnforcementMode
     ) -> Bool {
-        result.budgetExceeded ||
+        guard budget.hasEnabledBudget else { return false }
+        return result.budgetExceeded ||
             (budgetEnforcementMode == .hardStop && hasReportedTokensAboveBudget(budget: budget))
     }
 
@@ -113,6 +136,8 @@ enum AgentRuntimeBudgetPolicy {
         phase: String,
         budgetEnforcementMode: BudgetEnforcementMode
     ) {
+        guard AgentRuntimeBudgetSnapshot(task: task).hasEnabledBudget else { return }
+
         let reportedBudgetWarning = budgetEnforcementMode == .warning && hasReportedTokensAboveBudget(task: task)
         guard result.budgetWarning || result.finalReportedBudgetExceededAfterCompletion || reportedBudgetWarning else {
             return

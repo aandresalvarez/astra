@@ -23,7 +23,7 @@ enum SessionHistoryManager {
         try? FileManager.default.createDirectory(atPath: taskFolder, withIntermediateDirectories: true)
 
         let historyPath = (taskFolder as NSString).appendingPathComponent("session_history.md")
-        let turnNumber = nextTurnNumber(historyPath: historyPath)
+        let turnNumber = nextTurnNumber(historyPath: historyPath, taskFolder: taskFolder)
         let timestamp = Self.formatTimestamp(Date())
         let redactedMessage = redactSensitiveContent(turnMessage, redactions: redactions)
         let redactedOutput = redactSensitiveContent(output, redactions: redactions)
@@ -89,9 +89,15 @@ enum SessionHistoryManager {
 
     // MARK: - Private
 
-    private static func nextTurnNumber(historyPath: String) -> Int {
-        guard FileManager.default.fileExists(atPath: historyPath),
-              let content = try? String(contentsOfFile: historyPath, encoding: .utf8) else {
+    private static func nextTurnNumber(historyPath: String, taskFolder: String) -> Int {
+        let hostFileAccess = HostFileAccessBroker()
+        let accessIntent = HostFileAccessIntent.astraManagedStorage(root: URL(fileURLWithPath: taskFolder, isDirectory: true))
+        guard hostFileAccess.fileExists(at: URL(fileURLWithPath: historyPath), intent: accessIntent),
+              let content = try? hostFileAccess.readString(
+                at: URL(fileURLWithPath: historyPath),
+                encoding: .utf8,
+                intent: accessIntent
+              ) else {
             return 1
         }
         // Count existing "## Turn N" headers
@@ -102,15 +108,14 @@ enum SessionHistoryManager {
     }
 
     private static func summarizeOutput(_ output: String, maxLength: Int) -> String {
-        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "" }
+        let summary = TaskRunAnswerPresentationPolicy.summaryText(rawText: output, maxLength: maxLength)
+        guard !summary.isEmpty else { return "" }
 
-        if trimmed.count <= maxLength {
-            return trimmed
+        if summary.count <= maxLength {
+            return summary
         }
 
-        // Try to break at a sentence or paragraph boundary
-        let prefix = String(trimmed.prefix(maxLength))
+        let prefix = String(summary.prefix(maxLength))
         if let lastPeriod = prefix.lastIndex(of: ".") {
             return String(prefix[prefix.startIndex...lastPeriod]) + " *(see full output)*"
         }

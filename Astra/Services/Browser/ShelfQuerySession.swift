@@ -166,7 +166,11 @@ final class ShelfQuerySession: ObservableObject {
     }
 
     func loadFile(_ url: URL) {
-        let sql = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        let sql = (try? HostFileAccessBroker().readString(
+            at: url,
+            encoding: .utf8,
+            intent: .explicitUserSelection
+        )) ?? ""
         let document = ShelfQueryDocument(
             id: url.path,
             title: url.lastPathComponent,

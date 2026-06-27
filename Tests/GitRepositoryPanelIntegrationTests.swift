@@ -402,6 +402,82 @@ struct GitRepositoryPanelIntegrationTests {
     }
 
     @MainActor
+    @Test("Scanning a repository from an added path makes it the workspace code default")
+    func scanningAdditionalRepositoryPersistsWorkspaceCodeDefault() async throws {
+        let primary = try makeTempDir("primary-scan-default")
+        let repo = try makeTempDir("extra-scan-default")
+        defer {
+            try? FileManager.default.removeItem(atPath: primary)
+            try? FileManager.default.removeItem(atPath: repo)
+        }
+
+        let fakeGit = FakeGitRepositoryOperations()
+        fakeGit.repositories = [GitRepositoryInfo(name: "Extra", path: repo)]
+        let workspace = Workspace(name: "Repos", primaryPath: primary, additionalPaths: [repo])
+        let viewModel = WorkspaceGitViewModel(git: fakeGit)
+        viewModel.setWorkspaceForTesting(workspace)
+
+        await viewModel.scanRepositories()
+
+        #expect(viewModel.selectedRepository?.path == WorkspacePathPresentation.standardizedPath(repo))
+        #expect(workspace.activeWorkingPath == WorkspacePathPresentation.standardizedPath(repo))
+
+        let task = AgentTask(title: "Status", goal: "Run git status", workspace: workspace)
+        #expect(task.executionRootPath == WorkspacePathPresentation.standardizedPath(repo))
+        #expect(TaskWorkspaceAccess(task: task).codeWorkingDirectory == WorkspacePathPresentation.standardizedPath(repo))
+        #expect(TaskWorkspaceAccess(task: task).effectiveWorkspacePath == primary)
+    }
+
+    @MainActor
+    @Test("Scanning with a draft task selected does not pin the draft")
+    func scanningAdditionalRepositoryDoesNotPinDraftTask() async throws {
+        let primary = try makeTempDir("primary-scan-draft")
+        let repo = try makeTempDir("extra-scan-draft")
+        defer {
+            try? FileManager.default.removeItem(atPath: primary)
+            try? FileManager.default.removeItem(atPath: repo)
+        }
+
+        let fakeGit = FakeGitRepositoryOperations()
+        fakeGit.repositories = [GitRepositoryInfo(name: "Extra", path: repo)]
+        let workspace = Workspace(name: "Repos", primaryPath: primary, additionalPaths: [repo])
+        let task = AgentTask(title: "Draft", goal: "Work", workspace: workspace)
+        let viewModel = WorkspaceGitViewModel(git: fakeGit)
+        viewModel.setWorkspaceForTesting(workspace, selectedTask: task)
+
+        await viewModel.scanRepositories()
+
+        #expect(viewModel.selectedRepository?.path == WorkspacePathPresentation.standardizedPath(repo))
+        #expect(task.executionRootPath == nil)
+        #expect(workspace.activeWorkingPath == nil)
+    }
+
+    @MainActor
+    @Test("Scanning an unchanged workspace repository default does not touch updatedAt")
+    func scanningUnchangedRepositoryDefaultDoesNotTouchWorkspace() async throws {
+        let primary = try makeTempDir("primary-scan-unchanged")
+        let repo = try makeTempDir("extra-scan-unchanged")
+        defer {
+            try? FileManager.default.removeItem(atPath: primary)
+            try? FileManager.default.removeItem(atPath: repo)
+        }
+
+        let fakeGit = FakeGitRepositoryOperations()
+        fakeGit.repositories = [GitRepositoryInfo(name: "Extra", path: repo)]
+        let workspace = Workspace(name: "Repos", primaryPath: primary, additionalPaths: [repo])
+        workspace.activeWorkingPath = WorkspacePathPresentation.standardizedPath(repo)
+        let expectedUpdatedAt = Date(timeIntervalSince1970: 100)
+        workspace.updatedAt = expectedUpdatedAt
+        let viewModel = WorkspaceGitViewModel(git: fakeGit)
+        viewModel.setWorkspaceForTesting(workspace)
+
+        await viewModel.scanRepositories()
+
+        #expect(workspace.activeWorkingPath == WorkspacePathPresentation.standardizedPath(repo))
+        #expect(workspace.updatedAt == expectedUpdatedAt)
+    }
+
+    @MainActor
     @Test("Selecting a repository for a draft task pins the draft without changing workspace default")
     func selectingRepositoryPinsDraftTask() throws {
         let primary = try makeTempDir("primary-draft")
@@ -443,6 +519,33 @@ struct GitRepositoryPanelIntegrationTests {
 
         #expect(task.executionRootPath == repo)
         #expect(viewModel.errorMessage?.contains("pinned") == true)
+    }
+
+    @MainActor
+    @Test("Repository scope label reflects whether a historical task is actually pinned")
+    func repositoryScopeLabelReflectsDurablePin() throws {
+        let primary = try makeTempDir("primary-label")
+        let repo = try makeTempDir("extra-label")
+        defer {
+            try? FileManager.default.removeItem(atPath: primary)
+            try? FileManager.default.removeItem(atPath: repo)
+        }
+
+        let workspace = Workspace(name: "Repos", primaryPath: primary, additionalPaths: [repo])
+        let task = AgentTask(title: "Done", goal: "Work", workspace: workspace)
+        task.status = .completed
+
+        let viewModel = WorkspaceGitViewModel()
+        viewModel.setWorkspaceForTesting(workspace, selectedTask: task)
+        #expect(viewModel.activeSelectionScopeLabel == "Workspace default")
+
+        task.executionRootPath = repo
+        viewModel.setWorkspaceForTesting(workspace, selectedTask: task)
+        #expect(viewModel.activeSelectionScopeLabel == "Pinned task")
+
+        task.executionRootPath = "/definitely/missing-\(UUID().uuidString)"
+        viewModel.setWorkspaceForTesting(workspace, selectedTask: task)
+        #expect(viewModel.activeSelectionScopeLabel == "Workspace default")
     }
 
     @MainActor

@@ -437,7 +437,7 @@ enum LogDiagnosticsService {
             "issueCount": report.issueCount,
             "noticeCount": report.notices.count,
             "appChannel": AppChannel.current.displayName,
-            "appBuild": AppBuildInfo.current.installedBuildSummary,
+            "appBuild": AppBuildInfo.current.provenanceSummary,
             "sensitiveMode": AppLogger.isSensitiveMode,
             "logDirectory": CrashDiagnosticsService.userFacingPath(logDirectory),
             "artifactKinds": [
@@ -446,7 +446,9 @@ enum LogDiagnosticsService {
                 "analyzed_log_entries_jsonl",
                 "app_and_task_logs",
                 "browser_flight_logs_when_present",
-                "macos_crash_reports_when_present"
+                "macos_crash_reports_when_present",
+                "macos_crash_hang_reports_when_present",
+                "macos_diagnostic_reports_when_present"
             ],
             "sourceLogFiles": logFiles.map { file in
                 [
@@ -460,6 +462,7 @@ enum LogDiagnosticsService {
                 [
                     "name": report.fileName,
                     "appName": report.appName,
+                    "kind": report.kind.rawValue,
                     "path": report.displayPath,
                     "modifiedAt": archiveISOFormatter.string(from: report.modifiedAt),
                     "sizeBytes": report.sizeBytes
@@ -488,7 +491,7 @@ enum LogDiagnosticsService {
         - manifest.json: machine-readable index of included diagnostics artifacts.
         - logs/analyzed-log-entries.jsonl: sanitized log entries used by the report.
         - logs/*.log and logs/browser-flight-*.jsonl: relevant app, task, breadcrumb, and browser debug artifacts from the selected time window.
-        - crashes/*.ips or *.crash: matching macOS crash reports from the selected time window, when present.
+        - crashes/*.ips, *.crash, *.hang, or *.spin: matching macOS diagnostic reports from the selected time window, when present.
 
         Browser flight logs may include compact page evidence and screenshot thumbnails only when Browser Debug Capture was enabled.
         """
@@ -518,10 +521,12 @@ enum LogDiagnosticsService {
         interval: DateInterval?,
         fileManager: FileManager
     ) -> [URL] {
-        guard let files = try? fileManager.contentsOfDirectory(
+        let broker = HostFileAccessBroker(fileManager: fileManager)
+        guard let files = try? broker.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey, .isRegularFileKey],
-            options: [.skipsHiddenFiles]
+            options: [.skipsHiddenFiles],
+            intent: .astraManagedStorage(root: directory)
         ) else { return [] }
 
         return Array(files
@@ -695,6 +700,9 @@ enum LogDiagnosticsService {
                 continue
             }
             if classifyNotice(entry, index: index, entries: entries) != nil {
+                continue
+            }
+            if isValidationBehaviorFailureCoveredByAssertionOutcome(entry, index: index, entries: entries) {
                 continue
             }
             guard let classification = classifyConnectorCredentialRegression(
@@ -911,6 +919,80 @@ enum LogDiagnosticsService {
             let candidateLower = candidate.message.lowercased()
             return candidateLower.contains("validation.passed")
                 || candidateLower.contains(AuditEvent.capabilityEnabled.rawValue)
+        }
+    }
+
+    private static func isOptionalValidationBehaviorFailure(
+        _ entry: LogEntry,
+        index: Int,
+        entries: [LogEntry]
+    ) -> Bool {
+        guard entry.message.lowercased().contains(AuditEvent.validationBehaviorFailed.rawValue) else {
+            return false
+        }
+        return matchingValidationAssertionOutcome(
+            after: index,
+            entries: entries,
+            entry: entry,
+            event: AuditEvent.validationAssertionSkipped.rawValue,
+            required: "false",
+            result: "skipped"
+        )
+    }
+
+    private static func isValidationBehaviorFailureCoveredByAssertionOutcome(
+        _ entry: LogEntry,
+        index: Int,
+        entries: [LogEntry]
+    ) -> Bool {
+        guard entry.message.lowercased().contains(AuditEvent.validationBehaviorFailed.rawValue) else {
+            return false
+        }
+        return matchingValidationAssertionOutcome(
+            after: index,
+            entries: entries,
+            entry: entry,
+            event: AuditEvent.validationAssertionFailed.rawValue
+        ) || matchingValidationAssertionOutcome(
+            after: index,
+            entries: entries,
+            entry: entry,
+            event: AuditEvent.validationAssertionSkipped.rawValue,
+            required: "false",
+            result: "skipped"
+        )
+    }
+
+    private static func matchingValidationAssertionOutcome(
+        after index: Int,
+        entries: [LogEntry],
+        entry: LogEntry,
+        event: String,
+        required: String? = nil,
+        result: String? = nil
+    ) -> Bool {
+        guard index + 1 < entries.endIndex,
+              let assertionID = field("assertion_id", in: entry.message),
+              !assertionID.isEmpty else {
+            return false
+        }
+        let planID = field("plan_id", in: entry.message)
+        return entries[(index + 1)..<entries.endIndex].contains { candidate in
+            guard candidate.timestamp >= entry.timestamp,
+                  candidate.message.lowercased().contains(event),
+                  field("assertion_id", in: candidate.message) == assertionID else {
+                return false
+            }
+            if let planID, !planID.isEmpty, field("plan_id", in: candidate.message) != planID {
+                return false
+            }
+            if let required, field("required", in: candidate.message)?.lowercased() != required {
+                return false
+            }
+            if let result, field("result", in: candidate.message)?.lowercased() != result {
+                return false
+            }
+            return true
         }
     }
 
@@ -1131,6 +1213,16 @@ enum LogDiagnosticsService {
         let message = entry.message
         let lower = message.lowercased()
 
+        if isOptionalValidationBehaviorFailure(entry, index: index, entries: entries) {
+            let assertionID = field("assertion_id", in: message) ?? "browser_behavior"
+            return (
+                key: "validation.browser_behavior.optional_skipped.\(assertionID)",
+                title: "Optional browser behavior validation was skipped",
+                signal: "validation.behavior.failed followed_by=validation.assertion.skipped required=false",
+                analysis: "A browser behavior evidence check did not match the optional assertion, then ASTRA marked that assertion skipped and allowed the required validation contract to continue."
+            )
+        }
+
         if isResolvedCapabilityValidationFailure(entry, index: index, entries: entries) {
             let package = field("package_name", in: message) ?? field("package_id", in: message) ?? "capability"
             return (
@@ -1229,6 +1321,15 @@ enum LogDiagnosticsService {
                 title: "Task capability context was resolved",
                 signal: AuditEvent.capabilityResolved.rawValue,
                 analysis: "The worker resolved the task's skills, connectors, and local tools before launching the runtime. This is useful when verifying that enabled workspace capabilities reached the agent."
+            )
+        }
+
+        if lower.contains(AuditEvent.remoteWorkspacePreflight.rawValue) {
+            return (
+                key: "remote_workspace.preflight.\(field("workspace_id", in: message) ?? "unknown")",
+                title: "Remote workspace preflight was recorded",
+                signal: AuditEvent.remoteWorkspacePreflight.rawValue,
+                analysis: "ASTRA detected SSH workspace metadata before launching the runtime and recorded the app build plus SSH alias count. Use this to verify that the run used the SSH-aware launch path before investigating VM state, gcloud auth, or provider sandbox errors."
             )
         }
 
@@ -1525,6 +1626,27 @@ enum LogDiagnosticsService {
             )
         }
 
+        if lower.contains(AuditEvent.validationAssertionFailed.rawValue),
+           field("assertion_method", in: message) == "browser_behavior" {
+            return (
+                key: "validation.browser_behavior.failed.\(field("assertion_id", in: message) ?? "unknown")",
+                title: "Browser behavior validation failed",
+                severity: .warning,
+                signal: "validation.assertion.failed assertion_method=browser_behavior",
+                analysis: "A required browser behavior validation assertion failed. Inspect the evidence path and failure_reason fields, then fix the artifact or the expected browser-visible behavior."
+            )
+        }
+
+        if lower.contains(AuditEvent.validationBehaviorFailed.rawValue) {
+            return (
+                key: "validation.browser_behavior.failed.\(field("assertion_id", in: message) ?? "unknown")",
+                title: "Browser behavior validation failed",
+                severity: .warning,
+                signal: AuditEvent.validationBehaviorFailed.rawValue,
+                analysis: "A browser behavior evidence check failed and no matching optional skipped assertion was found in the analyzed window. Inspect the related validation assertion and contract events."
+            )
+        }
+
         if lower.contains("query shelf") &&
             lower.contains("bigquery") &&
             (lower.contains("bq is not installed") ||
@@ -1754,7 +1876,7 @@ enum LogDiagnosticsService {
             "",
             "Generated: \(displayTimestamp(generatedAt))",
             "App channel: \(AppChannel.current.displayName)",
-            "App build: \(AppBuildInfo.current.installedBuildSummary)",
+            "App build: \(AppBuildInfo.current.provenanceSummary)",
             "Log directory: \(LogSanitizer.sanitize(AppLogger.mainLogFile.deletingLastPathComponent().path))",
             "Breadcrumb file: \(LogSanitizer.sanitize(AppLogger.breadcrumbLogFile.path))",
             "Scope: \(scope.label)",
@@ -1777,7 +1899,7 @@ enum LogDiagnosticsService {
             "- Warnings: \(warnings)",
             "- Issue groups: \(issues.count + omittedIssueCount)",
             "- Resolved / non-actionable events: \(notices.count)",
-            "- Crash reports found: \(crashReports.count)",
+            "- Diagnostic reports found: \(crashReports.count)",
             "- Trace groups: \(traceSummaries.count)",
             "- Tasks with issues: \(issueTaskIDs.isEmpty ? "none" : issueTaskIDs.joined(separator: ", "))",
             "- Other tasks seen: \(otherTaskIDs.isEmpty ? "none" : otherTaskIDs.joined(separator: ", "))",
@@ -1887,31 +2009,31 @@ enum LogDiagnosticsService {
     private static func appendCrashReports(_ crashReports: [CrashReportSummary], to lines: inout [String]) {
         lines += [
             "",
-            "## Crash Reports",
+            "## Diagnostic Reports",
             ""
         ]
 
         guard !crashReports.isEmpty else {
             lines += [
-                "No recent ASTRA crash reports were found in `\(CrashDiagnosticsService.userFacingPath(CrashDiagnosticsService.defaultDiagnosticReportsDirectory))`."
+                "No recent ASTRA diagnostic reports were found in `\(CrashDiagnosticsService.userFacingPath(CrashDiagnosticsService.defaultDiagnosticReportsDirectory))`."
             ]
             return
         }
 
         lines += [
-            "Recent macOS crash reports matching ASTRA app names:",
+            "Recent macOS diagnostic reports matching ASTRA app names:",
             ""
         ]
 
         for report in crashReports {
             lines.append(
-                "- `\(report.fileName)` | app: \(report.appName) | modified: \(displayTimestamp(report.modifiedAt)) | size: \(byteCount(report.sizeBytes)) | path: `\(report.displayPath)`"
+                "- \(report.kind.displayName) report: `\(report.fileName)` | app: \(report.appName) | modified: \(displayTimestamp(report.modifiedAt)) | size: \(byteCount(report.sizeBytes)) | path: `\(report.displayPath)`"
             )
         }
 
         lines += [
             "",
-            "Open `$HOME/Library/Logs/DiagnosticReports` or use the Crashes button in the log viewer to reveal these files in Finder."
+            "Open `$HOME/Library/Logs/DiagnosticReports` or use the Diagnostic Reports button in the log viewer to reveal these files in Finder."
         ]
     }
 
@@ -2132,8 +2254,20 @@ enum LogDiagnosticsService {
             + intField("workspace_enabled_global_tools_count", in: message)
     }
 
+    private static func isIntentionalCapabilityPrune(_ message: String) -> Bool {
+        if field("scope_pruned", in: message)?.lowercased() == "true" {
+            return true
+        }
+
+        let excludedNames = field("scope_excluded_skill_names", in: message)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return excludedNames.map { !$0.isEmpty && $0 != "none" } ?? false
+    }
+
     private static func isCapabilityChatContextGap(_ message: String) -> Bool {
         guard enabledCapabilityResourceCount(in: message) > 0 else { return false }
+        guard !isIntentionalCapabilityPrune(message) else { return false }
         let source = field("source", in: message)?.lowercased() ?? ""
         guard source.contains("chat")
                 || source.contains("generation")
@@ -2154,6 +2288,7 @@ enum LogDiagnosticsService {
 
     private static func isCapabilityResolutionGap(_ message: String) -> Bool {
         guard enabledCapabilityResourceCount(in: message) > 0 else { return false }
+        guard !isIntentionalCapabilityPrune(message) else { return false }
         return intField("resolved_skill_count", in: message) == 0
             && intField("connector_count", in: message) == 0
             && intField("local_tool_count", in: message) == 0
@@ -2267,9 +2402,10 @@ enum LogDiagnosticsService {
     }
 
     private static func diagnosticLogFiles(in directory: URL) -> [URL] {
-        guard let files = try? FileManager.default.contentsOfDirectory(
+        guard let files = try? HostFileAccessBroker().contentsOfDirectory(
             at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey]
+            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+            intent: .astraManagedStorage(root: directory)
         ) else { return [] }
 
         let mainLogs = files
@@ -2293,7 +2429,11 @@ enum LogDiagnosticsService {
     }
 
     private static func tailLines(from url: URL, maxLines: Int) -> [String] {
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        guard let content = try? HostFileAccessBroker().readString(
+            at: url,
+            encoding: .utf8,
+            intent: .astraManagedStorage(root: url.deletingLastPathComponent())
+        ) else { return [] }
         let lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         guard lines.count > maxLines else { return lines }
         return Array(lines.suffix(maxLines))

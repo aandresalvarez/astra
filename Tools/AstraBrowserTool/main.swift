@@ -6,7 +6,12 @@ import ASTRACore
 struct AstraBrowserTool {
     static func main() async {
         do {
-            let result = try await run(arguments: Array(CommandLine.arguments.dropFirst()))
+            let arguments = Array(CommandLine.arguments.dropFirst())
+            if arguments.first == "mcp" {
+                await runMCPServer()
+                return
+            }
+            let result = try await run(arguments: arguments)
             print(result)
         } catch {
             fputs(errorJSON(error.localizedDescription) + "\n", stderr)
@@ -14,7 +19,7 @@ struct AstraBrowserTool {
         }
     }
 
-    private static func run(arguments: [String]) async throws -> String {
+    static func run(arguments: [String]) async throws -> String {
         let sanitizedArguments = try BrowserToolCommandParser.sanitizedArguments(arguments)
         guard let command = sanitizedArguments.first else {
             return usageJSON()
@@ -32,7 +37,10 @@ struct AstraBrowserTool {
             return try await request(endpoint: endpoint, method: "GET", path: "/actions")
         case "trace":
             let endpoint = try browserEndpoint()
-            return try await request(endpoint: endpoint, method: "GET", path: "/trace")
+            let items = args.contains("--full")
+                ? [URLQueryItem(name: "full", value: "true")]
+                : []
+            return try await request(endpoint: endpoint, method: "GET", path: "/trace", queryItems: items)
         case "benchmark":
             let endpoint = try browserEndpoint()
             var items: [URLQueryItem] = []
@@ -76,7 +84,7 @@ struct AstraBrowserTool {
                 "analysisID": analysisID,
                 "controlID": controlID,
                 "action": action,
-                "allowDangerous": args.contains("--dangerous")
+                "allowDangerous": false
             ])
         case "snapshot":
             let endpoint = try browserEndpoint()
@@ -131,7 +139,7 @@ struct AstraBrowserTool {
             return try await request(endpoint: endpoint, method: "POST", path: "/open", object: [
                 "analysisID": analysisID,
                 "controlID": controlID,
-                "allowDangerous": args.contains("--dangerous")
+                "allowDangerous": false
             ])
         case "double-click", "doubleclick", "double_click":
             let endpoint = try browserEndpoint()
@@ -148,7 +156,7 @@ struct AstraBrowserTool {
             guard (analysisID != nil && controlID != nil) || selector != nil || label != nil || role != nil || placeholder != nil || testID != nil || (x != nil && y != nil) else {
                 throw ToolError("double-click requires --analysis/--control, --selector, --label, --role, --placeholder, --testid, or --x/--y")
             }
-            var object: [String: Any] = ["allowDangerous": args.contains("--dangerous")]
+            var object: [String: Any] = ["allowDangerous": false]
             if let analysisID { object["analysisID"] = analysisID }
             if let controlID { object["controlID"] = controlID }
             if let selector { object["selector"] = selector }
@@ -172,7 +180,7 @@ struct AstraBrowserTool {
             let testID = args.value(after: "--testid") ?? args.value(after: "--test-id")
             let x = args.value(after: "--x").flatMap(Double.init)
             let y = args.value(after: "--y").flatMap(Double.init)
-            var object: [String: Any] = ["allowDangerous": args.contains("--dangerous")]
+            var object: [String: Any] = ["allowDangerous": false]
             if let analysisID { object["analysisID"] = analysisID }
             if let controlID { object["controlID"] = controlID }
             if let selector { object["selector"] = selector }
@@ -202,7 +210,7 @@ struct AstraBrowserTool {
             var object: [String: Any] = [
                 "text": text,
                 "clear": !args.contains("--append"),
-                "allowDangerous": args.contains("--dangerous")
+                "allowDangerous": false
             ]
             if let analysisID { object["analysisID"] = analysisID }
             if let controlID { object["controlID"] = controlID }
@@ -229,7 +237,7 @@ struct AstraBrowserTool {
             }
             var object: [String: Any] = [
                 "text": text,
-                "allowDangerous": args.contains("--dangerous")
+                "allowDangerous": false
             ]
             if let analysisID { object["analysisID"] = analysisID }
             if let controlID { object["controlID"] = controlID }
@@ -251,7 +259,7 @@ struct AstraBrowserTool {
                 "find": find,
                 "replacement": replacement,
                 "all": !args.contains("--first"),
-                "allowDangerous": args.contains("--dangerous")
+                "allowDangerous": false
             ]
             if let analysisID { object["analysisID"] = analysisID }
             if let controlID { object["controlID"] = controlID }
@@ -282,7 +290,7 @@ struct AstraBrowserTool {
                 throw ToolError("click-control requires --label or --analysis/--control")
             }
             var object: [String: Any] = [
-                "allowDangerous": args.contains("--dangerous")
+                "allowDangerous": false
             ]
             if let label { object["label"] = label }
             if let analysisID { object["analysisID"] = analysisID }
@@ -422,9 +430,6 @@ struct AstraBrowserTool {
             if let clickRole = args.value(after: "--click-role") {
                 object["clickRole"] = clickRole
             }
-            if args.contains("--dangerous") {
-                object["allowDangerous"] = true
-            }
             if args.contains("--wait-saved") {
                 object["waitSaved"] = true
             }
@@ -497,6 +502,15 @@ struct AstraBrowserTool {
         }
     }
 
+    private static func runMCPServer() async {
+        let server = BrowserMCPServer(executor: BrowserToolMCPExecutor())
+        while let line = readLine() {
+            if let response = await server.handleLine(line) {
+                FileHandle.standardOutput.write(Data((response + "\n").utf8))
+            }
+        }
+    }
+
     private static func browserEndpoint() throws -> URL {
         guard let raw = ProcessInfo.processInfo.environment["ASTRA_BROWSER_URL"]?.trimmingCharacters(in: .whitespacesAndNewlines),
               !raw.isEmpty,
@@ -544,6 +558,10 @@ struct AstraBrowserTool {
            !debugCapture.isEmpty {
             request.setValue(debugCapture, forHTTPHeaderField: "X-ASTRA-Browser-Debug-Capture")
         }
+        if let requiredEngine = ProcessInfo.processInfo.environment["ASTRA_BROWSER_REQUIRED_ENGINE"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !requiredEngine.isEmpty {
+            request.setValue(requiredEngine, forHTTPHeaderField: "X-ASTRA-Browser-Required-Engine")
+        }
         if let object {
             request.httpBody = try JSONSerialization.data(withJSONObject: object)
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -568,7 +586,7 @@ struct AstraBrowserTool {
                 "astra-browser health",
                 "astra-browser analyze [--v2|--version v1|v2|--analysis-version v1|v2] [--query text] [--full] [--debug] [--limit n]  # --v2 overrides version flags",
                 "ASTRA_BROWSER_DEBUG_CAPTURE=0 astra-browser click --role button --name Save  # suppress rich failure evidence for this command",
-                "astra-browser trace",
+                "astra-browser trace [--full]",
                 "astra-browser benchmark [--suite browser-v2-smoke] [--definition-only]",
                 "astra-browser preflight --analysis ana_... --control ctl_... --action click",
                 "astra-browser read-page [--format text|markdown|json] [--limit n] [--chunk-size chars]",
@@ -626,5 +644,11 @@ struct AstraBrowserTool {
         var errorDescription: String? {
             message
         }
+    }
+}
+
+private final class BrowserToolMCPExecutor: BrowserMCPCommandExecutor {
+    func runBrowserCommand(arguments: [String]) async throws -> String {
+        try await AstraBrowserTool.run(arguments: arguments)
     }
 }
