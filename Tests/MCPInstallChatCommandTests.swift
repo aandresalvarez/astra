@@ -26,6 +26,27 @@ struct MCPInstallChatCommandTests {
         #expect(MCPInstallChatCommand.installRequest(input: "/mcp \(json)") == nil)
     }
 
+    @Test("malformed pasted install target describes every supported format")
+    func malformedPastedInstallTargetDescribesEverySupportedFormat() {
+        let result = MCPInstallChatCommand.installResult(input: "npx @acme/mcp; rm -rf /")
+
+        guard case .failure(let failure) = result else {
+            Issue.record("Expected malformed pasted MCP target to produce a clear failure")
+            return
+        }
+        #expect(failure.message.contains("Supported MCP install target formats"))
+        #expect(failure.message.contains("npx"))
+        #expect(failure.message.contains("uvx"))
+        #expect(failure.message.contains("docker run"))
+        #expect(failure.message.contains("remote MCP URL"))
+        #expect(failure.message.contains("mcpServers JSON"))
+        guard let supportedFormats = failure.message.range(of: "Supported MCP install target formats"),
+              let jsonRule = failure.message.range(of: "mcpServers JSON") else {
+            return
+        }
+        #expect(supportedFormats.lowerBound < jsonRule.lowerBound)
+    }
+
     @Test("turn outcome carries parse failure without requiring workspace")
     func turnOutcomeCarriesParseFailureWithoutRequiringWorkspace() throws {
         let json = #"{ "mcpServers": { "broken": { "args": ["-y", "@acme/missing-command"] } } }"#

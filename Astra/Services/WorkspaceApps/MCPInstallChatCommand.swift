@@ -82,8 +82,9 @@ enum MCPInstallChatCommand {
 
     private static func parseFailure(explicit: Bool) -> MCPInstallChatFailure {
         let prefix = explicit ? "ASTRA could not parse that /mcp target." : "ASTRA could not parse that MCP install target."
+        let supportedFormats = "Supported MCP install target formats are npx, uvx, docker run, npm: package shorthand, remote MCP URL, or mcpServers JSON."
         return MCPInstallChatFailure(
-            message: "\(prefix) For mcpServers JSON, every declared server must include either a command or a remote URL, and ASTRA imports the full set only when all entries are valid."
+            message: "\(prefix) \(supportedFormats) For mcpServers JSON, every declared server must include either a command or a remote URL, and ASTRA imports the full set only when all entries are valid."
         )
     }
 }
