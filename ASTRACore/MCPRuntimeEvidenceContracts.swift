@@ -71,9 +71,11 @@ public struct MCPRuntimeDeliveryEvidence: Codable, Equatable, Sendable, Identifi
 public enum MCPValidationDriftKind: String, Codable, Equatable, Sendable, CaseIterable {
     case authProfileMismatch
     case deliveryEvidenceStale
+    case manifestShapeMismatch
     case missingServer
     case providerCapabilityMismatch
     case runtimeBindingMismatch
+    case runtimeCapabilityMismatch
     case scopeMismatch
     case toolSchemaMismatch
 }

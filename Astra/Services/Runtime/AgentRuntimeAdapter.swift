@@ -1278,8 +1278,14 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         )
         let mcpConfigReadablePaths = mcpConfigURL.map { [$0.deletingLastPathComponent().path] } ?? []
         let baseSandboxReadablePaths = mcpConfigReadablePaths + ClaudeCodeRuntime.authReadablePaths()
-        let mcpAllowedTools = mcpConfigURL == nil ? [] : MCPRuntimeProjection.allowedToolPermissions(servers: mcpServers)
-        let mcpDeniedTools = mcpConfigURL == nil ? [] : MCPRuntimeProjection.deniedToolPermissions(servers: mcpServers)
+        let mcpAllowedTools = mcpConfigURL == nil ? [] : MCPRuntimeProjection.allowedToolPermissions(
+            servers: mcpServers,
+            availableEnvironment: explicitMCPEnvironment
+        )
+        let mcpDeniedTools = mcpConfigURL == nil ? [] : MCPRuntimeProjection.deniedToolPermissions(
+            servers: mcpServers,
+            availableEnvironment: explicitMCPEnvironment
+        )
         let nativeDeniedTools = Array(Set(mcpDeniedTools + (usesDockerWorkspaceExecutor ? ["Bash"] : []))).sorted()
         // Live approvals use the stdio control protocol (stream-json input, so
         // the prompt travels over stdin). Resolved before the allow-list so it
