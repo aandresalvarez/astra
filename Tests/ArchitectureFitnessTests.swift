@@ -29,6 +29,7 @@ struct ArchitectureFitnessTests {
             "Capabilities",
             "Diagnostics",
             "Git",
+            "GoogleWorkspace",
             "Persistence",
             "Runtime",
             "Security",
