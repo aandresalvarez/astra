@@ -27,6 +27,7 @@ struct PluginPackageMCPTests {
         let package = try JSONDecoder().decode(PluginPackage.self, from: Data(json.utf8))
 
         #expect(package.mcpServers.isEmpty)
+        #expect(package.setupRequirements.isEmpty)
     }
 
     @Test("package mcp servers round trip")
@@ -67,6 +68,52 @@ struct PluginPackageMCPTests {
 
         #expect(decoded.mcpServers == package.mcpServers)
         #expect(decoded.contentParts.contains("1 MCP server"))
+    }
+
+    @Test("setup requirements decode and make package setup gated")
+    func setupRequirementsDecodeAndRequireSetup() throws {
+        let json = """
+        {
+          "id": "oauth-package",
+          "name": "OAuth Package",
+          "icon": "key",
+          "description": "OAuth package",
+          "author": "Tests",
+          "category": "Tests",
+          "tags": [],
+          "version": "1.0.0",
+          "skills": [],
+          "connectors": [],
+          "localTools": [],
+          "mcpServers": [],
+          "templates": [],
+          "setupRequirements": [
+            {
+              "id": "provider-oauth",
+              "kind": "oauthAccount",
+              "displayName": "Provider OAuth",
+              "provider": "provider",
+              "required": true,
+              "notes": "Connect the provider account."
+            }
+          ]
+        }
+        """
+
+        let package = try JSONDecoder().decode(PluginPackage.self, from: Data(json.utf8))
+
+        #expect(package.requiresSetup)
+        #expect(package.setupRequirements == [
+            PluginSetupRequirement(
+                id: "provider-oauth",
+                kind: .oauthAccount,
+                displayName: "Provider OAuth",
+                provider: "provider",
+                required: true,
+                notes: "Connect the provider account."
+            )
+        ])
+        #expect(package.contentParts.contains("1 setup requirement"))
     }
 
     @Test("mcp install source round trips without changing launch contract")

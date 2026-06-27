@@ -1,0 +1,180 @@
+{
+  "author" : "ASTRA",
+  "category" : "Integrations",
+  "connectors" : [
+
+  ],
+  "description" : "Use ASTRA-owned Google Workspace OAuth with Google remote MCP servers",
+  "formatVersion" : 2,
+  "governance" : {
+    "allowedRoles" : [
+
+    ],
+    "allowedWorkspaceTags" : [
+
+    ],
+    "approvalStatus" : "approved",
+    "approvedBy" : "ASTRA",
+    "dataAccess" : [
+      "keychainReference",
+      "externalService",
+      "network",
+      "email"
+    ],
+    "externalEffects" : [
+      "readOnly",
+      "externalAPIWrite",
+      "messageSend",
+      "delete"
+    ],
+    "policyNotes" : "Google Workspace uses ASTRA-owned OAuth account state and routes provider MCP traffic through ASTRA's governed gateway. Tokens must never be stored in package JSON, generated app manifests, or provider MCP configuration.",
+    "requiresAdminApproval" : false,
+    "requiresExplicitUserConsent" : false,
+    "riskLevel" : "restricted",
+    "visibility" : "everyone"
+  },
+  "icon" : "externaldrive.connected.to.line.below",
+  "iconDescriptor" : {
+    "fallbackSystemName" : "externaldrive.connected.to.line.below",
+    "kind" : "asset",
+    "monochromePreferred" : true,
+    "value" : "assets/google-drive.svg"
+  },
+  "id" : "google-workspace",
+  "localTools" : [
+
+  ],
+  "mcpServers" : [
+    {
+      "allowedTools" : [
+        "create_draft",
+        "get_thread",
+        "label_message",
+        "label_thread",
+        "list_drafts",
+        "list_labels",
+        "search_threads",
+        "unlabel_message",
+        "unlabel_thread"
+      ],
+      "arguments" : [
+
+      ],
+      "connectorBindings" : [
+        "google-workspace"
+      ],
+      "displayName" : "Google Workspace Gmail",
+      "environmentKeys" : [
+
+      ],
+      "excludedTools" : [
+
+      ],
+      "id" : "google_workspace_gmail",
+      "promptsEnabled" : false,
+      "resourcesEnabled" : false,
+      "transport" : "http",
+      "trustLevel" : "restricted",
+      "url" : "https:\/\/gmailmcp.googleapis.com\/mcp\/v1"
+    },
+    {
+      "allowedTools" : [
+        "copy_file",
+        "create_file",
+        "download_file_content",
+        "get_file_metadata",
+        "get_file_permissions",
+        "list_recent_files",
+        "read_file_content",
+        "search_files"
+      ],
+      "arguments" : [
+
+      ],
+      "connectorBindings" : [
+        "google-workspace"
+      ],
+      "displayName" : "Google Workspace Drive",
+      "environmentKeys" : [
+
+      ],
+      "excludedTools" : [
+
+      ],
+      "id" : "google_workspace_drive",
+      "promptsEnabled" : false,
+      "resourcesEnabled" : false,
+      "transport" : "http",
+      "trustLevel" : "restricted",
+      "url" : "https:\/\/drivemcp.googleapis.com\/mcp\/v1"
+    },
+    {
+      "allowedTools" : [
+        "create_event",
+        "delete_event",
+        "get_event",
+        "list_calendars",
+        "list_events",
+        "respond_to_event",
+        "suggest_time",
+        "update_event"
+      ],
+      "arguments" : [
+
+      ],
+      "connectorBindings" : [
+        "google-workspace"
+      ],
+      "displayName" : "Google Workspace Calendar",
+      "environmentKeys" : [
+
+      ],
+      "excludedTools" : [
+
+      ],
+      "id" : "google_workspace_calendar",
+      "promptsEnabled" : false,
+      "resourcesEnabled" : false,
+      "transport" : "http",
+      "trustLevel" : "restricted",
+      "url" : "https:\/\/calendarmcp.googleapis.com\/mcp\/v1"
+    }
+  ],
+  "name" : "Google Workspace",
+  "prerequisites" : [
+
+  ],
+  "setupGuide" : "Configure Google Workspace from this capability row. Add a Google OAuth client ID, keep the loopback redirect URI local, then connect a Google account through ASTRA's OAuth flow.\n\nWhat this enables:\n- Gmail remote MCP tools through ASTRA's local gateway\n- Google Drive remote MCP tools through ASTRA's local gateway\n- Google Calendar remote MCP tools through ASTRA's local gateway\n\nASTRA owns OAuth, refresh, policy, and token storage. Provider MCP config must never contain Google access tokens.",
+  "setupRequirements" : [
+    {
+      "displayName" : "Google Workspace OAuth account",
+      "id" : "google-workspace-oauth",
+      "kind" : "oauthAccount",
+      "notes" : "Configure an OAuth client ID, keep the redirect URI loopback-only, then connect a Google account before enabling the capability.",
+      "provider" : "google-workspace",
+      "required" : true
+    }
+  ],
+  "skills" : [
+
+  ],
+  "sourceMetadata" : {
+    "displayName" : "Built-in Capabilities",
+    "id" : "built-in",
+    "kind" : "built-in",
+    "trustLevel" : "built-in"
+  },
+  "tags" : [
+    "google",
+    "workspace",
+    "gmail",
+    "drive",
+    "calendar",
+    "mcp",
+    "oauth"
+  ],
+  "templates" : [
+
+  ],
+  "version" : "1.0.0"
+}

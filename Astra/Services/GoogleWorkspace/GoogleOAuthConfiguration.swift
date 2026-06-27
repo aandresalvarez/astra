@@ -20,12 +20,19 @@ struct GoogleOAuthConfiguration: Equatable, Sendable {
     var authorizationEndpoint: URL
     var tokenEndpoint: URL
 
-    static func load(environment: [String: String] = ProcessInfo.processInfo.environment) throws -> Self {
-        let clientID = environment["ASTRA_GOOGLE_OAUTH_CLIENT_ID"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    static func load(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        defaults: UserDefaults = .standard
+    ) throws -> Self {
+        let settings = GoogleOAuthConfigurationSettings.load(environment: environment, defaults: defaults)
+        return try load(settings: settings)
+    }
+
+    static func load(settings: GoogleOAuthConfigurationSettings) throws -> Self {
+        let clientID = settings.clientID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clientID.isEmpty else { throw Error.missingClientID }
 
-        let redirectText = environment["ASTRA_GOOGLE_OAUTH_REDIRECT_URI"]?.trimmingCharacters(in: .whitespacesAndNewlines)
-            ?? "http://127.0.0.1:48119/oauth/google/callback"
+        let redirectText = settings.redirectURI.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let redirectURI = URL(string: redirectText),
               redirectURI.scheme?.lowercased() == "http",
               isLoopback(redirectURI.host) else {
