@@ -286,6 +286,39 @@ struct MCPRuntimeProjectionTests {
         #expect(MCPRuntimeProjection.allowedToolPermissions(servers: [resolved]).isEmpty)
     }
 
+    @Test("Connector-bound gateway remote without endpoint is not rendered")
+    func connectorBoundGatewayRemoteWithoutEndpointIsNotRendered() {
+        let accessTokenEnv = RemoteMCPGatewayProjection.gatewayAccessTokenEnvironmentKey(
+            packageID: "google-workspace",
+            serverID: "google_drive",
+            bindingID: "auth-header"
+        )
+        let remote = PluginMCPServer(
+            id: "google_drive",
+            displayName: "Google Drive",
+            transport: .http,
+            url: nil,
+            connectorBindings: ["google-workspace"],
+            allowedTools: ["drive.search"],
+            controlPlane: gatewayAuthorizationControlPlane()
+        )
+        let resolved = MCPRuntimeProjection.ResolvedServer(packageID: "google-workspace", server: remote)
+
+        #expect(RemoteMCPGatewayProjection.providerFacingResolvedServer(for: resolved) == nil)
+        #expect(MCPRuntimeProjection.claudeConfigJSON(
+            servers: [resolved],
+            availableEnvironment: [accessTokenEnv: "secret-token"]
+        ) == nil)
+        #expect(CodexMCPConfigRenderer.configArguments(
+            servers: [resolved],
+            availableEnvironment: [accessTokenEnv: "secret-token"]
+        ).isEmpty)
+        #expect(MCPRuntimeProjection.allowedToolPermissions(
+            servers: [resolved],
+            availableEnvironment: [accessTokenEnv: "secret-token"]
+        ).isEmpty)
+    }
+
     @Test("Empty server set renders no config and writes no file")
     func emptyServersRenderNothing() {
         #expect(MCPRuntimeProjection.claudeConfigJSON(servers: []) == nil)

@@ -50,6 +50,10 @@ enum RemoteMCPGatewayProjection {
         guard let binding = gatewayAccessTokenBinding(server.controlPlane?.runtimeBindings ?? []) else {
             return nil
         }
+        guard let endpoint = server.url?.absoluteString,
+              !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
         let accessTokenEnvironmentKey = gatewayAccessTokenEnvironmentKey(
             packageID: resolved.packageID,
             serverID: server.id,
@@ -63,7 +67,7 @@ enum RemoteMCPGatewayProjection {
             arguments: [
                 "--package-id", resolved.packageID,
                 "--server-id", server.id,
-                "--endpoint", server.url?.absoluteString ?? "",
+                "--endpoint", endpoint,
                 "--access-token-env", accessTokenEnvironmentKey
             ],
             environmentKeys: [accessTokenEnvironmentKey],
