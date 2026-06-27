@@ -1432,7 +1432,7 @@ struct PluginCatalogView: View {
             sections.append(CapabilityDetailSection(
                 id: "mcp",
                 title: "MCP Servers",
-                subtitle: CapabilityRuntimeSupportPresentation.mcpSupportSubtitle(),
+                subtitle: CapabilityRuntimeSupportPresentation.mcpSupportSubtitle(for: package),
                 icon: "server.rack",
                 color: Stanford.plum,
                 items: package.mcpServers.enumerated().map { index, server in
