@@ -202,13 +202,17 @@ struct MCPControlPlaneRuntimeBindingService {
 
     func readiness(for metadata: MCPControlPlaneMetadata) -> MCPControlPlaneRuntimeBindingReadiness {
         let resolved = resolveRefs(in: metadata)
+        let invariantViolations = metadata.invariantViolations()
+        let invalidBindingIDs = invalidRuntimeBindingIDs(in: invariantViolations)
         let bindingPreviews = metadata.runtimeBindings.map {
-            bindingPreview(for: $0, resolved: resolved)
+            bindingPreview(for: $0, resolved: resolved, invalidBindingIDs: invalidBindingIDs)
         }
         let bindingIssues = bindingPreviews
             .filter { !$0.isReady }
-            .map { MCPControlPlaneRuntimeBindingReadinessIssue.invalidRuntimeBinding(bindingID: $0.id) }
-        let invariantIssues = controlPlaneInvariantIssues(for: metadata)
+            .compactMap { preview -> MCPControlPlaneRuntimeBindingReadinessIssue? in
+                preview.id.isEmpty ? nil : .invalidRuntimeBinding(bindingID: preview.id)
+            }
+        let invariantIssues = controlPlaneInvariantIssues(for: invariantViolations)
         return MCPControlPlaneRuntimeBindingReadiness(
             issues: uniqueIssues(resolved.issues + bindingIssues + invariantIssues),
             authProfileHandles: Array(resolved.authProfileHandles.values).sorted { $0.refID < $1.refID },
@@ -219,17 +223,39 @@ struct MCPControlPlaneRuntimeBindingService {
     }
 
     private func controlPlaneInvariantIssues(
-        for metadata: MCPControlPlaneMetadata
+        for violations: [MCPControlPlaneInvariantViolation]
     ) -> [MCPControlPlaneRuntimeBindingReadinessIssue] {
-        metadata.invariantViolations().map { violation in
+        violations.map { violation in
+            switch violation {
+            case .duplicateRuntimeBinding(let bindingID):
+                let canonicalID = Self.canonicalID(bindingID)
+                return canonicalID.isEmpty
+                    ? .invalidControlPlane(reason: violation.shortDescription)
+                    : .invalidRuntimeBinding(bindingID: canonicalID)
+            case .runtimeBinding(let bindingID, _):
+                let canonicalID = Self.canonicalID(bindingID)
+                return canonicalID.isEmpty
+                    ? .invalidControlPlane(reason: violation.shortDescription)
+                    : .invalidRuntimeBinding(bindingID: canonicalID)
+            default:
+                return .invalidControlPlane(reason: violation.shortDescription)
+            }
+        }
+    }
+
+    private func invalidRuntimeBindingIDs(
+        in violations: [MCPControlPlaneInvariantViolation]
+    ) -> Set<String> {
+        Set(violations.compactMap { violation in
             switch violation {
             case .duplicateRuntimeBinding(let bindingID),
                  .runtimeBinding(let bindingID, _):
-                return .invalidRuntimeBinding(bindingID: Self.canonicalID(bindingID))
+                let canonicalID = Self.canonicalID(bindingID)
+                return canonicalID.isEmpty ? nil : canonicalID
             default:
-                return .invalidControlPlane(reason: "\(violation)")
+                return nil
             }
-        }
+        })
     }
 
     private func resolveRefs(in metadata: MCPControlPlaneMetadata) -> ResolvedControlPlaneRefs {
@@ -282,10 +308,12 @@ struct MCPControlPlaneRuntimeBindingService {
 
     private func bindingPreview(
         for binding: MCPRuntimeBindingTemplate,
-        resolved: ResolvedControlPlaneRefs
+        resolved: ResolvedControlPlaneRefs,
+        invalidBindingIDs: Set<String>
     ) -> MCPControlPlaneRuntimeBindingPreview {
+        let bindingID = Self.canonicalID(binding.id)
         var parts: [String] = []
-        var isReady = true
+        var isReady = !bindingID.isEmpty && !invalidBindingIDs.contains(bindingID)
 
         for segment in binding.template {
             switch segment.kind {
@@ -331,7 +359,7 @@ struct MCPControlPlaneRuntimeBindingService {
         }
 
         return MCPControlPlaneRuntimeBindingPreview(
-            id: Self.canonicalID(binding.id),
+            id: bindingID,
             destination: binding.destination,
             name: binding.name.trimmingCharacters(in: .whitespacesAndNewlines),
             redactedValue: parts.joined(),

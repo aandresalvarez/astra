@@ -411,36 +411,7 @@ enum CapabilityCatalogPolicy {
         guard let controlPlane = server.controlPlane else { return nil }
         let violations = controlPlane.invariantViolations()
         guard !violations.isEmpty else { return nil }
-        return violations.map(controlPlaneViolationDescription).joined(separator: "; ")
-    }
-
-    private static func controlPlaneViolationDescription(
-        _ violation: MCPControlPlaneInvariantViolation
-    ) -> String {
-        switch violation {
-        case .authProfileProviderIDRequired(let id):
-            return "auth profile \(id.isEmpty ? "<empty>" : id) is missing a provider ID"
-        case .authProfileRefIDRequired:
-            return "auth profile ref ID is required"
-        case .configRefIDRequired:
-            return "config ref ID is required"
-        case .duplicateAuthProfileRef(let id):
-            return "duplicate auth profile ref \(id)"
-        case .duplicateConfigRef(let id):
-            return "duplicate config ref \(id)"
-        case .duplicateProviderCapability(let id):
-            return "duplicate provider capability \(id)"
-        case .duplicateRuntimeBinding(let id):
-            return "duplicate runtime binding \(id)"
-        case .duplicateSecretRef(let id):
-            return "duplicate secret ref \(id)"
-        case .providerCapability(let id, let nested):
-            return "provider capability \(id) is invalid: \(nested)"
-        case .runtimeBinding(let id, let nested):
-            return "runtime binding \(id) is invalid: \(nested)"
-        case .secretRefIDRequired:
-            return "secret ref ID is required"
-        }
+        return violations.map(\.shortDescription).joined(separator: "; ")
     }
 
     private static func isLoopbackHost(_ host: String?) -> Bool {

@@ -247,6 +247,10 @@ struct MCPControlPlaneRuntimeBindingServiceTests {
         #expect(readiness.status == .blocked)
         #expect(readiness.issues.contains(.invalidRuntimeBinding(bindingID: "invalid-literal")))
         #expect(readiness.issues.contains(.invalidRuntimeBinding(bindingID: "empty-template")))
+        let invalidLiteral = try #require(readiness.bindingPreviews.first { $0.id == "invalid-literal" })
+        let emptyTemplate = try #require(readiness.bindingPreviews.first { $0.id == "empty-template" })
+        #expect(!invalidLiteral.isReady)
+        #expect(!emptyTemplate.isReady)
     }
 
     @Test("duplicate binding IDs block aggregate readiness")
@@ -274,6 +278,33 @@ struct MCPControlPlaneRuntimeBindingServiceTests {
 
         #expect(readiness.status == .blocked)
         #expect(readiness.issues.contains(.invalidRuntimeBinding(bindingID: "duplicate")))
+    }
+
+    @Test("empty runtime binding ID reports control-plane issue instead of blank binding issue")
+    func emptyRuntimeBindingIDReportsControlPlaneIssueInsteadOfBlankBindingIssue() throws {
+        let metadata = MCPControlPlaneMetadata(
+            runtimeBindings: [
+                MCPRuntimeBindingTemplate(
+                    id: " ",
+                    destination: .environment,
+                    name: "BROKEN_BINDING",
+                    template: [.literal("safe-label")]
+                )
+            ]
+        )
+
+        let readiness = MCPControlPlaneRuntimeBindingService(
+            resolver: EmptyMCPControlPlaneRuntimeBindingResolver()
+        ).readiness(for: metadata)
+        let preview = try #require(readiness.bindingPreviews.first)
+
+        #expect(readiness.status == .blocked)
+        #expect(!readiness.issues.contains(.invalidRuntimeBinding(bindingID: "")))
+        #expect(readiness.issues.contains(.invalidControlPlane(
+            reason: "runtime binding <empty> is invalid: runtime binding ID is required"
+        )))
+        #expect(preview.id.isEmpty)
+        #expect(!preview.isReady)
     }
 
     @Test("package JSON and binding preview serialization keep raw secret values out of durable surfaces")

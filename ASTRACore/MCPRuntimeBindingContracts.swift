@@ -187,16 +187,20 @@ public struct MCPRuntimeBindingTemplate: Codable, Equatable, Sendable, Identifia
         return violations
     }
 
+    private static let rawSecretValueRegexes: [NSRegularExpression] = [
+        #"(?i)\bbearer\s+[a-z0-9._~+/=-]{12,}"#,
+        #"(?i)\b(api[_-]?key|apikey|access[_-]?token|refresh[_-]?token|secret|password)\b\s*[:=]\s*['"]?[^\s'";,]{8,}"#,
+        #"(?i)\bya29\.[a-z0-9._-]{6,}"#,
+        #"(?i)\b1//[a-z0-9._-]{6,}"#,
+        #"(?i)\bAIza[0-9a-z_-]{8,}"#
+    ].map { pattern in
+        try! NSRegularExpression(pattern: pattern)
+    }
+
     public static func literalLooksLikeRawSecretValue(_ value: String) -> Bool {
-        let patterns = [
-            #"(?i)\bbearer\s+[a-z0-9._~+/=-]{12,}"#,
-            #"(?i)\b(api[_-]?key|apikey|access[_-]?token|refresh[_-]?token|secret|password)\b\s*[:=]\s*['"]?[^\s'";,]{8,}"#,
-            #"(?i)\bya29\.[a-z0-9._-]{6,}"#,
-            #"(?i)\b1//[a-z0-9._-]{6,}"#,
-            #"(?i)\bAIza[0-9a-z_-]{8,}"#
-        ]
-        return patterns.contains { pattern in
-            value.range(of: pattern, options: .regularExpression) != nil
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        return rawSecretValueRegexes.contains { regex in
+            regex.firstMatch(in: value, range: range) != nil
         }
     }
 

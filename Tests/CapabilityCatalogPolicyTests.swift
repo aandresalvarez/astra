@@ -412,7 +412,10 @@ struct CapabilityCatalogPolicyTests {
         #expect(!decision.canEnable)
         #expect(!decision.canRun)
         #expect(decision.blockerMessages.contains { $0.contains("control-plane") })
-        #expect(decision.blockerMessages.contains { $0.contains("literalValueMustNotContainRawSecret") })
+        #expect(decision.blockerMessages.contains {
+            $0.contains("runtime binding authorization-header is invalid: literal value must not contain a raw secret")
+        })
+        #expect(!decision.blockerMessages.contains { $0.contains("literalValueMustNotContainRawSecret") })
     }
 
     @Test("Remote MCP servers require HTTPS unless loopback")

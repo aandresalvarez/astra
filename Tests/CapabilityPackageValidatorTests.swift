@@ -268,7 +268,10 @@ struct CapabilityPackageValidatorTests {
         #expect(!report.canInstall)
         #expect(report.blockers.map(\.code).contains(.unsafeMCPServer))
         #expect(report.blockers.contains { $0.message.contains("control-plane") })
-        #expect(report.blockers.contains { $0.message.contains("literalValueMustNotContainRawSecret") })
+        #expect(report.blockers.contains {
+            $0.message.contains("runtime binding authorization-header is invalid: literal value must not contain a raw secret")
+        })
+        #expect(!report.blockers.contains { $0.message.contains("literalValueMustNotContainRawSecret") })
     }
 
     @Test("mutable MCP install source is surfaced as a warning")
