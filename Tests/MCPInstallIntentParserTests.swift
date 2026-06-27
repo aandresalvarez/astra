@@ -20,6 +20,19 @@ struct MCPInstallIntentParserTests {
         #expect(intent.installSource?.installMode == .npx)
     }
 
+    @Test("npx package detection ignores filesystem path arguments")
+    func npxPackageDetectionIgnoresFilesystemPathArguments() throws {
+        let intent = try #require(MCPInstallIntentParser.parse(
+            "npx --cache /tmp @acme/mcp-server@2.0.0"
+        ))
+
+        #expect(intent.command == "npx")
+        #expect(intent.arguments == ["--cache", "/tmp", "@acme/mcp-server@2.0.0"])
+        #expect(intent.installSource?.kind == .npm)
+        #expect(intent.installSource?.identifier == "@acme/mcp-server")
+        #expect(intent.installSource?.version == "2.0.0")
+    }
+
     @Test("parses remote https mcp url")
     func parsesRemoteHTTPSMCPURL() throws {
         let intent = try #require(MCPInstallIntentParser.parse("https://example.com/mcp"))
@@ -63,6 +76,19 @@ struct MCPInstallIntentParserTests {
         #expect(intent.installSource?.identifier == "ghcr.io/acme/mcp-server")
         #expect(intent.installSource?.version == "1.0.0")
         #expect(intent.installSource?.installMode == .dockerRun)
+    }
+
+    @Test("docker image detection uses image before command path arguments")
+    func dockerImageDetectionUsesImageBeforeCommandPathArguments() throws {
+        let intent = try #require(MCPInstallIntentParser.parse(
+            "docker run --rm -i ghcr.io/acme/mcp-server:1.0.0 /tmp"
+        ))
+
+        #expect(intent.command == "docker")
+        #expect(intent.arguments == ["run", "--rm", "-i", "ghcr.io/acme/mcp-server:1.0.0", "/tmp"])
+        #expect(intent.installSource?.kind == .dockerImage)
+        #expect(intent.installSource?.identifier == "ghcr.io/acme/mcp-server")
+        #expect(intent.installSource?.version == "1.0.0")
     }
 
     @Test("rejects shell pipelines")

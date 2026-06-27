@@ -257,6 +257,31 @@ struct MCPRuntimeProjectionTests {
         #expect(!issue.message.contains("uvx"))
     }
 
+    @Test("Preflight message uses Docker tag syntax for Docker MCP install source")
+    func preflightMessageUsesDockerTagSyntaxForDockerSource() throws {
+        let server = PluginMCPServer(
+            id: "docker",
+            displayName: "Docker MCP",
+            transport: .stdio,
+            command: "docker",
+            arguments: ["run", "--rm", "-i", "ghcr.io/acme/mcp-server:1.0.0"],
+            installSource: PluginMCPInstallSource(
+                kind: .dockerImage,
+                identifier: "ghcr.io/acme/mcp-server",
+                version: "1.0.0",
+                installMode: .dockerRun
+            )
+        )
+
+        let issue = try #require(MCPRuntimeProjection.preflightIssues(
+            servers: [MCPRuntimeProjection.ResolvedServer(packageID: "p", server: server)],
+            detectExecutable: { _ in "" }
+        ).first)
+
+        #expect(issue.message.contains("Docker image ghcr.io/acme/mcp-server:1.0.0"))
+        #expect(!issue.message.contains("ghcr.io/acme/mcp-server@1.0.0"))
+    }
+
     @Test("Preflight message uses manual install mode without package manager guess")
     func preflightMessageUsesManualInstallModeWithoutPackageManagerGuess() throws {
         let server = PluginMCPServer(

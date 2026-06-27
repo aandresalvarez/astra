@@ -32,7 +32,14 @@ enum MCPInstallSourceFormatter {
         let identifier = source.identifier.trimmingCharacters(in: .whitespacesAndNewlines)
         let base = identifier.isEmpty ? source.identifier : identifier
         if let version = source.version?.trimmingCharacters(in: .whitespacesAndNewlines), !version.isEmpty {
-            return source.kind == .pypi ? "\(base)==\(version)" : "\(base)@\(version)"
+            switch source.kind {
+            case .pypi:
+                return "\(base)==\(version)"
+            case .dockerImage, .oci:
+                return "\(base):\(version)"
+            default:
+                return "\(base)@\(version)"
+            }
         }
         if let digest = source.digest?.trimmingCharacters(in: .whitespacesAndNewlines), !digest.isEmpty {
             return "\(base)@sha256:\(digest)"

@@ -172,14 +172,27 @@ enum MCPInstallIntentParser {
 
     private static func npmPackage(from token: String) -> (identifier: String, version: String?)? {
         guard !token.hasPrefix("-") else { return nil }
-        guard token.contains("/") || token.contains("mcp") else { return nil }
+        guard !isFilesystemPath(token) else { return nil }
         if token.hasPrefix("@") {
-            let pieces = token.split(separator: "@", omittingEmptySubsequences: false)
-            guard pieces.count >= 3 else { return (token, nil) }
-            return ("@" + pieces[1], String(pieces[2]))
+            let body = token.dropFirst()
+            guard let slash = body.firstIndex(of: "/"),
+                  slash < body.index(before: body.endIndex) else {
+                return nil
+            }
+            if let versionSeparator = body.lastIndex(of: "@"), versionSeparator > slash {
+                let identifier = String(token[..<versionSeparator])
+                let version = String(token[token.index(after: versionSeparator)...])
+                guard !version.isEmpty else { return nil }
+                return (identifier, version)
+            }
+            return (token, nil)
         }
+        guard token.localizedCaseInsensitiveContains("mcp") else { return nil }
         if let at = token.lastIndex(of: "@") {
-            return (String(token[..<at]), String(token[token.index(after: at)...]))
+            let identifier = String(token[..<at])
+            let version = String(token[token.index(after: at)...])
+            guard !identifier.isEmpty, !version.isEmpty else { return nil }
+            return (identifier, version)
         }
         return (token, nil)
     }
@@ -197,16 +210,63 @@ enum MCPInstallIntentParser {
     }
 
     private static func dockerImage(from arguments: [String]) -> (identifier: String, version: String?, digest: String?)? {
-        guard let image = arguments.last(where: { !$0.hasPrefix("-") && $0.contains("/") }) else {
-            return nil
+        var index = arguments.first == "run" ? 1 : 0
+        while index < arguments.count {
+            let token = arguments[index]
+            if token.hasPrefix("-") {
+                index += dockerOptionConsumesNextValue(token) ? 2 : 1
+                continue
+            }
+            if isDockerImageReference(token) {
+                return dockerImageParts(from: token)
+            }
+            index += 1
         }
+        return nil
+    }
+
+    private static func dockerImageParts(from image: String) -> (identifier: String, version: String?, digest: String?) {
         if let digestRange = image.range(of: "@sha256:") {
             return (String(image[..<digestRange.lowerBound]), nil, String(image[digestRange.upperBound...]))
         }
-        if let colon = image.lastIndex(of: ":") {
+        if let colon = image.lastIndex(of: ":"),
+           image.lastIndex(of: "/").map({ colon > $0 }) ?? true {
             return (String(image[..<colon]), String(image[image.index(after: colon)...]), nil)
         }
         return (image, nil, nil)
+    }
+
+    private static func isDockerImageReference(_ token: String) -> Bool {
+        guard !isFilesystemPath(token),
+              !token.contains("=") else {
+            return false
+        }
+        return token.contains("/")
+            || token.localizedCaseInsensitiveContains("mcp")
+            || token.contains("@sha256:")
+            || token.lastIndex(of: ":").map { colon in
+                token.lastIndex(of: "/").map { colon > $0 } ?? true
+            } ?? false
+    }
+
+    private static func dockerOptionConsumesNextValue(_ token: String) -> Bool {
+        let option = token.split(separator: "=", maxSplits: 1).first.map(String.init) ?? token
+        guard option == token else { return false }
+        return [
+            "-e", "--env", "--env-file", "--name", "--hostname", "-h",
+            "-p", "--publish", "--expose", "-v", "--volume", "--mount",
+            "-w", "--workdir", "-u", "--user", "--network", "--platform",
+            "--entrypoint", "--add-host", "--label", "--log-driver",
+            "--log-opt", "--pull"
+        ].contains(option)
+    }
+
+    private static func isFilesystemPath(_ token: String) -> Bool {
+        token.hasPrefix("/")
+            || token.hasPrefix("./")
+            || token.hasPrefix("../")
+            || token.hasPrefix("~/")
+            || token.hasPrefix("file:")
     }
 
     private static func defaultServerID(from value: String) -> String {
