@@ -28,6 +28,10 @@ Review checklist:
 - MCP servers must be declared in `mcpServers`, not hidden in skill prompt text or local tool notes.
 - Stdio MCP commands must be binary names or safe paths, and MCP arguments must not contain shell control syntax.
 - Remote MCP URLs must use HTTPS, except loopback HTTP for local development.
+- Package-managed MCP servers should declare `installSource` with the package
+  kind, identifier, exact version or digest when available, install mode, and
+  registry/documentation URLs. Keep runtime launch in `command`/`arguments`;
+  use `installSource` only for review, readiness, and remediation metadata.
 - Connector-bound MCP servers should list the connector service names in `connectorBindings` and required env keys in `environmentKeys`; never store values in JSON.
 - Risk metadata must match the strongest declared data access or external effect.
 - Use `iconDescriptor` for package-owned icons. Built-in brand assets live under
@@ -39,6 +43,17 @@ Review checklist:
 - Keep vendored brand assets small, local, and source-attributed. Do not point
   package JSON at remote icon URLs.
 - Add or update focused tests when changing package schema, prerequisites, governance, or runtime activation behavior.
+
+MCP lifecycle:
+
+- Author MCP servers through the capability package `mcpServers` array. Do not model first-class MCP servers as `LocalTool(toolType: "mcp")`; that path is only a legacy/custom-tool hint.
+- Every stdio MCP server should have an explicit command contract. If readiness needs to check installation before enablement, add a `prerequisites` entry for the command with a liveness probe that exits quickly.
+- Prefer exact npm/PyPI versions or Docker digests. Versionless package-manager
+  targets and unpinned Docker images are treated as higher-risk install sources
+  during local review.
+- MCP servers may reference environment keys only when those keys are declared by the same package's connector credential/config hints or skill environment keys.
+- Remote MCP URLs must be HTTPS, except loopback HTTP for local development.
+- Runtime launch still performs a final MCP preflight and blocks missing stdio commands for runtimes that support MCP servers.
 
 Approval workflow:
 

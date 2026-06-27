@@ -6,34 +6,6 @@ import AppKit
 // `WorkspaceCanvasItem`, `WorkspaceRightPanel`, and the shelf-boundary metrics live in
 // WorkspaceCanvasItem.swift (extracted to keep this file within its line budget).
 
-/// Reports window width and right-panel presence to `SidebarPresentationModel`.
-/// A background `GeometryReader` measures the full content width; both signals are
-/// pure proposals — the model alone turns them into sidebar visibility.
-private struct SidebarLayoutObserver: ViewModifier {
-    let hasRightSidePanel: Bool
-    let onWidthChanged: (CGFloat) -> Void
-    let onRightSidePanelChanged: (Bool) -> Void
-
-    func body(content: Content) -> some View {
-        content
-            .background {
-                GeometryReader { proxy in
-                    Color.clear
-                        .onAppear {
-                            onWidthChanged(proxy.size.width)
-                            onRightSidePanelChanged(hasRightSidePanel)
-                        }
-                        .onChange(of: proxy.size.width) {
-                            onWidthChanged(proxy.size.width)
-                        }
-                        .onChange(of: hasRightSidePanel) {
-                            onRightSidePanelChanged(hasRightSidePanel)
-                        }
-                }
-            }
-    }
-}
-
 // The shelf-boundary overlay views live in WorkspaceCanvasItem.swift (extracted for budget).
 
 private extension View {
@@ -78,31 +50,6 @@ struct NewWorkspaceDraft: Equatable {
     }
 }
 
-/// Leaf observer that watches the task queue's update-safety signal in
-/// isolation. Reading `taskQueue.isProcessing/activeCount/activeTasks` here —
-/// rather than in `ContentView.body` — keeps queue churn (task start/exit)
-/// from invalidating ContentView's very large body. See the UI responsiveness
-/// audit (Cluster 1): this is the only body-level reader of those fields.
-private struct UpdateSafetyObserver: View {
-    let taskQueue: TaskQueue
-    let runningTaskCount: Int
-    let onChange: () -> Void
-
-    private var signature: String {
-        [
-            String(taskQueue.isProcessing),
-            String(taskQueue.activeCount),
-            String(taskQueue.activeTasks.count),
-            String(runningTaskCount)
-        ].joined(separator: "|")
-    }
-
-    var body: some View {
-        Color.clear
-            .onChange(of: signature) { onChange() }
-    }
-}
-
 struct ContentView: View {
     @ObservedObject var appUpdateController: AppUpdateController
     let runtime: AppRuntimeController
@@ -120,6 +67,7 @@ struct ContentView: View {
     @State private var configureInitialTab: ConfigureTab = .capabilities
     @State private var configureFocusItemID: UUID?
     @State private var configureFocusCapabilityPackageID: String?
+    @State private var pendingMCPInstallRequest: MCPInstallChatRequest?
     @State private var showingWorkspaceEditor = false
     @State private var showingNewWorkspace = false
     @State private var showingSSHEditor = false
@@ -602,6 +550,7 @@ struct ContentView: View {
             isComposingWorkspaceApp: isComposingWorkspaceApp,
             studioSession: workspaceAppStudioSession,
             onStartWorkspaceAppStudio: { prompt in startWorkspaceAppStudio(initialPrompt: prompt) },
+            onStartMCPInstallReview: { request in pendingMCPInstallRequest = request },
             onPublishApp: { seed in publishWorkspaceAppFromStudio(seedSampleData: seed) },
             onDraftChanged: { WorkspaceAppStudioDraftAutosaveCoordinator.autosave(session: workspaceAppStudioSession, preferredWorkspace: effectiveWorkspace, modelContext: modelContext) },
             onCancelStudio: { cancelWorkspaceAppStudio() }
@@ -921,6 +870,11 @@ struct ContentView: View {
                 )
             }
         }
+        .mcpInstallReviewSheet(
+            request: $pendingMCPInstallRequest,
+            workspace: effectiveWorkspace,
+            onInstalled: openCapabilityPackage
+        )
         .sheet(isPresented: $showingWorkspaceEditor) {
             if let ws = effectiveWorkspace {
                 WorkspaceDetailView(workspace: ws, onDelete: {
@@ -2926,6 +2880,7 @@ private struct ContentDetailAreaView: View {
     let isComposingWorkspaceApp: Bool
     @ObservedObject var studioSession: WorkspaceAppStudioSession
     let onStartWorkspaceAppStudio: (String?) -> Void
+    let onStartMCPInstallReview: (MCPInstallChatRequest) -> Void
     let onPublishApp: (_ seedSampleData: Bool) -> Void
     let onDraftChanged: () -> Void
     let onCancelStudio: () -> Void
@@ -3299,6 +3254,7 @@ private struct ContentDetailAreaView: View {
             isComposingWorkspaceApp: isComposingWorkspaceApp,
             studioSession: studioSession,
             onStartWorkspaceAppStudio: onStartWorkspaceAppStudio,
+            onStartMCPInstallReview: onStartMCPInstallReview,
             onPublishApp: onPublishApp,
             onDraftChanged: onDraftChanged,
             onCancelStudio: onCancelStudio
@@ -3395,6 +3351,7 @@ private struct ContentDetailContentView: View {
     let isComposingWorkspaceApp: Bool
     @ObservedObject var studioSession: WorkspaceAppStudioSession
     let onStartWorkspaceAppStudio: (String?) -> Void
+    let onStartMCPInstallReview: (MCPInstallChatRequest) -> Void
     let onPublishApp: (_ seedSampleData: Bool) -> Void
     let onDraftChanged: () -> Void
     let onCancelStudio: () -> Void
@@ -3419,7 +3376,8 @@ private struct ContentDetailContentView: View {
                     onManageSkills: onManageSkills,
                     isPlanCanvasVisible: isPlanCanvasVisible,
                     onOpenPlan: onOpenPlan,
-                    onStartWorkspaceAppStudio: onStartWorkspaceAppStudio
+                    onStartWorkspaceAppStudio: onStartWorkspaceAppStudio,
+                    onStartMCPInstallReview: onStartMCPInstallReview
                 )
                 .id(task.id)
             }
@@ -3455,7 +3413,8 @@ private struct ContentDetailContentView: View {
                 onManageSkills: onManageSkills,
                 isPlanCanvasVisible: isPlanCanvasVisible,
                 onOpenPlan: onOpenPlan,
-                onStartWorkspaceAppStudio: onStartWorkspaceAppStudio
+                onStartWorkspaceAppStudio: onStartWorkspaceAppStudio,
+                onStartMCPInstallReview: onStartMCPInstallReview
             )
         case .workspaceHome:
             if let workspace = effectiveWorkspace {

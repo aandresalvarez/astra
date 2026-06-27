@@ -298,11 +298,14 @@ enum MCPRuntimeProjection {
 
     enum PreflightIssue: Equatable {
         case missingExecutable(serverID: String, command: String)
+        case missingExecutableWithInstallSource(serverID: String, command: String, source: PluginMCPInstallSource)
 
         var message: String {
             switch self {
             case .missingExecutable(let serverID, let command):
                 return "MCP server \(serverID) needs \(command), which was not found. Install it or disable the capability that provides this server."
+            case .missingExecutableWithInstallSource(let serverID, let command, let source):
+                return "MCP server \(serverID) needs \(command), which was not found. Install \(MCPInstallSourceFormatter.installDescription(for: source)) or disable the capability that provides this server."
             }
         }
     }
@@ -323,11 +326,22 @@ enum MCPRuntimeProjection {
             if command.hasPrefix("/") {
                 return isExecutableFile(command)
                     ? nil
-                    : .missingExecutable(serverID: server.id, command: command)
+                    : missingExecutableIssue(for: server, command: command)
             }
             return detectExecutable(command).isEmpty
-                ? .missingExecutable(serverID: server.id, command: command)
+                ? missingExecutableIssue(for: server, command: command)
                 : nil
         }
     }
+
+    private static func missingExecutableIssue(
+        for server: PluginMCPServer,
+        command: String
+    ) -> PreflightIssue {
+        if let source = server.installSource {
+            return .missingExecutableWithInstallSource(serverID: server.id, command: command, source: source)
+        }
+        return .missingExecutable(serverID: server.id, command: command)
+    }
+
 }

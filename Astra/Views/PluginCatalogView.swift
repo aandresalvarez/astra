@@ -76,6 +76,9 @@ struct PluginCatalogView: View {
     @State private var importReview: CapabilityImportReview?
     @State private var importError: String?
     @State private var selectedPackageID: String?
+    @State private var showMCPInstallTargetSheet = false
+    @State private var pastedMCPInstallTarget = ""
+    @State private var mcpInstallRequest: MCPInstallChatRequest?
     @State private var approvalRecordsRefreshTask: Task<Void, Never>?
     @State private var approvalRecordsRefreshGeneration = 0
 
@@ -231,6 +234,27 @@ struct PluginCatalogView: View {
                 onCancel: { importReview = nil },
                 onImport: { report in
                     importCapability(report)
+                }
+            )
+        }
+        .sheet(isPresented: $showMCPInstallTargetSheet) {
+            MCPInstallTargetPasteSheet(
+                targetText: $pastedMCPInstallTarget,
+                onCancel: { showMCPInstallTargetSheet = false },
+                onReview: { reviewPastedMCPInstallTarget() }
+            )
+        }
+        .sheet(item: $mcpInstallRequest) { request in
+            CapabilityMCPInstallReviewSheet(
+                request: request,
+                workspace: workspace,
+                onCancel: { mcpInstallRequest = nil },
+                onInstalled: { package in
+                    mcpInstallRequest = nil
+                    selectedPackageID = package.id
+                    onPackageFocusChanged?(package.id)
+                    catalog.loadApprovedCapabilities()
+                    onCatalogChanged?()
                 }
             )
         }
@@ -418,7 +442,7 @@ struct PluginCatalogView: View {
             Spacer()
 
             importCapabilityButton
-            newCapabilityButton
+            newCapabilityMenu
 
             if !isEmbedded {
                 Button("Done") { dismiss() }
@@ -438,7 +462,7 @@ struct PluginCatalogView: View {
 
             if isEmbedded {
                 importCapabilityButton
-                newCapabilityButton
+                newCapabilityMenu
             }
         }
         .padding(.horizontal, 18)
@@ -476,22 +500,33 @@ struct PluginCatalogView: View {
         .frame(maxWidth: .infinity)
     }
 
-    private var newCapabilityButton: some View {
-        Button {
-            showCreateWizard = true
+    private var newCapabilityMenu: some View {
+        Menu {
+            Button {
+                showCreateWizard = true
+            } label: {
+                Label(CapabilityCreationPresentation.blankCapabilityTitle, systemImage: "plus")
+            }
+
+            Button {
+                showMCPInstallTargetSheet = true
+            } label: {
+                Label(CapabilityCreationPresentation.mcpCapabilityTitle, systemImage: "server.rack")
+            }
         } label: {
-            Label("New Capability", systemImage: "plus")
+            Label(CapabilityCreationPresentation.menuTitle, systemImage: "plus")
                 .font(Stanford.body(13))
         }
-        .buttonStyle(.bordered)
+        .menuStyle(.button)
         .fixedSize()
+        .help(CapabilityCreationPresentation.menuHelp)
     }
 
     private var importCapabilityButton: some View {
         Button {
             openCapabilityImportPanel()
         } label: {
-            Label("Import Capability", systemImage: "square.and.arrow.down")
+            Label(CapabilityImportPresentation.actionTitle, systemImage: "square.and.arrow.down")
                 .font(Stanford.body(13))
         }
         .buttonStyle(.bordered)
@@ -641,36 +676,38 @@ struct PluginCatalogView: View {
 
     private func capabilityGroupedList(_ state: PluginCatalogPresentationState) -> some View {
         VStack(alignment: .leading, spacing: 16) {
-            ForEach(state.groupedPackages, id: \.kind.rawValue) { group in
-                capabilityGroupSection(group)
+            ForEach(state.categorySections, id: \.category) { section in
+                capabilityCategorySection(section)
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
-    private func capabilityGroupSection(_ group: CapabilityCatalogPackageGroup) -> some View {
+    private func capabilityCategorySection(_ section: CapabilityCatalogCategorySection) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
             // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
             HStack(alignment: .top, spacing: 6) {
-                Text(group.kind.title)
+                Text(section.category)
                     .font(Stanford.caption(12).weight(.semibold))
                     .foregroundStyle(.secondary)
-                Text("\(group.packages.count)")
+                Text("\(section.packages.count)")
                     .font(Stanford.caption(10).weight(.medium))
                     .foregroundStyle(.tertiary)
                 Spacer(minLength: 0)
-                Text(group.kind.subtitle)
+                Text(capabilityCategoryStatusSummary(section))
                     .font(Stanford.caption(10))
                     .foregroundStyle(.tertiary)
             }
 
             VStack(spacing: 0) {
-                ForEach(Array(group.packages.enumerated()), id: \.element.id) { index, package in
-                    capabilityCatalogRow(package)
-                    if index < group.packages.count - 1 {
+                ForEach(Array(section.statusGroups.enumerated()), id: \.element.kind.rawValue) { statusIndex, group in
+                    if section.statusGroups.count > 1 {
+                        capabilityStatusSubheading(group)
+                    }
+                    capabilityPackageRows(group.packages)
+                    if statusIndex < section.statusGroups.count - 1 {
                         Divider()
-                            .padding(.leading, 42)
                     }
                 }
             }
@@ -681,6 +718,39 @@ struct PluginCatalogView: View {
                     .stroke(Color.primary.opacity(0.055), lineWidth: 1)
             }
         }
+    }
+
+    private func capabilityStatusSubheading(_ group: CapabilityCatalogPackageGroup) -> some View {
+        HStack(spacing: 5) {
+            Text(group.kind.title)
+                .font(Stanford.caption(10).weight(.semibold))
+                .foregroundStyle(.tertiary)
+            Text("\(group.packages.count)")
+                .font(Stanford.caption(10).weight(.medium))
+                .foregroundStyle(.quaternary)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 3)
+    }
+
+    private func capabilityPackageRows(_ packages: [PluginPackage]) -> some View {
+        VStack(spacing: 0) {
+            ForEach(Array(packages.enumerated()), id: \.element.id) { index, package in
+                capabilityCatalogRow(package)
+                if index < packages.count - 1 {
+                    Divider()
+                        .padding(.leading, 42)
+                }
+            }
+        }
+    }
+
+    private func capabilityCategoryStatusSummary(_ section: CapabilityCatalogCategorySection) -> String {
+        section.statusGroups
+            .map { "\($0.packages.count) \($0.kind.title.lowercased())" }
+            .joined(separator: " · ")
     }
 
     private func capabilityCatalogRow(_ package: PluginPackage) -> some View {
@@ -932,6 +1002,17 @@ struct PluginCatalogView: View {
     private func prepareCapabilityImportReview(_ url: URL) {
         let report = CapabilityPackageImporter().validateFile(at: url)
         importReview = CapabilityImportReview(report: report)
+    }
+
+    private func reviewPastedMCPInstallTarget() {
+        guard let request = MCPInstallChatCommand.installRequest(input: "/mcp \(pastedMCPInstallTarget)") else {
+            importError = "Paste an MCP npm, uvx, Docker, JSON, or HTTPS target to review."
+            return
+        }
+        showMCPInstallTargetSheet = false
+        DispatchQueue.main.async {
+            mcpInstallRequest = request
+        }
     }
 
     private func importCapability(_ report: CapabilityPackageValidationReport) {
@@ -1265,16 +1346,7 @@ struct PluginCatalogView: View {
     }
 
     private func capabilityContentsSummary(_ package: PluginPackage) -> String {
-        let parts: [String] = [
-            countPhrase(package.skills.count, singular: "instruction", plural: "instructions"),
-            countPhrase(package.connectors.count, singular: "connector", plural: "connectors"),
-            countPhrase(package.localTools.count, singular: "tool", plural: "tools"),
-            countPhrase(package.mcpServers.count, singular: "MCP server", plural: "MCP servers"),
-            countPhrase(package.browserAdapters.count, singular: "browser adapter", plural: "browser adapters"),
-            countPhrase(package.templates.count, singular: "template", plural: "templates")
-        ].filter { !$0.hasPrefix("0 ") }
-
-        return parts.isEmpty ? "No declared resources" : parts.joined(separator: " · ")
+        CapabilityPackageResourceSummary(package: package).contentSummary(separator: " · ")
     }
 
     private func countPhrase(_ count: Int, singular: String, plural: String) -> String {
@@ -1769,6 +1841,88 @@ struct PluginCatalogView: View {
             workspace: workspace,
             capabilities: capabilities
         )
+    }
+}
+
+private struct MCPInstallTargetPasteSheet: View {
+    @Binding var targetText: String
+    let onCancel: () -> Void
+    let onReview: () -> Void
+
+    private var canReview: Bool {
+        MCPInstallChatCommand.installRequest(input: "/mcp \(targetText)") != nil
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "server.rack")
+                    .font(Stanford.ui(18, weight: .semibold))
+                    .foregroundStyle(Stanford.lagunita)
+                    .frame(width: 34, height: 34)
+                    .background(Stanford.lagunita.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(CapabilityCreationPresentation.pasteSheetTitle)
+                        .font(Stanford.heading(18))
+                    Text(CapabilityCreationPresentation.pasteSheetSubtitle)
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer()
+            }
+            .padding(18)
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Target")
+                    .font(Stanford.ui(12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+
+                TextEditor(text: $targetText)
+                    .font(Stanford.ui(12, design: .monospaced))
+                    .scrollContentBackground(.hidden)
+                    .padding(8)
+                    .background(Color(nsColor: .textBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                    )
+                    .frame(minHeight: CGFloat(CapabilityCreationPresentation.mcpPasteTextEditorMinimumHeight))
+
+                Text("Examples: npx -y @vendor/server@1.2.3, npm:@vendor/server@1.2.3, uvx mcp-server==1.2.3, docker run vendor/server:1.2.3, https://example.com/mcp")
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(18)
+
+            Divider()
+
+            HStack {
+                Button("Cancel") { onCancel() }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button {
+                    onReview()
+                } label: {
+                    Label("Review", systemImage: "checklist")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Stanford.lagunita)
+                .disabled(!canReview)
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(18)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(width: CGFloat(CapabilityCreationPresentation.mcpPasteSheetWidth))
+        .frame(minHeight: CGFloat(CapabilityCreationPresentation.mcpPasteSheetMinimumHeight))
     }
 }
 

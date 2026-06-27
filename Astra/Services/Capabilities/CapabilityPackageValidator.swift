@@ -21,6 +21,7 @@ struct CapabilityPackageValidationIssue: Equatable, Identifiable {
         case unsafeConnector
         case unknownBrowserAdapter
         case unsafeMCPServer
+        case mcpInstallSourcePolicy
         case missingPrerequisite
         case emptyPayload
         case packageUpdate
@@ -530,7 +531,46 @@ enum CapabilityPackageValidator {
                     component: name
                 ))
             }
+            validateMCPInstallSource(server, issues: &issues)
         }
+    }
+
+    private static func validateMCPInstallSource(
+        _ server: PluginMCPServer,
+        issues: inout [CapabilityPackageValidationIssue]
+    ) {
+        guard server.installSource != nil else { return }
+        let name = displayName(server.displayName, fallback: server.id)
+        let intent = MCPInstallIntent(
+            rawInput: server.installSource?.identifier ?? server.id,
+            kind: server.transport == .stdio ? .stdioCommand : .remoteURL,
+            serverID: server.id,
+            displayName: server.displayName,
+            transport: server.transport,
+            command: server.command,
+            arguments: server.arguments,
+            url: server.url,
+            installSource: server.installSource
+        )
+        let decision = MCPInstallPolicy.decision(for: intent)
+        issues.append(contentsOf: decision.blockers.map { message in
+            issue(
+                .blocker,
+                .mcpInstallSourcePolicy,
+                "MCP install source blocked",
+                "\(name): \(message)",
+                component: name
+            )
+        })
+        issues.append(contentsOf: decision.warnings.map { message in
+            issue(
+                .warning,
+                .mcpInstallSourcePolicy,
+                "MCP install source needs review",
+                "\(name): \(message)",
+                component: name
+            )
+        })
     }
 
     private static func validatePrerequisites(
