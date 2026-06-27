@@ -152,7 +152,7 @@ enum MCPRuntimeProjection {
         guard !servers.isEmpty else { return nil }
         var entries: [String: [String: Any]] = [:]
         for resolved in servers {
-            let server = resolved.server
+            let server = RemoteMCPGatewayProjection.providerFacingServer(for: resolved)
             var entry: [String: Any] = ["type": server.transport.rawValue]
             switch server.transport {
             case .stdio:
@@ -319,7 +319,7 @@ enum MCPRuntimeProjection {
         isExecutableFile: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
     ) -> [PreflightIssue] {
         servers.compactMap { resolved in
-            let server = resolved.server
+            let server = RemoteMCPGatewayProjection.providerFacingServer(for: resolved)
             guard server.transport == .stdio, let command = server.command, !command.isEmpty else {
                 return nil
             }
