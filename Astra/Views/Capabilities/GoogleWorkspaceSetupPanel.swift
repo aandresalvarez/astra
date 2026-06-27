@@ -92,11 +92,11 @@ struct GoogleWorkspaceSetupPanel: View {
 
             Spacer(minLength: 10)
 
-            if let primaryActionTitle = presentation.primaryActionTitle {
+            if let primaryAction = presentation.primaryAction {
                 setupActionButton(
-                    title: primaryActionTitle,
-                    systemImage: primaryActionIcon(for: primaryActionTitle),
-                    action: primaryActionHandler(for: primaryActionTitle)
+                    title: primaryAction.title,
+                    systemImage: primaryAction.systemImage,
+                    action: primaryActionHandler(for: primaryAction)
                 )
             }
 
@@ -159,39 +159,20 @@ struct GoogleWorkspaceSetupPanel: View {
         .help(action == nil ? "Google Workspace account setup is not wired in this build." : title)
     }
 
-    private func primaryActionHandler(for title: String) -> (() -> Void)? {
-        switch title {
-        case "Connect":
+    private func primaryActionHandler(for action: GoogleWorkspaceSetupAction) -> (() -> Void)? {
+        switch action {
+        case .connect:
             return actions.connect
-        case "Upgrade":
+        case .upgradeScopes:
             return actions.upgradeScopes
-        case "Reauthorize":
+        case .reauthorize:
             return actions.reauthorize
-        case "Reconnect":
+        case .reconnect:
             return actions.reconnect
-        case "Retry":
+        case .retryPreflight:
             return actions.retryPreflight
-        case "Review":
+        case .reviewApprovals:
             return actions.reviewApprovals
-        default:
-            return nil
-        }
-    }
-
-    private func primaryActionIcon(for title: String) -> String {
-        switch title {
-        case "Connect", "Reconnect":
-            return "link"
-        case "Upgrade":
-            return "arrow.up.circle"
-        case "Reauthorize":
-            return "arrow.clockwise"
-        case "Retry":
-            return "play.circle"
-        case "Review":
-            return "checklist"
-        default:
-            return "arrow.right.circle"
         }
     }
 

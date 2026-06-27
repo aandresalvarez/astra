@@ -27,7 +27,7 @@ enum GoogleWorkspaceSetupPolicyState: Equatable {
     case denied(messages: [String])
 
     static func make(decision: CapabilityCatalogDecision) -> GoogleWorkspaceSetupPolicyState {
-        guard decision.canRun || decision.canEnable else {
+        guard !decision.hasNonApprovalBlockers else {
             return .denied(messages: decision.blockerMessages)
         }
         return .allowed
@@ -73,13 +73,55 @@ enum GoogleWorkspaceSetupIssueKind: Equatable {
     case writePendingApproval
 }
 
+enum GoogleWorkspaceSetupAction: Equatable {
+    case connect
+    case upgradeScopes
+    case reauthorize
+    case reconnect
+    case retryPreflight
+    case reviewApprovals
+
+    var title: String {
+        switch self {
+        case .connect:
+            return "Connect"
+        case .upgradeScopes:
+            return "Upgrade"
+        case .reauthorize:
+            return "Reauthorize"
+        case .reconnect:
+            return "Reconnect"
+        case .retryPreflight:
+            return "Retry"
+        case .reviewApprovals:
+            return "Review"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .connect, .reconnect:
+            return "link"
+        case .upgradeScopes:
+            return "arrow.up.circle"
+        case .reauthorize:
+            return "arrow.clockwise"
+        case .retryPreflight:
+            return "play.circle"
+        case .reviewApprovals:
+            return "checklist"
+        }
+    }
+}
+
 struct GoogleWorkspaceSetupIssuePresentation: Equatable, Identifiable {
     var kind: GoogleWorkspaceSetupIssueKind
     var message: String
     var detail: String?
-    var actionTitle: String?
+    var action: GoogleWorkspaceSetupAction?
 
     var id: GoogleWorkspaceSetupIssueKind { kind }
+    var actionTitle: String? { action?.title }
 }
 
 struct GoogleWorkspaceSetupPresentation: Equatable {
@@ -89,9 +131,11 @@ struct GoogleWorkspaceSetupPresentation: Equatable {
     var groupTitle: String
     var summarySubtitle: String
     var accountSubtitle: String
-    var primaryActionTitle: String?
+    var primaryAction: GoogleWorkspaceSetupAction?
     var secondaryActionTitle: String?
     var issues: [GoogleWorkspaceSetupIssuePresentation]
+
+    var primaryActionTitle: String? { primaryAction?.title }
 
     static func make(state: GoogleWorkspaceSetupState) -> GoogleWorkspaceSetupPresentation {
         let issues = issues(for: state)
@@ -99,7 +143,7 @@ struct GoogleWorkspaceSetupPresentation: Equatable {
             groupTitle: issues.isEmpty ? "Ready" : "Action needed",
             summarySubtitle: summarySubtitle(for: state, issues: issues),
             accountSubtitle: accountSubtitle(for: state.account),
-            primaryActionTitle: issues.first?.actionTitle,
+            primaryAction: issues.first?.action,
             secondaryActionTitle: state.account.email == nil ? nil : "Revoke",
             issues: issues
         )
@@ -112,7 +156,18 @@ struct GoogleWorkspaceSetupPresentation: Equatable {
                     kind: .policyDenied,
                     message: "Google Workspace is blocked by capability policy.",
                     detail: messages.map(trimmed).filter { !$0.isEmpty }.joined(separator: "\n"),
-                    actionTitle: nil
+                    action: nil
+                )
+            ]
+        }
+
+        if case .unavailable(let reason) = state.mcpAvailability {
+            return [
+                GoogleWorkspaceSetupIssuePresentation(
+                    kind: .mcpUnavailable,
+                    message: "Google Workspace MCP is not ready.",
+                    detail: trimmed(reason),
+                    action: .retryPreflight
                 )
             ]
         }
@@ -124,7 +179,7 @@ struct GoogleWorkspaceSetupPresentation: Equatable {
                     kind: .noAccount,
                     message: "Connect a Google account before enabling Workspace tools.",
                     detail: nil,
-                    actionTitle: "Connect"
+                    action: .connect
                 )
             ]
         case .expired:
@@ -133,7 +188,7 @@ struct GoogleWorkspaceSetupPresentation: Equatable {
                     kind: .expiredToken,
                     message: "Google access expired. Reauthorize to refresh account and scope status.",
                     detail: nil,
-                    actionTitle: "Reauthorize"
+                    action: .reauthorize
                 )
             ]
         case .revoked:
@@ -142,7 +197,7 @@ struct GoogleWorkspaceSetupPresentation: Equatable {
                     kind: .revokedToken,
                     message: "Google access was revoked. Reconnect the account before using Workspace tools.",
                     detail: nil,
-                    actionTitle: "Reconnect"
+                    action: .reconnect
                 )
             ]
         case .connected:
@@ -156,18 +211,7 @@ struct GoogleWorkspaceSetupPresentation: Equatable {
                     kind: .missingScopes,
                     message: "Upgrade Google consent to include the required Workspace scopes.",
                     detail: missingScopes.joined(separator: "\n"),
-                    actionTitle: "Upgrade"
-                )
-            ]
-        }
-
-        if case .unavailable(let reason) = state.mcpAvailability {
-            return [
-                GoogleWorkspaceSetupIssuePresentation(
-                    kind: .mcpUnavailable,
-                    message: "Google Workspace MCP is not ready.",
-                    detail: trimmed(reason),
-                    actionTitle: "Retry"
+                    action: .upgradeScopes
                 )
             ]
         }
@@ -178,7 +222,7 @@ struct GoogleWorkspaceSetupPresentation: Equatable {
                     kind: .writePendingApproval,
                     message: "Review \(count) pending Google write \(count == 1 ? "approval" : "approvals") before destructive actions can run.",
                     detail: nil,
-                    actionTitle: "Review"
+                    action: .reviewApprovals
                 )
             ]
         }
