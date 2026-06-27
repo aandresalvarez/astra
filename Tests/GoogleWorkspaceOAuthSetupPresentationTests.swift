@@ -38,4 +38,22 @@ struct GoogleWorkspaceOAuthSetupPresentationTests {
         #expect(presentation.actions.contains(.copyRequiredScopes))
         #expect(presentation.actions.contains(.openGoogleCloudConsole))
     }
+
+    @Test("missing custom setup can switch back to managed OAuth when available")
+    func missingCustomSetupCanSwitchBackToManagedOAuthWhenAvailable() {
+        let presentation = GoogleWorkspaceOAuthSetupPresentation.make(
+            settings: GoogleOAuthConfigurationSettings(
+                clientID: "",
+                redirectURI: GoogleOAuthConfigurationSettings.defaultRedirectURI,
+                source: .missing
+            ),
+            managedClientAvailable: true
+        )
+
+        #expect(presentation.mode == .customRequired)
+        #expect(presentation.actions.contains(.useManagedOAuth))
+        #expect(presentation.actions.contains(.copyRedirectURI))
+        #expect(presentation.actions.contains(.copyRequiredScopes))
+        #expect(presentation.actions.contains(.openGoogleCloudConsole))
+    }
 }

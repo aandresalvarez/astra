@@ -57,7 +57,7 @@ struct GoogleWorkspaceOAuthSetupPresentation: Equatable {
                 primaryTitle: "Custom OAuth client",
                 primaryStatus: "Setup required",
                 showsCustomFields: true,
-                actions: [
+                actions: (hasManagedClient ? [.useManagedOAuth] : []) + [
                     .copyRedirectURI,
                     .copyRequiredScopes,
                     .openGoogleCloudConsole

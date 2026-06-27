@@ -36,7 +36,7 @@ struct GoogleOAuthConfigurationTests {
     @Test("saved custom client does not override managed client unless custom mode is selected")
     func savedCustomClientRequiresExplicitCustomModeWhenManagedClientExists() throws {
         let defaults = try isolatedDefaults()
-        defaults.set("saved-client.apps.googleusercontent.com", forKey: GoogleOAuthConfigurationSettings.clientIDDefaultsKey)
+        defaults.set(" saved-client.apps.googleusercontent.com ", forKey: GoogleOAuthConfigurationSettings.clientIDDefaultsKey)
         defaults.set(GoogleOAuthClientSource.managed.rawValue, forKey: GoogleOAuthConfigurationSettings.clientSourceDefaultsKey)
 
         let managed = GoogleOAuthConfigurationSettings.load(
@@ -62,6 +62,21 @@ struct GoogleOAuthConfigurationTests {
 
         #expect(custom.clientID == "saved-client.apps.googleusercontent.com")
         #expect(custom.source == .custom)
+    }
+
+    @Test("legacy saved custom client loads normalized without a source marker")
+    func legacySavedCustomClientLoadsNormalizedWithoutSourceMarker() throws {
+        let defaults = try isolatedDefaults()
+        defaults.set(" saved-client.apps.googleusercontent.com ", forKey: GoogleOAuthConfigurationSettings.clientIDDefaultsKey)
+
+        let settings = GoogleOAuthConfigurationSettings.load(
+            environment: [:],
+            defaults: defaults,
+            bundleInfo: [:]
+        )
+
+        #expect(settings.clientID == "saved-client.apps.googleusercontent.com")
+        #expect(settings.source == .custom)
     }
 
     @Test("stored custom client remains available while managed client is preferred")

@@ -70,6 +70,11 @@ validate_sparkle_public_ed_key() {
   [[ "$decoded_length" == "32" ]]
 }
 
+validate_google_managed_oauth_client_id() {
+  local client_id="$1"
+  [[ "$client_id" =~ ^[A-Za-z0-9._-]+\.apps\.googleusercontent\.com$ ]]
+}
+
 case "$ASTRA_CHANNEL" in
   prod|production)
     ASTRA_CHANNEL="prod"
@@ -101,6 +106,11 @@ SPARKLE_FEED_URL="${ASTRA_SPARKLE_FEED_URL:-$DEFAULT_SPARKLE_FEED_URL}"
 
 if [[ -n "$SPARKLE_PUBLIC_ED_KEY" ]] && ! validate_sparkle_public_ed_key "$SPARKLE_PUBLIC_ED_KEY"; then
   echo "Invalid ASTRA_SPARKLE_PUBLIC_ED_KEY: expected a base64 Sparkle EdDSA public key that decodes to 32 bytes." >&2
+  exit 2
+fi
+
+if [[ -n "$GOOGLE_MANAGED_OAUTH_CLIENT_ID" ]] && ! validate_google_managed_oauth_client_id "$GOOGLE_MANAGED_OAUTH_CLIENT_ID"; then
+  echo "Invalid ASTRA_GOOGLE_MANAGED_OAUTH_CLIENT_ID: expected a Google OAuth client ID ending in .apps.googleusercontent.com." >&2
   exit 2
 fi
 

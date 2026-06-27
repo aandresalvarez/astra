@@ -35,7 +35,7 @@ struct GoogleOAuthConfigurationSettings: Equatable {
         defaults: UserDefaults = .standard,
         bundleInfo: [String: Any] = Bundle.main.infoDictionary ?? [:]
     ) -> Self {
-        let storedClientID = defaults.string(forKey: clientIDDefaultsKey) ?? ""
+        let storedClientID = firstNonEmpty(defaults.string(forKey: clientIDDefaultsKey))
         let storedRedirectURI = defaults.string(forKey: redirectURIDefaultsKey) ?? ""
         let storedSource = defaults.string(forKey: clientSourceDefaultsKey)
             .flatMap(GoogleOAuthClientSource.init(rawValue:))
@@ -53,7 +53,7 @@ struct GoogleOAuthConfigurationSettings: Equatable {
             )
         }
 
-        if storedSource == .custom, !storedClientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if storedSource == .custom, !storedClientID.isEmpty {
             return GoogleOAuthConfigurationSettings(
                 clientID: storedClientID,
                 redirectURI: redirectURI,
@@ -70,7 +70,7 @@ struct GoogleOAuthConfigurationSettings: Equatable {
             )
         }
 
-        if !storedClientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if !storedClientID.isEmpty {
             return GoogleOAuthConfigurationSettings(
                 clientID: storedClientID,
                 redirectURI: redirectURI,
