@@ -188,7 +188,11 @@ public struct MCPRuntimeBindingTemplate: Codable, Equatable, Sendable, Identifia
                   segment.reference?.kind == kind else {
                 return nil
             }
-            return segment.reference?.id.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let referenceID = segment.reference?.id.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !referenceID.isEmpty else {
+                return nil
+            }
+            return referenceID
         }
     }
 }
