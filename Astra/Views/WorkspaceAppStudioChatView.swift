@@ -64,6 +64,10 @@ struct WorkspaceAppStudioChatView: View {
                     manifest: draft.manifest,
                     workspacePath: workspace.primaryPath,
                     onSaveChecks: { session.applyChecks($0, workspace: workspace) },
+                    onFixIssue: { prompt in
+                        isTesting = false
+                        send(prompt)
+                    },
                     onDismiss: { isTesting = false }
                 )
             }

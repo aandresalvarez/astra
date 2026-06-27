@@ -35,6 +35,12 @@ enum WorkspaceAppScenarioCheckGenerator {
             )
         }
         guard !scenario.isEmpty else { return failure("Describe a test scenario first.") }
+        if let unsupported = WorkspaceAppTestCoverageAnalyzer.unsupportedScenarioFailure(
+            scenario: scenario,
+            manifest: manifest
+        ) {
+            return unsupported
+        }
 
         let runResult = await runner(buildPrompt(scenario: scenario, manifest: manifest), workspacePath, configuration)
         guard runResult.exitCode == 0 else {
@@ -99,8 +105,17 @@ enum WorkspaceAppScenarioCheckGenerator {
         - expect.kind is one of: "rowCount" (table row count `op` value; op = eq|gte|lte|gt|lt),
           "summaryContains" (the last run of expect.actionID produced output containing expect.text),
           or "noErrors" (every step just runs).
+        - appStorage.delete hard-deletes the primary-key row; later appStorage.query/list checks should
+          expect the row count to drop or the deleted row to be absent. Do not invent an is_deleted
+          soft-delete expectation unless the manifest has an explicit archive/status update action and
+          the scenario asks for archive/soft delete.
+        - Storage-backed HTML can call astra.query, astra.insert, and astra.update. It cannot directly
+          click-test DOM controls or call astra.delete; choose the declared action that backs the
+          behavior, and if none exists ASTRA will report that the scenario is unsupported.
         - Example — "after adding one record the table has 1 row": steps = [the add action],
           expect = {"kind":"rowCount","table":"<that table>","op":"eq","value":1}.
+        - Example — "after deleting one record the table is empty": steps = [the delete action],
+          expect = {"kind":"rowCount","table":"<that table>","op":"eq","value":0}.
         - Output ONLY the JSON inside the block.
         """
     }

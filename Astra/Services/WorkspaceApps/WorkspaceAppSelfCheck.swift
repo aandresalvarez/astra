@@ -40,6 +40,7 @@ enum WorkspaceAppSelfCheck {
     static func autoExercise(manifest: WorkspaceAppManifest, sampleRowsPerTable: Int = 3) -> WorkspaceAppSelfCheckReport {
         let runner = WorkspaceAppPreviewRunner(manifest: manifest, sampleRowsPerTable: sampleRowsPerTable)
         let results = manifest.actions.map { exercise($0, runner: runner, manifest: manifest) }
+            + WorkspaceAppTestCoverageAnalyzer.staticChecks(for: manifest)
         return WorkspaceAppSelfCheckReport(results: results)
     }
 
@@ -50,7 +51,9 @@ enum WorkspaceAppSelfCheck {
     ) -> WorkspaceAppCheckResult {
         let label = action.label ?? action.id
         do {
-            let result = try runner.run(action, manifest: manifest, input: defaultInput(for: action, runner: runner, manifest: manifest))
+            let beforeTables = runner.tables
+            let input = defaultInput(for: action, runner: runner, manifest: manifest)
+            let result = try runner.run(action, manifest: manifest, input: input)
             let summary = result.outputSummary
             if summary.contains("(preview") {
                 return WorkspaceAppCheckResult(id: action.id, label: label, status: .warn, detail: summary)
@@ -58,6 +61,16 @@ enum WorkspaceAppSelfCheck {
             if isWriteLabeled(label), WorkspaceAppActionEffect.effect(for: action.type) == .read {
                 return WorkspaceAppCheckResult(id: action.id, label: label, status: .warn,
                                                detail: "Labelled as a write but only reads — \(summary)")
+            }
+            if let failure = postconditionFailure(
+                for: action,
+                input: input,
+                result: result,
+                beforeTables: beforeTables,
+                runner: runner,
+                manifest: manifest
+            ) {
+                return WorkspaceAppCheckResult(id: action.id, label: label, status: .fail, detail: failure)
             }
             return WorkspaceAppCheckResult(id: action.id, label: label, status: .pass, detail: summary)
         } catch {
@@ -83,9 +96,13 @@ enum WorkspaceAppSelfCheck {
         let decisions = action.approvalDecisions + action.agentDecisions
         switch action.type {
         case "appStorage.insert":
-            let record = table.flatMap { WorkspaceAppDraftPreviewBuilder.defaultSampleRows(for: $0, count: 1, seed: 7).first } ?? [:]
+            let record = insertRecord(for: table, tableName: tableName, runner: runner)
             return WorkspaceAppActionInput(table: tableName, record: record, confirmedApproval: true)
-        case "appStorage.update", "appStorage.delete":
+        case "appStorage.update":
+            let existing = tableName.flatMap { runner.tables[$0]?.first } ?? [:]
+            let record = changedRecord(from: existing, table: table)
+            return WorkspaceAppActionInput(table: tableName, record: record, confirmedApproval: true)
+        case "appStorage.delete":
             let existing = tableName.flatMap { runner.tables[$0]?.first } ?? [:]
             return WorkspaceAppActionInput(table: tableName, record: existing, confirmedDestructive: true, confirmedApproval: true)
         default:
@@ -104,6 +121,129 @@ enum WorkspaceAppSelfCheck {
         let verbs: Set<String> = ["save", "add", "create", "insert", "record", "submit", "new", "log", "register", "store"]
         let words = Set(label.lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init))
         return !words.isDisjoint(with: verbs)
+    }
+
+    private static func changedRecord(
+        from existing: [String: WorkspaceAppStorageValue],
+        table: WorkspaceAppStorageTable?
+    ) -> [String: WorkspaceAppStorageValue] {
+        guard let table,
+              let primaryKey = table.columns.first(where: { $0.primaryKey })?.name,
+              let column = table.columns.first(where: { $0.name != primaryKey }) else {
+            return existing
+        }
+        var record = existing
+        record[column.name] = changedValue(for: column, current: existing[column.name])
+        return record
+    }
+
+    private static func insertRecord(
+        for table: WorkspaceAppStorageTable?,
+        tableName: String?,
+        runner: WorkspaceAppPreviewRunner
+    ) -> [String: WorkspaceAppStorageValue] {
+        guard let table else { return [:] }
+        var record = WorkspaceAppDraftPreviewBuilder.defaultSampleRows(for: table, count: 1, seed: 7).first ?? [:]
+        if let primaryKey = table.columns.first(where: { $0.primaryKey }) {
+            let rows = tableName.flatMap { runner.tables[$0] } ?? []
+            record[primaryKey.name] = uniquePrimaryKeyValue(for: primaryKey, tableName: table.name, rows: rows)
+        }
+        return record
+    }
+
+    private static func uniquePrimaryKeyValue(
+        for column: WorkspaceAppStorageColumn,
+        tableName: String,
+        rows: [[String: WorkspaceAppStorageValue]]
+    ) -> WorkspaceAppStorageValue {
+        let type = column.type.lowercased()
+        for offset in 1...10_000 {
+            let candidate: WorkspaceAppStorageValue = type.contains("int")
+                ? .integer(Int64(rows.count + offset))
+                : .text("self-check-\(tableName)-\(rows.count + offset)")
+            if !rows.contains(where: { $0[column.name] == candidate }) {
+                return candidate
+            }
+        }
+        return type.contains("int") ? .integer(Int64.max) : .text("self-check-\(tableName)-overflow")
+    }
+
+    private static func changedValue(
+        for column: WorkspaceAppStorageColumn,
+        current: WorkspaceAppStorageValue?
+    ) -> WorkspaceAppStorageValue {
+        switch column.type.lowercased() {
+        case "bool", "boolean":
+            if case .bool(let value) = current { return .bool(!value) }
+            return .bool(true)
+        case "int", "integer":
+            if case .integer(let value) = current { return .integer(value + 1) }
+            return .integer(1)
+        case "double", "real", "float", "number":
+            if case .real(let value) = current { return .real(value + 1) }
+            if case .integer(let value) = current { return .real(Double(value) + 1) }
+            return .real(1)
+        default:
+            if case .text(let value) = current, !value.isEmpty {
+                return .text("\(value) updated")
+            }
+            return .text("updated")
+        }
+    }
+
+    private static func postconditionFailure(
+        for action: WorkspaceAppActionSpec,
+        input: WorkspaceAppActionInput,
+        result: WorkspaceAppActionExecutionResult,
+        beforeTables: [String: [[String: WorkspaceAppStorageValue]]],
+        runner: WorkspaceAppPreviewRunner,
+        manifest: WorkspaceAppManifest
+    ) -> String? {
+        guard let table = input.table ?? action.table else { return nil }
+        let beforeRows = beforeTables[table] ?? []
+        let afterRows = runner.tables[table] ?? []
+        switch action.type {
+        case "appStorage.query":
+            let expected = min(beforeRows.count, max(1, min(input.limit, 10_000)))
+            guard result.rows.count == expected else {
+                return "Query returned \(result.rows.count) row(s), expected \(expected) from \(table)."
+            }
+        case "appStorage.insert":
+            guard afterRows.count == beforeRows.count + 1 else {
+                return "Insert did not add exactly one row to \(table): before \(beforeRows.count), after \(afterRows.count)."
+            }
+        case "appStorage.update":
+            guard let primaryKey = primaryKeyColumn(in: table, manifest: manifest),
+                  let keyValue = input.record[primaryKey],
+                  let updated = afterRows.first(where: { $0[primaryKey] == keyValue }) else {
+                return "Update did not leave a primary-key-matched row in \(table)."
+            }
+            let changedFields = input.record.keys.filter { $0 != primaryKey }
+            guard !changedFields.isEmpty else {
+                return "Update had no non-primary-key field to change in \(table)."
+            }
+            for field in changedFields where updated[field] != input.record[field] {
+                return "Update did not persist '\(field)' in \(table)."
+            }
+        case "appStorage.delete":
+            guard beforeRows.count > 0 else {
+                return "Delete could not be checked because \(table) had no sample row."
+            }
+            guard afterRows.count == beforeRows.count - 1 else {
+                return "Delete did not remove exactly one row from \(table): before \(beforeRows.count), after \(afterRows.count)."
+            }
+        default:
+            break
+        }
+        return nil
+    }
+
+    private static func primaryKeyColumn(in tableName: String, manifest: WorkspaceAppManifest) -> String? {
+        manifest.storage?.tables
+            .first(where: { $0.name == tableName })?
+            .columns
+            .first(where: { $0.primaryKey })?
+            .name
     }
 
     // MARK: - Tier 2: authored expectations
