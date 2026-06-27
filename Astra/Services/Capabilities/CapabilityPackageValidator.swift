@@ -531,6 +531,16 @@ enum CapabilityPackageValidator {
                     component: name
                 ))
             }
+            if let reason = unsafeMCPControlPlaneReason(server) {
+                let name = displayName(server.displayName, fallback: server.id)
+                issues.append(issue(
+                    .blocker,
+                    .unsafeMCPServer,
+                    "Unsafe MCP control plane",
+                    "\(name) has unsafe MCP control-plane metadata: \(reason).",
+                    component: name
+                ))
+            }
             validateMCPInstallSource(server, issues: &issues)
         }
     }
@@ -630,6 +640,13 @@ enum CapabilityPackageValidator {
             return "remote MCP URL must use HTTPS, except loopback HTTP for local development"
         }
         return nil
+    }
+
+    private static func unsafeMCPControlPlaneReason(_ server: PluginMCPServer) -> String? {
+        guard let controlPlane = server.controlPlane else { return nil }
+        let violations = controlPlane.invariantViolations()
+        guard !violations.isEmpty else { return nil }
+        return violations.map(\.shortDescription).joined(separator: "; ")
     }
 
     private static func governanceWasOmitted(from data: Data) -> Bool {

@@ -71,6 +71,7 @@ public enum MCPRuntimeBindingInvariantViolation: Equatable, Sendable {
     case destinationNameRequired
     case idRequired
     case literalSegmentMustNotCarryReference
+    case literalValueMustNotContainRawSecret
     case literalValueRequired
     case referenceSegmentMustNotCarryLiteral
     case referenceIDRequired
@@ -147,7 +148,11 @@ public struct MCPRuntimeBindingTemplate: Codable, Equatable, Sendable, Identifia
                 if segment.reference != nil {
                     violations.append(.literalSegmentMustNotCarryReference)
                 }
-                if segment.literal == nil {
+                if let literal = segment.literal {
+                    if Self.literalLooksLikeRawSecretValue(literal) {
+                        violations.append(.literalValueMustNotContainRawSecret)
+                    }
+                } else {
                     violations.append(.literalValueRequired)
                 }
             case .reference:
@@ -180,6 +185,23 @@ public struct MCPRuntimeBindingTemplate: Codable, Equatable, Sendable, Identifia
             }
         }
         return violations
+    }
+
+    private static let rawSecretValueRegexes: [NSRegularExpression] = [
+        #"(?i)\bbearer\s+[a-z0-9._~+/=-]{12,}"#,
+        #"(?i)\b(api[_-]?key|apikey|access[_-]?token|refresh[_-]?token|secret|password)\b\s*[:=]\s*['"]?[^\s'";,]{8,}"#,
+        #"(?i)\bya29\.[a-z0-9._-]{6,}"#,
+        #"(?i)\b1//[a-z0-9._-]{6,}"#,
+        #"(?i)\bAIza[0-9a-z_-]{8,}"#
+    ].map { pattern in
+        try! NSRegularExpression(pattern: pattern)
+    }
+
+    public static func literalLooksLikeRawSecretValue(_ value: String) -> Bool {
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        return rawSecretValueRegexes.contains { regex in
+            regex.firstMatch(in: value, range: range) != nil
+        }
     }
 
     private func references(ofKind kind: MCPRuntimeTemplateReferenceKind) -> [String] {
