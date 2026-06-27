@@ -55,6 +55,14 @@ struct WorkspaceAppSelfCheckTests {
         )
     }
 
+    private func noteArchiveActions() -> [WorkspaceAppActionSpec] {
+        [
+            WorkspaceAppActionSpec(id: "list_notes", type: "appStorage.query", label: "List Notes", table: "notes"),
+            WorkspaceAppActionSpec(id: "add_note", type: "appStorage.insert", label: "Add Note", table: "notes"),
+            WorkspaceAppActionSpec(id: "archive_note", type: "appStorage.update", label: "Archive Note", table: "notes")
+        ]
+    }
+
     private func expectation(_ kind: String, table: String? = nil, op: String? = nil, value: Int? = nil, text: String? = nil, actionID: String? = nil) -> WorkspaceAppCheckExpectation {
         WorkspaceAppCheckExpectation(kind: kind, table: table, op: op, value: value, text: text, actionID: actionID)
     }
@@ -103,7 +111,15 @@ struct WorkspaceAppSelfCheckTests {
 
         #expect(deleteCoverage?.status == .fail)
         #expect(deleteCoverage?.detail.contains("delete") == true)
-        #expect(deleteCoverage?.detail.contains("bridge") == true)
+        #expect(deleteCoverage?.detail.contains("removal path") == true)
+    }
+
+    @Test("auto-exercise accepts delete UI backed by an archive/update path")
+    func tier1StorageHTMLDeleteAffordanceAcceptsArchiveUpdatePath() {
+        let report = WorkspaceAppSelfCheck.autoExercise(manifest: noteHTMLManifest(actions: noteArchiveActions()))
+
+        #expect(report.results.contains { $0.id == "html-delete-affordance" } == false)
+        #expect(report.results.first { $0.id == "archive_note" }?.status == .pass)
     }
 
     // MARK: - Tier 2
@@ -186,7 +202,36 @@ struct WorkspaceAppSelfCheckTests {
         #expect(runnerCalled == false)
         #expect(result.check == nil)
         #expect(result.result.status == .fail)
-        #expect(result.result.detail.contains("no executable delete action") == true)
+        #expect(result.result.detail.contains("no executable delete/archive action") == true)
+    }
+
+    @Test("the scenario generator accepts delete/trash scenarios backed by archive/update")
+    func tier3DeleteScenarioAcceptsArchiveUpdatePath() async {
+        var runnerCalled = false
+        let json = #"""
+        {
+          "id": "archive",
+          "label": "Archive note",
+          "steps": [
+            { "actionID": "add_note", "record": { "id": "note-1", "title": "Draft", "body": "Body" } },
+            { "actionID": "archive_note", "record": { "id": "note-1", "title": "Archived", "body": "Body" } }
+          ],
+          "expect": { "kind": "summaryContains", "actionID": "archive_note", "text": "Updated 1 record" }
+        }
+        """#
+        let result = await WorkspaceAppScenarioCheckGenerator.generate(
+            scenario: "notes should be removed when I click the trash can",
+            manifest: noteHTMLManifest(actions: noteArchiveActions()),
+            workspacePath: "/tmp",
+            runner: { _, _, _ in
+                runnerCalled = true
+                return AgentUtilityRunResult(exitCode: 0, output: "ASTRA_APP_CHECK\n\(json)\nEND_ASTRA_APP_CHECK", error: "")
+            }
+        )
+
+        #expect(runnerCalled == true)
+        #expect(result.check != nil)
+        #expect(result.result.status == .pass)
     }
 
     @Test("the scenario prompt documents hard-delete storage semantics")

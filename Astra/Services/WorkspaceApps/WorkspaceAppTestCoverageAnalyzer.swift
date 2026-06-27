@@ -13,20 +13,25 @@ enum WorkspaceAppTestCoverageAnalyzer {
         scenario: String,
         manifest: WorkspaceAppManifest
     ) -> WorkspaceAppScenarioCheckResult? {
-        guard mentionsDeleteIntent(scenario), !hasExecutableDeleteAction(manifest) else { return nil }
+        guard mentionsRemovalIntent(scenario), !hasExecutableRemovalPath(manifest) else { return nil }
         return WorkspaceAppScenarioCheckResult(
             check: nil,
             result: WorkspaceAppCheckResult(
                 id: "scenario",
                 label: scenario,
                 status: .fail,
-                detail: "This app has no executable delete action. Add an appStorage.delete action, or implement archive/removal through an appStorage.update flow, then rerun this test."
+                detail: "This app has no executable delete/archive action. Add an appStorage.delete action, or add an appStorage.update action whose id or label makes the archive/remove flow explicit, then rerun this test."
             )
         )
     }
 
-    static func hasExecutableDeleteAction(_ manifest: WorkspaceAppManifest) -> Bool {
-        manifest.actions.contains { $0.type == "appStorage.delete" }
+    static func hasExecutableRemovalPath(_ manifest: WorkspaceAppManifest) -> Bool {
+        manifest.actions.contains { action in
+            if action.type == "appStorage.delete" {
+                return true
+            }
+            return action.type == "appStorage.update" && actionExpressesRemoval(action)
+        }
     }
 
     private static func storageHTMLDeleteAffordanceGap(
@@ -38,21 +43,33 @@ enum WorkspaceAppTestCoverageAnalyzer {
               containsDeleteAffordance(html) else {
             return nil
         }
+        guard !hasExecutableRemovalPath(manifest) else { return nil }
         return WorkspaceAppCheckResult(
             id: "html-delete-affordance",
             label: "Delete UI coverage",
             status: .fail,
-            detail: "The storage-backed HTML shows a delete/trash affordance, but ASTRA's HTML bridge exposes query, insert, and update only. Back the UI with a supported archive/update flow or move deletion into a governed native action."
+            detail: "The storage-backed HTML shows a delete/trash affordance, but the manifest does not expose a supported removal path. Back the UI with appStorage.delete or an explicit appStorage.update archive/remove action."
         )
     }
 
-    private static func mentionsDeleteIntent(_ text: String) -> Bool {
+    private static func mentionsRemovalIntent(_ text: String) -> Bool {
         let lower = text.lowercased()
         return [
             "delete", "deleted", "deleting",
             "remove", "removed", "removing",
-            "trash", "trashed"
+            "trash", "trashed",
+            "archive", "archived", "archiving"
         ].contains { lower.contains($0) }
+    }
+
+    private static func actionExpressesRemoval(_ action: WorkspaceAppActionSpec) -> Bool {
+        [
+            action.id,
+            action.label,
+            action.operation
+        ]
+        .compactMap { $0 }
+        .contains { mentionsRemovalIntent($0) }
     }
 
     private static func htmlReferencesAstraBridge(_ html: String) -> Bool {
