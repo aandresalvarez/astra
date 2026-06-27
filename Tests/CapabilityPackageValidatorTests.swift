@@ -239,6 +239,38 @@ struct CapabilityPackageValidatorTests {
         #expect(report.blockers.contains { $0.message.contains("interpreter execution flag") })
     }
 
+    @Test("unsafe MCP control-plane metadata is blocked")
+    func unsafeMCPControlPlaneMetadataIsBlocked() {
+        var package = makePackage(governance: .localDraft())
+        package.mcpServers = [
+            PluginMCPServer(
+                id: "google-workspace",
+                displayName: "Google Workspace",
+                transport: .http,
+                url: URL(string: "https://mcp.example.com/google"),
+                controlPlane: MCPControlPlaneMetadata(
+                    runtimeBindings: [
+                        MCPRuntimeBindingTemplate(
+                            id: "authorization-header",
+                            destination: .httpHeader,
+                            name: "Authorization",
+                            template: [
+                                .literal("Bearer ya29.raw-access-token-that-must-not-serialize")
+                            ]
+                        )
+                    ]
+                )
+            )
+        ]
+
+        let report = CapabilityPackageValidator.validate(package: package, checkPrerequisites: false)
+
+        #expect(!report.canInstall)
+        #expect(report.blockers.map(\.code).contains(.unsafeMCPServer))
+        #expect(report.blockers.contains { $0.message.contains("control-plane") })
+        #expect(report.blockers.contains { $0.message.contains("literalValueMustNotContainRawSecret") })
+    }
+
     @Test("mutable MCP install source is surfaced as a warning")
     func mutableMCPInstallSourceIsWarning() {
         var package = makePackage(governance: .localDraft())

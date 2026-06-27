@@ -380,6 +380,41 @@ struct CapabilityCatalogPolicyTests {
         )))
     }
 
+    @Test("Unsafe MCP control-plane metadata blocks package")
+    func unsafeMCPControlPlaneMetadataBlocksPackage() {
+        var package = makePolicyPackage(governance: .builtInApproved(riskLevel: .medium))
+        package.mcpServers = [
+            PluginMCPServer(
+                id: "google-workspace",
+                displayName: "Google Workspace",
+                transport: .http,
+                url: URL(string: "https://mcp.example.com/google"),
+                controlPlane: MCPControlPlaneMetadata(
+                    runtimeBindings: [
+                        MCPRuntimeBindingTemplate(
+                            id: "authorization-header",
+                            destination: .httpHeader,
+                            name: "Authorization",
+                            template: [
+                                .literal("Bearer ya29.raw-access-token-that-must-not-serialize")
+                            ]
+                        )
+                    ]
+                )
+            )
+        ]
+
+        let decision = CapabilityCatalogPolicy.decision(
+            for: package,
+            context: CapabilityCatalogPolicyContext(currentAppVersion: SemanticVersion(1, 0, 0))
+        )
+
+        #expect(!decision.canEnable)
+        #expect(!decision.canRun)
+        #expect(decision.blockerMessages.contains { $0.contains("control-plane") })
+        #expect(decision.blockerMessages.contains { $0.contains("literalValueMustNotContainRawSecret") })
+    }
+
     @Test("Remote MCP servers require HTTPS unless loopback")
     func remoteMCPServersRequireHTTPSUnlessLoopback() {
         var remote = makePolicyPackage(governance: .builtInApproved(riskLevel: .medium))

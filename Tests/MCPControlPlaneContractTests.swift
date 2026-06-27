@@ -157,6 +157,57 @@ struct MCPControlPlaneContractTests {
         #expect(violations.contains(.runtimeBinding("bad-literal", .literalSegmentMustNotCarryReference)))
     }
 
+    @Test("runtime binding literal segments reject raw bearer API key and refresh token values")
+    func runtimeBindingLiteralsRejectRawSecretValues() {
+        let controlPlane = MCPControlPlaneMetadata(
+            secretRefs: [
+                MCPSecretRef(id: "declared-secret", purpose: "Token")
+            ],
+            runtimeBindings: [
+                MCPRuntimeBindingTemplate(
+                    id: "raw-bearer",
+                    destination: .httpHeader,
+                    name: "Authorization",
+                    template: [
+                        .literal("Bearer ya29.raw-access-token-that-must-not-serialize")
+                    ]
+                ),
+                MCPRuntimeBindingTemplate(
+                    id: "raw-api-key",
+                    destination: .environment,
+                    name: "GOOGLE_API_KEY",
+                    template: [
+                        .literal("api_key=AIza-raw-api-key-that-must-not-serialize")
+                    ]
+                ),
+                MCPRuntimeBindingTemplate(
+                    id: "raw-refresh-token",
+                    destination: .environment,
+                    name: "GOOGLE_REFRESH_TOKEN",
+                    template: [
+                        .literal("refresh_token=1//raw-refresh-token-that-must-not-serialize")
+                    ]
+                ),
+                MCPRuntimeBindingTemplate(
+                    id: "safe-bearer-prefix",
+                    destination: .httpHeader,
+                    name: "Authorization",
+                    template: [
+                        .literal("Bearer "),
+                        .reference(.secret("declared-secret"))
+                    ]
+                )
+            ]
+        )
+
+        let violations = controlPlane.invariantViolations()
+
+        #expect(violations.contains(.runtimeBinding("raw-bearer", .literalValueMustNotContainRawSecret)))
+        #expect(violations.contains(.runtimeBinding("raw-api-key", .literalValueMustNotContainRawSecret)))
+        #expect(violations.contains(.runtimeBinding("raw-refresh-token", .literalValueMustNotContainRawSecret)))
+        #expect(!violations.contains(.runtimeBinding("safe-bearer-prefix", .literalValueMustNotContainRawSecret)))
+    }
+
     @Test("declared refs use canonical IDs and reject empty declarations")
     func declaredRefsUseCanonicalIDsAndRejectEmptyDeclarations() {
         let controlPlane = MCPControlPlaneMetadata(
