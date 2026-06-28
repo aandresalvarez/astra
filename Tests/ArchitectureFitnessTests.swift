@@ -30,6 +30,7 @@ struct ArchitectureFitnessTests {
             "Diagnostics",
             "Git",
             "GoogleWorkspace",
+            "Packs",
             "Persistence",
             "Runtime",
             "Security",
@@ -38,6 +39,25 @@ struct ArchitectureFitnessTests {
             "Validation",
             "WorkspaceApps"
         ])
+    }
+
+    @Test("Pack services stay in the Packs service folder")
+    func packServicesStayInPacksServiceFolder() throws {
+        let root = try repositoryRoot()
+        let serviceRoot = root.appendingPathComponent("Astra/Services")
+        let packServiceFilesOutsidePacks = try swiftFiles(under: serviceRoot)
+            .compactMap { file -> String? in
+                let path = relativePath(for: file, root: root)
+                guard path.contains("/Packs/") == false else { return nil }
+                let text = try String(contentsOf: file, encoding: .utf8)
+                return text.contains("AstraPack") ? path : nil
+            }
+            .sorted()
+
+        #expect(
+            packServiceFilesOutsidePacks.isEmpty,
+            "Pack service files should live under Astra/Services/Packs: \(packServiceFilesOutsidePacks)"
+        )
     }
 
     @Test("Workspace App Studio stays on the direct session architecture")
