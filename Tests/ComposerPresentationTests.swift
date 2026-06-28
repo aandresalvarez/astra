@@ -1,6 +1,7 @@
 import Testing
 @testable import ASTRA
 import ASTRACore
+import SwiftUI
 
 @Suite("Composer Presentation")
 struct ComposerPresentationTests {
@@ -42,6 +43,24 @@ struct ComposerPresentationTests {
         #expect(ComposerToolbarPresentation.verticalPadding == 7)
         #expect(ComposerToolbarPresentation.chipVerticalPadding == 6)
         #expect(ComposerToolbarPresentation.permissionModeUsesFlatChrome == true)
+    }
+
+    @Test("slash menu follows compact command list presentation")
+    func slashMenuFollowsCompactCommandListPresentation() {
+        #expect(SlashCommandMenuPresentation.rowHeight == 46)
+        #expect(SlashCommandMenuPresentation.iconFrame == 28)
+        #expect(SlashCommandMenuPresentation.iconSize == 15)
+        #expect(SlashCommandMenuPresentation.horizontalPadding == 12)
+        #expect(SlashCommandMenuPresentation.verticalPadding == 6)
+        #expect(SlashCommandMenuPresentation.commandFontSize == 14)
+        #expect(SlashCommandMenuPresentation.titleFontSize == 12)
+        #expect(SlashCommandMenuPresentation.descriptionFontSize == 11)
+        #expect(SlashCommandMenuPresentation.descriptionLineLimit == 1)
+        #expect(SlashCommandMenuPresentation.maxWidth == 380)
+        #expect(SlashCommandMenuPresentation.usesIconColumnDividers == true)
+        #expect(SlashCommandMenuPresentation.usesFullWidthDividers == false)
+        #expect(SlashCommandMenuPresentation.shadowRadius == 8)
+        #expect(SlashCommandMenuPresentation.shadowOpacity == 0.08)
     }
 
     @Test("disabled budgets are omitted from composer runtime status")
@@ -89,7 +108,74 @@ struct ComposerPresentationTests {
         #expect(TaskComposerCoordinator.visibleSlashOptions(messageText: "/sch") == [
             TaskComposerSlashOption(id: .routine, command: "/routine ")
         ])
+        #expect(TaskComposerCoordinator.visibleSlashOptions(messageText: "/m") == [
+            TaskComposerSlashOption(id: .mcp, command: "/mcp ")
+        ])
         #expect(TaskComposerSlashOption(id: .recap, command: "/recap").executesImmediately)
+    }
+
+    @Test("chat panel slash catalog exposes MCP review command")
+    func chatPanelSlashCatalogExposesMCPReviewCommand() {
+        let mcpOptions = ChatPanelSlashOption.matching("/m")
+
+        #expect(mcpOptions.map(\.command) == ["/mcp"])
+        #expect(mcpOptions.first?.title == "Install MCP")
+        #expect(mcpOptions.first?.description.contains("server JSON") == true)
+        #expect(mcpOptions.first?.executesImmediately == false)
+    }
+
+    @Test("chat panel slash catalog lists every workspace command in menu order")
+    func chatPanelSlashCatalogListsEveryWorkspaceCommandInMenuOrder() {
+        #expect(ChatPanelSlashOption.all.map(\.command) == [
+            "/skill",
+            "/tool",
+            "/connector",
+            "/template",
+            "/app",
+            "/mcp",
+            "/routine",
+            "/remember",
+            "/recap"
+        ])
+        #expect(Set(ChatPanelSlashOption.all.map(\.id)).count == ChatPanelSlashOption.all.count)
+        #expect(ChatPanelSlashOption.matching("/").map(\.command) == ChatPanelSlashOption.all.map(\.command))
+        #expect(ChatPanelSlashOption.matching("/r").map(\.command) == ["/routine", "/remember", "/recap"])
+    }
+
+    @Test("chat panel slash routing recognizes every command and rejects lookalikes")
+    func chatPanelSlashRoutingRecognizesEveryCommandAndRejectsLookalikes() {
+        for command in ["/skill", "/tool", "/connector", "/template", "/app", "/mcp", "/routine", "/schedule", "/remember", "/recap"] {
+            #expect(ChatPanelSlashCommandRouting.isSlashCommandInput(command))
+            #expect(ChatPanelSlashCommandRouting.isSlashCommandInput("\(command) with details"))
+        }
+
+        #expect(!ChatPanelSlashCommandRouting.isSlashCommandInput("/application build"))
+        #expect(!ChatPanelSlashCommandRouting.isSlashCommandInput("/remembered fact"))
+        #expect(!ChatPanelSlashCommandRouting.isSlashCommandInput("please /recap this"))
+    }
+
+    @Test("chat panel slash routing separates provider assisted commands from direct commands")
+    func chatPanelSlashRoutingSeparatesProviderAssistedCommandsFromDirectCommands() {
+        #expect(ChatPanelSlashCommandRouting.providerContextCommand(for: "/skill") == "/skill")
+        #expect(ChatPanelSlashCommandRouting.providerContextCommand(for: "/tool add jq") == "/tool")
+        #expect(ChatPanelSlashCommandRouting.providerContextCommand(for: "/connector") == "/connector")
+        #expect(ChatPanelSlashCommandRouting.providerContextCommand(for: "/template") == "/template")
+        #expect(ChatPanelSlashCommandRouting.providerContextCommand(for: "/routine daily cleanup") == "/routine")
+        #expect(ChatPanelSlashCommandRouting.providerContextCommand(for: "/schedule daily cleanup") == "/schedule")
+
+        #expect(ChatPanelSlashCommandRouting.providerContextCommand(for: "/remember facts") == nil)
+        #expect(ChatPanelSlashCommandRouting.providerContextCommand(for: "/app build tracker") == nil)
+        #expect(ChatPanelSlashCommandRouting.providerContextCommand(for: "/mcp npx -y @acme/mcp") == nil)
+        #expect(ChatPanelSlashCommandRouting.providerContextCommand(for: "/recap") == nil)
+    }
+
+    @Test("chat panel slash selection keeps commands that need arguments editable")
+    func chatPanelSlashSelectionKeepsCommandsThatNeedArgumentsEditable() {
+        let mcp = ChatPanelSlashOption.all.first { $0.command == "/mcp" }
+        let skill = ChatPanelSlashOption.all.first { $0.command == "/skill" }
+
+        #expect(mcp.map { ChatPanelSlashCommandRouting.selectionText(for: $0) } == "/mcp ")
+        #expect(skill.map { ChatPanelSlashCommandRouting.selectionText(for: $0) } == "/skill")
     }
 
     @Test("task composer send action classifies commands and attachments")
@@ -99,6 +185,14 @@ struct ComposerPresentationTests {
         #expect(TaskComposerCoordinator.sendAction(messageText: "/recap please", attachedFiles: []) == .recap)
         #expect(TaskComposerCoordinator.sendAction(messageText: "/routine every morning", attachedFiles: []) == .routine(instructions: "every morning"))
         #expect(TaskComposerCoordinator.sendAction(messageText: "/schedule", attachedFiles: []) == .routine(instructions: nil))
+        guard case .mcpInstall(let request) = TaskComposerCoordinator.sendAction(
+            messageText: "/mcp npx -y @acme/mcp@1.0.0",
+            attachedFiles: []
+        ) else {
+            Issue.record("Expected /mcp to route to MCP install review")
+            return
+        }
+        #expect(request.intent.installSource?.identifier == "@acme/mcp")
         #expect(TaskComposerCoordinator.sendAction(messageText: "Review this", attachedFiles: ["/tmp/a.txt", "/tmp/b.png"]) == .message("""
         Review this
 

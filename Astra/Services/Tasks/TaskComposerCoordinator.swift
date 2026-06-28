@@ -3,6 +3,7 @@ import ASTRACore
 
 enum TaskComposerSlashCommandID: String, CaseIterable, Sendable {
     case remember
+    case mcp
     case routine
     case recap
 }
@@ -21,6 +22,8 @@ enum TaskComposerSendAction: Equatable, Sendable {
     case remember(String)
     case recap
     case routine(instructions: String?)
+    case mcpInstall(MCPInstallChatRequest)
+    case mcpInstallFailure(String)
     case message(String)
 }
 
@@ -50,6 +53,9 @@ enum TaskComposerCoordinator {
         var options: [TaskComposerSlashOption] = []
         if "/remember".hasPrefix(trimmed) {
             options.append(TaskComposerSlashOption(id: .remember, command: "/remember "))
+        }
+        if "/mcp".hasPrefix(trimmed) {
+            options.append(TaskComposerSlashOption(id: .mcp, command: "/mcp "))
         }
         if "/routine".hasPrefix(trimmed) || "/schedule".hasPrefix(trimmed) {
             options.append(TaskComposerSlashOption(id: .routine, command: "/routine "))
@@ -81,6 +87,17 @@ enum TaskComposerCoordinator {
                 ? ""
                 : String(trimmed.dropFirst(commandLength)).trimmingCharacters(in: .whitespaces)
             return .routine(instructions: instructions.isEmpty ? nil : instructions)
+        }
+
+        if lower == "/mcp" || lower.hasPrefix("/mcp ") {
+            switch MCPInstallChatCommand.installResult(input: trimmed) {
+            case .request(let request):
+                return .mcpInstall(request)
+            case .failure(let failure):
+                return .mcpInstallFailure(failure.message)
+            case nil:
+                return .mcpInstallFailure("ASTRA could not parse that /mcp target.")
+            }
         }
 
         var message = messageText
