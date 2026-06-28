@@ -2267,25 +2267,37 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
     }
 
     private func extractCopilotUtilityText(from output: String) -> String {
-        var pieces: [String] = []
+        var textPieces: [String] = []
+        var failurePieces: [String] = []
+        var completionSummary: String?
         for line in output.split(whereSeparator: \.isNewline).map(String.init) {
             for event in CopilotStreamEventParser.parseAgentEvents(line: line) {
                 switch event {
                 case .text(let text):
-                    pieces.append(text)
+                    textPieces.append(text)
                 case .completed(let summary):
-                    if let summary, !summary.isEmpty {
-                        pieces.append(summary)
+                    if let summary = nonEmptyUtilityText(summary) {
+                        completionSummary = summary
                     }
                 case .failed(let message):
-                    pieces.append(message)
+                    if let message = nonEmptyUtilityText(message) {
+                        failurePieces.append(message)
+                    }
                 default:
                     continue
                 }
             }
         }
-        let joined = pieces.joined()
+        if let completionSummary {
+            return completionSummary
+        }
+        let joined = (textPieces + failurePieces).joined()
         return joined.isEmpty ? output : joined.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func nonEmptyUtilityText(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 
@@ -2294,6 +2306,7 @@ private final class CopilotUtilityStreamRunState: @unchecked Sendable {
     private var completed = false
     private var rawOutput = ""
     private var outputPieces: [String] = []
+    private var completionSummary: String?
     private var stderrOutput = ""
 
     func appendStdoutLineAndCompleteIfReady(_ line: String) -> AgentUtilityRunResult? {
@@ -2311,8 +2324,8 @@ private final class CopilotUtilityStreamRunState: @unchecked Sendable {
                 outputPieces.append(text)
             case .completed(let summary):
                 completedLine = true
-                if let summary, !summary.isEmpty {
-                    outputPieces.append(summary)
+                if let summary = Self.nonEmptyText(summary) {
+                    completionSummary = summary
                 }
             default:
                 continue
@@ -2371,11 +2384,19 @@ private final class CopilotUtilityStreamRunState: @unchecked Sendable {
     }
 
     private func renderedOutputLocked() -> String {
+        if let completionSummary {
+            return completionSummary
+        }
         let parsed = outputPieces.joined().trimmingCharacters(in: .whitespacesAndNewlines)
         if !parsed.isEmpty {
             return parsed
         }
         return rawOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func nonEmptyText(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private static func isTerminalLine(_ line: String) -> Bool {
