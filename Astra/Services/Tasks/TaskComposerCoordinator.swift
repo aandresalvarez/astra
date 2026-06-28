@@ -66,7 +66,11 @@ enum TaskComposerCoordinator {
         return options
     }
 
-    static func sendAction(messageText: String, attachedFiles: [String]) -> TaskComposerSendAction {
+    static func sendAction(
+        messageText: String,
+        attachedFiles: [String],
+        hasWorkspace: Bool = true
+    ) -> TaskComposerSendAction {
         guard hasInput(messageText: messageText, attachedFiles: attachedFiles) else { return .none }
 
         let trimmed = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -90,14 +94,14 @@ enum TaskComposerCoordinator {
         }
 
         if lower == "/mcp" || lower.hasPrefix("/mcp ") {
-            switch MCPInstallChatCommand.installResult(input: trimmed) {
-            case .request(let request):
+            let outcome = MCPInstallChatCommand.explicitInstallTurnOutcome(
+                input: trimmed,
+                hasWorkspace: hasWorkspace
+            )
+            if let request = outcome.request {
                 return .mcpInstall(request)
-            case .failure(let failure):
-                return .mcpInstallFailure(failure.message)
-            case nil:
-                return .mcpInstallFailure("ASTRA could not parse that /mcp target.")
             }
+            return .mcpInstallFailure(outcome.assistantMessage)
         }
 
         var message = messageText

@@ -193,6 +193,23 @@ struct ComposerPresentationTests {
             return
         }
         #expect(request.intent.installSource?.identifier == "@acme/mcp")
+        guard case .mcpInstallFailure(let missingWorkspaceMessage) = TaskComposerCoordinator.sendAction(
+            messageText: "/mcp npx -y @acme/mcp@1.0.0",
+            attachedFiles: [],
+            hasWorkspace: false
+        ) else {
+            Issue.record("Expected /mcp to require a workspace before review")
+            return
+        }
+        #expect(missingWorkspaceMessage == "Select a workspace first - MCP capabilities are workspace-scoped.")
+        guard case .mcpInstallFailure(let parseMessage) = TaskComposerCoordinator.sendAction(
+            messageText: "/mcp",
+            attachedFiles: []
+        ) else {
+            Issue.record("Expected invalid /mcp input to return the parser failure")
+            return
+        }
+        #expect(parseMessage.contains("Supported MCP install target formats"))
         #expect(TaskComposerCoordinator.sendAction(messageText: "Review this", attachedFiles: ["/tmp/a.txt", "/tmp/b.png"]) == .message("""
         Review this
 

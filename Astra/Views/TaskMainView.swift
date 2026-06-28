@@ -5413,7 +5413,8 @@ struct TaskMainView: View {
     private func sendMessage() {
         let sendAction = TaskComposerCoordinator.sendAction(
             messageText: messageText,
-            attachedFiles: attachedFiles
+            attachedFiles: attachedFiles,
+            hasWorkspace: task.workspace != nil
         )
         guard sendAction != .none else { return }
 

@@ -52,6 +52,25 @@ enum MCPInstallChatCommand {
 
     static func installTurnOutcome(input: String, hasWorkspace: Bool) -> MCPInstallChatTurnOutcome? {
         guard let result = installResult(input: input) else { return nil }
+        return turnOutcome(from: result, hasWorkspace: hasWorkspace)
+    }
+
+    static func explicitInstallTurnOutcome(input: String, hasWorkspace: Bool) -> MCPInstallChatTurnOutcome {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let payload = String(trimmed.dropFirst(commandToken.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let intent = MCPInstallIntentParser.parse(payload) else {
+            return turnOutcome(from: .failure(parseFailure(explicit: true)), hasWorkspace: hasWorkspace)
+        }
+        return turnOutcome(
+            from: .request(MCPInstallChatRequest(intent: intent, explicit: true)),
+            hasWorkspace: hasWorkspace
+        )
+    }
+
+    private static func turnOutcome(
+        from result: MCPInstallChatCommandResult,
+        hasWorkspace: Bool
+    ) -> MCPInstallChatTurnOutcome {
         switch result {
         case .failure(let failure):
             return MCPInstallChatTurnOutcome(assistantMessage: failure.message, request: nil)
