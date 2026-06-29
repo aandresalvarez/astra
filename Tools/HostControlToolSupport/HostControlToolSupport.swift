@@ -491,7 +491,7 @@ public final class HostControlMCPServer {
                 ]],
                 "isError": !status.ready
             ])
-        case "get_issue", "issue", "search_jql", "search":
+        case "get_issue", "search_jql":
             return handleJiraReadRequest(id: id, operation: operation, connector: connector, arguments: arguments)
         default:
             return encodeError(id: id, code: -32602, message: "Unsupported Jira operation '\(operation)'")
@@ -547,7 +547,8 @@ public final class HostControlMCPServer {
     }
 
     private func jiraStatus(connector: HostControlConnector) -> JiraConnectorStatus {
-        let baseURLReady = URL(string: connector.baseURL)?.scheme?.hasPrefix("http") == true
+        let scheme = URL(string: connector.baseURL)?.scheme?.lowercased()
+        let baseURLReady = scheme == "http" || scheme == "https"
         let emailKey = envKey(named: "JIRA_EMAIL", in: connector) ?? envKey(named: "EMAIL", in: connector)
         let tokenKey = envKey(named: "JIRA_API_TOKEN", in: connector) ?? envKey(named: "API_TOKEN", in: connector)
         let emailReady = emailKey.flatMap { configuration.environment[$0] }.map { !$0.isEmpty } ?? false
@@ -791,9 +792,21 @@ private struct JiraHTTPRequest {
 }
 
 private enum JiraRequestPolicy {
+    private static let readFields = [
+        "key",
+        "summary",
+        "status",
+        "assignee",
+        "priority",
+        "issuetype",
+        "project",
+        "created",
+        "updated"
+    ].joined(separator: ",")
+
     static func readRequest(operation: String, arguments: [String: Any]) throws -> JiraHTTPRequest {
         switch operation {
-        case "get_issue", "issue":
+        case "get_issue":
             guard let issueKey = clean(arguments["issue_key"] as? String),
                   isValidIssueKey(issueKey) else {
                 throw JiraRequestPolicyError("jira get_issue requires an issue_key such as ASTRA-123")
@@ -801,9 +814,11 @@ private enum JiraRequestPolicy {
             return JiraHTTPRequest(
                 method: "GET",
                 path: "/rest/api/3/issue/\(issueKey)",
-                queryItems: []
+                queryItems: [
+                    URLQueryItem(name: "fields", value: Self.readFields)
+                ]
             )
-        case "search_jql", "search":
+        case "search_jql":
             guard let jql = clean(arguments["jql"] as? String),
                   jql.count <= 1_000 else {
                 throw JiraRequestPolicyError("jira search_jql requires a non-empty jql string up to 1000 characters")
@@ -813,7 +828,8 @@ private enum JiraRequestPolicy {
                 path: "/rest/api/3/search/jql",
                 queryItems: [
                     URLQueryItem(name: "jql", value: jql),
-                    URLQueryItem(name: "maxResults", value: String(maxResults(from: arguments["max_results"])))
+                    URLQueryItem(name: "maxResults", value: String(maxResults(from: arguments["max_results"]))),
+                    URLQueryItem(name: "fields", value: Self.readFields)
                 ]
             )
         default:
@@ -930,7 +946,7 @@ private final class JiraHTTPClient {
 
     private func url(baseURL: String, request: JiraHTTPRequest) -> URL? {
         guard var url = URL(string: baseURL),
-              url.scheme?.hasPrefix("http") == true else {
+              ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
             return nil
         }
         for segment in request.path.split(separator: "/") {

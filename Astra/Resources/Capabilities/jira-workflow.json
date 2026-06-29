@@ -29,7 +29,7 @@
       "serviceType" : "jira"
     }
   ],
-  "description" : "Query, create, and update Jira tickets",
+  "description" : "Search and read Jira tickets",
   "formatVersion" : 2,
   "governance" : {
     "allowedRoles" : [
@@ -46,11 +46,9 @@
       "network"
     ],
     "externalEffects" : [
-      "readOnly",
-      "externalAPIWrite",
-      "ticketMutation"
+      "readOnly"
     ],
-    "policyNotes" : "Jira API access uses Keychain-backed connector credentials. Ticket creation, comments, transitions, and updates require explicit user confirmation at task time.",
+    "policyNotes" : "Jira API access uses Keychain-backed connector credentials. The built-in Jira bridge is read-only and supports typed status, issue lookup, and JQL search operations.",
     "requiresAdminApproval" : false,
     "requiresExplicitUserConsent" : false,
     "riskLevel" : "high",
@@ -72,7 +70,7 @@
   "prerequisites" : [
 
   ],
-  "setupGuide" : "Connect your workspace to Jira. The agent uses the REST API to interact with your Jira instance directly.\n\nWhat you can do:\n• Search tickets by project, sprint, status, or assignee\n• Read ticket details, comments, and history\n• Create new tickets with proper fields\n• Update status, assignee, and add comments\n• Summarize sprint progress and blockers\n\nSetup:\n• Base URL — your Jira instance (e.g. https:\/\/company.atlassian.net)\n• Email — your Jira account email\n• API Token — generate at id.atlassian.com > Security > API tokens\n• Projects — the project keys you work with (e.g. ENG, OPS)",
+  "setupGuide" : "Connect your workspace to Jira. The agent uses the REST API to read ticket metadata from your Jira instance.\n\nWhat you can do:\n• Search tickets by project, sprint, status, or assignee\n• Read ticket summaries, status, assignee, priority, project, and issue type\n• Summarize sprint progress and blockers\n\nSetup:\n• Base URL — your Jira instance (e.g. https:\/\/company.atlassian.net)\n• Email — your Jira account email\n• API Token — generate at id.atlassian.com > Security > API tokens\n• Projects — the project keys you work with (e.g. ENG, OPS)",
   "skills" : [
     {
       "allowedTools" : [
@@ -81,11 +79,11 @@
         "Glob",
         "Grep"
       ],
-      "behaviorInstructions" : "You are a Jira integration agent. Use curl via Bash to interact with the Jira REST API.\n\nAUTHENTICATION\nUse Basic auth with the email, API token, and base URL env vars shown for the selected Jira connector in Available Connectors / ASTRA_CONNECTORS. The prompt may include a connector-specific runtime example; follow those projected env names instead of assuming bare legacy names.\nFirst verify auth with /rest/api/3/mypermissions?permissions=BROWSE_PROJECTS. For configured projects, check /rest/api/3/mypermissions?projectKey=KEY&permissions=BROWSE_PROJECTS,CREATE_ISSUES. If permissions authenticate but project checks fail, report project visibility or CREATE_ISSUES problems instead of saying the token is invalid.\nUse /rest/api/3/myself only as a fallback identity check when permission probes are rejected. Do not treat /myself returning 401/403 as proof of an invalid token if a permission endpoint succeeds.\nDo not call /rest/api/3/permissions to check access. That endpoint only lists permission metadata; it does not prove the current account has project access.\nOnly recommend generating a new API token when both permission and fallback auth probes return 401/403. If permissions authenticate but searches return zero projects or issues, first check the selected connector's configured projects, Browse Projects, Create Issues, and site/project membership.\n\nCOMMON OPERATIONS\n• Search: GET /rest/api/3/search/jql?jql=project=KEY+AND+status!=Done&maxResults=20\n• Get issue: GET /rest/api/3/issue/{KEY-123}\n• Create issue: POST /rest/api/3/issue with {\"fields\":{\"project\":{\"key\":\"...\"},\"summary\":\"...\",\"issuetype\":{\"name\":\"Task\"}}}\n• Update fields: PUT /rest/api/3/issue/{KEY-123}\n• Add comment: POST /rest/api/3/issue/{KEY-123}/comment with {\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[...]}}\n• Transition: POST /rest/api/3/issue/{KEY-123}/transitions\n\nFORMATTING\n• Always show: ticket key, summary, status, assignee, priority\n• For search results, format as a clean table or list\n• When summarizing a sprint, group by status (To Do / In Progress / Done)\n\nRULES\n• Always confirm with the user before creating or modifying tickets\n• Default searches to the selected connector's configured project keys unless told otherwise\n• Use JQL for complex queries\n• Handle pagination for large result sets",
+      "behaviorInstructions" : "You are a Jira integration agent. Use the ASTRA host-control Jira bridge for typed, read-only Jira operations when available. In Docker workspace runs, use `mcp__astra_host__jira` or Copilot's `astra_host-jira`; do not use workspace shell or native host Bash for Jira.\n\nAUTHENTICATION\nUse Basic auth with the email, API token, and base URL env vars shown for the selected Jira connector in Available Connectors / ASTRA_CONNECTORS. The prompt may include a connector-specific runtime example; follow those projected env names instead of assuming bare legacy names.\nFirst verify auth with /rest/api/3/mypermissions?permissions=BROWSE_PROJECTS. For configured projects, check /rest/api/3/mypermissions?projectKey=KEY&permissions=BROWSE_PROJECTS. If permissions authenticate but project checks fail, report project visibility or Browse Projects problems instead of saying the token is invalid.\nUse /rest/api/3/myself only as a fallback identity check when permission probes are rejected. Do not treat /myself returning 401/403 as proof of an invalid token if a permission endpoint succeeds.\nDo not call /rest/api/3/permissions to check access. That endpoint only lists permission metadata; it does not prove the current account has project access.\nOnly recommend generating a new API token when both permission and fallback auth probes return 401/403. If permissions authenticate but searches return zero projects or issues, first check the selected connector's configured projects, Browse Projects, and site/project membership.\n\nREAD-ONLY OPERATIONS\n• Status: operation status\n• Search: operation search_jql with jql and optional max_results\n• Get issue: operation get_issue with issue_key\n• The bridge owns Jira paths and returns a vetted field set. Do not request raw method, path, or body inputs.\n\nFORMATTING\n• Always show: ticket key, summary, status, assignee, priority\n• For search results, format as a clean table or list\n• When summarizing a sprint, group by status (To Do / In Progress / Done)\n\nRULES\n• Do not create, update, comment on, transition, delete, or otherwise mutate Jira tickets with this capability\n• Default searches to the selected connector's configured project keys unless told otherwise\n• Use JQL for complex queries\n• Handle pagination for large result sets",
       "customTools" : [
 
       ],
-      "description" : "Query, create, and update Jira tickets via REST API",
+      "description" : "Search and read Jira tickets via typed read-only operations",
       "disallowedTools" : [
         "Write",
         "Edit"
@@ -115,5 +113,5 @@
   "templates" : [
 
   ],
-  "version" : "2.0.3"
+  "version" : "2.0.4"
 }

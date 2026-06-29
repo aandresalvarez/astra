@@ -88,15 +88,18 @@ struct PluginCatalogBuiltInTests {
         let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
         let skill = try #require(package.skills.first)
 
-        #expect(package.version == "2.0.3")
+        #expect(package.version == "2.0.4")
         #expect(skill.behaviorInstructions.contains("/rest/api/3/mypermissions?permissions=BROWSE_PROJECTS"))
-        #expect(skill.behaviorInstructions.contains("/rest/api/3/search/jql?jql="))
+        #expect(skill.behaviorInstructions.contains("permissions=BROWSE_PROJECTS"))
+        #expect(!skill.behaviorInstructions.contains("CREATE_ISSUES"))
+        #expect(skill.behaviorInstructions.contains("operation search_jql"))
         #expect(!skill.behaviorInstructions.contains("/rest/api/3/search?jql="))
         #expect(skill.behaviorInstructions.contains("First verify auth with /rest/api/3/mypermissions"))
         #expect(skill.behaviorInstructions.contains("Use /rest/api/3/myself only as a fallback"))
         #expect(!skill.behaviorInstructions.contains("If /myself returns 401/403, stop"))
         #expect(skill.behaviorInstructions.contains("Do not call /rest/api/3/permissions"))
         #expect(skill.behaviorInstructions.contains("Only recommend generating a new API token when both permission and fallback auth probes return 401/403"))
+        #expect(skill.behaviorInstructions.contains("Do not create, update, comment on, transition, delete"))
     }
 
     @Test("Security auditor bundled capability version matches fallback catalog")

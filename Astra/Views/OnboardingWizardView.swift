@@ -193,7 +193,7 @@ enum OnboardingCapabilitySetup {
             id: jiraPackageID,
             packageID: jiraPackageID,
             title: "Jira",
-            subtitle: "Query, create, and update Jira tickets",
+            subtitle: "Search and read Jira tickets",
             icon: "list.bullet.clipboard"
         ),
         OnboardingCapabilityOption(
