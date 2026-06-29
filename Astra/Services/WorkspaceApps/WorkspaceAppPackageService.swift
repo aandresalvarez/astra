@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import SwiftData
 
@@ -558,8 +559,7 @@ struct WorkspaceAppPackageService {
         ))
         let tables = Set(manifest.storage?.tables.map(\.name) ?? [])
         for dataExport in exports where tables.contains(dataExport.table) {
-            let dataURL = try containedPackageFileURL(in: packageURL, path: dataExport.path)
-            let rows = try readJSONLines(at: dataURL)
+            let rows = try readPackageJSONLines(in: packageURL, path: dataExport.path)
             for row in rows {
                 try storageService.insertRecord(row, into: dataExport.table, databaseURL: databaseURL)
             }
@@ -572,10 +572,10 @@ struct WorkspaceAppPackageService {
             .appendingPathComponent("data", isDirectory: true)
             .appendingPathComponent("exports.json")
         guard fileManager.fileExists(atPath: url.path) else { return nil }
-        guard let containedURL = try? containedPackageFileURL(in: packageURL, path: "storage/data/exports.json") else {
+        guard let data = try? readContainedPackageFileData(in: packageURL, path: "storage/data/exports.json") else {
             return nil
         }
-        return try? JSONDecoder().decode([WorkspaceAppPackageDataExport].self, from: Data(contentsOf: containedURL))
+        return try? JSONDecoder().decode([WorkspaceAppPackageDataExport].self, from: data)
     }
 
     private func writeJSONLines(
@@ -590,8 +590,14 @@ struct WorkspaceAppPackageService {
         try Data(lines.joined(separator: "\n").utf8).write(to: url, options: [.atomic])
     }
 
-    private func readJSONLines(at url: URL) throws -> [[String: WorkspaceAppStorageValue]] {
-        let text = try String(contentsOf: url, encoding: .utf8)
+    private func readPackageJSONLines(
+        in packageURL: URL,
+        path: String
+    ) throws -> [[String: WorkspaceAppStorageValue]] {
+        let data = try readContainedPackageFileData(in: packageURL, path: path)
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw WorkspaceAppPackageFileResolutionError.invalidPath
+        }
         let decoder = JSONDecoder()
         return try text
             .split(whereSeparator: \.isNewline)
@@ -621,10 +627,10 @@ struct WorkspaceAppPackageService {
     ) -> T? {
         let relativePath = path.hasPrefix("/") ? String(path.dropFirst()) : path
         do {
-            let url = try containedPackageFileURL(in: packageURL, path: relativePath)
+            let data = try readContainedPackageFileData(in: packageURL, path: relativePath)
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
-            return try decoder.decode(type, from: Data(contentsOf: url))
+            return try decoder.decode(type, from: data)
         } catch WorkspaceAppPackageFileResolutionError.missing {
             issues.append(blocker(path, "Could not decode required package file \(relativePath): file is missing."))
             return nil
@@ -641,7 +647,7 @@ struct WorkspaceAppPackageService {
         let paths = portableFilePaths(in: packageURL)
             .filter { $0 != "checksums.json" }
         return try paths.map { path in
-            let data = try Data(contentsOf: packageURL.appendingPathComponent(path))
+            let data = try readContainedPackageFileData(in: packageURL, path: path)
             return WorkspaceAppPackageChecksum(path: path, sha256: WorkspaceAppService.digest(for: data))
         }
     }
@@ -656,23 +662,18 @@ struct WorkspaceAppPackageService {
                 issues.append(blocker("/checksums.json/\(checksum.path)", "Checksum path must be relative and portable."))
                 continue
             }
-            let url: URL
             do {
-                url = try containedPackageFileURL(in: packageURL, path: checksum.path)
+                let data = try readContainedPackageFileData(in: packageURL, path: checksum.path)
+                let actual = WorkspaceAppService.digest(for: data)
+                if actual != checksum.sha256 {
+                    issues.append(blocker("/checksums.json/\(checksum.path)", "Checksum does not match package file."))
+                }
             } catch WorkspaceAppPackageFileResolutionError.missing {
                 issues.append(blocker("/checksums.json/\(checksum.path)", "Checksum references a missing file."))
                 continue
             } catch {
                 issues.append(blocker("/checksums.json/\(checksum.path)", "Checksum file must be a regular file inside the package."))
                 continue
-            }
-            guard let data = try? Data(contentsOf: url) else {
-                issues.append(blocker("/checksums.json/\(checksum.path)", "Checksum references an unreadable file."))
-                continue
-            }
-            let actual = WorkspaceAppService.digest(for: data)
-            if actual != checksum.sha256 {
-                issues.append(blocker("/checksums.json/\(checksum.path)", "Checksum does not match package file."))
             }
         }
     }
@@ -719,19 +720,17 @@ struct WorkspaceAppPackageService {
                 issues.append(blocker("/storage/data/exports.json", "Data export path must stay within the selected storage data folder."))
                 continue
             }
-            let url: URL
             do {
-                url = try containedPackageFileURL(in: packageURL, path: dataExport.path)
+                let rows = try readPackageJSONLines(in: packageURL, path: dataExport.path)
+                if rows.count != dataExport.rowCount {
+                    issues.append(blocker("/storage/data/exports.json", "Data export row count does not match \(dataExport.path)."))
+                }
             } catch WorkspaceAppPackageFileResolutionError.missing {
                 issues.append(blocker("/storage/data/exports.json", "Data export references a missing file."))
                 continue
             } catch {
                 issues.append(blocker("/\(dataExport.path)", "Data export file must be a regular file inside the package."))
                 continue
-            }
-            let rowCount = (try? readJSONLines(at: url).count) ?? -1
-            if rowCount != dataExport.rowCount {
-                issues.append(blocker("/storage/data/exports.json", "Data export row count does not match \(dataExport.path)."))
             }
         }
     }
@@ -821,8 +820,7 @@ struct WorkspaceAppPackageService {
         issues: inout [WorkspaceAppPackageValidationReport.Issue]
     ) {
         for path in portableFilePaths(in: packageURL) where path.hasSuffix(".json") || path.hasSuffix(".jsonl") || path.hasSuffix(".md") {
-            guard let url = try? containedPackageFileURL(in: packageURL, path: path),
-                  let data = try? Data(contentsOf: url),
+            guard let data = try? readContainedPackageFileData(in: packageURL, path: path),
                   let text = String(data: data, encoding: .utf8) else {
                 continue
             }
@@ -856,6 +854,61 @@ struct WorkspaceAppPackageService {
             throw WorkspaceAppPackageFileResolutionError.invalidPath
         }
         return url
+    }
+
+    private func readContainedPackageFileData(in packageURL: URL, path: String) throws -> Data {
+        let descriptor = try openContainedPackageFile(in: packageURL, path: path)
+        defer { close(descriptor) }
+
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+        while true {
+            let count = Darwin.read(descriptor, &buffer, buffer.count)
+            if count > 0 {
+                data.append(buffer, count: count)
+            } else if count == 0 {
+                return data
+            } else if errno != EINTR {
+                throw WorkspaceAppPackageFileResolutionError.invalidPath
+            }
+        }
+    }
+
+    private func openContainedPackageFile(in packageURL: URL, path: String) throws -> Int32 {
+        guard isPortableRelativePath(path) else {
+            throw WorkspaceAppPackageFileResolutionError.invalidPath
+        }
+        let components = path.split(separator: "/").map(String.init)
+        guard !components.isEmpty else {
+            throw WorkspaceAppPackageFileResolutionError.invalidPath
+        }
+
+        let rootPath = packageURL.resolvingSymlinksInPath().standardizedFileURL.path
+        var current = Darwin.open(rootPath, O_RDONLY | O_DIRECTORY)
+        guard current >= 0 else {
+            throw errno == ENOENT ? WorkspaceAppPackageFileResolutionError.missing : WorkspaceAppPackageFileResolutionError.invalidPath
+        }
+
+        for (index, component) in components.enumerated() {
+            let isLast = index == components.count - 1
+            let flags = isLast
+                ? (O_RDONLY | O_NOFOLLOW)
+                : (O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+            let next = component.withCString { Darwin.openat(current, $0, flags) }
+            let openErrno = errno
+            close(current)
+            guard next >= 0 else {
+                throw openErrno == ENOENT ? WorkspaceAppPackageFileResolutionError.missing : WorkspaceAppPackageFileResolutionError.invalidPath
+            }
+            current = next
+        }
+
+        var stat = stat()
+        guard fstat(current, &stat) == 0, (stat.st_mode & S_IFMT) == S_IFREG else {
+            close(current)
+            throw WorkspaceAppPackageFileResolutionError.invalidPath
+        }
+        return current
     }
 
     private func portableFilePaths(in packageURL: URL) -> [String] {
@@ -914,14 +967,9 @@ struct WorkspaceAppPackageService {
         return package == nil ? .decoded : .readyToInstall
     }
 
-    private func digest(for url: URL) -> String {
-        guard let data = try? Data(contentsOf: url) else { return "" }
-        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-    }
-
     private func digest(forPackageFile path: String, in packageURL: URL) -> String {
-        guard let url = try? containedPackageFileURL(in: packageURL, path: path) else { return "" }
-        return digest(for: url)
+        guard let data = try? readContainedPackageFileData(in: packageURL, path: path) else { return "" }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     private func packageDigest(at packageURL: URL) -> String {

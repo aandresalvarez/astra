@@ -106,6 +106,41 @@ struct WorkspaceAppPackageTests {
         })
     }
 
+    @Test("package validation rejects symlinked data export parent directories")
+    func packageValidationRejectsSymlinkedDataExportParentDirectories() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("grocery-seed-parent.astra-app", isDirectory: true)
+        let databaseURL = try Self.groceryDatabase(in: root)
+        _ = try WorkspaceAppPackageService().exportPackage(
+            manifest: Self.groceryManifest(),
+            to: packageURL,
+            packageID: "grocery-seed-parent",
+            mode: .templatePlusSeedData,
+            appStorageDatabaseURL: databaseURL
+        )
+        let seedDirectory = packageURL.appendingPathComponent("storage/data/seed", isDirectory: true)
+        let outsideSeedDirectory = root.appendingPathComponent("outside-seed", isDirectory: true)
+        try FileManager.default.createDirectory(at: outsideSeedDirectory, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(
+            at: seedDirectory.appendingPathComponent("items.jsonl"),
+            to: outsideSeedDirectory.appendingPathComponent("items.jsonl")
+        )
+        try FileManager.default.removeItem(at: seedDirectory)
+        try FileManager.default.createSymbolicLink(
+            atPath: seedDirectory.path,
+            withDestinationPath: outsideSeedDirectory.path
+        )
+
+        let report = WorkspaceAppPackageService().validatePackage(at: packageURL)
+
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains {
+            $0.path == "/storage/data/seed/items.jsonl"
+                && $0.message.contains("inside the package")
+        })
+    }
+
     @Test("full app export writes records and surfaces a sensitive data warning")
     func fullAppExportWritesRecordsAndSurfacesSensitiveDataWarning() throws {
         let root = try Self.temporaryRoot()
