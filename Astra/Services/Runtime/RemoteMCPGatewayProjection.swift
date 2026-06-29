@@ -47,6 +47,7 @@ enum RemoteMCPGatewayProjection {
         }
         guard RemoteMCPGatewayEndpointTrustPolicy.credentialForwardingEndpointViolation(
             packageID: resolved.packageID,
+            packageSourceMetadata: resolved.packageSourceMetadata,
             server: server
         ) == nil else {
             return nil
@@ -89,6 +90,7 @@ enum RemoteMCPGatewayProjection {
         )
         return MCPRuntimeProjection.ResolvedServer(
             packageID: resolved.packageID,
+            packageSourceMetadata: resolved.packageSourceMetadata,
             server: gatewayServer,
             permittedEnvironmentKeys: [accessTokenEnvironmentKey]
         )

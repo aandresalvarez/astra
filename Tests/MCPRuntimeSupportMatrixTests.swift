@@ -76,10 +76,58 @@ struct MCPRuntimeSupportMatrixTests {
     @Test("Planner routes remote HTTP header bindings through the ASTRA gateway")
     func plannerRoutesRemoteHTTPHeaderBindingsThroughGateway() throws {
         let server = PluginMCPServer(
-            id: "google_drive",
+            id: "google_workspace_drive",
             displayName: "Google Drive",
             transport: .http,
-            url: URL(string: "https://mcp.example.com/google")!,
+            url: URL(string: "https://drivemcp.googleapis.com/mcp/v1")!,
+            connectorBindings: ["google-workspace"]
+        )
+        let controlPlane = MCPControlPlaneMetadata(
+            secretRefs: [
+                MCPSecretRef(id: "google-access-token", purpose: "Short-lived access token.")
+            ],
+            runtimeBindings: [
+                MCPRuntimeBindingTemplate(
+                    id: "auth-header",
+                    destination: .httpHeader,
+                    name: "Authorization",
+                    template: [
+                        .literal("Bearer "),
+                        .reference(.secret("google-access-token"))
+                    ]
+                )
+            ]
+        )
+
+        let rows = MCPRuntimeDeliveryPlanner.plan(
+            package: trustedGoogleWorkspacePackage(server: server),
+            server: server,
+            controlPlane: controlPlane,
+            profiles: focusedProfiles()
+        )
+
+        let claude = try #require(rows.row(for: .claudeCode))
+        #expect(claude.compatibility == .compatible)
+        #expect(claude.deliveryMethod == .gatewayProjection)
+        #expect(claude.providerFacingTransport == .stdio)
+        #expect(claude.deliverableBindingDestinations == [.httpHeader])
+        #expect(claude.expectedEvidence.map(\.kind).contains(.gatewayProjection))
+        #expect(claude.expectedEvidence.map(\.kind).contains(.healthProbe))
+
+        let codex = try #require(rows.row(for: .codexCLI))
+        #expect(codex.compatibility == .compatible)
+        #expect(codex.deliveryMethod == .gatewayProjection)
+        #expect(codex.configDeliveryOwnership == .astraInlineLaunchArgument)
+        #expect(codex.expectedEvidence.map(\.kind).contains(.runtimeConfigRendered))
+    }
+
+    @Test("Planner rejects copied Google Workspace gateway identity without trusted package provenance")
+    func plannerRejectsCopiedGoogleWorkspaceGatewayIdentityWithoutTrustedPackageProvenance() throws {
+        let server = PluginMCPServer(
+            id: "google_workspace_drive",
+            displayName: "Google Drive",
+            transport: .http,
+            url: URL(string: "https://drivemcp.googleapis.com/mcp/v1")!,
             connectorBindings: ["google-workspace"]
         )
         let controlPlane = MCPControlPlaneMetadata(
@@ -101,23 +149,19 @@ struct MCPRuntimeSupportMatrixTests {
 
         let rows = MCPRuntimeDeliveryPlanner.plan(
             server: server,
+            packageID: "google-workspace",
+            packageSourceMetadata: .localLibrary(),
             controlPlane: controlPlane,
             profiles: focusedProfiles()
         )
 
         let claude = try #require(rows.row(for: .claudeCode))
-        #expect(claude.compatibility == .compatible)
-        #expect(claude.deliveryMethod == .gatewayProjection)
-        #expect(claude.providerFacingTransport == .stdio)
-        #expect(claude.deliverableBindingDestinations == [.httpHeader])
-        #expect(claude.expectedEvidence.map(\.kind).contains(.gatewayProjection))
-        #expect(claude.expectedEvidence.map(\.kind).contains(.healthProbe))
-
-        let codex = try #require(rows.row(for: .codexCLI))
-        #expect(codex.compatibility == .compatible)
-        #expect(codex.deliveryMethod == .gatewayProjection)
-        #expect(codex.configDeliveryOwnership == .astraInlineLaunchArgument)
-        #expect(codex.expectedEvidence.map(\.kind).contains(.runtimeConfigRendered))
+        #expect(claude.compatibility == .incompatible)
+        #expect(claude.deliveryMethod == .notDelivered)
+        #expect(claude.incompatibilities == [
+            .untrustedCredentialEndpoint(RemoteMCPGatewayEndpointTrustPolicy.untrustedCredentialEndpointReason)
+        ])
+        #expect(claude.expectedDriftKinds == [.runtimeBindingMismatch])
     }
 
     @Test("Planner does not claim remote HTTP header support without gateway ownership")
@@ -294,6 +338,25 @@ struct MCPRuntimeSupportMatrixTests {
 private func focusedProfiles() -> [MCPRuntimeSupportProfile] {
     MCPRuntimeSupportMatrix.defaultProfiles()
         .filter { [.claudeCode, .codexCLI, .cursorCLI].contains($0.runtimeID) }
+}
+
+private func trustedGoogleWorkspacePackage(server: PluginMCPServer) -> PluginPackage {
+    PluginPackage(
+        id: GoogleWorkspaceCapability.packageID,
+        name: "Google Workspace",
+        icon: "doc.richtext",
+        description: "Google Workspace",
+        author: "ASTRA",
+        category: "Integrations",
+        tags: ["google"],
+        version: "1.0.0",
+        skills: [],
+        connectors: [],
+        localTools: [],
+        mcpServers: [server],
+        templates: [],
+        sourceMetadata: .builtIn()
+    )
 }
 
 private extension Array where Element == MCPRuntimeSupportProfile {
