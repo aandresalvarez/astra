@@ -562,10 +562,11 @@ struct WorkspaceAppService {
         modelContext: ModelContext,
         now: Date = Date()
     ) throws {
-        if let workspace, !workspace.primaryPath.isEmpty {
+        if let workspace, !workspace.primaryPath.isEmpty, WorkspaceAppIDPolicy.isPortableIdentifier(app.logicalID) {
             let directory = WorkspaceAppManifestStore(fileManager: fileManager)
                 .appDirectoryURL(app: app, workspace: workspace)
-            if fileManager.fileExists(atPath: directory.path) {
+            if WorkspaceFileLayout.isContainedAppDirectory(directory, workspacePath: workspace.primaryPath),
+               fileManager.fileExists(atPath: directory.path) {
                 do {
                     try fileManager.removeItem(at: directory)
                 } catch {

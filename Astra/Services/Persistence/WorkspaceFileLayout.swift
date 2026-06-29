@@ -41,7 +41,11 @@ enum WorkspaceFileLayout {
     static func appDirectory(workspacePath: String, appID: String) -> String {
         let root = appRoot(for: workspacePath)
         guard !root.isEmpty else { return "" }
-        return (root as NSString).appendingPathComponent(appID)
+        guard WorkspaceAppIDPolicy.isPortableIdentifier(appID) else { return "" }
+        let rootURL = URL(fileURLWithPath: root, isDirectory: true).standardizedFileURL
+        let appURL = rootURL.appendingPathComponent(appID, isDirectory: true).standardizedFileURL
+        guard isContainedAppDirectory(appURL, inAppRoot: rootURL) else { return "" }
+        return appURL.path
     }
 
     static func appManifestFile(workspacePath: String, appID: String) -> String {
@@ -75,11 +79,14 @@ enum WorkspaceFileLayout {
     }
 
     static func relativeAppDirectory(appID: String) -> String {
-        "\(supportDirectoryName)/apps/\(appID)"
+        guard WorkspaceAppIDPolicy.isPortableIdentifier(appID) else { return "" }
+        return "\(supportDirectoryName)/apps/\(appID)"
     }
 
     static func relativeAppManifestFile(appID: String) -> String {
-        "\(relativeAppDirectory(appID: appID))/manifest.json"
+        let directory = relativeAppDirectory(appID: appID)
+        guard !directory.isEmpty else { return "" }
+        return "\(directory)/manifest.json"
     }
 
     // Slice 3 versioning: published-manifest snapshots live under the app directory,
@@ -104,7 +111,29 @@ enum WorkspaceFileLayout {
     }
 
     static func relativeAppVersionsDirectory(appID: String) -> String {
-        "\(relativeAppDirectory(appID: appID))/versions"
+        let directory = relativeAppDirectory(appID: appID)
+        guard !directory.isEmpty else { return "" }
+        return "\(directory)/versions"
+    }
+
+    static func isContainedAppDirectory(_ url: URL, workspacePath: String) -> Bool {
+        let root = appRoot(for: workspacePath)
+        guard !root.isEmpty else { return false }
+        return isContainedAppDirectory(
+            url.standardizedFileURL,
+            inAppRoot: URL(fileURLWithPath: root, isDirectory: true).standardizedFileURL
+        )
+    }
+
+    static func isContainedAppManifestFile(_ url: URL, workspacePath: String) -> Bool {
+        url.lastPathComponent == "manifest.json"
+            && isContainedAppDirectory(url.deletingLastPathComponent(), workspacePath: workspacePath)
+    }
+
+    private static func isContainedAppDirectory(_ url: URL, inAppRoot rootURL: URL) -> Bool {
+        let standardized = url.standardizedFileURL
+        return standardized.deletingLastPathComponent().path == rootURL.path
+            && standardized.path != rootURL.path
     }
 
     // App Studio conversation journal: the build conversation + per-turn event log live under the

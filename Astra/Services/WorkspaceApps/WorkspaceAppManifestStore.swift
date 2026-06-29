@@ -77,14 +77,24 @@ struct WorkspaceAppManifestStore {
 
     private func storedManifestURL(app: WorkspaceApp, workspace: Workspace) -> URL? {
         guard !app.manifestRelativePath.isEmpty else { return nil }
-        return URL(fileURLWithPath: workspace.primaryPath)
+        let url = URL(fileURLWithPath: workspace.primaryPath)
             .appendingPathComponent(app.manifestRelativePath)
+            .standardizedFileURL
+        guard WorkspaceFileLayout.isContainedAppManifestFile(url, workspacePath: workspace.primaryPath) else {
+            return nil
+        }
+        return url
     }
 
     private func storedAppDirectoryURL(app: WorkspaceApp, workspace: Workspace) -> URL? {
         guard !app.appDirectoryRelativePath.isEmpty else { return nil }
-        return URL(fileURLWithPath: workspace.primaryPath)
+        let url = URL(fileURLWithPath: workspace.primaryPath)
             .appendingPathComponent(app.appDirectoryRelativePath, isDirectory: true)
+            .standardizedFileURL
+        guard WorkspaceFileLayout.isContainedAppDirectory(url, workspacePath: workspace.primaryPath) else {
+            return nil
+        }
+        return url
     }
 
     private func unique(_ urls: [URL?]) -> [URL] {

@@ -646,6 +646,78 @@ struct WorkspaceAppServiceTests {
     }
 
     @MainActor
+    @Test("createApp rejects reserved path component IDs before writing app files")
+    func createAppRejectsReservedPathComponentIDsBeforeWritingAppFiles() throws {
+        for reservedID in [".", ".."] {
+            let root = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("workspace-app-reserved-id-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+
+            let container = try ModelContainer(
+                for: ASTRASchema.current,
+                migrationPlan: ASTRAMigrationPlan.self,
+                configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+            )
+            let context = container.mainContext
+            let workspace = Workspace(name: "Apps", primaryPath: root.path)
+            context.insert(workspace)
+
+            var manifest = Self.reconciliationManifest()
+            manifest.app.id = reservedID
+
+            do {
+                _ = try WorkspaceAppService().createApp(
+                    manifest: manifest,
+                    in: workspace,
+                    modelContext: context
+                )
+                Issue.record("Expected reserved app id '\(reservedID)' to be rejected.")
+            } catch WorkspaceAppServiceError.invalidManifest(let blockers) {
+                #expect(blockers.contains {
+                    $0.path == "/app/id" && $0.message.contains("reserved path component")
+                })
+            }
+
+            #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".astra/manifest.json").path))
+            #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".astra/apps/manifest.json").path))
+            #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".astra/data/app.sqlite").path))
+            #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".astra/apps/data/app.sqlite").path))
+        }
+    }
+
+    @MainActor
+    @Test("createApp still accepts portable dotted app IDs inside the per-app directory")
+    func createAppAcceptsPortableDottedAppIDsInsidePerAppDirectory() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("workspace-app-dotted-id-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let workspace = Workspace(name: "Apps", primaryPath: root.path)
+        context.insert(workspace)
+
+        var manifest = Self.reconciliationManifest()
+        manifest.app.id = "vendor.reconciliation"
+
+        let created = try WorkspaceAppService().createApp(
+            manifest: manifest,
+            in: workspace,
+            modelContext: context
+        )
+
+        #expect(created.app.logicalID == "vendor.reconciliation")
+        #expect(created.manifestURL.path == root.appendingPathComponent(".astra/apps/vendor.reconciliation/manifest.json").path)
+        #expect(FileManager.default.fileExists(atPath: created.manifestURL.path))
+    }
+
+    @MainActor
     @Test("createApp enforces workspace-unique logical IDs so two apps never share one SQLite file")
     func serviceEnforcesUniqueLogicalIDAcrossApps() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
