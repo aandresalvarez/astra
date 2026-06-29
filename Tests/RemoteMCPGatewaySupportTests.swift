@@ -44,6 +44,45 @@ struct RemoteMCPGatewaySupportTests {
         #expect(!listJSON.contains("secret-access-token"))
     }
 
+    @Test("Gateway enforces allowed and excluded tools before authenticated forwarding")
+    func gatewayEnforcesToolPolicyBeforeAuthenticatedForwarding() throws {
+        let descriptor = RemoteMCPServerDescriptor(
+            id: "google_drive",
+            displayName: "Google Drive",
+            transport: .http,
+            endpoint: URL(string: "https://mcp.example.test/google")!,
+            connectorBindings: ["google-workspace"],
+            allowedTools: ["drive.search"],
+            excludedTools: ["drive.files.delete"]
+        )
+        let remote = RecordingRemoteMCPClient(tools: [
+            ["name": "drive.search", "description": "Search fake Drive files."],
+            ["name": "drive.files.delete", "description": "Delete a fake Drive file."],
+            ["name": "drive.files.export", "description": "Export a fake Drive file."]
+        ])
+        let gateway = LocalMCPGateway(
+            server: descriptor,
+            remoteClient: remote,
+            authTokenProvider: StaticGatewayTokenProvider(token: "secret-access-token")
+        )
+
+        let list = try parseJSON(try #require(gateway.handleLine(#"{"jsonrpc":"2.0","id":5,"method":"tools/list"}"#)))
+        let listResult = try #require(list["result"] as? [String: Any])
+        let tools = try #require(listResult["tools"] as? [[String: Any]])
+        #expect(tools.map { $0["name"] as? String } == ["drive.search"])
+
+        let excluded = try parseJSON(try #require(gateway.handleLine(#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"drive.files.delete","arguments":{"id":"abc"}}}"#)))
+        let excludedError = try #require(excluded["error"] as? [String: Any])
+        #expect(excludedError["code"] as? Int == -32602)
+
+        let unlisted = try parseJSON(try #require(gateway.handleLine(#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"drive.files.export","arguments":{"id":"abc"}}}"#)))
+        let unlistedError = try #require(unlisted["error"] as? [String: Any])
+        #expect(unlistedError["code"] as? Int == -32602)
+
+        #expect(remote.calledTools.isEmpty)
+        #expect(remote.authHeaders == ["Bearer secret-access-token"])
+    }
+
     @Test("Environment token provider reads the gateway process token")
     func environmentTokenProvider() throws {
         let provider = EnvironmentMCPGatewayAuthTokenProvider(
@@ -67,6 +106,20 @@ private final class RecordingRemoteMCPClient: RemoteMCPClient {
     var calledTools: [String] = []
     var calledArguments: [[String: Any]] = []
     var authHeaders: [String] = []
+    var tools: [[String: Any]]
+
+    init(tools: [[String: Any]] = [[
+        "name": "drive.search",
+        "description": "Search fake Drive files.",
+        "inputSchema": [
+            "type": "object",
+            "properties": ["query": ["type": "string"]],
+            "required": ["query"],
+            "additionalProperties": false
+        ]
+    ]]) {
+        self.tools = tools
+    }
 
     func listTools(
         for server: RemoteMCPServerDescriptor,
@@ -76,16 +129,7 @@ private final class RecordingRemoteMCPClient: RemoteMCPClient {
         if let header = auth.authorizationHeader {
             authHeaders.append(header)
         }
-        return [[
-            "name": "drive.search",
-            "description": "Search fake Drive files.",
-            "inputSchema": [
-                "type": "object",
-                "properties": ["query": ["type": "string"]],
-                "required": ["query"],
-                "additionalProperties": false
-            ]
-        ]]
+        return tools
     }
 
     func callTool(

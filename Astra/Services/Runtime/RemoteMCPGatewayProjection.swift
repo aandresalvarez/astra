@@ -59,17 +59,21 @@ enum RemoteMCPGatewayProjection {
             serverID: server.id,
             bindingID: binding.id
         )
+        let arguments = [
+            "--package-id", resolved.packageID,
+            "--server-id", server.id,
+            "--endpoint", endpoint,
+            "--access-token-env", accessTokenEnvironmentKey
+        ] + toolPolicyArguments(
+            allowedTools: server.allowedTools,
+            excludedTools: server.excludedTools
+        )
         let gatewayServer = PluginMCPServer(
             id: server.id,
             displayName: server.displayName,
             transport: .stdio,
             command: executablePath,
-            arguments: [
-                "--package-id", resolved.packageID,
-                "--server-id", server.id,
-                "--endpoint", endpoint,
-                "--access-token-env", accessTokenEnvironmentKey
-            ],
+            arguments: arguments,
             environmentKeys: [accessTokenEnvironmentKey],
             connectorBindings: server.connectorBindings,
             allowedTools: server.allowedTools,
@@ -136,6 +140,20 @@ enum RemoteMCPGatewayProjection {
         return String(mapped)
             .split(separator: "_", omittingEmptySubsequences: true)
             .joined(separator: "_")
+    }
+
+    private static func toolPolicyArguments(
+        allowedTools: [String],
+        excludedTools: [String]
+    ) -> [String] {
+        var arguments: [String] = []
+        for tool in orderedUnique(allowedTools) where !tool.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            arguments += ["--allowed-tool", tool]
+        }
+        for tool in orderedUnique(excludedTools) where !tool.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            arguments += ["--excluded-tool", tool]
+        }
+        return arguments
     }
 
     private static func gatewayAccessTokenEnvironmentKeys(in arguments: [String]) -> [String] {

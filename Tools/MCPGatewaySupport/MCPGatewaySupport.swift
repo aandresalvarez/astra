@@ -11,19 +11,71 @@ public struct RemoteMCPServerDescriptor: Equatable {
     public var transport: Transport
     public var endpoint: URL
     public var connectorBindings: [String]
+    public var allowedTools: [String]
+    public var excludedTools: [String]
 
     public init(
         id: String,
         displayName: String,
         transport: Transport,
         endpoint: URL,
-        connectorBindings: [String] = []
+        connectorBindings: [String] = [],
+        allowedTools: [String] = [],
+        excludedTools: [String] = []
     ) {
         self.id = id
         self.displayName = displayName
         self.transport = transport
         self.endpoint = endpoint
         self.connectorBindings = connectorBindings
+        self.allowedTools = allowedTools
+        self.excludedTools = excludedTools
+    }
+}
+
+public struct RemoteMCPGatewayToolPolicy: Equatable {
+    public var allowedTools: [String]
+    public var excludedTools: [String]
+
+    public init(allowedTools: [String] = [], excludedTools: [String] = []) {
+        self.allowedTools = Self.normalizedUnique(allowedTools)
+        self.excludedTools = Self.normalizedUnique(excludedTools)
+    }
+
+    public func allows(_ toolName: String) -> Bool {
+        let tool = Self.normalized(toolName)
+        guard !tool.isEmpty else { return false }
+        if excludedTools.contains(tool) {
+            return false
+        }
+        if allowedTools.isEmpty {
+            return true
+        }
+        return allowedTools.contains(tool)
+    }
+
+    public func filterTools(_ tools: [[String: Any]]) -> [[String: Any]] {
+        tools.filter { tool in
+            guard let name = tool["name"] as? String else {
+                return allowedTools.isEmpty && excludedTools.isEmpty
+            }
+            return allows(name)
+        }
+    }
+
+    private static func normalizedUnique(_ tools: [String]) -> [String] {
+        var result: [String] = []
+        for tool in tools {
+            let normalizedTool = normalized(tool)
+            if !normalizedTool.isEmpty && !result.contains(normalizedTool) {
+                result.append(normalizedTool)
+            }
+        }
+        return result
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 }
 
@@ -92,6 +144,7 @@ public final class LocalMCPGateway {
     private let server: RemoteMCPServerDescriptor
     private let remoteClient: RemoteMCPClient
     private let authTokenProvider: MCPGatewayAuthTokenProvider
+    private let toolPolicy: RemoteMCPGatewayToolPolicy
 
     public init(
         server: RemoteMCPServerDescriptor,
@@ -101,6 +154,10 @@ public final class LocalMCPGateway {
         self.server = server
         self.remoteClient = remoteClient
         self.authTokenProvider = authTokenProvider
+        self.toolPolicy = RemoteMCPGatewayToolPolicy(
+            allowedTools: server.allowedTools,
+            excludedTools: server.excludedTools
+        )
     }
 
     public func handleLine(_ line: String) -> String? {
@@ -136,7 +193,7 @@ public final class LocalMCPGateway {
     private func handleToolsList(id: Any?) -> String? {
         do {
             let tools = try remoteClient.listTools(for: server, auth: authContext())
-            return encodeResult(id: id, result: ["tools": tools])
+            return encodeResult(id: id, result: ["tools": toolPolicy.filterTools(tools)])
         } catch {
             return encodeError(id: id, code: -32000, message: "Remote MCP tool discovery failed: \(error.localizedDescription)")
         }
@@ -147,6 +204,9 @@ public final class LocalMCPGateway {
               let toolName = params["name"] as? String,
               !toolName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return encodeError(id: id, code: -32602, message: "Unsupported tool")
+        }
+        guard toolPolicy.allows(toolName) else {
+            return encodeError(id: id, code: -32602, message: "Tool is not allowed by ASTRA gateway policy")
         }
         let arguments = params["arguments"] as? [String: Any] ?? [:]
         do {
@@ -243,7 +303,9 @@ public enum AstraMCPGatewayToolMain {
             displayName: options.serverID,
             transport: .http,
             endpoint: options.endpoint ?? URL(string: "http://127.0.0.1/astra-mcp-gateway-unconfigured")!,
-            connectorBindings: []
+            connectorBindings: [],
+            allowedTools: options.allowedTools,
+            excludedTools: options.excludedTools
         )
         let gateway = LocalMCPGateway(
             server: descriptor,
@@ -263,6 +325,8 @@ private struct GatewayCommandOptions {
     var serverID: String = "remote"
     var endpoint: URL?
     var accessTokenEnvironmentKey: String = "ASTRA_MCP_GATEWAY_ACCESS_TOKEN"
+    var allowedTools: [String] = []
+    var excludedTools: [String] = []
 
     init(arguments: [String]) {
         var index = 0
@@ -280,6 +344,12 @@ private struct GatewayCommandOptions {
                 index += 2
             case "--access-token-env" where index + 1 < arguments.count:
                 accessTokenEnvironmentKey = arguments[index + 1]
+                index += 2
+            case "--allowed-tool" where index + 1 < arguments.count:
+                allowedTools.append(arguments[index + 1])
+                index += 2
+            case "--excluded-tool" where index + 1 < arguments.count:
+                excludedTools.append(arguments[index + 1])
                 index += 2
             default:
                 index += 1

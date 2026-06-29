@@ -197,6 +197,7 @@ struct MCPRuntimeProjectionTests {
             url: URL(string: "https://mcp.example.com/google")!,
             connectorBindings: ["google-workspace"],
             allowedTools: ["drive.search"],
+            excludedTools: ["drive.files.delete"],
             trustLevel: .high,
             controlPlane: gatewayAuthorizationControlPlane()
         )
@@ -220,7 +221,9 @@ struct MCPRuntimeProjectionTests {
             "--package-id", "google-workspace",
             "--server-id", "google_drive",
             "--endpoint", "https://mcp.example.com/google",
-            "--access-token-env", accessTokenEnv
+            "--access-token-env", accessTokenEnv,
+            "--allowed-tool", "drive.search",
+            "--excluded-tool", "drive.files.delete"
         ])
         let env = try #require(entry["env"] as? [String: String])
         #expect(env[accessTokenEnv] == "${\(accessTokenEnv)}")
@@ -247,6 +250,7 @@ struct MCPRuntimeProjectionTests {
             url: URL(string: "https://mcp.example.com/google")!,
             connectorBindings: ["google-workspace"],
             allowedTools: ["drive.search"],
+            excludedTools: ["drive.files.delete"],
             trustLevel: .high,
             controlPlane: gatewayAuthorizationControlPlane()
         )
@@ -263,7 +267,7 @@ struct MCPRuntimeProjectionTests {
         let config = arguments.last ?? ""
         #expect(config.contains("\"google_drive\"={"))
         #expect(config.contains("command=\"\(RemoteMCPGatewayProjection.executablePath)\""))
-        #expect(config.contains("args=[\"--package-id\",\"google-workspace\",\"--server-id\",\"google_drive\",\"--endpoint\",\"https://mcp.example.com/google\",\"--access-token-env\",\"\(accessTokenEnv)\"]"))
+        #expect(config.contains("args=[\"--package-id\",\"google-workspace\",\"--server-id\",\"google_drive\",\"--endpoint\",\"https://mcp.example.com/google\",\"--access-token-env\",\"\(accessTokenEnv)\",\"--allowed-tool\",\"drive.search\",\"--excluded-tool\",\"drive.files.delete\"]"))
         #expect(config.contains("env_vars=[\"\(accessTokenEnv)\"]"))
         #expect(!config.contains("url="))
         #expect(!config.contains("secret-token"))
