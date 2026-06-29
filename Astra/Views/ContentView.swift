@@ -3452,6 +3452,7 @@ private struct ContentDetailContentView: View {
                 WorkspaceAppStudioChatView(
                     session: studioSession,
                     workspace: workspace,
+                    enabledPackIDs: WorkspaceAppStudioTemplatePackLoadingSource(workspace: workspace).enabledPackIDs,
                     onPublish: onPublishApp,
                     onDraftChanged: onDraftChanged,
                     onCancel: onCancelStudio

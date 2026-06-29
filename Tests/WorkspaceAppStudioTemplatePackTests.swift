@@ -7,16 +7,23 @@ import ASTRACore
 struct WorkspaceAppStudioTemplatePackTests {
     final class ScriptedRunner {
         private(set) var calls: [(prompt: String, workspacePath: String)] = []
-        private let output: AgentUtilityRunResult
+        private var outputs: [AgentUtilityRunResult]
 
         init(output: AgentUtilityRunResult) {
-            self.output = output
+            self.outputs = [output]
+        }
+
+        init(outputs: [AgentUtilityRunResult]) {
+            self.outputs = outputs
         }
 
         var runner: WorkspaceAppStudioPromptRunner {
             { [self] prompt, workspacePath, _ in
                 calls.append((prompt, workspacePath))
-                return output
+                guard !outputs.isEmpty else {
+                    return AgentUtilityRunResult(exitCode: 1, output: "", error: "No scripted output")
+                }
+                return outputs.removeFirst()
             }
         }
     }
@@ -164,6 +171,29 @@ struct WorkspaceAppStudioTemplatePackTests {
         #expect(try #require(explicitPackSource.templates(in: snapshot).first).packID == capabilityIDThatMatchesAPackID)
     }
 
+    @MainActor
+    @Test("Studio template loading source uses workspace pack enablement")
+    func studioTemplateLoadingSourceUsesWorkspacePackEnablement() throws {
+        let workspace = Self.workspace()
+        workspace.enabledCapabilityIDs = ["astra.pack.research"]
+        workspace.enabledPackIDs = ["astra.pack.devops"]
+        let snapshot = Self.snapshot(entries: [
+            Self.entry(
+                packID: "astra.pack.devops",
+                templates: [Self.template(id: "pr-review-board")]
+            ),
+            Self.entry(
+                packID: "astra.pack.research",
+                templates: [Self.template(id: "paper-review")]
+            )
+        ])
+
+        let source = WorkspaceAppStudioTemplatePackLoadingSource(workspace: workspace)
+
+        #expect(source.enabledPackIDs == ["astra.pack.devops"])
+        #expect(source.templates(in: snapshot).map(\.packID) == ["astra.pack.devops"])
+    }
+
     @Test("template requirements are recorded as provenance and do not grant capability contracts")
     func templateRequirementsAreRecordedButNotGranted() async throws {
         let descriptor = try #require(WorkspaceAppTemplatePackCatalog(
@@ -272,6 +302,50 @@ struct WorkspaceAppStudioTemplatePackTests {
         #expect(result.origin == .model)
         #expect(runner.calls.count == 1)
         #expect(!runner.calls[0].prompt.contains("PACK_TEMPLATE_CONTEXT_BEGIN"))
+    }
+
+    @Test("direct generator edit and repair prompts drop template context")
+    func directGeneratorEditAndRepairPromptsDropTemplateContext() async throws {
+        let descriptor = try Self.descriptor(
+            packID: "astra.pack.devops",
+            template: Self.template(id: "pr-review-board", name: "PR Review Board")
+        )
+        let runner = ScriptedRunner(outputs: [
+            Self.ok("No manifest or patch here."),
+            Self.manifestBlock(Self.json(Self.validManifest))
+        ])
+
+        _ = await WorkspaceAppStudioGenerator.generate(
+            intent: "Add a priority field.",
+            workspaceName: "Demo",
+            workspacePath: "/tmp/demo",
+            existingManifest: Self.validManifest,
+            maxRepairAttempts: 1,
+            templateContext: WorkspaceAppStudioTemplateContext(packTemplate: descriptor),
+            runner: runner.runner
+        )
+
+        #expect(runner.calls.count == 2)
+        #expect(runner.calls.allSatisfy { !$0.prompt.contains("PACK_TEMPLATE_CONTEXT_BEGIN") })
+        #expect(runner.calls.allSatisfy { !$0.prompt.contains("PACK_TEMPLATE_CONTEXT_END") })
+    }
+
+    @MainActor
+    @Test("reset clears stale available pack templates")
+    func resetClearsStaleAvailablePackTemplates() throws {
+        let descriptor = try Self.descriptor(
+            packID: "astra.pack.devops",
+            template: Self.template(id: "pr-review-board", name: "PR Review Board")
+        )
+        let session = WorkspaceAppStudioSession(generate: TemplateContextSpyGenerator(result: Self.result(Self.validManifest)).generate, verify: Self.noVerify)
+        session.configureTemplatePacks([descriptor])
+        session.selectTemplate(descriptor.id)
+
+        session.reset(for: Self.workspace())
+
+        #expect(session.availableTemplatePacks.isEmpty)
+        #expect(session.availableTemplateChoices.isEmpty)
+        #expect(session.selectedTemplate == nil)
     }
 
     @Test("template guidance renders pack metadata as bounded untrusted data")

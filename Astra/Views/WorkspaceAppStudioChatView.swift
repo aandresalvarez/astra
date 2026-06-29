@@ -17,7 +17,7 @@ struct WorkspaceAppStudioChatView: View {
     init(
         session: WorkspaceAppStudioSession,
         workspace: Workspace,
-        enabledPackIDs: Set<String> = [],
+        enabledPackIDs: Set<String>,
         onPublish: @escaping (_ seedSampleData: Bool) -> Void,
         onDraftChanged: @escaping () -> Void,
         onCancel: @escaping () -> Void

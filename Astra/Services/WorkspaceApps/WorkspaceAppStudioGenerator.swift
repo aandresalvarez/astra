@@ -99,12 +99,13 @@ enum WorkspaceAppStudioGenerator {
             candidate.model = AgentRuntimeAdapterRegistry.defaultModel(for: runtime)
             candidates.append(candidate)
         }
+        let draftTemplateContext = existingManifest == nil ? templateContext : nil
 
         var lastResult = await generateOnce(
             intent: rawIntent, workspaceName: workspaceName, workspacePath: workspacePath,
             existingManifest: existingManifest, maxRepairAttempts: maxRepairAttempts,
             configuration: candidates[0], contractFamilies: contractFamilies,
-            availableProviders: availableProviders, templateContext: templateContext, runner: runner
+            availableProviders: availableProviders, templateContext: draftTemplateContext, runner: runner
         )
         // The selected provider resolved it (an accepted app OR a validation-exhaustion template) —
         // keep it. Only a PROVIDER failure (401/timeout/crash) is worth retrying elsewhere.
@@ -119,7 +120,7 @@ enum WorkspaceAppStudioGenerator {
                 intent: rawIntent, workspaceName: workspaceName, workspacePath: workspacePath,
                 existingManifest: existingManifest, maxRepairAttempts: maxRepairAttempts,
                 configuration: candidate, contractFamilies: contractFamilies,
-                availableProviders: availableProviders, templateContext: templateContext, runner: runner
+                availableProviders: availableProviders, templateContext: draftTemplateContext, runner: runner
             )
             if !result.providerFailed {
                 // A fallback provider produced an ACCEPTED app → record the switch so the chat can
@@ -152,6 +153,7 @@ enum WorkspaceAppStudioGenerator {
         // model. When editing an existing app, that manifest is the base instead.
         let base = existingManifest ?? WorkspaceAppStudioBuilder.baseManifest(intent: intent)
         let baseReport = WorkspaceAppManifestValidator.validate(base)
+        let draftTemplateContext = existingManifest == nil ? templateContext : nil
 
         func fallback(attempts: Int, providerFailure: String?, providerFailed: Bool) -> WorkspaceAppStudioGenerationResult {
             AppLogger.info(
@@ -197,7 +199,7 @@ enum WorkspaceAppStudioGenerator {
                 current: existingManifest,
                 contractFamilies: contractFamilies,
                 availableProviders: availableProviders,
-                templateContext: templateContext
+                templateContext: draftTemplateContext
             )
         } else {
             firstPrompt = generationPrompt(
@@ -206,7 +208,7 @@ enum WorkspaceAppStudioGenerator {
                 base: base,
                 contractFamilies: contractFamilies,
                 availableProviders: availableProviders,
-                templateContext: templateContext
+                templateContext: draftTemplateContext
             )
         }
         let firstResult = await runner(firstPrompt, workspacePath, configuration)
@@ -247,7 +249,7 @@ enum WorkspaceAppStudioGenerator {
                 report: vetted.report,
                 contractFamilies: contractFamilies,
                 currentManifest: existingManifest,
-                templateContext: templateContext
+                templateContext: draftTemplateContext
             )
             let result = await runner(prompt, workspacePath, configuration)
             attempts += 1

@@ -250,6 +250,7 @@ final class WorkspaceAppStudioSession: ObservableObject {
         isVerifying = false
         lastResolvedRuntimeID = nil   // a stale auto-fallback must not rewrite the picker after a reset
         selectedTemplate = nil
+        availableTemplatePacks = []
         generationToken &+= 1  // invalidate any in-flight generation from a prior session
         generationEvents = []
         draftAutosaveRevision = 0

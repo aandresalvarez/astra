@@ -86,6 +86,11 @@ struct WorkspaceAppStudioTemplatePackLoadingSource: Equatable, Sendable {
         self.enabledPackIDs = enabledPackIDs
     }
 
+    @MainActor
+    init(workspace: Workspace) {
+        self.enabledPackIDs = Set(workspace.enabledPackIDs)
+    }
+
     func loadSignature(workspaceID: UUID) -> String {
         ([workspaceID.uuidString] + enabledPackIDs.sorted()).joined(separator: "|")
     }
