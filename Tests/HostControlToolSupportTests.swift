@@ -93,6 +93,31 @@ struct HostControlToolSupportTests {
         #expect(!diagnosticsText.contains("super-secret-token"))
     }
 
+    @Test("Host control bq blocks query and mutation commands before running host executable")
+    func hostControlBQBlocksQueryAndMutationCommandsBeforeRunningHostExecutable() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-control-bq-policy-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let log = root.appendingPathComponent("host.log", isDirectory: false)
+        let bq = try fakeExecutable(named: "bq", root: root, log: log, stdout: "bq:$*")
+        let server = HostControlMCPServer(configuration: HostControlToolConfiguration(bigQueryExecutable: bq.path))
+
+        let blockedArguments = [
+            ["query", "SELECT * FROM project.dataset.table"],
+            ["query", "DELETE FROM project.dataset.table WHERE true"],
+            ["rm", "-f", "project:dataset.table"],
+            ["extract", "project:dataset.table", "gs://example/export.json"]
+        ]
+
+        for (offset, arguments) in blockedArguments.enumerated() {
+            let response = try call(server, id: offset + 1, tool: "bq", arguments: ["arguments": arguments])
+            #expect(try errorMessage(response).contains("bq command is not allowed"))
+        }
+        #expect(!FileManager.default.fileExists(atPath: log.path))
+    }
+
     @Test("Host and Docker mixed harness routes control-plane and workspace commands separately")
     func hostAndDockerMixedHarnessRoutesControlPlaneAndWorkspaceCommandsSeparately() throws {
         let root = FileManager.default.temporaryDirectory
@@ -281,5 +306,10 @@ struct HostControlToolSupportTests {
         let result = try #require(object["result"] as? [String: Any])
         let content = try #require(result["content"] as? [[String: Any]])
         return try #require(content.first?["text"] as? String)
+    }
+
+    private func errorMessage(_ object: [String: Any]) throws -> String {
+        let error = try #require(object["error"] as? [String: Any])
+        return try #require(error["message"] as? String)
     }
 }

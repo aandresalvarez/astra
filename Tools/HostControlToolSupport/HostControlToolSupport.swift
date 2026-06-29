@@ -391,7 +391,8 @@ public final class HostControlMCPServer {
                 toolName: toolName,
                 executable: configuration.bigQueryExecutable,
                 arguments: arguments,
-                allowedFirstArguments: nil
+                allowedFirstArguments: nil,
+                argumentPolicy: BigQueryHostControlPolicy.rejectionMessage
             )
         case "ssh":
             return handleSSH(id: id, arguments: arguments)
@@ -407,7 +408,8 @@ public final class HostControlMCPServer {
         toolName: String,
         executable: String,
         arguments: [String: Any],
-        allowedFirstArguments: Set<String>?
+        allowedFirstArguments: Set<String>?,
+        argumentPolicy: (([String]) -> String?)? = nil
     ) -> String? {
         guard let argv = stringArray(arguments["arguments"]) else {
             return encodeError(id: id, code: -32602, message: "\(toolName) requires an arguments array")
@@ -419,6 +421,9 @@ public final class HostControlMCPServer {
            let first = argv.first?.lowercased(),
            !allowedFirstArguments.contains(first) {
             return encodeError(id: id, code: -32602, message: "\(toolName) does not allow subcommand '\(first)'")
+        }
+        if let rejection = argumentPolicy?(argv) {
+            return encodeError(id: id, code: -32602, message: rejection)
         }
         let timeout = timeoutSeconds(from: arguments["timeout_seconds"]) ?? 120
         let result = processRunner.run(
@@ -638,8 +643,8 @@ public final class HostControlMCPServer {
             ),
             processSchema(
                 name: "bq",
-                description: "Run BigQuery CLI control-plane commands on the host through ASTRA without provider Bash.",
-                argumentDescription: "Arguments for bq, for example [\"ls\", \"project:dataset\"]."
+                description: "Run metadata-only BigQuery CLI commands on the host through ASTRA without provider Bash.",
+                argumentDescription: "Metadata-only bq arguments, for example [\"ls\", \"project:dataset\"]. Query, export, load, delete, and job commands are denied."
             ),
             sshSchema(),
             jiraSchema()
@@ -760,6 +765,54 @@ public final class HostControlMCPServer {
             return nil
         }
         return String(data: data, encoding: .utf8)
+    }
+}
+
+private enum BigQueryHostControlPolicy {
+    private static let allowedCommands: Set<String> = ["help", "ls", "show", "version"]
+    private static let globalOptionsWithValues: Set<String> = [
+        "--format",
+        "--location",
+        "--max_results",
+        "--page_token",
+        "--project_id"
+    ]
+
+    static func rejectionMessage(arguments: [String]) -> String? {
+        let actionTokens = dropLeadingOptions(arguments)
+        guard let command = actionTokens.first?.lowercased() else {
+            return blockedMessage(command: "<missing>")
+        }
+        guard allowedCommands.contains(command) else {
+            return blockedMessage(command: command)
+        }
+        return nil
+    }
+
+    private static func dropLeadingOptions(_ arguments: [String]) -> [String] {
+        var index = 0
+        while index < arguments.count {
+            let token = arguments[index]
+            if token == "--" {
+                index += 1
+                break
+            }
+            guard token.hasPrefix("-") else { break }
+            index += 1
+            let optionName = token.split(separator: "=", maxSplits: 1).first.map(String.init) ?? token
+            if globalOptionsWithValues.contains(optionName), !token.contains("="), index < arguments.count {
+                index += 1
+            }
+        }
+        return Array(arguments.dropFirst(index))
+    }
+
+    private static func blockedMessage(command: String) -> String {
+        [
+            "bq command is not allowed by ASTRA host-control policy: '\(command)'.",
+            "Allowed bq operations are metadata-only: help, ls, show, and version.",
+            "Use an explicitly approved BigQuery capability for query, export, load, delete, copy, table mutation, or job operations."
+        ].joined(separator: " ")
     }
 }
 
