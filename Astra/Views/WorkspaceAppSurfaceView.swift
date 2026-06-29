@@ -232,13 +232,22 @@ struct WorkspaceAppSurfaceView: View {
     private func submitForm(view: WorkspaceAppViewSpec, manifest: WorkspaceAppManifest, values: [String: WorkspaceAppStorageValue]) {
         // Route the draft through the declared write action (capability.write submitCreate) so it
         // goes through the governed, approval-gated path — never a direct write.
-        guard let submit = manifest.actions.first(where: { $0.type == "capability.write" && ($0.table == nil || $0.table == view.table) }) else { return }
-        _ = try? onRunAction(
-            submit,
-            manifest,
-            WorkspaceAppActionInput(table: view.table, record: values, confirmedApproval: true)
-        )
-        onReload()
+        guard let submission = WorkspaceAppNativeFormSubmissionPolicy.submission(
+            for: view,
+            manifest: manifest,
+            values: values
+        ) else { return }
+        do {
+            let result = try onRunAction(
+                submission.action,
+                manifest,
+                submission.input
+            )
+            actionStatusMessage = result.outputSummary
+            onReload()
+        } catch {
+            actionStatusMessage = String(describing: error)
+        }
     }
 
     @ViewBuilder
