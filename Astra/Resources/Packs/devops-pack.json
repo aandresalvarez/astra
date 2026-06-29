@@ -1,0 +1,18 @@
+{
+  "formatVersion": 1,
+  "id": "astra.pack.devops",
+  "name": "DevOps Pack",
+  "version": "1.0.0",
+  "coreAPIVersion": "1.0",
+  "description": "Inert starter pack manifest for DevOps workflows.",
+  "capabilityPackageIDs": [],
+  "shelfDefaults": [],
+  "appTemplates": [],
+  "policyRestrictions": [],
+  "vocabulary": {},
+  "branding": {
+    "accentColor": "#3B82F6",
+    "iconSystemName": "shippingbox",
+    "displayName": "DevOps"
+  }
+}
