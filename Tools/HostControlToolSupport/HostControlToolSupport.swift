@@ -770,6 +770,7 @@ public final class HostControlMCPServer {
 
 private enum BigQueryHostControlPolicy {
     private static let allowedCommands: Set<String> = ["help", "ls", "show", "version"]
+    private static let helpOptions: Set<String> = ["--help", "-h"]
     private static let globalOptionsWithValues: Set<String> = [
         "--format",
         "--location",
@@ -781,6 +782,9 @@ private enum BigQueryHostControlPolicy {
     static func rejectionMessage(arguments: [String]) -> String? {
         let actionTokens = dropLeadingOptions(arguments)
         guard let command = actionTokens.first?.lowercased() else {
+            if hasHelpOption(arguments) {
+                return nil
+            }
             return blockedMessage(command: "<missing>")
         }
         guard allowedCommands.contains(command) else {
@@ -805,6 +809,13 @@ private enum BigQueryHostControlPolicy {
             }
         }
         return Array(arguments.dropFirst(index))
+    }
+
+    private static func hasHelpOption(_ arguments: [String]) -> Bool {
+        arguments.contains { token in
+            let optionName = token.split(separator: "=", maxSplits: 1).first.map(String.init) ?? token
+            return helpOptions.contains(optionName)
+        }
     }
 
     private static func blockedMessage(command: String) -> String {

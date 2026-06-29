@@ -68,6 +68,16 @@ struct HostControlToolSupportTests {
         ])
         #expect(try resultText(bqResult).contains("bq:ls project:dataset"))
 
+        let bqHelpResult = try call(server, id: 7, tool: "bq", arguments: [
+            "arguments": ["--help"]
+        ])
+        #expect(try resultText(bqHelpResult).contains("bq:--help"))
+
+        let bqShortHelpResult = try call(server, id: 8, tool: "bq", arguments: [
+            "arguments": ["-h"]
+        ])
+        #expect(try resultText(bqShortHelpResult).contains("bq:-h"))
+
         let sshResult = try call(server, id: 5, tool: "ssh", arguments: [
             "alias": "deid-jsn-workbench",
             "remote_command": "hostname && uptime"
@@ -84,6 +94,8 @@ struct HostControlToolSupportTests {
         #expect(hostLog.contains("gh pr view 123 --comments"))
         #expect(hostLog.contains("gcloud compute instances list --format=json"))
         #expect(hostLog.contains("bq ls project:dataset"))
+        #expect(hostLog.contains("bq --help"))
+        #expect(hostLog.contains("bq -h"))
         #expect(hostLog.contains("ssh deid-jsn-workbench hostname && uptime"))
 
         let diagnosticLog = diagnostics.appendingPathComponent("host_control_tool_activity.jsonl", isDirectory: false)
@@ -106,6 +118,7 @@ struct HostControlToolSupportTests {
 
         let blockedArguments = [
             ["query", "SELECT * FROM project.dataset.table"],
+            ["--help", "query", "SELECT * FROM project.dataset.table"],
             ["query", "DELETE FROM project.dataset.table WHERE true"],
             ["rm", "-f", "project:dataset.table"],
             ["extract", "project:dataset.table", "gs://example/export.json"]
