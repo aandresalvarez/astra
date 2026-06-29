@@ -124,6 +124,58 @@ struct MCPToolPolicyEngineTests {
         }
     }
 
+    @Test("pack policy can raise read MCP tools to native approval")
+    func packPolicyCanRaiseReadToolsToNativeApproval() {
+        let packPolicy = AstraPackPolicyResolver.resolve(
+            composition: AstraPackComposition.resolve(packs: [
+                AstraPackManifest(
+                    id: "astra.pack.regulated-docs",
+                    name: "Regulated Docs",
+                    version: "1.0.0",
+                    coreAPIVersion: "1.0",
+                    description: "Requires review for Google Docs reads.",
+                    policyRestrictions: [
+                        AstraPackPolicyRestriction(
+                            id: "docs-read-consent",
+                            contributionKind: "workspaceApp",
+                            action: "requireExplicitConsent",
+                            effect: "restrict",
+                            targetMCPServerID: "google",
+                            targetMCPToolName: "docs.get",
+                            message: "Regulated docs reads require native approval."
+                        )
+                    ]
+                )
+            ])
+        )
+        let audit = RecordingMCPToolPolicyAuditSink()
+        let engine = makeEngine(auditSink: audit)
+
+        let denied = engine.evaluate(
+            request(
+                toolName: "docs.get",
+                grantedScopes: [.googleDocsRead],
+                nativeApproval: nil,
+                packPolicyResolver: { _ in packPolicy }
+            )
+        )
+        let allowed = engine.evaluate(
+            request(
+                toolName: "docs.get",
+                grantedScopes: [.googleDocsRead],
+                nativeApproval: .approved(reason: "native review"),
+                packPolicyResolver: { _ in packPolicy }
+            )
+        )
+
+        #expect(!denied.isAllowed)
+        #expect(denied.denialReason == .packPolicyNativeApprovalRequired)
+        #expect(denied.policyEvidence.contains { $0.restrictionID == "docs-read-consent" })
+        #expect(allowed.isAllowed)
+        #expect(allowed.policyEvidence.contains { $0.restrictionID == "docs-read-consent" })
+        #expect(audit.records.first?.policyEvidence.contains("docs-read-consent") == true)
+    }
+
     @Test("rate limit denies the third call in the same window and records a denial audit")
     func rateLimitDeniesThirdCall() {
         let audit = RecordingMCPToolPolicyAuditSink()
@@ -209,6 +261,8 @@ struct MCPToolPolicyEngineTests {
         caller: MCPToolPolicyCaller = .nativeRuntime,
         grantedScopes: Set<MCPToolPolicyScope> = [],
         nativeApproval: MCPToolNativeApproval? = nil,
+        packPolicy: PackResolvedPolicy? = nil,
+        packPolicyResolver: (Workspace?) -> PackResolvedPolicy = { _ in .empty },
         now: Date? = nil,
         arguments: [String: AnySendable] = [:]
     ) -> MCPToolPolicyRequest {
@@ -225,6 +279,8 @@ struct MCPToolPolicyEngineTests {
             caller: caller,
             grantedScopes: grantedScopes,
             nativeApproval: nativeApproval,
+            packPolicy: packPolicy,
+            packPolicyResolver: packPolicyResolver,
             now: now ?? self.now,
             arguments: arguments
         )

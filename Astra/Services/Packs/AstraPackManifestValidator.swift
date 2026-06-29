@@ -24,6 +24,7 @@ struct AstraPackManifestValidationReport: Sendable, Equatable {
             case invalidTemplateID
             case emptyPolicyRestrictionID
             case invalidPolicyRestrictionID
+            case missingPolicyRestrictionTarget
             case policyWidening
             case unknownContributionKind
         }
@@ -57,6 +58,28 @@ enum AstraPackManifestValidator {
         "capabilityPackage",
         "shelf",
         "workspaceApp"
+    ]
+    private static let supportedPolicyActionsByContributionKind: [String: Set<String>] = [
+        "capabilitypackage": [
+            "addwarning",
+            "disablecapability",
+            "hidecapability",
+            "requirereviewgate"
+        ],
+        "shelf": [
+            "hideshelf"
+        ],
+        "workspaceapp": [
+            "requireexplicitconsent"
+        ]
+    ]
+    private static let wideningPolicyActions: Set<String> = [
+        "autoapproveexternalwrite",
+        "broadenfileaccess",
+        "broadennetworkaccess",
+        "bypassproviderpolicy",
+        "enablecapability",
+        "lowerrisklevel"
     ]
 
     static func validate(_ manifest: AstraPackManifest) -> AstraPackManifestValidationReport {
@@ -190,6 +213,56 @@ enum AstraPackManifestValidator {
                     message: "Pack policy restrictions are restrict-only; '\(restriction.effect)' would widen policy."
                 ))
             }
+            validatePolicyRestrictionAction(restriction, index: index, issues: &issues)
+        }
+    }
+
+    private static func validatePolicyRestrictionAction(
+        _ restriction: AstraPackPolicyRestriction,
+        index: Int,
+        issues: inout [AstraPackManifestValidationReport.Issue]
+    ) {
+        let contributionKind = normalized(restriction.contributionKind)
+        let action = normalized(restriction.action)
+        guard let supportedActions = supportedPolicyActionsByContributionKind[contributionKind] else {
+            return
+        }
+        guard supportedActions.contains(action), !wideningPolicyActions.contains(action) else {
+            issues.append(blocker(
+                .policyWidening,
+                path: "/policyRestrictions/\(index)/action",
+                message: "Pack policy action '\(restriction.action)' cannot be proven restrict-only by this ASTRA version."
+            ))
+            return
+        }
+
+        switch (contributionKind, action) {
+        case ("capabilitypackage", _):
+            if isBlank(restriction.targetID) && isBlank(restriction.targetTag) {
+                issues.append(blocker(
+                    .missingPolicyRestrictionTarget,
+                    path: "/policyRestrictions/\(index)",
+                    message: "Capability policy restrictions require targetID or targetTag."
+                ))
+            }
+        case ("shelf", "hideshelf"):
+            if isBlank(restriction.targetID) {
+                issues.append(blocker(
+                    .missingPolicyRestrictionTarget,
+                    path: "/policyRestrictions/\(index)/targetID",
+                    message: "Shelf policy restrictions require targetID."
+                ))
+            }
+        case ("workspaceapp", "requireexplicitconsent"):
+            if isBlank(restriction.targetMCPServerID) || isBlank(restriction.targetMCPToolName) {
+                issues.append(blocker(
+                    .missingPolicyRestrictionTarget,
+                    path: "/policyRestrictions/\(index)",
+                    message: "Workspace app consent restrictions require targetMCPServerID and targetMCPToolName."
+                ))
+            }
+        default:
+            break
         }
     }
 
@@ -252,6 +325,14 @@ enum AstraPackManifestValidator {
 
     private static func matchesIdentifier(_ value: String) -> Bool {
         value.range(of: identifierPattern, options: .regularExpression) != nil
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func isBlank(_ value: String?) -> Bool {
+        value?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true
     }
 
     private static func blocker(

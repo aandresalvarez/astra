@@ -19,6 +19,7 @@ struct AstraPackResolvedProfile: Equatable {
     var vocabulary: [String: String]
     var branding: AstraPackBranding?
     var capabilityPackageIDsByShelfID: [ShelfID: [String]]
+    var policy: PackResolvedPolicy
     var diagnostics: [AstraPackProfileDiagnostic]
     var compositionDiagnostics: [AstraPackCompositionDiagnostic]
 
@@ -79,6 +80,7 @@ enum AstraPackProfileResolver {
     ) -> AstraPackResolvedProfile {
         let coreShelfIDs = Set(coreDescriptors.map(\.id))
         let hasShelfDefaults = !composition.shelfDefaults.isEmpty
+        let policy = AstraPackPolicyResolver.resolve(composition: composition)
         var diagnostics: [AstraPackProfileDiagnostic] = []
         var visibleShelfIDs: Set<ShelfID> = hasShelfDefaults ? [] : coreShelfIDs
         var capabilityPackageIDsByShelfID: [ShelfID: [String]] = [:]
@@ -117,6 +119,8 @@ enum AstraPackProfileResolver {
             diagnostics: &diagnostics
         )
 
+        visibleShelfIDs.subtract(policy.hiddenShelfIDs)
+
         var resolvedVocabulary = coreVocabulary
         for key in composition.vocabulary.keys.sorted() {
             resolvedVocabulary[key] = composition.vocabulary[key]
@@ -129,6 +133,7 @@ enum AstraPackProfileResolver {
             vocabulary: resolvedVocabulary,
             branding: branding,
             capabilityPackageIDsByShelfID: capabilityPackageIDsByShelfID,
+            policy: policy,
             diagnostics: diagnostics,
             compositionDiagnostics: composition.diagnostics
         )

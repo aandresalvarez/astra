@@ -314,6 +314,10 @@ enum AstraPackComposition {
     private struct PolicyKey: Hashable {
         var contributionKind: String
         var action: String
+        var targetID: String?
+        var targetTag: String?
+        var targetMCPServerID: String?
+        var targetMCPToolName: String?
     }
 
     private static func resolvePolicyRestrictions(from inputs: [AstraPackCompositionInput]) -> [AstraPackPolicyRestriction] {
@@ -321,11 +325,8 @@ enum AstraPackComposition {
         var restrictionsByKey: [PolicyKey: AstraPackPolicyRestriction] = [:]
 
         for input in inputs {
-            for restriction in input.manifest.policyRestrictions where restriction.effect == "restrict" {
-                let key = PolicyKey(
-                    contributionKind: restriction.contributionKind,
-                    action: restriction.action
-                )
+            for restriction in input.manifest.policyRestrictions where normalized(restriction.effect) == "restrict" {
+                let key = policyKey(for: restriction)
                 if restrictionsByKey[key] == nil {
                     order.append(key)
                 }
@@ -334,6 +335,27 @@ enum AstraPackComposition {
         }
 
         return order.compactMap { restrictionsByKey[$0] }
+    }
+
+    private static func policyKey(for restriction: AstraPackPolicyRestriction) -> PolicyKey {
+        PolicyKey(
+            contributionKind: normalized(restriction.contributionKind),
+            action: normalized(restriction.action),
+            targetID: normalizedOptional(restriction.targetID),
+            targetTag: normalizedOptional(restriction.targetTag),
+            targetMCPServerID: normalizedOptional(restriction.targetMCPServerID),
+            targetMCPToolName: normalizedOptional(restriction.targetMCPToolName)
+        )
+    }
+
+    private static func normalizedOptional(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let normalized = normalized(value)
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     private static func appendUnique(_ values: [String], to target: inout [String]) {

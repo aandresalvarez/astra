@@ -164,25 +164,41 @@ struct AstraPackCompositionTests {
         let readOnlyPack = Self.pack(
             id: "astra.pack.read-only",
             policyRestrictions: [
-                Self.restriction(id: "block-browser-write", action: "browser.write"),
-                Self.restriction(id: "block-shell-run", action: "shell.run")
+                Self.restriction(id: "hide-browser", contributionKind: "shelf", action: "hideShelf", targetID: "browser"),
+                Self.restriction(
+                    id: "disable-shell",
+                    contributionKind: "capabilityPackage",
+                    action: "disableCapability",
+                    targetID: "builtin.shell"
+                )
             ]
         )
         let verticalPack = Self.pack(
             id: "vertical.incident",
             policyRestrictions: [
-                Self.restriction(id: "block-shell-run-vertical", action: "shell.run"),
-                Self.restriction(id: "block-network-write", action: "network.write")
+                Self.restriction(
+                    id: "disable-shell-vertical",
+                    contributionKind: "capabilityPackage",
+                    action: "disableCapability",
+                    targetID: "builtin.shell"
+                ),
+                Self.restriction(
+                    id: "disable-network",
+                    contributionKind: "capabilityPackage",
+                    action: "disableCapability",
+                    targetID: "builtin.network"
+                )
             ]
         )
 
         let result = AstraPackComposition.resolve(packs: [verticalPack, readOnlyPack])
 
         #expect(result.policyRestrictions.map(\.action) == [
-            "browser.write",
-            "shell.run",
-            "network.write"
+            "hideShelf",
+            "disableCapability",
+            "disableCapability"
         ])
+        #expect(result.policyRestrictions.map(\.targetID) == ["browser", "builtin.shell", "builtin.network"])
         #expect(result.policyRestrictions.allSatisfy { $0.effect == "restrict" })
     }
 
@@ -287,13 +303,15 @@ struct AstraPackCompositionTests {
     private static func restriction(
         id: String,
         contributionKind: String = "workspaceApp",
-        action: String
+        action: String,
+        targetID: String
     ) -> AstraPackPolicyRestriction {
         AstraPackPolicyRestriction(
             id: id,
             contributionKind: contributionKind,
             action: action,
-            effect: "restrict"
+            effect: "restrict",
+            targetID: targetID
         )
     }
 }

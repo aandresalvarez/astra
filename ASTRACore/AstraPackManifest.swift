@@ -139,17 +139,45 @@ public struct AstraPackPolicyRestriction: Codable, Equatable, Sendable, Identifi
     public var contributionKind: String
     public var action: String
     public var effect: String
+    public var targetID: String?
+    public var targetTag: String?
+    public var targetMCPServerID: String?
+    public var targetMCPToolName: String?
+    public var message: String
 
     public init(
         id: String,
         contributionKind: String,
         action: String,
-        effect: String
+        effect: String,
+        targetID: String? = nil,
+        targetTag: String? = nil,
+        targetMCPServerID: String? = nil,
+        targetMCPToolName: String? = nil,
+        message: String = ""
     ) {
         self.id = id
         self.contributionKind = contributionKind
         self.action = action
         self.effect = effect
+        self.targetID = targetID
+        self.targetTag = targetTag
+        self.targetMCPServerID = targetMCPServerID
+        self.targetMCPToolName = targetMCPToolName
+        self.message = message
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        contributionKind = try container.decode(String.self, forKey: .contributionKind)
+        action = try container.decode(String.self, forKey: .action)
+        effect = try container.decode(String.self, forKey: .effect)
+        targetID = try container.decodeIfPresent(String.self, forKey: .targetID)
+        targetTag = try container.decodeIfPresent(String.self, forKey: .targetTag)
+        targetMCPServerID = try container.decodeIfPresent(String.self, forKey: .targetMCPServerID)
+        targetMCPToolName = try container.decodeIfPresent(String.self, forKey: .targetMCPToolName)
+        message = try container.decodeIfPresent(String.self, forKey: .message) ?? ""
     }
 }
 

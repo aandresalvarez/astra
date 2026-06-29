@@ -33,10 +33,13 @@ struct AstraPackManifestTests {
             ],
             policyRestrictions: [
                 AstraPackPolicyRestriction(
-                    id: "read-only-github",
+                    id: "github-pr-consent",
                     contributionKind: "workspaceApp",
-                    action: "github.pull_requests.read",
-                    effect: "restrict"
+                    action: "requireExplicitConsent",
+                    effect: "restrict",
+                    targetMCPServerID: "github",
+                    targetMCPToolName: "pull_requests.read",
+                    message: "Pull request reads require native review."
                 )
             ],
             vocabulary: [
