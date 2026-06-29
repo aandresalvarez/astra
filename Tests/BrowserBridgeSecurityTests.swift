@@ -186,7 +186,9 @@ struct BrowserBridgeSecurityTests {
     @Test("Bridge open control navigation rejects unsafe hrefs before activation fallback")
     func bridgeOpenControlNavigationRejectsUnsafeHrefsBeforeFallback() throws {
         #expect(BrowserBridgeNavigationPolicy.openControlNavigation(forHref: "") == .fallbackToActivation)
+        #expect(BrowserBridgeNavigationPolicy.openControlNavigation(forHref: " \n\t ") == .fallbackToActivation)
         #expect(BrowserBridgeNavigationPolicy.openControlNavigation(forHref: "file:///etc/passwd") == .reject)
+        #expect(BrowserBridgeNavigationPolicy.openControlNavigation(forHref: " file:///etc/passwd ") == .reject)
 
         let decision = BrowserBridgeNavigationPolicy.openControlNavigation(forHref: "https://docs.google.com/document/d/example/edit")
         guard case let .navigate(url) = decision else {

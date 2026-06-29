@@ -17,10 +17,11 @@ enum BrowserBridgeNavigationPolicy {
     }
 
     static func openControlNavigation(forHref href: String) -> OpenControlNavigation {
-        guard !href.isEmpty else {
+        let trimmedHref = href.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedHref.isEmpty else {
             return .fallbackToActivation
         }
-        guard let url = normalizedProviderURL(from: href) else {
+        guard let url = normalizedProviderURL(from: trimmedHref) else {
             return .reject
         }
         return .navigate(url)
