@@ -254,6 +254,31 @@ struct PanelLayoutGeometryTests {
         ) == nil)
     }
 
+    @Test("Target plan presentation seeds cache from the validated target task")
+    func targetPlanPresentationSeedsCacheFromValidatedTargetTask() {
+        let previousTaskID = UUID()
+        let targetTaskID = UUID()
+
+        #expect(WorkspacePlanCanvasPresentationTransition.cachedHasPlanContentAfterTargetValidation(
+            previousTaskID: previousTaskID,
+            targetTaskID: targetTaskID,
+            currentCachedHasPlanContent: false,
+            targetHasPlanContent: true
+        ))
+        #expect(!WorkspacePlanCanvasPresentationTransition.cachedHasPlanContentAfterTargetValidation(
+            previousTaskID: previousTaskID,
+            targetTaskID: targetTaskID,
+            currentCachedHasPlanContent: true,
+            targetHasPlanContent: false
+        ))
+        #expect(!WorkspacePlanCanvasPresentationTransition.cachedHasPlanContentAfterTargetValidation(
+            previousTaskID: targetTaskID,
+            targetTaskID: targetTaskID,
+            currentCachedHasPlanContent: false,
+            targetHasPlanContent: true
+        ))
+    }
+
     // MARK: - isCompactPanelLayout
 
     @Test("isCompactPanelLayout is false for zero or negative widths (layout not measured yet)")
