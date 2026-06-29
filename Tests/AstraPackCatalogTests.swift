@@ -36,6 +36,42 @@ struct AstraPackCatalogTests {
         })
     }
 
+    @Test("catalog distinguishes unsupported format version from malformed JSON")
+    func catalogDistinguishesUnsupportedFormatVersionFromMalformedJSON() throws {
+        let root = try Self.makeTemporaryDirectory(named: "format-diagnostics")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let unsupported = """
+        {
+          "formatVersion": 2,
+          "id": "astra.pack.future",
+          "name": "Future Pack",
+          "version": "1.0.0",
+          "coreAPIVersion": "1.0",
+          "description": "Requires a future pack manifest format."
+        }
+        """
+        let malformed = """
+        {
+          "formatVersion": 1,
+          "id": "astra.pack.broken",
+        """
+        try Data(unsupported.utf8).write(to: root.appendingPathComponent("future.json"))
+        try Data(malformed.utf8).write(to: root.appendingPathComponent("broken.json"))
+
+        let snapshot = AstraPackCatalog(builtInDirectory: root, localStorageRoot: nil).load()
+
+        #expect(snapshot.packs.isEmpty)
+        #expect(snapshot.diagnostics.contains {
+            $0.code == .invalidManifest
+                && $0.source.manifestURL?.lastPathComponent == "future.json"
+                && $0.validationIssues.contains { $0.code == .unsupportedFormatVersion }
+        })
+        #expect(snapshot.diagnostics.contains {
+            $0.code == .malformedManifest
+                && $0.source.manifestURL?.lastPathComponent == "broken.json"
+        })
+    }
+
     @Test("duplicate pack IDs resolve deterministically")
     func duplicatePackIDsResolveDeterministically() throws {
         let root = try Self.makeTemporaryDirectory(named: "duplicate-packs")
@@ -93,9 +129,8 @@ struct AstraPackCatalogTests {
         #expect(snapshot.packs.map(\.id) == ["astra.pack.local"])
         #expect(snapshot.entries.first?.source.kind == .local)
         #expect(!snapshot.packs.map(\.id).contains("astra.pack.escape"))
-        #expect(snapshot.diagnostics.contains {
-            $0.code == .unreadableSource
-                && $0.source.manifestURL?.lastPathComponent == "escape.json"
+        #expect(!snapshot.diagnostics.contains {
+            $0.source.manifestURL?.lastPathComponent == "escape.json"
         })
     }
 

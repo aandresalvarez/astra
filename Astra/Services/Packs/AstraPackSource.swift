@@ -21,18 +21,21 @@ struct AstraPackSource: Equatable, Sendable {
             return AstraPackSourceReadResult(sources: [], failures: [])
         }
 
+        let broker = HostFileAccessBroker(fileManager: fileManager)
+        let accessIntent = HostFileAccessIntent.astraManagedStorage(root: directory)
         var isDirectory = ObjCBool(false)
-        guard fileManager.fileExists(atPath: directory.path, isDirectory: &isDirectory),
+        guard broker.fileExists(at: directory, isDirectory: &isDirectory, intent: accessIntent),
               isDirectory.boolValue else {
             return AstraPackSourceReadResult(sources: [], failures: [])
         }
 
         let urls: [URL]
         do {
-            urls = try fileManager.contentsOfDirectory(
+            urls = try broker.contentsOfDirectory(
                 at: directory,
                 includingPropertiesForKeys: [.isRegularFileKey],
-                options: [.skipsHiddenFiles]
+                options: [.skipsHiddenFiles],
+                intent: accessIntent
             )
             .filter { $0.pathExtension.lowercased() == "json" }
             .sorted { lhs, rhs in
@@ -52,7 +55,6 @@ struct AstraPackSource: Equatable, Sendable {
             )
         }
 
-        let broker = HostFileAccessBroker(fileManager: fileManager)
         var sources: [AstraPackSource] = []
         var failures: [AstraPackSourceReadFailure] = []
         for url in urls {
@@ -66,7 +68,7 @@ struct AstraPackSource: Equatable, Sendable {
             do {
                 let data = try broker.readData(
                     at: url,
-                    intent: .astraManagedStorage(root: directory)
+                    intent: accessIntent
                 )
                 var loadedSource = source
                 loadedSource.rawData = data

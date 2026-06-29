@@ -60,6 +60,30 @@ struct ArchitectureFitnessTests {
         )
     }
 
+    @Test("Pack source discovery goes through the file access broker")
+    func packSourceDiscoveryGoesThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let relativePath = "Astra/Services/Packs/AstraPackSource.swift"
+        let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+        let forbiddenPatterns = [
+            "fileManager.fileExists(",
+            "FileManager.default.fileExists(",
+            "fileManager.contentsOfDirectory(",
+            "FileManager.default.contentsOfDirectory("
+        ]
+
+        let matches = text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .compactMap { index, line -> String? in
+                let value = String(line)
+                guard forbiddenPatterns.contains(where: { pattern in value.contains(pattern) }) else { return nil }
+                return "\(relativePath):\(index + 1)"
+            }
+
+        #expect(matches.isEmpty, "Pack source discovery should use HostFileAccessBroker: \(matches)")
+    }
+
     @Test("Workspace App Studio stays on the direct session architecture")
     func workspaceAppStudioStaysOnDirectSessionArchitecture() throws {
         let root = try repositoryRoot()

@@ -95,7 +95,6 @@ struct AstraPackCatalog {
         _ sources: [AstraPackSource],
         diagnostics: inout [AstraPackCatalogDiagnostic]
     ) -> [AstraPackCatalogEntry] {
-        let decoder = JSONDecoder()
         var entries: [AstraPackCatalogEntry] = []
 
         for source in sources {
@@ -109,9 +108,9 @@ struct AstraPackCatalog {
                 continue
             }
 
-            let manifest: AstraPackManifest
+            let payload: AstraPackManifestPayload
             do {
-                manifest = try decoder.decode(AstraPackManifest.self, from: data)
+                payload = try JSONDecoder().decode(AstraPackManifestPayload.self, from: data)
             } catch {
                 diagnostics.append(AstraPackCatalogDiagnostic(
                     code: .malformedManifest,
@@ -122,6 +121,7 @@ struct AstraPackCatalog {
                 continue
             }
 
+            let manifest = payload.manifest
             let validation = AstraPackManifestValidator.validate(manifest)
             guard validation.isValid else {
                 diagnostics.append(AstraPackCatalogDiagnostic(
@@ -195,5 +195,71 @@ struct AstraPackCatalog {
         }
 
         return (lhs.source.manifestURL?.path ?? "") < (rhs.source.manifestURL?.path ?? "")
+    }
+}
+
+private struct AstraPackManifestPayload: Decodable {
+    var formatVersion: Int
+    var id: String
+    var name: String
+    var version: String
+    var coreAPIVersion: String
+    var description: String
+    var capabilityPackageIDs: [String]
+    var shelfDefaults: [AstraPackShelfDefault]
+    var appTemplates: [AstraPackAppTemplate]
+    var policyRestrictions: [AstraPackPolicyRestriction]
+    var vocabulary: [String: String]
+    var branding: AstraPackBranding?
+
+    var manifest: AstraPackManifest {
+        AstraPackManifest(
+            formatVersion: formatVersion,
+            id: id,
+            name: name,
+            version: version,
+            coreAPIVersion: coreAPIVersion,
+            description: description,
+            capabilityPackageIDs: capabilityPackageIDs,
+            shelfDefaults: shelfDefaults,
+            appTemplates: appTemplates,
+            policyRestrictions: policyRestrictions,
+            vocabulary: vocabulary,
+            branding: branding
+        )
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case formatVersion
+        case id
+        case name
+        case version
+        case coreAPIVersion
+        case description
+        case capabilityPackageIDs
+        case shelfDefaults
+        case appTemplates
+        case policyRestrictions
+        case vocabulary
+        case branding
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        formatVersion = try container.decode(Int.self, forKey: .formatVersion)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        version = try container.decode(String.self, forKey: .version)
+        coreAPIVersion = try container.decode(String.self, forKey: .coreAPIVersion)
+        description = try container.decode(String.self, forKey: .description)
+        capabilityPackageIDs = try container.decodeIfPresent([String].self, forKey: .capabilityPackageIDs) ?? []
+        shelfDefaults = try container.decodeIfPresent([AstraPackShelfDefault].self, forKey: .shelfDefaults) ?? []
+        appTemplates = try container.decodeIfPresent([AstraPackAppTemplate].self, forKey: .appTemplates) ?? []
+        policyRestrictions = try container.decodeIfPresent(
+            [AstraPackPolicyRestriction].self,
+            forKey: .policyRestrictions
+        ) ?? []
+        vocabulary = try container.decodeIfPresent([String: String].self, forKey: .vocabulary) ?? [:]
+        branding = try container.decodeIfPresent(AstraPackBranding.self, forKey: .branding)
     }
 }
