@@ -4,6 +4,32 @@ import Testing
 
 @Suite("Prompt Context IO Snapshot Loader")
 struct PromptContextIOSnapshotLoaderTests {
+    @Test("Prompt IO byte limits keep default windows precise but clamp misconfigured windows")
+    func promptIOByteLimitsClampMisconfiguredWindows() {
+        #expect(PromptContextIOSnapshotLoader.byteLimit(for: 8_000) == 32_000)
+        #expect(PromptContextIOSnapshotLoader.byteLimit(for: 0) == 0)
+        #expect(PromptContextIOSnapshotLoader.byteLimit(for: -1) == 0)
+
+        let hugeLimit = PromptContextIOSnapshotLoader.byteLimit(for: Int.max)
+        #expect(hugeLimit < Int.max)
+        #expect(hugeLimit == PromptContextIOSnapshotLoader.byteLimit(for: Int.max / 4))
+    }
+
+    @Test("Prompt IO UTF-8 repair trims only scalar-boundary bytes")
+    func promptIOUTF8RepairTrimsOnlyScalarBoundaryBytes() {
+        var prefixBoundary = Data("prefix".utf8)
+        prefixBoundary.append(contentsOf: [0xf0, 0x9f, 0x98])
+        #expect(PromptContextIOSnapshotLoader.utf8String(from: prefixBoundary, keeping: .prefix) == "prefix")
+
+        var suffixBoundary = Data([0x9f, 0x98])
+        suffixBoundary.append(Data("suffix".utf8))
+        #expect(PromptContextIOSnapshotLoader.utf8String(from: suffixBoundary, keeping: .suffix) == "suffix")
+
+        var invalidRun = Data(repeating: 0xff, count: 8)
+        invalidRun.append(Data("tail".utf8))
+        #expect(PromptContextIOSnapshotLoader.utf8String(from: invalidRun, keeping: .suffix) == nil)
+    }
+
     @Test("Prompt IO snapshot bounds file bytes before UTF-8 decoding")
     func promptIOSnapshotBoundsFileBytesBeforeUTF8Decoding() throws {
         let folder = NSTemporaryDirectory() + "prompt-io-bounded-read-\(UUID().uuidString)"

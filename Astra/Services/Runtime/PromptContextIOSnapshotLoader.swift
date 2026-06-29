@@ -1,6 +1,8 @@
 import Foundation
 
 enum PromptContextIOSnapshotLoader {
+    private static let maximumSnapshotReadBytes = 1_048_576
+
     /// How much raw turn history a rebuilt follow-up prompt may carry. Runtimes
     /// without provider-native session resume depend entirely on this window for
     /// multi-turn coherence, so they get the wider preset.
@@ -180,29 +182,35 @@ enum PromptContextIOSnapshotLoader {
         return string
     }
 
-    private static func byteLimit(for maxCharacters: Int) -> Int {
+    static func byteLimit(for maxCharacters: Int) -> Int {
         guard maxCharacters > 0 else { return 0 }
-        guard maxCharacters <= Int.max / 4 else { return Int.max }
-        return maxCharacters * 4
+        let scaledLimit = maxCharacters <= Int.max / 4
+            ? maxCharacters * 4
+            : Int.max
+        return min(scaledLimit, maximumSnapshotReadBytes)
     }
 
-    private static func utf8String(from data: Data, keeping bound: TextBound) -> String? {
-        var trimmed = data
-        while !trimmed.isEmpty {
-            if let string = String(data: trimmed, encoding: .utf8) {
-                return string
-            }
+    static func utf8String(from data: Data, keeping bound: TextBound) -> String? {
+        if let string = String(data: data, encoding: .utf8) {
+            return string
+        }
+
+        for trimCount in 1...min(3, data.count) {
+            let repaired: Data
             switch bound {
             case .prefix:
-                trimmed.removeLast()
+                repaired = Data(data.dropLast(trimCount))
             case .suffix:
-                trimmed.removeFirst()
+                repaired = Data(data.dropFirst(trimCount))
+            }
+            if let string = String(data: repaired, encoding: .utf8) {
+                return string
             }
         }
-        return String(data: trimmed, encoding: .utf8)
+        return nil
     }
 
-    private enum TextBound {
+    enum TextBound {
         case prefix
         case suffix
 
