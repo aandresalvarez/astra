@@ -399,12 +399,7 @@ end findMessage
 """#
 
     private static func appleLiteral(_ value: String) -> String {
-        let safe = value
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "\r", with: " ")
-            .replacingOccurrences(of: "\n", with: " ")
-        return "\"\(safe)\""
+        AppleScriptSource.stringLiteral(value)
     }
 
     private static func scriptWith(_ body: String) -> String {
@@ -669,10 +664,13 @@ return my joinText(rowList, ASCII character 30)
             set foundMessage to my findMessageInMailbox(targetMailbox, \(appleLiteral(messageID)))
             """
         }
+        let missingMessageError = AppleScriptSource.errorStatement(
+            "No Apple Mail message matches message id \(messageID)."
+        )
         let script = scriptWith("""
         set accountRef to my selectedAccount(\(appleLiteral(account)))
         \(lookupScript)
-        if foundMessage is missing value then error "No Apple Mail message matches message id \(messageID)."
+        if foundMessage is missing value then \(missingMessageError)
         return my messageRow(foundMessage, true)
         """)
         var rows = splitRows(
