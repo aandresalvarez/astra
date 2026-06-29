@@ -128,6 +128,8 @@ public struct HostControlCommandResult: Equatable, Sendable {
     public var stdout: String
     public var stderr: String
     public var timedOut: Bool
+    public var stdoutTruncated: Bool
+    public var stderrTruncated: Bool
 
     public init(
         command: String,
@@ -135,7 +137,9 @@ public struct HostControlCommandResult: Equatable, Sendable {
         exitCode: Int32,
         stdout: String,
         stderr: String,
-        timedOut: Bool = false
+        timedOut: Bool = false,
+        stdoutTruncated: Bool = false,
+        stderrTruncated: Bool = false
     ) {
         self.command = command
         self.arguments = arguments
@@ -143,6 +147,27 @@ public struct HostControlCommandResult: Equatable, Sendable {
         self.stdout = stdout
         self.stderr = stderr
         self.timedOut = timedOut
+        self.stdoutTruncated = stdoutTruncated
+        self.stderrTruncated = stderrTruncated
+    }
+}
+
+public struct HostControlProcessLimits: Equatable, Sendable {
+    public static let standard = HostControlProcessLimits()
+
+    public var maximumTimeoutSeconds: TimeInterval
+    public var outputByteLimit: Int
+
+    public init(
+        maximumTimeoutSeconds: TimeInterval = 300,
+        outputByteLimit: Int = 256 * 1024
+    ) {
+        self.maximumTimeoutSeconds = max(1, maximumTimeoutSeconds)
+        self.outputByteLimit = max(1, outputByteLimit)
+    }
+
+    func clampedTimeout(_ requested: TimeInterval) -> TimeInterval {
+        min(max(1, requested), maximumTimeoutSeconds)
     }
 }
 
@@ -156,7 +181,11 @@ public protocol HostControlProcessRunning: AnyObject {
 }
 
 public final class HostControlProcessRunner: HostControlProcessRunning {
-    public init() {}
+    private let limits: HostControlProcessLimits
+
+    public init(limits: HostControlProcessLimits = .standard) {
+        self.limits = limits
+    }
 
     public func run(
         executablePath: String,
@@ -177,18 +206,30 @@ public final class HostControlProcessRunner: HostControlProcessRunning {
 
         let stdout = Pipe()
         let stderr = Pipe()
-        let stdoutBuffer = LockedData()
-        let stderrBuffer = LockedData()
+        let stdoutBuffer = BoundedProcessOutput(label: "stdout", byteLimit: limits.outputByteLimit)
+        let stderrBuffer = BoundedProcessOutput(label: "stderr", byteLimit: limits.outputByteLimit)
+        let outputLimitExceeded = LockedFlag()
         process.standardOutput = stdout
         process.standardError = stderr
 
+        let terminateForOutputLimit: () -> Void = {
+            if outputLimitExceeded.setIfUnset() {
+                if process.isRunning {
+                    process.terminate()
+                }
+            }
+        }
         stdout.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
-            if !data.isEmpty { stdoutBuffer.append(data) }
+            if stdoutBuffer.append(data) {
+                terminateForOutputLimit()
+            }
         }
         stderr.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
-            if !data.isEmpty { stderrBuffer.append(data) }
+            if stderrBuffer.append(data) {
+                terminateForOutputLimit()
+            }
         }
 
         let semaphore = DispatchSemaphore(value: 0)
@@ -219,17 +260,37 @@ public final class HostControlProcessRunner: HostControlProcessRunning {
 
         stdout.fileHandleForReading.readabilityHandler = nil
         stderr.fileHandleForReading.readabilityHandler = nil
-        stdoutBuffer.append(stdout.fileHandleForReading.readDataToEndOfFile())
-        stderrBuffer.append(stderr.fileHandleForReading.readDataToEndOfFile())
+        drainPipe(stdout.fileHandleForReading, into: stdoutBuffer, onLimitExceeded: terminateForOutputLimit)
+        drainPipe(stderr.fileHandleForReading, into: stderrBuffer, onLimitExceeded: terminateForOutputLimit)
+
+        let outputTruncated = outputLimitExceeded.isSet || stdoutBuffer.isTruncated || stderrBuffer.isTruncated
 
         return HostControlCommandResult(
             command: executablePath,
             arguments: arguments,
-            exitCode: timedOut ? 124 : process.terminationStatus,
+            exitCode: timedOut ? 124 : outputTruncated ? 125 : process.terminationStatus,
             stdout: stdoutBuffer.stringValue,
             stderr: stderrBuffer.stringValue,
-            timedOut: timedOut
+            timedOut: timedOut,
+            stdoutTruncated: stdoutBuffer.isTruncated,
+            stderrTruncated: stderrBuffer.isTruncated
         )
+    }
+
+    private func drainPipe(
+        _ handle: FileHandle,
+        into buffer: BoundedProcessOutput,
+        onLimitExceeded: () -> Void
+    ) {
+        while true {
+            guard let data = try? handle.read(upToCount: 8192),
+                  !data.isEmpty else {
+                return
+            }
+            if buffer.append(data) {
+                onLimitExceeded()
+            }
+        }
     }
 
     private func commandInvocation(executablePath: String, arguments: [String]) -> (executablePath: String, arguments: [String]) {
@@ -320,15 +381,18 @@ public final class HostControlMCPServer {
     private let configuration: HostControlToolConfiguration
     private let processRunner: HostControlProcessRunning
     private let diagnosticsRecorder: HostControlToolDiagnosticsRecorder?
+    private let processLimits: HostControlProcessLimits
 
     public init(
         configuration: HostControlToolConfiguration,
         processRunner: HostControlProcessRunning = HostControlProcessRunner(),
-        diagnosticsRecorder: HostControlToolDiagnosticsRecorder? = nil
+        diagnosticsRecorder: HostControlToolDiagnosticsRecorder? = nil,
+        processLimits: HostControlProcessLimits = .standard
     ) {
         self.configuration = configuration
         self.processRunner = processRunner
         self.diagnosticsRecorder = diagnosticsRecorder
+        self.processLimits = processLimits
     }
 
     public func handleLine(_ line: String) -> String? {
@@ -420,7 +484,7 @@ public final class HostControlMCPServer {
            !allowedFirstArguments.contains(first) {
             return encodeError(id: id, code: -32602, message: "\(toolName) does not allow subcommand '\(first)'")
         }
-        let timeout = timeoutSeconds(from: arguments["timeout_seconds"]) ?? 120
+        let timeout = timeoutSeconds(from: arguments["timeout_seconds"])
         let result = processRunner.run(
             executablePath: executable,
             arguments: argv,
@@ -459,7 +523,7 @@ public final class HostControlMCPServer {
         if let remoteCommand {
             argv.append(remoteCommand)
         }
-        let timeout = timeoutSeconds(from: arguments["timeout_seconds"]) ?? 120
+        let timeout = timeoutSeconds(from: arguments["timeout_seconds"])
         let result = processRunner.run(
             executablePath: configuration.sshExecutable,
             arguments: argv,
@@ -518,7 +582,7 @@ public final class HostControlMCPServer {
               path.hasPrefix("/") else {
             return encodeError(id: id, code: -32602, message: "jira request requires a path starting with /")
         }
-        let timeout = timeoutSeconds(from: arguments["timeout_seconds"]) ?? 120
+        let timeout = timeoutSeconds(from: arguments["timeout_seconds"])
         let body = clean(arguments["body"] as? String)
         let response = JiraHTTPClient(configuration: configuration).request(
             connector: connector,
@@ -592,7 +656,9 @@ public final class HostControlMCPServer {
             exitCode: result.exitCode,
             stdout: configuration.redacted(result.stdout),
             stderr: configuration.redacted(result.stderr),
-            timedOut: result.timedOut
+            timedOut: result.timedOut,
+            stdoutTruncated: result.stdoutTruncated,
+            stderrTruncated: result.stderrTruncated
         )
     }
 
@@ -602,7 +668,7 @@ public final class HostControlMCPServer {
                 "type": "text",
                 "text": formatted(result)
             ]],
-            "isError": result.exitCode != 0 || result.timedOut
+            "isError": result.exitCode != 0 || result.timedOut || result.stdoutTruncated || result.stderrTruncated
         ])
     }
 
@@ -614,6 +680,15 @@ public final class HostControlMCPServer {
         ]
         if result.timedOut {
             lines.append("timed_out: true")
+        }
+        if result.stdoutTruncated || result.stderrTruncated {
+            lines.append("output_truncated: true")
+        }
+        if result.stdoutTruncated {
+            lines.append("stdout_truncated: true")
+        }
+        if result.stderrTruncated {
+            lines.append("stderr_truncated: true")
         }
         lines += [
             "stdout:",
@@ -660,7 +735,7 @@ public final class HostControlMCPServer {
                     ],
                     "timeout_seconds": [
                         "type": "number",
-                        "description": "Optional command timeout. Defaults to 120 seconds."
+                        "description": "Optional command timeout. Defaults to 120 seconds and is capped at 300 seconds."
                     ]
                 ],
                 "required": ["arguments"],
@@ -678,7 +753,7 @@ public final class HostControlMCPServer {
                 "properties": [
                     "alias": ["type": "string", "description": "Configured SSH Host alias or workspace SSH connection alias."],
                     "remote_command": ["type": "string", "description": "Optional remote command passed to ssh as one argument."],
-                    "timeout_seconds": ["type": "number", "description": "Optional command timeout. Defaults to 120 seconds."]
+                    "timeout_seconds": ["type": "number", "description": "Optional command timeout. Defaults to 120 seconds and is capped at 300 seconds."]
                 ],
                 "required": ["alias"],
                 "additionalProperties": false
@@ -698,7 +773,7 @@ public final class HostControlMCPServer {
                     "method": ["type": "string", "description": "For request: GET, POST, PUT, or DELETE."],
                     "path": ["type": "string", "description": "For request: Jira REST path beginning with /."],
                     "body": ["type": "string", "description": "For request: optional JSON body."],
-                    "timeout_seconds": ["type": "number", "description": "Optional request timeout. Defaults to 120 seconds."]
+                    "timeout_seconds": ["type": "number", "description": "Optional request timeout. Defaults to 120 seconds and is capped at 300 seconds."]
                 ],
                 "additionalProperties": false
             ]
@@ -717,15 +792,16 @@ public final class HostControlMCPServer {
         }
     }
 
-    private func timeoutSeconds(from value: Any?) -> TimeInterval? {
-        switch value {
+    private func timeoutSeconds(from value: Any?) -> TimeInterval {
+        let requested: TimeInterval? = switch value {
         case let number as NSNumber:
-            return max(1, number.doubleValue)
+            number.doubleValue
         case let value as String:
-            return Double(value).map { max(1, $0) }
+            Double(value)
         default:
-            return nil
+            nil
         }
+        return processLimits.clampedTimeout(requested ?? 120)
     }
 
     private func clean(_ value: String?) -> String? {
@@ -885,14 +961,63 @@ public enum AstraHostControlToolMain {
     }
 }
 
-private final class LockedData: @unchecked Sendable {
+private final class LockedFlag: @unchecked Sendable {
     private let lock = NSLock()
-    private var data = Data()
+    private var value = false
 
-    func append(_ chunk: Data) {
+    func setIfUnset() -> Bool {
         lock.lock()
-        data.append(chunk)
+        defer { lock.unlock() }
+        guard !value else { return false }
+        value = true
+        return true
+    }
+
+    var isSet: Bool {
+        lock.lock()
+        let snapshot = value
         lock.unlock()
+        return snapshot
+    }
+}
+
+private final class BoundedProcessOutput: @unchecked Sendable {
+    private let lock = NSLock()
+    private let label: String
+    private let byteLimit: Int
+    private var data = Data()
+    private var truncated = false
+
+    init(label: String, byteLimit: Int) {
+        self.label = label
+        self.byteLimit = byteLimit
+    }
+
+    func append(_ chunk: Data) -> Bool {
+        guard !chunk.isEmpty else { return false }
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard !truncated else { return false }
+        let remaining = max(0, byteLimit - data.count)
+        if remaining >= chunk.count {
+            data.append(chunk)
+            return false
+        }
+        if remaining > 0 {
+            data.append(chunk.prefix(remaining))
+        }
+        let marker = "\n[ASTRA truncated \(label) after \(byteLimit) bytes]\n"
+        data.append(Data(marker.utf8))
+        truncated = true
+        return true
+    }
+
+    var isTruncated: Bool {
+        lock.lock()
+        let snapshot = truncated
+        lock.unlock()
+        return snapshot
     }
 
     var stringValue: String {

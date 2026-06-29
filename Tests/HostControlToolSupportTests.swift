@@ -234,6 +234,52 @@ struct HostControlToolSupportTests {
         })
     }
 
+    @Test("Host control process tools clamp provider-selected timeouts")
+    func hostControlProcessToolsClampProviderSelectedTimeouts() throws {
+        let runner = CapturingHostControlProcessRunner()
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(githubExecutable: "/usr/bin/gh"),
+            processRunner: runner
+        )
+
+        _ = try call(server, id: 1, tool: "github", arguments: [
+            "arguments": ["pr", "view", "123"],
+            "timeout_seconds": 7200
+        ])
+
+        #expect(runner.requests.map(\.timeoutSeconds) == [300])
+    }
+
+    @Test("Host control process runner truncates excessive stdout before returning results")
+    func hostControlProcessRunnerTruncatesExcessiveStdoutBeforeReturningResults() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-output-limit-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let executable = root.appendingPathComponent("noisy", isDirectory: false)
+        try """
+        #!/bin/sh
+        dd if=/dev/zero bs=1024 count=320 2>/dev/null | tr '\\0' A
+        printf 'TAIL_SENTINEL'
+        exit 0
+        """.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+
+        let result = HostControlProcessRunner().run(
+            executablePath: executable.path,
+            arguments: [],
+            timeoutSeconds: 10,
+            environment: [:]
+        )
+
+        #expect(result.exitCode == 125)
+        #expect(result.stdoutTruncated)
+        #expect(result.stdout.contains("ASTRA truncated stdout after"))
+        #expect(!result.stdout.contains("TAIL_SENTINEL"))
+        #expect(Data(result.stdout.utf8).count < 270_000)
+    }
+
     private func fakeExecutable(named name: String, root: URL, log: URL, stdout: String) throws -> URL {
         let executable = root.appendingPathComponent(name, isDirectory: false)
         let quotedLog = log.path.replacingOccurrences(of: "'", with: "'\\''")
@@ -281,5 +327,37 @@ struct HostControlToolSupportTests {
         let result = try #require(object["result"] as? [String: Any])
         let content = try #require(result["content"] as? [[String: Any]])
         return try #require(content.first?["text"] as? String)
+    }
+}
+
+private final class CapturingHostControlProcessRunner: HostControlProcessRunning {
+    struct Request: Equatable {
+        var executablePath: String
+        var arguments: [String]
+        var timeoutSeconds: TimeInterval
+        var environment: [String: String]
+    }
+
+    private(set) var requests: [Request] = []
+
+    func run(
+        executablePath: String,
+        arguments: [String],
+        timeoutSeconds: TimeInterval,
+        environment: [String: String]
+    ) -> HostControlCommandResult {
+        requests.append(Request(
+            executablePath: executablePath,
+            arguments: arguments,
+            timeoutSeconds: timeoutSeconds,
+            environment: environment
+        ))
+        return HostControlCommandResult(
+            command: executablePath,
+            arguments: arguments,
+            exitCode: 0,
+            stdout: "ok",
+            stderr: ""
+        )
     }
 }
