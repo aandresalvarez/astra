@@ -183,10 +183,10 @@ enum WorkspaceAppManifestValidator {
         // pipeline/loop, so the MANIFEST must guarantee external effects in those runs are
         // human-gated — the bridge relies on this admission check, not just on the deterministic
         // builders, so a hand/model-authored HTML app can't ship an ungated write.
-        //  - A `pipeline.run` may include `artifact.export` only if a `gate.humanApproval` step
-        //    PRECEDES it. (Export does NOT suspend the pipeline — unlike `task.createAndRun`, which
-        //    suspends and is throttled — so without a prior gate a JS trigger would write a file
-        //    ungated; `artifact.export`'s effect is classified `.read` so the executor won't gate it.)
+        //  - A `pipeline.run` may include an external-effect step only if a `gate.humanApproval`
+        //    step PRECEDES it. The JS bridge can trigger the parent pipeline without minting
+        //    `confirmedApproval`, and `.preApproved` app mode is intentionally not a workflow-level
+        //    human gate for agent launches, connector writes, fan-out, or exports.
         //  - A `loop.run` may not include ANY external-effect step (export / agent task / connector
         //    write): loops execute steps inline with no suspend/approval, so a write would be
         //    re-triggerable without limit.
@@ -211,11 +211,10 @@ enum WorkspaceAppManifestValidator {
                         "An HTML app's loop '\(action.id)' must not run an external-effect step ('\(bad)') — loops execute inline with no approval gate. Use a pipeline with a human-approval gate."
                     ))
                 }
-            } else if let exportIdx = stepTypes.firstIndex(of: "artifact.export"),
-                      !stepTypes[..<exportIdx].contains("gate.humanApproval") {
+            } else if let ungatedStep = firstUngatedExternalEffectStep(in: stepTypes, externalEffectSteps: externalEffectSteps) {
                 issues.append(blocker(
                     "/actions/\(index)/steps",
-                    "An HTML app's pipeline '\(action.id)' exports without a preceding gate.humanApproval step; a JS trigger could write ungated. Add a human-approval gate before the export."
+                    "An HTML app's pipeline '\(action.id)' reaches external-effect step '\(ungatedStep)' without a preceding gate.humanApproval step; a JS trigger could write ungated. Add a human-approval gate before the external effect."
                 ))
             }
         }
@@ -296,6 +295,21 @@ enum WorkspaceAppManifestValidator {
                 "gate.humanApproval", "gate.agentRecommendation", "gate.expression",
                 "pipeline.run", "loop.run", "artifact.export", "notification.show",
                 "rows.reduce", "capability.read"].contains(type)
+    }
+
+    private static func firstUngatedExternalEffectStep(
+        in stepTypes: [String],
+        externalEffectSteps: Set<String>
+    ) -> String? {
+        var hasHumanApprovalGate = false
+        for type in stepTypes {
+            if type == "gate.humanApproval" {
+                hasHumanApprovalGate = true
+            } else if externalEffectSteps.contains(type), !hasHumanApprovalGate {
+                return type
+            }
+        }
+        return nil
     }
 
     /// True if `lowered` contains an `eval(` call or `new Function`. `eval(` is matched only as a
