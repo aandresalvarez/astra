@@ -142,8 +142,14 @@ struct BrowserControlActionServiceTests {
                 "coveredBy": "#overlay",
                 "selector": "#save",
                 "requestedSelector": "button.primary",
+                "label": "Password",
                 "role": "button",
                 "tag": "button",
+                "type": "password",
+                "placeholder": "Enter password",
+                "testID": "password-field",
+                "href": "https://example.com/login",
+                "url": "https://example.com",
                 "bounds": [
                     "x": 10,
                     "y": 20,
@@ -165,6 +171,12 @@ struct BrowserControlActionServiceTests {
         #expect(summary["coveredBy"] as? String == "#overlay")
         #expect(summary["selector"] as? String == "#save")
         #expect(summary["requestedSelector"] as? String == "button.primary")
+        #expect(summary["label"] as? String == "Password")
+        #expect(summary["type"] as? String == "password")
+        #expect(summary["placeholder"] as? String == "Enter password")
+        #expect(summary["testID"] as? String == "password-field")
+        #expect(summary["href"] as? String == "https://example.com/login")
+        #expect(summary["url"] as? String == "https://example.com")
 
         let bounds = try #require(summary["bounds"] as? [String: Any])
         #expect(bounds["width"] as? Int == 100)

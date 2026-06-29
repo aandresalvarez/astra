@@ -884,7 +884,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         server.start()
     }
 
-    private func publishBridgeState() {
+    func publishBridgeState() {
         ShelfBrowserBridgeRegistry.shared.update(
             endpoint: bridgeEndpoint,
             currentURL: currentURL.isEmpty ? nil : currentURL,
@@ -948,7 +948,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         )
     }
 
-    private func syncDisplayedStateForEngine() {
+    func syncDisplayedStateForEngine() {
         if isUsingControlledBrowser {
             currentURL = controlledBrowser.currentURL
             pageTitle = controlledBrowser.pageTitle
@@ -3112,6 +3112,23 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 placeholder: placeholder,
                 testID: testID
             )
+            if let result = try blockedTextEntryResult(
+                action: action,
+                targetInfo: actionability,
+                attachmentKey: "actionability",
+                logContext: BrowserTextEntryLogContext(
+                    started: started,
+                    action: action,
+                    selector: selector,
+                    label: label,
+                    role: role,
+                    placeholder: placeholder,
+                    testID: testID,
+                    fields: ["clear": String(clear), "text_length": String(text.count)]
+                )
+            ) {
+                return result
+            }
             let beforeSettle = try? await rawSnapshotObject()
 
             let json: String
@@ -3360,7 +3377,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         ]
     }
 
-    private func logBrowserAction(
+    func logBrowserAction(
         phase: String,
         action: String,
         selector: String?,
@@ -3536,6 +3553,19 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             )
             return result
         }
+        if let result = try await blockedFocusedTextEntryResult(
+            action: "keypress",
+            logContext: BrowserTextEntryLogContext(
+                started: started,
+                action: "keypress",
+                fields: [
+                    "key_length": String(key.count),
+                    "modifier_count": String(modifiers.count)
+                ]
+            )
+        ) {
+            return result
+        }
         logBrowserAction(
             phase: "requested",
             action: "keypress",
@@ -3611,6 +3641,16 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             fields: ["text_length": String(text.count)]
         )
         do {
+            if let result = try await blockedFocusedTextEntryResult(
+                action: BrowserActionKind.insertText.rawValue,
+                logContext: BrowserTextEntryLogContext(
+                    started: started,
+                    action: "insertText",
+                    fields: ["text_length": String(text.count)]
+                )
+            ) {
+                return result
+            }
             let json: String
             if isUsingControlledBrowser {
                 json = try await controlledBrowser.insertText(text)
@@ -5576,7 +5616,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         return response
     }
 
-    private func evaluateJavaScriptString(_ script: String) async throws -> String {
+    func evaluateJavaScriptString(_ script: String) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             webView.evaluateJavaScript(script) { result, error in
                 if let error {
@@ -5719,7 +5759,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             .lowercased()
     }
 
-    private static func jsonObject(from json: String) throws -> [String: Any] {
+    static func jsonObject(from json: String) throws -> [String: Any] {
         guard let data = json.data(using: .utf8),
               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw CocoaError(.coderInvalidValue)
@@ -5727,7 +5767,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         return object
     }
 
-    private static func jsonString(_ object: [String: Any]) throws -> String {
+    static func jsonString(_ object: [String: Any]) throws -> String {
         let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         return String(data: data, encoding: .utf8) ?? #"{"ok":false,"error":"encoding_failed"}"#
     }

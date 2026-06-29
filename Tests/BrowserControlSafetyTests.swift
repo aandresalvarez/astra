@@ -4,6 +4,52 @@ import Testing
 
 @Suite("Browser Control Safety")
 struct BrowserControlSafetyTests {
+    @Test("Text entry preflight blocks credential and MFA targets")
+    func textEntryPreflightBlocksCredentialAndMFATargets() throws {
+        let passwordBlock = try #require(BrowserTextEntryPreflight.blockResponse(
+            action: BrowserActionKind.fill.rawValue,
+            targetInfo: [
+                "ok": true,
+                "selector": "input[type=password]",
+                "label": "Password",
+                "role": "textbox",
+                "tag": "input",
+                "type": "password",
+                "placeholder": "Password"
+            ]
+        ))
+        #expect(passwordBlock["ok"] as? Bool == false)
+        #expect(passwordBlock["error"] as? String == "credential_input_blocked")
+
+        let mfaBlock = try #require(BrowserTextEntryPreflight.blockResponse(
+            action: BrowserActionKind.insertText.rawValue,
+            targetInfo: [
+                "ok": true,
+                "selector": "#otp",
+                "label": "Verification code",
+                "role": "textbox",
+                "tag": "input",
+                "type": "text",
+                "placeholder": "One-time code"
+            ]
+        ))
+        #expect(mfaBlock["ok"] as? Bool == false)
+        #expect(mfaBlock["error"] as? String == "mfa_input_blocked")
+
+        #expect(BrowserTextEntryPreflight.blockResponse(
+            action: BrowserActionKind.setValue.rawValue,
+            targetInfo: [
+                "ok": true,
+                "selector": "input[name=email]",
+                "label": "Email",
+                "role": "textbox",
+                "tag": "input",
+                "type": "email",
+                "placeholder": "name@example.com"
+            ]
+        ) == nil)
+    }
+
     @Test("Drive open default timeout covers slow Google Drive search results")
     func driveOpenDefaultTimeoutCoversSlowGoogleDriveSearchResults() {
         #expect(GoogleWorkspaceBrowserService.googleDriveOpenDefaultTimeoutSeconds >= 20)

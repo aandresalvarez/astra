@@ -538,6 +538,19 @@ enum BrowserAutomationScripts {
         """
     }
 
+    static func focusedTargetInfoScript() -> String {
+        """
+        (() => {
+          \(targetResolutionPrelude(selector: nil, x: nil, y: nil, allowDangerous: true, label: nil, role: nil, text: nil, placeholder: nil, testID: nil))
+          const active = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
+          if (!active) return JSON.stringify({ ok: false, error: "no_focused_element", locator: { focused: true } });
+          if (!visible(active)) return JSON.stringify(publicTarget({ ok: false, error: "target_not_visible", el: active }));
+          if (disabled(active)) return JSON.stringify(publicTarget({ ok: false, error: "target_disabled", el: active }));
+          return JSON.stringify(publicTarget({ ok: true, el: active, point: null }));
+        })()
+        """
+    }
+
     static func clickScript(
         selector: String?,
         x: Double?,
@@ -1003,6 +1016,9 @@ enum BrowserAutomationScripts {
               role: roleFor(el),
               tag: el.tagName.toLowerCase(),
               type: el.getAttribute("type") || "",
+              placeholder: el.getAttribute("placeholder") || "",
+              testID: el.getAttribute("data-testid") || el.getAttribute("data-test") || "",
+              href: el.getAttribute("href") || "",
               disabled: disabled(el),
               visible: visible(el),
               actionable: target.ok,

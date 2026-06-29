@@ -45,8 +45,14 @@ enum BrowserControlActionService {
             "coveredBy": object["coveredBy"] as? String ?? "",
             "selector": object["selector"] as? String ?? "",
             "requestedSelector": object["requestedSelector"] as? String ?? "",
+            "label": object["label"] as? String ?? "",
             "role": object["role"] as? String ?? "",
-            "tag": object["tag"] as? String ?? ""
+            "tag": object["tag"] as? String ?? "",
+            "type": object["type"] as? String ?? "",
+            "placeholder": object["placeholder"] as? String ?? "",
+            "testID": object["testID"] as? String ?? "",
+            "href": object["href"] as? String ?? "",
+            "url": object["url"] as? String ?? ""
         ]
         if let bounds = object["bounds"] as? [String: Any] {
             summary["bounds"] = bounds

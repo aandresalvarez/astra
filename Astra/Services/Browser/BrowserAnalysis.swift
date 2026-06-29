@@ -1359,6 +1359,20 @@ enum BrowserAnalysisBuilder {
         testID: String,
         href: String
     ) -> BrowserRisk {
+        let sharedRisk = BrowserSensitiveControlClassifier.classify(
+            selector: selector,
+            label: label,
+            role: role,
+            tag: tag,
+            type: type,
+            placeholder: placeholder,
+            testID: testID,
+            href: href
+        )
+        if sharedRisk != .normal {
+            return sharedRisk
+        }
+
         let text = [
             selector,
             label,
@@ -1369,25 +1383,6 @@ enum BrowserAnalysisBuilder {
             testID,
             href
         ].joined(separator: " ").lowercased()
-
-        if type.lowercased() == "password" || containsAny(text, ["password", "passcode", "secret"]) {
-            return .credentialInput
-        }
-        if containsAny(text, ["mfa", "2fa", "two factor", "two-factor", "verification code", "security code", "otp", "one-time"]) {
-            return .mfaInput
-        }
-        if containsAny(text, ["delete", "remove", "destroy", "discard", "revoke", "terminate", "erase"]) {
-            return .destructive
-        }
-        if containsAny(text, ["purchase", "buy now", "place order", "checkout"]) {
-            return .purchase
-        }
-        if containsAny(text, ["pay", "payment", "billing", "credit card", "card number"]) {
-            return .payment
-        }
-        if containsAny(text, ["authorize", "approve", "grant", "allow access", "permission", "consent"]) {
-            return .authorization
-        }
         let lowerTag = tag.lowercased()
         let lowerRole = role.lowercased()
         let isEditable = lowerTag == "input" || lowerTag == "textarea" || lowerRole.contains("textbox")

@@ -653,6 +653,13 @@ final class ControlledBrowserController: ObservableObject {
         return value
     }
 
+    func focusedTargetInfo() async throws -> String {
+        try await ensureLaunched(initialURL: URL(string: "about:blank"))
+        let value = try await evaluate(script: BrowserAutomationScripts.focusedTargetInfoScript())
+        try await refreshPageMetadata()
+        return value
+    }
+
     func type(
         selector: String?,
         text: String,
