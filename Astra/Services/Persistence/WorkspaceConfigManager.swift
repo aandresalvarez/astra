@@ -93,6 +93,7 @@ enum WorkspaceConfigManager {
         var connectorCount: Int
         var localToolCount: Int
         var taskCount: Int
+        var quarantinedScheduleCount: Int
         var skippedConnectorCount: Int
         var skippedLocalToolCount: Int
 
@@ -108,6 +109,7 @@ enum WorkspaceConfigManager {
                 "connector_count": String(connectorCount),
                 "local_tool_count": String(localToolCount),
                 "task_count": String(taskCount),
+                "quarantined_schedule_count": String(quarantinedScheduleCount),
                 "skipped_connector_count": String(skippedConnectorCount),
                 "skipped_local_tool_count": String(skippedLocalToolCount)
             ]
@@ -735,7 +737,7 @@ enum WorkspaceConfigManager {
         }
 
         for sc in config.schedules ?? [] {
-            let schedule = makeSchedule(from: sc, workspace: workspace)
+            let schedule = makeImportedSchedule(from: sc, workspace: workspace)
             modelContext.insert(schedule)
         }
 
@@ -763,6 +765,7 @@ enum WorkspaceConfigManager {
             connectorCount: workspace.connectors.count,
             localToolCount: workspace.localTools.count,
             taskCount: workspace.tasks.count,
+            quarantinedScheduleCount: config.schedules?.count ?? 0,
             skippedConnectorCount: skippedConnectorCount,
             skippedLocalToolCount: skippedLocalToolCount
         )
@@ -1319,7 +1322,13 @@ enum WorkspaceConfigManager {
         )
     }
 
-    private static func makeSchedule(from config: ScheduleConfig, workspace: Workspace) -> TaskSchedule {
+    private enum ImportedScheduleTrustPolicy {
+        static func isEnabledAfterImport() -> Bool {
+            false
+        }
+    }
+
+    private static func makeImportedSchedule(from config: ScheduleConfig, workspace: Workspace) -> TaskSchedule {
         let schedule = TaskSchedule(
             name: config.name,
             goal: config.goal,
@@ -1333,7 +1342,7 @@ enum WorkspaceConfigManager {
         if let id = config.id.flatMap(UUID.init(uuidString:)) {
             schedule.id = id
         }
-        schedule.isEnabled = config.isEnabled
+        schedule.isEnabled = ImportedScheduleTrustPolicy.isEnabledAfterImport()
         schedule.templateID = config.templateID.flatMap(UUID.init(uuidString:))
         schedule.templateVariablesJSON = config.templateVariablesJSON
         schedule.routineDescription = config.routineDescription ?? schedule.routineDescription

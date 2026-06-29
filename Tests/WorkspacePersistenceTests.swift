@@ -698,6 +698,56 @@ struct WorkspacePersistenceTests {
         #expect(result.auditFields["skipped_connector_count"] == "1")
     }
 
+    @Test("imported schedules are quarantined until local re-enable")
+    @MainActor
+    func importedSchedulesAreQuarantinedUntilLocalReenable() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        var config = minimalWorkspaceConfig(
+            name: "Imported Schedule",
+            path: "/tmp/astra_import_schedule_\(UUID().uuidString)",
+            skillID: UUID().uuidString
+        )
+        let dueDate = Date(timeIntervalSince1970: 1_777_002_000)
+        config.schedules = [
+            WorkspaceConfigManager.ScheduleConfig(
+                id: UUID().uuidString,
+                name: "Untrusted Routine",
+                isEnabled: true,
+                goal: "Launch from imported config",
+                templateVariablesJSON: "{}",
+                model: "claude-sonnet-4-6",
+                tokenBudget: 50_000,
+                scheduleType: ScheduleType.once.rawValue,
+                nextFireDate: dueDate,
+                intervalSeconds: 3600,
+                dailyHour: 9,
+                dailyMinute: 0,
+                weeklyDayOfWeek: 2,
+                fireCount: 0
+            )
+        ]
+
+        let result = WorkspaceConfigManager.importWorkspaceResult(from: config, modelContext: context)
+        let importedSchedule = try #require(result.workspace.schedules.first)
+
+        #expect(importedSchedule.isEnabled == false)
+        #expect(importedSchedule.nextFireDate == dueDate)
+        #expect(importedSchedule.goal == "Launch from imported config")
+        #expect(result.quarantinedScheduleCount == 1)
+        #expect(result.auditFields["quarantined_schedule_count"] == "1")
+
+        let scheduler = TaskScheduler()
+        let queue = TaskQueue()
+        scheduler.checkAndFire(modelContext: context, taskQueue: queue)
+        #expect(result.workspace.tasks.filter { $0.originScheduleID == importedSchedule.id }.isEmpty)
+        #expect(queue.hasProcessingLoop == false)
+
+        importedSchedule.isEnabled = true
+        try context.save()
+        #expect(importedSchedule.isEnabled == true)
+    }
+
     @Test("auto-export skip launch flags are recognized")
     func autoExportSkipLaunchFlagsAreRecognized() {
         #expect(WorkspacePersistenceCoordinator.shouldSkipAutoExport(
