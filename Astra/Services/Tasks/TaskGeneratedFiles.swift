@@ -6,47 +6,48 @@ enum TaskGeneratedFileShelfDestination: Equatable {
     case query
 
     var title: String {
-        switch self {
-        case .browser: "Open in Browser Shelf"
-        case .files: "Open in Files Shelf"
-        case .query: "Open in Query Shelf"
-        }
+        generatedFileDestination.title
     }
 
     var compactTitle: String {
-        switch self {
-        case .browser: "Browser"
-        case .files: "Files"
-        case .query: "Query"
-        }
+        generatedFileDestination.compactTitle
     }
 
     var systemImage: String {
-        switch self {
-        case .browser: "globe"
-        case .files: "doc.text"
-        case .query: "cylinder.split.1x2"
+        generatedFileDestination.systemImage
+    }
+
+    init?(shelfID: ShelfID) {
+        switch shelfID {
+        case .browser:
+            self = .browser
+        case .files:
+            self = .files
+        case .query:
+            self = .query
+        case .plan, .appPreview:
+            return nil
         }
+    }
+
+    var shelfID: ShelfID {
+        switch self {
+        case .browser:
+            .browser
+        case .files:
+            .files
+        case .query:
+            .query
+        }
+    }
+
+    private var generatedFileDestination: ShelfGeneratedFileDestinationMetadata {
+        CoreShelfRegistry.descriptor(for: shelfID)!.generatedFileDestination!
     }
 }
 
 enum TaskGeneratedFiles {
     private static let markdownExtensions: Set<String> = ["md", "markdown", "qmd"]
-
-    private static let filesShelfExtensions: Set<String> = [
-        "md", "markdown", "qmd", "txt", "text", "log",
-        "json", "jsonl", "csv", "tsv", "yaml", "yml", "toml", "xml", "plist",
-        "swift", "py", "js", "jsx", "ts", "tsx", "css", "scss", "html", "htm",
-        "sh", "bash", "zsh", "fish", "sql", "r", "rb", "go", "rs",
-        "java", "kt", "kts", "c", "cc", "cpp", "cxx", "h", "hpp", "m", "mm",
-        "php", "pl", "lua", "env", "ini", "cfg", "conf"
-    ]
-
-    private static let filesShelfFileNames: Set<String> = [
-        ".env", ".gitignore", ".npmrc", ".zshrc", ".bashrc",
-        "dockerfile", "makefile", "rakefile", "gemfile", "podfile",
-        "readme", "license", "changelog"
-    ]
 
     static func files(in folder: String, fileManager: FileManager = .default) -> [String] {
         guard !folder.isEmpty else { return [] }
@@ -182,19 +183,11 @@ enum TaskGeneratedFiles {
     }
 
     static func isFilesShelfFile(_ path: String) -> Bool {
-        let url = URL(fileURLWithPath: path)
-        let ext = url.pathExtension.lowercased()
-        let name = url.lastPathComponent.lowercased()
-        return filesShelfExtensions.contains(ext)
-            || filesShelfFileNames.contains(name)
-            || name.hasPrefix(".env.")
+        ShelfArtifactRouter.isFilesShelfFile(path)
     }
 
     static func shelfDestination(for path: String) -> TaskGeneratedFileShelfDestination? {
-        if isHTMLFile(path) { return .browser }
-        if isSQLFile(path) { return .query }
-        if isFilesShelfFile(path) { return .files }
-        return nil
+        ShelfArtifactRouter.shelfID(for: path).flatMap(TaskGeneratedFileShelfDestination.init(shelfID:))
     }
 
     static func shouldLoadGeneratedHTMLOnUserOpen(currentBrowserURL: String, targetPath: String) -> Bool {
