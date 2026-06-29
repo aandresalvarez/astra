@@ -131,6 +131,74 @@ struct AgentExecutionScopedProcessTests {
         #expect(control == .cancel(reason: "cancelled_by_user"))
     }
 
+    @Test("concurrent control messages stay line atomic")
+    func concurrentControlMessagesStayLineAtomic() async throws {
+        let directory = temporaryDirectory()
+        let readyFile = directory.appendingPathComponent("ready")
+        let controlFile = directory.appendingPathComponent("control-lines.jsonl")
+        let script = directory.appendingPathComponent("control-stream.sh")
+        try """
+        #!/bin/sh
+        : > "\(controlFile.path)"
+        echo ready > "\(readyFile.path)"
+        while IFS= read -r message <&4; do
+            printf '%s\\n' "$message" >> "\(controlFile.path)"
+        done
+        exit 0
+        """.write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+
+        let process = AgentExecutionScopedProcess(
+            executablePath: "/bin/sh",
+            arguments: [script.path],
+            currentDirectory: directory.path,
+            environment: ["PATH": "/bin:/usr/bin"],
+            dedicatedControlFileDescriptor: 4
+        )
+
+        let completion = Task { await runAndWait(process) }
+        let isReady = await waitUntil(timeout: 2) {
+            FileManager.default.fileExists(atPath: readyFile.path)
+        }
+        #expect(isReady)
+
+        let messageCount = 24
+        let requestPathPayload = "/tmp/" + String(repeating: "x", count: 8_192)
+        let writeResults = await withTaskGroup(of: Bool.self, returning: [Bool].self) { group in
+            for index in 0..<messageCount {
+                group.addTask {
+                    process.sendControl(.run(
+                        requestID: "request-\(index)",
+                        requestFile: "\(requestPathPayload)-\(index).json"
+                    ))
+                }
+            }
+
+            var results: [Bool] = []
+            for await result in group {
+                results.append(result)
+            }
+            return results
+        }
+        #expect(writeResults.count == messageCount)
+        #expect(writeResults.allSatisfy { $0 })
+
+        process.closeControl()
+        let exitCode = await completion.value
+        let controlText = try String(contentsOf: controlFile, encoding: .utf8)
+        let lines = controlText.split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.isEmpty }
+        let decoded = try lines.map {
+            try JSONDecoder().decode(LocalModelControlMessage.self, from: Data($0.utf8))
+        }
+
+        #expect(exitCode == 0)
+        #expect(lines.count == messageCount)
+        #expect(Set(decoded.compactMap(\.requestID)) == Set((0..<messageCount).map { "request-\($0)" }))
+        #expect(decoded.allSatisfy { $0.type == "run" })
+        #expect(decoded.allSatisfy { $0.requestFile?.hasPrefix(requestPathPayload) == true })
+    }
+
     @Test("request cancellation falls back when control pipe is closed")
     func requestCancellationFallsBackWhenControlPipeIsClosed() async throws {
         let directory = temporaryDirectory()

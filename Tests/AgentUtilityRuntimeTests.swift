@@ -575,4 +575,85 @@ struct AgentUtilityRuntimeTests {
         #expect(request.messages.first?.content.contains("Private Local Chat utility") == true)
         #expect(request.messages.first?.content.contains("Do not claim you used files") == true)
     }
+
+    @Test("Copilot utility prefers final message when stream repeats delta text")
+    func copilotUtilityPrefersFinalMessageWhenStreamRepeatsDeltaText() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-utility-copilot-stream-final-\(UUID().uuidString)", isDirectory: true)
+        let fakeCopilot = root.appendingPathComponent("copilot")
+        let copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "help" ]; then
+          cat <<'HELP'
+        \(modernCopilotHelpText())
+        HELP
+          exit 0
+        fi
+        printf '%s\\n' '{"type":"assistant.message_delta","data":{"deltaContent":"{\\"action\\":\\"create_skill\\",\\"name\\":\\"Slash Smoke Skill\\"}"}}'
+        printf '%s\\n' '{"type":"assistant.message","data":{"content":"{\\"action\\":\\"create_skill\\",\\"name\\":\\"Slash Smoke Skill\\"}"}}'
+        printf '%s\\n' '{"type":"assistant.turn_end"}'
+        exit 0
+        """
+        try writeExecutableScript(at: fakeCopilot, contents: script)
+
+        let result = await AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI).runUtilityPrompt(
+            "Return a JSON action",
+            workspacePath: root.path,
+            configuration: AgentUtilityRuntimeConfiguration(
+                runtime: .copilotCLI,
+                model: "gpt-5",
+                copilotPath: fakeCopilot.path,
+                copilotHome: copilotHome.path,
+                timeoutSeconds: 3
+            ),
+            toolMode: .readOnly
+        )
+
+        #expect(result.exitCode == 0)
+        #expect(result.output == #"{"action":"create_skill","name":"Slash Smoke Skill"}"#)
+    }
+
+    @Test("Copilot utility keeps streamed text when result summary follows")
+    func copilotUtilityKeepsStreamedTextWhenResultSummaryFollows() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-utility-copilot-result-summary-\(UUID().uuidString)", isDirectory: true)
+        let fakeCopilot = root.appendingPathComponent("copilot")
+        let copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "help" ]; then
+          cat <<'HELP'
+        \(modernCopilotHelpText())
+        HELP
+          exit 0
+        fi
+        printf '%s\\n' '{"type":"assistant.message_delta","data":{"deltaContent":"Actual provider response"}}'
+        printf '%s\\n' '{"type":"result","data":{"usage":{"input_tokens":1,"output_tokens":1},"summary":"done"}}'
+        exit 0
+        """
+        try writeExecutableScript(at: fakeCopilot, contents: script)
+
+        let result = await AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI).runUtilityPrompt(
+            "Return the provider response",
+            workspacePath: root.path,
+            configuration: AgentUtilityRuntimeConfiguration(
+                runtime: .copilotCLI,
+                model: "gpt-5",
+                copilotPath: fakeCopilot.path,
+                copilotHome: copilotHome.path,
+                timeoutSeconds: 3
+            ),
+            toolMode: .readOnly
+        )
+
+        #expect(result.exitCode == 0)
+        #expect(result.output == "Actual provider response")
+    }
 }

@@ -289,11 +289,10 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     @discardableResult
     func sendControl(_ message: LocalModelControlMessage) -> Bool {
         guard let controlPipe else { return false }
-        lock.lock()
-        let closed = controlWriteClosed
-        lock.unlock()
-        guard !closed else { return false }
         guard let data = try? JSONEncoder().encode(message) else { return false }
+        lock.lock()
+        defer { lock.unlock() }
+        guard !controlWriteClosed else { return false }
         return writeAll(data + Data([0x0a]), to: controlPipe.fileHandleForWriting.fileDescriptor)
     }
 
@@ -326,26 +325,20 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
 
     private func writeControlData(_ data: Data, to handle: FileHandle) -> Bool {
         lock.lock()
-        if controlWriteClosed {
-            lock.unlock()
-            return false
-        }
-        lock.unlock()
-
+        defer { lock.unlock() }
+        guard !controlWriteClosed else { return false }
         let didWrite = writeAll(data, to: handle.fileDescriptor)
-        closeControlWriteIfNeeded()
+        controlWriteClosed = true
+        handle.closeFile()
         return didWrite
     }
 
     private func closeControlWriteIfNeeded() {
         guard let controlPipe else { return }
         lock.lock()
-        guard !controlWriteClosed else {
-            lock.unlock()
-            return
-        }
+        defer { lock.unlock() }
+        guard !controlWriteClosed else { return }
         controlWriteClosed = true
-        lock.unlock()
         controlPipe.fileHandleForWriting.closeFile()
     }
 

@@ -5,6 +5,7 @@ enum MCPInstallPackageBuilder {
     enum BuildError: LocalizedError, Equatable {
         case blocked([String])
         case missingLaunchTarget
+        case requiresGuidedSetup(String)
 
         var errorDescription: String? {
             switch self {
@@ -12,12 +13,17 @@ enum MCPInstallPackageBuilder {
                 return blockers.joined(separator: "\n")
             case .missingLaunchTarget:
                 return "The MCP install target does not include a launch command or URL."
+            case .requiresGuidedSetup(let guidance):
+                return guidance
             }
         }
     }
 
     static func package(from intent: MCPInstallIntent) throws -> PluginPackage {
         let policy = MCPInstallPolicy.decision(for: intent)
+        if policy.requiresGuidedSetup {
+            throw BuildError.requiresGuidedSetup(intent.setupCommand?.guidance ?? policy.summary)
+        }
         guard policy.blockers.isEmpty else {
             throw BuildError.blocked(policy.blockers)
         }
@@ -25,7 +31,8 @@ enum MCPInstallPackageBuilder {
         let source = intent.installSource
         let serverID = normalizedServerID(intent.serverID ?? source?.identifier ?? "mcp")
         let display = displayName(from: intent)
-        let server = try server(from: intent, serverID: serverID, displayName: display)
+        let servers = try servers(from: intent)
+        guard !servers.isEmpty else { throw BuildError.missingLaunchTarget }
         return PluginPackage(
             id: "local.mcp.\(serverID)",
             name: "\(display) MCP",
@@ -37,10 +44,10 @@ enum MCPInstallPackageBuilder {
             tags: ["mcp"],
             version: "1.0.0",
             setupGuide: setupGuide(for: policy),
-            skills: [],
+            skills: environmentDeclarationSkills(for: servers),
             connectors: [],
             localTools: [],
-            mcpServers: [server],
+            mcpServers: servers,
             templates: [],
             prerequisites: prerequisites(for: intent),
             sourceMetadata: .localLibrary(),
@@ -58,44 +65,76 @@ enum MCPInstallPackageBuilder {
     }
 
     private static func server(
-        from intent: MCPInstallIntent,
-        serverID: String,
-        displayName: String
+        from spec: MCPInstallServerSpec
     ) throws -> PluginMCPServer {
-        switch intent.transport {
+        let serverID = normalizedServerID(spec.serverID)
+        let displayName = displayName(from: spec)
+        switch spec.transport {
         case .stdio:
-            guard let command = intent.command else { throw BuildError.missingLaunchTarget }
+            guard let command = spec.command else { throw BuildError.missingLaunchTarget }
             return PluginMCPServer(
                 id: serverID,
                 displayName: displayName,
                 transport: .stdio,
                 command: command,
-                arguments: intent.arguments,
+                arguments: spec.arguments,
+                environmentKeys: spec.environmentKeys,
                 trustLevel: .high,
-                installSource: intent.installSource
+                installSource: spec.installSource
             )
         case .http, .sse:
-            guard let url = intent.url else { throw BuildError.missingLaunchTarget }
+            guard let url = spec.url else { throw BuildError.missingLaunchTarget }
             return PluginMCPServer(
                 id: serverID,
                 displayName: displayName,
-                transport: intent.transport,
+                transport: spec.transport,
                 url: url,
+                environmentKeys: spec.environmentKeys,
                 trustLevel: .medium,
-                installSource: intent.installSource
+                installSource: spec.installSource
             )
         }
     }
 
+    private static func servers(from intent: MCPInstallIntent) throws -> [PluginMCPServer] {
+        let specs = intent.serverSpecs
+        guard !specs.isEmpty else { return [] }
+        return try specs.map(server(from:))
+    }
+
     private static func prerequisites(for intent: MCPInstallIntent) -> [CLIPrerequisite] {
-        guard intent.transport == .stdio, let command = intent.command else { return [] }
-        return [
-            CLIPrerequisite(
+        var seen = Set<String>()
+        return intent.serverSpecs.compactMap { spec in
+            guard spec.transport == .stdio,
+                  let command = spec.command,
+                  !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  seen.insert(command).inserted else {
+                return nil
+            }
+            return CLIPrerequisite(
                 binary: command,
                 livenessArgs: ["--version"],
                 displayName: "\(command) runtime",
                 purpose: "Launches the pasted MCP server.",
-                installHint: installHint(for: intent)
+                installHint: installHint(for: spec.installSource)
+            )
+        }
+    }
+
+    private static func environmentDeclarationSkills(for servers: [PluginMCPServer]) -> [PluginSkill] {
+        let keys = orderedUnique(servers.flatMap(\.environmentKeys))
+        guard !keys.isEmpty else { return [] }
+        return [
+            PluginSkill(
+                name: "MCP Environment",
+                icon: "key.fill",
+                description: "Declares environment variables requested by imported MCP server configuration.",
+                allowedTools: [],
+                disallowedTools: [],
+                customTools: [],
+                behaviorInstructions: "Use this capability's MCP servers with the environment variables the imported configuration explicitly declared.",
+                environmentKeys: keys,
+                environmentValues: Array(repeating: "", count: keys.count)
             )
         ]
     }
@@ -104,8 +143,8 @@ enum MCPInstallPackageBuilder {
         ([policy.summary] + policy.warnings).joined(separator: "\n")
     }
 
-    private static func installHint(for intent: MCPInstallIntent) -> String {
-        switch intent.installSource?.installMode {
+    private static func installHint(for source: PluginMCPInstallSource?) -> String {
+        switch source?.installMode {
         case .npx:
             return "Install Node.js and npm so npx can launch this MCP package."
         case .uvx:
@@ -120,17 +159,42 @@ enum MCPInstallPackageBuilder {
     }
 
     private static func dataAccess(for intent: MCPInstallIntent) -> [CapabilityDataAccessKind] {
-        guard intent.transport == .stdio else { return [.network, .externalService] }
-        switch intent.installSource?.kind {
-        case .npm, .pypi, .nuget, .dockerImage, .oci, .mcpb, .remoteHTTP:
-            return [.workspaceFiles, .network, .externalService]
-        case .localBinary, .unknown, .none:
-            return [.workspaceFiles]
+        var result: [CapabilityDataAccessKind] = []
+        func append(_ kind: CapabilityDataAccessKind) {
+            if !result.contains(kind) {
+                result.append(kind)
+            }
         }
+
+        for spec in intent.serverSpecs {
+            if spec.transport == .stdio {
+                append(.workspaceFiles)
+            } else {
+                append(.network)
+                append(.externalService)
+            }
+
+            switch spec.installSource?.kind {
+            case .npm, .pypi, .nuget, .dockerImage, .oci, .mcpb, .remoteHTTP:
+                append(.network)
+                append(.externalService)
+            case .localBinary, .unknown:
+                break
+            case .none:
+                break
+            }
+        }
+
+        return result.isEmpty ? [.workspaceFiles] : result
     }
 
     private static func displayName(from intent: MCPInstallIntent) -> String {
         let value = intent.displayName ?? intent.installSource?.identifier ?? intent.serverID ?? "MCP"
+        return value.split(separator: "/").last.map(String.init) ?? value
+    }
+
+    private static func displayName(from spec: MCPInstallServerSpec) -> String {
+        let value = spec.displayName ?? spec.installSource?.identifier ?? spec.serverID
         return value.split(separator: "/").last.map(String.init) ?? value
     }
 
@@ -143,5 +207,16 @@ enum MCPInstallPackageBuilder {
         }
         let normalized = String(scalars).trimmingCharacters(in: CharacterSet(charactersIn: "-._"))
         return normalized.isEmpty ? "mcp" : normalized
+    }
+
+    private static func orderedUnique(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for value in values {
+            let key = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty, seen.insert(key).inserted else { continue }
+            result.append(key)
+        }
+        return result.sorted()
     }
 }
