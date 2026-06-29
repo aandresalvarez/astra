@@ -43,6 +43,7 @@ struct AstraPackManifestTests {
                 "review": "Review",
                 "workspace": "Workspace"
             ],
+            compositionPriority: 25,
             branding: AstraPackBranding(
                 accentColor: "#4267B2",
                 iconSystemName: "shippingbox",
@@ -80,6 +81,7 @@ struct AstraPackManifestTests {
         #expect(manifest.appTemplates.isEmpty)
         #expect(manifest.policyRestrictions.isEmpty)
         #expect(manifest.vocabulary.isEmpty)
+        #expect(manifest.compositionPriority == nil)
         #expect(manifest.branding == nil)
     }
 

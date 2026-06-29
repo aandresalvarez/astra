@@ -113,20 +113,14 @@ struct AstraPackProfileTests {
         let workspace = Workspace(name: "Profile Policy", primaryPath: "/tmp/profile-policy")
         workspace.enabledPackIDs = ["astra.pack.runbooks"]
         let catalog = AstraPackCatalogSnapshot(entries: [
-            AstraPackCatalogEntry(
-                manifest: Self.pack(
+            Self.catalogEntry(
+                Self.pack(
                     id: "astra.pack.runbooks",
                     shelfDefaults: [
                         Self.shelfDefault(id: "plan")
                     ]
                 ),
-                source: AstraPackSource(
-                    kind: .builtIn,
-                    manifestURL: nil,
-                    rootURL: nil,
-                    displayName: "Test Packs",
-                    rawData: nil
-                )
+                kind: .builtIn
             )
         ], diagnostics: [])
         let policy = AstraPackWorkspaceProfileProvider.shelfAvailabilityPolicy(
@@ -148,6 +142,41 @@ struct AstraPackProfileTests {
         #expect(!policy.canPresent(.query, in: openTask))
         #expect(!policy.canPresent(.files, in: openTask))
         #expect(!policy.canPresent(.appPreview, in: openTask))
+    }
+
+    @Test("workspace profile provider preserves catalog source ordering")
+    @MainActor
+    func workspaceProfileProviderPreservesCatalogSourceOrdering() {
+        let workspace = Workspace(name: "Profile Source Ordering", primaryPath: "/tmp/profile-source-ordering")
+        workspace.enabledPackIDs = ["astra.pack.local-override", "vertical.builtin-source"]
+        let catalog = AstraPackCatalogSnapshot(entries: [
+            Self.catalogEntry(
+                Self.pack(
+                    id: "astra.pack.local-override",
+                    vocabulary: ["task": "Incident"]
+                ),
+                kind: .local
+            ),
+            Self.catalogEntry(
+                Self.pack(
+                    id: "vertical.builtin-source",
+                    vocabulary: ["task": "Task"]
+                ),
+                kind: .builtIn
+            )
+        ], diagnostics: [])
+
+        let profile = AstraPackWorkspaceProfileProvider.resolvedProfile(
+            for: workspace,
+            catalogSnapshot: catalog
+        )
+
+        #expect(profile.vocabularyValue(for: "task") == "Incident")
+        #expect(profile.compositionDiagnostics.contains {
+            $0.conflictKind == .vocabulary
+                && $0.packIDs == ["vertical.builtin-source", "astra.pack.local-override"]
+                && $0.winningPackID == "astra.pack.local-override"
+        })
     }
 
     @Test("legacy workspace without pack state uses core defaults")
@@ -212,6 +241,7 @@ struct AstraPackProfileTests {
 
     private static func pack(
         id: String = "astra.pack.test",
+        capabilityPackageIDs: [String] = ["test-capability"],
         shelfDefaults: [AstraPackShelfDefault] = [],
         vocabulary: [String: String] = [:]
     ) -> AstraPackManifest {
@@ -221,7 +251,7 @@ struct AstraPackProfileTests {
             version: "1.0.0",
             coreAPIVersion: "1.0",
             description: "Profile test pack.",
-            capabilityPackageIDs: ["test-capability"],
+            capabilityPackageIDs: capabilityPackageIDs,
             shelfDefaults: shelfDefaults,
             vocabulary: vocabulary
         )
@@ -236,6 +266,22 @@ struct AstraPackProfileTests {
             title: id,
             kind: "core",
             capabilityPackageIDs: capabilityPackageIDs
+        )
+    }
+
+    private static func catalogEntry(
+        _ manifest: AstraPackManifest,
+        kind: AstraPackSource.Kind
+    ) -> AstraPackCatalogEntry {
+        AstraPackCatalogEntry(
+            manifest: manifest,
+            source: AstraPackSource(
+                kind: kind,
+                manifestURL: nil,
+                rootURL: nil,
+                displayName: "Test Packs",
+                rawData: nil
+            )
         )
     }
 }

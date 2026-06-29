@@ -14,6 +14,7 @@ public struct AstraPackManifest: Codable, Equatable, Sendable, Identifiable {
     public var appTemplates: [AstraPackAppTemplate]
     public var policyRestrictions: [AstraPackPolicyRestriction]
     public var vocabulary: [String: String]
+    public var compositionPriority: Int?
     public var branding: AstraPackBranding?
 
     public init(
@@ -28,6 +29,7 @@ public struct AstraPackManifest: Codable, Equatable, Sendable, Identifiable {
         appTemplates: [AstraPackAppTemplate] = [],
         policyRestrictions: [AstraPackPolicyRestriction] = [],
         vocabulary: [String: String] = [:],
+        compositionPriority: Int? = nil,
         branding: AstraPackBranding? = nil
     ) {
         self.formatVersion = formatVersion
@@ -41,6 +43,7 @@ public struct AstraPackManifest: Codable, Equatable, Sendable, Identifiable {
         self.appTemplates = appTemplates
         self.policyRestrictions = policyRestrictions
         self.vocabulary = vocabulary
+        self.compositionPriority = compositionPriority
         self.branding = branding
     }
 
@@ -68,6 +71,7 @@ public struct AstraPackManifest: Codable, Equatable, Sendable, Identifiable {
             forKey: .policyRestrictions
         ) ?? []
         vocabulary = try container.decodeIfPresent([String: String].self, forKey: .vocabulary) ?? [:]
+        compositionPriority = try container.decodeIfPresent(Int.self, forKey: .compositionPriority)
         branding = try container.decodeIfPresent(AstraPackBranding.self, forKey: .branding)
     }
 }
