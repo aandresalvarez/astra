@@ -34,16 +34,16 @@ Status vocabulary:
 | --- | --- | --- | --- | --- | --- |
 | 0 | PR-0 Architecture Baseline And Plan | In progress | current detached worktree | none | Plan exists and passes self-review |
 | 1 | PR-1 Pack Manifest V1 | Ready for review | `alvaro/astra-packs-manifest-v1` | none | `swift test --filter 'AstraPackManifestTests|AstraPackManifestValidatorTests'` |
-| 1 | PR-2 Pack Loader And Catalog | Not started | `alvaro/astra-packs-loader` | none | `swift test --filter 'AstraPackCatalogTests|CapabilityLibraryTests'` |
-| 2 | PR-3 Core Shelf Registry | Not started | `alvaro/shelf-registry-core` | none | `swift test --filter 'ShelfRegistryTests|PanelLayoutGeometryTests'` |
-| 2 | PR-4 ContentView Uses Shelf Policy | Not started | `alvaro/shelf-policy-contentview` | none | `swift test --filter 'ShelfAvailabilityPolicyTests|PanelLayoutGeometryTests|ArchitectureFitnessTests'` and `./script/build_and_run.sh --verify` |
-| 3 | PR-5 Pack Profiles And Default Layout | Not started | `alvaro/astra-pack-profiles` | none | `swift test --filter 'AstraPackProfileTests|ShelfAvailabilityPolicyTests|PluginCatalogTests'` |
-| 3 | PR-6 Pack Composition And Conflict Reporting | Not started | `alvaro/astra-pack-composition` | none | `swift test --filter 'AstraPackCompositionTests|AstraPackCatalogTests'` |
-| 4 | PR-7 Restrict-Only Policy Lattice | Not started | `alvaro/pack-policy-lattice` | none | `swift test --filter 'AstraPackPolicyTests|AgentPolicyTests|MCPToolPolicyEngineTests'` |
-| 5 | PR-8 App Studio Template Packs | Not started | `alvaro/app-studio-template-packs` | none | `swift test --filter 'WorkspaceAppStudioTemplatePackTests|WorkspaceAppManifestValidatorTests'` |
-| 6 | PR-9 Trusted Native Shelf Contributions | Not started | `alvaro/trusted-native-shelf-packs` | none | `swift test --filter 'ShelfRegistryTests|AstraPackManifestValidatorTests|ArchitectureFitnessTests'` and `./script/build_and_run.sh --verify` |
-| 7 | PR-10 Example DevOps Pack | Not started | `alvaro/example-devops-pack` | none | `swift test --filter 'AstraPackCatalogTests|PluginCatalogTests|TaskCapabilityResolverTests'` |
-| 7 | PR-11 Authoring Docs And Validation Runbook | Not started | `alvaro/astra-pack-authoring-docs` | none | `git diff --check` and doc link validation by review |
+| 1 | PR-2 Pack Loader And Catalog | Ready for review | `alvaro/astra-packs-loader` | none | `swift test --filter 'AstraPackCatalogTests|CapabilityLibraryTests'` |
+| 2 | PR-3 Core Shelf Registry | Ready for review | `alvaro/shelf-registry-core` | none | `swift test --filter 'ShelfRegistryTests|PanelLayoutGeometryTests'` |
+| 2 | PR-4 ContentView Uses Shelf Policy | Ready for review | `alvaro/shelf-policy-contentview` | none | `swift test --filter 'ShelfAvailabilityPolicyTests|PanelLayoutGeometryTests|ArchitectureFitnessTests'` and `./script/build_and_run.sh --verify` |
+| 3 | PR-5 Pack Profiles And Default Layout | Ready for review | `alvaro/astra-pack-profiles` | none | `swift test --filter 'AstraPackProfileTests|WorkspacePersistenceTests|WorkspaceCapabilitiesTests|ShelfAvailabilityPolicyTests|ArchitectureFitnessTests'` and `./script/build_and_run.sh --verify` |
+| 3 | PR-6 Pack Composition And Conflict Reporting | Ready for review | `alvaro/astra-pack-composition` | none | `swift test --filter 'AstraPackCompositionTests|AstraPackProfileTests|AstraPackManifestTests|AstraPackManifestValidatorTests|AstraPackCatalogTests|LoggerTests|ArchitectureFitnessTests'` and `./script/build_and_run.sh --verify` |
+| 4 | PR-7 Restrict-Only Policy Lattice | Ready for review | `alvaro/pack-policy-lattice` | none | `swift test --filter 'AstraPackPolicyTests|MCPToolPolicyEngineTests|CapabilityCatalogPolicyTests|AstraPackManifestTests|AstraPackManifestValidatorTests|AstraPackCompositionTests|AstraPackProfileTests|ShelfAvailabilityPolicyTests|AgentPolicyTests|ArchitectureFitnessTests'` and `./script/build_and_run.sh --verify` |
+| 5 | PR-8 App Studio Template Packs | Ready for review | `alvaro/app-studio-template-packs` | none | `swift test --filter 'WorkspaceAppStudioTemplatePackTests|WorkspaceAppStudioGeneratorTests|WorkspaceAppStudioSessionTests|WorkspaceAppManifestTests|WorkspaceAppStudioScopeTests|ArchitectureFitnessTests'` and `./script/build_and_run.sh --verify` |
+| 6 | PR-9 Trusted Native Shelf Contributions | Ready for review | `alvaro/trusted-native-shelf-packs` | none | `swift test --filter 'ShelfRegistryTests|TrustedShelfContributionTests|AstraPackManifestValidatorTests|ArchitectureFitnessTests'`, `./script/build_and_run.sh --verify`, and `./script/prepush.sh` |
+| 7 | PR-10 Example DevOps Pack | Ready for review | `alvaro/example-devops-pack` | none | `swift test --filter 'AstraPackCatalogTests|PluginCatalogTests|TaskCapabilityResolverTests|WorkspaceAppStudioTemplatePackTests|AstraPackPolicyTests'`, `./script/build_and_run.sh --verify`, and `./script/prepush.sh` |
+| 7 | PR-11 Authoring Docs And Validation Runbook | Ready for review | `alvaro/astra-pack-authoring-docs` | none | `git diff --check`, doc link validation by review, and merged-stack focused pack tests |
 | 8 | PR-12 Full Integration Pass | Not started | `alvaro/astra-packs-integration` | none | `swift test`, `git diff --check`, `./script/build_and_run.sh --verify` |
 
 ## Root-Cause Diagnosis
@@ -273,7 +273,7 @@ ASTRA Core
 
 ASTRA Packs
   Pack manifest
-  Capability package references or embedded capability manifests
+  Capability package ID references
   App Studio templates
   Default shelf layout/profile
   Vocabulary and branding strings
@@ -1300,3 +1300,118 @@ Append one entry per PR update.
 - Change: Code-quality review caught incomplete ID/reference validation; added nested capability/template ID regressions and centralized ID validation.
 - Validation: `swift test --filter 'AstraPackManifestTests|AstraPackManifestValidatorTests|ArchitectureFitnessTests'` passed with 59 tests.
 - Validation: `git diff --check` passed with no whitespace errors.
+
+### 2026-06-28 - PR-2
+
+- Status: Ready for review.
+- Branch: `alvaro/astra-packs-loader`.
+- Change: Added validated built-in/local pack catalog loading, bundled pack resource scaffolding, and catalog diagnostics.
+- Review: Fixed local discovery to use `HostFileAccessBroker` and fixed unsupported `formatVersion` diagnostics.
+- Validation: `swift test --filter 'AstraPackCatalogTests|CapabilityLibraryTests|AstraPackManifestValidatorTests|AstraPackManifestTests|ArchitectureFitnessTests'` passed.
+- Validation: `git diff --check` passed with no whitespace errors.
+
+### 2026-06-28 - PR-3
+
+- Status: Ready for review.
+- Branch: `alvaro/shelf-registry-core`.
+- Change: Added stable shelf IDs, core shelf descriptors, generated-file shelf routing, and view-side compatibility adapters.
+- Review: Moved view-layer shelf mapping out of services and added an architecture fitness guard for the boundary.
+- Validation: `swift test --filter 'ShelfRegistryTests|ShelfArtifactRouterTests|TaskFileShelfSnapshotTests|PanelLayoutGeometryTests|ArchitectureFitnessTests'` passed.
+- Validation: `git diff --check` passed with no whitespace errors.
+
+### 2026-06-28 - PR-4
+
+- Status: Ready for review.
+- Branch: `alvaro/shelf-policy-contentview`.
+- Change: Added pure `ShelfAvailabilityPolicy` and routed `ContentView` shelf toolbar, presentation, and remembered-restore decisions through it.
+- Review: Fixed a target-task Plan first-click regression by seeding plan content from the validated target before policy-gated presentation.
+- Validation: `swift test --filter 'ShelfAvailabilityPolicyTests|PanelLayoutGeometryTests|ArchitectureFitnessTests'` passed with 90 tests.
+- Validation: `./script/build_and_run.sh --verify` passed and launched `ASTRA Dev.app`.
+- Validation: `git diff --check` passed with no whitespace errors.
+
+### 2026-06-28 - PR-5
+
+- Status: Ready for review.
+- Branch: `alvaro/astra-pack-profiles`.
+- Stack: Started from the combined PR-2, PR-3, and PR-4 base; final head is `5a2ef05`.
+- Change: Added durable workspace `enabledPackIDs`, shelf overrides, config import/export version 11, migration coverage, profile resolution, and `ContentView` policy consumption.
+- Review: Fixed App Studio startup policy, active hidden shelf invalidation, and direct V9 migration regressions.
+- Validation: `swift test --filter 'AstraPackProfileTests|WorkspacePersistenceTests|WorkspaceCapabilitiesTests|ShelfAvailabilityPolicyTests|ArchitectureFitnessTests'` passed with 116 tests.
+- Validation: `swift test --filter SchemaVersionTests` passed with 32 tests.
+- Validation: `./script/build_and_run.sh --verify` passed and launched `ASTRA Dev.app`.
+- Validation: `git diff --check` passed with no whitespace errors.
+
+### 2026-06-29 - PR-6
+
+- Status: Ready for review.
+- Branch: `alvaro/astra-pack-composition`.
+- Commit: `478e216`.
+- Stack: Started from PR-5 final head so composition consumes durable profile inputs.
+- Change: Added optional `compositionPriority`, deterministic pack ordering, conflict diagnostics, shelf default composition, vocabulary composition, and restrictive policy union.
+- Review: Fixed shared-shelf capability bindings so metadata has one winner while shelf capability package IDs remain additive.
+- Validation: `swift test --filter 'AstraPackCompositionTests|AstraPackProfileTests|AstraPackManifestTests|AstraPackManifestValidatorTests|AstraPackCatalogTests|LoggerTests|ArchitectureFitnessTests'` passed with 100 tests.
+- Validation: `./script/build_and_run.sh --verify` passed and launched `ASTRA Dev.app`.
+- Validation: `git diff --check` passed with no whitespace errors.
+
+### 2026-06-29 - PR-7
+
+- Status: Ready for review.
+- Branch: `alvaro/pack-policy-lattice`.
+- Commit: `5bf6594`.
+- Stack: Started from PR-6 final head so pack runtime policy consumes composed `policyRestrictions`.
+- Change: Added restrict-only pack policy decisions, workspace-derived policy resolution, capability catalog enforcement, MCP explicit-consent escalation, profile shelf clamping, and audit evidence.
+- Review: Fixed injectable-only policy plumbing, MCP empty-policy defaults, review-gate satisfaction, and composition/resolver semantic drift.
+- Validation: `swift test --filter 'AstraPackPolicyTests|MCPToolPolicyEngineTests|CapabilityCatalogPolicyTests|AstraPackManifestTests|AstraPackManifestValidatorTests|AstraPackCompositionTests|AstraPackProfileTests|ShelfAvailabilityPolicyTests|AgentPolicyTests|ArchitectureFitnessTests'` passed with 184 tests.
+- Validation: `./script/build_and_run.sh --verify` passed and launched `ASTRA Dev.app`.
+- Validation: `script/prepush.sh` passed 410 tests across runtime, persistence, policy, capability, and architecture guardrails.
+
+### 2026-06-28 - PR-8
+
+- Status: Ready for review.
+- Branch: `alvaro/app-studio-template-packs`.
+- Commit: `1faaa04`.
+- Stack: Started from PR-5 because real App Studio template visibility depends on durable workspace pack enablement.
+- Change: Added template pack catalog, template context, App Studio choices, selected template state, and template-pack refresh revisioning.
+- Review: Fixed visible selection, prompt-injection risk, capability-ID-vs-pack-ID confusion, missing durable pack state, and stale async template refresh races.
+- Validation: `swift test --scratch-path /tmp/astra-pr8-template-pack-verify --jobs 1 --filter 'WorkspaceAppStudioTemplatePackTests|WorkspaceAppStudioGeneratorTests|WorkspaceAppStudioSessionTests|WorkspaceAppManifestTests|WorkspaceAppStudioScopeTests|ArchitectureFitnessTests'` passed with 156 tests.
+- Validation: `swift test --scratch-path /tmp/astra-pr8-template-pack-verify --jobs 1 --filter 'AstraPackProfileTests|ShelfAvailabilityPolicyTests|SchemaVersionTests'` passed with 47 tests.
+- Validation: `./script/build_and_run.sh --verify` passed and launched `ASTRA Dev.app`.
+- Validation: `git diff --check` passed with no whitespace errors.
+
+### 2026-06-29 - PR-9
+
+- Status: Ready for review.
+- Branch: `alvaro/trusted-native-shelf-packs`.
+- Commit: `ae5b1ed`.
+- Stack: Started from PR-7 final head so trusted native shelf references build on the restrict-only policy lattice and composed pack defaults.
+- Change: Added `ShelfDescriptor.isPackAddressable`, centralized stable shelf ID parsing, blocked unknown/non-pack-addressable shelf defaults, rejected dynamic shelf implementation fields, and guarded resolver/override bypasses.
+- Review: Fixed override bypass coverage, resolver-bypass coverage, stable-ID parsing duplication, and forbidden-key table coverage.
+- Validation: `swift test --filter 'ShelfRegistryTests|TrustedShelfContributionTests|AstraPackManifestValidatorTests|AstraPackManifestTests|AstraPackCompositionTests|AstraPackProfileTests|AstraPackPolicyTests|ShelfAvailabilityPolicyTests|ArchitectureFitnessTests'` passed with 106 tests.
+- Validation: `./script/build_and_run.sh --verify` passed and launched `ASTRA Dev.app`.
+- Validation: `./script/prepush.sh` passed 411 tests across runtime, persistence, policy, capability, sandbox, and architecture guardrails, followed by `git diff --no-ext-diff --check origin/main...HEAD`.
+
+### 2026-06-29 - PR-10
+
+- Status: Ready for review.
+- Branch: `alvaro/example-devops-pack`.
+- Commit: `41373f1`.
+- Stack: Started from PR-8 final head so the example pack exercises bundled catalog loading, workspace profile state, and App Studio template-pack support together.
+- Change: Updated the bundled DevOps manifest, added `devops/README.md` and `devops/pr-ci-review-template.md`, and added catalog, known-capability, App Studio template, policy-floor, shelf-profile, and task-runtime safety tests.
+- Review: Spec reviewer reported compliant; code-quality reviewer found no critical or important issues.
+- Validation: Initial focused test failed because the bundled DevOps pack was inert and assets were absent.
+- Validation: `swift test --filter 'AstraPackCatalogTests|PluginCatalogTests|TaskCapabilityResolverTests|WorkspaceAppStudioTemplatePackTests|AstraPackPolicyTests'` passed with 84 tests.
+- Validation: `./script/build_and_run.sh --verify` passed and launched `ASTRA Dev.app`.
+- Validation: `./script/prepush.sh` passed 411 tests across runtime, persistence, policy, capability, sandbox, and architecture guardrails, followed by `git diff --no-ext-diff --check origin/main...HEAD`.
+
+### 2026-06-29 - PR-11
+
+- Status: Ready for review.
+- Branch: `alvaro/astra-pack-authoring-docs`.
+- Commit: `e38d1d5`.
+- Stack: Started from PR-10 final head `41373f1`, then merged PR-9 final head `ae5b1ed` so authoring docs, policy tests, composition tests, and trusted shelf tests exist in one reviewable branch.
+- Change: Added the durable ASTRA Packs architecture doc, pack authoring/runbook guide, resource README links, and fork-to-pack migration guardrails.
+- Review: Spec re-review found the previous missing-suite P1 fixed and reported PR11 spec compliant.
+- Review: Quality re-review found the old `externalWrite` policy example invalid; fixed it with a supported `requireExplicitConsent` example plus the supported v1 policy-action table. Final quality re-review found no critical or important issues.
+- Validation: `git diff --check` passed with no whitespace errors.
+- Validation: `swift test --filter 'AstraPackCatalogTests|PluginCatalogTests|TaskCapabilityResolverTests|WorkspaceAppStudioTemplatePackTests|AstraPackPolicyTests|AstraPackCompositionTests|TrustedShelfContributionTests|ShelfRegistryTests|ArchitectureFitnessTests'` passed with 159 tests.
+- Validation: Commit hook passed `ArchitectureFitnessTests` with 47 tests and cached diff check.

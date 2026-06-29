@@ -210,6 +210,7 @@ private struct AstraPackManifestPayload: Decodable {
     var appTemplates: [AstraPackAppTemplate]
     var policyRestrictions: [AstraPackPolicyRestriction]
     var vocabulary: [String: String]
+    var compositionPriority: Int?
     var branding: AstraPackBranding?
 
     var manifest: AstraPackManifest {
@@ -225,6 +226,7 @@ private struct AstraPackManifestPayload: Decodable {
             appTemplates: appTemplates,
             policyRestrictions: policyRestrictions,
             vocabulary: vocabulary,
+            compositionPriority: compositionPriority,
             branding: branding
         )
     }
@@ -241,6 +243,7 @@ private struct AstraPackManifestPayload: Decodable {
         case appTemplates
         case policyRestrictions
         case vocabulary
+        case compositionPriority
         case branding
     }
 
@@ -260,6 +263,7 @@ private struct AstraPackManifestPayload: Decodable {
             forKey: .policyRestrictions
         ) ?? []
         vocabulary = try container.decodeIfPresent([String: String].self, forKey: .vocabulary) ?? [:]
+        compositionPriority = try container.decodeIfPresent(Int.self, forKey: .compositionPriority)
         branding = try container.decodeIfPresent(AstraPackBranding.self, forKey: .branding)
     }
 }

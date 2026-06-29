@@ -89,6 +89,28 @@ struct ArchitectureFitnessTests {
         #expect(matches.isEmpty, "Pack source discovery should use HostFileAccessBroker: \(matches)")
     }
 
+    @Test("Pack shelf schema does not expose dynamic SwiftUI implementation fields")
+    func packShelfSchemaDoesNotExposeDynamicSwiftUIImplementationFields() throws {
+        let root = try repositoryRoot()
+        let relativePath = "ASTRACore/AstraPackManifest.swift"
+        let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+        let forbiddenStoredProperties = [
+            "public var swiftUIViewType",
+            "public var viewImplementation",
+            "public var viewType",
+            "public var modulePath",
+            "public var bundlePath",
+            "public var pluginPath"
+        ]
+
+        let matches = forbiddenStoredProperties.filter { text.contains($0) }
+
+        #expect(
+            matches.isEmpty,
+            "Pack shelf manifests must reference trusted Core shelf IDs, not dynamic SwiftUI implementations: \(matches)"
+        )
+    }
+
     @Test("Shelf services stay independent of view-layer types")
     func shelfServicesStayIndependentOfViewLayerTypes() throws {
         let root = try repositoryRoot()

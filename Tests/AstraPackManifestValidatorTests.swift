@@ -195,7 +195,7 @@ struct AstraPackManifestValidatorTests {
             description: "A valid pack manifest.",
             capabilityPackageIDs: ["builtin.github"],
             shelfDefaults: [
-                AstraPackShelfDefault(id: "inbox", title: "Inbox", kind: "documents")
+                AstraPackShelfDefault(id: "files", title: "Files", kind: "nativeShelf")
             ],
             appTemplates: [
                 AstraPackAppTemplate(
@@ -207,12 +207,14 @@ struct AstraPackManifestValidatorTests {
             ],
             policyRestrictions: [
                 AstraPackPolicyRestriction(
-                    id: "read-only",
-                    contributionKind: "workspaceApp",
-                    action: "github.pull_requests.read",
-                    effect: "restrict"
-                )
-            ],
+                id: "read-only",
+                contributionKind: "workspaceApp",
+                action: "requireExplicitConsent",
+                effect: "restrict",
+                targetMCPServerID: "github",
+                targetMCPToolName: "pull_requests.read"
+            )
+        ],
             vocabulary: ["pullRequest": "Pull Request"],
             branding: AstraPackBranding(
                 accentColor: "#4267B2",
