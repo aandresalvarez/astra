@@ -4,11 +4,37 @@ public protocol RemoteMCPHTTPTransport: AnyObject {
     func postJSON(to url: URL, headers: [String: String], body: [String: Any]) throws -> (statusCode: Int, body: [String: Any])
 }
 
+public struct RemoteMCPHTTPTimeouts: Equatable {
+    public static let gatewayDefault = RemoteMCPHTTPTimeouts(request: 30)
+
+    public var request: TimeInterval
+
+    public init(request: TimeInterval) {
+        self.request = max(0.001, request)
+    }
+}
+
 public final class URLSessionRemoteMCPHTTPTransport: RemoteMCPHTTPTransport {
-    public init() {}
+    private let session: URLSession
+    private let timeouts: RemoteMCPHTTPTimeouts
+
+    public init(
+        session: URLSession? = nil,
+        timeouts: RemoteMCPHTTPTimeouts = .gatewayDefault
+    ) {
+        self.timeouts = timeouts
+        if let session {
+            self.session = session
+        } else {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.timeoutIntervalForRequest = timeouts.request
+            configuration.timeoutIntervalForResource = timeouts.request
+            self.session = URLSession(configuration: configuration)
+        }
+    }
 
     public func postJSON(to url: URL, headers: [String: String], body: [String: Any]) throws -> (statusCode: Int, body: [String: Any]) {
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: url, timeoutInterval: timeouts.request)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -16,22 +42,50 @@ public final class URLSessionRemoteMCPHTTPTransport: RemoteMCPHTTPTransport {
         request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
 
         let semaphore = DispatchSemaphore(value: 0)
-        var result: Result<(Int, [String: Any]), Error>!
-        URLSession.shared.dataTask(with: request) { data, response, error in
+        let response = RemoteMCPHTTPResponseBox()
+        let task = session.dataTask(with: request) { data, responseValue, error in
             defer { semaphore.signal() }
             if let error {
-                result = .failure(error)
+                if (error as? URLError)?.code == .timedOut {
+                    response.store(.failure(RemoteMCPHTTPClient.Error.requestTimedOut))
+                } else {
+                    response.store(.failure(error))
+                }
                 return
             }
-            guard let http = response as? HTTPURLResponse else {
-                result = .failure(RemoteMCPHTTPClient.Error.invalidResponse)
+            guard let http = responseValue as? HTTPURLResponse else {
+                response.store(.failure(RemoteMCPHTTPClient.Error.invalidResponse))
                 return
             }
             let object = data.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any] ?? [:]
-            result = .success((http.statusCode, object))
-        }.resume()
-        semaphore.wait()
+            response.store(.success((http.statusCode, object)))
+        }
+        task.resume()
+        if semaphore.wait(timeout: .now() + timeouts.request) == .timedOut {
+            task.cancel()
+            throw RemoteMCPHTTPClient.Error.requestTimedOut
+        }
+        guard let result = response.load() else {
+            throw RemoteMCPHTTPClient.Error.invalidResponse
+        }
         return try result.get()
+    }
+}
+
+private final class RemoteMCPHTTPResponseBox {
+    private let lock = NSLock()
+    private var result: Result<(Int, [String: Any]), Error>?
+
+    func store(_ result: Result<(Int, [String: Any]), Error>) {
+        lock.lock()
+        self.result = result
+        lock.unlock()
+    }
+
+    func load() -> Result<(Int, [String: Any]), Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        return result
     }
 }
 
@@ -41,6 +95,7 @@ public final class RemoteMCPHTTPClient: RemoteMCPClient {
         case httpStatus(Int)
         case missingTools
         case missingResult
+        case requestTimedOut
 
         public var errorDescription: String? {
             switch self {
@@ -52,6 +107,8 @@ public final class RemoteMCPHTTPClient: RemoteMCPClient {
                 return "Remote MCP tools/list response did not include tools."
             case .missingResult:
                 return "Remote MCP tools/call response did not include a result."
+            case .requestTimedOut:
+                return "Remote MCP request timed out."
             }
         }
     }
