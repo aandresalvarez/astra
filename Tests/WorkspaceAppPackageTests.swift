@@ -174,6 +174,71 @@ struct WorkspaceAppPackageTests {
         #expect(report.blockers.contains { $0.path == "/assets/unsafe.json" && $0.message.contains("absolute local path") })
     }
 
+    @Test("package validation blocks oversized JSONL exports before import")
+    func packageValidationBlocksOversizedJSONLExportsBeforeImport() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("oversized-data.astra-app", isDirectory: true)
+        let databaseURL = try Self.groceryDatabase(in: root)
+
+        _ = try WorkspaceAppPackageService().exportPackage(
+            manifest: Self.groceryManifest(),
+            to: packageURL,
+            packageID: "oversized-data",
+            mode: .templatePlusSeedData,
+            appStorageDatabaseURL: databaseURL
+        )
+
+        let dataURL = packageURL.appendingPathComponent("storage/data/seed/items.jsonl")
+        let oversizedRow = #"{"id":{"text":"\#(String(repeating: "item", count: 80_000))"}}"#
+        try Data(oversizedRow.utf8).write(to: dataURL, options: [.atomic])
+        let exports = [
+            WorkspaceAppPackageDataExport(
+                table: "items",
+                policy: .seed,
+                path: "storage/data/seed/items.jsonl",
+                rowCount: 1
+            )
+        ]
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(exports)
+            .write(to: packageURL.appendingPathComponent("storage/data/exports.json"), options: [.atomic])
+        try Self.rewriteChecksums(at: packageURL)
+
+        let report = WorkspaceAppPackageService().validatePackage(at: packageURL)
+
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains {
+            $0.path == "/storage/data/seed/items.jsonl"
+                && $0.message.lowercased().contains("package resource limit")
+        })
+    }
+
+    @Test("package library discovery blocks oversized portable text")
+    func packageLibraryDiscoveryBlocksOversizedPortableText() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("oversized-text.astra-app", isDirectory: true)
+        _ = try WorkspaceAppPackageService().exportPackage(
+            manifest: Self.groceryManifest(),
+            to: packageURL,
+            packageID: "oversized-text"
+        )
+
+        let readmeURL = packageURL.appendingPathComponent("docs/README.md")
+        try Data(String(repeating: "portable package note\n", count: 120_000).utf8)
+            .write(to: readmeURL, options: [.atomic])
+        try Self.rewriteChecksums(at: packageURL)
+
+        let entry = try #require(WorkspaceAppPackageLibraryService()
+            .discoverPackages(in: root)
+            .first { $0.packageURL.lastPathComponent == packageURL.lastPathComponent })
+
+        #expect(!entry.canInstall)
+        #expect(entry.blockerMessages.contains { $0.lowercased().contains("package resource limit") })
+    }
+
     @Test("package validation marks missing required contracts for dependency mapping")
     func packageValidationMarksMissingRequiredContractsForDependencyMapping() throws {
         let root = try Self.temporaryRoot()

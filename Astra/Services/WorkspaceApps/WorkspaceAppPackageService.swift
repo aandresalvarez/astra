@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import SwiftData
 
@@ -222,6 +221,7 @@ struct WorkspaceAppPackageService {
     var fileManager: FileManager = .default
     var appService = WorkspaceAppService()
     var storageService = WorkspaceAppStorageService()
+    var resourceReader = WorkspaceAppPackageResourceReader()
 
     func exportPackage(
         manifest: WorkspaceAppManifest,
@@ -311,6 +311,7 @@ struct WorkspaceAppPackageService {
             path: "/checksums.json",
             issues: &issues
         )
+        validateResourceBudget(packageURL: packageURL, issues: &issues)
 
         if let manifest {
             let manifestReport = WorkspaceAppManifestValidator.validate(manifest)
@@ -553,8 +554,11 @@ struct WorkspaceAppPackageService {
         ))
         let tables = Set(manifest.storage?.tables.map(\.name) ?? [])
         for dataExport in exports where tables.contains(dataExport.table) {
-            let rows = try readJSONLines(at: packageURL.appendingPathComponent(dataExport.path))
-            for row in rows {
+            try resourceReader.decodeJSONLines(
+                [String: WorkspaceAppStorageValue].self,
+                at: packageURL.appendingPathComponent(dataExport.path),
+                relativePath: "/\(dataExport.path)"
+            ) { row in
                 try storageService.insertRecord(row, into: dataExport.table, databaseURL: databaseURL)
             }
         }
@@ -566,7 +570,10 @@ struct WorkspaceAppPackageService {
             .appendingPathComponent("data", isDirectory: true)
             .appendingPathComponent("exports.json")
         guard fileManager.fileExists(atPath: url.path) else { return nil }
-        return try? JSONDecoder().decode([WorkspaceAppPackageDataExport].self, from: Data(contentsOf: url))
+        return try? JSONDecoder().decode(
+            [WorkspaceAppPackageDataExport].self,
+            from: resourceReader.data(at: url, relativePath: "/storage/data/exports.json")
+        )
     }
 
     private func writeJSONLines(
@@ -579,16 +586,6 @@ struct WorkspaceAppPackageService {
             String(decoding: try encoder.encode(row), as: UTF8.self)
         }
         try Data(lines.joined(separator: "\n").utf8).write(to: url, options: [.atomic])
-    }
-
-    private func readJSONLines(at url: URL) throws -> [[String: WorkspaceAppStorageValue]] {
-        let text = try String(contentsOf: url, encoding: .utf8)
-        let decoder = JSONDecoder()
-        return try text
-            .split(whereSeparator: \.isNewline)
-            .map { line in
-                try decoder.decode([String: WorkspaceAppStorageValue].self, from: Data(String(line).utf8))
-            }
     }
 
     private func dataPolicy(for mode: WorkspaceAppPackageExportMode) -> WorkspaceAppPackageDataExportPolicy? {
@@ -613,7 +610,7 @@ struct WorkspaceAppPackageService {
         do {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
-            return try decoder.decode(type, from: Data(contentsOf: url))
+            return try decoder.decode(type, from: resourceReader.data(at: url, relativePath: path))
         } catch {
             issues.append(blocker(path, "Could not decode required package file: \(error.localizedDescription)"))
             return nil
@@ -624,8 +621,11 @@ struct WorkspaceAppPackageService {
         let paths = portableFilePaths(in: packageURL)
             .filter { $0 != "checksums.json" }
         return try paths.map { path in
-            let data = try Data(contentsOf: packageURL.appendingPathComponent(path))
-            return WorkspaceAppPackageChecksum(path: path, sha256: WorkspaceAppService.digest(for: data))
+            let digest = try resourceReader.digest(
+                at: packageURL.appendingPathComponent(path),
+                relativePath: "/\(path)"
+            )
+            return WorkspaceAppPackageChecksum(path: path, sha256: digest)
         }
     }
 
@@ -640,11 +640,16 @@ struct WorkspaceAppPackageService {
                 continue
             }
             let url = packageURL.appendingPathComponent(checksum.path)
-            guard let data = try? Data(contentsOf: url) else {
+            let actual: String
+            do {
+                actual = try resourceReader.digest(at: url, relativePath: "/\(checksum.path)")
+            } catch let error as WorkspaceAppPackageResourceError {
+                issues.append(blocker("/\(checksum.path)", error.localizedDescription))
+                continue
+            } catch {
                 issues.append(blocker("/checksums.json/\(checksum.path)", "Checksum references a missing file."))
                 continue
             }
-            let actual = WorkspaceAppService.digest(for: data)
             if actual != checksum.sha256 {
                 issues.append(blocker("/checksums.json/\(checksum.path)", "Checksum does not match package file."))
             }
@@ -698,7 +703,16 @@ struct WorkspaceAppPackageService {
                 issues.append(blocker("/storage/data/exports.json", "Data export references a missing file."))
                 continue
             }
-            let rowCount = (try? readJSONLines(at: url).count) ?? -1
+            let rowCount: Int
+            do {
+                rowCount = try resourceReader.countJSONLines(
+                    at: url,
+                    relativePath: "/\(dataExport.path)"
+                )
+            } catch {
+                issues.append(blocker("/\(dataExport.path)", error.localizedDescription))
+                continue
+            }
             if rowCount != dataExport.rowCount {
                 issues.append(blocker("/storage/data/exports.json", "Data export row count does not match \(dataExport.path)."))
             }
@@ -790,8 +804,14 @@ struct WorkspaceAppPackageService {
         issues: inout [WorkspaceAppPackageValidationReport.Issue]
     ) {
         for path in portableFilePaths(in: packageURL) where path.hasSuffix(".json") || path.hasSuffix(".jsonl") || path.hasSuffix(".md") {
-            guard let data = try? Data(contentsOf: packageURL.appendingPathComponent(path)),
-                  let text = String(data: data, encoding: .utf8) else {
+            let text: String
+            do {
+                text = try resourceReader.scannedText(
+                    at: packageURL.appendingPathComponent(path),
+                    relativePath: "/\(path)"
+                )
+            } catch {
+                issues.append(blocker("/\(path)", error.localizedDescription))
                 continue
             }
             let lowercased = text.lowercased()
@@ -802,6 +822,23 @@ struct WorkspaceAppPackageService {
             if text.contains(NSHomeDirectory()) || lowercased.contains("/users/") {
                 issues.append(blocker("/\(path)", "Package content appears to include an absolute local path."))
             }
+        }
+    }
+
+    private func validateResourceBudget(
+        packageURL: URL,
+        issues: inout [WorkspaceAppPackageValidationReport.Issue]
+    ) {
+        do {
+            try resourceReader.validatePackageFiles(
+                packageURL: packageURL,
+                paths: portableFilePaths(in: packageURL),
+                isScannedTextPath: { path in
+                    path.hasSuffix(".json") || path.hasSuffix(".jsonl") || path.hasSuffix(".md")
+                }
+            )
+        } catch {
+            issues.append(blocker("/", error.localizedDescription))
         }
     }
 
@@ -862,8 +899,7 @@ struct WorkspaceAppPackageService {
     }
 
     private func digest(for url: URL) -> String {
-        guard let data = try? Data(contentsOf: url) else { return "" }
-        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        (try? resourceReader.digest(at: url, relativePath: "/\(url.lastPathComponent)")) ?? ""
     }
 
     private func packageDigest(at packageURL: URL) -> String {
