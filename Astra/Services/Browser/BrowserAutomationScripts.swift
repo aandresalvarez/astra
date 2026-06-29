@@ -418,6 +418,44 @@ enum BrowserAutomationScripts {
         const text = aria || el.innerText || el.value || el.id || el.tagName.toLowerCase();
         return String(text).replace(/\\s+/g, " ").trim().slice(0, 160);
       };
+      const containsAny = (text, needles) => needles.some((needle) => text.includes(needle));
+      const sensitiveFieldTerms = [
+        "password", "passcode", "secret", "token", "api key", "api-key", "api_token", "apikey",
+        "access token", "refresh token", "auth token", "bearer token",
+        "oauth", "client secret", "private key", "mfa", "2fa", "two factor",
+        "two-factor", "verification code", "security code", "one-time",
+        "one time", "otp", "totp", "ssn", "social security", "credit card",
+        "card number", "cvv", "cvc"
+      ];
+      const sensitiveAutocompleteTerms = [
+        "current-password", "new-password", "one-time-code",
+        "cc-number", "cc-csc", "cc-exp", "webauthn"
+      ];
+      const isSensitiveValueControl = (el) => {
+        const type = String(el.getAttribute("type") || "").toLowerCase();
+        if (type === "password" || type === "hidden") return true;
+        const autocomplete = String(el.getAttribute("autocomplete") || "").toLowerCase();
+        if (containsAny(autocomplete, sensitiveAutocompleteTerms)) return true;
+        const text = [
+          selectorFor(el),
+          labelFor(el),
+          el.getAttribute("name") || "",
+          el.getAttribute("role") || "",
+          el.tagName.toLowerCase(),
+          type,
+          el.getAttribute("placeholder") || "",
+          el.getAttribute("data-testid") || el.getAttribute("data-test") || "",
+          el.href || "",
+          autocomplete
+        ].join(" ").toLowerCase();
+        return containsAny(text, sensitiveFieldTerms);
+      };
+      const valueForSnapshot = (el) => {
+        if (!(el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT")) return "";
+        const value = String(el.value || "").slice(0, 160);
+        if (!value) return "";
+        return isSensitiveValueControl(el) ? "[redacted-sensitive-input]" : value;
+      };
       const frameLabelFor = (frame) => {
         const title = frame.getAttribute("title") || frame.getAttribute("name") || frame.getAttribute("aria-label") || frame.src || selectorFor(frame);
         return String(title || "").replace(/\\s+/g, " ").trim().slice(0, 160);
@@ -483,10 +521,11 @@ enum BrowserAutomationScripts {
           label: labelFor(el),
           name: labelFor(el),
           placeholder: el.getAttribute("placeholder") || "",
+          autocomplete: el.getAttribute("autocomplete") || "",
           testID: el.getAttribute("data-testid") || el.getAttribute("data-test") || "",
           disabled: disabled(el),
           actionable: !disabled(el) && visible(el),
-          value: (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT") ? String(el.value || "").slice(0, 160) : "",
+          value: valueForSnapshot(el),
           href: el.href || "",
           framePath: entry.framePath,
           shadowDepth: entry.shadowDepth,
@@ -510,7 +549,8 @@ enum BrowserAutomationScripts {
           role: active.getAttribute("role") || "",
           type: active.getAttribute("type") || "",
           label: labelFor(active),
-          value: (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.tagName === "SELECT") ? String(active.value || "").slice(0, 160) : "",
+          autocomplete: active.getAttribute("autocomplete") || "",
+          value: valueForSnapshot(active),
           bounds: boundsFor(active)
         } : null,
         text: visibleText(),

@@ -2239,6 +2239,8 @@ struct ControlledBrowserTests {
         #expect(script.contains("shadowRoot"))
         #expect(script.contains("compareViewportOrder"))
         #expect(script.contains("inViewport"))
+        #expect(script.contains("valueForSnapshot"))
+        #expect(script.contains("[redacted-sensitive-input]"))
     }
 
     @Test("existing controlled profile process parser finds DevTools port")

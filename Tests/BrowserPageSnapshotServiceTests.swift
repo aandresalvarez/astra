@@ -18,6 +18,46 @@ struct BrowserPageSnapshotServiceTests {
         #expect(compacted == json)
     }
 
+    @Test("snapshot output redacts sensitive focused and control values")
+    func snapshotOutputRedactsSensitiveFocusedAndControlValues() throws {
+        let compacted = try BrowserPageSnapshotService.compactSnapshot(
+            json: sensitiveSnapshotJSON,
+            mode: .full,
+            query: nil,
+            limit: nil
+        )
+        let object = try jsonObject(from: compacted)
+
+        let focused = try #require(object["focusedElement"] as? [String: Any])
+        #expect(focused["value"] as? String == "[redacted-sensitive-input]")
+
+        let controls = try #require(object["controls"] as? [[String: Any]])
+        let password = try #require(controls.first { $0["label"] as? String == "Password" })
+        let token = try #require(controls.first { $0["label"] as? String == "API token" })
+        let email = try #require(controls.first { $0["label"] as? String == "Email" })
+
+        #expect(password["value"] as? String == "[redacted-sensitive-input]")
+        #expect(token["value"] as? String == "[redacted-sensitive-input]")
+        #expect(email["value"] as? String == "alvaro@example.com")
+        #expect(!compacted.contains("correct-horse-battery-staple"))
+        #expect(!compacted.contains("ghp_secret_token"))
+    }
+
+    @Test("snapshot control filtering does not match redacted sensitive values")
+    func snapshotControlFilteringDoesNotMatchRedactedSensitiveValues() throws {
+        let compacted = try BrowserPageSnapshotService.compactSnapshot(
+            json: sensitiveSnapshotJSON,
+            mode: .controls,
+            query: "ghp_secret_token",
+            limit: nil
+        )
+        let object = try jsonObject(from: compacted)
+        let controls = try #require(object["controls"] as? [[String: Any]])
+
+        #expect(controls.isEmpty)
+        #expect(!compacted.contains("ghp_secret_token"))
+    }
+
     @Test("summary mode includes compact text, controls, and query matches")
     func summaryModeIncludesCompactTextControlsAndMatches() throws {
         let compacted = try BrowserPageSnapshotService.compactSnapshot(
@@ -90,6 +130,56 @@ struct BrowserPageSnapshotServiceTests {
             {"label": "Save", "role": "button", "selector": "#save"},
             {"label": "Cancel", "role": "button", "selector": "#cancel"},
             {"label": "Save as", "role": "menuitem", "selector": "#save-as"}
+          ]
+        }
+        """
+    }
+
+    private var sensitiveSnapshotJSON: String {
+        """
+        {
+          "ok": true,
+          "url": "https://example.com/login",
+          "title": "Login",
+          "text": "Sign in",
+          "viewport": {"width": 1000, "height": 800},
+          "focusedElement": {
+            "selector": "#password",
+            "tag": "input",
+            "role": "textbox",
+            "type": "password",
+            "label": "Password",
+            "value": "correct-horse-battery-staple"
+          },
+          "controls": [
+            {
+              "selector": "#password",
+              "tag": "input",
+              "role": "textbox",
+              "type": "password",
+              "label": "Password",
+              "name": "Password",
+              "value": "correct-horse-battery-staple"
+            },
+            {
+              "selector": "#token",
+              "tag": "input",
+              "role": "textbox",
+              "type": "text",
+              "label": "API token",
+              "name": "api_token",
+              "placeholder": "Paste token",
+              "value": "ghp_secret_token"
+            },
+            {
+              "selector": "#email",
+              "tag": "input",
+              "role": "textbox",
+              "type": "email",
+              "label": "Email",
+              "name": "Email",
+              "value": "alvaro@example.com"
+            }
           ]
         }
         """

@@ -299,6 +299,22 @@ struct BrowserControl {
         risk.requiresUserConfirmation
     }
 
+    var providerVisibleValue: String {
+        BrowserSensitiveInputRedactionPolicy.redactedValue(
+            value,
+            selector: selector,
+            label: label,
+            name: name,
+            role: role,
+            tag: tag,
+            type: type,
+            placeholder: placeholder,
+            testID: testID,
+            href: href,
+            risk: risk
+        )
+    }
+
     func supports(_ action: BrowserActionKind) -> Bool {
         validActions.contains(action)
     }
@@ -314,7 +330,7 @@ struct BrowserControl {
             "selector": selector,
             "placeholder": placeholder,
             "testID": testID,
-            "value": value,
+            "value": providerVisibleValue,
             "href": href,
             "framePath": framePath,
             "shadowDepth": shadowDepth,
@@ -378,7 +394,7 @@ struct BrowserControlRef {
             "role": control.role,
             "name": control.name.isEmpty ? control.label : control.name,
             "label": control.label,
-            "value": control.value,
+            "value": control.providerVisibleValue,
             "selectorFallback": control.selector,
             "framePath": control.framePath,
             "bounds": control.bounds,
@@ -1013,7 +1029,7 @@ enum BrowserAnalysisBuilder {
         let type = string(raw["type"])
         let placeholder = string(raw["placeholder"])
         let testID = string(raw["testID"])
-        let value = string(raw["value"])
+        let rawValue = string(raw["value"])
         let href = string(raw["href"])
         let framePath = stringArray(raw["framePath"])
         let shadowDepth = int(raw["shadowDepth"]) ?? 0
@@ -1021,6 +1037,7 @@ enum BrowserAnalysisBuilder {
         let visible = true
         let actionable = bool(raw["actionable"]) && !disabled
         let bounds = raw["bounds"] as? [String: Any] ?? [:]
+        let autocomplete = string(raw["autocomplete"])
         let risk = classifyRisk(
             pageURL: pageURL,
             selector: selector,
@@ -1031,6 +1048,20 @@ enum BrowserAnalysisBuilder {
             placeholder: placeholder,
             testID: testID,
             href: href
+        )
+        let value = BrowserSensitiveInputRedactionPolicy.redactedValue(
+            rawValue,
+            selector: selector,
+            label: label,
+            name: name,
+            role: role,
+            tag: tag,
+            type: type,
+            placeholder: placeholder,
+            testID: testID,
+            href: href,
+            autocomplete: autocomplete,
+            risk: risk
         )
         let actions = validActions(
             pageURL: pageURL,

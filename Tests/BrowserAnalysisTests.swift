@@ -73,6 +73,53 @@ struct BrowserAnalysisTests {
         #expect(full["omittedControlCount"] as? Int == 0)
     }
 
+    @Test("Analysis response redacts sensitive control values")
+    func analysisResponseRedactsSensitiveControlValues() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "input[name=password]",
+                    tag: "input",
+                    role: "textbox",
+                    type: "password",
+                    label: "Password",
+                    value: "correct-horse-battery-staple"
+                ),
+                Self.control(
+                    selector: "input[name=otp]",
+                    tag: "input",
+                    role: "textbox",
+                    type: "text",
+                    label: "One-time verification code",
+                    value: "123456"
+                ),
+                Self.control(
+                    selector: "input[name=email]",
+                    tag: "input",
+                    role: "textbox",
+                    type: "email",
+                    label: "Email",
+                    value: "alvaro@example.com"
+                )
+            ]),
+            backend: "embedded WebKit",
+            engine: "embedded"
+        )
+
+        let response = analysis.responseObject(query: nil, full: true, limit: nil, version: .v2)
+        let controls = try #require(response["controls"] as? [[String: Any]])
+        let refs = try #require(response["controlRefs"] as? [[String: Any]])
+        let password = try #require(controls.first { $0["label"] as? String == "Password" })
+        let mfa = try #require(refs.first { $0["label"] as? String == "One-time verification code" })
+        let email = try #require(controls.first { $0["label"] as? String == "Email" })
+
+        #expect(password["value"] as? String == "[redacted-sensitive-input]")
+        #expect(mfa["value"] as? String == "[redacted-sensitive-input]")
+        #expect(email["value"] as? String == "alvaro@example.com")
+        #expect(String(describing: response).contains("correct-horse-battery-staple") == false)
+        #expect(String(describing: response).contains("123456") == false)
+    }
+
     @Test("V2 response adds semantic control refs without changing default response")
     func v2ResponseAddsSemanticControlRefs() throws {
         let analysis = BrowserAnalysisBuilder.build(
