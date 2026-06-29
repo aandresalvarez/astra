@@ -308,8 +308,8 @@ struct ExecutionSandboxRunnerTests {
         }
     }
 
-    @Test("sandboxedPlan keeps Codex Git credential access path scoped")
-    func sandboxedPlanKeepsCodexGitCredentialAccessPathScoped() {
+    @Test("sandboxedPlan blocks restricted Codex when external Git credentials need native access")
+    func sandboxedPlanBlocksRestrictedCodexExternalGitCredentialAccess() {
         withStandardEnforcement(.off) {
             let runner = AgentRuntimeProcessRunner(gitCredentialContextProvider: { _ in
                 GitCredentialSandboxContext(
@@ -323,18 +323,18 @@ struct ExecutionSandboxRunnerTests {
                 adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: "/tmp/whatever"),
                 context: makeContext(workspacePath: "/tmp/whatever", permissionPolicy: .restricted)
             )
-            guard case .plan(let plan) = outcome else {
-                Issue.record("Expected .plan when disabled")
+            guard case .blocked(let result) = outcome else {
+                Issue.record("Expected restricted Codex to fail closed when native credential access is unsupported")
                 return
             }
-            #expect(!plan.arguments.contains("sandbox_permissions=[\"disk-full-read-access\"]"))
-            #expect(plan.commandPlannedFields["git_provider_native_read_access"] == nil)
-            #expect(plan.sandboxReadablePaths.contains("/tmp/astra-gitconfig"))
+            #expect(result.exitCode == -1)
+            #expect(result.runtimeStopReason == "git_credential_native_access_unavailable")
+            #expect(result.runtimeStopMessage?.contains("read-only native path grant") == true)
         }
     }
 
-    @Test("sandboxedPlan leaves Codex resume prompt unshifted for Git credential context")
-    func sandboxedPlanLeavesCodexResumePromptUnshiftedForGitCredentialContext() {
+    @Test("sandboxedPlan leaves autonomous Codex resume prompt unshifted for Git credential context")
+    func sandboxedPlanLeavesAutonomousCodexResumePromptUnshiftedForGitCredentialContext() {
         withStandardEnforcement(.off) {
             let runner = AgentRuntimeProcessRunner(gitCredentialContextProvider: { _ in
                 GitCredentialSandboxContext(
@@ -350,7 +350,7 @@ struct ExecutionSandboxRunnerTests {
                     currentDirectory: "/tmp/whatever",
                     arguments: ["exec", "resume", "--json", "--skip-git-repo-check", "session-id", "git pull origin main"]
                 ),
-                context: makeContext(workspacePath: "/tmp/whatever", permissionPolicy: .restricted)
+                context: makeContext(workspacePath: "/tmp/whatever", permissionPolicy: .autonomous)
             )
             guard case .plan(let plan) = outcome,
                   let skipIndex = plan.arguments.firstIndex(of: "--skip-git-repo-check") else {

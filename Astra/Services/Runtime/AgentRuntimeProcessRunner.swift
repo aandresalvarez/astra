@@ -114,6 +114,20 @@ final class AgentRuntimeProcessRunner {
                 )
         }
         let environment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
+        if let block = plan.unsupportedProviderNativeGitCredentialReadBlock(
+            for: gitCredentialContext,
+            permissionPolicy: effectivePermissionPolicy,
+            workspaceCommandsRunInsideManagedExecutor: environment.workspaceCommandsRunInsideContainer
+        ) {
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.task.id, fields: [
+                "runtime": plan.runtime.rawValue,
+                "reason": block.runtimeStopReason ?? "git_credential_native_access_unavailable",
+                "git_credential_readable_path_count": String(gitCredentialContext.readablePaths.count),
+                "git_credential_writable_path_count": String(gitCredentialContext.writablePaths.count),
+                "git_credential_transports": gitCredentialContext.transports.map(\.rawValue).joined(separator: ",")
+            ], level: .error)
+            return .blocked(block)
+        }
         if environment.workspaceCommandsRunInsideContainer,
            (!DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: plan.runtime)
             || plan.commandPlannedFields["docker_workspace_executor_supported"] == "false") {

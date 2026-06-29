@@ -84,6 +84,29 @@ extension AgentRuntimeProcessLaunchPlan {
         )
     }
 
+    func unsupportedProviderNativeGitCredentialReadBlock(
+        for context: GitCredentialSandboxContext,
+        permissionPolicy: PermissionPolicy,
+        workspaceCommandsRunInsideManagedExecutor: Bool
+    ) -> AgentProcessResult? {
+        guard context.needsExternalCredentialAccess,
+              permissionPolicy != .autonomous,
+              runtime == .codexCLI,
+              !workspaceCommandsRunInsideManagedExecutor else {
+            return nil
+        }
+
+        let message = """
+        ASTRA blocked this Codex run because the task needs external Git or SSH credentials, but Codex restricted mode does not expose a read-only native path grant for those files. Switch to a runtime with supported path-scoped credential access, use autonomous mode only for a trusted workspace, or move the required credential material into an approved workspace-scoped setup before retrying.
+        """
+        return AgentProcessResult(
+            exitCode: -1,
+            error: message,
+            runtimeStopReason: "git_credential_native_access_unavailable",
+            runtimeStopMessage: message
+        )
+    }
+
     private static func uniqueNonEmpty(_ values: [String]) -> [String] {
         var seen: Set<String> = []
         return values.filter { value in
