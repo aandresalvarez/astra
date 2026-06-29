@@ -195,7 +195,7 @@ struct AstraPackManifestValidatorTests {
             description: "A valid pack manifest.",
             capabilityPackageIDs: ["builtin.github"],
             shelfDefaults: [
-                AstraPackShelfDefault(id: "inbox", title: "Inbox", kind: "documents")
+                AstraPackShelfDefault(id: "files", title: "Files", kind: "nativeShelf")
             ],
             appTemplates: [
                 AstraPackAppTemplate(

@@ -18,6 +18,8 @@ struct AstraPackManifestValidationReport: Sendable, Equatable {
             case invalidCapabilityPackageID
             case emptyShelfID
             case invalidShelfID
+            case unknownTrustedShelfID
+            case unaddressableTrustedShelfID
             case emptyAppTemplateID
             case invalidAppTemplateID
             case emptyTemplateID
@@ -145,12 +147,36 @@ enum AstraPackManifestValidator {
             }
             if isValidID {
                 seenShelfIDs.insert(trimmedID)
+                validateTrustedShelfReference(shelf, index: index, issues: &issues)
             }
             validateCapabilityPackageIDs(
                 shelf.capabilityPackageIDs,
                 basePath: "/shelfDefaults/\(index)/capabilityPackageIDs",
                 issues: &issues
             )
+        }
+    }
+
+    private static func validateTrustedShelfReference(
+        _ shelf: AstraPackShelfDefault,
+        index: Int,
+        issues: inout [AstraPackManifestValidationReport.Issue]
+    ) {
+        guard let descriptor = CoreShelfRegistry.descriptor(forStableID: shelf.id) else {
+            issues.append(blocker(
+                .unknownTrustedShelfID,
+                path: "/shelfDefaults/\(index)/id",
+                message: "Pack shelf default '\(shelf.id)' does not reference a Core-registered shelf."
+            ))
+            return
+        }
+        guard descriptor.isPackAddressable else {
+            issues.append(blocker(
+                .unaddressableTrustedShelfID,
+                path: "/shelfDefaults/\(index)/id",
+                message: "Core shelf '\(shelf.id)' is not pack-addressable."
+            ))
+            return
         }
     }
 

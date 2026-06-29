@@ -95,11 +95,49 @@ public struct AstraPackShelfDefault: Codable, Equatable, Sendable, Identifiable 
     }
 
     public init(from decoder: Decoder) throws {
+        let dynamicContainer = try decoder.container(keyedBy: AstraPackDynamicCodingKey.self)
+        let forbiddenImplementationKeys = [
+            "swiftUIViewType",
+            "viewImplementation",
+            "viewType",
+            "modulePath",
+            "bundlePath",
+            "pluginPath"
+        ]
+        if let forbiddenKey = forbiddenImplementationKeys.first(where: { key in
+            dynamicContainer.contains(AstraPackDynamicCodingKey(key))
+        }) {
+            throw DecodingError.dataCorruptedError(
+                forKey: AstraPackDynamicCodingKey(forbiddenKey),
+                in: dynamicContainer,
+                debugDescription: "ASTRA pack shelf defaults may only reference trusted Core shelves, not dynamic view implementations."
+            )
+        }
+
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
         title = try container.decode(String.self, forKey: .title)
         kind = try container.decode(String.self, forKey: .kind)
         capabilityPackageIDs = try container.decodeIfPresent([String].self, forKey: .capabilityPackageIDs) ?? []
+    }
+}
+
+private struct AstraPackDynamicCodingKey: CodingKey {
+    var stringValue: String
+    var intValue: Int?
+
+    init(_ stringValue: String) {
+        self.stringValue = stringValue
+        self.intValue = nil
+    }
+
+    init?(stringValue: String) {
+        self.init(stringValue)
+    }
+
+    init?(intValue: Int) {
+        self.stringValue = String(intValue)
+        self.intValue = intValue
     }
 }
 

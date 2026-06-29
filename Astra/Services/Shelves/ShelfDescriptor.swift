@@ -15,5 +15,6 @@ struct ShelfDescriptor: Equatable {
     let idealWidth: CGFloat
     let maxWidth: CGFloat
     let closesWhenDraggedBelowMinimum: Bool
+    let isPackAddressable: Bool
     let generatedFileDestination: ShelfGeneratedFileDestinationMetadata?
 }

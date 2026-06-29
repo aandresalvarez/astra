@@ -317,14 +317,7 @@ enum AstraPackPolicyResolver {
     }
 
     private static func shelfID(for identifier: String) -> ShelfID? {
-        let value = normalized(identifier)
-        if let exact = ShelfID(rawValue: value) {
-            return exact
-        }
-        if value == "app-preview" {
-            return .appPreview
-        }
-        return nil
+        CoreShelfRegistry.shelfID(forStableID: identifier)
     }
 
     private static func trimmed(_ value: String?) -> String? {

@@ -19,15 +19,15 @@ struct ShelfRegistryTests {
 
     @Test("Core shelf descriptors preserve width constraints")
     func coreShelfDescriptorsPreserveWidthConstraints() throws {
-        let expectations: [(ShelfID, String, String, CGFloat, CGFloat, CGFloat, Bool)] = [
-            (.plan, "Plan", "list.bullet.rectangle", 400, 520, 1040, false),
-            (.files, "Files", "doc.text", ShelfWidthMetrics.filesMinReadableWidth, 620, 980, true),
-            (.browser, "Browser", "globe", ShelfWidthMetrics.browserMinWidth, 440, 1120, false),
-            (.query, "Query", "cylinder.split.1x2", 460, 640, 1180, false),
-            (.appPreview, "Live preview", "apps.iphone", 440, 560, 1120, false)
+        let expectations: [(ShelfID, String, String, CGFloat, CGFloat, CGFloat, Bool, Bool)] = [
+            (.plan, "Plan", "list.bullet.rectangle", 400, 520, 1040, false, true),
+            (.files, "Files", "doc.text", ShelfWidthMetrics.filesMinReadableWidth, 620, 980, true, true),
+            (.browser, "Browser", "globe", ShelfWidthMetrics.browserMinWidth, 440, 1120, false, true),
+            (.query, "Query", "cylinder.split.1x2", 460, 640, 1180, false, true),
+            (.appPreview, "Live preview", "apps.iphone", 440, 560, 1120, false, false)
         ]
 
-        for (id, title, systemImage, minWidth, idealWidth, maxWidth, closesWhenDraggedBelowMinimum) in expectations {
+        for (id, title, systemImage, minWidth, idealWidth, maxWidth, closesWhenDraggedBelowMinimum, isPackAddressable) in expectations {
             let descriptor = try #require(CoreShelfRegistry.descriptor(for: id))
             #expect(descriptor.title == title)
             #expect(descriptor.systemImage == systemImage)
@@ -35,6 +35,7 @@ struct ShelfRegistryTests {
             #expect(descriptor.idealWidth == idealWidth)
             #expect(descriptor.maxWidth == maxWidth)
             #expect(descriptor.closesWhenDraggedBelowMinimum == closesWhenDraggedBelowMinimum)
+            #expect(descriptor.isPackAddressable == isPackAddressable)
         }
     }
 
@@ -51,5 +52,22 @@ struct ShelfRegistryTests {
         #expect(ShelfID.browser.workspaceCanvasItem == .browser)
         #expect(ShelfID.query.workspaceCanvasItem == .query)
         #expect(ShelfID.appPreview.workspaceCanvasItem == .appPreview)
+    }
+
+    @Test("Core registry resolves stable shelf IDs")
+    func coreRegistryResolvesStableShelfIDs() {
+        let expectations: [(String, ShelfID)] = [
+            ("plan", .plan),
+            (" files ", .files),
+            ("BROWSER", .browser),
+            ("query", .query),
+            ("app-preview", .appPreview),
+            ("appPreview", .appPreview)
+        ]
+
+        for (stableID, shelfID) in expectations {
+            #expect(CoreShelfRegistry.shelfID(forStableID: stableID) == shelfID)
+            #expect(CoreShelfRegistry.descriptor(forStableID: stableID)?.id == shelfID)
+        }
     }
 }

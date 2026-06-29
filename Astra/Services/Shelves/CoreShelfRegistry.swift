@@ -11,6 +11,7 @@ enum CoreShelfRegistry {
             idealWidth: 520,
             maxWidth: 1040,
             closesWhenDraggedBelowMinimum: false,
+            isPackAddressable: true,
             generatedFileDestination: nil
         ),
         ShelfDescriptor(
@@ -21,6 +22,7 @@ enum CoreShelfRegistry {
             idealWidth: 620,
             maxWidth: 980,
             closesWhenDraggedBelowMinimum: true,
+            isPackAddressable: true,
             generatedFileDestination: ShelfGeneratedFileDestinationMetadata(
                 title: "Open in Files Shelf",
                 compactTitle: "Files",
@@ -35,6 +37,7 @@ enum CoreShelfRegistry {
             idealWidth: 440,
             maxWidth: 1120,
             closesWhenDraggedBelowMinimum: false,
+            isPackAddressable: true,
             generatedFileDestination: ShelfGeneratedFileDestinationMetadata(
                 title: "Open in Browser Shelf",
                 compactTitle: "Browser",
@@ -49,6 +52,7 @@ enum CoreShelfRegistry {
             idealWidth: 640,
             maxWidth: 1180,
             closesWhenDraggedBelowMinimum: false,
+            isPackAddressable: true,
             generatedFileDestination: ShelfGeneratedFileDestinationMetadata(
                 title: "Open in Query Shelf",
                 compactTitle: "Query",
@@ -63,6 +67,7 @@ enum CoreShelfRegistry {
             idealWidth: 560,
             maxWidth: 1120,
             closesWhenDraggedBelowMinimum: false,
+            isPackAddressable: false,
             generatedFileDestination: nil
         )
     ]
@@ -71,5 +76,26 @@ enum CoreShelfRegistry {
 
     static func descriptor(for id: ShelfID) -> ShelfDescriptor? {
         descriptorsByID[id]
+    }
+
+    static func shelfID(forStableID stableID: String) -> ShelfID? {
+        let trimmed = stableID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let exact = ShelfID(rawValue: trimmed) {
+            return exact
+        }
+
+        let value = trimmed.lowercased()
+        if let normalized = ShelfID(rawValue: value) {
+            return normalized
+        }
+        if value == "app-preview" {
+            return .appPreview
+        }
+        return nil
+    }
+
+    static func descriptor(forStableID stableID: String) -> ShelfDescriptor? {
+        guard let shelfID = shelfID(forStableID: stableID) else { return nil }
+        return descriptor(for: shelfID)
     }
 }
