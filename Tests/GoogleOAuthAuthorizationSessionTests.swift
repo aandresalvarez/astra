@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import Testing
 @testable import ASTRA
 
@@ -39,5 +40,27 @@ struct GoogleOAuthAuthorizationSessionTests {
 
         #expect(callback.code == "auth-code")
         #expect(callback.state == "state-123")
+    }
+
+    @Test("loopback listener parameters bind to the redirect host and port")
+    func loopbackListenerParametersBindToRedirectHostAndPort() throws {
+        let redirectURI = URL(string: "http://127.0.0.1:48119/oauth/google/callback")!
+        let parameters = try #require(GoogleOAuthLoopbackListenerPolicy.parameters(for: redirectURI))
+        let endpoint = try #require(parameters.requiredLocalEndpoint)
+
+        guard case let .hostPort(host, port) = endpoint else {
+            Issue.record("Expected a required hostPort local endpoint, got \(endpoint)")
+            return
+        }
+
+        #expect(String(describing: host) == "127.0.0.1")
+        #expect(port.rawValue == 48_119)
+    }
+
+    @Test("loopback listener parameters reject non-loopback redirect hosts")
+    func loopbackListenerParametersRejectNonLoopbackHosts() {
+        let redirectURI = URL(string: "http://192.0.2.10:48119/oauth/google/callback")!
+
+        #expect(GoogleOAuthLoopbackListenerPolicy.parameters(for: redirectURI) == nil)
     }
 }

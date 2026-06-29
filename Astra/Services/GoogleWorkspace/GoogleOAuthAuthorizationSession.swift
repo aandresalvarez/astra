@@ -86,11 +86,11 @@ protocol GoogleOAuthCallbackReceiving {
 struct LoopbackGoogleOAuthCallbackReceiver: GoogleOAuthCallbackReceiving {
     func receiveCallback(authorizationURL: URL) async throws -> GoogleOAuthCallback {
         guard let redirectURI = Self.redirectURI(from: authorizationURL),
-              let portValue = redirectURI.port,
-              let port = NWEndpoint.Port(rawValue: UInt16(portValue)) else {
+              let port = GoogleOAuthLoopbackListenerPolicy.port(for: redirectURI),
+              let parameters = GoogleOAuthLoopbackListenerPolicy.parameters(for: redirectURI) else {
             throw GoogleOAuthAuthorizationSessionError.unsupportedPlatform
         }
-        let listener = try NWListener(using: .tcp, on: port)
+        let listener = try NWListener(using: parameters, on: port)
         let queue = DispatchQueue(label: "com.coral.astra.google-oauth-callback")
 
         return try await withTaskCancellationHandler {
@@ -143,6 +143,39 @@ struct LoopbackGoogleOAuthCallbackReceiver: GoogleOAuthCallbackReceiving {
             .first { $0.name == "redirect_uri" }?
             .value
             .flatMap(URL.init(string:))
+    }
+}
+
+enum GoogleOAuthLoopbackListenerPolicy {
+    static func parameters(for redirectURI: URL) -> NWParameters? {
+        guard let host = normalizedLoopbackHost(from: redirectURI),
+              let port = port(for: redirectURI) else {
+            return nil
+        }
+
+        let parameters = NWParameters.tcp
+        parameters.requiredLocalEndpoint = .hostPort(host: NWEndpoint.Host(host), port: port)
+        return parameters
+    }
+
+    static func port(for redirectURI: URL) -> NWEndpoint.Port? {
+        guard let portValue = redirectURI.port,
+              let rawPort = UInt16(exactly: portValue) else {
+            return nil
+        }
+        return NWEndpoint.Port(rawValue: rawPort)
+    }
+
+    private static func normalizedLoopbackHost(from redirectURI: URL) -> String? {
+        guard let host = redirectURI.host?.lowercased(),
+              isLoopback(host) else {
+            return nil
+        }
+        return host
+    }
+
+    private static func isLoopback(_ host: String) -> Bool {
+        host == "127.0.0.1" || host == "localhost" || host == "::1"
     }
 }
 
