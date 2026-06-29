@@ -632,17 +632,11 @@ enum WorkspaceConfigManager {
         workspace.memories = config.memories ?? []
         workspace.isStarred = config.isStarred ?? false
         workspace.activeExecutionEnvironmentJSON = sanitizedExecutionEnvironmentJSON(config.activeExecutionEnvironmentJSON)
-        // Only restore the worktree focus when the worktree actually exists on
-        // this machine; otherwise reset to root so new chats don't pin to a
-        // path that isn't here.
-        if let active = config.activeWorkingPath,
-           !active.isEmpty,
-           active != config.primaryPath,
-           FileManager.default.fileExists(atPath: active) {
-            workspace.activeWorkingPath = active
-        } else {
-            workspace.activeWorkingPath = nil
-        }
+        workspace.activeWorkingPath = importedActiveWorkingPath(
+            config.activeWorkingPath,
+            primaryPath: config.primaryPath,
+            additionalPaths: config.additionalPaths
+        )
         if let refs = config.installedPlugins {
             workspace.installedPluginIDs = refs.map(\.id)
             workspace.installedPluginVersions = refs.map(\.version)
@@ -1721,6 +1715,58 @@ enum WorkspaceConfigManager {
     private static func appendUnique(_ value: String, to values: inout [String]) {
         guard !values.contains(value) else { return }
         values.append(value)
+    }
+
+    private static func importedActiveWorkingPath(
+        _ activeWorkingPath: String?,
+        primaryPath: String,
+        additionalPaths: [String],
+        fileManager: FileManager = .default
+    ) -> String? {
+        guard let active = activeWorkingPath,
+              !active.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+
+        let activeURL = URL(fileURLWithPath: active)
+        let activePath = activeURL.standardizedFileURL.path
+        guard activePath != standardizedPath(primaryPath),
+              fileManager.fileExists(atPath: activePath) else {
+            return nil
+        }
+
+        let roots = ([primaryPath] + additionalPaths)
+            .map(standardizedPath)
+            .filter { !$0.isEmpty }
+        guard roots.contains(where: { isPath(activePath, insideOrEqualTo: $0) }) else {
+            return nil
+        }
+
+        let resolvedActive = activeURL.resolvingSymlinksInPath().standardizedFileURL.path
+        guard roots.contains(where: { root in
+            let resolvedRoot = URL(fileURLWithPath: root)
+                .resolvingSymlinksInPath()
+                .standardizedFileURL
+                .path
+            return isPath(resolvedActive, insideOrEqualTo: resolvedRoot)
+        }) else {
+            return nil
+        }
+
+        return activePath
+    }
+
+    private static func standardizedPath(_ path: String) -> String {
+        let expanded = NSString(string: path)
+            .expandingTildeInPath
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !expanded.isEmpty else { return "" }
+        return URL(fileURLWithPath: expanded).standardizedFileURL.path
+    }
+
+    private static func isPath(_ path: String, insideOrEqualTo root: String) -> Bool {
+        guard !path.isEmpty, !root.isEmpty else { return false }
+        return path == root || path.hasPrefix(root + "/")
     }
 }
 

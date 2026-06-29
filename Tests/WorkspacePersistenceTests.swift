@@ -214,17 +214,17 @@ struct WorkspacePersistenceTests {
         #expect(imported.tasks.first?.isDone == false)
     }
 
-    @Test("active worktree focus travels with the workspace and re-validates on import")
+    @Test("active worktree focus travels only when it remains inside imported workspace roots")
     @MainActor
     func activeWorkingPathRoundTrips() throws {
         let container = try makeWorkspacePersistenceContainer()
         let context = container.mainContext
 
         let root = "/tmp/astra_active_path_\(UUID().uuidString)"
-        let worktree = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("astra-active-wt-\(UUID().uuidString)", isDirectory: true).path
+        let worktree = URL(fileURLWithPath: root, isDirectory: true)
+            .appendingPathComponent("repo-worktree", isDirectory: true).path
         try FileManager.default.createDirectory(atPath: worktree, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(atPath: worktree) }
+        defer { try? FileManager.default.removeItem(atPath: root) }
 
         let workspace = try makeRichWorkspace(in: context, root: root)
         workspace.activeWorkingPath = worktree
@@ -232,19 +232,37 @@ struct WorkspacePersistenceTests {
         let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
         #expect(config.activeWorkingPath == worktree)
 
-        // Worktree present on this machine → focus is restored.
+        // Worktree present inside an imported root -> focus is restored.
         let presentContainer = try makeWorkspacePersistenceContainer()
         let present = WorkspaceConfigManager.importWorkspace(from: config, modelContext: presentContainer.mainContext)
         #expect(present.activeWorkingPath == worktree)
         #expect(present.isUsingWorktree == true)
 
-        // Worktree absent (different machine) → focus resets to root.
+        // Worktree absent (different machine) -> focus resets to root.
         var staleConfig = config
         staleConfig.activeWorkingPath = "/gone/\(UUID().uuidString)"
         let absentContainer = try makeWorkspacePersistenceContainer()
         let absent = WorkspaceConfigManager.importWorkspace(from: staleConfig, modelContext: absentContainer.mainContext)
         #expect(absent.activeWorkingPath == nil)
         #expect(absent.isUsingWorktree == false)
+
+        // Existing outside path from imported config -> focus resets to root so
+        // new tasks cannot launch outside imported workspace roots.
+        let outside = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("astra-outside-wt-\(UUID().uuidString)", isDirectory: true).path
+        try FileManager.default.createDirectory(atPath: outside, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: outside) }
+
+        var outsideConfig = config
+        outsideConfig.activeWorkingPath = outside
+        let outsideContainer = try makeWorkspacePersistenceContainer()
+        let outsideContext = outsideContainer.mainContext
+        let imported = WorkspaceConfigManager.importWorkspace(from: outsideConfig, modelContext: outsideContext)
+        let task = AgentTask(title: "Check root", goal: "Stay inside roots", workspace: imported)
+
+        #expect(imported.activeWorkingPath == nil)
+        #expect(imported.isUsingWorktree == false)
+        #expect(task.executionRootPath == nil)
     }
 
     @Test("import skips unsafe local tool definitions from workspace config")
