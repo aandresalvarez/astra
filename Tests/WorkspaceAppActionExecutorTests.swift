@@ -236,6 +236,52 @@ struct WorkspaceAppActionExecutorTests {
     }
 
     @MainActor
+    @Test("artifact CSV exports preserve typed negative numeric storage values")
+    func artifactCSVExportsPreserveTypedNegativeNumericStorageValues() throws {
+        let fixture = try Self.makePublishedApp(
+            permissionMode: .draftOnly,
+            manifest: Self.metricExportManifest(permissionMode: .draftOnly)
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        _ = try WorkspaceAppActionExecutor().execute(
+            actionID: "addMetric",
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: fixture.manifest,
+            input: WorkspaceAppActionInput(
+                table: "metrics",
+                record: [
+                    "id": .text("metric-1"),
+                    "count": .integer(-10),
+                    "delta": .real(-2.5),
+                    "textFormula": .text("=2+3"),
+                    "textNegativeInteger": .text("-10"),
+                    "textNegativeReal": .text("-2.5")
+                ]
+            ),
+            modelContext: fixture.context
+        )
+
+        let result = try WorkspaceAppActionExecutor().execute(
+            actionID: "exportMetrics",
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: fixture.manifest,
+            modelContext: fixture.context
+        )
+
+        let path = try #require(result.run.linkedArtifactPath)
+        let csv = try String(contentsOfFile: path, encoding: .utf8)
+        #expect(csv == """
+        id,count,delta,textFormula,textNegativeInteger,textNegativeReal
+        metric-1,-10,-2.5,'=2+3,'-10,'-2.5
+
+        """)
+        #expect(!csv.contains("metric-1,'-10,'-2.5"))
+    }
+
+    @MainActor
     @Test("artifact export actions write linked JSON files from app storage")
     func artifactExportActionsWriteLinkedJSONFilesFromAppStorage() throws {
         let fixture = try Self.makePublishedApp(permissionMode: .draftOnly)
@@ -1645,7 +1691,8 @@ struct WorkspaceAppActionExecutorTests {
 
     @MainActor
     static func makePublishedApp(
-        permissionMode: WorkspaceAppPermissionMode
+        permissionMode: WorkspaceAppPermissionMode,
+        manifest: WorkspaceAppManifest? = nil
     ) throws -> (
         root: URL,
         container: ModelContainer,
@@ -1667,7 +1714,7 @@ struct WorkspaceAppActionExecutorTests {
         let workspace = Workspace(name: "Actions", primaryPath: root.path)
         context.insert(workspace)
 
-        let manifest = groceryManifest(permissionMode: permissionMode)
+        let manifest = manifest ?? groceryManifest(permissionMode: permissionMode)
         let result = try WorkspaceAppService().createApp(
             manifest: manifest,
             in: workspace,
@@ -1675,6 +1722,57 @@ struct WorkspaceAppActionExecutorTests {
         )
 
         return (root, container, context, workspace, result.app, manifest)
+    }
+
+    static func metricExportManifest(permissionMode: WorkspaceAppPermissionMode) -> WorkspaceAppManifest {
+        WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(
+                id: "metric-actions",
+                name: "Metric Actions",
+                icon: "chart.line.uptrend.xyaxis"
+            ),
+            requirements: [
+                WorkspaceAppRequirement(
+                    id: "localRecords",
+                    contract: "appStorage.records",
+                    operations: ["insertRecord", "queryRecords"]
+                )
+            ],
+            storage: WorkspaceAppStorageSchema(tables: [
+                WorkspaceAppStorageTable(name: "metrics", columns: [
+                    WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true),
+                    WorkspaceAppStorageColumn(name: "count", type: "integer"),
+                    WorkspaceAppStorageColumn(name: "delta", type: "real"),
+                    WorkspaceAppStorageColumn(name: "textFormula", type: "text"),
+                    WorkspaceAppStorageColumn(name: "textNegativeInteger", type: "text"),
+                    WorkspaceAppStorageColumn(name: "textNegativeReal", type: "text")
+                ])
+            ]),
+            views: [
+                WorkspaceAppViewSpec(id: "metrics", type: "table", title: "Metrics")
+            ],
+            actions: [
+                WorkspaceAppActionSpec(
+                    id: "addMetric",
+                    type: "appStorage.insert",
+                    label: "Add Metric",
+                    requirementRef: "localRecords",
+                    operation: "insertRecord"
+                ),
+                WorkspaceAppActionSpec(
+                    id: "exportMetrics",
+                    type: "artifact.export",
+                    label: "Export Metrics",
+                    table: "metrics",
+                    exportFormat: "csv"
+                )
+            ],
+            permissions: WorkspaceAppPermissions(
+                reads: ["appStorage.records"],
+                writes: ["appStorage.records"],
+                defaultMode: permissionMode
+            )
+        )
     }
 
     static func groceryManifest(permissionMode: WorkspaceAppPermissionMode) -> WorkspaceAppManifest {

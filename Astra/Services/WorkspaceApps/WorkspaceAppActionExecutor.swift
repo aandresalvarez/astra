@@ -2275,23 +2275,30 @@ private struct WorkspaceAppCSVExportFormatter {
     }
 
     func data(rows: [[String: WorkspaceAppStorageValue]]) -> Data {
-        let lines = [columns.map(field).joined(separator: ",")] + rows.map { row in
+        let lines = [columns.map(headerField).joined(separator: ",")] + rows.map { row in
             columns
-                .map { field(Self.exportValue(row[$0])) }
+                .map { storageField(row[$0]) }
                 .joined(separator: ",")
         }
         return Data((lines.joined(separator: "\n") + "\n").utf8)
     }
 
-    private func field(_ rawValue: String) -> String {
-        let value = Self.literalizedSpreadsheetValue(rawValue)
-        if value.contains(",") || value.contains("\"") || value.contains("\n") || value.contains("\r") {
-            return "\"\(value.replacingOccurrences(of: "\"", with: "\"\""))\""
-        }
-        return value
+    private func headerField(_ rawValue: String) -> String {
+        field(Self.literalizedSpreadsheetText(rawValue))
     }
 
-    private static func literalizedSpreadsheetValue(_ value: String) -> String {
+    private func storageField(_ value: WorkspaceAppStorageValue?) -> String {
+        field(Self.exportValue(value))
+    }
+
+    private func field(_ rawValue: String) -> String {
+        if rawValue.contains(",") || rawValue.contains("\"") || rawValue.contains("\n") || rawValue.contains("\r") {
+            return "\"\(rawValue.replacingOccurrences(of: "\"", with: "\"\""))\""
+        }
+        return rawValue
+    }
+
+    private static func literalizedSpreadsheetText(_ value: String) -> String {
         guard hasSpreadsheetFormulaPrefix(value) else {
             return value
         }
@@ -2323,7 +2330,7 @@ private struct WorkspaceAppCSVExportFormatter {
         case .null, nil:
             ""
         case .text(let value):
-            value
+            literalizedSpreadsheetText(value)
         case .integer(let value):
             "\(value)"
         case .real(let value):
