@@ -1168,7 +1168,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 ))
             case .navigate:
                 let command = try request.decodeJSON(NavigateCommand.self)
-                guard let url = ShelfBrowserAddress.normalizedURL(from: command.url) else {
+                guard let url = BrowserBridgeNavigationPolicy.normalizedProviderURL(from: command.url) else {
                     return .json(["ok": false, "error": "invalid_url"], statusCode: 400)
                 }
                 let wait = await navigateForBridge(to: url, source: "bridge")
@@ -3044,7 +3044,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 timeoutSeconds: timeoutSeconds,
                 intervalMilliseconds: intervalMilliseconds
             )
-        } else if !control.href.isEmpty, let url = ShelfBrowserAddress.normalizedURL(from: control.href) {
+        } else if !control.href.isEmpty, let url = BrowserBridgeNavigationPolicy.normalizedProviderURL(from: control.href) {
             load(url, source: "bridge_open_control")
             object = [
                 "ok": true,
@@ -5109,7 +5109,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 }
             case "navigate":
                 guard let urlText = action.url,
-                      let url = ShelfBrowserAddress.normalizedURL(from: urlText) else {
+                      let url = BrowserBridgeNavigationPolicy.normalizedProviderURL(from: urlText) else {
                     results.append(["ok": false, "action": action.action, "error": "invalid_url"])
                     continue
                 }
