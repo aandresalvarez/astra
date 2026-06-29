@@ -743,6 +743,31 @@ struct WorkspaceToolSupportTests {
         #expect(manager.tail(jobID: job.jobID, stream: "stdout", lines: 10).text.contains("ok"))
     }
 
+    @Test("Workspace managed job tail bounds bytes before returning capped lines")
+    func workspaceManagedJobTailBoundsBytesBeforeReturningCappedLines() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-tail-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = WorkspaceManagedJobStore(rootPath: root.path)
+        let job = try store.create(
+            command: "printf large-log",
+            timeoutSeconds: nil,
+            label: nil,
+            progressProbe: nil,
+            runtime: "docker"
+        )
+        let oversizedLinePrefix = "prefix-that-proves-the-whole-log-was-returned:"
+        let oversizedLastLine = oversizedLinePrefix + String(repeating: "x", count: 600_000)
+        try ("older output\n" + oversizedLastLine)
+            .write(to: URL(fileURLWithPath: job.stdoutLogPath), atomically: true, encoding: .utf8)
+
+        let tail = try store.tail(jobID: job.jobID, stream: "stdout", lines: 1)
+
+        #expect(!tail.text.contains(oversizedLinePrefix))
+        #expect(tail.text.hasSuffix(String(repeating: "x", count: 64)))
+    }
+
     @Test("Docker workspace job manager maps host workspace path before persisting command")
     func dockerWorkspaceJobManagerMapsHostWorkspacePathBeforePersistingCommand() throws {
         let root = FileManager.default.temporaryDirectory

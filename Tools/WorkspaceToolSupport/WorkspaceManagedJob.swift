@@ -178,11 +178,10 @@ public final class WorkspaceManagedJobStore {
         let record = try load(jobID: jobID)
         let normalizedStream = stream.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let path = normalizedStream == "stderr" ? record.stderrLogPath : record.stdoutLogPath
-        let text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
         return WorkspaceManagedJobTail(
             jobID: record.jobID,
             stream: normalizedStream == "stderr" ? "stderr" : "stdout",
-            text: lastLines(text, count: lines)
+            text: WorkspaceManagedJobLogTailReader.tail(path: path, lines: lines)
         )
     }
 
@@ -235,12 +234,6 @@ public final class WorkspaceManagedJobStore {
         return filtered.isEmpty ? "unknown-job" : String(filtered.prefix(80))
     }
 
-    private func lastLines(_ text: String, count: Int) -> String {
-        let limit = max(1, min(count, 10_000))
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        return lines.suffix(limit).joined(separator: "\n")
-    }
-
     private struct RuntimeHeartbeat: Codable {
         var status: WorkspaceManagedJobStatus
         var timestamp: Date
@@ -259,6 +252,65 @@ public final class WorkspaceManagedJobStore {
         static func read(from url: URL, decoder: JSONDecoder) throws -> RuntimeResult {
             try decoder.decode(RuntimeResult.self, from: Data(contentsOf: url))
         }
+    }
+}
+
+private enum WorkspaceManagedJobLogTailReader {
+    private static let maximumLineCount = 10_000
+    private static let minimumReadBytes = 64 * 1024
+    private static let bytesPerRequestedLine = 1024
+    private static let maximumReadBytes = 4 * 1024 * 1024
+
+    static func tail(path: String, lines: Int) -> String {
+        let lineLimit = max(1, min(lines, maximumLineCount))
+        let byteLimit = max(
+            minimumReadBytes,
+            min(maximumReadBytes, lineLimit * bytesPerRequestedLine)
+        )
+        guard let suffix = readSuffix(path: path, byteLimit: byteLimit) else {
+            return ""
+        }
+        let text = String(decoding: suffix.data, as: UTF8.self)
+        return lastLines(
+            dropPartialLeadingLineIfNeeded(text, wasTruncated: suffix.wasTruncated),
+            count: lineLimit
+        )
+    }
+
+    private static func readSuffix(path: String, byteLimit: Int) -> LogSuffix? {
+        guard let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path, isDirectory: false)) else {
+            return nil
+        }
+        defer { try? handle.close() }
+
+        do {
+            let fileSize = try handle.seekToEnd()
+            let bytesToRead = min(UInt64(byteLimit), fileSize)
+            try handle.seek(toOffset: fileSize - bytesToRead)
+            return LogSuffix(
+                data: handle.readDataToEndOfFile(),
+                wasTruncated: bytesToRead < fileSize
+            )
+        } catch {
+            return nil
+        }
+    }
+
+    private static func dropPartialLeadingLineIfNeeded(_ text: String, wasTruncated: Bool) -> String {
+        guard wasTruncated, let newline = text.firstIndex(of: "\n") else {
+            return text
+        }
+        return String(text[text.index(after: newline)...])
+    }
+
+    private static func lastLines(_ text: String, count: Int) -> String {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        return lines.suffix(count).joined(separator: "\n")
+    }
+
+    private struct LogSuffix {
+        var data: Data
+        var wasTruncated: Bool
     }
 }
 
