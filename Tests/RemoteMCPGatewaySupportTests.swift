@@ -83,6 +83,30 @@ struct RemoteMCPGatewaySupportTests {
         #expect(remote.authHeaders == ["Bearer secret-access-token"])
     }
 
+    @Test("Gateway forwards the same canonical tool name evaluated by policy")
+    func gatewayForwardsCanonicalToolName() throws {
+        let descriptor = RemoteMCPServerDescriptor(
+            id: "google_drive",
+            displayName: "Google Drive",
+            transport: .http,
+            endpoint: URL(string: "https://mcp.example.test/google")!,
+            connectorBindings: ["google-workspace"],
+            allowedTools: ["drive.search"]
+        )
+        let remote = RecordingRemoteMCPClient()
+        let gateway = LocalMCPGateway(
+            server: descriptor,
+            remoteClient: remote,
+            authTokenProvider: StaticGatewayTokenProvider(token: "secret-access-token")
+        )
+
+        let call = try parseJSON(try #require(gateway.handleLine(#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":" drive.search ","arguments":{"query":"budget"}}}"#)))
+        let callResult = try #require(call["result"] as? [String: Any])
+        #expect(callResult["isError"] as? Bool == false)
+        #expect(remote.calledTools == ["drive.search"])
+        #expect(remote.calledArguments.first?["query"] as? String == "budget")
+    }
+
     @Test("Environment token provider reads the gateway process token")
     func environmentTokenProvider() throws {
         let provider = EnvironmentMCPGatewayAuthTokenProvider(

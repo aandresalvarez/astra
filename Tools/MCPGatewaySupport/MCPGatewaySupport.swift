@@ -201,8 +201,11 @@ public final class LocalMCPGateway {
 
     private func handleToolCall(id: Any?, object: [String: Any]) -> String? {
         guard let params = object["params"] as? [String: Any],
-              let toolName = params["name"] as? String,
-              !toolName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+              let rawToolName = params["name"] as? String else {
+            return encodeError(id: id, code: -32602, message: "Unsupported tool")
+        }
+        let toolName = rawToolName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !toolName.isEmpty else {
             return encodeError(id: id, code: -32602, message: "Unsupported tool")
         }
         guard toolPolicy.allows(toolName) else {
