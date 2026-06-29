@@ -970,6 +970,46 @@ struct LocalModelRuntimeTests {
         #expect(!threadObservation.content.contains("secret-slack-token"))
     }
 
+    @MainActor
+    @Test("Local Slack observations normalize and cap message text")
+    func localSlackObservationsNormalizeAndCapMessageText() {
+        let longText = "First line\nSecond line\t" + String(repeating: "word ", count: 200)
+        let searchObservation = SlackConnectorSearchService.searchObservation(from: .success([
+            SlackMessageSearchResult(
+                id: "slack-msg-long",
+                channelID: "C123",
+                channelName: "release",
+                user: "U123",
+                username: "ada",
+                text: longText,
+                timestamp: "1716920000.000100",
+                permalink: nil
+            )
+        ]))
+        let threadObservation = SlackConnectorSearchService.threadObservation(from: .success(SlackThreadSummary(
+            channelID: "C123",
+            threadTimestamp: "1716920000.000100",
+            messages: [
+                SlackThreadMessage(
+                    user: "U123",
+                    username: "ada",
+                    text: longText,
+                    timestamp: "1716920000.000100"
+                )
+            ],
+            truncated: false
+        )))
+
+        #expect(searchObservation.content.contains("First line Second line word"))
+        #expect(threadObservation.content.contains("First line Second line word"))
+        #expect(!searchObservation.content.contains("First line\nSecond line"))
+        #expect(!threadObservation.content.contains("First line\nSecond line"))
+        #expect(searchObservation.content.contains("... (truncated)"))
+        #expect(threadObservation.content.contains("... (truncated)"))
+        #expect(searchObservation.content.count < 700)
+        #expect(threadObservation.content.count < 800)
+    }
+
     @Test("Local async tool requests have bounded network timeouts")
     @MainActor
     func localAsyncToolRequestsHaveBoundedNetworkTimeouts() {
@@ -4451,6 +4491,7 @@ struct LocalModelRuntimeTests {
         #expect(nativeEntrypoint.contains(#""backend":"mlx""#))
         #expect(scaffoldEntrypoint.contains("modelRootArgumentValue"))
         #expect(scaffoldEntrypoint.contains(#"argumentValue("--models-root", in: arguments) ?? argumentValue("--models-dir", in: arguments)"#))
+        #expect(scaffoldEntrypoint.contains(#"argumentValue("--request-file", in: arguments) != nil"#))
         #expect(buildScript.contains(#"LOCAL_MODEL_BACKEND="${ASTRA_LOCAL_MODEL_BACKEND:-mlx}""#))
         #expect(buildScript.contains("scaffold|mlx)"))
         #expect(buildScript.contains(#""$LOCAL_MODEL_BACKEND" == "scaffold""#))

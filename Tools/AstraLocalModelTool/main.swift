@@ -29,7 +29,8 @@ func main() -> Int32 {
         return 78
     }
 
-    guard arguments.first == "run" else {
+    guard arguments.first == "run",
+          argumentValue("--request-file", in: arguments) != nil else {
         FileHandle.standardError.writeString("Usage: astra-local-model run --request-file <path>\n")
         return 64
     }
@@ -79,15 +80,7 @@ func printModelList(arguments: [String], backend: String) {
 func loadRequest(from arguments: [String]) throws -> LocalModelRunRequest {
     guard let index = arguments.firstIndex(of: "--request-file"),
           arguments.indices.contains(arguments.index(after: index)) else {
-        return LocalModelRunRequest(
-            prompt: "",
-            messages: [],
-            model: "Qwen/Qwen3-4B-MLX-4bit",
-            modelDirectory: nil,
-            permissionMode: "restricted",
-            experimentalToolsEnabled: false,
-            maxContextTokens: nil
-        )
+        throw LocalModelToolError.missingRequestFile
     }
 
     let requestPath = arguments[arguments.index(after: index)]
@@ -201,11 +194,14 @@ func startParentWatchdog() {
 }
 
 enum LocalModelToolError: LocalizedError {
+    case missingRequestFile
     case protocolChannelClosed
     case protocolWriteFailed(Int32)
 
     var errorDescription: String? {
         switch self {
+        case .missingRequestFile:
+            return "Missing --request-file for local model run."
         case .protocolChannelClosed:
             return "Local model protocol channel closed."
         case .protocolWriteFailed(let code):

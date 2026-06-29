@@ -29,6 +29,7 @@ struct SlackThreadMessage: Sendable, Equatable {
 @MainActor
 struct SlackConnectorSearchService {
     nonisolated static let requestTimeout: TimeInterval = 15
+    private nonisolated static let observationMessageTextLimit = 500
 
     enum SearchError: LocalizedError, Equatable {
         case missingConnector
@@ -208,7 +209,7 @@ struct SlackConnectorSearchService {
             let body = summary.messages.map { message in
                 let speaker = message.username ?? message.user ?? "unknown"
                 let timestamp = message.timestamp.map { " [\($0)]" } ?? ""
-                return "- \(speaker)\(timestamp): \(message.text)"
+                return "- \(speaker)\(timestamp): \(observationText(message.text))"
             }.joined(separator: "\n")
             return .init(
                 status: "ok",
@@ -283,7 +284,19 @@ struct SlackConnectorSearchService {
             details.append(permalink)
         }
         let detailText = details.isEmpty ? "" : " (\(details.joined(separator: ", ")))"
-        return "- \(message.text) [\(message.id)]\(detailText)"
+        return "- \(observationText(message.text)) [\(message.id)]\(detailText)"
+    }
+
+    private static func observationText(_ text: String) -> String {
+        let normalized = text
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+        guard normalized.count > observationMessageTextLimit else {
+            return normalized
+        }
+        let prefix = String(normalized.prefix(observationMessageTextLimit))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return "\(prefix)... (truncated)"
     }
 }
 
