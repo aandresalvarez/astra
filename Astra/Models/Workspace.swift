@@ -14,6 +14,9 @@ final class Workspace: Identifiable {
     var enabledGlobalConnectorIDs: [String] = []
     var enabledGlobalToolIDs: [String] = []
     var enabledCapabilityIDs: [String] = []
+    var enabledPackIDs: [String] = []
+    var shelfVisibilityOverrideIDs: [String] = []
+    var shelfVisibilityOverrideValues: [Bool] = []
     var memories: [String] = []
     var installedPluginIDs: [String] = []
     var installedPluginVersions: [String] = []
@@ -61,11 +64,30 @@ final class Workspace: Identifiable {
         self.icon = icon
         self.instructions = instructions
         self.lastUsedSkillNames = []
+        self.enabledPackIDs = []
+        self.shelfVisibilityOverrideIDs = []
+        self.shelfVisibilityOverrideValues = []
         self.isStarred = false
         self.activeWorkingPath = nil
         self.activeExecutionEnvironmentJSON = nil
         self.createdAt = Date()
         self.updatedAt = Date()
+    }
+
+    var shelfVisibilityOverrides: [String: Bool] {
+        get {
+            var overrides: [String: Bool] = [:]
+            for (index, shelfID) in shelfVisibilityOverrideIDs.enumerated() {
+                guard !shelfID.isEmpty, index < shelfVisibilityOverrideValues.count else { continue }
+                overrides[shelfID] = shelfVisibilityOverrideValues[index]
+            }
+            return overrides
+        }
+        set {
+            let orderedShelfIDs = newValue.keys.sorted()
+            shelfVisibilityOverrideIDs = orderedShelfIDs
+            shelfVisibilityOverrideValues = orderedShelfIDs.map { newValue[$0] ?? false }
+        }
     }
 
     /// The directory new chats and the Repository panel currently operate in:

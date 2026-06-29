@@ -99,6 +99,50 @@ struct WorkspaceCapabilitiesTests {
         #expect(capabilities.activeConnectors.map(\.name) == ["Configured Jira"])
     }
 
+    @Test("enabled pack IDs do not grant capability package resources")
+    @MainActor
+    func enabledPackIDsDoNotGrantCapabilityPackageResources() {
+        let workspace = Workspace(name: "Pack Profile Only", primaryPath: "/tmp/pack-profile-only")
+        workspace.enabledPackIDs = ["jira-workflow"]
+
+        let jiraSkill = Skill(name: "Jira Agent", allowedTools: ["Read", "Bash"])
+        jiraSkill.isGlobal = true
+        let package = PluginPackage(
+            id: "jira-workflow",
+            name: "Jira Workflow",
+            icon: "checklist",
+            description: "Jira workflow capabilities.",
+            author: "ASTRA",
+            category: "Integrations",
+            tags: [],
+            version: "1.0.0",
+            skills: [
+                PluginSkill(
+                    name: "Jira Agent",
+                    icon: "checklist",
+                    description: "Jira issue agent.",
+                    allowedTools: ["Read", "Bash"],
+                    disallowedTools: [],
+                    customTools: [],
+                    behaviorInstructions: "Read Jira issues.",
+                    environmentKeys: [],
+                    environmentValues: []
+                )
+            ],
+            connectors: [],
+            localTools: [],
+            templates: []
+        )
+
+        let capabilities = WorkspaceCapabilities(
+            workspace: workspace,
+            globalSkills: [jiraSkill],
+            packageDefinitions: [package]
+        )
+
+        #expect(capabilities.activeSkills.isEmpty)
+    }
+
     @Test("enabled package skills include matched tool owner when package skill name changes")
     @MainActor
     func enabledPackageSkillsIncludeMatchedToolOwnerWhenPackageSkillNameChanges() {
