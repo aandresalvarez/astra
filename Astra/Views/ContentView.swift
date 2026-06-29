@@ -529,6 +529,7 @@ struct ContentView: View {
             onMoveToDraft: moveTaskToDraft,
             onForkTask: setSelectedTask,
             onCreateTask: startComposingTask,
+            onCreateApp: startWorkspaceAppStudioTask,
             onOpenWorkspaceApp: setSelectedWorkspaceApp,
             onOpenTask: openExistingTask,
             onDeleteTask: requestDeleteTask,
@@ -1738,6 +1739,10 @@ struct ContentView: View {
         presentRightRail(rememberShelfState: false)
     }
 
+    private func startWorkspaceAppStudioTask() {
+        startWorkspaceAppStudio()
+    }
+
     private func handleQuickRunTask(_ task: AgentTask) {
         promoteDraftBrowserSessionIfNeeded(to: task)
         setSelectedTask(task)
@@ -2859,6 +2864,7 @@ private struct ContentDetailAreaView: View {
     let onMoveToDraft: (AgentTask) -> Void
     let onForkTask: (AgentTask) -> Void
     let onCreateTask: () -> Void
+    let onCreateApp: () -> Void
     var onOpenWorkspaceApp: ((WorkspaceApp) -> Void)?
     let onOpenTask: (AgentTask) -> Void
     let onDeleteTask: (AgentTask) -> Void
@@ -3239,6 +3245,7 @@ private struct ContentDetailAreaView: View {
             onMoveToDraft: onMoveToDraft,
             onForkTask: onForkTask,
             onCreateTask: onCreateTask,
+            onCreateApp: onCreateApp,
             onOpenWorkspaceApp: onOpenWorkspaceApp,
             onOpenTask: onOpenTask,
             onDeleteTask: onDeleteTask,
@@ -3336,6 +3343,7 @@ private struct ContentDetailContentView: View {
     let onMoveToDraft: (AgentTask) -> Void
     let onForkTask: (AgentTask) -> Void
     let onCreateTask: () -> Void
+    let onCreateApp: () -> Void
     var onOpenWorkspaceApp: ((WorkspaceApp) -> Void)?
     let onOpenTask: (AgentTask) -> Void
     let onDeleteTask: (AgentTask) -> Void
@@ -3423,6 +3431,7 @@ private struct ContentDetailContentView: View {
                     workspace: workspace,
                     taskQueue: taskQueue,
                     onCreateTask: onCreateTask,
+                    onCreateApp: onCreateApp,
                     onOpenTask: onOpenTask,
                     onDeleteTask: onDeleteTask,
                     onSetDoneState: onSetDoneState,
