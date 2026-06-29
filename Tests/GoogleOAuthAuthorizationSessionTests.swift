@@ -57,6 +57,21 @@ struct GoogleOAuthAuthorizationSessionTests {
         #expect(port.rawValue == 48_119)
     }
 
+    @Test("loopback listener normalizes localhost redirects to an IP literal bind")
+    func loopbackListenerNormalizesLocalhostRedirects() throws {
+        let redirectURI = URL(string: "http://localhost:48119/oauth/google/callback")!
+        let parameters = try #require(GoogleOAuthLoopbackListenerPolicy.parameters(for: redirectURI))
+        let endpoint = try #require(parameters.requiredLocalEndpoint)
+
+        guard case let .hostPort(host, port) = endpoint else {
+            Issue.record("Expected a required hostPort local endpoint, got \(endpoint)")
+            return
+        }
+
+        #expect(String(describing: host) == "127.0.0.1")
+        #expect(port.rawValue == 48_119)
+    }
+
     @Test("loopback listener parameters reject non-loopback redirect hosts")
     func loopbackListenerParametersRejectNonLoopbackHosts() {
         let redirectURI = URL(string: "http://192.0.2.10:48119/oauth/google/callback")!

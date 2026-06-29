@@ -167,15 +167,17 @@ enum GoogleOAuthLoopbackListenerPolicy {
     }
 
     private static func normalizedLoopbackHost(from redirectURI: URL) -> String? {
-        guard let host = redirectURI.host?.lowercased(),
-              isLoopback(host) else {
+        guard let host = redirectURI.host?.lowercased() else {
             return nil
         }
-        return host
-    }
-
-    private static func isLoopback(_ host: String) -> Bool {
-        host == "127.0.0.1" || host == "localhost" || host == "::1"
+        switch host {
+        case "localhost":
+            return "127.0.0.1"
+        case "127.0.0.1", "::1":
+            return host
+        default:
+            return nil
+        }
     }
 }
 
