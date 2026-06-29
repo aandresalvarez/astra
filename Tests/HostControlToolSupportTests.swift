@@ -85,6 +85,7 @@ struct HostControlToolSupportTests {
         let properties = try #require(inputSchema["properties"] as? [String: Any])
         #expect(properties.keys.contains("issue_key"))
         #expect(properties.keys.contains("jql"))
+        #expect(properties.keys.contains("next_page_token"))
         #expect(!properties.keys.contains("method"))
         #expect(!properties.keys.contains("path"))
         #expect(!properties.keys.contains("body"))
@@ -153,7 +154,8 @@ struct HostControlToolSupportTests {
         let response = try call(server, id: 1, tool: "jira", arguments: [
             "operation": "search_jql",
             "jql": "project = ASTRA",
-            "max_results": 5
+            "max_results": 5,
+            "next_page_token": "token-123"
         ])
 
         #expect(try resultText(response).contains("status_code: 200"))
@@ -161,6 +163,7 @@ struct HostControlToolSupportTests {
         #expect(url.path == "/rest/api/3/search/jql")
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
         let fields = try #require(components.queryItems?.first { $0.name == "fields" }?.value)
+        #expect(components.queryItems?.first { $0.name == "nextPageToken" }?.value == "token-123")
         #expect(fields.contains("summary"))
         #expect(fields.contains("status"))
         #expect(fields.contains("assignee"))

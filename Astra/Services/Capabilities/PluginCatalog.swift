@@ -124,7 +124,7 @@ final class PluginCatalog {
             author: "ASTRA",
             category: "Integrations",
             tags: ["jira", "atlassian", "tickets", "project-management"],
-            version: "2.0.4",
+            version: "2.0.5",
             setupGuide: """
             Connect your workspace to Jira. The agent uses the REST API \
             to read ticket metadata from your Jira instance.
@@ -159,7 +159,7 @@ final class PluginCatalog {
 
                 READ-ONLY OPERATIONS
                 • Status: operation status
-                • Search: operation search_jql with jql and optional max_results
+                • Search: operation search_jql with jql, optional max_results, and optional next_page_token for Jira pagination
                 • Get issue: operation get_issue with issue_key
                 • The bridge owns Jira paths and returns a vetted field set. Do not request raw method, path, or body inputs.
 
@@ -172,7 +172,7 @@ final class PluginCatalog {
                 • Do not create, update, comment on, transition, delete, or otherwise mutate Jira tickets with this capability
                 • Default searches to the selected connector's configured project keys unless told otherwise
                 • Use JQL for complex queries
-                • Handle pagination for large result sets
+                • Handle pagination for large result sets by passing returned nextPageToken values as next_page_token
                 """,
                 environmentKeys: ["JIRA_BASE_URL"], environmentValues: [""]
             )],
@@ -196,8 +196,8 @@ final class PluginCatalog {
             governance: .builtInApproved(
                 riskLevel: .high,
                 dataAccess: [.connectorCredentials, .externalService, .network],
-                externalEffects: [.readOnly],
-                policyNotes: "Jira API access uses Keychain-backed connector credentials. The built-in Jira bridge is read-only and supports typed status, issue lookup, and JQL search operations."
+                externalEffects: [.readOnly, .externalAPIWrite, .ticketMutation],
+                policyNotes: "Jira API access uses Keychain-backed connector credentials. Docker host-control routes are typed and read-only, but non-Docker runs can still access Jira credentials from Bash; governance must report ticket mutation effects until that path is also enforced."
             )
         ),
 

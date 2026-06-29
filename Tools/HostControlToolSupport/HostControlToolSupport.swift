@@ -699,6 +699,7 @@ public final class HostControlMCPServer {
                     "issue_key": ["type": "string", "description": "For get_issue: Jira issue key, for example ASTRA-123."],
                     "jql": ["type": "string", "description": "For search_jql: Jira Query Language expression."],
                     "max_results": ["type": "number", "description": "For search_jql: maximum result count from 1 to 100. Defaults to 20."],
+                    "next_page_token": ["type": "string", "description": "For search_jql: opaque Jira nextPageToken returned by a previous page."],
                     "timeout_seconds": ["type": "number", "description": "Optional request timeout. Defaults to 120 seconds."]
                 ],
                 "additionalProperties": false
@@ -823,14 +824,18 @@ private enum JiraRequestPolicy {
                   jql.count <= 1_000 else {
                 throw JiraRequestPolicyError("jira search_jql requires a non-empty jql string up to 1000 characters")
             }
+            var queryItems = [
+                URLQueryItem(name: "jql", value: jql),
+                URLQueryItem(name: "maxResults", value: String(maxResults(from: arguments["max_results"]))),
+                URLQueryItem(name: "fields", value: Self.readFields)
+            ]
+            if let nextPageToken = try nextPageToken(from: arguments["next_page_token"]) {
+                queryItems.append(URLQueryItem(name: "nextPageToken", value: nextPageToken))
+            }
             return JiraHTTPRequest(
                 method: "GET",
                 path: "/rest/api/3/search/jql",
-                queryItems: [
-                    URLQueryItem(name: "jql", value: jql),
-                    URLQueryItem(name: "maxResults", value: String(maxResults(from: arguments["max_results"]))),
-                    URLQueryItem(name: "fields", value: Self.readFields)
-                ]
+                queryItems: queryItems
             )
         default:
             throw JiraRequestPolicyError("Unsupported Jira operation '\(operation)'")
@@ -848,6 +853,17 @@ private enum JiraRequestPolicy {
             raw = nil
         }
         return min(max(raw ?? 20, 1), 100)
+    }
+
+    private static func nextPageToken(from value: Any?) throws -> String? {
+        guard let raw = value else { return nil }
+        guard let token = clean(raw as? String),
+              token.count <= 2_000,
+              !token.contains("\n"),
+              !token.contains("\r") else {
+            throw JiraRequestPolicyError("jira search_jql next_page_token must be a non-empty string up to 2000 characters")
+        }
+        return token
     }
 
     private static func clean(_ value: String?) -> String? {
