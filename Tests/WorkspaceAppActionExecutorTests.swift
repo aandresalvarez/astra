@@ -226,9 +226,13 @@ struct WorkspaceAppActionExecutorTests {
         let path = try #require(result.run.linkedArtifactPath)
         let csv = try String(contentsOfFile: path, encoding: .utf8)
         #expect(csv.contains("\nitem-eq,'=2+3,'+SUM(A1:A2)\n"))
+        #expect(!csv.contains("\nitem-eq,=2+3,+SUM(A1:A2)\n"))
         #expect(csv.contains("\nitem-minus,'-10,'@NOW()\n"))
+        #expect(!csv.contains("\nitem-minus,-10,@NOW()\n"))
         #expect(csv.contains("\nitem-tab,'\t=2+3,'  =2+3\n"))
+        #expect(!csv.contains("\nitem-tab,\t=2+3,  =2+3\n"))
         #expect(csv.contains("\nitem-cr,\"'\r=2+3\",Plain\n"))
+        #expect(!csv.contains("\nitem-cr,\"\r=2+3\",Plain\n"))
     }
 
     @MainActor
