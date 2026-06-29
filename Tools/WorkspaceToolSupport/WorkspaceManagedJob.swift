@@ -272,7 +272,7 @@ private enum WorkspaceManagedJobLogTailReader {
         }
         let text = String(decoding: suffix.data, as: UTF8.self)
         return lastLines(
-            dropPartialLeadingLineIfNeeded(text, wasTruncated: suffix.wasTruncated),
+            dropPartialLeadingLineIfNeeded(text, startsInsideLine: suffix.startsInsideLine),
             count: lineLimit
         )
     }
@@ -286,31 +286,51 @@ private enum WorkspaceManagedJobLogTailReader {
         do {
             let fileSize = try handle.seekToEnd()
             let bytesToRead = min(UInt64(byteLimit), fileSize)
-            try handle.seek(toOffset: fileSize - bytesToRead)
+            let startOffset = fileSize - bytesToRead
+            let startsInsideLine: Bool
+            if startOffset > 0 {
+                try handle.seek(toOffset: startOffset - 1)
+                let previousByte = try handle.read(upToCount: 1)?.first
+                startsInsideLine = previousByte != UInt8(ascii: "\n")
+            } else {
+                startsInsideLine = false
+            }
+            try handle.seek(toOffset: startOffset)
             return LogSuffix(
-                data: handle.readDataToEndOfFile(),
-                wasTruncated: bytesToRead < fileSize
+                data: try handle.read(upToCount: Int(bytesToRead)) ?? Data(),
+                startsInsideLine: startsInsideLine
             )
         } catch {
             return nil
         }
     }
 
-    private static func dropPartialLeadingLineIfNeeded(_ text: String, wasTruncated: Bool) -> String {
-        guard wasTruncated, let newline = text.firstIndex(of: "\n") else {
+    private static func dropPartialLeadingLineIfNeeded(_ text: String, startsInsideLine: Bool) -> String {
+        guard startsInsideLine, let newline = text.firstIndex(of: "\n") else {
             return text
         }
         return String(text[text.index(after: newline)...])
     }
 
     private static func lastLines(_ text: String, count: Int) -> String {
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        return lines.suffix(count).joined(separator: "\n")
+        var remainingNewlines = count
+        var cursor = text.endIndex
+        while cursor > text.startIndex {
+            let previous = text.index(before: cursor)
+            if text[previous] == "\n" {
+                remainingNewlines -= 1
+                if remainingNewlines == 0 {
+                    return String(text[text.index(after: previous)...])
+                }
+            }
+            cursor = previous
+        }
+        return text
     }
 
     private struct LogSuffix {
         var data: Data
-        var wasTruncated: Bool
+        var startsInsideLine: Bool
     }
 }
 
