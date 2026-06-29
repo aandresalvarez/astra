@@ -331,21 +331,28 @@ struct WorkspaceAppStudioTemplatePackTests {
     }
 
     @MainActor
-    @Test("reset clears stale available pack templates")
+    @Test("reset clears stale available pack templates and changes reload signature")
     func resetClearsStaleAvailablePackTemplates() throws {
         let descriptor = try Self.descriptor(
             packID: "astra.pack.devops",
             template: Self.template(id: "pr-review-board", name: "PR Review Board")
         )
+        let workspace = Self.workspace()
+        workspace.enabledPackIDs = ["astra.pack.devops"]
         let session = WorkspaceAppStudioSession(generate: TemplateContextSpyGenerator(result: Self.result(Self.validManifest)).generate, verify: Self.noVerify)
         session.configureTemplatePacks([descriptor])
         session.selectTemplate(descriptor.id)
+        let beforeSignature = WorkspaceAppStudioTemplatePackLoadingSource(workspace: workspace)
+            .loadSignature(workspaceID: workspace.id, refreshRevision: session.templatePackRefreshRevision)
 
-        session.reset(for: Self.workspace())
+        session.reset(for: workspace)
 
+        let afterSignature = WorkspaceAppStudioTemplatePackLoadingSource(workspace: workspace)
+            .loadSignature(workspaceID: workspace.id, refreshRevision: session.templatePackRefreshRevision)
         #expect(session.availableTemplatePacks.isEmpty)
         #expect(session.availableTemplateChoices.isEmpty)
         #expect(session.selectedTemplate == nil)
+        #expect(afterSignature != beforeSignature)
     }
 
     @Test("template guidance renders pack metadata as bounded untrusted data")

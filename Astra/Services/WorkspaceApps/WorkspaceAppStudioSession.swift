@@ -94,6 +94,9 @@ final class WorkspaceAppStudioSession: ObservableObject {
     /// Enabled pack templates that may seed a NEW App Studio draft. These are inert descriptors:
     /// capability package IDs are shown as provenance/requirements only, never runtime grants.
     @Published private(set) var availableTemplatePacks: [WorkspaceAppTemplatePackDescriptor] = []
+    /// Bumped when a reset invalidates the current template pack list, so a mounted Studio view can
+    /// reload choices even when the workspace and enabled pack IDs did not change.
+    @Published private(set) var templatePackRefreshRevision = 0
     /// The pre-draft pack template the user selected. Owned by the session so the provisional preview
     /// and final generator capture the same context for the first build.
     @Published private(set) var selectedTemplate: WorkspaceAppTemplatePackDescriptor?
@@ -251,6 +254,7 @@ final class WorkspaceAppStudioSession: ObservableObject {
         lastResolvedRuntimeID = nil   // a stale auto-fallback must not rewrite the picker after a reset
         selectedTemplate = nil
         availableTemplatePacks = []
+        templatePackRefreshRevision &+= 1
         generationToken &+= 1  // invalidate any in-flight generation from a prior session
         generationEvents = []
         draftAutosaveRevision = 0

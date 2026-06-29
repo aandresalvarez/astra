@@ -95,6 +95,10 @@ struct WorkspaceAppStudioTemplatePackLoadingSource: Equatable, Sendable {
         ([workspaceID.uuidString] + enabledPackIDs.sorted()).joined(separator: "|")
     }
 
+    func loadSignature(workspaceID: UUID, refreshRevision: Int) -> String {
+        ([workspaceID.uuidString, String(refreshRevision)] + enabledPackIDs.sorted()).joined(separator: "|")
+    }
+
     func templates(in snapshot: AstraPackCatalogSnapshot) -> [WorkspaceAppTemplatePackDescriptor] {
         WorkspaceAppTemplatePackCatalog(snapshot: snapshot, enabledPackIDs: enabledPackIDs).templates
     }

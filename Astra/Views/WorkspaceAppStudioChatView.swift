@@ -342,7 +342,10 @@ struct WorkspaceAppStudioChatView: View {
     }
 
     private var templatePackLoadSignature: String {
-        templatePackLoadingSource.loadSignature(workspaceID: workspace.id)
+        templatePackLoadingSource.loadSignature(
+            workspaceID: workspace.id,
+            refreshRevision: session.templatePackRefreshRevision
+        )
     }
 
     private var templatePackLoadingSource: WorkspaceAppStudioTemplatePackLoadingSource {
