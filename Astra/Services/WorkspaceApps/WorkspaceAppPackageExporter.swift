@@ -61,7 +61,9 @@ struct WorkspaceAppPackageExporter {
 
     private func loadManifest(app: WorkspaceApp, workspace: Workspace) throws -> WorkspaceAppLoadedManifest {
         let manifestStore = WorkspaceAppManifestStore(fileManager: fileManager)
-        let manifestURL = manifestStore.readableManifestURL(app: app, workspace: workspace)
+        guard let manifestURL = manifestStore.readableManifestURL(app: app, workspace: workspace) else {
+            throw WorkspaceAppPackageExportError.missingManifest(app.manifestRelativePath)
+        }
         guard fileManager.fileExists(atPath: manifestURL.path) else {
             throw WorkspaceAppPackageExportError.missingManifest(manifestURL.path)
         }

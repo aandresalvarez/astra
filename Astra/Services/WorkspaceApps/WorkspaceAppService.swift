@@ -462,8 +462,10 @@ struct WorkspaceAppService {
             throw WorkspaceAppServiceError.emptyWorkspacePath
         }
         let manifestStore = WorkspaceAppManifestStore(fileManager: fileManager)
-        let sourceDirectory = manifestStore.appDirectoryURL(app: app, workspace: workspace)
-        let sourceManifestURL = manifestStore.readableManifestURL(app: app, workspace: workspace)
+        guard let sourceDirectory = manifestStore.appDirectoryURL(app: app, workspace: workspace),
+              let sourceManifestURL = manifestStore.readableManifestURL(app: app, workspace: workspace) else {
+            throw WorkspaceAppServiceError.fileOperationFailed("No safe app manifest path for app '\(app.logicalID)'.")
+        }
         guard fileManager.fileExists(atPath: sourceManifestURL.path) else {
             throw WorkspaceAppServiceError.missingManifest(sourceManifestURL.path)
         }
@@ -562,10 +564,11 @@ struct WorkspaceAppService {
         modelContext: ModelContext,
         now: Date = Date()
     ) throws {
-        if let workspace, !workspace.primaryPath.isEmpty, WorkspaceAppIDPolicy.isPortableIdentifier(app.logicalID) {
+        if let workspace, !workspace.primaryPath.isEmpty {
             let directory = WorkspaceAppManifestStore(fileManager: fileManager)
                 .appDirectoryURL(app: app, workspace: workspace)
-            if WorkspaceFileLayout.isContainedAppDirectory(directory, workspacePath: workspace.primaryPath),
+            if let directory,
+               WorkspaceFileLayout.isContainedStoredAppDirectory(directory, workspacePath: workspace.primaryPath),
                fileManager.fileExists(atPath: directory.path) {
                 do {
                     try fileManager.removeItem(at: directory)

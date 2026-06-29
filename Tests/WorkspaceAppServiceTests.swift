@@ -576,6 +576,74 @@ struct WorkspaceAppServiceTests {
     }
 
     @MainActor
+    @Test("manifest store reads legacy app root stored paths without trusting nonportable IDs")
+    func manifestStoreReadsLegacyAppRootStoredPathsWithoutTrustingNonportableIDs() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("workspace-app-legacy-root-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let workspace = Workspace(name: "Legacy Apps", primaryPath: root.path)
+        let legacyDirectory = root.appendingPathComponent("apps/legacy-reconciliation", isDirectory: true)
+        let manifestURL = legacyDirectory.appendingPathComponent("manifest.json")
+        try FileManager.default.createDirectory(at: legacyDirectory, withIntermediateDirectories: true)
+        try WorkspaceAppService.encodeManifest(Self.reconciliationManifest()).write(to: manifestURL)
+        let app = WorkspaceApp(
+            workspaceID: workspace.id,
+            logicalID: " legacy reconciliation ",
+            name: "Legacy",
+            manifestRelativePath: "apps/legacy-reconciliation/manifest.json",
+            appDirectoryRelativePath: "apps/legacy-reconciliation",
+            manifestDigest: "digest"
+        )
+
+        #expect(WorkspaceFileLayout.appDirectoryURL(workspacePath: workspace.primaryPath, appID: app.logicalID) == nil)
+
+        let loaded = try WorkspaceAppManifestStore().loadManifest(app: app, workspace: workspace)
+
+        #expect(loaded.location.manifestURL.path == manifestURL.path)
+        #expect(loaded.location.appDirectoryURL.path == legacyDirectory.path)
+        #expect(loaded.manifest.app.id == "enrollment-reconciliation")
+    }
+
+    @MainActor
+    @Test("service deletes safely stored legacy app directories for nonportable logical IDs")
+    func serviceDeletesSafelyStoredLegacyAppDirectoryForNonportableLogicalID() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("workspace-app-delete-legacy-root-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let workspace = Workspace(name: "Legacy Apps", primaryPath: root.path)
+        context.insert(workspace)
+        let legacyDirectory = root.appendingPathComponent("apps/legacy-reconciliation", isDirectory: true)
+        try FileManager.default.createDirectory(at: legacyDirectory, withIntermediateDirectories: true)
+        try WorkspaceAppService.encodeManifest(Self.reconciliationManifest())
+            .write(to: legacyDirectory.appendingPathComponent("manifest.json"))
+        let app = WorkspaceApp(
+            workspaceID: workspace.id,
+            logicalID: " legacy reconciliation ",
+            name: "Legacy",
+            manifestRelativePath: "apps/legacy-reconciliation/manifest.json",
+            appDirectoryRelativePath: "apps/legacy-reconciliation",
+            manifestDigest: "digest"
+        )
+        context.insert(app)
+        try context.save()
+
+        try WorkspaceAppService().deleteApp(app, in: workspace, modelContext: context)
+
+        #expect(!FileManager.default.fileExists(atPath: legacyDirectory.path))
+        #expect(try context.fetch(FetchDescriptor<WorkspaceApp>()).isEmpty)
+    }
+
+    @MainActor
     @Test("service deletes app files and related domain records")
     func serviceDeletesAppFilesAndRelatedDomainRecords() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
