@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 public enum WorkspaceManagedJobStatus: String, Codable, Equatable, Sendable {
     case queued
@@ -181,13 +186,50 @@ public final class WorkspaceManagedJobStore {
     public func tail(jobID: String, stream: String, lines: Int) throws -> WorkspaceManagedJobTail {
         let record = try load(jobID: jobID)
         let normalizedStream = stream.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let path = normalizedStream == "stderr" ? record.stderrLogPath : record.stdoutLogPath
-        let text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+        let directory = jobDirectory(jobID: record.jobID)
+        let layout = WorkspaceManagedJobFileLayout(directory: directory)
+        let logURL = normalizedStream == "stderr" ? layout.stderr : layout.stdout
+        let text = trustedLogText(at: logURL, inside: directory)
         return WorkspaceManagedJobTail(
             jobID: record.jobID,
             stream: normalizedStream == "stderr" ? "stderr" : "stdout",
             text: lastLines(text, count: lines)
         )
+    }
+
+    private func trustedLogText(at url: URL, inside directory: URL) -> String {
+        let directoryPath = directory.standardizedFileURL.resolvingSymlinksInPath().path
+        let resolvedPath = url.standardizedFileURL.resolvingSymlinksInPath().path
+        guard resolvedPath.hasPrefix(directoryPath + "/") else {
+            return ""
+        }
+
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW)
+        guard fd >= 0 else {
+            return ""
+        }
+        defer { close(fd) }
+
+        var statInfo = stat()
+        guard fstat(fd, &statInfo) == 0,
+              (statInfo.st_mode & S_IFMT) == S_IFREG else {
+            return ""
+        }
+
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+        while true {
+            let bytesRead = read(fd, &buffer, buffer.count)
+            if bytesRead > 0 {
+                data.append(buffer, count: bytesRead)
+            } else if bytesRead == 0 {
+                break
+            } else {
+                return ""
+            }
+        }
+
+        return String(data: data, encoding: .utf8) ?? ""
     }
 
     public func mark(jobID: String, status: WorkspaceManagedJobStatus, message: String? = nil, exitCode: Int32? = nil) throws -> WorkspaceManagedJobRecord {

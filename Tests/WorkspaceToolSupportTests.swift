@@ -780,6 +780,21 @@ struct WorkspaceToolSupportTests {
         #expect(stderr.text.contains("SAFE_STDERR"))
         #expect(!stdout.text.contains("HOST_SECRET_FROM_OUTSIDE_JOB_DIR"))
         #expect(!stderr.text.contains("HOST_SECRET_FROM_OUTSIDE_JOB_DIR"))
+
+        let stdoutURL = jobDirectory.appendingPathComponent("stdout.log")
+        let stderrURL = jobDirectory.appendingPathComponent("stderr.log")
+        try FileManager.default.removeItem(at: stdoutURL)
+        try FileManager.default.removeItem(at: stderrURL)
+        try FileManager.default.createSymbolicLink(at: stdoutURL, withDestinationURL: outside)
+        try FileManager.default.createSymbolicLink(at: stderrURL, withDestinationURL: outside)
+
+        let symlinkedStdout = try store.tail(jobID: record.jobID, stream: "stdout", lines: 10)
+        let symlinkedStderr = try store.tail(jobID: record.jobID, stream: "stderr", lines: 10)
+
+        #expect(symlinkedStdout.text.isEmpty)
+        #expect(symlinkedStderr.text.isEmpty)
+        #expect(!symlinkedStdout.text.contains("HOST_SECRET_FROM_OUTSIDE_JOB_DIR"))
+        #expect(!symlinkedStderr.text.contains("HOST_SECRET_FROM_OUTSIDE_JOB_DIR"))
     }
 
     @Test("Docker workspace job manager maps host workspace path before persisting command")
