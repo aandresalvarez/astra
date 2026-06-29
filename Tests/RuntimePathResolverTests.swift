@@ -42,6 +42,16 @@ struct RuntimePathResolverTests {
 
         #expect(resolved == "/tmp/fallback-tool")
     }
+
+    @Test("Local MLX auto detection prefers bundled ASTRA helper")
+    func localMLXAutoDetectionPrefersBundledHelper() throws {
+        let firstCandidate = try #require(LocalMLXRuntime.executableCandidates.first)
+
+        #expect(firstCandidate == "\(RuntimePathResolver.astraToolsPath)/\(LocalMLXRuntime.executableName)")
+        #expect(LocalMLXRuntime.executableCandidates.firstIndex(
+            of: "\(RuntimePathResolver.homebrewBin)/\(LocalMLXRuntime.executableName)"
+        ).map { $0 > 0 } == true)
+    }
 }
 
 // MARK: - RuntimeProcessEnvironment

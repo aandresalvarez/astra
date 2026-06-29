@@ -155,7 +155,12 @@ public enum LocalModelJSONValue: Codable, Sendable, Equatable {
     public var intValue: Int? {
         switch self {
         case .number(let value):
-            return value.isFinite ? Int(value) : nil
+            guard value.isFinite,
+                  value >= Double(Int.min),
+                  value <= Double(Int.max) else {
+                return nil
+            }
+            return Int(value)
         case .string(let value):
             return Int(value.trimmingCharacters(in: .whitespacesAndNewlines))
         default:

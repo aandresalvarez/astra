@@ -213,7 +213,7 @@ enum LocalAgentGitBranchPreflight {
             .lowercased()
         let branchTerms = ["branch", "branches", "bracnh", "bracnhes", "brach", "braches"]
         guard branchTerms.contains(where: { normalized.contains($0) }) else { return false }
-        let gitContextTerms = ["git", "repo", "repository", "checkout", "worktree", "available", "abailable", "list", "show", "see"]
+        let gitContextTerms = ["git", "repo", "repository", "checkout", "worktree"]
         return gitContextTerms.contains(where: { normalized.contains($0) })
     }
 
@@ -972,7 +972,7 @@ final class LocalAgentOrchestrator {
                             ? PermissionBroker.approvalGrants(for: violation.permissionRequest ?? fallbackRequest)
                             : violation.approvalGrants
                         if !violation.requiresApproval,
-                           let explicitRequest = Self.localAgentExplicitApprovalRequest(tool: tool, arguments: arguments),
+                           let explicitRequest = Self.localAgentExplicitApprovalRequest(tool: tool, arguments: arguments, task: task),
                            Self.isExplicitBrowserApprovalTool(tool) {
                             let explicitGrants = PermissionBroker.approvalGrants(for: explicitRequest)
                             let approvalName = Self.localAgentExplicitApprovalName(tool: tool)
@@ -1041,7 +1041,7 @@ final class LocalAgentOrchestrator {
                                 modelContext: modelContext
                             )
                         }
-                    } else if let approvalRequest = Self.localAgentExplicitApprovalRequest(tool: tool, arguments: arguments) {
+                    } else if let approvalRequest = Self.localAgentExplicitApprovalRequest(tool: tool, arguments: arguments, task: task) {
                         let approvalGrants = PermissionBroker.approvalGrants(for: approvalRequest)
                         let approvalName = Self.localAgentExplicitApprovalName(tool: tool)
                         if approvalGrants.isEmpty {
@@ -1673,7 +1673,7 @@ final class LocalAgentOrchestrator {
         } else {
             context = argumentSummary(arguments)
         }
-        if tool == "workspace.write_file" {
+        if tool == "task.write_output" || tool == "workspace.write_file" {
             return .fileWrite(path: context, toolName: policyTool)
         }
         return .tool(name: policyTool, context: context)
@@ -1870,7 +1870,8 @@ final class LocalAgentOrchestrator {
 
     private static func localAgentExplicitApprovalRequest(
         tool: String,
-        arguments: [String: LocalModelJSONValue]
+        arguments: [String: LocalModelJSONValue],
+        task: AgentTask
     ) -> PermissionRequest? {
         switch tool {
         case "shell.exec":
@@ -1890,6 +1891,18 @@ final class LocalAgentOrchestrator {
                 return nil
             }
             return .tool(name: policyToolName(for: tool), context: target)
+        case "task.write_output":
+            guard let path = arguments["path"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !path.isEmpty else {
+                return nil
+            }
+            return .fileWrite(path: taskOutputPolicyPath(path, task: task), toolName: policyToolName(for: tool))
+        case "workspace.write_file":
+            guard let path = arguments["path"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !path.isEmpty else {
+                return nil
+            }
+            return .fileWrite(path: path, toolName: policyToolName(for: tool))
         default:
             return nil
         }
@@ -1905,6 +1918,10 @@ final class LocalAgentOrchestrator {
             return "browser click"
         case "browser.type":
             return "browser typing"
+        case "task.write_output":
+            return "task output write"
+        case "workspace.write_file":
+            return "workspace file write"
         default:
             return "tool execution"
         }
@@ -1921,6 +1938,8 @@ final class LocalAgentOrchestrator {
             return arguments["url"]?.stringValue
         case "browser.click", "browser.type":
             return browserApprovalTarget(tool: tool, arguments: arguments)
+        case "task.write_output", "workspace.write_file":
+            return arguments["path"]?.stringValue
         default:
             return nil
         }
@@ -2282,6 +2301,193 @@ enum LocalAgentCancellableDataLoader {
         } onCancel: {
             state.cancel()
         }
+    }
+
+    static func boundedData(
+        for request: URLRequest,
+        maxBytes: Int,
+        cancellationToken: LocalAgentCancellationToken?
+    ) async throws -> LocalAgentBoundedDataLoadResult {
+        if cancellationToken?.isCancelled == true {
+            throw CancellationError()
+        }
+        let loader = LocalAgentBoundedDataLoader(
+            request: request,
+            maxBytes: max(1, maxBytes),
+            cancellationToken: cancellationToken
+        )
+        return try await loader.start()
+    }
+}
+
+struct LocalAgentBoundedDataLoadResult: Sendable {
+    var data: Data
+    var response: URLResponse
+    var truncated: Bool
+}
+
+enum LocalAgentNetworkFetchError: LocalizedError {
+    case redirectDenied(URL)
+    case missingResponse
+
+    var errorDescription: String? {
+        switch self {
+        case .redirectDenied(let url):
+            return "Redirects are not allowed for Local Agent network.fetch: \(url.absoluteString)"
+        case .missingResponse:
+            return "The server did not return a response."
+        }
+    }
+}
+
+private final class LocalAgentBoundedDataLoader: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private let request: URLRequest
+    private let maxBytes: Int
+    private let cancellationToken: LocalAgentCancellationToken?
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<LocalAgentBoundedDataLoadResult, Error>?
+    private var session: URLSession?
+    private var task: URLSessionDataTask?
+    private var registrationID: UUID?
+    private var response: URLResponse?
+    private var data = Data()
+    private var finished = false
+
+    init(
+        request: URLRequest,
+        maxBytes: Int,
+        cancellationToken: LocalAgentCancellationToken?
+    ) {
+        self.request = request
+        self.maxBytes = maxBytes
+        self.cancellationToken = cancellationToken
+    }
+
+    func start() async throws -> LocalAgentBoundedDataLoadResult {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let configuration = URLSessionConfiguration.ephemeral
+                let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+                let task = session.dataTask(with: request)
+                let registrationID = cancellationToken?.register(task)
+
+                lock.lock()
+                self.continuation = continuation
+                self.session = session
+                self.task = task
+                self.registrationID = registrationID
+                lock.unlock()
+
+                task.resume()
+            }
+        } onCancel: {
+            self.cancel()
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
+        let deniedURL = request.url ?? response.url ?? self.request.url ?? URL(fileURLWithPath: "/")
+        finish(.failure(LocalAgentNetworkFetchError.redirectDenied(deniedURL)), cancelTask: true)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+    ) {
+        lock.lock()
+        if !finished {
+            self.response = response
+        }
+        lock.unlock()
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive chunk: Data) {
+        var result: LocalAgentBoundedDataLoadResult?
+
+        lock.lock()
+        if !finished {
+            let remaining = maxBytes - data.count
+            if chunk.count > remaining {
+                if remaining > 0 {
+                    data.append(chunk.prefix(remaining))
+                }
+                if let response {
+                    result = LocalAgentBoundedDataLoadResult(data: data, response: response, truncated: true)
+                }
+            } else {
+                data.append(chunk)
+            }
+        }
+        lock.unlock()
+
+        if let result {
+            finish(.success(result), cancelTask: true)
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error {
+            finish(.failure(error), cancelTask: false)
+            return
+        }
+
+        let result: Result<LocalAgentBoundedDataLoadResult, Error>
+        lock.lock()
+        if let response {
+            result = .success(LocalAgentBoundedDataLoadResult(data: data, response: response, truncated: false))
+        } else {
+            result = .failure(LocalAgentNetworkFetchError.missingResponse)
+        }
+        lock.unlock()
+        finish(result, cancelTask: false)
+    }
+
+    private func cancel() {
+        finish(.failure(CancellationError()), cancelTask: true)
+    }
+
+    private func finish(_ result: Result<LocalAgentBoundedDataLoadResult, Error>, cancelTask: Bool) {
+        let continuation: CheckedContinuation<LocalAgentBoundedDataLoadResult, Error>?
+        let session: URLSession?
+        let task: URLSessionDataTask?
+        let registrationID: UUID?
+
+        lock.lock()
+        guard !finished else {
+            lock.unlock()
+            return
+        }
+        finished = true
+        continuation = self.continuation
+        session = self.session
+        task = self.task
+        registrationID = self.registrationID
+        self.continuation = nil
+        self.session = nil
+        self.task = nil
+        self.registrationID = nil
+        lock.unlock()
+
+        if let registrationID {
+            cancellationToken?.unregister(registrationID)
+        }
+        if cancelTask {
+            task?.cancel()
+            session?.invalidateAndCancel()
+        } else {
+            session?.finishTasksAndInvalidate()
+        }
+        continuation?.resume(with: result)
     }
 }
 
@@ -2800,19 +3006,21 @@ struct LocalAgentToolExecutor {
 
         let startedAt = Date()
         do {
-            let (data, response) = try await LocalAgentCancellableDataLoader.data(
+            let result = try await LocalAgentCancellableDataLoader.boundedData(
                 for: request,
+                maxBytes: maxResponseBytes,
                 cancellationToken: cancellationToken
             )
+            let data = result.data
+            let response = result.response
             guard cancellationToken?.isCancelled != true else {
                 return .init(status: "error", content: "network.fetch cancelled.")
             }
             let durationMs = max(0, Int(Date().timeIntervalSince(startedAt) * 1_000))
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
             let contentType = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type") ?? "unknown"
-            let responsePrefix = data.prefix(maxResponseBytes)
-            let body = String(decoding: responsePrefix, as: UTF8.self)
-            let truncated = data.count > responsePrefix.count
+            let body = String(decoding: data, as: UTF8.self)
+            let truncated = result.truncated
             let status = (200..<300).contains(statusCode) ? "ok" : "error"
             var sections = [
                 "Network fetch \(status == "ok" ? "completed" : "failed") with HTTP \(statusCode) in \(durationMs)ms.",
@@ -3543,7 +3751,7 @@ struct LocalAgentToolExecutor {
         if first.hasPrefix(".") {
             return true
         }
-        if first == ".local-agent" || first == ".runtime-bin" || first == "turns" {
+        if !TaskGeneratedFiles.shouldDisplayTaskFolderFile(relativePath: normalized) {
             return true
         }
         return false

@@ -41,8 +41,23 @@ enum LocalMLXRuntime {
         )
     }
 
-    static func detectPath() -> String {
-        RuntimePathResolver.detectExecutablePath(named: executableName)
+    static var executableCandidates: [String] {
+        [
+            "\(RuntimePathResolver.astraToolsPath)/\(executableName)",
+            "\(RuntimePathResolver.userLocalBin)/\(executableName)",
+            "\(RuntimePathResolver.homebrewBin)/\(executableName)",
+            "\(RuntimePathResolver.usrLocalBin)/\(executableName)",
+            "\(RuntimePathResolver.npmGlobalBin)/\(executableName)",
+            "\(RuntimePathResolver.usrBin)/\(executableName)"
+        ]
+    }
+
+    static func detectPath(fileManager: FileManager = .default) -> String {
+        RuntimePathResolver.detectExecutablePath(
+            named: executableName,
+            candidates: executableCandidates,
+            fileManager: fileManager
+        )
     }
 
     static func downloadCommand(repository: String, localDirectory: String) -> String {

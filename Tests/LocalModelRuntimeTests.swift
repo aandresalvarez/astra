@@ -142,6 +142,16 @@ struct LocalModelRuntimeTests {
         #expect(aliasArguments["command"]?.stringValue == "/bin/ls -1")
     }
 
+    @Test("Local JSON integer conversion rejects unsafe finite numbers")
+    func localJSONIntegerConversionRejectsUnsafeFiniteNumbers() {
+        #expect(LocalModelJSONValue.number(42).intValue == 42)
+        #expect(LocalModelJSONValue.number(42.9).intValue == 42)
+        #expect(LocalModelJSONValue.string(" 2048 ").intValue == 2_048)
+        #expect(LocalModelJSONValue.number(Double.greatestFiniteMagnitude).intValue == nil)
+        #expect(LocalModelJSONValue.number(Double.infinity).intValue == nil)
+        #expect(LocalModelJSONValue.number(-Double.greatestFiniteMagnitude).intValue == nil)
+    }
+
     @Test("Local action parser accepts blocked and cancelled lifecycle actions")
     func localActionParserAcceptsBlockedAndCancelledLifecycleActions() throws {
         guard case .success(.blocked(let blockedID, let reason)) = LocalModelActionParser.parse("""
@@ -259,6 +269,33 @@ struct LocalModelRuntimeTests {
         }
         #expect(answer.contains("not a Git repository"))
         #expect(answer.contains(directory.standardizedFileURL.path))
+    }
+
+    @Test("Local Agent branch preflight requires explicit git context")
+    func localAgentBranchPreflightRequiresExplicitGitContext() {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        #expect(LocalAgentGitBranchPreflight.decision(
+            requestText: "Can you list the available bank branches nearby?",
+            workspacePath: directory.path,
+            shellExecutionEnabled: true
+        ) == nil)
+
+        #expect(LocalAgentGitBranchPreflight.decision(
+            requestText: "Can you list the available git branches?",
+            workspacePath: directory.path,
+            shellExecutionEnabled: true
+        ) != nil)
+    }
+
+    @Test("Local Agent task output policy treats ASTRA state files as internal")
+    func localAgentTaskOutputPolicyTreatsAstraStateFilesAsInternal() {
+        #expect(!TaskGeneratedFiles.shouldDisplayTaskFolderFile(relativePath: "current_state.json"))
+        #expect(!TaskGeneratedFiles.shouldDisplayTaskFolderFile(relativePath: "session_history.md"))
+        #expect(!TaskGeneratedFiles.shouldDisplayTaskFolderFile(relativePath: "turns/turn_001.md"))
+        #expect(!TaskGeneratedFiles.shouldDisplayTaskFolderFile(relativePath: ".runtime-bin/astra-local-model"))
+        #expect(TaskGeneratedFiles.shouldDisplayTaskFolderFile(relativePath: "beta-soak/report.md"))
     }
 
     @Test("Local Agent branch preflight requests git branch shell approval in git repo")
@@ -2096,10 +2133,23 @@ struct LocalModelRuntimeTests {
         )
         let brokerSwitch = sourceSlice(source, from: "func execute(\n        callID", to: "    private func readFile")
         let policySwitch = sourceSlice(source, from: "private static func policyToolName", to: "private static func policyInput")
+        let explicitApprovalSwitch = sourceSlice(
+            source,
+            from: "private static func localAgentExplicitApprovalRequest",
+            to: "private static func localAgentExplicitApprovalName"
+        )
+        let fallbackApprovalMapping = sourceSlice(
+            source,
+            from: "private static func fallbackPermissionRequest",
+            to: "private static func workspaceWriteDiffPreview"
+        )
         for tool in allToolNames {
             #expect(brokerSwitch.contains(#"case "\#(tool)":"#), "Broker executor is missing \(tool)")
             #expect(policySwitch.contains(#""\#(tool)""#), "Policy mapping is missing \(tool)")
         }
+        #expect(explicitApprovalSwitch.contains(#"case "task.write_output":"#))
+        #expect(explicitApprovalSwitch.contains(#"case "workspace.write_file":"#))
+        #expect(fallbackApprovalMapping.contains(#"tool == "task.write_output" || tool == "workspace.write_file""#))
     }
 
     @Test("Local MLX release gate audit reflects current shipping boundaries")
@@ -4387,6 +4437,10 @@ struct LocalModelRuntimeTests {
         #expect(nativeEntrypoint.contains("memoryBudgetBytes"))
         #expect(nativeEntrypoint.contains("waitForKeepWarmTTL"))
         #expect(nativeEntrypoint.contains("idle_keep_warm"))
+        let completedRange = try #require(nativeEntrypoint.range(of: #"try emit(.init(type: "completed""#))
+        let runOnceAfterCompletion = nativeEntrypoint[completedRange.upperBound...]
+        let unsupportedArchitectureRange = try #require(runOnceAfterCompletion.range(of: "#else"))
+        #expect(!runOnceAfterCompletion[..<unsupportedArchitectureRange.lowerBound].contains("waitForKeepWarmTTL"))
         #expect(nativeEntrypoint.contains("runSmoke"))
         #expect(nativeEntrypoint.contains("LocalModelSmokeReport"))
         #expect(nativeEntrypoint.contains("modelRootArgumentValue"))
