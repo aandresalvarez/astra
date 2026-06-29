@@ -1768,19 +1768,30 @@ struct ContentView: View {
     }
 
     private func openPlanCanvas(_ task: AgentTask) {
-        if selectedTask?.id == task.id {
-            guard cachedHasCanvasContent else { return }
+        let previousTaskID = selectedTask?.id
+        let currentCachedHasPlanContent = cachedHasCanvasContent
+        let targetHasPlanContent: Bool
+        if previousTaskID == task.id {
+            targetHasPlanContent = currentCachedHasPlanContent
         } else {
-            guard TaskPlanService.reconstruct(for: task).plan != nil else { return }
+            targetHasPlanContent = TaskPlanService.reconstruct(for: task).plan != nil
         }
-        if selectedTask?.id == task.id, activeWorkspaceCanvasItem == .plan {
+        guard targetHasPlanContent else { return }
+
+        if previousTaskID == task.id, activeWorkspaceCanvasItem == .plan {
             animatePanelChange {
                 setActiveWorkspaceCanvasItem(nil, remember: true)
             }
             return
         }
-        if selectedTask?.id != task.id {
+        if previousTaskID != task.id {
             setSelectedTask(task)
+            cachedHasCanvasContent = WorkspacePlanCanvasPresentationTransition.cachedHasPlanContentAfterTargetValidation(
+                previousTaskID: previousTaskID,
+                targetTaskID: task.id,
+                currentCachedHasPlanContent: currentCachedHasPlanContent,
+                targetHasPlanContent: targetHasPlanContent
+            )
         }
         isComposingTask = false
         presentCanvas(.plan)

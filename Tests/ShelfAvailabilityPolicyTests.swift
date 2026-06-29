@@ -3,6 +3,21 @@ import Testing
 
 @Suite("Shelf availability policy")
 struct ShelfAvailabilityPolicyTests {
+    @Test("Policy allows Plan only for an open task with plan content")
+    func policyAllowsPlanOnlyForOpenTaskWithPlanContent() {
+        let policy = ShelfAvailabilityPolicy()
+
+        #expect(!policy.isToolbarAvailable(.plan, in: context(hasPlanContent: true)))
+        #expect(!policy.canPresent(.plan, in: context(hasPlanContent: true)))
+        #expect(!policy.isToolbarAvailable(.plan, in: context(hasOpenTaskThread: true)))
+        #expect(!policy.canPresent(.plan, in: context(hasOpenTaskThread: true)))
+
+        let openTaskWithPlan = context(hasOpenTaskThread: true, hasPlanContent: true)
+        #expect(policy.isToolbarAvailable(.plan, in: openTaskWithPlan))
+        #expect(policy.canPresent(.plan, in: openTaskWithPlan))
+        #expect(policy.canRestoreRemembered(.plan, in: openTaskWithPlan))
+    }
+
     @Test("Policy allows Browser for an open task by default")
     func policyAllowsBrowserForOpenTaskByDefault() {
         let policy = ShelfAvailabilityPolicy()

@@ -14,3 +14,14 @@ enum WorkspaceCanvasItemSelectionTransition {
         return .browser
     }
 }
+
+enum WorkspacePlanCanvasPresentationTransition {
+    static func cachedHasPlanContentAfterTargetValidation(
+        previousTaskID: UUID?,
+        targetTaskID: UUID,
+        currentCachedHasPlanContent: Bool,
+        targetHasPlanContent: Bool
+    ) -> Bool {
+        previousTaskID == targetTaskID ? currentCachedHasPlanContent : targetHasPlanContent
+    }
+}
