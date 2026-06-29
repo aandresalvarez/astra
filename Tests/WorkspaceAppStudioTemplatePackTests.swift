@@ -133,6 +133,37 @@ struct WorkspaceAppStudioTemplatePackTests {
         #expect(choice.isSelected)
     }
 
+    @MainActor
+    @Test("capability IDs alone do not make Studio pack templates visible")
+    func capabilityIDsAloneDoNotMakeStudioPackTemplatesVisible() throws {
+        let capabilityIDThatMatchesAPackID = "github-workflow"
+        let workspace = Self.workspace()
+        workspace.enabledCapabilityIDs = [capabilityIDThatMatchesAPackID]
+        let snapshot = Self.snapshot(entries: [
+            Self.entry(
+                packID: capabilityIDThatMatchesAPackID,
+                packName: "GitHub Workflow Pack",
+                templates: [
+                    Self.template(
+                        id: "pr-review-board",
+                        name: "PR Review Board",
+                        capabilityPackageIDs: [capabilityIDThatMatchesAPackID]
+                    )
+                ]
+            )
+        ])
+
+        let defaultSource = WorkspaceAppStudioTemplatePackLoadingSource()
+        #expect(defaultSource.loadSignature(workspaceID: workspace.id) == workspace.id.uuidString)
+        #expect(defaultSource.templates(in: snapshot).isEmpty)
+
+        let explicitPackSource = WorkspaceAppStudioTemplatePackLoadingSource(
+            enabledPackIDs: [capabilityIDThatMatchesAPackID]
+        )
+        #expect(explicitPackSource.loadSignature(workspaceID: workspace.id).contains(capabilityIDThatMatchesAPackID))
+        #expect(try #require(explicitPackSource.templates(in: snapshot).first).packID == capabilityIDThatMatchesAPackID)
+    }
+
     @Test("template requirements are recorded as provenance and do not grant capability contracts")
     func templateRequirementsAreRecordedButNotGranted() async throws {
         let descriptor = try #require(WorkspaceAppTemplatePackCatalog(

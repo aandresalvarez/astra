@@ -79,6 +79,22 @@ struct WorkspaceAppTemplatePackCatalog: Equatable {
     }
 }
 
+struct WorkspaceAppStudioTemplatePackLoadingSource: Equatable, Sendable {
+    var enabledPackIDs: Set<String>
+
+    init(enabledPackIDs: Set<String> = []) {
+        self.enabledPackIDs = enabledPackIDs
+    }
+
+    func loadSignature(workspaceID: UUID) -> String {
+        ([workspaceID.uuidString] + enabledPackIDs.sorted()).joined(separator: "|")
+    }
+
+    func templates(in snapshot: AstraPackCatalogSnapshot) -> [WorkspaceAppTemplatePackDescriptor] {
+        WorkspaceAppTemplatePackCatalog(snapshot: snapshot, enabledPackIDs: enabledPackIDs).templates
+    }
+}
+
 struct WorkspaceAppStudioTemplateChoice: Identifiable, Equatable, Sendable {
     var id: String
     var title: String

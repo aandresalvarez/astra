@@ -9,9 +9,26 @@ import SwiftUI
 struct WorkspaceAppStudioChatView: View {
     @ObservedObject var session: WorkspaceAppStudioSession
     let workspace: Workspace
+    let enabledPackIDs: Set<String>
     let onPublish: (_ seedSampleData: Bool) -> Void
     let onDraftChanged: () -> Void
     let onCancel: () -> Void
+
+    init(
+        session: WorkspaceAppStudioSession,
+        workspace: Workspace,
+        enabledPackIDs: Set<String> = [],
+        onPublish: @escaping (_ seedSampleData: Bool) -> Void,
+        onDraftChanged: @escaping () -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self._session = ObservedObject(wrappedValue: session)
+        self.workspace = workspace
+        self.enabledPackIDs = enabledPackIDs
+        self.onPublish = onPublish
+        self.onDraftChanged = onDraftChanged
+        self.onCancel = onCancel
+    }
 
     // Generation provider + model: bound to the same global default the task composer uses,
     // so a provider choice carries across the app and routes generation here too.
@@ -325,20 +342,21 @@ struct WorkspaceAppStudioChatView: View {
     }
 
     private var templatePackLoadSignature: String {
-        ([workspace.id.uuidString] + workspace.enabledCapabilityIDs.sorted()).joined(separator: "|")
+        templatePackLoadingSource.loadSignature(workspaceID: workspace.id)
+    }
+
+    private var templatePackLoadingSource: WorkspaceAppStudioTemplatePackLoadingSource {
+        WorkspaceAppStudioTemplatePackLoadingSource(enabledPackIDs: enabledPackIDs)
     }
 
     private func refreshTemplatePacks() async {
-        let enabledPackIDs = Set(workspace.enabledCapabilityIDs)
-        guard !enabledPackIDs.isEmpty else {
+        let source = templatePackLoadingSource
+        guard !source.enabledPackIDs.isEmpty else {
             await MainActor.run { session.configureTemplatePacks([]) }
             return
         }
         let snapshot = AstraPackCatalog().load()
-        let templates = WorkspaceAppTemplatePackCatalog(
-            snapshot: snapshot,
-            enabledPackIDs: enabledPackIDs
-        ).templates
+        let templates = source.templates(in: snapshot)
         await MainActor.run {
             session.configureTemplatePacks(templates)
         }
