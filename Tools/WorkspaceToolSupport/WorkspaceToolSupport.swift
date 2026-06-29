@@ -321,36 +321,61 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
             WorkspaceControlPlaneCommand(
                 tool: "gh",
                 capability: "GitHub",
-                pattern: #"(^|[;&|]\s*)gh\s+(api|auth|issue|pr|repo|search)\b"#
+                subcommands: ["api", "auth", "issue", "pr", "repo", "search"]
             ),
             WorkspaceControlPlaneCommand(
                 tool: "jira",
-                capability: "Jira",
-                pattern: #"(^|[;&|]\s*)jira\s+"#
+                capability: "Jira"
             ),
             WorkspaceControlPlaneCommand(
                 tool: "gcloud",
-                capability: "Google Cloud",
-                pattern: #"(^|[;&|]\s*)gcloud\s+"#
+                capability: "Google Cloud"
             ),
             WorkspaceControlPlaneCommand(
                 tool: "bq",
-                capability: "BigQuery",
-                pattern: #"(^|[;&|]\s*)bq\s+"#
+                capability: "BigQuery"
             ),
             WorkspaceControlPlaneCommand(
                 tool: "ssh",
-                capability: "SSH",
-                pattern: #"(^|[;&|]\s*)ssh\s+"#
+                capability: "SSH"
             )
         ]
-        let range = NSRange(command.startIndex..<command.endIndex, in: command)
-        return commands.first { candidate in
-            guard let regex = try? NSRegularExpression(pattern: candidate.pattern) else {
-                return false
+
+        let words = shellCommandWords(in: command)
+        for (index, word) in words.enumerated() {
+            guard let candidate = commands.first(where: { $0.matches(word) }) else {
+                continue
             }
-            return regex.firstMatch(in: command, range: range) != nil
+            guard !candidate.subcommands.isEmpty else {
+                return candidate
+            }
+            if index + 1 < words.endIndex,
+               candidate.subcommands.contains(words[index + 1].lowercased()) {
+                return candidate
+            }
         }
+        return nil
+    }
+
+    private func shellCommandWords(in command: String) -> [String] {
+        var words: [String] = []
+        var current = ""
+        for character in command {
+            if isShellWordCharacter(character) {
+                current.append(character)
+            } else if !current.isEmpty {
+                words.append(current)
+                current.removeAll(keepingCapacity: true)
+            }
+        }
+        if !current.isEmpty {
+            words.append(current)
+        }
+        return words
+    }
+
+    private func isShellWordCharacter(_ character: Character) -> Bool {
+        character.isLetter || character.isNumber || character == "_" || character == "-" || character == "." || character == "/"
     }
 
     private func hostControlPlaneCommandMessage(_ command: WorkspaceControlPlaneCommand) -> String {
@@ -386,7 +411,17 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
 private struct WorkspaceControlPlaneCommand {
     var tool: String
     var capability: String
-    var pattern: String
+    var subcommands: Set<String> = []
+
+    func matches(_ word: String) -> Bool {
+        normalizedBasename(word) == tool
+    }
+
+    private func normalizedBasename(_ word: String) -> String {
+        let trimmed = word.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        return URL(fileURLWithPath: trimmed).lastPathComponent.lowercased()
+    }
 }
 
 private struct WorkspaceAmbiguousMount {

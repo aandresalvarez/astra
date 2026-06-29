@@ -241,6 +241,41 @@ struct WorkspaceToolSupportTests {
         #expect(ssh.errorMessage?.contains("host control-plane CLI 'ssh'") == true)
     }
 
+    @Test("Workspace command path mapper rejects host control-plane commands hidden by shell syntax")
+    func workspaceCommandPathMapperRejectsShellExpandedHostControlPlaneCommands() throws {
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: "docker",
+            image: "astra/workspace:latest",
+            containerName: "astra-test",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-1",
+            runID: "run-1",
+            mounts: [
+                WorkspaceDockerMount(hostPath: "/tmp/workspace", containerPath: "/workspace", access: "rw", role: "workspace"),
+                WorkspaceDockerMount(hostPath: "/tmp/gcloud", containerPath: "/root/.config/gcloud", access: "ro", role: "credential")
+            ],
+            containerEnvironment: [
+                "CLOUDSDK_CONFIG": "/root/.config/gcloud",
+                "GOOGLE_APPLICATION_CREDENTIALS": "/root/.config/gcloud/application_default_credentials.json"
+            ]
+        )
+
+        let commands = [
+            "echo $(gcloud auth list --format=json)",
+            "env TOKEN=$(gcloud auth application-default print-access-token)",
+            "sh -c 'gcloud projects list'",
+            "command gcloud projects list",
+            "$(ssh deid-jsn-workbench hostname)",
+            "python3 -c \"import subprocess; subprocess.run(['bq', 'ls'])\""
+        ]
+
+        for command in commands {
+            let resolution = configuration.containerCommand(for: command)
+            #expect(resolution.errorMessage?.contains("host control-plane CLI") == true)
+        }
+    }
+
     @Test("Workspace MCP server exposes and runs workspace_shell")
     func workspaceMCPServerExposesAndRunsWorkspaceShell() throws {
         let executor = RecordingWorkspaceCommandExecutor(result: WorkspaceCommandResult(
