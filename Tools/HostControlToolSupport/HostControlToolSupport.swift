@@ -643,8 +643,8 @@ public final class HostControlMCPServer {
             ),
             processSchema(
                 name: "bq",
-                description: "Run metadata-only BigQuery CLI commands on the host through ASTRA without provider Bash.",
-                argumentDescription: "Metadata-only bq arguments, for example [\"ls\", \"project:dataset\"]. Query, export, load, delete, and job commands are denied."
+                description: "Run BigQuery CLI help/version commands on the host through ASTRA without provider Bash.",
+                argumentDescription: "Help-only bq arguments, for example [\"--help\"], [\"help\"], or [\"version\"]. Resource listing, display, query, export, load, delete, copy, table mutation, and job commands are denied."
             ),
             sshSchema(),
             jiraSchema()
@@ -769,8 +769,9 @@ public final class HostControlMCPServer {
 }
 
 private enum BigQueryHostControlPolicy {
-    private static let allowedCommands: Set<String> = ["help", "ls", "show", "version"]
+    private static let allowedCommands: Set<String> = ["help", "version"]
     private static let helpOptions: Set<String> = ["--help", "-h"]
+    private static let versionOptions: Set<String> = ["--version"]
     private static let globalOptionsWithValues: Set<String> = [
         "--format",
         "--location",
@@ -782,7 +783,7 @@ private enum BigQueryHostControlPolicy {
     static func rejectionMessage(arguments: [String]) -> String? {
         let actionTokens = dropLeadingOptions(arguments)
         guard let command = actionTokens.first?.lowercased() else {
-            if hasHelpOption(arguments) {
+            if isBareHelpOrVersion(arguments) {
                 return nil
             }
             return blockedMessage(command: "<missing>")
@@ -811,17 +812,17 @@ private enum BigQueryHostControlPolicy {
         return Array(arguments.dropFirst(index))
     }
 
-    private static func hasHelpOption(_ arguments: [String]) -> Bool {
-        arguments.contains { token in
+    private static func isBareHelpOrVersion(_ arguments: [String]) -> Bool {
+        !arguments.isEmpty && arguments.allSatisfy { token in
             let optionName = token.split(separator: "=", maxSplits: 1).first.map(String.init) ?? token
-            return helpOptions.contains(optionName)
+            return helpOptions.contains(optionName) || versionOptions.contains(optionName)
         }
     }
 
     private static func blockedMessage(command: String) -> String {
         [
             "bq command is not allowed by ASTRA host-control policy: '\(command)'.",
-            "Allowed bq operations are metadata-only: help, ls, show, and version.",
+            "Allowed bq operations are help/version only: help and version commands, or bare --help, -h, and --version flags.",
             "Use an explicitly approved BigQuery capability for query, export, load, delete, copy, table mutation, or job operations."
         ].joined(separator: " ")
     }

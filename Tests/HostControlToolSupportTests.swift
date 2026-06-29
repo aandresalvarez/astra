@@ -63,11 +63,6 @@ struct HostControlToolSupportTests {
         ])
         #expect(try resultText(gcloudResult).contains("gcloud:compute instances list --format=json"))
 
-        let bqResult = try call(server, id: 4, tool: "bq", arguments: [
-            "arguments": ["ls", "project:dataset"]
-        ])
-        #expect(try resultText(bqResult).contains("bq:ls project:dataset"))
-
         let bqHelpResult = try call(server, id: 7, tool: "bq", arguments: [
             "arguments": ["--help"]
         ])
@@ -77,6 +72,16 @@ struct HostControlToolSupportTests {
             "arguments": ["-h"]
         ])
         #expect(try resultText(bqShortHelpResult).contains("bq:-h"))
+
+        let bqVersionResult = try call(server, id: 9, tool: "bq", arguments: [
+            "arguments": ["version"]
+        ])
+        #expect(try resultText(bqVersionResult).contains("bq:version"))
+
+        let bqLongVersionResult = try call(server, id: 10, tool: "bq", arguments: [
+            "arguments": ["--version"]
+        ])
+        #expect(try resultText(bqLongVersionResult).contains("bq:--version"))
 
         let sshResult = try call(server, id: 5, tool: "ssh", arguments: [
             "alias": "deid-jsn-workbench",
@@ -93,9 +98,10 @@ struct HostControlToolSupportTests {
         let hostLog = try String(contentsOf: log, encoding: .utf8)
         #expect(hostLog.contains("gh pr view 123 --comments"))
         #expect(hostLog.contains("gcloud compute instances list --format=json"))
-        #expect(hostLog.contains("bq ls project:dataset"))
         #expect(hostLog.contains("bq --help"))
         #expect(hostLog.contains("bq -h"))
+        #expect(hostLog.contains("bq version"))
+        #expect(hostLog.contains("bq --version"))
         #expect(hostLog.contains("ssh deid-jsn-workbench hostname && uptime"))
 
         let diagnosticLog = diagnostics.appendingPathComponent("host_control_tool_activity.jsonl", isDirectory: false)
@@ -105,8 +111,8 @@ struct HostControlToolSupportTests {
         #expect(!diagnosticsText.contains("super-secret-token"))
     }
 
-    @Test("Host control bq blocks query and mutation commands before running host executable")
-    func hostControlBQBlocksQueryAndMutationCommandsBeforeRunningHostExecutable() throws {
+    @Test("Host control bq blocks resource access and mutation commands before running host executable")
+    func hostControlBQBlocksResourceAccessAndMutationCommandsBeforeRunningHostExecutable() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("astra-host-control-bq-policy-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -117,6 +123,10 @@ struct HostControlToolSupportTests {
         let server = HostControlMCPServer(configuration: HostControlToolConfiguration(bigQueryExecutable: bq.path))
 
         let blockedArguments = [
+            ["ls", "project:dataset"],
+            ["--format=json", "ls", "--project_id", "project"],
+            ["show", "project:dataset.table"],
+            ["--format=prettyjson", "show", "--schema", "project:dataset.table"],
             ["query", "SELECT * FROM project.dataset.table"],
             ["--help", "query", "SELECT * FROM project.dataset.table"],
             ["query", "DELETE FROM project.dataset.table WHERE true"],
