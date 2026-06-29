@@ -78,6 +78,34 @@ struct WorkspaceAppPackageTests {
         #expect(report.package?.exportMode == .templatePlusSeedData)
     }
 
+    @Test("package validation rejects symlinked data exports outside the package")
+    func packageValidationRejectsSymlinkedDataExportsOutsidePackage() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("grocery-seed.astra-app", isDirectory: true)
+        let databaseURL = try Self.groceryDatabase(in: root)
+        _ = try WorkspaceAppPackageService().exportPackage(
+            manifest: Self.groceryManifest(),
+            to: packageURL,
+            packageID: "grocery-seed",
+            mode: .templatePlusSeedData,
+            appStorageDatabaseURL: databaseURL
+        )
+        let dataURL = packageURL.appendingPathComponent("storage/data/seed/items.jsonl")
+        let outsideURL = root.appendingPathComponent("outside-items.jsonl")
+        try FileManager.default.copyItem(at: dataURL, to: outsideURL)
+        try FileManager.default.removeItem(at: dataURL)
+        try FileManager.default.createSymbolicLink(atPath: dataURL.path, withDestinationPath: outsideURL.path)
+
+        let report = WorkspaceAppPackageService().validatePackage(at: packageURL)
+
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains {
+            $0.path == "/storage/data/seed/items.jsonl"
+                && $0.message.contains("inside the package")
+        })
+    }
+
     @Test("full app export writes records and surfaces a sensitive data warning")
     func fullAppExportWritesRecordsAndSurfacesSensitiveDataWarning() throws {
         let root = try Self.temporaryRoot()
