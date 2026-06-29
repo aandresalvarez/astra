@@ -82,6 +82,20 @@ private func gatewayAuthorizationControlPlane(
     )
 }
 
+private func argumentValues(after option: String, in arguments: [String]) -> [String] {
+    var values: [String] = []
+    var index = 0
+    while index < arguments.count {
+        if arguments[index] == option, index + 1 < arguments.count {
+            values.append(arguments[index + 1])
+            index += 2
+        } else {
+            index += 1
+        }
+    }
+    return values
+}
+
 @Suite("MCP Runtime Projection")
 @MainActor
 struct MCPRuntimeProjectionTests {
@@ -231,6 +245,28 @@ struct MCPRuntimeProjectionTests {
             servers: [resolved],
             availableEnvironment: [accessTokenEnv: "secret-token"]
         ) == ["mcp__google_drive__drive.search"])
+    }
+
+    @Test("Gateway projection includes policy classifications for Google Workspace tools")
+    func gatewayProjectionIncludesPolicyClassificationsForGoogleWorkspaceTools() throws {
+        let remote = PluginMCPServer(
+            id: "google_workspace_drive",
+            displayName: "Google Workspace Drive",
+            transport: .http,
+            url: URL(string: "https://drivemcp.googleapis.com/mcp/v1")!,
+            connectorBindings: ["google-workspace"],
+            allowedTools: ["search_files", "create_file", "copy_file"],
+            trustLevel: .restricted,
+            controlPlane: gatewayAuthorizationControlPlane()
+        )
+        let resolved = MCPRuntimeProjection.ResolvedServer(packageID: "google-workspace", server: remote)
+
+        let projected = try #require(RemoteMCPGatewayProjection.providerFacingResolvedServer(for: resolved)?.server)
+
+        #expect(projected.arguments.contains("--gateway-tool-policy-required"))
+        #expect(argumentValues(after: "--gateway-read-tool", in: projected.arguments) == ["search_files"])
+        #expect(argumentValues(after: "--gateway-write-tool", in: projected.arguments) == ["copy_file", "create_file"])
+        #expect(!projected.arguments.contains("--gateway-native-approved-tool"))
     }
 
     @Test("Codex config routes credentialed remote MCP through ASTRA gateway")

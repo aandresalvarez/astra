@@ -44,6 +44,48 @@ struct RemoteMCPGatewaySupportTests {
         #expect(!listJSON.contains("secret-access-token"))
     }
 
+    @Test("Gateway blocks write tools before bearer-token forwarding without native approval")
+    func gatewayBlocksWriteToolsWithoutNativeApproval() throws {
+        let remote = RecordingRemoteMCPClient()
+        let gateway = LocalMCPGateway(
+            server: googleDriveDescriptor(),
+            remoteClient: remote,
+            authTokenProvider: StaticGatewayTokenProvider(token: "secret-access-token"),
+            toolPolicyEnforcer: ConfiguredMCPGatewayToolPolicyEnforcer(rules: [
+                MCPGatewayToolPolicyRule(toolName: "create_file", access: .write)
+            ])
+        )
+
+        let call = try parseJSON(try #require(gateway.handleLine(#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"create_file","arguments":{"name":"budget.txt"}}}"#)))
+        let callResult = try #require(call["result"] as? [String: Any])
+        let content = try #require(callResult["content"] as? [[String: Any]])
+
+        #expect(callResult["isError"] as? Bool == true)
+        #expect((content.first?["text"] as? String)?.contains("Native approval required") == true)
+        #expect(remote.calledTools.isEmpty)
+        #expect(remote.authHeaders.isEmpty)
+    }
+
+    @Test("Gateway forwards read tools and explicitly approved write tools")
+    func gatewayForwardsReadAndApprovedWriteTools() throws {
+        let remote = RecordingRemoteMCPClient()
+        let gateway = LocalMCPGateway(
+            server: googleDriveDescriptor(),
+            remoteClient: remote,
+            authTokenProvider: StaticGatewayTokenProvider(token: "secret-access-token"),
+            toolPolicyEnforcer: ConfiguredMCPGatewayToolPolicyEnforcer(rules: [
+                MCPGatewayToolPolicyRule(toolName: "search_files", access: .read),
+                MCPGatewayToolPolicyRule(toolName: "create_file", access: .write, nativeApprovalGranted: true)
+            ])
+        )
+
+        _ = try parseJSON(try #require(gateway.handleLine(#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"search_files","arguments":{"query":"budget"}}}"#)))
+        _ = try parseJSON(try #require(gateway.handleLine(#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"create_file","arguments":{"query":"budget"}}}"#)))
+
+        #expect(remote.calledTools == ["search_files", "create_file"])
+        #expect(remote.authHeaders == ["Bearer secret-access-token", "Bearer secret-access-token"])
+    }
+
     @Test("Environment token provider reads the gateway process token")
     func environmentTokenProvider() throws {
         let provider = EnvironmentMCPGatewayAuthTokenProvider(
@@ -60,6 +102,16 @@ struct RemoteMCPGatewaySupportTests {
 
         #expect(token == "process-token")
     }
+}
+
+private func googleDriveDescriptor() -> RemoteMCPServerDescriptor {
+    RemoteMCPServerDescriptor(
+        id: "google_workspace_drive",
+        displayName: "Google Drive",
+        transport: .http,
+        endpoint: URL(string: "https://mcp.example.test/google")!,
+        connectorBindings: ["google-workspace"]
+    )
 }
 
 private final class RecordingRemoteMCPClient: RemoteMCPClient {

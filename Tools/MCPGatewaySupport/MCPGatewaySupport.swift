@@ -63,6 +63,98 @@ public struct RemoteMCPToolResult {
     }
 }
 
+public enum MCPGatewayToolAccess: String, Equatable {
+    case read
+    case write
+    case send
+    case delete
+    case admin
+
+    var requiresNativeApproval: Bool {
+        switch self {
+        case .read:
+            return false
+        case .write, .send, .delete, .admin:
+            return true
+        }
+    }
+}
+
+public struct MCPGatewayToolPolicyRule: Equatable {
+    public var toolName: String
+    public var access: MCPGatewayToolAccess
+    public var nativeApprovalGranted: Bool
+
+    public init(
+        toolName: String,
+        access: MCPGatewayToolAccess,
+        nativeApprovalGranted: Bool = false
+    ) {
+        self.toolName = toolName
+        self.access = access
+        self.nativeApprovalGranted = nativeApprovalGranted
+    }
+}
+
+public enum MCPGatewayToolPolicyDecision: Equatable {
+    case allowed
+    case denied(String)
+}
+
+public protocol MCPGatewayToolPolicyEnforcing {
+    func decision(
+        forTool toolName: String,
+        server: RemoteMCPServerDescriptor
+    ) -> MCPGatewayToolPolicyDecision
+}
+
+public struct AllowingMCPGatewayToolPolicyEnforcer: MCPGatewayToolPolicyEnforcing {
+    public init() {}
+
+    public func decision(
+        forTool toolName: String,
+        server: RemoteMCPServerDescriptor
+    ) -> MCPGatewayToolPolicyDecision {
+        .allowed
+    }
+}
+
+public struct ConfiguredMCPGatewayToolPolicyEnforcer: MCPGatewayToolPolicyEnforcing {
+    private let rulesByToolName: [String: MCPGatewayToolPolicyRule]
+    private let requiresExplicitPolicy: Bool
+
+    public init(
+        rules: [MCPGatewayToolPolicyRule],
+        requiresExplicitPolicy: Bool = true
+    ) {
+        self.rulesByToolName = Dictionary(
+            rules.map { (Self.normalized($0.toolName), $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        self.requiresExplicitPolicy = requiresExplicitPolicy
+    }
+
+    public func decision(
+        forTool toolName: String,
+        server: RemoteMCPServerDescriptor
+    ) -> MCPGatewayToolPolicyDecision {
+        guard let rule = rulesByToolName[Self.normalized(toolName)] else {
+            if requiresExplicitPolicy {
+                return .denied("Gateway policy has no classification for tool \(trimmed(toolName)).")
+            }
+            return .allowed
+        }
+        guard !rule.access.requiresNativeApproval || rule.nativeApprovalGranted else {
+            return .denied("Native approval required for \(rule.access.rawValue) tool \(trimmed(toolName)).")
+        }
+        return .allowed
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+}
+
 public struct EmptyMCPGatewayAuthTokenProvider: MCPGatewayAuthTokenProvider {
     public init() {}
 
@@ -92,15 +184,18 @@ public final class LocalMCPGateway {
     private let server: RemoteMCPServerDescriptor
     private let remoteClient: RemoteMCPClient
     private let authTokenProvider: MCPGatewayAuthTokenProvider
+    private let toolPolicyEnforcer: any MCPGatewayToolPolicyEnforcing
 
     public init(
         server: RemoteMCPServerDescriptor,
         remoteClient: RemoteMCPClient,
-        authTokenProvider: MCPGatewayAuthTokenProvider = EmptyMCPGatewayAuthTokenProvider()
+        authTokenProvider: MCPGatewayAuthTokenProvider = EmptyMCPGatewayAuthTokenProvider(),
+        toolPolicyEnforcer: any MCPGatewayToolPolicyEnforcing = AllowingMCPGatewayToolPolicyEnforcer()
     ) {
         self.server = server
         self.remoteClient = remoteClient
         self.authTokenProvider = authTokenProvider
+        self.toolPolicyEnforcer = toolPolicyEnforcer
     }
 
     public func handleLine(_ line: String) -> String? {
@@ -149,6 +244,18 @@ public final class LocalMCPGateway {
             return encodeError(id: id, code: -32602, message: "Unsupported tool")
         }
         let arguments = params["arguments"] as? [String: Any] ?? [:]
+        switch toolPolicyEnforcer.decision(forTool: toolName, server: server) {
+        case .allowed:
+            break
+        case .denied(let reason):
+            return encodeResult(id: id, result: [
+                "content": [[
+                    "type": "text",
+                    "text": "Remote MCP tool call blocked by ASTRA policy: \(reason)"
+                ]],
+                "isError": true
+            ])
+        }
         do {
             let result = try remoteClient.callTool(
                 toolName,
@@ -248,7 +355,8 @@ public enum AstraMCPGatewayToolMain {
         let gateway = LocalMCPGateway(
             server: descriptor,
             remoteClient: options.endpoint == nil ? UnconfiguredRemoteMCPClient() : RemoteMCPHTTPClient(),
-            authTokenProvider: EnvironmentMCPGatewayAuthTokenProvider(variableName: options.accessTokenEnvironmentKey)
+            authTokenProvider: EnvironmentMCPGatewayAuthTokenProvider(variableName: options.accessTokenEnvironmentKey),
+            toolPolicyEnforcer: options.toolPolicyEnforcer
         )
         while let line = readLine() {
             if let response = gateway.handleLine(line) {
@@ -263,6 +371,26 @@ private struct GatewayCommandOptions {
     var serverID: String = "remote"
     var endpoint: URL?
     var accessTokenEnvironmentKey: String = "ASTRA_MCP_GATEWAY_ACCESS_TOKEN"
+    var toolPolicyRequired = false
+    var toolAccessByName: [String: MCPGatewayToolAccess] = [:]
+    var nativeApprovedTools: Set<String> = []
+
+    var toolPolicyEnforcer: any MCPGatewayToolPolicyEnforcing {
+        let rules = toolAccessByName.map { toolName, access in
+            MCPGatewayToolPolicyRule(
+                toolName: toolName,
+                access: access,
+                nativeApprovalGranted: nativeApprovedTools.contains(Self.normalized(toolName))
+            )
+        }
+        guard toolPolicyRequired || !rules.isEmpty else {
+            return AllowingMCPGatewayToolPolicyEnforcer()
+        }
+        return ConfiguredMCPGatewayToolPolicyEnforcer(
+            rules: rules,
+            requiresExplicitPolicy: toolPolicyRequired
+        )
+    }
 
     init(arguments: [String]) {
         var index = 0
@@ -281,9 +409,38 @@ private struct GatewayCommandOptions {
             case "--access-token-env" where index + 1 < arguments.count:
                 accessTokenEnvironmentKey = arguments[index + 1]
                 index += 2
+            case "--gateway-tool-policy-required":
+                toolPolicyRequired = true
+                index += 1
+            case "--gateway-read-tool" where index + 1 < arguments.count:
+                toolAccessByName[arguments[index + 1]] = .read
+                index += 2
+            case "--gateway-write-tool" where index + 1 < arguments.count:
+                toolAccessByName[arguments[index + 1]] = .write
+                index += 2
+            case "--gateway-send-tool" where index + 1 < arguments.count:
+                toolAccessByName[arguments[index + 1]] = .send
+                index += 2
+            case "--gateway-delete-tool" where index + 1 < arguments.count:
+                toolAccessByName[arguments[index + 1]] = .delete
+                index += 2
+            case "--gateway-admin-tool" where index + 1 < arguments.count:
+                toolAccessByName[arguments[index + 1]] = .admin
+                index += 2
+            case "--gateway-native-approved-tool" where index + 1 < arguments.count:
+                nativeApprovedTools.insert(Self.normalized(arguments[index + 1]))
+                index += 2
             default:
                 index += 1
             }
         }
     }
+
+    private static func normalized(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+}
+
+private func trimmed(_ value: String) -> String {
+    value.trimmingCharacters(in: .whitespacesAndNewlines)
 }

@@ -69,7 +69,7 @@ enum RemoteMCPGatewayProjection {
                 "--server-id", server.id,
                 "--endpoint", endpoint,
                 "--access-token-env", accessTokenEnvironmentKey
-            ],
+            ] + gatewayPolicyArguments(for: server),
             environmentKeys: [accessTokenEnvironmentKey],
             connectorBindings: server.connectorBindings,
             allowedTools: server.allowedTools,
@@ -126,6 +126,81 @@ enum RemoteMCPGatewayProjection {
         return binding
     }
 
+    private static func gatewayPolicyArguments(for server: PluginMCPServer) -> [String] {
+        let accessByToolName = gatewayToolAccessByToolName(for: server)
+        guard !accessByToolName.isEmpty else { return [] }
+
+        let allowedToolNames = Set(server.allowedTools.map(normalized).filter { !$0.isEmpty })
+        let selectedRules = accessByToolName.filter { toolName, _ in
+            allowedToolNames.isEmpty || allowedToolNames.contains(normalized(toolName))
+        }
+        guard !selectedRules.isEmpty else { return ["--gateway-tool-policy-required"] }
+
+        var arguments = ["--gateway-tool-policy-required"]
+        for option in [
+            "--gateway-read-tool",
+            "--gateway-write-tool",
+            "--gateway-send-tool",
+            "--gateway-delete-tool",
+            "--gateway-admin-tool"
+        ] {
+            let toolNames = selectedRules
+                .filter { _, toolOption in toolOption == option }
+                .map(\.key)
+                .sorted()
+            for toolName in toolNames {
+                arguments += [option, toolName]
+            }
+        }
+        return arguments
+    }
+
+    private static func gatewayToolAccessByToolName(for server: PluginMCPServer) -> [String: String] {
+        let registryClassifications = server.remoteRegistry?.toolClassifications ?? []
+        if !registryClassifications.isEmpty {
+            return Dictionary(
+                registryClassifications.map { ($0.toolName, gatewayPolicyOption(for: $0.effect)) },
+                uniquingKeysWith: { first, _ in first }
+            )
+        }
+
+        guard let product = GoogleWorkspaceRemoteMCPRegistry.products.first(where: { $0.serverID == server.id }) else {
+            return [:]
+        }
+        return Dictionary(
+            product.toolFamilies.map { toolName, family in (toolName, gatewayPolicyOption(for: family)) },
+            uniquingKeysWith: { first, _ in first }
+        )
+    }
+
+    private static func gatewayPolicyOption(for effect: RemoteMCPToolEffect) -> String {
+        switch effect {
+        case .read:
+            return "--gateway-read-tool"
+        case .write:
+            return "--gateway-write-tool"
+        case .send:
+            return "--gateway-send-tool"
+        case .delete:
+            return "--gateway-delete-tool"
+        case .admin:
+            return "--gateway-admin-tool"
+        }
+    }
+
+    private static func gatewayPolicyOption(for family: GoogleWorkspaceRemoteMCPToolFamily) -> String {
+        switch family {
+        case .read, .permissionRead, .download, .availabilityRead:
+            return "--gateway-read-tool"
+        case .draft, .label, .write:
+            return "--gateway-write-tool"
+        case .response:
+            return "--gateway-send-tool"
+        case .delete:
+            return "--gateway-delete-tool"
+        }
+    }
+
     private static func environmentKeyComponent(_ value: String) -> String {
         let mapped = value.uppercased().unicodeScalars.map { scalar -> Character in
             if CharacterSet.alphanumerics.contains(scalar) {
@@ -136,6 +211,10 @@ enum RemoteMCPGatewayProjection {
         return String(mapped)
             .split(separator: "_", omittingEmptySubsequences: true)
             .joined(separator: "_")
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     private static func gatewayAccessTokenEnvironmentKeys(in arguments: [String]) -> [String] {
