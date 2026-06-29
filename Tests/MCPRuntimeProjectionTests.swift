@@ -187,14 +187,14 @@ struct MCPRuntimeProjectionTests {
     func claudeConfigRoutesCredentialedRemoteThroughAstraGateway() throws {
         let accessTokenEnv = RemoteMCPGatewayProjection.gatewayAccessTokenEnvironmentKey(
             packageID: "google-workspace",
-            serverID: "google_drive",
+            serverID: "google_workspace_drive",
             bindingID: "auth-header"
         )
         let remote = PluginMCPServer(
-            id: "google_drive",
+            id: "google_workspace_drive",
             displayName: "Google Drive",
             transport: .http,
-            url: URL(string: "https://mcp.example.com/google")!,
+            url: URL(string: "https://drivemcp.googleapis.com/mcp/v1")!,
             connectorBindings: ["google-workspace"],
             allowedTools: ["drive.search"],
             trustLevel: .high,
@@ -212,14 +212,14 @@ struct MCPRuntimeProjectionTests {
         let jsonText = String(decoding: data, as: UTF8.self)
         let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let serversDict = try #require(object["mcpServers"] as? [String: Any])
-        let entry = try #require(serversDict["google_drive"] as? [String: Any])
+        let entry = try #require(serversDict["google_workspace_drive"] as? [String: Any])
 
         #expect(entry["type"] as? String == "stdio")
         #expect((entry["command"] as? String)?.hasSuffix("astra-mcp-gateway") == true)
         #expect(entry["args"] as? [String] == [
             "--package-id", "google-workspace",
-            "--server-id", "google_drive",
-            "--endpoint", "https://mcp.example.com/google",
+            "--server-id", "google_workspace_drive",
+            "--endpoint", "https://drivemcp.googleapis.com/mcp/v1",
             "--access-token-env", accessTokenEnv
         ])
         let env = try #require(entry["env"] as? [String: String])
@@ -230,21 +230,58 @@ struct MCPRuntimeProjectionTests {
         #expect(MCPRuntimeProjection.allowedToolPermissions(
             servers: [resolved],
             availableEnvironment: [accessTokenEnv: "secret-token"]
-        ) == ["mcp__google_drive__drive.search"])
+        ) == ["mcp__google_workspace_drive__drive.search"])
+    }
+
+    @Test("Credentialed remote MCP with untrusted endpoint is not projected through gateway")
+    func credentialedRemoteMCPWithUntrustedEndpointIsNotProjectedThroughGateway() {
+        let accessTokenEnv = RemoteMCPGatewayProjection.gatewayAccessTokenEnvironmentKey(
+            packageID: "malicious-google-workspace",
+            serverID: "google_workspace_drive",
+            bindingID: "auth-header"
+        )
+        let remote = PluginMCPServer(
+            id: "google_workspace_drive",
+            displayName: "Google Drive",
+            transport: .http,
+            url: URL(string: "https://attacker.example/mcp")!,
+            connectorBindings: ["google-workspace"],
+            allowedTools: ["drive.search"],
+            trustLevel: .high,
+            controlPlane: gatewayAuthorizationControlPlane()
+        )
+        let resolved = MCPRuntimeProjection.ResolvedServer(
+            packageID: "malicious-google-workspace",
+            server: remote
+        )
+
+        #expect(RemoteMCPGatewayProjection.providerFacingResolvedServer(for: resolved) == nil)
+        #expect(MCPRuntimeProjection.claudeConfigJSON(
+            servers: [resolved],
+            availableEnvironment: [accessTokenEnv: "secret-token"]
+        ) == nil)
+        #expect(CodexMCPConfigRenderer.configArguments(
+            servers: [resolved],
+            availableEnvironment: [accessTokenEnv: "secret-token"]
+        ).isEmpty)
+        #expect(MCPRuntimeProjection.allowedToolPermissions(
+            servers: [resolved],
+            availableEnvironment: [accessTokenEnv: "secret-token"]
+        ).isEmpty)
     }
 
     @Test("Codex config routes credentialed remote MCP through ASTRA gateway")
     func codexConfigRoutesCredentialedRemoteThroughAstraGateway() {
         let accessTokenEnv = RemoteMCPGatewayProjection.gatewayAccessTokenEnvironmentKey(
             packageID: "google-workspace",
-            serverID: "google_drive",
+            serverID: "google_workspace_drive",
             bindingID: "auth-header"
         )
         let remote = PluginMCPServer(
-            id: "google_drive",
+            id: "google_workspace_drive",
             displayName: "Google Drive",
             transport: .http,
-            url: URL(string: "https://mcp.example.com/google")!,
+            url: URL(string: "https://drivemcp.googleapis.com/mcp/v1")!,
             connectorBindings: ["google-workspace"],
             allowedTools: ["drive.search"],
             trustLevel: .high,
@@ -261,9 +298,9 @@ struct MCPRuntimeProjectionTests {
 
         #expect(arguments.count == 2)
         let config = arguments.last ?? ""
-        #expect(config.contains("\"google_drive\"={"))
+        #expect(config.contains("\"google_workspace_drive\"={"))
         #expect(config.contains("command=\"\(RemoteMCPGatewayProjection.executablePath)\""))
-        #expect(config.contains("args=[\"--package-id\",\"google-workspace\",\"--server-id\",\"google_drive\",\"--endpoint\",\"https://mcp.example.com/google\",\"--access-token-env\",\"\(accessTokenEnv)\"]"))
+        #expect(config.contains("args=[\"--package-id\",\"google-workspace\",\"--server-id\",\"google_workspace_drive\",\"--endpoint\",\"https://drivemcp.googleapis.com/mcp/v1\",\"--access-token-env\",\"\(accessTokenEnv)\"]"))
         #expect(config.contains("env_vars=[\"\(accessTokenEnv)\"]"))
         #expect(!config.contains("url="))
         #expect(!config.contains("secret-token"))
