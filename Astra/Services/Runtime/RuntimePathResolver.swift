@@ -4,13 +4,20 @@ enum RuntimePathResolver {
     static let usrBin = "/usr/bin"
     static let homebrewBin = "/opt/homebrew/bin"
     static let usrLocalBin = "/usr/local/bin"
+    static let googleCloudSDKBin = "\(NSHomeDirectory())/google-cloud-sdk/bin"
     static let userLocalBin = "\(NSHomeDirectory())/.local/bin"
     static let astraToolsPath = "\(NSHomeDirectory())/.astra/tools"
 
     static let npmGlobalBin = "\(NSHomeDirectory())/.npm-global/bin"
 
     static var shellPathSuffix: String {
-        "\(usrLocalBin):\(homebrewBin):\(userLocalBin):\(npmGlobalBin)"
+        [
+            usrLocalBin,
+            homebrewBin,
+            googleCloudSDKBin,
+            userLocalBin,
+            npmGlobalBin
+        ].joined(separator: ":")
     }
 
     static var agentPathSuffix: String {
@@ -23,6 +30,13 @@ enum RuntimePathResolver {
         fallback: String = "",
         fileManager: FileManager = .default
     ) -> String {
+        let executableName = executableName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !executableName.isEmpty else { return fallback }
+
+        if executableName.contains("/") {
+            return fileManager.isExecutableFile(atPath: executableName) ? executableName : fallback
+        }
+
         let searchCandidates = candidates.isEmpty
             ? defaultExecutableCandidates(named: executableName)
             : candidates
@@ -128,15 +142,22 @@ enum RuntimePathResolver {
     }
 
     private static func defaultExecutableCandidates(named executableName: String) -> [String] {
-        [
-            "\(userLocalBin)/\(executableName)",
-            "\(homebrewBin)/\(executableName)",
-            "\(usrLocalBin)/\(executableName)",
-            "\(npmGlobalBin)/\(executableName)",
-            "\(astraToolsPath)/\(executableName)",
-            "\(usrBin)/\(executableName)"
-        ]
+        defaultExecutableSearchDirectories.map {
+            URL(fileURLWithPath: $0, isDirectory: true)
+                .appendingPathComponent(executableName)
+                .path
+        }
     }
+
+    static let defaultExecutableSearchDirectories: [String] = [
+        userLocalBin,
+        homebrewBin,
+        usrLocalBin,
+        googleCloudSDKBin,
+        npmGlobalBin,
+        astraToolsPath,
+        usrBin
+    ]
 }
 
 // MARK: - Centralized process environment
@@ -155,6 +176,7 @@ enum RuntimeProcessEnvironment {
     static let wellKnownDirectories: [String] = [
         RuntimePathResolver.homebrewBin,
         RuntimePathResolver.usrLocalBin,
+        RuntimePathResolver.googleCloudSDKBin,
         RuntimePathResolver.userLocalBin,
         RuntimePathResolver.npmGlobalBin,
         RuntimePathResolver.astraToolsPath,

@@ -239,14 +239,13 @@ enum CapabilityRuntimeIntegrityService {
 
             if checkExecutables,
                pluginTool.toolType != "mcp",
-               !pluginTool.command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-               RuntimePathResolver.detectExecutablePath(named: pluginTool.command).isEmpty {
+               let missingCommand = missingExecutableCommand(for: pluginTool, matches: matches) {
                 issues.append(issue(
                     package: package,
                     source: source,
                     kind: .executable,
-                    name: pluginTool.command,
-                    message: "local tool command \(pluginTool.command) is not installed or not executable"
+                    name: missingCommand,
+                    message: "local tool command \(missingCommand) is not installed or not executable"
                 ))
             }
         }
@@ -313,6 +312,27 @@ enum CapabilityRuntimeIntegrityService {
         }
 
         return issues
+    }
+
+    private static func missingExecutableCommand(
+        for pluginTool: PluginLocalTool,
+        matches: [LocalTool]
+    ) -> String? {
+        let configuredCommands = matches
+            .filter { $0.toolType != "mcp" }
+            .map { $0.command.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let packageCommand = pluginTool.command.trimmingCharacters(in: .whitespacesAndNewlines)
+        let commands = configuredCommands.isEmpty && !packageCommand.isEmpty
+            ? [packageCommand]
+            : configuredCommands
+        guard !commands.isEmpty else { return nil }
+
+        let missing = commands.filter {
+            RuntimePathResolver.detectExecutablePath(named: $0).isEmpty
+        }
+        guard missing.count == commands.count else { return nil }
+        return missing.joined(separator: ", ")
     }
 
     private struct ConnectorCredentialGap {

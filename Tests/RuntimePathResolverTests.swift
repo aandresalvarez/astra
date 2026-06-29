@@ -32,6 +32,32 @@ struct RuntimePathResolverTests {
         #expect(resolved == "/usr/bin/security")
     }
 
+    @Test("Generic resolver covers per-user Google Cloud SDK tools")
+    func genericResolverCoversUserGoogleCloudSDKTools() {
+        let bqPath = "\(NSHomeDirectory())/google-cloud-sdk/bin/bq"
+        let fileManager = RuntimePathResolverExecutableFileManager(executablePaths: [bqPath])
+
+        let resolved = RuntimePathResolver.detectExecutablePath(
+            named: "bq",
+            fileManager: fileManager
+        )
+
+        #expect(resolved == bqPath)
+    }
+
+    @Test("Generic resolver accepts explicit executable paths")
+    func genericResolverAcceptsExplicitExecutablePaths() {
+        let executablePath = "/tmp/astra-explicit-tool-\(UUID().uuidString)"
+        let fileManager = RuntimePathResolverExecutableFileManager(executablePaths: [executablePath])
+
+        let resolved = RuntimePathResolver.detectExecutablePath(
+            named: executablePath,
+            fileManager: fileManager
+        )
+
+        #expect(resolved == executablePath)
+    }
+
     @Test("Generic resolver returns fallback for unknown tools")
     func genericResolverReturnsFallbackForUnknownTools() {
         let missing = "astra-missing-\(UUID().uuidString)"
@@ -56,6 +82,7 @@ struct RuntimeProcessEnvironmentTests {
 
         #expect(path.contains("/opt/homebrew/bin"))
         #expect(path.contains("/usr/local/bin"))
+        #expect(path.contains("/google-cloud-sdk/bin"))
         #expect(path.contains(".local/bin"))
         #expect(path.contains(".npm-global/bin"))
         #expect(path.contains(".astra/tools"))
@@ -216,5 +243,17 @@ struct RuntimeProcessEnvironmentTests {
         } catch {
             // env/node not found — acceptable on systems without Node
         }
+    }
+}
+
+private final class RuntimePathResolverExecutableFileManager: FileManager {
+    private let executablePaths: Set<String>
+
+    init(executablePaths: Set<String>) {
+        self.executablePaths = executablePaths
+    }
+
+    override func isExecutableFile(atPath path: String) -> Bool {
+        executablePaths.contains(path)
     }
 }
