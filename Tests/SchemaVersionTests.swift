@@ -483,6 +483,41 @@ struct SchemaVersionTests {
     }
 
     @MainActor
+    @Test("SchemaV9 store migrates directly to empty pack profile workspace fields")
+    func v9StoreMigratesToEmptyPackProfileWorkspaceFields() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-schema-v9-pack-profile-migration-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let storeURL = root.appendingPathComponent("store.store")
+        var oldContainer: ModelContainer? = try ModelContainer(
+            for: Schema(versionedSchema: ASTRASchemaV9.self),
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+
+        let oldContext = try #require(oldContainer?.mainContext)
+        let oldWorkspace = ASTRASchemaV7.Workspace()
+        oldWorkspace.name = "Legacy V9 Profile"
+        oldWorkspace.primaryPath = "/tmp/legacy-v9-profile"
+        oldContext.insert(oldWorkspace)
+        try oldContext.save()
+        oldContainer = nil
+
+        let migratedContainer = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+        let context = migratedContainer.mainContext
+        let migratedWorkspace = try #require(try context.fetch(FetchDescriptor<Workspace>()).first)
+        #expect(migratedWorkspace.enabledPackIDs.isEmpty)
+        #expect(migratedWorkspace.shelfVisibilityOverrideIDs.isEmpty)
+        #expect(migratedWorkspace.shelfVisibilityOverrideValues.isEmpty)
+        #expect(migratedWorkspace.shelfVisibilityOverrides.isEmpty)
+    }
+
+    @MainActor
     @Test("SchemaV7 store (main's released 10-entity schema) migrates to V8 and gains the 5 Workspace App tables")
     func v7StoreMigratesToWorkspaceAppTables() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
