@@ -44,7 +44,7 @@ Status vocabulary:
 | 6 | PR-9 Trusted Native Shelf Contributions | Ready for review | `alvaro/trusted-native-shelf-packs` | none | `swift test --filter 'ShelfRegistryTests|TrustedShelfContributionTests|AstraPackManifestValidatorTests|ArchitectureFitnessTests'`, `./script/build_and_run.sh --verify`, and `./script/prepush.sh` |
 | 7 | PR-10 Example DevOps Pack | Ready for review | `alvaro/example-devops-pack` | none | `swift test --filter 'AstraPackCatalogTests|PluginCatalogTests|TaskCapabilityResolverTests|WorkspaceAppStudioTemplatePackTests|AstraPackPolicyTests'`, `./script/build_and_run.sh --verify`, and `./script/prepush.sh` |
 | 7 | PR-11 Authoring Docs And Validation Runbook | Ready for review | `alvaro/astra-pack-authoring-docs` | none | `git diff --check`, doc link validation by review, and merged-stack focused pack tests |
-| 8 | PR-12 Full Integration Pass | Ready for review | `alvaro/astra-packs-integration` | none | `swift test`, `git diff --check`, `./script/build_and_run.sh --verify` |
+| 8 | PR-12 Full Integration Pass | Ready for review | `alvaro/astra-packs-integration` | https://github.com/aandresalvarez/astra/pull/158 | `swift test`, `git diff --check`, `./script/build_and_run.sh --verify` |
 
 ## Root-Cause Diagnosis
 
@@ -1419,7 +1419,8 @@ Append one entry per PR update.
 
 - Status: Ready for review.
 - Branch: `alvaro/astra-packs-integration`.
-- Commit: pending final integration commit.
+- Draft PR: https://github.com/aandresalvarez/astra/pull/158.
+- Implementation commit: `264cb6b`.
 - Stack: Started from PR-11 final head `9e159bb`, then merged current `origin/main` at `634c686` into the integration branch with merge commit `80100c9`.
 - Change: Reconciled the full packs stack with current `main`, fixed the full-suite blocker by making runtime provider settings an explicit worker dependency for test scenarios, and tied browser-bridge runtime exposure to the resolved shelf policy so pack-hidden Browser shelves cannot leak prompt tools or environment variables.
 - Review: Spec reviewer found PR12 bookkeeping was premature before commit/push/PR and caught an overclaim around disabled shelf bridge runtime exposure. Code-quality reviewer found no critical or important issues in the worker/queue isolation change.
