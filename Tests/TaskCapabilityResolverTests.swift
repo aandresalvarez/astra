@@ -2142,6 +2142,53 @@ struct TaskCapabilityResolverTests {
         #expect(AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: task, contextText: contextText)["ASTRA_BROWSER_URL"] == nil)
     }
 
+    @Test("Pack-hidden browser shelf suppresses runtime browser bridge")
+    func packHiddenBrowserShelfSuppressesRuntimeBrowserBridge() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "DevOps Browser Hidden Workspace", primaryPath: "/tmp/devops-browser-hidden")
+        workspace.enabledPackIDs = ["astra.pack.devops"]
+        context.insert(workspace)
+
+        let task = AgentTask(
+            title: "Inspect current browser page",
+            goal: "Use the ASTRA browser to inspect the current page.",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let policy = AstraPackWorkspaceProfileProvider.shelfAvailabilityPolicy(for: workspace)
+        let shelfContext = ShelfAvailabilityPolicy.Context(
+            hasOpenTaskThread: true,
+            hasWorkspaceContext: true,
+            hasPlanContent: false,
+            hasFilesShelfContent: false,
+            hasQueryShelfContent: false,
+            isComposingWorkspaceApp: false,
+            activeShelfID: nil
+        )
+        #expect(!policy.canPresent(.browser, in: shelfContext))
+
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "https://example.com/dashboard",
+            currentTitle: "Dashboard",
+            taskID: task.id,
+            isPresented: true,
+            isEnabled: true
+        )
+        defer { ShelfBrowserBridgeRegistry.shared.reset() }
+
+        let contextText = "Use the ASTRA browser to inspect the current page."
+
+        #expect(!TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText))
+        let scope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
+        #expect(!scope.localTools.contains { $0.command == "astra-browser" })
+        #expect(AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: task, contextText: contextText)["ASTRA_BROWSER_URL"] == nil)
+    }
+
     @Test("Browser adapters require runnable catalog policy")
     func browserAdaptersRequireRunnableCatalogPolicy() throws {
         let workspace = Workspace(name: "Draft Browser Workspace", primaryPath: "/tmp/draft-browser-workspace")

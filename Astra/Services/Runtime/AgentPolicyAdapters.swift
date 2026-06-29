@@ -1216,7 +1216,7 @@ enum AgentPolicyManifestService {
             let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)
             return command.isEmpty ? nil : command
         }
-        if !ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id).isEmpty {
+        if TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) {
             commands.append("astra-browser")
         }
         return Array(Set(commands)).sorted()

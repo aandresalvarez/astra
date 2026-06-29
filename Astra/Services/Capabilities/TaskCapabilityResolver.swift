@@ -562,6 +562,7 @@ struct TaskCapabilityResolver {
     }
 
     static func shouldExposeBrowserBridge(for task: AgentTask, contextText: String = "") -> Bool {
+        guard canPresentBrowserShelf(for: task) else { return false }
         let state = ShelfBrowserBridgeRegistry.shared.promptState(for: task.id)
         guard state.isExposed else { return false }
         if state.isPresented || state.hasCurrentURL {
@@ -569,6 +570,10 @@ struct TaskCapabilityResolver {
         }
         let text = searchableTaskText(task: task, contextText: contextText)
         return explicitBrowserControlTerms.contains { text.contains($0) }
+    }
+
+    private static func canPresentBrowserShelf(for task: AgentTask) -> Bool {
+        WorkspaceShelfRuntimePolicy.canPresentBrowserShelf(for: task.workspace)
     }
 
     private static func browserBridgeTool() -> LocalTool {

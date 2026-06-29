@@ -42,8 +42,36 @@ extension AgentRuntimeWorker {
             let enforcement: ExecutionSandboxEnforcement = permissionPolicy == .autonomous ? .strict : .bestEffort
             return ExecutionSandboxSettings(enforcement: enforcement)
         }
-        let worker = AgentRuntimeWorker(processRunner: runner)
+        let worker = AgentRuntimeWorker(
+            processRunner: runner,
+            providerSettingsSnapshotProvider: { .headlessScenario }
+        )
         worker.runtimeReadinessService = RuntimeReadinessService(runner: InstantSuccessBinaryRunner())
         return worker
+    }
+}
+
+extension TaskQueue {
+    @MainActor
+    static func scenarioQueue(poolSize: Int = 3) -> TaskQueue {
+        TaskQueue(poolSize: poolSize) {
+            AgentRuntimeWorker.scenarioWorker()
+        }
+    }
+}
+
+private extension ProviderSettingsSnapshot {
+    static var headlessScenario: ProviderSettingsSnapshot {
+        ProviderSettingsSnapshot(
+            providerSettings: AgentRuntimeProviderSettings(),
+            providerSettingsRevision: 0,
+            providerSettingsSignature: "headless-scenario",
+            claudeProvider: .anthropic,
+            vertexProjectID: "",
+            vertexRegion: "",
+            vertexOpusModel: "",
+            vertexSonnetModel: "",
+            vertexHaikuModel: ""
+        )
     }
 }

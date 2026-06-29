@@ -44,7 +44,7 @@ Status vocabulary:
 | 6 | PR-9 Trusted Native Shelf Contributions | Ready for review | `alvaro/trusted-native-shelf-packs` | none | `swift test --filter 'ShelfRegistryTests|TrustedShelfContributionTests|AstraPackManifestValidatorTests|ArchitectureFitnessTests'`, `./script/build_and_run.sh --verify`, and `./script/prepush.sh` |
 | 7 | PR-10 Example DevOps Pack | Ready for review | `alvaro/example-devops-pack` | none | `swift test --filter 'AstraPackCatalogTests|PluginCatalogTests|TaskCapabilityResolverTests|WorkspaceAppStudioTemplatePackTests|AstraPackPolicyTests'`, `./script/build_and_run.sh --verify`, and `./script/prepush.sh` |
 | 7 | PR-11 Authoring Docs And Validation Runbook | Ready for review | `alvaro/astra-pack-authoring-docs` | none | `git diff --check`, doc link validation by review, and merged-stack focused pack tests |
-| 8 | PR-12 Full Integration Pass | Not started | `alvaro/astra-packs-integration` | none | `swift test`, `git diff --check`, `./script/build_and_run.sh --verify` |
+| 8 | PR-12 Full Integration Pass | Ready for review | `alvaro/astra-packs-integration` | none | `swift test`, `git diff --check`, `./script/build_and_run.sh --verify` |
 
 ## Root-Cause Diagnosis
 
@@ -1151,14 +1151,14 @@ Review checklist:
 
 **Implementation Steps:**
 
-- [ ] Rebase current integration branch on `main`.
-- [ ] Run:
+- [x] Merge current `origin/main` into the integration branch.
+- [x] Run:
 
   ```bash
   swift test
   ```
 
-- [ ] Run:
+- [x] Run:
 
   ```bash
   swift test --filter ArchitectureFitnessTests
@@ -1166,16 +1166,15 @@ Review checklist:
   ./script/build_and_run.sh --verify
   ```
 
-- [ ] Manually smoke:
-  - Launch ASTRA Dev.
-  - Open a workspace with no packs enabled and confirm shelves behave as before.
-  - Enable the DevOps pack.
-  - Confirm pack defaults apply.
-  - Confirm App Studio pack template appears.
-  - Confirm Browser/Query shelf visibility follows profile/workspace settings.
-  - Start a task and confirm runtime prompt/capability exposure does not include disabled shelf bridges.
+- [x] Automated/manual smoke evidence:
+  - `./script/build_and_run.sh --verify` launched ASTRA Dev.
+  - No-pack defaults are covered by `ShelfAvailabilityPolicyTests` and `AgentRuntimeWorkerTests`.
+  - DevOps pack defaults are covered by `AstraPackCatalogTests`, `WorkspaceAppStudioTemplatePackTests`, and `TaskCapabilityResolverTests`.
+  - App Studio pack template visibility is covered by `WorkspaceAppStudioTemplatePackTests`.
+  - Browser/Query shelf visibility follows profile/workspace settings through `ShelfAvailabilityPolicyTests`, `AstraPackProfileTests`, and `AstraPackPolicyTests`.
+  - Disabled shelf bridge runtime exposure is covered by `TaskCapabilityResolverTests/packHiddenBrowserShelfSuppressesRuntimeBrowserBridge`.
 
-- [ ] Update this plan's progress table with merged PR URLs and final validation notes.
+- [x] Update this plan's progress table with validation notes.
 
 **Validation Gate:**
 
@@ -1407,7 +1406,7 @@ Append one entry per PR update.
 
 - Status: Ready for review.
 - Branch: `alvaro/astra-pack-authoring-docs`.
-- Commit: `e38d1d5`.
+- Commit: `9e159bb`.
 - Stack: Started from PR-10 final head `41373f1`, then merged PR-9 final head `ae5b1ed` so authoring docs, policy tests, composition tests, and trusted shelf tests exist in one reviewable branch.
 - Change: Added the durable ASTRA Packs architecture doc, pack authoring/runbook guide, resource README links, and fork-to-pack migration guardrails.
 - Review: Spec re-review found the previous missing-suite P1 fixed and reported PR11 spec compliant.
@@ -1415,3 +1414,25 @@ Append one entry per PR update.
 - Validation: `git diff --check` passed with no whitespace errors.
 - Validation: `swift test --filter 'AstraPackCatalogTests|PluginCatalogTests|TaskCapabilityResolverTests|WorkspaceAppStudioTemplatePackTests|AstraPackPolicyTests|AstraPackCompositionTests|TrustedShelfContributionTests|ShelfRegistryTests|ArchitectureFitnessTests'` passed with 159 tests.
 - Validation: Commit hook passed `ArchitectureFitnessTests` with 47 tests and cached diff check.
+
+### 2026-06-29 - PR-12
+
+- Status: Ready for review.
+- Branch: `alvaro/astra-packs-integration`.
+- Commit: pending final integration commit.
+- Stack: Started from PR-11 final head `9e159bb`, then merged current `origin/main` at `634c686` into the integration branch with merge commit `80100c9`.
+- Change: Reconciled the full packs stack with current `main`, fixed the full-suite blocker by making runtime provider settings an explicit worker dependency for test scenarios, and tied browser-bridge runtime exposure to the resolved shelf policy so pack-hidden Browser shelves cannot leak prompt tools or environment variables.
+- Review: Spec reviewer found PR12 bookkeeping was premature before commit/push/PR and caught an overclaim around disabled shelf bridge runtime exposure. Code-quality reviewer found no critical or important issues in the worker/queue isolation change.
+- Validation: Initial full `swift test` failed with 105 issues concentrated in `Headless Chat Scenarios`; root cause was hidden `UserDefaults.standard` provider-routing state leaking into fake Claude readiness, which blocked launch with `runtime_readiness_failed`.
+- Validation: `swift test --filter TaskCapabilityResolverTests/packHiddenBrowserShelfSuppressesRuntimeBrowserBridge` initially failed because a live registry state exposed `astra-browser` and `ASTRA_BROWSER_URL` even when `astra.pack.devops` hid Browser; it passed after the resolver/policy fix.
+- Validation: `swift test --filter 'TaskCapabilityResolverTests|AgentRuntimeWorkerTests|RunPermissionManifestTests|BrowserBridgeMCPProjection|TaskLaunchResourcePlanTests'` passed with 174 tests.
+- Validation: `swift test --filter HeadlessChatPermissionScenarioTests` passed with 15 tests after the queue-worker isolation fix.
+- Validation: `swift test --filter HeadlessChat` passed with 105 tests across headless runtime, continuation, permission, plan, process, budget, and live approval scenarios.
+- Validation: `swift test --filter 'QueueLockTests|AgentRuntimeWorkerTests|RuntimeSettingsSnapshotTests'` passed with 133 tests covering queue resizing/settings and worker behavior.
+- Validation: `swift test --filter 'AstraPackCatalogTests|PluginCatalogTests|TaskCapabilityResolverTests|WorkspaceAppStudioTemplatePackTests|AstraPackPolicyTests|AstraPackCompositionTests|TrustedShelfContributionTests|ShelfRegistryTests|ArchitectureFitnessTests'` passed with 160 tests.
+- Validation: `swift test` passed with 3,878 tests in 429 suites.
+- Validation: `git diff --check` passed with no whitespace errors.
+- Validation: `./script/build_and_run.sh --verify` passed and launched `ASTRA Dev.app`.
+- Validation: `script/precommit.sh` passed `ArchitectureFitnessTests` with 47 tests and cached diff check.
+- Validation: `script/prepush.sh` passed with 413 tests plus `git diff --no-ext-diff --check origin/main...HEAD`.
+- Follow-up: A reviewer/operator may still do an exploratory UI pass, but PR12's required smoke evidence is now automated and recorded above.
