@@ -324,6 +324,7 @@ struct TaskMainView: View {
     var onManageSkills: (() -> Void)?
     var onForkTask: ((AgentTask) -> Void)?
     var onOpenGeneratedFile: ((String) -> Void)?
+    var onStartMCPInstallReview: ((MCPInstallChatRequest) -> Void)?
 
     private var availableSkills: [Skill] {
         guard let workspace = task.workspace else { return [] }
@@ -4037,6 +4038,8 @@ struct TaskMainView: View {
             return ("text.badge.checkmark", Stanford.lagunita, "Add Memory", "Save a fact to this workspace's memory")
         case .routine:
             return ("arrow.triangle.2.circlepath", Stanford.poppy, "Create Routine", "Automate this task on a recurring cadence")
+        case .mcp:
+            return ("server.rack", Stanford.lagunita, "Install MCP", "Review an MCP package, command, URL, or server JSON")
         case .recap:
             return ("doc.text", Stanford.paloAltoGreen, "Recap Task", "Summarize progress so you can pause and resume later")
         }
@@ -4912,42 +4915,68 @@ struct TaskMainView: View {
                             Button {
                                 selectSlashOption(opt)
                             } label: {
-                                HStack(spacing: 10) {
+                                HStack(spacing: 9) {
                                     Image(systemName: meta.icon)
-                                        .font(Stanford.body(16))
+                                        .font(Stanford.ui(SlashCommandMenuPresentation.iconSize, weight: .semibold))
                                         .foregroundStyle(meta.color)
-                                        .frame(width: 28)
+                                        .frame(width: SlashCommandMenuPresentation.iconFrame)
                                     VStack(alignment: .leading, spacing: 2) {
                                         HStack(spacing: 6) {
                                             Text(opt.command.trimmingCharacters(in: .whitespaces))
-                                                .font(Stanford.body(14)).fontWeight(.semibold)
+                                                .font(Stanford.ui(SlashCommandMenuPresentation.commandFontSize, weight: .semibold, design: .monospaced))
                                             Text(meta.title)
-                                                .font(Stanford.caption(13)).foregroundStyle(Stanford.coolGrey)
+                                                .font(Stanford.caption(SlashCommandMenuPresentation.titleFontSize))
+                                                .foregroundStyle(Stanford.coolGrey)
+                                                .lineLimit(1)
                                         }
                                         Text(meta.subtitle)
-                                            .font(Stanford.caption(12))
+                                            .font(Stanford.caption(SlashCommandMenuPresentation.descriptionFontSize))
                                             .foregroundStyle(Stanford.coolGrey)
+                                            .lineLimit(SlashCommandMenuPresentation.descriptionLineLimit)
+                                            .truncationMode(.tail)
+                                            .help(meta.subtitle)
                                     }
                                     Spacer()
+                                    if isSelected {
+                                        Image(systemName: "return")
+                                            .font(Stanford.ui(SlashCommandMenuPresentation.returnIconSize))
+                                            .foregroundStyle(.tertiary)
+                                    }
                                 }
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 8)
-                                .background(isSelected ? Color.primary.opacity(0.075) : .clear)
-                                .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
+                                .padding(.horizontal, SlashCommandMenuPresentation.horizontalPadding)
+                                .frame(height: SlashCommandMenuPresentation.rowHeight)
+                                .background {
+                                    if isSelected {
+                                        RoundedRectangle(cornerRadius: SlashCommandMenuPresentation.rowCornerRadius, style: .continuous)
+                                            .fill(Stanford.lagunita.opacity(SlashCommandMenuPresentation.selectedBackgroundOpacity))
+                                    }
+                                }
+                                .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+
+                            if SlashCommandMenuPresentation.usesIconColumnDividers && index < opts.count - 1 {
+                                Divider()
+                                    .opacity(SlashCommandMenuPresentation.dividerOpacity)
+                                    .padding(.leading, SlashCommandMenuPresentation.dividerLeadingPadding)
+                                    .padding(.trailing, SlashCommandMenuPresentation.dividerTrailingPadding)
+                            }
                         }
                     }
-                    .padding(.vertical, 5)
-                    .frame(maxWidth: 420)
+                    .padding(.vertical, SlashCommandMenuPresentation.menuVerticalPadding)
+                    .frame(maxWidth: SlashCommandMenuPresentation.maxWidth)
                     .background(.regularMaterial)
-                    .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusLarge, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: SlashCommandMenuPresentation.menuCornerRadius, style: .continuous))
                     .overlay(
-                        RoundedRectangle(cornerRadius: Stanford.radiusLarge, style: .continuous)
-                            .stroke(Color.primary.opacity(0.11), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: SlashCommandMenuPresentation.menuCornerRadius, style: .continuous)
+                            .stroke(Color.primary.opacity(SlashCommandMenuPresentation.borderOpacity), lineWidth: 1)
                     )
-                    .shadow(color: .black.opacity(0.14), radius: 14, y: -3)
-                    .offset(y: -CGFloat(visibleSlashOptions.count) * 48 - 16)
+                    .shadow(
+                        color: .black.opacity(SlashCommandMenuPresentation.shadowOpacity),
+                        radius: SlashCommandMenuPresentation.shadowRadius,
+                        y: SlashCommandMenuPresentation.shadowYOffset
+                    )
+                    .offset(y: -SlashCommandMenuPresentation.menuHeight(rowCount: visibleSlashOptions.count) - 8)
                     .padding(.leading, 4)
                 }
             }
@@ -5384,7 +5413,8 @@ struct TaskMainView: View {
     private func sendMessage() {
         let sendAction = TaskComposerCoordinator.sendAction(
             messageText: messageText,
-            attachedFiles: attachedFiles
+            attachedFiles: attachedFiles,
+            hasWorkspace: task.workspace != nil
         )
         guard sendAction != .none else { return }
 
@@ -5413,9 +5443,37 @@ struct TaskMainView: View {
                 showScheduleEditor = true
             }
             return
+        case .mcpInstall(let request):
+            recordMCPInstallCommand(messageText, assistantMessage: "I found an MCP install target. Review it before ASTRA saves or enables anything.")
+            onStartMCPInstallReview?(request)
+            return
+        case .mcpInstallFailure(let message):
+            recordMCPInstallCommand(messageText, assistantMessage: message)
+            return
         case .message(let msg):
             sendConversationMessage(msg)
         }
+    }
+
+    private func recordMCPInstallCommand(_ input: String, assistantMessage: String) {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        messageText = ""
+        if !trimmed.isEmpty {
+            modelContext.insert(TaskEvent(
+                task: task,
+                eventType: TaskEventTypes.Conversation.userMessage,
+                payload: trimmed
+            ))
+        }
+        modelContext.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.System.info,
+            payload: assistantMessage
+        ))
+        task.updatedAt = Date()
+        try? modelContext.save()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+        threadViewModel.refreshSnapshot(for: task)
     }
 
     private func sendConversationMessage(_ msg: String) {
