@@ -98,14 +98,25 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV9.versionIdentifier == Schema.Version(9, 0, 0))
     }
 
-    @Test("Migration plan lists SchemaV1 through SchemaV9")
-    func migrationPlanHasVersions() {
-        #expect(ASTRAMigrationPlan.schemas.count == 9)
+    @Test("SchemaV10 declares 16 model types and keeps pack profile fields on Workspace")
+    func v10ModelCountAndPackProfileFields() {
+        #expect(ASTRASchemaV10.models.count == 16)
+        #expect(ASTRASchemaV10.models.contains { $0 == GoogleOAuthAccountProfile.self })
     }
 
-    @Test("Migration plan has V1 to V9 lightweight stages")
+    @Test("SchemaV10 version identifier is 10.0.0")
+    func v10VersionIdentifier() {
+        #expect(ASTRASchemaV10.versionIdentifier == Schema.Version(10, 0, 0))
+    }
+
+    @Test("Migration plan lists SchemaV1 through SchemaV10")
+    func migrationPlanHasVersions() {
+        #expect(ASTRAMigrationPlan.schemas.count == 10)
+    }
+
+    @Test("Migration plan has V1 to V10 lightweight stages")
     func migrationPlanHasStage() {
-        #expect(ASTRAMigrationPlan.stages.count == 8)
+        #expect(ASTRAMigrationPlan.stages.count == 9)
     }
 
     @Test("ModelContainer can be created with versioned schema")
@@ -437,6 +448,41 @@ struct SchemaVersionTests {
     }
 
     @MainActor
+    @Test("Previous schema store migrates to empty pack profile workspace fields")
+    func previousSchemaStoreMigratesToEmptyPackProfileWorkspaceFields() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-schema-pack-profile-migration-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let storeURL = root.appendingPathComponent("store.store")
+        var oldContainer: ModelContainer? = try ModelContainer(
+            for: Schema(versionedSchema: ASTRASchemaV5.self),
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+
+        let oldContext = try #require(oldContainer?.mainContext)
+        let oldWorkspace = ASTRASchemaV5.Workspace()
+        oldWorkspace.name = "Legacy Profile"
+        oldWorkspace.primaryPath = "/tmp/legacy-profile"
+        oldContext.insert(oldWorkspace)
+        try oldContext.save()
+        oldContainer = nil
+
+        let migratedContainer = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+        let context = migratedContainer.mainContext
+        let migratedWorkspace = try #require(try context.fetch(FetchDescriptor<Workspace>()).first)
+        #expect(migratedWorkspace.enabledPackIDs.isEmpty)
+        #expect(migratedWorkspace.shelfVisibilityOverrideIDs.isEmpty)
+        #expect(migratedWorkspace.shelfVisibilityOverrideValues.isEmpty)
+        #expect(migratedWorkspace.shelfVisibilityOverrides.isEmpty)
+    }
+
+    @MainActor
     @Test("SchemaV7 store (main's released 10-entity schema) migrates to V8 and gains the 5 Workspace App tables")
     func v7StoreMigratesToWorkspaceAppTables() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -444,27 +490,33 @@ struct SchemaVersionTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        // Write a store at main's V7 (10 core entities, NO Workspace App tables). V7 references the
-        // live top-level @Model classes, so we insert live Workspace/AgentTask/TaskRun here.
+        // Write a store at main's V7 (10 core entities, NO Workspace App tables).
         let storeURL = root.appendingPathComponent("store.store")
         var oldContainer: ModelContainer? = try ModelContainer(
             for: Schema(versionedSchema: ASTRASchemaV7.self),
             configurations: [ModelConfiguration(url: storeURL)]
         )
         let oldContext = try #require(oldContainer?.mainContext)
-        let oldWorkspace = Workspace(name: "Legacy V7", primaryPath: "/tmp/legacy-v7")
+        let oldWorkspace = ASTRASchemaV7.Workspace()
+        oldWorkspace.name = "Legacy V7"
+        oldWorkspace.primaryPath = "/tmp/legacy-v7"
         oldContext.insert(oldWorkspace)
-        let oldTask = AgentTask(title: "Legacy V7 Task", goal: "Do work", workspace: oldWorkspace)
+        let oldTask = ASTRASchemaV7.AgentTask()
+        oldTask.title = "Legacy V7 Task"
+        oldTask.goal = "Do work"
+        oldTask.workspace = oldWorkspace
         oldContext.insert(oldTask)
-        oldContext.insert(TaskRun(task: oldTask))
+        let oldRun = ASTRASchemaV7.TaskRun()
+        oldRun.task = oldTask
+        oldContext.insert(oldRun)
         try oldContext.save()
         // Capture the id BEFORE tearing down the old container — the model instance is faulted/destroyed
         // once its container is released, so reading `oldWorkspace.id` afterward would crash.
         let oldWorkspaceID = oldWorkspace.id
         oldContainer = nil
 
-        // Reopen at current (V8) through the migration plan: the V7 -> V8 lightweight stage must
-        // create the 5 additive Workspace App tables while preserving the existing core rows.
+        // Reopen at current through the migration plan: the V7 -> V8 lightweight stage must
+        // create the 5 additive Workspace App tables while later stages preserve core rows.
         let migratedContainer = try ModelContainer(
             for: ASTRASchema.current,
             migrationPlan: ASTRAMigrationPlan.self,

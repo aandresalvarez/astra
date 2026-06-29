@@ -161,3 +161,83 @@ enum AstraPackProfileResolver {
         }
     }
 }
+
+enum AstraPackWorkspaceProfileProvider {
+    static func resolvedProfile(
+        for workspace: Workspace?,
+        catalogSnapshot: AstraPackCatalogSnapshot = AstraPackCatalog().load(),
+        managedShelfVisibilityOverrides: [String: Bool] = AstraPackManagedProfileOverrides.shelfVisibilityOverrides(),
+        coreDescriptors: [ShelfDescriptor] = CoreShelfRegistry.allDescriptors
+    ) -> AstraPackResolvedProfile {
+        AstraPackProfileResolver.resolve(
+            coreDescriptors: coreDescriptors,
+            enabledPacks: enabledPacks(for: workspace, in: catalogSnapshot),
+            workspaceShelfVisibilityOverrides: workspace?.shelfVisibilityOverrides ?? [:],
+            adminShelfVisibilityOverrides: managedShelfVisibilityOverrides
+        )
+    }
+
+    static func shelfAvailabilityPolicy(
+        for workspace: Workspace?,
+        catalogSnapshot: AstraPackCatalogSnapshot = AstraPackCatalog().load(),
+        managedShelfVisibilityOverrides: [String: Bool] = AstraPackManagedProfileOverrides.shelfVisibilityOverrides(),
+        coreDescriptors: [ShelfDescriptor] = CoreShelfRegistry.allDescriptors
+    ) -> ShelfAvailabilityPolicy {
+        let profile = resolvedProfile(
+            for: workspace,
+            catalogSnapshot: catalogSnapshot,
+            managedShelfVisibilityOverrides: managedShelfVisibilityOverrides,
+            coreDescriptors: coreDescriptors
+        )
+        return ShelfAvailabilityPolicy(
+            descriptors: coreDescriptors,
+            disabledShelfIDs: profile.hiddenShelfIDs
+        )
+    }
+
+    private static func enabledPacks(
+        for workspace: Workspace?,
+        in catalogSnapshot: AstraPackCatalogSnapshot
+    ) -> [AstraPackManifest] {
+        guard let workspace else { return [] }
+        let enabledPackIDs = Set(
+            workspace.enabledPackIDs
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
+        guard !enabledPackIDs.isEmpty else { return [] }
+        return catalogSnapshot.packs.filter { enabledPackIDs.contains($0.id) }
+    }
+}
+
+enum AstraPackManagedProfileOverrides {
+    static func shelfVisibilityOverrides(defaults: UserDefaults = .standard) -> [String: Bool] {
+        guard let rawOverrides = defaults.dictionary(forKey: AppStorageKeys.managedShelfVisibilityOverrides) else {
+            return [:]
+        }
+
+        var overrides: [String: Bool] = [:]
+        for (key, value) in rawOverrides {
+            if let boolValue = value as? Bool {
+                overrides[key] = boolValue
+            } else if let numberValue = value as? NSNumber {
+                overrides[key] = numberValue.boolValue
+            } else if let stringValue = value as? String,
+                      let boolValue = boolValue(from: stringValue) {
+                overrides[key] = boolValue
+            }
+        }
+        return overrides
+    }
+
+    private static func boolValue(from value: String) -> Bool? {
+        switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "true", "yes", "1":
+            return true
+        case "false", "no", "0":
+            return false
+        default:
+            return nil
+        }
+    }
+}

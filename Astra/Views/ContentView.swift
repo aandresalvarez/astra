@@ -53,6 +53,7 @@ struct NewWorkspaceDraft: Equatable {
 struct ContentView: View {
     @ObservedObject var appUpdateController: AppUpdateController
     let runtime: AppRuntimeController
+    private let packCatalogSnapshot: AstraPackCatalogSnapshot
     @Environment(\.modelContext) private var modelContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Query(sort: \Workspace.name) private var workspaces: [Workspace]
@@ -161,6 +162,7 @@ struct ContentView: View {
     init(appUpdateController: AppUpdateController, runtime: AppRuntimeController) {
         self.appUpdateController = appUpdateController
         self.runtime = runtime
+        self.packCatalogSnapshot = AstraPackCatalog().load()
     }
 
     private var effectiveWorkspace: Workspace? {
@@ -317,7 +319,10 @@ struct ContentView: View {
     }
 
     private var shelfAvailabilityPolicy: ShelfAvailabilityPolicy {
-        ShelfAvailabilityPolicy(disabledShelfIDs: [])
+        AstraPackWorkspaceProfileProvider.shelfAvailabilityPolicy(
+            for: effectiveWorkspace,
+            catalogSnapshot: packCatalogSnapshot
+        )
     }
 
     private var shelfAvailabilityContext: ShelfAvailabilityPolicy.Context {

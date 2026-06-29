@@ -60,6 +60,96 @@ struct AstraPackProfileTests {
         })
     }
 
+    @Test("multi-pack shelf defaults use union semantics")
+    func multiPackShelfDefaultsUseUnionSemantics() {
+        let profile = AstraPackProfileResolver.resolve(
+            enabledPacks: [
+                Self.pack(
+                    id: "astra.pack.runbooks",
+                    shelfDefaults: [
+                        Self.shelfDefault(id: "plan"),
+                        Self.shelfDefault(id: "files")
+                    ]
+                ),
+                Self.pack(
+                    id: "astra.pack.analytics",
+                    shelfDefaults: [
+                        Self.shelfDefault(id: "query")
+                    ]
+                )
+            ]
+        )
+
+        #expect(profile.visibleShelfIDs == Set([.plan, .files, .query]))
+        #expect(profile.hiddenShelfIDs == Set([.browser, .appPreview]))
+    }
+
+    @Test("admin overrides win over workspace overrides")
+    func adminOverridesWinOverWorkspaceOverrides() {
+        let profile = AstraPackProfileResolver.resolve(
+            enabledPacks: [
+                Self.pack(shelfDefaults: [
+                    Self.shelfDefault(id: "plan")
+                ])
+            ],
+            workspaceShelfVisibilityOverrides: [
+                "browser": true,
+                "query": false
+            ],
+            adminShelfVisibilityOverrides: [
+                "browser": false,
+                "query": true
+            ]
+        )
+
+        #expect(profile.isShelfVisible(.plan))
+        #expect(!profile.isShelfVisible(.browser))
+        #expect(profile.isShelfVisible(.query))
+    }
+
+    @Test("workspace pack state drives shelf availability policy")
+    @MainActor
+    func workspacePackStateDrivesShelfAvailabilityPolicy() {
+        let workspace = Workspace(name: "Profile Policy", primaryPath: "/tmp/profile-policy")
+        workspace.enabledPackIDs = ["astra.pack.runbooks"]
+        let catalog = AstraPackCatalogSnapshot(entries: [
+            AstraPackCatalogEntry(
+                manifest: Self.pack(
+                    id: "astra.pack.runbooks",
+                    shelfDefaults: [
+                        Self.shelfDefault(id: "plan")
+                    ]
+                ),
+                source: AstraPackSource(
+                    kind: .builtIn,
+                    manifestURL: nil,
+                    rootURL: nil,
+                    displayName: "Test Packs",
+                    rawData: nil
+                )
+            )
+        ], diagnostics: [])
+        let policy = AstraPackWorkspaceProfileProvider.shelfAvailabilityPolicy(
+            for: workspace,
+            catalogSnapshot: catalog
+        )
+        let openTask = ShelfAvailabilityPolicy.Context(
+            hasOpenTaskThread: true,
+            hasWorkspaceContext: true,
+            hasPlanContent: true,
+            hasFilesShelfContent: true,
+            hasQueryShelfContent: true,
+            isComposingWorkspaceApp: true,
+            activeShelfID: nil
+        )
+
+        #expect(policy.canPresent(.plan, in: openTask))
+        #expect(!policy.canPresent(.browser, in: openTask))
+        #expect(!policy.canPresent(.query, in: openTask))
+        #expect(!policy.canPresent(.files, in: openTask))
+        #expect(!policy.canPresent(.appPreview, in: openTask))
+    }
+
     @Test("legacy workspace without pack state uses core defaults")
     func legacyWorkspaceWithoutPackStateUsesCoreDefaults() {
         let profile = AstraPackProfileResolver.resolve(enabledPacks: [])

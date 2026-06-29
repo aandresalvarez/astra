@@ -30,6 +30,7 @@ enum AppStorageKeys {
     static let markdownShelfWidth = "astra.markdownShelf.width.v1"
     static let queryShelfWidth = "astra.queryShelf.width.v1"
     static let appPreviewShelfWidth = "astra.appPreviewShelf.width.v1"
+    static let managedShelfVisibilityOverrides = "astra.packs.managedShelfVisibilityOverrides.v1"
     static let activeWorkspaceCanvasItemsByConversation = "astra.workspaceCanvas.activeItemsByConversation.v1"
     static let rightRailWidth = "astra.rightRail.width.v1"
     static let markdownShelfShowHiddenPaths = "astra.markdownShelf.showHiddenPaths.v1"
