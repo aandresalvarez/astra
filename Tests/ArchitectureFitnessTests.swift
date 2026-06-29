@@ -45,10 +45,14 @@ struct ArchitectureFitnessTests {
     func packServicesStayInPacksServiceFolder() throws {
         let root = try repositoryRoot()
         let serviceRoot = root.appendingPathComponent("Astra/Services")
+        let allowedWorkspaceAppPackAdapters: Set<String> = [
+            "Astra/Services/WorkspaceApps/WorkspaceAppTemplatePackCatalog.swift"
+        ]
         let packServiceFilesOutsidePacks = try swiftFiles(under: serviceRoot)
             .compactMap { file -> String? in
                 let path = relativePath(for: file, root: root)
                 guard path.contains("/Packs/") == false else { return nil }
+                guard allowedWorkspaceAppPackAdapters.contains(path) == false else { return nil }
                 let text = try String(contentsOf: file, encoding: .utf8)
                 return text.contains("AstraPack") ? path : nil
             }

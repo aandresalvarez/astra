@@ -83,6 +83,7 @@ enum WorkspaceAppStudioGenerator {
         configuration: AgentUtilityRuntimeConfiguration = .claude(),
         contractFamilies: [WorkspaceAppContractFamily] = WorkspaceAppContractRegistry().families,
         availableProviders: Set<String> = [],
+        templateContext: WorkspaceAppStudioTemplateContext? = nil,
         fallbackRuntimes: [AgentRuntimeID] = [],
         runner: WorkspaceAppStudioPromptRunner = defaultRunner
     ) async -> WorkspaceAppStudioGenerationResult {
@@ -103,7 +104,7 @@ enum WorkspaceAppStudioGenerator {
             intent: rawIntent, workspaceName: workspaceName, workspacePath: workspacePath,
             existingManifest: existingManifest, maxRepairAttempts: maxRepairAttempts,
             configuration: candidates[0], contractFamilies: contractFamilies,
-            availableProviders: availableProviders, runner: runner
+            availableProviders: availableProviders, templateContext: templateContext, runner: runner
         )
         // The selected provider resolved it (an accepted app OR a validation-exhaustion template) —
         // keep it. Only a PROVIDER failure (401/timeout/crash) is worth retrying elsewhere.
@@ -118,7 +119,7 @@ enum WorkspaceAppStudioGenerator {
                 intent: rawIntent, workspaceName: workspaceName, workspacePath: workspacePath,
                 existingManifest: existingManifest, maxRepairAttempts: maxRepairAttempts,
                 configuration: candidate, contractFamilies: contractFamilies,
-                availableProviders: availableProviders, runner: runner
+                availableProviders: availableProviders, templateContext: templateContext, runner: runner
             )
             if !result.providerFailed {
                 // A fallback provider produced an ACCEPTED app → record the switch so the chat can
@@ -143,6 +144,7 @@ enum WorkspaceAppStudioGenerator {
         configuration: AgentUtilityRuntimeConfiguration = .claude(),
         contractFamilies: [WorkspaceAppContractFamily] = WorkspaceAppContractRegistry().families,
         availableProviders: Set<String> = [],
+        templateContext: WorkspaceAppStudioTemplateContext? = nil,
         runner: WorkspaceAppStudioPromptRunner = defaultRunner
     ) async -> WorkspaceAppStudioGenerationResult {
         let intent = rawIntent.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -194,7 +196,8 @@ enum WorkspaceAppStudioGenerator {
                 workspaceName: workspaceName,
                 current: existingManifest,
                 contractFamilies: contractFamilies,
-                availableProviders: availableProviders
+                availableProviders: availableProviders,
+                templateContext: templateContext
             )
         } else {
             firstPrompt = generationPrompt(
@@ -202,7 +205,8 @@ enum WorkspaceAppStudioGenerator {
                 workspaceName: workspaceName,
                 base: base,
                 contractFamilies: contractFamilies,
-                availableProviders: availableProviders
+                availableProviders: availableProviders,
+                templateContext: templateContext
             )
         }
         let firstResult = await runner(firstPrompt, workspacePath, configuration)
@@ -242,7 +246,8 @@ enum WorkspaceAppStudioGenerator {
                 rawOutput: vetted.decoded == nil ? vetted.rawOutput : nil,
                 report: vetted.report,
                 contractFamilies: contractFamilies,
-                currentManifest: existingManifest
+                currentManifest: existingManifest,
+                templateContext: templateContext
             )
             let result = await runner(prompt, workspacePath, configuration)
             attempts += 1
@@ -404,7 +409,8 @@ enum WorkspaceAppStudioGenerator {
         workspaceName: String,
         base: WorkspaceAppManifest,
         contractFamilies: [WorkspaceAppContractFamily],
-        availableProviders: Set<String> = []
+        availableProviders: Set<String> = [],
+        templateContext: WorkspaceAppStudioTemplateContext? = nil
     ) -> String {
         """
         You are ASTRA App Studio's manifest generator. Produce ONE Workspace App \
@@ -417,6 +423,8 @@ enum WorkspaceAppStudioGenerator {
         <INTENT>
         \(sanitizedIntent(intent))
         </INTENT>
+
+        \(templateGuidance(templateContext))
 
         Respond with a one-line plain-language summary, then the manifest block — and, for a \
         dynamic HTML app (see DYNAMIC HTML APPS below), ALSO an HTML block. Put each marker on its \
@@ -554,7 +562,8 @@ enum WorkspaceAppStudioGenerator {
         workspaceName: String,
         current: WorkspaceAppManifest,
         contractFamilies: [WorkspaceAppContractFamily],
-        availableProviders: Set<String> = []
+        availableProviders: Set<String> = [],
+        templateContext: WorkspaceAppStudioTemplateContext? = nil
     ) -> String {
         // The UI body is shown ONCE, cleanly, in its own CURRENT_HTML section (below) rather than
         // JSON-escaped inside the manifest — so the model can copy verbatim anchors for surgical
@@ -597,6 +606,8 @@ enum WorkspaceAppStudioGenerator {
         <INTENT>
         \(sanitizedIntent(intent))
         </INTENT>
+
+        \(templateGuidance(templateContext))
 
         Here is the app's CURRENT manifest. Patch paths address THIS structure; array indexes are \
         0-based against the arrays below:
@@ -647,7 +658,8 @@ enum WorkspaceAppStudioGenerator {
         rawOutput: String?,
         report: WorkspaceAppManifestValidationReport,
         contractFamilies: [WorkspaceAppContractFamily],
-        currentManifest: WorkspaceAppManifest? = nil
+        currentManifest: WorkspaceAppManifest? = nil,
+        templateContext: WorkspaceAppStudioTemplateContext? = nil
     ) -> String {
         // Show the model what it produced: the decoded manifest when it parsed,
         // otherwise the raw (truncated) output so it can see the formatting error.
@@ -710,6 +722,8 @@ enum WorkspaceAppStudioGenerator {
         \(sanitizedIntent(intent))
         </INTENT>
 
+        \(templateGuidance(templateContext))
+
         Fix every BLOCKER below (warnings are advisory and do not block):
         \(issueDigest(report))
 
@@ -733,6 +747,45 @@ enum WorkspaceAppStudioGenerator {
 
         You may ONLY reference these capability contracts (exact ids/operations):
         \(contractCatalog(contractFamilies))
+        """
+    }
+
+    static func templateGuidance(_ context: WorkspaceAppStudioTemplateContext?) -> String {
+        guard let context else { return "" }
+
+        let packLine: String
+        if let packID = context.packID {
+            let name = context.packDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let name, !name.isEmpty {
+                packLine = "Pack: \(name) (`\(packID)`)."
+            } else {
+                packLine = "Pack: `\(packID)`."
+            }
+        } else {
+            packLine = "Pack: none."
+        }
+
+        let capabilities = context.capabilityPackageIDs.isEmpty
+            ? "Required capability package IDs: none."
+            : "Required capability package IDs: \(context.capabilityPackageIDs.joined(separator: ", "))."
+        let branding: String
+        if let brandingContext = context.branding {
+            branding = "Branding metadata: displayName=\(brandingContext.displayName), icon=\(brandingContext.iconSystemName), accentColor=\(brandingContext.accentColor)."
+        } else {
+            branding = "Branding metadata: none."
+        }
+
+        return """
+        PACK TEMPLATE
+        Selected starting template: \(context.displayName) (`\(context.templateID)`).
+        \(packLine)
+        \(capabilities)
+        Treat the capability package IDs as requirements and provenance only. They do not grant \
+        capability contracts, permissions, native bridges, JavaScript APIs, or runtime privileges. \
+        Declare only contracts from the capability catalog below, and request app permissions explicitly \
+        in the generated manifest.
+        \(branding)
+        END PACK TEMPLATE
         """
     }
 
