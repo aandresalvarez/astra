@@ -181,8 +181,54 @@ struct WorkspaceAppActionExecutorTests {
         let events = try fixture.context.fetch(FetchDescriptor<WorkspaceAppRunEvent>())
         #expect(events.contains { event in
             event.type == "workspaceApp.artifact.exported" &&
-                event.payload.contains("items.csv")
+            event.payload.contains("items.csv")
         })
+    }
+
+    @MainActor
+    @Test("artifact CSV exports literalize spreadsheet formula prefixes")
+    func artifactCSVExportsLiteralizeSpreadsheetFormulaPrefixes() throws {
+        let fixture = try Self.makePublishedApp(permissionMode: .draftOnly)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let rows: [(id: String, name: String, category: String)] = [
+            ("item-eq", "=2+3", "+SUM(A1:A2)"),
+            ("item-minus", "-10", "@NOW()"),
+            ("item-tab", "\t=2+3", "  =2+3"),
+            ("item-cr", "\r=2+3", "Plain")
+        ]
+        for row in rows {
+            _ = try WorkspaceAppActionExecutor().execute(
+                actionID: "addItem",
+                app: fixture.app,
+                workspace: fixture.workspace,
+                manifest: fixture.manifest,
+                input: WorkspaceAppActionInput(
+                    table: "items",
+                    record: [
+                        "id": .text(row.id),
+                        "name": .text(row.name),
+                        "category": .text(row.category)
+                    ]
+                ),
+                modelContext: fixture.context
+            )
+        }
+
+        let result = try WorkspaceAppActionExecutor().execute(
+            actionID: "exportItems",
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: fixture.manifest,
+            modelContext: fixture.context
+        )
+
+        let path = try #require(result.run.linkedArtifactPath)
+        let csv = try String(contentsOfFile: path, encoding: .utf8)
+        #expect(csv.contains("\nitem-eq,'=2+3,'+SUM(A1:A2)\n"))
+        #expect(csv.contains("\nitem-minus,'-10,'@NOW()\n"))
+        #expect(csv.contains("\nitem-tab,'\t=2+3,'  =2+3\n"))
+        #expect(csv.contains("\nitem-cr,\"'\r=2+3\",Plain\n"))
     }
 
     @MainActor
