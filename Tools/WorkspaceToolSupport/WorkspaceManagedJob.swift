@@ -94,6 +94,17 @@ public struct WorkspaceManagedJobTail: Equatable, Sendable {
     }
 }
 
+public enum WorkspaceManagedJobStoreError: LocalizedError, Sendable {
+    case invalidJobID
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidJobID:
+            return "Invalid workspace job id."
+        }
+    }
+}
+
 public protocol WorkspaceJobManaging: AnyObject {
     func start(
         command: String,
@@ -127,13 +138,32 @@ public final class WorkspaceManagedJobStore {
         UUID().uuidString.lowercased()
     }
 
-    public func jobDirectory(jobID: String) -> URL {
-        rootURL.appendingPathComponent(safeJobID(jobID), isDirectory: true)
+    public func canonicalJobID(_ raw: String) throws -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 80 else {
+            throw WorkspaceManagedJobStoreError.invalidJobID
+        }
+        guard trimmed.unicodeScalars.allSatisfy({ scalar in
+            let value = scalar.value
+            return (65...90).contains(value) ||
+                (97...122).contains(value) ||
+                (48...57).contains(value) ||
+                value == 45 ||
+                value == 95
+        }) else {
+            throw WorkspaceManagedJobStoreError.invalidJobID
+        }
+        return trimmed
+    }
+
+    public func jobDirectory(jobID: String) throws -> URL {
+        let canonicalID = try canonicalJobID(jobID)
+        return rootURL.appendingPathComponent(canonicalID, isDirectory: true)
     }
 
     public func create(command: String, timeoutSeconds: TimeInterval?, label: String?, progressProbe: String?, runtime: String) throws -> WorkspaceManagedJobRecord {
         let jobID = makeJobID()
-        let directory = jobDirectory(jobID: jobID)
+        let directory = try jobDirectory(jobID: jobID)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         let commandURL = directory.appendingPathComponent("command.sh", isDirectory: false)
         try ("#!/bin/sh\n" + command + "\n").write(to: commandURL, atomically: true, encoding: .utf8)
@@ -160,16 +190,20 @@ public final class WorkspaceManagedJobStore {
     }
 
     public func save(_ record: WorkspaceManagedJobRecord) throws {
-        let directory = jobDirectory(jobID: record.jobID)
+        let directory = try jobDirectory(jobID: record.jobID)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         let data = try encoder.encode(record)
         try data.write(to: directory.appendingPathComponent("job.json", isDirectory: false), options: [.atomic])
     }
 
     public func load(jobID: String) throws -> WorkspaceManagedJobRecord {
-        let directory = jobDirectory(jobID: jobID)
+        let canonicalID = try canonicalJobID(jobID)
+        let directory = try jobDirectory(jobID: canonicalID)
         let data = try Data(contentsOf: directory.appendingPathComponent("job.json", isDirectory: false))
         var record = try decoder.decode(WorkspaceManagedJobRecord.self, from: data)
+        guard record.jobID == canonicalID else {
+            throw WorkspaceManagedJobStoreError.invalidJobID
+        }
         applyRuntimeFiles(to: &record, directory: directory)
         return record
     }
@@ -226,13 +260,6 @@ public final class WorkspaceManagedJobStore {
             record.updatedAt = result.completedAt
             record.message = result.message ?? record.message
         }
-    }
-
-    private func safeJobID(_ raw: String) -> String {
-        let filtered = raw
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .filter { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
-        return filtered.isEmpty ? "unknown-job" : String(filtered.prefix(80))
     }
 
     private func lastLines(_ text: String, count: Int) -> String {
@@ -352,18 +379,19 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
     }
 
     public func cancel(jobID: String) -> WorkspaceManagedJobRecord {
-        let directory = containerJobDirectory(jobID: jobID)
-        _ = executor.runDockerCommand(
-            arguments: [
-                "exec", configuration.containerName,
-                "sh", "-c",
-                "if [ -r \(shellQuote(directory + "/pid")) ]; then kill -TERM \"$(cat \(shellQuote(directory + "/pid")))\" 2>/dev/null || true; fi"
-            ],
-            commandLabel: "workspace_job_cancel \(jobID)",
-            timeoutSeconds: 10
-        )
         do {
-            return try store.mark(jobID: jobID, status: .cancelled, message: "Cancelled by ASTRA.")
+            let record = try store.load(jobID: jobID)
+            let directory = containerJobDirectory(jobID: record.jobID)
+            _ = executor.runDockerCommand(
+                arguments: [
+                    "exec", configuration.containerName,
+                    "sh", "-c",
+                    "if [ -r \(shellQuote(directory + "/pid")) ]; then kill -TERM \"$(cat \(shellQuote(directory + "/pid")))\" 2>/dev/null || true; fi"
+                ],
+                commandLabel: "workspace_job_cancel \(record.jobID)",
+                timeoutSeconds: 10
+            )
+            return try store.mark(jobID: record.jobID, status: .cancelled, message: "Cancelled by ASTRA.")
         } catch {
             return failedSynthetic(command: "", jobID: jobID, message: error.localizedDescription)
         }
