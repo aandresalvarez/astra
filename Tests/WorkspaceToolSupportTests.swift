@@ -732,6 +732,9 @@ struct WorkspaceToolSupportTests {
         #expect(logLines.contains("exec -d --workdir /workspace astra-test-job sh -c"))
         #expect(logLines.contains("/workspace/jobs/\(job.jobID)"))
         #expect(logLines.contains("timeout_seconds=7200"))
+        #expect(logLines.contains("setsid sh \"$job_dir/command.sh\" > \"$stdout\" 2> \"$stderr\" &"))
+        #expect(logLines.contains("kill -TERM -\"$command_pid\" 2>/dev/null || true"))
+        #expect(logLines.contains("kill -KILL -\"$command_pid\" 2>/dev/null || true"))
         #expect(logLines.contains("status=timed_out; code=124"))
 
         try #"{"status":"succeeded","exitCode":0,"completedAt":"2026-06-24T12:00:00Z"}"#
@@ -741,6 +744,60 @@ struct WorkspaceToolSupportTests {
         #expect(completed.status == .succeeded)
         #expect(completed.exitCode == 0)
         #expect(manager.tail(jobID: job.jobID, stream: "stdout", lines: 10).text.contains("ok"))
+    }
+
+    @Test("Docker workspace job cancel terminates command process group")
+    func dockerWorkspaceJobCancelTerminatesCommandProcessGroup() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-cancel-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let docker = root.appendingPathComponent("docker")
+        let log = root.appendingPathComponent("docker.log")
+        let quotedLogPath = log.path.replacingOccurrences(of: "'", with: "'\\''")
+        try """
+        #!/bin/sh
+        LOG='\(quotedLogPath)'
+        printf '%s\\n' "$*" >> "$LOG"
+        case "$1" in
+          inspect) exit 1 ;;
+          rm) exit 0 ;;
+          run) echo container-id; exit 0 ;;
+          exec) exit 0 ;;
+          stop) exit 0 ;;
+          *) exit 99 ;;
+        esac
+        """.write(to: docker, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
+
+        let jobRoot = root.appendingPathComponent("jobs", isDirectory: true)
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: docker.path,
+            image: "astra/workspace:latest",
+            containerName: "astra-test-job-cancel",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-cancel",
+            runID: "run-cancel",
+            mounts: [
+                WorkspaceDockerMount(hostPath: root.path, containerPath: "/workspace", access: "rw", role: "workspace")
+            ],
+            jobRootHostPath: jobRoot.path,
+            jobRootContainerPath: "/workspace/jobs"
+        )
+        let executor = DockerWorkspaceCommandExecutor(configuration: configuration)
+        let manager = DockerWorkspaceJobManager(configuration: configuration, executor: executor)
+
+        let job = manager.start(command: "sleep 60", timeoutSeconds: 7200, label: nil, progressProbe: nil)
+        _ = manager.cancel(jobID: job.jobID)
+        executor.cleanup()
+
+        let logLines = try String(contentsOf: log, encoding: .utf8)
+        #expect(logLines.contains("pidfile='/workspace/jobs/\(job.jobID)/pid'"))
+        #expect(logLines.contains("command_pid=\"$(cat \"$pidfile\")\""))
+        #expect(logLines.contains("kill -TERM -\"$command_pid\" 2>/dev/null || true"))
+        #expect(logLines.contains("kill -KILL -\"$command_pid\" 2>/dev/null || true"))
     }
 
     @Test("Docker workspace job manager maps host workspace path before persisting command")

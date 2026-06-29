@@ -357,7 +357,19 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
             arguments: [
                 "exec", configuration.containerName,
                 "sh", "-c",
-                "if [ -r \(shellQuote(directory + "/pid")) ]; then kill -TERM \"$(cat \(shellQuote(directory + "/pid")))\" 2>/dev/null || true; fi"
+                """
+                pidfile=\(shellQuote(directory + "/pid"))
+                if [ -r "$pidfile" ]; then
+                  command_pid="$(cat "$pidfile")"
+                  if [ -n "$command_pid" ] && { kill -0 -"$command_pid" 2>/dev/null || kill -0 "$command_pid" 2>/dev/null; }; then
+                    kill -TERM -"$command_pid" 2>/dev/null || true
+                    kill -TERM "$command_pid" 2>/dev/null || true
+                    sleep 5
+                    kill -KILL -"$command_pid" 2>/dev/null || true
+                    kill -KILL "$command_pid" 2>/dev/null || true
+                  fi
+                fi
+                """
             ],
             commandLabel: "workspace_job_cancel \(jobID)",
             timeoutSeconds: 10
@@ -404,18 +416,34 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
           done
         ) &
         heartbeat_pid=$!
-        sh "$job_dir/command.sh" > "$stdout" 2> "$stderr" &
+        if ! command -v setsid >/dev/null 2>&1; then
+          printf '%s\\n' "setsid is required for managed job process-group isolation." > "$stderr"
+          kill "$heartbeat_pid" 2>/dev/null || true
+          wait "$heartbeat_pid" 2>/dev/null || true
+          printf '{"status":"failed","exitCode":127,"completedAt":"%s","message":"process group isolation unavailable"}\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$result"
+          printf '{"status":"failed","timestamp":"%s"}\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$heartbeat"
+          exit 0
+        fi
+        setsid sh "$job_dir/command.sh" > "$stdout" 2> "$stderr" &
         command_pid=$!
         printf '%s\\n' "$command_pid" > "$pidfile"
+        terminate_command_group() {
+          grace_seconds="${1:-5}"
+          if kill -0 -"$command_pid" 2>/dev/null || kill -0 "$command_pid" 2>/dev/null; then
+            kill -TERM -"$command_pid" 2>/dev/null || true
+            kill -TERM "$command_pid" 2>/dev/null || true
+            sleep "$grace_seconds"
+            kill -KILL -"$command_pid" 2>/dev/null || true
+            kill -KILL "$command_pid" 2>/dev/null || true
+          fi
+        }
         timeout_pid=""
         if [ "$timeout_seconds" -gt 0 ]; then
           (
             sleep "$timeout_seconds"
             if kill -0 "$command_pid" 2>/dev/null; then
               printf '%s\\n' timed_out > "$timeout_marker"
-              kill -TERM "$command_pid" 2>/dev/null || true
-              sleep 5
-              kill -KILL "$command_pid" 2>/dev/null || true
+              terminate_command_group 5
             fi
           ) &
           timeout_pid=$!
@@ -426,6 +454,7 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
           kill "$timeout_pid" 2>/dev/null || true
           wait "$timeout_pid" 2>/dev/null || true
         fi
+        terminate_command_group 1
         kill "$heartbeat_pid" 2>/dev/null || true
         wait "$heartbeat_pid" 2>/dev/null || true
         status=failed
