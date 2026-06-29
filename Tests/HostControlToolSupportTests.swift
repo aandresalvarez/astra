@@ -234,6 +234,41 @@ struct HostControlToolSupportTests {
         })
     }
 
+    @Test("Host control gcloud denies credential printing and mutations before process execution")
+    func hostControlGCloudDeniesCredentialPrintingAndMutationsBeforeProcessExecution() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-gcloud-policy-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let log = root.appendingPathComponent("host.log", isDirectory: false)
+        let gcloud = try fakeExecutable(named: "gcloud", root: root, log: log, stdout: "ya29.FAKE_ACCESS_TOKEN_FROM_AMBIENT_ADC")
+        let configuration = HostControlToolConfiguration(gcloudExecutable: gcloud.path)
+        let server = HostControlMCPServer(configuration: configuration)
+
+        let tokenResult = try call(server, id: 1, tool: "gcloud", arguments: [
+            "arguments": ["auth", "print-access-token"]
+        ])
+        let tokenError = try #require(tokenResult["error"] as? [String: Any])
+        #expect((tokenError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
+        let mutationResult = try call(server, id: 2, tool: "gcloud", arguments: [
+            "arguments": ["run", "deploy", "prod-service", "--image", "gcr.io/example/app"]
+        ])
+        let mutationError = try #require(mutationResult["error"] as? [String: Any])
+        #expect((mutationError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
+        let readResult = try call(server, id: 3, tool: "gcloud", arguments: [
+            "arguments": ["compute", "instances", "list", "--format=json"]
+        ])
+        #expect(try resultText(readResult).contains("gcloud:compute instances list --format=json"))
+
+        let hostLog = try String(contentsOf: log, encoding: .utf8)
+        #expect(!hostLog.contains("auth print-access-token"))
+        #expect(!hostLog.contains("run deploy"))
+        #expect(hostLog.contains("gcloud compute instances list --format=json"))
+    }
+
     private func fakeExecutable(named name: String, root: URL, log: URL, stdout: String) throws -> URL {
         let executable = root.appendingPathComponent(name, isDirectory: false)
         let quotedLog = log.path.replacingOccurrences(of: "'", with: "'\\''")

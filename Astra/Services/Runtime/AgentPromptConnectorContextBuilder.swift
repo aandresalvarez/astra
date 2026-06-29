@@ -90,7 +90,7 @@ enum AgentPromptConnectorContextBuilder {
     private static func connectorAPIGuidance(dockerRouted: Bool) -> String {
         if dockerRouted {
             return """
-            IMPORTANT: This task is routed through a Docker workspace executor. Do not use native host Bash or Docker workspace_shell for host connector APIs. For Jira, use `mcp__astra_host__jira` (or Copilot's `astra_host-jira`) with the projected ASTRA_CONNECTORS credentials. For Google Cloud or BigQuery host CLI operations, use `mcp__astra_host__gcloud` or `mcp__astra_host__bq`. Use workspace_shell only for project commands that belong inside the container image. WebFetch cannot handle SSO, session cookies, or token-based auth headers.
+            IMPORTANT: This task is routed through a Docker workspace executor. Do not use native host Bash or Docker workspace_shell for host connector APIs. For Jira, use `mcp__astra_host__jira` (or Copilot's `astra_host-jira`) with the projected ASTRA_CONNECTORS credentials. For read-only Google Cloud checks, use `mcp__astra_host__gcloud`; for BigQuery host CLI operations, use `mcp__astra_host__bq`. Use workspace_shell only for project commands that belong inside the container image. WebFetch cannot handle SSO, session cookies, or token-based auth headers.
             """
         }
         return """

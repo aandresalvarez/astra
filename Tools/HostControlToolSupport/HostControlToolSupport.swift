@@ -383,7 +383,8 @@ public final class HostControlMCPServer {
                 toolName: toolName,
                 executable: configuration.gcloudExecutable,
                 arguments: arguments,
-                allowedFirstArguments: nil
+                allowedFirstArguments: nil,
+                commandPolicy: .gcloud
             )
         case "bq":
             return handleProcessTool(
@@ -391,7 +392,8 @@ public final class HostControlMCPServer {
                 toolName: toolName,
                 executable: configuration.bigQueryExecutable,
                 arguments: arguments,
-                allowedFirstArguments: nil
+                allowedFirstArguments: nil,
+                commandPolicy: nil
             )
         case "ssh":
             return handleSSH(id: id, arguments: arguments)
@@ -407,7 +409,8 @@ public final class HostControlMCPServer {
         toolName: String,
         executable: String,
         arguments: [String: Any],
-        allowedFirstArguments: Set<String>?
+        allowedFirstArguments: Set<String>?,
+        commandPolicy: HostControlCloudCommandPolicy? = nil
     ) -> String? {
         guard let argv = stringArray(arguments["arguments"]) else {
             return encodeError(id: id, code: -32602, message: "\(toolName) requires an arguments array")
@@ -419,6 +422,14 @@ public final class HostControlMCPServer {
            let first = argv.first?.lowercased(),
            !allowedFirstArguments.contains(first) {
             return encodeError(id: id, code: -32602, message: "\(toolName) does not allow subcommand '\(first)'")
+        }
+        if let commandPolicy {
+            switch commandPolicy.evaluate(arguments: argv) {
+            case .allowed:
+                break
+            case .denied(let message):
+                return encodeError(id: id, code: -32602, message: message)
+            }
         }
         let timeout = timeoutSeconds(from: arguments["timeout_seconds"]) ?? 120
         let result = processRunner.run(
@@ -633,7 +644,7 @@ public final class HostControlMCPServer {
             ),
             processSchema(
                 name: "gcloud",
-                description: "Run Google Cloud CLI control-plane commands on the host through ASTRA without provider Bash.",
+                description: "Run read-only Google Cloud CLI control-plane commands on the host through ASTRA without provider Bash.",
                 argumentDescription: "Arguments for gcloud, for example [\"compute\", \"instances\", \"list\", \"--format=json\"]."
             ),
             processSchema(

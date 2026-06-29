@@ -150,7 +150,7 @@ enum HostControlPlaneMCPProjection {
         case "github":
             return "Run GitHub control-plane commands on the host through ASTRA without provider Bash."
         case "gcloud":
-            return "Run Google Cloud control-plane commands on the host through ASTRA without provider Bash."
+            return "Run read-only Google Cloud control-plane commands on the host through ASTRA without provider Bash."
         case "bq":
             return "Run BigQuery control-plane commands on the host through ASTRA without provider Bash."
         case "ssh":
