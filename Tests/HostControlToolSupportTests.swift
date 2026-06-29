@@ -69,10 +69,9 @@ struct HostControlToolSupportTests {
         #expect(try resultText(bqResult).contains("bq:ls project:dataset"))
 
         let sshResult = try call(server, id: 5, tool: "ssh", arguments: [
-            "alias": "deid-jsn-workbench",
-            "remote_command": "hostname && uptime"
+            "alias": "deid-jsn-workbench"
         ])
-        #expect(try resultText(sshResult).contains("ssh:deid-jsn-workbench hostname && uptime"))
+        #expect(try resultText(sshResult).contains("ssh:deid-jsn-workbench"))
 
         let jira = try call(server, id: 6, tool: "jira", arguments: ["operation": "status"])
         let jiraText = try resultText(jira)
@@ -84,13 +83,39 @@ struct HostControlToolSupportTests {
         #expect(hostLog.contains("gh pr view 123 --comments"))
         #expect(hostLog.contains("gcloud compute instances list --format=json"))
         #expect(hostLog.contains("bq ls project:dataset"))
-        #expect(hostLog.contains("ssh deid-jsn-workbench hostname && uptime"))
+        #expect(hostLog.contains("ssh deid-jsn-workbench"))
+        #expect(!hostLog.contains("hostname && uptime"))
 
         let diagnosticLog = diagnostics.appendingPathComponent("host_control_tool_activity.jsonl", isDirectory: false)
         let diagnosticsText = try String(contentsOf: diagnosticLog, encoding: .utf8)
         #expect(diagnosticsText.contains(#""toolName":"github""#))
         #expect(diagnosticsText.contains(#""toolName":"jira""#))
         #expect(!diagnosticsText.contains("super-secret-token"))
+    }
+
+    @Test("Host control SSH rejects remote commands before invoking ssh")
+    func hostControlSSHRejectsRemoteCommandsBeforeInvokingSSH() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-control-ssh-policy-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let log = root.appendingPathComponent("host.log", isDirectory: false)
+        let ssh = try fakeExecutable(named: "ssh", root: root, log: log, stdout: "ssh:$*")
+        let server = HostControlMCPServer(configuration: HostControlToolConfiguration(
+            sshExecutable: ssh.path,
+            allowedSSHAliases: ["deid-jsn-workbench"]
+        ))
+
+        let response = try call(server, id: 1, tool: "ssh", arguments: [
+            "alias": "deid-jsn-workbench",
+            "remote_command": "hostname && uptime"
+        ])
+
+        let error = try #require(response["error"] as? [String: Any])
+        #expect(error["code"] as? Int == -32602)
+        #expect((error["message"] as? String)?.contains("remote_command is not supported") == true)
+        #expect(!FileManager.default.fileExists(atPath: log.path))
     }
 
     @Test("Host and Docker mixed harness routes control-plane and workspace commands separately")
@@ -140,7 +165,7 @@ struct HostControlToolSupportTests {
 
         _ = try call(hostServer, id: 1, tool: "github", arguments: ["arguments": ["pr", "view", "123", "--comments"]])
         _ = try call(hostServer, id: 2, tool: "gcloud", arguments: ["arguments": ["compute", "instances", "list"]])
-        _ = try call(hostServer, id: 3, tool: "ssh", arguments: ["alias": "deid-jsn-workbench", "remote_command": "uptime"])
+        _ = try call(hostServer, id: 3, tool: "ssh", arguments: ["alias": "deid-jsn-workbench"])
         _ = try call(hostServer, id: 4, tool: "jira", arguments: ["operation": "status"])
 
         let docker = root.appendingPathComponent("docker", isDirectory: false)
@@ -204,7 +229,8 @@ struct HostControlToolSupportTests {
         let hostLogText = try String(contentsOf: hostLog, encoding: .utf8)
         #expect(hostLogText.contains("gh pr view 123 --comments"))
         #expect(hostLogText.contains("gcloud compute instances list"))
-        #expect(hostLogText.contains("ssh deid-jsn-workbench uptime"))
+        #expect(hostLogText.contains("ssh deid-jsn-workbench"))
+        #expect(!hostLogText.contains("uptime"))
 
         let dockerLogText = try String(contentsOf: dockerLog, encoding: .utf8)
         #expect(dockerLogText.contains("exec -i --workdir /workspace astra-mixed sh -c command -v sqlfmt && sqlfmt --version"))

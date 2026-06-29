@@ -1446,6 +1446,36 @@ struct RuntimePolicyGuardTests {
         }
     }
 
+    @Test("Host control SSH support rejects provider remote commands")
+    func hostControlSSHSupportRejectsProviderRemoteCommands() throws {
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["read"],
+            providerID: .codexCLI,
+            runtimeSupportTools: HostControlPlaneMCPProjection.runtimeSupportToolDescriptors(for: .codexCLI)
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(
+                name: HostControlPlaneMCPProjection.providerToolPermission(for: "ssh"),
+                id: "host-control-ssh",
+                input: [
+                    "alias": "deid-jsn-workbench",
+                    "remote_command": "hostname && uptime"
+                ]
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyViolation == true)
+        #expect(monitor.policyViolationMessage?.contains("unsupported input keys: remote_command") == true)
+    }
+
     @Test("Docker workspace managed job support allows provider aliases")
     func dockerWorkspaceManagedJobSupportAllowsProviderAliases() throws {
         let cases: [(AgentRuntimeID, String)] = [
