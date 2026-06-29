@@ -21,8 +21,8 @@ struct ShelfRegistryTests {
     func coreShelfDescriptorsPreserveWidthConstraints() throws {
         let expectations: [(ShelfID, String, String, CGFloat, CGFloat, CGFloat, Bool)] = [
             (.plan, "Plan", "list.bullet.rectangle", 400, 520, 1040, false),
-            (.files, "Files", "doc.text", PanelLayoutGeometry.filesShelfMinReadableWidth, 620, 980, true),
-            (.browser, "Browser", "globe", PanelLayoutGeometry.browserShelfMinWidth, 440, 1120, false),
+            (.files, "Files", "doc.text", ShelfWidthMetrics.filesMinReadableWidth, 620, 980, true),
+            (.browser, "Browser", "globe", ShelfWidthMetrics.browserMinWidth, 440, 1120, false),
             (.query, "Query", "cylinder.split.1x2", 460, 640, 1180, false),
             (.appPreview, "Live preview", "apps.iphone", 440, 560, 1120, false)
         ]

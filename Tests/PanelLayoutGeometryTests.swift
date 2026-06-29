@@ -475,6 +475,11 @@ struct PanelLayoutGeometryTests {
 
     @Test("Files shelf minimum preserves navigator and preview")
     func filesShelfMinimumPreservesNavigatorAndPreview() {
+        #expect(PanelLayoutGeometry.filesShelfNavigatorDefaultWidth == ShelfWidthMetrics.filesNavigatorDefaultWidth)
+        #expect(PanelLayoutGeometry.filesShelfResizeHandleWidth == ShelfWidthMetrics.filesResizeHandleWidth)
+        #expect(PanelLayoutGeometry.filesShelfMinimumPreviewWidth == ShelfWidthMetrics.filesMinimumPreviewWidth)
+        #expect(PanelLayoutGeometry.filesShelfMinReadableWidth == ShelfWidthMetrics.filesMinReadableWidth)
+        #expect(PanelLayoutGeometry.browserShelfMinWidth == ShelfWidthMetrics.browserMinWidth)
         #expect(PanelLayoutGeometry.filesShelfMinReadableWidth == 550)
         #expect(PanelLayoutGeometry.filesShelfPreviewWidth(shelfWidth: 360) < PanelLayoutGeometry.filesShelfMinimumPreviewWidth)
         #expect(PanelLayoutGeometry.filesShelfPreviewWidth(
