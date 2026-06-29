@@ -1,0 +1,62 @@
+import Foundation
+
+enum GitHubHostControlPolicy {
+    static func denialReason(for arguments: [String]) -> String? {
+        let operation = normalizedOperation(arguments)
+
+        switch operation.command {
+        case "pr":
+            return allow(operation, subcommands: ["checks", "diff", "list", "status", "view"])
+        case "issue":
+            return allow(operation, subcommands: ["list", "status", "view"])
+        case "search":
+            return allow(operation, subcommands: ["code", "commits", "issues", "prs", "repos"])
+        case "repo":
+            return allow(operation, subcommands: ["list", "view"])
+        case "run":
+            return allow(operation, subcommands: ["list", "view"])
+        case "workflow":
+            return allow(operation, subcommands: ["list", "view"])
+        case "auth":
+            return denial(operation, reason: "credential export and authentication management are not exposed")
+        case "api":
+            return denial(operation, reason: "raw GitHub API access is not an explicit read-only operation")
+        default:
+            return denial(operation, reason: "only explicit read-only GitHub operations are exposed")
+        }
+    }
+
+    private static func allow(_ operation: Operation, subcommands: Set<String>) -> String? {
+        guard let subcommand = operation.subcommand else {
+            return denial(operation, reason: "a read-only subcommand is required")
+        }
+        guard subcommands.contains(subcommand) else {
+            return denial(operation, reason: "the subcommand is not read-only")
+        }
+        return nil
+    }
+
+    private static func denial(_ operation: Operation, reason: String) -> String {
+        "github does not allow GitHub operation '\(operation.displayName)': \(reason)"
+    }
+
+    private static func normalizedOperation(_ arguments: [String]) -> Operation {
+        let command = arguments.first?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        let subcommand = arguments.dropFirst().first { !$0.hasPrefix("-") }?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return Operation(command: command, subcommand: subcommand)
+    }
+
+    private struct Operation {
+        var command: String
+        var subcommand: String?
+
+        var displayName: String {
+            ([command] + [subcommand].compactMap { $0 }).compactMap { value in
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
+            }.joined(separator: " ")
+        }
+    }
+}

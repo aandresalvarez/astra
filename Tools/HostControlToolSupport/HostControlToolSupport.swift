@@ -375,7 +375,8 @@ public final class HostControlMCPServer {
                 toolName: toolName,
                 executable: configuration.githubExecutable,
                 arguments: arguments,
-                allowedFirstArguments: ["api", "auth", "issue", "pr", "repo", "search", "run", "workflow"]
+                allowedFirstArguments: nil,
+                operationPolicy: GitHubHostControlPolicy.denialReason(for:)
             )
         case "gcloud":
             return handleProcessTool(
@@ -407,7 +408,8 @@ public final class HostControlMCPServer {
         toolName: String,
         executable: String,
         arguments: [String: Any],
-        allowedFirstArguments: Set<String>?
+        allowedFirstArguments: Set<String>?,
+        operationPolicy: (([String]) -> String?)? = nil
     ) -> String? {
         guard let argv = stringArray(arguments["arguments"]) else {
             return encodeError(id: id, code: -32602, message: "\(toolName) requires an arguments array")
@@ -419,6 +421,9 @@ public final class HostControlMCPServer {
            let first = argv.first?.lowercased(),
            !allowedFirstArguments.contains(first) {
             return encodeError(id: id, code: -32602, message: "\(toolName) does not allow subcommand '\(first)'")
+        }
+        if let denialReason = operationPolicy?(argv) {
+            return encodeError(id: id, code: -32602, message: denialReason)
         }
         let timeout = timeoutSeconds(from: arguments["timeout_seconds"]) ?? 120
         let result = processRunner.run(

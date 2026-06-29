@@ -5,6 +5,38 @@ import Testing
 
 @Suite("Host Control Tool Support", .serialized)
 struct HostControlToolSupportTests {
+    @Test("GitHub host-control denies credential export and broad mutations before launch")
+    func githubHostControlDeniesCredentialExportAndBroadMutationsBeforeLaunch() throws {
+        let runner = RecordingHostControlProcessRunner(stdout: "ok")
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(githubExecutable: "gh"),
+            processRunner: runner
+        )
+
+        let deniedAuth = try call(server, id: 1, tool: "github", arguments: [
+            "arguments": ["auth", "token"]
+        ])
+        #expect(errorMessage(deniedAuth)?.contains("does not allow GitHub operation") == true)
+
+        let deniedAPI = try call(server, id: 2, tool: "github", arguments: [
+            "arguments": ["api", "--method", "DELETE", "/repos/example/project"]
+        ])
+        #expect(errorMessage(deniedAPI)?.contains("does not allow GitHub operation") == true)
+
+        let deniedWorkflow = try call(server, id: 3, tool: "github", arguments: [
+            "arguments": ["workflow", "run", "ci.yml"]
+        ])
+        #expect(errorMessage(deniedWorkflow)?.contains("does not allow GitHub operation") == true)
+
+        #expect(runner.invocations.isEmpty)
+
+        let allowed = try call(server, id: 4, tool: "github", arguments: [
+            "arguments": ["pr", "view", "123", "--comments"]
+        ])
+        #expect(try resultText(allowed).contains("ok"))
+        #expect(runner.invocations.map(\.arguments) == [["pr", "view", "123", "--comments"]])
+    }
+
     @Test("Host control MCP runs fake host tools and redacts connector secrets")
     func hostControlMCPRunsFakeHostToolsAndRedactsConnectorSecrets() throws {
         let root = FileManager.default.temporaryDirectory
@@ -281,5 +313,46 @@ struct HostControlToolSupportTests {
         let result = try #require(object["result"] as? [String: Any])
         let content = try #require(result["content"] as? [[String: Any]])
         return try #require(content.first?["text"] as? String)
+    }
+
+    private func errorMessage(_ object: [String: Any]) -> String? {
+        (object["error"] as? [String: Any])?["message"] as? String
+    }
+}
+
+private final class RecordingHostControlProcessRunner: HostControlProcessRunning {
+    struct Invocation: Equatable {
+        var executablePath: String
+        var arguments: [String]
+        var timeoutSeconds: TimeInterval
+        var environment: [String: String]
+    }
+
+    private(set) var invocations: [Invocation] = []
+    private let stdout: String
+
+    init(stdout: String) {
+        self.stdout = stdout
+    }
+
+    func run(
+        executablePath: String,
+        arguments: [String],
+        timeoutSeconds: TimeInterval,
+        environment: [String: String]
+    ) -> HostControlCommandResult {
+        invocations.append(Invocation(
+            executablePath: executablePath,
+            arguments: arguments,
+            timeoutSeconds: timeoutSeconds,
+            environment: environment
+        ))
+        return HostControlCommandResult(
+            command: executablePath,
+            arguments: arguments,
+            exitCode: 0,
+            stdout: stdout,
+            stderr: ""
+        )
     }
 }
