@@ -43,6 +43,7 @@ struct WorkspaceAppSurfaceView: View {
     @State private var recordFormValues: [String: String] = [:]
     @State private var recordFormError = ""
     @State private var pendingDeleteRecordID: String?
+    @State private var pendingNativeFormSubmission: PendingNativeFormSubmission?
 
     init(
         snapshot: WorkspaceAppDetailDataSnapshot,
@@ -226,6 +227,9 @@ struct WorkspaceAppSurfaceView: View {
                     onSubmit: { values in submitForm(view: view, manifest: manifest, values: values) }
                 )
             }
+            if let pendingNativeFormSubmission {
+                nativeFormApprovalForm(pendingNativeFormSubmission)
+            }
         }
     }
 
@@ -237,17 +241,71 @@ struct WorkspaceAppSurfaceView: View {
             manifest: manifest,
             values: values
         ) else { return }
+        if submission.requiresExplicitApproval {
+            pendingNativeFormSubmission = PendingNativeFormSubmission(submission: submission, manifest: manifest)
+            return
+        }
+        runNativeFormSubmission(submission, manifest: manifest)
+    }
+
+    private func runNativeFormSubmission(
+        _ submission: WorkspaceAppNativeFormSubmission,
+        manifest: WorkspaceAppManifest,
+        confirmedApproval: Bool = false
+    ) {
+        var input = submission.input
+        input.confirmedApproval = confirmedApproval
         do {
             let result = try onRunAction(
                 submission.action,
                 manifest,
-                submission.input
+                input
             )
             actionStatusMessage = result.outputSummary
+            pendingNativeFormSubmission = nil
             onReload()
         } catch {
-            actionStatusMessage = String(describing: error)
+            actionStatusMessage = WorkspaceAppActionStatusPresentation.errorMessage(for: error)
         }
+    }
+
+    @ViewBuilder
+    private func nativeFormApprovalForm(_ pending: PendingNativeFormSubmission) -> some View {
+        let action = pending.submission.action
+        let prompt = action.approvalPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let confirmLabel = action.approvalDecisions.first { decision in
+            !["cancel", "reject", "deny"].contains(decision.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        } ?? action.approvalDecisions.first ?? "Approve"
+        VStack(alignment: .leading, spacing: 8) {
+            Text(action.label ?? "Confirm submission")
+                .font(Stanford.body(13).weight(.semibold))
+                .foregroundStyle(Stanford.black)
+            if !prompt.isEmpty {
+                Text(prompt)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 8) {
+                Button(confirmLabel) {
+                    runNativeFormSubmission(pending.submission, manifest: pending.manifest, confirmedApproval: true)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+
+                Button("Cancel") {
+                    pendingNativeFormSubmission = nil
+                }
+                .buttonStyle(.plain)
+                .controlSize(.small)
+            }
+        }
+        .padding(10)
+        .background(Color.primary.opacity(0.025))
+        .clipShape(RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        )
     }
 
     @ViewBuilder
@@ -596,7 +654,12 @@ struct WorkspaceAppSurfaceView: View {
             actionStatusMessage = result.outputSummary
             onReload()
         } catch {
-            actionStatusMessage = String(describing: error)
+            actionStatusMessage = WorkspaceAppActionStatusPresentation.errorMessage(for: error)
         }
     }
+}
+
+private struct PendingNativeFormSubmission {
+    var submission: WorkspaceAppNativeFormSubmission
+    var manifest: WorkspaceAppManifest
 }
