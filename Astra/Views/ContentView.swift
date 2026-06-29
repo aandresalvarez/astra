@@ -53,6 +53,7 @@ struct NewWorkspaceDraft: Equatable {
 struct ContentView: View {
     @ObservedObject var appUpdateController: AppUpdateController
     let runtime: AppRuntimeController
+    private let packCatalogSnapshot: AstraPackCatalogSnapshot
     @Environment(\.modelContext) private var modelContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Query(sort: \Workspace.name) private var workspaces: [Workspace]
@@ -161,6 +162,7 @@ struct ContentView: View {
     init(appUpdateController: AppUpdateController, runtime: AppRuntimeController) {
         self.appUpdateController = appUpdateController
         self.runtime = runtime
+        self.packCatalogSnapshot = AstraPackCatalog().load()
     }
 
     private var effectiveWorkspace: Workspace? {
@@ -316,19 +318,35 @@ struct ContentView: View {
         selectedTask != nil || isComposingTask
     }
 
-    private var hasQueryShelfAffordance: Bool {
-        activeWorkspaceCanvasItem == .query
-            || selectedTaskHasQueryShelfContent
+    private var shelfAvailabilityPolicy: ShelfAvailabilityPolicy {
+        AstraPackWorkspaceProfileProvider.shelfAvailabilityPolicy(
+            for: effectiveWorkspace,
+            catalogSnapshot: packCatalogSnapshot
+        )
+    }
+
+    private var shelfAvailabilityContext: ShelfAvailabilityPolicy.Context {
+        ShelfAvailabilityPolicy.Context(
+            hasOpenTaskThread: hasOpenTaskThread,
+            hasWorkspaceContext: effectiveWorkspace != nil,
+            hasPlanContent: hasWorkspaceCanvasContent,
+            hasFilesShelfContent: selectedTaskHasMarkdownShelfContent,
+            hasQueryShelfContent: selectedTaskHasQueryShelfContent,
+            isComposingWorkspaceApp: isComposingWorkspaceApp,
+            activeShelfID: activeWorkspaceCanvasItem?.shelfID
+        )
     }
 
     private var topRightActions: WorkspaceTopRightActions {
-        WorkspaceTopRightActions(
+        let policy = shelfAvailabilityPolicy
+        let context = shelfAvailabilityContext
+        return WorkspaceTopRightActions(
             hasWorkspace: effectiveWorkspace != nil,
-            canShowPlanShelf: hasOpenTaskThread && hasWorkspaceCanvasContent,
-            canShowTextShelf: effectiveWorkspace != nil || activeWorkspaceCanvasItem == .markdown,
-            canShowBrowserShelf: hasOpenTaskThread,
-            canShowQueryShelf: hasOpenTaskThread && hasQueryShelfAffordance,
-            canShowAppPreviewShelf: isComposingWorkspaceApp,
+            canShowPlanShelf: policy.isToolbarAvailable(.plan, in: context),
+            canShowTextShelf: policy.isToolbarAvailable(.files, in: context),
+            canShowBrowserShelf: policy.isToolbarAvailable(.browser, in: context),
+            canShowQueryShelf: policy.isToolbarAvailable(.query, in: context),
+            canShowAppPreviewShelf: policy.isToolbarAvailable(.appPreview, in: context),
             activeCanvasItem: activeWorkspaceCanvasItem,
             browserEngine: browserToolbarEngine,
             isRightRailVisible: isWorkspaceRightRailVisible
@@ -610,6 +628,7 @@ struct ContentView: View {
                 setActiveWorkspaceCanvasItem(nil, remember: false)
             }
         } else {
+            guard canPresentWorkspaceCanvasItem(.appPreview) else { return }
             animatePanelChange {
                 isWorkspaceRightRailVisible = false
                 setActiveWorkspaceCanvasItem(.appPreview, remember: false)
@@ -833,16 +852,8 @@ struct ContentView: View {
             handleSelectedTaskCanvasSignatureChanged()
         }
         .onChange(of: hasOpenTaskThread) {
-            if !hasOpenTaskThread, activeWorkspaceCanvasItem != nil {
-                if activeWorkspaceCanvasItem == .markdown, effectiveWorkspace != nil {
-                    return
-                }
-                // The live preview belongs to the App Studio composer, not a task
-                // thread. "New App" nils the selected task (collapsing the thread)
-                // right after docking .appPreview — don't let that close it.
-                if activeWorkspaceCanvasItem == .appPreview, isComposingWorkspaceApp {
-                    return
-                }
+            if let activeWorkspaceCanvasItem,
+               !canPresentWorkspaceCanvasItem(activeWorkspaceCanvasItem) {
                 animatePanelChange {
                     setActiveWorkspaceCanvasItem(nil, remember: false)
                 }
@@ -1113,13 +1124,8 @@ struct ContentView: View {
 
     private func handleSelectedTaskCanvasSignatureChanged() {
         cachedHasCanvasContent = selectedTask.flatMap { TaskPlanService.reconstruct(for: $0).plan } != nil
-        if !cachedHasCanvasContent, activeWorkspaceCanvasItem == .plan {
-            setActiveWorkspaceCanvasItem(nil, remember: false)
-        }
-        if selectedTask == nil, !isComposingTask, activeWorkspaceCanvasItem == .browser {
-            setActiveWorkspaceCanvasItem(nil, remember: false)
-        }
-        if selectedTask == nil, !isComposingTask, effectiveWorkspace == nil, activeWorkspaceCanvasItem == .markdown {
+        if let activeWorkspaceCanvasItem,
+           !canPresentWorkspaceCanvasItem(activeWorkspaceCanvasItem) {
             setActiveWorkspaceCanvasItem(nil, remember: false)
         }
         refreshMarkdownShelfAvailabilityForSelectedTask()
@@ -1146,6 +1152,7 @@ struct ContentView: View {
     }
 
     private func presentCanvas(_ item: WorkspaceCanvasItem) {
+        guard canPresentWorkspaceCanvasItem(item) else { return }
         animatePanelChange {
             isWorkspaceRightRailVisible = false
             setActiveWorkspaceCanvasItem(item, remember: true)
@@ -1155,7 +1162,10 @@ struct ContentView: View {
     private var workspaceCanvasItemBinding: Binding<WorkspaceCanvasItem?> {
         Binding(
             get: { activeWorkspaceCanvasItem },
-            set: { setActiveWorkspaceCanvasItem($0, remember: true) }
+            set: { item in
+                guard item.map(canPresentWorkspaceCanvasItem) ?? true else { return }
+                setActiveWorkspaceCanvasItem(item, remember: true)
+            }
         )
     }
 
@@ -1203,18 +1213,7 @@ struct ContentView: View {
     }
 
     private func canPresentWorkspaceCanvasItem(_ item: WorkspaceCanvasItem) -> Bool {
-        switch item {
-        case .plan:
-            return hasOpenTaskThread && hasWorkspaceCanvasContent
-        case .markdown:
-            return effectiveWorkspace != nil || selectedTaskHasMarkdownShelfContent || selectedTask != nil || isComposingTask
-        case .browser:
-            return hasOpenTaskThread
-        case .query:
-            return hasOpenTaskThread && hasQueryShelfAffordance
-        case .appPreview:
-            return isComposingWorkspaceApp
-        }
+        shelfAvailabilityPolicy.canPresent(item.shelfID, in: shelfAvailabilityContext)
     }
 
     private func prepareWorkspaceCanvasItemForPresentation(_ item: WorkspaceCanvasItem, source: String) {
@@ -1253,7 +1252,7 @@ struct ContentView: View {
     }
 
     private func toggleWorkspaceCanvas() {
-        guard hasWorkspaceCanvasContent else {
+        guard canPresentWorkspaceCanvasItem(.plan) else {
             animatePanelChange {
                 if activeWorkspaceCanvasItem == .plan {
                     setActiveWorkspaceCanvasItem(nil, remember: true)
@@ -1271,18 +1270,20 @@ struct ContentView: View {
     }
 
     private func toggleBrowserCanvas() {
-        currentBrowserSession.bindToTask(selectedTask?.id)
         if activeWorkspaceCanvasItem == .browser {
             animatePanelChange {
                 setActiveWorkspaceCanvasItem(nil, remember: true)
             }
         } else {
+            guard canPresentWorkspaceCanvasItem(.browser) else { return }
+            currentBrowserSession.bindToTask(selectedTask?.id)
             loadPreferredGeneratedHTMLForBrowserShelfIfNeeded(source: "browser_shelf_open")
             presentCanvas(.browser)
         }
     }
 
     private func openBrowserCanvas(engine: ShelfBrowserEngine) {
+        guard canPresentWorkspaceCanvasItem(.browser) else { return }
         let session = currentBrowserSession
         session.bindToTask(selectedTask?.id)
         if session.engine != engine {
@@ -1296,7 +1297,7 @@ struct ContentView: View {
     }
 
     private func toggleMarkdownCanvas() {
-        guard effectiveWorkspace != nil || selectedTaskHasMarkdownShelfContent || selectedTask != nil || isComposingTask else {
+        guard canPresentWorkspaceCanvasItem(.markdown) else {
             if activeWorkspaceCanvasItem == .markdown {
                 animatePanelChange {
                     setActiveWorkspaceCanvasItem(nil, remember: true)
@@ -1321,7 +1322,7 @@ struct ContentView: View {
     }
 
     private func toggleQueryCanvas() {
-        guard hasQueryShelfAffordance else {
+        guard canPresentWorkspaceCanvasItem(.query) else {
             if activeWorkspaceCanvasItem == .query {
                 animatePanelChange {
                     setActiveWorkspaceCanvasItem(nil, remember: true)
@@ -1772,19 +1773,30 @@ struct ContentView: View {
     }
 
     private func openPlanCanvas(_ task: AgentTask) {
-        if selectedTask?.id == task.id {
-            guard cachedHasCanvasContent else { return }
+        let previousTaskID = selectedTask?.id
+        let currentCachedHasPlanContent = cachedHasCanvasContent
+        let targetHasPlanContent: Bool
+        if previousTaskID == task.id {
+            targetHasPlanContent = currentCachedHasPlanContent
         } else {
-            guard TaskPlanService.reconstruct(for: task).plan != nil else { return }
+            targetHasPlanContent = TaskPlanService.reconstruct(for: task).plan != nil
         }
-        if selectedTask?.id == task.id, activeWorkspaceCanvasItem == .plan {
+        guard targetHasPlanContent else { return }
+
+        if previousTaskID == task.id, activeWorkspaceCanvasItem == .plan {
             animatePanelChange {
                 setActiveWorkspaceCanvasItem(nil, remember: true)
             }
             return
         }
-        if selectedTask?.id != task.id {
+        if previousTaskID != task.id {
             setSelectedTask(task)
+            cachedHasCanvasContent = WorkspacePlanCanvasPresentationTransition.cachedHasPlanContentAfterTargetValidation(
+                previousTaskID: previousTaskID,
+                targetTaskID: task.id,
+                currentCachedHasPlanContent: currentCachedHasPlanContent,
+                targetHasPlanContent: targetHasPlanContent
+            )
         }
         isComposingTask = false
         presentCanvas(.plan)
