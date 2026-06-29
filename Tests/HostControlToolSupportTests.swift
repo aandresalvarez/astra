@@ -80,6 +80,15 @@ struct HostControlToolSupportTests {
         #expect(jiraText.contains("api_token_present: true"))
         #expect(!jiraText.contains("super-secret-token"))
 
+        let jiraSchema = try #require(tools.first { $0["name"] as? String == "jira" })
+        let inputSchema = try #require(jiraSchema["inputSchema"] as? [String: Any])
+        let properties = try #require(inputSchema["properties"] as? [String: Any])
+        #expect(properties.keys.contains("issue_key"))
+        #expect(properties.keys.contains("jql"))
+        #expect(!properties.keys.contains("method"))
+        #expect(!properties.keys.contains("path"))
+        #expect(!properties.keys.contains("body"))
+
         let hostLog = try String(contentsOf: log, encoding: .utf8)
         #expect(hostLog.contains("gh pr view 123 --comments"))
         #expect(hostLog.contains("gcloud compute instances list --format=json"))
@@ -91,6 +100,32 @@ struct HostControlToolSupportTests {
         #expect(diagnosticsText.contains(#""toolName":"github""#))
         #expect(diagnosticsText.contains(#""toolName":"jira""#))
         #expect(!diagnosticsText.contains("super-secret-token"))
+    }
+
+    @Test("Jira host control rejects raw REST request passthrough")
+    func jiraHostControlRejectsRawRESTRequestPassthrough() throws {
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"http://127.0.0.1:9","authMethod":"basic","env":{"JIRA_EMAIL":"JIRA_EMAIL_ENV","JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_EMAIL":"JIRA_EMAIL_ENV","JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let configuration = HostControlToolConfiguration(
+            connectorsJSON: connectors,
+            environment: [
+                "ASTRA_CONNECTORS": connectors,
+                "JIRA_EMAIL_ENV": "user@example.com",
+                "JIRA_TOKEN_ENV": "super-secret-token"
+            ]
+        )
+        let server = HostControlMCPServer(configuration: configuration)
+
+        let response = try call(server, id: 1, tool: "jira", arguments: [
+            "operation": "request",
+            "method": "DELETE",
+            "path": "/rest/api/3/issue/ASTRA-1",
+            "body": #"{"deleteSubtasks":true}"#
+        ])
+
+        let error = try errorMessage(response)
+        #expect(error.contains("Unsupported Jira operation 'request'"))
     }
 
     @Test("Host and Docker mixed harness routes control-plane and workspace commands separately")
@@ -281,5 +316,10 @@ struct HostControlToolSupportTests {
         let result = try #require(object["result"] as? [String: Any])
         let content = try #require(result["content"] as? [[String: Any]])
         return try #require(content.first?["text"] as? String)
+    }
+
+    private func errorMessage(_ object: [String: Any]) throws -> String {
+        let error = try #require(object["error"] as? [String: Any])
+        return try #require(error["message"] as? String)
     }
 }

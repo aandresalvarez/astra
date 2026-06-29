@@ -491,17 +491,22 @@ public final class HostControlMCPServer {
                 ]],
                 "isError": !status.ready
             ])
-        case "request":
-            return handleJiraRequest(id: id, connector: connector, arguments: arguments)
+        case "get_issue", "issue", "search_jql", "search":
+            return handleJiraReadRequest(id: id, operation: operation, connector: connector, arguments: arguments)
         default:
             return encodeError(id: id, code: -32602, message: "Unsupported Jira operation '\(operation)'")
         }
     }
 
-    private func handleJiraRequest(id: Any?, connector: HostControlConnector, arguments: [String: Any]) -> String? {
+    private func handleJiraReadRequest(
+        id: Any?,
+        operation: String,
+        connector: HostControlConnector,
+        arguments: [String: Any]
+    ) -> String? {
         let status = jiraStatus(connector: connector)
         guard status.ready else {
-            diagnosticsRecorder?.record(toolName: "jira", summary: "jira request \(connector.alias) blocked: not configured", result: nil)
+            diagnosticsRecorder?.record(toolName: "jira", summary: "jira \(operation) \(connector.alias) blocked: not configured", result: nil)
             return encodeResult(id: id, result: [
                 "content": [[
                     "type": "text",
@@ -510,24 +515,19 @@ public final class HostControlMCPServer {
                 "isError": true
             ])
         }
-        guard let method = clean(arguments["method"] as? String)?.uppercased(),
-              ["GET", "POST", "PUT", "DELETE"].contains(method) else {
-            return encodeError(id: id, code: -32602, message: "jira request requires method GET, POST, PUT, or DELETE")
-        }
-        guard let path = clean(arguments["path"] as? String),
-              path.hasPrefix("/") else {
-            return encodeError(id: id, code: -32602, message: "jira request requires a path starting with /")
+        let request: JiraHTTPRequest
+        do {
+            request = try JiraRequestPolicy.readRequest(operation: operation, arguments: arguments)
+        } catch {
+            return encodeError(id: id, code: -32602, message: error.localizedDescription)
         }
         let timeout = timeoutSeconds(from: arguments["timeout_seconds"]) ?? 120
-        let body = clean(arguments["body"] as? String)
         let response = JiraHTTPClient(configuration: configuration).request(
             connector: connector,
-            method: method,
-            path: path,
-            body: body,
+            request: request,
             timeoutSeconds: timeout
         )
-        diagnosticsRecorder?.record(toolName: "jira", summary: "jira \(method) \(path)", result: response.diagnosticResult)
+        diagnosticsRecorder?.record(toolName: "jira", summary: "jira \(operation) \(request.diagnosticPath)", result: response.diagnosticResult)
         return encodeResult(id: id, result: [
             "content": [[
                 "type": "text",
@@ -689,15 +689,15 @@ public final class HostControlMCPServer {
     private func jiraSchema() -> [String: Any] {
         [
             "name": "jira",
-            "description": "Use ASTRA-projected Jira connector credentials on the host. Status never reveals secret values.",
+            "description": "Use typed, read-only ASTRA-projected Jira connector operations on the host. Status never reveals secret values.",
             "inputSchema": [
                 "type": "object",
                 "properties": [
-                    "operation": ["type": "string", "description": "status or request. Defaults to status."],
+                    "operation": ["type": "string", "description": "status, get_issue, or search_jql. Defaults to status."],
                     "alias": ["type": "string", "description": "Optional connector alias."],
-                    "method": ["type": "string", "description": "For request: GET, POST, PUT, or DELETE."],
-                    "path": ["type": "string", "description": "For request: Jira REST path beginning with /."],
-                    "body": ["type": "string", "description": "For request: optional JSON body."],
+                    "issue_key": ["type": "string", "description": "For get_issue: Jira issue key, for example ASTRA-123."],
+                    "jql": ["type": "string", "description": "For search_jql: Jira Query Language expression."],
+                    "max_results": ["type": "number", "description": "For search_jql: maximum result count from 1 to 100. Defaults to 20."],
                     "timeout_seconds": ["type": "number", "description": "Optional request timeout. Defaults to 120 seconds."]
                 ],
                 "additionalProperties": false
@@ -777,6 +777,84 @@ private struct JiraConnectorStatus {
     }
 }
 
+private struct JiraHTTPRequest {
+    var method: String
+    var path: String
+    var queryItems: [URLQueryItem]
+
+    var diagnosticPath: String {
+        if queryItems.isEmpty {
+            return path
+        }
+        return "\(path)?<query>"
+    }
+}
+
+private enum JiraRequestPolicy {
+    static func readRequest(operation: String, arguments: [String: Any]) throws -> JiraHTTPRequest {
+        switch operation {
+        case "get_issue", "issue":
+            guard let issueKey = clean(arguments["issue_key"] as? String),
+                  isValidIssueKey(issueKey) else {
+                throw JiraRequestPolicyError("jira get_issue requires an issue_key such as ASTRA-123")
+            }
+            return JiraHTTPRequest(
+                method: "GET",
+                path: "/rest/api/3/issue/\(issueKey)",
+                queryItems: []
+            )
+        case "search_jql", "search":
+            guard let jql = clean(arguments["jql"] as? String),
+                  jql.count <= 1_000 else {
+                throw JiraRequestPolicyError("jira search_jql requires a non-empty jql string up to 1000 characters")
+            }
+            return JiraHTTPRequest(
+                method: "GET",
+                path: "/rest/api/3/search/jql",
+                queryItems: [
+                    URLQueryItem(name: "jql", value: jql),
+                    URLQueryItem(name: "maxResults", value: String(maxResults(from: arguments["max_results"])))
+                ]
+            )
+        default:
+            throw JiraRequestPolicyError("Unsupported Jira operation '\(operation)'")
+        }
+    }
+
+    private static func maxResults(from value: Any?) -> Int {
+        let raw: Int?
+        switch value {
+        case let number as NSNumber:
+            raw = number.intValue
+        case let string as String:
+            raw = Int(string.trimmingCharacters(in: .whitespacesAndNewlines))
+        default:
+            raw = nil
+        }
+        return min(max(raw ?? 20, 1), 100)
+    }
+
+    private static func clean(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func isValidIssueKey(_ value: String) -> Bool {
+        value.range(
+            of: #"^[A-Z][A-Z0-9_]+-[1-9][0-9]*$"#,
+            options: [.regularExpression]
+        ) != nil
+    }
+}
+
+private struct JiraRequestPolicyError: LocalizedError {
+    var errorDescription: String?
+
+    init(_ message: String) {
+        errorDescription = message
+    }
+}
+
 private struct JiraHTTPResponse {
     var statusCode: Int
     var body: String
@@ -817,12 +895,10 @@ private final class JiraHTTPClient {
 
     func request(
         connector: HostControlConnector,
-        method: String,
-        path: String,
-        body: String?,
+        request jiraRequest: JiraHTTPRequest,
         timeoutSeconds: TimeInterval
     ) -> JiraHTTPResponse {
-        guard let url = URL(string: connector.baseURL)?.appendingPathComponent(path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))) else {
+        guard let url = url(baseURL: connector.baseURL, request: jiraRequest) else {
             return JiraHTTPResponse(statusCode: 0, body: "", errorMessage: "Invalid Jira base URL or path")
         }
         guard let email = credential(named: "JIRA_EMAIL", connector: connector) ?? credential(named: "EMAIL", connector: connector),
@@ -831,12 +907,8 @@ private final class JiraHTTPClient {
         }
 
         var request = URLRequest(url: url, timeoutInterval: timeoutSeconds)
-        request.httpMethod = method
+        request.httpMethod = jiraRequest.method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if let body {
-            request.httpBody = Data(body.utf8)
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        }
         let tokenData = Data("\(email):\(token)".utf8).base64EncodedString()
         request.setValue("Basic \(tokenData)", forHTTPHeaderField: "Authorization")
 
@@ -854,6 +926,21 @@ private final class JiraHTTPClient {
             return JiraHTTPResponse(statusCode: 0, body: "", errorMessage: "Timed out after \(Int(timeoutSeconds))s")
         }
         return result
+    }
+
+    private func url(baseURL: String, request: JiraHTTPRequest) -> URL? {
+        guard var url = URL(string: baseURL),
+              url.scheme?.hasPrefix("http") == true else {
+            return nil
+        }
+        for segment in request.path.split(separator: "/") {
+            url.appendPathComponent(String(segment))
+        }
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+        components.queryItems = request.queryItems.isEmpty ? nil : request.queryItems
+        return components.url
     }
 
     private func credential(named logicalName: String, connector: HostControlConnector) -> String? {
