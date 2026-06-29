@@ -50,6 +50,9 @@ struct PanelLayoutGeometryTests {
         #expect(WorkspaceCanvasItem.markdown.rawValue == "markdown")
         #expect(WorkspaceCanvasItem.browser.rawValue == "browser")
         #expect(WorkspaceCanvasItem.query.rawValue == "query")
+        #expect(WorkspaceCanvasItem.appPreview.rawValue == "appPreview")
+        #expect(WorkspaceCanvasItem.markdown.shelfID == .files)
+        #expect(ShelfID.files.workspaceCanvasItem.rawValue == "markdown")
         #expect(WorkspaceCanvasItemPreference.item(for: "") == nil)
         #expect(WorkspaceCanvasItemPreference.rawValue(for: nil) == "")
         #expect(WorkspaceCanvasItemPreference.rawValue(for: .browser) == "browser")
@@ -472,6 +475,11 @@ struct PanelLayoutGeometryTests {
 
     @Test("Files shelf minimum preserves navigator and preview")
     func filesShelfMinimumPreservesNavigatorAndPreview() {
+        #expect(PanelLayoutGeometry.filesShelfNavigatorDefaultWidth == ShelfWidthMetrics.filesNavigatorDefaultWidth)
+        #expect(PanelLayoutGeometry.filesShelfResizeHandleWidth == ShelfWidthMetrics.filesResizeHandleWidth)
+        #expect(PanelLayoutGeometry.filesShelfMinimumPreviewWidth == ShelfWidthMetrics.filesMinimumPreviewWidth)
+        #expect(PanelLayoutGeometry.filesShelfMinReadableWidth == ShelfWidthMetrics.filesMinReadableWidth)
+        #expect(PanelLayoutGeometry.browserShelfMinWidth == ShelfWidthMetrics.browserMinWidth)
         #expect(PanelLayoutGeometry.filesShelfMinReadableWidth == 550)
         #expect(PanelLayoutGeometry.filesShelfPreviewWidth(shelfWidth: 360) < PanelLayoutGeometry.filesShelfMinimumPreviewWidth)
         #expect(PanelLayoutGeometry.filesShelfPreviewWidth(

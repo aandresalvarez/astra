@@ -84,12 +84,11 @@ enum PanelLayoutGeometry {
 
     /// Default split inside the Files shelf. The shelf's outer minimum must
     /// keep this navigator and the preview pane readable together.
-    static let filesShelfNavigatorDefaultWidth: CGFloat = 282
-    static let filesShelfResizeHandleWidth: CGFloat = 8
-    static let filesShelfMinimumPreviewWidth: CGFloat = 260
-    static let filesShelfMinReadableWidth: CGFloat =
-        filesShelfNavigatorDefaultWidth + filesShelfResizeHandleWidth + filesShelfMinimumPreviewWidth
-    static let browserShelfMinWidth: CGFloat = 360
+    static let filesShelfNavigatorDefaultWidth: CGFloat = ShelfWidthMetrics.filesNavigatorDefaultWidth
+    static let filesShelfResizeHandleWidth: CGFloat = ShelfWidthMetrics.filesResizeHandleWidth
+    static let filesShelfMinimumPreviewWidth: CGFloat = ShelfWidthMetrics.filesMinimumPreviewWidth
+    static let filesShelfMinReadableWidth: CGFloat = ShelfWidthMetrics.filesMinReadableWidth
+    static let browserShelfMinWidth: CGFloat = ShelfWidthMetrics.browserMinWidth
 
     /// Returns true when the window is narrow enough that having both the sidebar
     /// AND a right-side panel open at once would cramp the detail area.

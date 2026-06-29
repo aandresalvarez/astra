@@ -35,6 +35,7 @@ struct ArchitectureFitnessTests {
             "Runtime",
             "Security",
             "Settings",
+            "Shelves",
             "Tasks",
             "Validation",
             "WorkspaceApps"
@@ -82,6 +83,31 @@ struct ArchitectureFitnessTests {
             }
 
         #expect(matches.isEmpty, "Pack source discovery should use HostFileAccessBroker: \(matches)")
+    }
+
+    @Test("Shelf services stay independent of view-layer types")
+    func shelfServicesStayIndependentOfViewLayerTypes() throws {
+        let root = try repositoryRoot()
+        let shelvesRoot = root.appendingPathComponent("Astra/Services/Shelves")
+        let forbiddenSymbols = [
+            "WorkspaceCanvasItem",
+            "PanelLayoutGeometry"
+        ]
+
+        let matches = try swiftFiles(under: shelvesRoot)
+            .flatMap { file -> [String] in
+                let relativePath = relativePath(for: file, root: root)
+                let text = try String(contentsOf: file, encoding: .utf8)
+                return forbiddenSymbols
+                    .filter { text.contains($0) }
+                    .map { "\(relativePath): \($0)" }
+            }
+            .sorted()
+
+        #expect(
+            matches.isEmpty,
+            "Shelf services must not depend on view-layer types; add a view-side adapter or neutral metrics instead: \(matches)"
+        )
     }
 
     @Test("Workspace App Studio stays on the direct session architecture")
