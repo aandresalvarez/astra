@@ -124,6 +124,35 @@ struct PluginCatalogBuiltInTests {
         #expect(package.governance.visibility == .hidden)
     }
 
+    @Test("Google Workspace bundled capability is a normal setup-gated integration")
+    func googleWorkspaceCapabilityIsNormalSetupGatedIntegration() throws {
+        let package = try #require(PluginCatalog.builtInPackages.first { $0.id == GoogleWorkspaceCapability.packageID })
+
+        #expect(package.name == "Google Workspace")
+        #expect(package.category == "Integrations")
+        #expect(package.connectors.isEmpty)
+        #expect(package.requiresSetup)
+        #expect(package.setupRequirements == [
+            PluginSetupRequirement(
+                id: GoogleWorkspaceCapability.setupRequirementID,
+                kind: .oauthAccount,
+                displayName: "Google Workspace OAuth account",
+                provider: GoogleWorkspaceCapability.connectorBinding,
+                required: true,
+                notes: "Connect with ASTRA managed OAuth when provisioned, or configure an admin custom OAuth client with a loopback redirect before enabling the capability."
+            )
+        ])
+        #expect(GoogleWorkspaceCapability.usesGoogleWorkspaceOAuthSetup(package))
+        #expect(package.mcpServers.map(\.id) == [
+            "google_workspace_gmail",
+            "google_workspace_drive",
+            "google_workspace_calendar"
+        ])
+        #expect(package.mcpServers.allSatisfy { $0.transport == .http })
+        #expect(package.mcpServers.allSatisfy { $0.connectorBindings == [GoogleWorkspaceCapability.connectorBinding] })
+        #expect(package.mcpServers.allSatisfy { $0.environmentKeys.isEmpty })
+    }
+
     @Test("Built-in packages all have valid versions")
     func builtInVersionsValid() {
         for pkg in PluginCatalog.builtInPackages {

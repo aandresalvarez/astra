@@ -1,29 +1,17 @@
 import Foundation
 import ASTRACore
 
-struct MCPInstallIntent: Equatable {
-    enum Kind: Equatable {
-        case stdioCommand
-        case remoteURL
-    }
-
-    var rawInput: String
-    var kind: Kind
-    var serverID: String?
-    var displayName: String?
-    var transport: PluginMCPServer.Transport
-    var command: String?
-    var arguments: [String]
-    var url: URL?
-    var installSource: PluginMCPInstallSource?
-}
-
 enum MCPInstallIntentParser {
     static func parse(_ input: String) -> MCPInstallIntent? {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
-        if let jsonIntent = parseClaudeConfig(trimmed) {
+        if let jsonIntent = MCPInstallConfigParser.parse(
+            trimmed,
+            commandParser: { command, arguments, rawInput in
+                parseCommand(command: command, arguments: arguments, rawInput: rawInput)
+            }
+        ) {
             return jsonIntent
         }
         guard !containsShellControl(trimmed) else { return nil }
@@ -87,6 +75,14 @@ enum MCPInstallIntentParser {
         let tokens = shellTokens(input)
         guard let command = tokens.first else { return nil }
         let arguments = Array(tokens.dropFirst())
+        return parseCommand(command: command, arguments: arguments, rawInput: input)
+    }
+
+    private static func parseCommand(
+        command: String,
+        arguments: [String],
+        rawInput: String
+    ) -> MCPInstallIntent? {
         let executable = (command as NSString).lastPathComponent.lowercased()
 
         let source: PluginMCPInstallSource
@@ -124,8 +120,28 @@ enum MCPInstallIntentParser {
             )
         }
 
+        if let setupCommand = MCPInstallSetupCommandClassifier.setupCommand(
+            command: command,
+            arguments: arguments,
+            source: source
+        ) {
+            return MCPInstallIntent(
+                rawInput: rawInput,
+                kind: .setupCommand,
+                serverID: defaultServerID(from: source.identifier),
+                displayName: source.identifier,
+                transport: .stdio,
+                command: nil,
+                arguments: [],
+                url: nil,
+                installSource: source,
+                serverSpecs: [],
+                setupCommand: setupCommand
+            )
+        }
+
         return MCPInstallIntent(
-            rawInput: input,
+            rawInput: rawInput,
             kind: .stdioCommand,
             serverID: defaultServerID(from: source.identifier),
             displayName: source.identifier,
@@ -135,31 +151,6 @@ enum MCPInstallIntentParser {
             url: nil,
             installSource: source
         )
-    }
-
-    private static func parseClaudeConfig(_ input: String) -> MCPInstallIntent? {
-        guard let data = input.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let servers = object["mcpServers"] as? [String: Any],
-              let first = servers.sorted(by: { $0.key < $1.key }).first,
-              let entry = first.value as? [String: Any] else {
-            return nil
-        }
-
-        if let urlText = entry["url"] as? String,
-           var urlIntent = parseURL(urlText) {
-            urlIntent.rawInput = input
-            urlIntent.serverID = first.key
-            return urlIntent
-        }
-
-        guard let command = entry["command"] as? String else { return nil }
-        let args = entry["args"] as? [String] ?? []
-        let commandLine = ([command] + args).joined(separator: " ")
-        guard var intent = parseCommand(commandLine) else { return nil }
-        intent.rawInput = input
-        intent.serverID = first.key
-        return intent
     }
 
     private static func containsShellControl(_ input: String) -> Bool {

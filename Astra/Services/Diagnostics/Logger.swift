@@ -182,6 +182,8 @@ enum AuditEvent: String, CaseIterable {
     case capabilityChatContext = "capability.chat_context"
     case capabilityResolved = "capability.resolved"
     case capabilityRuntimeIntegrity = "capability.runtime_integrity"
+    case mcpToolPolicyAllowed = "mcp.tool_policy.allowed"
+    case mcpToolPolicyDenied = "mcp.tool_policy.denied"
     case workspaceImported = "workspace.imported"
     case workspaceExported = "workspace.exported"
     case workspaceRecovered = "workspace.recovered"

@@ -298,6 +298,95 @@ struct WorkspaceAppContractRegistry: Equatable {
                 WorkspaceAppContractOperation(name: "listMyPullRequests", effect: .read),
                 WorkspaceAppContractOperation(name: "listRepoPullRequests", effect: .read)
             ]
+        ),
+        WorkspaceAppContractFamily(
+            id: "gmail.thread.read",
+            displayName: "Gmail Thread Read",
+            operations: [
+                WorkspaceAppContractOperation(name: "listThreads", effect: .read),
+                WorkspaceAppContractOperation(name: "getThread", effect: .read)
+            ]
+        ),
+        WorkspaceAppContractFamily(
+            id: "gmail.message.write",
+            displayName: "Gmail Message Write",
+            operations: [
+                WorkspaceAppContractOperation(name: "prepareMessage", effect: .read),
+                WorkspaceAppContractOperation(name: "sendMessage", effect: .externalWrite, requiresApproval: true)
+            ]
+        ),
+        WorkspaceAppContractFamily(
+            id: "drive.file.read",
+            displayName: "Drive File Read",
+            operations: [
+                WorkspaceAppContractOperation(name: "listFiles", effect: .read),
+                WorkspaceAppContractOperation(name: "getFileMetadata", effect: .read),
+                WorkspaceAppContractOperation(name: "readFileContents", effect: .read)
+            ]
+        ),
+        WorkspaceAppContractFamily(
+            id: "drive.file.write",
+            displayName: "Drive File Write",
+            operations: [
+                WorkspaceAppContractOperation(name: "prepareFile", effect: .read),
+                WorkspaceAppContractOperation(name: "createFile", effect: .externalWrite, requiresApproval: true),
+                WorkspaceAppContractOperation(name: "updateFile", effect: .externalWrite, requiresApproval: true),
+                WorkspaceAppContractOperation(name: "trashFile", effect: .destructive, requiresApproval: true)
+            ]
+        ),
+        WorkspaceAppContractFamily(
+            id: "calendar.event.read",
+            displayName: "Calendar Event Read",
+            operations: [
+                WorkspaceAppContractOperation(name: "listCalendars", effect: .read),
+                WorkspaceAppContractOperation(name: "listEvents", effect: .read),
+                WorkspaceAppContractOperation(name: "getEvent", effect: .read)
+            ]
+        ),
+        WorkspaceAppContractFamily(
+            id: "calendar.event.write",
+            displayName: "Calendar Event Write",
+            operations: [
+                WorkspaceAppContractOperation(name: "prepareEvent", effect: .read),
+                WorkspaceAppContractOperation(name: "createEvent", effect: .externalWrite, requiresApproval: true),
+                WorkspaceAppContractOperation(name: "updateEvent", effect: .externalWrite, requiresApproval: true),
+                WorkspaceAppContractOperation(name: "deleteEvent", effect: .destructive, requiresApproval: true)
+            ]
+        ),
+        WorkspaceAppContractFamily(
+            id: "docs.document.read",
+            displayName: "Docs Document Read",
+            operations: [
+                WorkspaceAppContractOperation(name: "getDocumentMetadata", effect: .read),
+                WorkspaceAppContractOperation(name: "readDocument", effect: .read)
+            ]
+        ),
+        WorkspaceAppContractFamily(
+            id: "docs.document.write",
+            displayName: "Docs Document Write",
+            operations: [
+                WorkspaceAppContractOperation(name: "prepareDocumentEdit", effect: .read),
+                WorkspaceAppContractOperation(name: "insertText", effect: .externalWrite, requiresApproval: true),
+                WorkspaceAppContractOperation(name: "replaceDocument", effect: .externalWrite, requiresApproval: true)
+            ]
+        ),
+        WorkspaceAppContractFamily(
+            id: "sheets.range.read",
+            displayName: "Sheets Range Read",
+            operations: [
+                WorkspaceAppContractOperation(name: "getSpreadsheetMetadata", effect: .read),
+                WorkspaceAppContractOperation(name: "readRange", effect: .read)
+            ]
+        ),
+        WorkspaceAppContractFamily(
+            id: "sheets.range.write",
+            displayName: "Sheets Range Write",
+            operations: [
+                WorkspaceAppContractOperation(name: "prepareRangeEdit", effect: .read),
+                WorkspaceAppContractOperation(name: "updateRange", effect: .externalWrite, requiresApproval: true),
+                WorkspaceAppContractOperation(name: "appendRows", effect: .externalWrite, requiresApproval: true),
+                WorkspaceAppContractOperation(name: "clearRange", effect: .destructive, requiresApproval: true)
+            ]
         )
     ]
 

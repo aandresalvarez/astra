@@ -1868,12 +1868,36 @@ enum ASTRASchemaV8: VersionedSchema {
     }
 }
 
+/// V9 adds Google OAuth account profiles. Token values are intentionally not
+/// model fields; they live only in the dedicated Keychain-backed vault.
+enum ASTRASchemaV9: VersionedSchema {
+    static var versionIdentifier = Schema.Version(9, 0, 0)
+
+    static var models: [any PersistentModel.Type] {
+        [
+            Workspace.self,
+            AgentTask.self,
+            TaskRun.self,
+            TaskEvent.self,
+            Artifact.self,
+            Skill.self,
+            Connector.self,
+            LocalTool.self,
+            TaskTemplate.self,
+            TaskSchedule.self,
+            WorkspaceApp.self,
+            WorkspaceAppRun.self,
+            WorkspaceAppRunEvent.self,
+            WorkspaceAppDependencyBinding.self,
+            WorkspaceAppAutomationState.self,
+            GoogleOAuthAccountProfile.self
+        ]
+    }
+}
+
 enum ASTRASchema {
     static var current: Schema {
-        // V8 introduces the WorkspaceApp models (referenced as top-level classes), so the
-        // B2 resumable-run fields added to WorkspaceAppRun are part of V8's fresh table
-        // creation in the V7 -> V8 stage. No separate version needed.
-        Schema(versionedSchema: ASTRASchemaV8.self)
+        Schema(versionedSchema: ASTRASchemaV9.self)
     }
 }
 
@@ -1887,7 +1911,8 @@ enum ASTRAMigrationPlan: SchemaMigrationPlan {
             ASTRASchemaV5.self,
             ASTRASchemaV6.self,
             ASTRASchemaV7.self,
-            ASTRASchemaV8.self
+            ASTRASchemaV8.self,
+            ASTRASchemaV9.self
         ]
     }
 
@@ -1899,7 +1924,8 @@ enum ASTRAMigrationPlan: SchemaMigrationPlan {
             .lightweight(fromVersion: ASTRASchemaV4.self, toVersion: ASTRASchemaV5.self),
             .lightweight(fromVersion: ASTRASchemaV5.self, toVersion: ASTRASchemaV6.self),
             .lightweight(fromVersion: ASTRASchemaV6.self, toVersion: ASTRASchemaV7.self),
-            .lightweight(fromVersion: ASTRASchemaV7.self, toVersion: ASTRASchemaV8.self)
+            .lightweight(fromVersion: ASTRASchemaV7.self, toVersion: ASTRASchemaV8.self),
+            .lightweight(fromVersion: ASTRASchemaV8.self, toVersion: ASTRASchemaV9.self)
         ]
     }
 }

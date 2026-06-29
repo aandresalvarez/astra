@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .executable(name: "ASTRA", targets: ["ASTRAExecutable"]),
         .executable(name: "astra-browser", targets: ["AstraBrowserTool"]),
+        .executable(name: "astra-mcp-gateway", targets: ["AstraMCPGatewayTool"]),
         .executable(name: "astra-host-control", targets: ["AstraHostControlTool"]),
         .executable(name: "astra-workspace", targets: ["AstraWorkspaceTool"]),
         .executable(name: "stanford-mail", targets: ["StanfordMailTool"]),
@@ -44,10 +45,19 @@ let package = Package(
             name: "HostControlToolSupport",
             path: "Tools/HostControlToolSupport"
         ),
+        .target(
+            name: "MCPGatewaySupport",
+            path: "Tools/MCPGatewaySupport"
+        ),
         .executableTarget(
             name: "AstraBrowserTool",
             dependencies: ["ASTRACore"],
             path: "Tools/AstraBrowserTool"
+        ),
+        .executableTarget(
+            name: "AstraMCPGatewayTool",
+            dependencies: ["MCPGatewaySupport"],
+            path: "Tools/AstraMCPGatewayTool"
         ),
         .executableTarget(
             name: "AstraHostControlTool",
@@ -99,7 +109,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ASTRATests",
-            dependencies: ["ASTRA", "ASTRACore", "ASTRAGitContracts", "HostControlToolSupport", "WorkspaceToolSupport"],
+            dependencies: ["ASTRA", "ASTRACore", "ASTRAGitContracts", "HostControlToolSupport", "MCPGatewaySupport", "WorkspaceToolSupport"],
             path: "Tests"
         )
     ]

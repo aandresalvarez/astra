@@ -106,6 +106,166 @@ invalidates a prior local approval.
 - `browserAdapters`: IDs for ASTRA-known native browser adapters.
 - `prerequisites`: local CLI readiness checks.
 
+### Remote MCP OAuth Contracts
+
+Remote MCP servers that need Google Workspace or another OAuth-backed provider
+must declare ASTRA-owned auth and policy metadata, not provider-owned secrets.
+ASTRA owns OAuth account identity, requested scopes, consent, audit naming,
+tool classification, and generated-app contract IDs.
+
+Providers receive only ASTRA MCP configuration. Generated apps receive stable
+contract IDs such as `googleWorkspace.drive.read` or
+`googleWorkspace.gmail.send`; they must never receive OAuth tokens, refresh
+tokens, raw Google tool names as their authority boundary, or provider-specific
+credentials in manifests, prompts, logs, or config files.
+
+Remote registry metadata is contract-only. It does not perform token exchange
+or live MCP forwarding:
+
+```json
+{
+  "id": "google-workspace",
+  "displayName": "Google Workspace Remote MCP",
+  "transport": "http",
+  "url": "https://mcp.astra.local/google-workspace",
+  "remoteRegistry": {
+    "registryID": "google-workspace",
+    "providerID": "googleWorkspace",
+    "providerDisplayName": "Google Workspace",
+    "tokenDelivery": "astraBrokered",
+    "exposesRawProviderToolsToGeneratedApps": false,
+    "contractIDs": ["googleWorkspace.drive.read"],
+    "toolClassifications": [
+      {
+        "toolName": "drive.files.list",
+        "contractID": "googleWorkspace.drive.read",
+        "effect": "read",
+        "dataAccess": ["externalService"],
+        "riskLevel": "medium",
+        "requiresExplicitUserConsent": false,
+        "auditEventName": "google.workspace.drive.files.list"
+      }
+    ],
+    "authProfile": {
+      "id": "google-workspace-primary",
+      "providerID": "googleWorkspace",
+      "authorizationKind": "astraOwnedOAuth",
+      "consentRequired": true,
+      "auditEventNamespace": "google.workspace",
+      "scopes": [
+        {
+          "value": "https://www.googleapis.com/auth/drive.metadata.readonly",
+          "purpose": "Read Drive metadata for generated app contract responses.",
+          "sensitivity": "restricted",
+          "required": true
+        }
+      ]
+    }
+  }
+}
+```
+
+### MCP Control Plane Metadata
+
+Each `mcpServers[]` entry may include optional `controlPlane` metadata. This
+metadata keeps the MCP server declaration as the package source of truth while
+recording the refs and matrix rows that future runtime PRs need. It is
+contract-only in this slice: it does not project provider config, mutate global
+provider settings, exchange OAuth tokens, or forward MCP calls.
+
+`controlPlane` separates refs from values:
+
+- `authProfileRefs`: ASTRA-owned auth profile handles and provider IDs.
+- `secretRefs`: declared secret handles only. Do not store access tokens,
+  refresh tokens, API keys, client secrets, or cookie values here.
+- `configRefs`: declared non-secret config handles only.
+- `runtimeBindings`: environment/header templates made from literal text plus
+  `secretRef`, `configRef`, or `authProfileRef` segments. The template can say
+  "Bearer " and reference a token handle; it cannot carry the token value.
+- `providerCapabilities`: stable provider capability rows for future capability
+  matrices, including contract IDs, availability, required refs, scopes, and
+  tool effects.
+
+Example:
+
+```json
+{
+  "id": "google-workspace",
+  "displayName": "Google Workspace Remote MCP",
+  "transport": "http",
+  "url": "https://mcp.astra.local/google-workspace",
+  "controlPlane": {
+    "authProfileRefs": [
+      {
+        "id": "google-workspace-primary",
+        "providerID": "googleWorkspace",
+        "purpose": "ASTRA-owned OAuth account for Google Workspace MCP.",
+        "required": true
+      }
+    ],
+    "secretRefs": [
+      {
+        "id": "google-workspace-access-token",
+        "purpose": "Short-lived access token projected by ASTRA at the gateway boundary.",
+        "required": true
+      }
+    ],
+    "configRefs": [
+      {
+        "id": "google-workspace-domain",
+        "purpose": "Optional hosted-domain constraint for policy display.",
+        "required": false
+      }
+    ],
+    "runtimeBindings": [
+      {
+        "id": "google-workspace-authz",
+        "destination": "httpHeader",
+        "name": "Authorization",
+        "logRedaction": "whenReferencesSensitive",
+        "template": [
+          { "kind": "literal", "literal": "Bearer " },
+          {
+            "kind": "reference",
+            "reference": {
+              "kind": "secretRef",
+              "id": "google-workspace-access-token"
+            }
+          }
+        ]
+      }
+    ],
+    "providerCapabilities": [
+      {
+        "id": "drive-files-read",
+        "displayName": "Drive files read",
+        "contractID": "googleWorkspace.drive.read",
+        "availability": "preview",
+        "requiredAuthProfileRefs": ["google-workspace-primary"],
+        "requiredSecretRefs": ["google-workspace-access-token"],
+        "requiredConfigRefs": ["google-workspace-domain"],
+        "requiredScopes": [
+          {
+            "value": "https://www.googleapis.com/auth/drive.metadata.readonly",
+            "purpose": "Read Drive metadata for generated app contract responses.",
+            "sensitivity": "restricted",
+            "required": true
+          }
+        ],
+        "supportedToolEffects": ["read"]
+      }
+    ]
+  }
+}
+```
+
+Runtime delivery and validation drift evidence are also stable serializable
+ASTRACore contracts, but they are not package manifest source of truth. Future
+health-check services should store evidence separately and reference package MCP
+server IDs by stable ID. Evidence records carry IDs, status enums,
+fingerprints, and diagnostic references, not raw provider responses or secret
+values.
+
 ### MCP Install Sources
 
 Each `mcpServers[]` entry may include optional `installSource` metadata. This

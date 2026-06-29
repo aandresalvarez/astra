@@ -60,6 +60,28 @@ private func stdioServer(
     )
 }
 
+private func gatewayAuthorizationControlPlane(
+    bindingID: String = "auth-header",
+    secretID: String = "google-access-token"
+) -> MCPControlPlaneMetadata {
+    MCPControlPlaneMetadata(
+        secretRefs: [
+            MCPSecretRef(id: secretID, purpose: "Short-lived gateway access token.")
+        ],
+        runtimeBindings: [
+            MCPRuntimeBindingTemplate(
+                id: bindingID,
+                destination: .httpHeader,
+                name: "Authorization",
+                template: [
+                    .literal("Bearer "),
+                    .reference(.secret(secretID))
+                ]
+            )
+        ]
+    )
+}
+
 @Suite("MCP Runtime Projection")
 @MainActor
 struct MCPRuntimeProjectionTests {
@@ -159,6 +181,142 @@ struct MCPRuntimeProjectionTests {
         let entry = try #require(serversDict["remote"] as? [String: Any])
         #expect(entry["type"] as? String == "http")
         #expect(entry["url"] as? String == "https://mcp.example.com/v1")
+    }
+
+    @Test("Claude config routes credentialed remote MCP through ASTRA gateway without tokens")
+    func claudeConfigRoutesCredentialedRemoteThroughAstraGateway() throws {
+        let accessTokenEnv = RemoteMCPGatewayProjection.gatewayAccessTokenEnvironmentKey(
+            packageID: "google-workspace",
+            serverID: "google_drive",
+            bindingID: "auth-header"
+        )
+        let remote = PluginMCPServer(
+            id: "google_drive",
+            displayName: "Google Drive",
+            transport: .http,
+            url: URL(string: "https://mcp.example.com/google")!,
+            connectorBindings: ["google-workspace"],
+            allowedTools: ["drive.search"],
+            trustLevel: .high,
+            controlPlane: gatewayAuthorizationControlPlane()
+        )
+        let resolved = MCPRuntimeProjection.ResolvedServer(packageID: "google-workspace", server: remote)
+
+        #expect(MCPRuntimeProjection.claudeConfigJSON(servers: [resolved]) == nil)
+        #expect(MCPRuntimeProjection.allowedToolPermissions(servers: [resolved]).isEmpty)
+
+        let data = try #require(MCPRuntimeProjection.claudeConfigJSON(
+            servers: [resolved],
+            availableEnvironment: [accessTokenEnv: "secret-token"]
+        ))
+        let jsonText = String(decoding: data, as: UTF8.self)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let serversDict = try #require(object["mcpServers"] as? [String: Any])
+        let entry = try #require(serversDict["google_drive"] as? [String: Any])
+
+        #expect(entry["type"] as? String == "stdio")
+        #expect((entry["command"] as? String)?.hasSuffix("astra-mcp-gateway") == true)
+        #expect(entry["args"] as? [String] == [
+            "--package-id", "google-workspace",
+            "--server-id", "google_drive",
+            "--endpoint", "https://mcp.example.com/google",
+            "--access-token-env", accessTokenEnv
+        ])
+        let env = try #require(entry["env"] as? [String: String])
+        #expect(env[accessTokenEnv] == "${\(accessTokenEnv)}")
+        #expect(entry["url"] == nil)
+        #expect(!jsonText.contains("secret-token"))
+        #expect(!jsonText.contains("GOOGLE_OAUTH_ACCESS_TOKEN"))
+        #expect(MCPRuntimeProjection.allowedToolPermissions(
+            servers: [resolved],
+            availableEnvironment: [accessTokenEnv: "secret-token"]
+        ) == ["mcp__google_drive__drive.search"])
+    }
+
+    @Test("Codex config routes credentialed remote MCP through ASTRA gateway")
+    func codexConfigRoutesCredentialedRemoteThroughAstraGateway() {
+        let accessTokenEnv = RemoteMCPGatewayProjection.gatewayAccessTokenEnvironmentKey(
+            packageID: "google-workspace",
+            serverID: "google_drive",
+            bindingID: "auth-header"
+        )
+        let remote = PluginMCPServer(
+            id: "google_drive",
+            displayName: "Google Drive",
+            transport: .http,
+            url: URL(string: "https://mcp.example.com/google")!,
+            connectorBindings: ["google-workspace"],
+            allowedTools: ["drive.search"],
+            trustLevel: .high,
+            controlPlane: gatewayAuthorizationControlPlane()
+        )
+        let resolved = MCPRuntimeProjection.ResolvedServer(packageID: "google-workspace", server: remote)
+
+        #expect(CodexMCPConfigRenderer.configArguments(servers: [resolved]).isEmpty)
+
+        let arguments = CodexMCPConfigRenderer.configArguments(
+            servers: [resolved],
+            availableEnvironment: [accessTokenEnv: "secret-token"]
+        )
+
+        #expect(arguments.count == 2)
+        let config = arguments.last ?? ""
+        #expect(config.contains("\"google_drive\"={"))
+        #expect(config.contains("command=\"\(RemoteMCPGatewayProjection.executablePath)\""))
+        #expect(config.contains("args=[\"--package-id\",\"google-workspace\",\"--server-id\",\"google_drive\",\"--endpoint\",\"https://mcp.example.com/google\",\"--access-token-env\",\"\(accessTokenEnv)\"]"))
+        #expect(config.contains("env_vars=[\"\(accessTokenEnv)\"]"))
+        #expect(!config.contains("url="))
+        #expect(!config.contains("secret-token"))
+        #expect(!config.contains("GOOGLE_OAUTH_ACCESS_TOKEN"))
+    }
+
+    @Test("Connector-bound remote without control-plane bindings is not rendered")
+    func connectorBoundRemoteWithoutControlPlaneBindingsIsNotRendered() {
+        let remote = PluginMCPServer(
+            id: "google_drive",
+            displayName: "Google Drive",
+            transport: .http,
+            url: URL(string: "https://mcp.example.com/google")!,
+            connectorBindings: ["google-workspace"]
+        )
+        let resolved = MCPRuntimeProjection.ResolvedServer(packageID: "google-workspace", server: remote)
+
+        #expect(MCPRuntimeProjection.claudeConfigJSON(servers: [resolved]) == nil)
+        #expect(CodexMCPConfigRenderer.configArguments(servers: [resolved]).isEmpty)
+        #expect(MCPRuntimeProjection.allowedToolPermissions(servers: [resolved]).isEmpty)
+    }
+
+    @Test("Connector-bound gateway remote without endpoint is not rendered")
+    func connectorBoundGatewayRemoteWithoutEndpointIsNotRendered() {
+        let accessTokenEnv = RemoteMCPGatewayProjection.gatewayAccessTokenEnvironmentKey(
+            packageID: "google-workspace",
+            serverID: "google_drive",
+            bindingID: "auth-header"
+        )
+        let remote = PluginMCPServer(
+            id: "google_drive",
+            displayName: "Google Drive",
+            transport: .http,
+            url: nil,
+            connectorBindings: ["google-workspace"],
+            allowedTools: ["drive.search"],
+            controlPlane: gatewayAuthorizationControlPlane()
+        )
+        let resolved = MCPRuntimeProjection.ResolvedServer(packageID: "google-workspace", server: remote)
+
+        #expect(RemoteMCPGatewayProjection.providerFacingResolvedServer(for: resolved) == nil)
+        #expect(MCPRuntimeProjection.claudeConfigJSON(
+            servers: [resolved],
+            availableEnvironment: [accessTokenEnv: "secret-token"]
+        ) == nil)
+        #expect(CodexMCPConfigRenderer.configArguments(
+            servers: [resolved],
+            availableEnvironment: [accessTokenEnv: "secret-token"]
+        ).isEmpty)
+        #expect(MCPRuntimeProjection.allowedToolPermissions(
+            servers: [resolved],
+            availableEnvironment: [accessTokenEnv: "secret-token"]
+        ).isEmpty)
     }
 
     @Test("Empty server set renders no config and writes no file")
@@ -435,18 +593,18 @@ struct MCPRuntimeProjectionTests {
 @MainActor
 struct MCPRuntimeParityTests {
 
-    @Test("Claude Code, Copilot, and Codex declare MCP support")
-    func claudeCopilotAndCodexDeclareMCPSupport() {
+    @Test("Claude Code and Codex declare static MCP support")
+    func claudeAndCodexDeclareStaticMCPSupport() {
         let descriptors = CapabilityRuntimeSupportPresentation.allRuntimeDescriptors()
         let supporting = CapabilityRuntimeSupportPresentation.mcpSupportingRuntimes(descriptors: descriptors)
-        #expect(supporting.map(\.id) == [.claudeCode, .copilotCLI, .codexCLI])
+        #expect(supporting.map(\.id) == [.claudeCode, .codexCLI])
     }
 
     @Test("Catalog subtitle names the delivering runtimes")
     func catalogSubtitleNamesRuntimes() {
         let subtitle = CapabilityRuntimeSupportPresentation.mcpSupportSubtitle()
         #expect(subtitle.contains("Claude Code"))
-        #expect(subtitle.contains("GitHub Copilot CLI"))
+        #expect(!subtitle.contains("GitHub Copilot CLI"))
         #expect(subtitle.contains("skip"))
     }
 

@@ -3406,7 +3406,8 @@ private struct ContentDetailContentView: View {
                     onMoveToDraft: onMoveToDraft,
                     onManageSkills: onManageSkills,
                     onForkTask: onForkTask,
-                    onOpenGeneratedFile: onOpenGeneratedFile
+                    onOpenGeneratedFile: onOpenGeneratedFile,
+                    onStartMCPInstallReview: onStartMCPInstallReview
                 )
                 .id(task.id)
             }

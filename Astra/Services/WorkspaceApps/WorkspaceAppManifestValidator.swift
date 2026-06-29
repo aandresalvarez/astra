@@ -39,7 +39,11 @@ enum WorkspaceAppManifestValidator {
             issues.append(blocker("/app/name", "App name is required."))
         }
 
-        let requirementIDs = validateRequirements(manifest.requirements, issues: &issues)
+        let requirementIDs = validateRequirements(
+            manifest.requirements,
+            registry: WorkspaceAppContractRegistry(),
+            issues: &issues
+        )
         let storageTables = validateStorage(manifest.storage, issues: &issues)
         let sourceIDs = validateSources(manifest.sources, requirementIDs: requirementIDs, issues: &issues)
         let actionIDs = validateActions(
@@ -429,6 +433,7 @@ enum WorkspaceAppManifestValidator {
 
     private static func validateRequirements(
         _ requirements: [WorkspaceAppRequirement],
+        registry: WorkspaceAppContractRegistry,
         issues: inout [WorkspaceAppManifestValidationReport.Issue]
     ) -> Set<String> {
         var seen = Set<String>()
@@ -445,6 +450,9 @@ enum WorkspaceAppManifestValidator {
             if requirement.operations.isEmpty {
                 issues.append(blocker("\(path)/operations", "Requirement must declare at least one operation."))
             }
+            let contractOperations = registry.family(id: requirement.contract).map {
+                Set($0.operations.map(\.name))
+            }
             for (operationIndex, operation) in requirement.operations.enumerated() {
                 validateIdentifier(
                     operation,
@@ -452,6 +460,12 @@ enum WorkspaceAppManifestValidator {
                     label: "Operation",
                     issues: &issues
                 )
+                if let contractOperations, !contractOperations.contains(operation) {
+                    issues.append(blocker(
+                        "\(path)/operations/\(operationIndex)",
+                        "Operation '\(operation)' is not supported by contract '\(requirement.contract)'. Use one of: \(contractOperations.sorted().joined(separator: ", "))."
+                    ))
+                }
             }
         }
         return seen

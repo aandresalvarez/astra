@@ -13,6 +13,7 @@ struct CapabilityMCPInstallReviewSheet: View {
     @State private var errorMessage: String?
 
     private let decision: MCPInstallPolicyDecision
+    private let declaredEnvironmentKeys: Set<String>
 
     init(
         request: MCPInstallChatRequest,
@@ -25,7 +26,9 @@ struct CapabilityMCPInstallReviewSheet: View {
         self.onCancel = onCancel
         self.onInstalled = onInstalled
         self.decision = MCPInstallPolicy.decision(for: request.intent)
-        _draft = State(initialValue: Self.draft(from: request.intent))
+        let draftState = CapabilityMCPInstallReviewDraftFactory.draftState(from: request.intent)
+        self.declaredEnvironmentKeys = draftState.declaredEnvironmentKeys
+        _draft = State(initialValue: draftState.draft)
     }
 
     var body: some View {
@@ -35,11 +38,7 @@ struct CapabilityMCPInstallReviewSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     policySection
-                    CapabilityMCPServerDraftEditor(
-                        draft: $draft,
-                        declaredEnvironmentKeys: [],
-                        validationMessage: errorMessage
-                    )
+                    reviewSection
                 }
                 .padding(18)
             }
@@ -93,6 +92,68 @@ struct CapabilityMCPInstallReviewSheet: View {
         }
     }
 
+    @ViewBuilder
+    private var reviewSection: some View {
+        if decision.requiresGuidedSetup {
+            guidedSetupSection
+        } else if request.intent.serverSpecs.count == 1 {
+            CapabilityMCPServerDraftEditor(
+                draft: $draft,
+                declaredEnvironmentKeys: declaredEnvironmentKeys,
+                validationMessage: errorMessage
+            )
+        } else {
+            parsedServersSection
+        }
+    }
+
+    private var guidedSetupSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Run setup, then paste the generated mcpServers JSON.", systemImage: "gearshape.2")
+                .font(Stanford.caption(12))
+                .foregroundStyle(.secondary)
+            if let setupCommand = request.intent.setupCommand {
+                Text(([setupCommand.command] + setupCommand.arguments).joined(separator: " "))
+                    .font(.system(size: 12, weight: .regular, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        }
+    }
+
+    private var parsedServersSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Parsed MCP servers")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.primary)
+            ForEach(Array(request.intent.serverSpecs.enumerated()), id: \.offset) { _, spec in
+                HStack(spacing: 10) {
+                    Image(systemName: spec.transport == .stdio ? "terminal" : "network")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Stanford.lagunita)
+                        .frame(width: 20)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(spec.displayName ?? spec.serverID)
+                            .font(.system(size: 12, weight: .semibold))
+                        Text(serverSummary(spec))
+                            .font(Stanford.caption(11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    Spacer()
+                }
+                .padding(10)
+                .background(Stanford.cardBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(Stanford.cardinalRed)
+            }
+        }
+    }
+
     private var footer: some View {
         HStack {
             Button("Cancel") { onCancel() }
@@ -113,9 +174,11 @@ struct CapabilityMCPInstallReviewSheet: View {
 
     private func install() {
         do {
-            let server = try draft.makeServer()
             var package = try MCPInstallPackageBuilder.package(from: request.intent)
-            package.mcpServers = [server]
+            if request.intent.serverSpecs.count == 1 {
+                let server = try draft.makeServer(declaredEnvironmentKeys: declaredEnvironmentKeys)
+                package.mcpServers = [server]
+            }
             let result = try CapabilityPackageCreationService().create(
                 package,
                 enableHere: false,
@@ -130,15 +193,14 @@ struct CapabilityMCPInstallReviewSheet: View {
         }
     }
 
-    private static func draft(from intent: MCPInstallIntent) -> CapabilityMCPServerDraft {
-        var draft = CapabilityMCPServerDraft()
-        draft.serverID = intent.serverID ?? "mcp"
-        draft.displayName = intent.displayName ?? intent.serverID ?? "MCP"
-        draft.transport = intent.transport
-        draft.command = intent.command ?? ""
-        draft.argumentsText = intent.arguments.joined(separator: "\n")
-        draft.urlText = intent.url?.absoluteString ?? ""
-        draft.installSource = intent.installSource
-        return draft
+    private func serverSummary(_ spec: MCPInstallServerSpec) -> String {
+        switch spec.transport {
+        case .stdio:
+            return ([spec.command ?? ""] + spec.arguments)
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+        case .http, .sse:
+            return spec.url?.absoluteString ?? spec.transport.rawValue
+        }
     }
 }

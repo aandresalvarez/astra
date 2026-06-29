@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import ASTRA
 import ASTRACore
@@ -21,6 +22,56 @@ struct MCPInstallPackageBuilderTests {
         #expect(package.prerequisites.first?.binary == "npx")
     }
 
+    @Test("refuses Audity generator command instead of building runnable server")
+    func refusesAudityGeneratorCommandInsteadOfBuildingRunnableServer() throws {
+        let intent = try #require(MCPInstallIntentParser.parse("npx @auditynow/connect --generate"))
+
+        do {
+            _ = try MCPInstallPackageBuilder.package(from: intent)
+            Issue.record("Audity generator command must require setup/import guidance, not a runnable MCP package")
+        } catch MCPInstallPackageBuilder.BuildError.requiresGuidedSetup(let guidance) {
+            #expect(guidance.contains("@auditynow/connect"))
+            #expect(guidance.contains("--generate"))
+        }
+    }
+
+    @Test("builds every server from Claude config without serializing inline env values")
+    func buildsEveryServerFromClaudeConfigWithoutSerializingInlineEnvValues() throws {
+        let json = """
+        {
+          "mcpServers": {
+            "github": {
+              "type": "stdio",
+              "command": "npx",
+              "args": ["-y", "@acme/github-mcp@1.0.0"],
+              "env": {
+                "GITHUB_TOKEN": "ghp_inline_secret"
+              }
+            },
+            "linear": {
+              "type": "sse",
+              "url": "https://mcp.linear.app/sse"
+            }
+          }
+        }
+        """
+        let intent = try #require(MCPInstallIntentParser.parse(json))
+        let package = try MCPInstallPackageBuilder.package(from: intent)
+
+        #expect(package.mcpServers.map(\.id) == ["github", "linear"])
+        #expect(package.mcpServers[0].command == "npx")
+        #expect(package.mcpServers[0].arguments == ["-y", "@acme/github-mcp@1.0.0"])
+        #expect(package.mcpServers[0].environmentKeys == ["GITHUB_TOKEN"])
+        #expect(package.mcpServers[1].transport == .sse)
+        #expect(package.mcpServers[1].url?.absoluteString == "https://mcp.linear.app/sse")
+        #expect(package.skills.first?.environmentKeys == ["GITHUB_TOKEN"])
+
+        let encoded = try JSONEncoder().encode(package)
+        let text = String(decoding: encoded, as: UTF8.self)
+        #expect(text.contains("GITHUB_TOKEN"))
+        #expect(!text.contains("ghp_inline_secret"))
+    }
+
     @Test("refuses blocked remote http intent")
     func refusesBlockedRemoteHTTPIntent() throws {
         let intent = try #require(MCPInstallIntentParser.parse("http://example.com/mcp"))
@@ -39,5 +90,31 @@ struct MCPInstallPackageBuilderTests {
 
         #expect(report.blockers.isEmpty)
         #expect(report.package?.mcpServers.first?.installSource?.identifier == "@acme/github-mcp")
+    }
+
+    @Test("review package with imported env keys validates through capability validator")
+    func reviewPackageWithImportedEnvKeysValidatesThroughCapabilityValidator() throws {
+        let json = """
+        {
+          "mcpServers": {
+            "github": {
+              "type": "stdio",
+              "command": "npx",
+              "args": ["-y", "@acme/github-mcp@1.0.0"],
+              "env": {
+                "GITHUB_TOKEN": "ghp_inline_secret"
+              }
+            }
+          }
+        }
+        """
+        let intent = try #require(MCPInstallIntentParser.parse(json))
+        let package = try MCPInstallPackageBuilder.package(from: intent)
+
+        let report = CapabilityPackageValidator.validate(package: package, installedPackages: [], checkPrerequisites: false)
+
+        #expect(report.blockers.isEmpty)
+        #expect(report.package?.skills.first?.environmentKeys == ["GITHUB_TOKEN"])
+        #expect(report.package?.mcpServers.first?.environmentKeys == ["GITHUB_TOKEN"])
     }
 }
