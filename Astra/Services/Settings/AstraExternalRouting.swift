@@ -36,7 +36,10 @@ enum AstraExternalRouteCodec {
             components.queryItems = [
                 URLQueryItem(name: "workspace", value: workspaceID.uuidString),
                 URLQueryItem(name: "goal", value: goal),
-                URLQueryItem(name: "run", value: shouldRun ? "1" : "0")
+                URLQueryItem(
+                    name: "run",
+                    value: AstraExternalRouteRunAuthorization.urlQueryValue(forRequestedRun: shouldRun)
+                )
             ]
 
         case .continueLatestUnfinishedTask(let workspaceID):
@@ -76,7 +79,10 @@ enum AstraExternalRouteCodec {
                   !goal.isEmpty else {
                 return nil
             }
-            let shouldRun = query["run"] == "1" || query["run"]?.lowercased() == "true"
+            let requestedRun = query["run"] == "1" || query["run"]?.lowercased() == "true"
+            let shouldRun = AstraExternalRouteRunAuthorization.allowsImmediateRunFromExternalURL(
+                requestedRun: requestedRun
+            )
             return AstraExternalRoute(
                 destination: .createTask(workspaceID: workspaceID, goal: goal, shouldRun: shouldRun)
             )
@@ -104,6 +110,16 @@ enum AstraExternalRouteCodec {
     private static func uuidPathComponent(from url: URL) -> UUID? {
         let value = url.pathComponents.dropFirst().first
         return value.flatMap(UUID.init(uuidString:))
+    }
+}
+
+enum AstraExternalRouteRunAuthorization {
+    static func urlQueryValue(forRequestedRun requestedRun: Bool) -> String {
+        allowsImmediateRunFromExternalURL(requestedRun: requestedRun) ? "1" : "0"
+    }
+
+    static func allowsImmediateRunFromExternalURL(requestedRun: Bool) -> Bool {
+        false
     }
 }
 

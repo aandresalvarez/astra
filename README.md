@@ -180,12 +180,8 @@ open "astra-dev://create-task?workspace=$WORKSPACE_ID&goal=Test%20draft%20task%2
 open "astra-dev://continue?workspace=$WORKSPACE_ID"
 ```
 
-Only test the run route in a safe development workspace, because it starts an
-agent run:
-
-```bash
-open "astra-dev://create-task?workspace=$WORKSPACE_ID&goal=Say%20hello%20and%20summarize%20the%20workspace%20without%20editing%20files&run=1"
-```
+Public `create-task` URLs always create drafts. A `run=1` query value is ignored
+unless a route-local authorization mechanism is added later.
 
 To test Shortcuts or voice, open the macOS Shortcuts app, create a new
 shortcut, and search for `ASTRA` or `ASTRA Dev`. The expected actions are:
