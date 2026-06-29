@@ -113,6 +113,26 @@ struct ValidationServiceTests {
         ])
     }
 
+    @Test("runTests rejects shell composition before executing imported task commands")
+    func runTestsRejectsShellCompositionBeforeExecution() async throws {
+        let root = "/tmp/astra-validation-imported-\(UUID().uuidString.prefix(8))"
+        let workspace = Workspace(name: "Imported Validation Guard", primaryPath: root)
+        let task = AgentTask(title: "Validate", goal: "Reject imported shell composition", workspace: workspace)
+        task.testCommand = "true; touch should-not-run"
+        let runner = StubValidationCommandRunner(results: [
+            ValidationCommandResult(exitCode: 0, stdout: "unsafe pass", stderr: "")
+        ])
+
+        let result = await ValidationService.runTests(task: task, commandRunner: runner)
+
+        if case .error(let message) = result {
+            #expect(message.contains("not allowed"))
+        } else {
+            Issue.record("Expected unsafe test command to be rejected before execution")
+        }
+        #expect(await runner.recordedCalls().isEmpty)
+    }
+
     @Test("validation contract command assertions use injected runner")
     func validationContractCommandAssertionsUseInjectedRunner() async throws {
         let root = try temporaryRoot()

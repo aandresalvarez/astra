@@ -22,6 +22,90 @@ protocol ValidationCommandRunning: Sendable {
     func run(command: String, workingDirectory: String, environment: [String: String]) async -> ValidationCommandResult
 }
 
+enum ValidationCommandPolicy {
+    static func isAllowed(_ command: String) -> Bool {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              !containsShellComposition(trimmed),
+              let root = shellRoot(trimmed)?.lowercased() else {
+            return false
+        }
+
+        let allowedExactRoots: Set<String> = [
+            "true",
+            "false",
+            "test",
+            "[",
+            "pytest",
+            "npm",
+            "yarn",
+            "pnpm",
+            "swift",
+            "xcodebuild",
+            "make"
+        ]
+        if allowedExactRoots.contains(root) {
+            return commandArgumentsAreValidationOrBuildOnly(root: root, command: trimmed)
+        }
+        if root == "python" || root == "python3" {
+            return pythonCommandRunsPytest(root: root, command: trimmed)
+        }
+        return false
+    }
+
+    private static func containsShellComposition(_ command: String) -> Bool {
+        let disallowedFragments = ["&&", "||", ";", "|", "`", "$(", ">", "<", "\n", "\r"]
+        return disallowedFragments.contains { command.contains($0) }
+    }
+
+    private static func shellRoot(_ command: String) -> String? {
+        command.split(whereSeparator: \.isWhitespace).first.map(String.init)
+    }
+
+    private static func shellTokens(_ command: String) -> [String] {
+        command.split(whereSeparator: \.isWhitespace).map(String.init)
+    }
+
+    private static func pythonCommandRunsPytest(root: String, command: String) -> Bool {
+        let tokens = shellTokens(command)
+        guard tokens.count >= 3 else { return false }
+        return tokens[0].lowercased() == root &&
+            tokens[1] == "-m" &&
+            tokens[2] == "pytest"
+    }
+
+    private static func commandArgumentsAreValidationOrBuildOnly(root: String, command: String) -> Bool {
+        switch root {
+        case "true", "false", "test", "[":
+            return true
+        case "swift":
+            return command == "swift test" ||
+                command.hasPrefix("swift test ") ||
+                command == "swift build" ||
+                command.hasPrefix("swift build ")
+        case "xcodebuild":
+            return command.contains(" test") || command.contains(" build")
+        case "pytest":
+            return true
+        case "npm":
+            return command == "npm test" ||
+                command.hasPrefix("npm test ") ||
+                command == "npm run test" ||
+                command.hasPrefix("npm run test")
+        case "yarn", "pnpm":
+            return command == "\(root) test" ||
+                command.hasPrefix("\(root) test ") ||
+                command == "\(root) run test" ||
+                command.hasPrefix("\(root) run test")
+        case "make":
+            return command == "make test" ||
+                command.hasPrefix("make test ")
+        default:
+            return false
+        }
+    }
+}
+
 struct ShellValidationCommandRunner: ValidationCommandRunning {
     func run(command: String, workingDirectory: String, environment: [String: String]) async -> ValidationCommandResult {
         let result = await ProcessBinaryRunner().run(
@@ -123,6 +207,14 @@ enum ValidationService {
         let command = task.testCommand.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !command.isEmpty else {
             return .error("No test command configured")
+        }
+        guard ValidationCommandPolicy.isAllowed(command) else {
+            AppLogger.audit(.validationFailed, category: "Validation", taskID: task.id, fields: [
+                "reason": "command_not_allowed",
+                "command_length": String(command.count),
+                "workspace_id": task.workspace?.id.uuidString ?? "none"
+            ], level: .error)
+            return .error("Validation test command is not allowed. Use a standard test or build command.")
         }
 
         AppLogger.audit(.validationStarted, category: "Validation", taskID: task.id, fields: [
@@ -503,7 +595,7 @@ enum ValidationService {
                 reason: "missing_command"
             )
         }
-        guard isAllowedValidationCommand(command) else {
+        guard ValidationCommandPolicy.isAllowed(command) else {
             return assertionPayload(
                 assertion: assertion,
                 planID: planID,
@@ -1406,88 +1498,6 @@ enum ValidationService {
             .replacingOccurrences(of: "-", with: "_")
             .replacingOccurrences(of: " ", with: "_") ?? ""
         return ["directory", "folder", "dir"].contains(expected)
-    }
-
-    private static func isAllowedValidationCommand(_ command: String) -> Bool {
-        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty,
-              !containsShellComposition(trimmed),
-              let root = shellRoot(trimmed)?.lowercased() else {
-            return false
-        }
-
-        let allowedExactRoots: Set<String> = [
-            "true",
-            "false",
-            "test",
-            "[",
-            "pytest",
-            "npm",
-            "yarn",
-            "pnpm",
-            "swift",
-            "xcodebuild",
-            "make"
-        ]
-        if allowedExactRoots.contains(root) {
-            return commandArgumentsAreValidationOrBuildOnly(root: root, command: trimmed)
-        }
-        if root == "python" || root == "python3" {
-            return pythonCommandRunsPytest(root: root, command: trimmed)
-        }
-        return false
-    }
-
-    private static func containsShellComposition(_ command: String) -> Bool {
-        let disallowedFragments = ["&&", "||", ";", "|", "`", "$(", ">", "<", "\n", "\r"]
-        return disallowedFragments.contains { command.contains($0) }
-    }
-
-    private static func shellRoot(_ command: String) -> String? {
-        command.split(whereSeparator: \.isWhitespace).first.map(String.init)
-    }
-
-    private static func shellTokens(_ command: String) -> [String] {
-        command.split(whereSeparator: \.isWhitespace).map(String.init)
-    }
-
-    private static func pythonCommandRunsPytest(root: String, command: String) -> Bool {
-        let tokens = shellTokens(command)
-        guard tokens.count >= 3 else { return false }
-        return tokens[0].lowercased() == root &&
-            tokens[1] == "-m" &&
-            tokens[2] == "pytest"
-    }
-
-    private static func commandArgumentsAreValidationOrBuildOnly(root: String, command: String) -> Bool {
-        switch root {
-        case "true", "false", "test", "[":
-            return true
-        case "swift":
-            return command == "swift test" ||
-                command.hasPrefix("swift test ") ||
-                command == "swift build" ||
-                command.hasPrefix("swift build ")
-        case "xcodebuild":
-            return command.contains(" test") || command.contains(" build")
-        case "pytest":
-            return true
-        case "npm":
-            return command == "npm test" ||
-                command.hasPrefix("npm test ") ||
-                command == "npm run test" ||
-                command.hasPrefix("npm run test")
-        case "yarn", "pnpm":
-            return command == "\(root) test" ||
-                command.hasPrefix("\(root) test ") ||
-                command == "\(root) run test" ||
-                command.hasPrefix("\(root) run test")
-        case "make":
-            return command == "make test" ||
-                command.hasPrefix("make test ")
-        default:
-            return false
-        }
     }
 
     private static func latestPassingAssertionEvent(
