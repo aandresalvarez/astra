@@ -41,6 +41,7 @@ struct WorkspaceAppNativeAsyncCapabilitySourceClient: WorkspaceAppAsyncCapabilit
 
 struct WorkspaceAppBigQueryReadClient: WorkspaceAppAsyncCapabilitySourceClient {
     var queryRunner: any WorkspaceAppDatabaseQueryRunning = DatabaseQueryService()
+    var sqlBuilder = WorkspaceAppBigQueryReadSQLBuilder()
 
     func read(
         source: WorkspaceAppSource,
@@ -55,34 +56,13 @@ struct WorkspaceAppBigQueryReadClient: WorkspaceAppAsyncCapabilitySourceClient {
         guard operation == "runReadOnlyQuery" || operation == "previewRows" else {
             throw WorkspaceAppSourceResolutionError.unsupportedSource(source.id)
         }
-        let sql = try sql(for: source, operation: operation, limit: input.limit)
-        guard SQLClassifier.classify(sql) == .read else {
-            throw WorkspaceAppSourceResolutionError.unsupportedSource(source.id)
-        }
+        let sql = try sqlBuilder.sql(for: source, operation: operation, limit: input.limit)
         let result = try await queryRunner.run(QueryRequest(
             sql: sql,
             connection: connection(for: source, binding: binding),
             rowLimit: max(1, input.limit)
         ))
         return rows(from: result)
-    }
-
-    private func sql(
-        for source: WorkspaceAppSource,
-        operation: String,
-        limit: Int
-    ) throws -> String {
-        if operation == "runReadOnlyQuery",
-           let query = source.query?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !query.isEmpty {
-            return query
-        }
-        guard let table = source.tableRef?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !table.isEmpty,
-              let quotedTable = quotedTableIdentifier(table, projectRef: source.projectRef) else {
-            throw WorkspaceAppSourceResolutionError.unsupportedSource(source.id)
-        }
-        return "SELECT * FROM \(quotedTable) LIMIT \(max(1, limit))"
     }
 
     private func connection(
@@ -94,9 +74,38 @@ struct WorkspaceAppBigQueryReadClient: WorkspaceAppAsyncCapabilitySourceClient {
             displayName: binding.provider ?? "BigQuery",
             adapterID: "bigquery-cli",
             dialect: .bigQueryStandard,
-            defaultNamespace: datasetID(from: source.tableRef),
+            defaultNamespace: sqlBuilder.datasetID(from: source.tableRef),
             projectID: source.projectRef
         )
+    }
+
+    private func rows(from result: QueryExecutionResult) -> [[String: WorkspaceAppStorageValue]] {
+        result.rows.map { row in
+            var values: [String: WorkspaceAppStorageValue] = [:]
+            for (index, column) in result.columns.enumerated() where index < row.count {
+                values[column.name] = .text(row[index])
+            }
+            return values
+        }
+    }
+}
+
+struct WorkspaceAppBigQueryReadSQLBuilder {
+    func sql(
+        for source: WorkspaceAppSource,
+        operation: String,
+        limit: Int
+    ) throws -> String {
+        if let query = source.query?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !query.isEmpty {
+            throw WorkspaceAppSourceResolutionError.unsupportedSource(source.id)
+        }
+        guard let table = source.tableRef?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !table.isEmpty,
+              let quotedTable = quotedTableIdentifier(table, projectRef: source.projectRef) else {
+            throw WorkspaceAppSourceResolutionError.unsupportedSource(source.id)
+        }
+        return "SELECT * FROM \(quotedTable) LIMIT \(max(1, limit))"
     }
 
     private func quotedTableIdentifier(_ tableRef: String, projectRef: String?) -> String? {
@@ -113,21 +122,11 @@ struct WorkspaceAppBigQueryReadClient: WorkspaceAppAsyncCapabilitySourceClient {
         return "`\(table)`"
     }
 
-    private func datasetID(from tableRef: String?) -> String? {
+    func datasetID(from tableRef: String?) -> String? {
         guard let tableRef else { return nil }
         let parts = tableRef.replacingOccurrences(of: ":", with: ".").split(separator: ".")
         guard parts.count >= 2 else { return nil }
         return String(parts[parts.count - 2])
-    }
-
-    private func rows(from result: QueryExecutionResult) -> [[String: WorkspaceAppStorageValue]] {
-        result.rows.map { row in
-            var values: [String: WorkspaceAppStorageValue] = [:]
-            for (index, column) in result.columns.enumerated() where index < row.count {
-                values[column.name] = .text(row[index])
-            }
-            return values
-        }
     }
 }
 

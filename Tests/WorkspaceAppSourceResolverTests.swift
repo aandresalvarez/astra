@@ -199,6 +199,57 @@ struct WorkspaceAppSourceResolverTests {
         }
     }
 
+    @Test("BigQuery native client rejects manifest supplied SQL even when classified as read")
+    func bigQueryNativeClientRejectsManifestSuppliedReadSQL() async throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = Workspace(name: "Reconciliation", primaryPath: root.path)
+        var manifest = Self.reconciliationManifest()
+        manifest.sources[0].query = """
+        WITH candidates AS (
+            SELECT * FROM `clinical.enrollment_candidates`
+        )
+        SELECT * FROM candidates
+        """
+        let app = Self.app(for: manifest, workspace: workspace)
+        let binding = WorkspaceAppDependencyBinding(
+            workspaceID: workspace.id,
+            appID: app.id,
+            appLogicalID: app.logicalID,
+            requirementID: "sourceWarehouse",
+            contract: "tabularQuery.read",
+            operations: ["runReadOnlyQuery"],
+            optional: false,
+            status: .mapped,
+            implementationID: "bigquery-read-native",
+            provider: "bigQuery",
+            transport: .native
+        )
+        let runner = MockWorkspaceAppDatabaseQueryRunner(result: QueryExecutionResult(
+            columns: [QueryResultColumn(name: "participant_id", type: "STRING")],
+            rows: [["P-001"]],
+            rowCount: 1,
+            bytesProcessed: 512,
+            elapsedMilliseconds: 25,
+            jobID: "job-1",
+            message: "Query completed."
+        ))
+        let resolver = WorkspaceAppSourceResolver(
+            asyncCapabilityClient: WorkspaceAppNativeAsyncCapabilitySourceClient(queryRunner: runner)
+        )
+
+        await #expect(throws: WorkspaceAppSourceResolutionError.unsupportedSource("warehouse_latest")) {
+            try await resolver.resolveAsync(
+                sourceID: "warehouse_latest",
+                app: app,
+                workspace: workspace,
+                manifest: manifest,
+                dependencyBindings: [binding]
+            )
+        }
+        #expect(await runner.requests.isEmpty)
+    }
+
     @Test("async resolver reads REDCap record sources through native client")
     func asyncResolverReadsREDCapRecordSourcesThroughNativeClient() async throws {
         let root = try Self.temporaryRoot()
