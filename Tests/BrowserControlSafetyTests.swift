@@ -36,6 +36,22 @@ struct BrowserControlSafetyTests {
         #expect(mfaBlock["ok"] as? Bool == false)
         #expect(mfaBlock["error"] as? String == "mfa_input_blocked")
 
+        let disabledPasswordBlock = try #require(BrowserTextEntryPreflight.blockResponse(
+            action: BrowserActionKind.fill.rawValue,
+            targetInfo: [
+                "ok": false,
+                "selector": "#current-password",
+                "label": "Current password",
+                "role": "textbox",
+                "tag": "input",
+                "type": "password",
+                "placeholder": "Password",
+                "reason": "target_not_visible"
+            ]
+        ))
+        #expect(disabledPasswordBlock["ok"] as? Bool == false)
+        #expect(disabledPasswordBlock["error"] as? String == "credential_input_blocked")
+
         #expect(BrowserTextEntryPreflight.blockResponse(
             action: BrowserActionKind.setValue.rawValue,
             targetInfo: [

@@ -69,8 +69,6 @@ enum BrowserSensitiveControlClassifier {
 
 enum BrowserTextEntryPreflight {
     static func blockResponse(action: String, targetInfo: [String: Any]) -> [String: Any]? {
-        guard bool(targetInfo["ok"]) else { return nil }
-
         let risk = BrowserSensitiveControlClassifier.classify(targetInfo: targetInfo)
         let code: String
         let summary: String
@@ -106,13 +104,6 @@ enum BrowserTextEntryPreflight {
             "testID": string(targetInfo["testID"]),
             "url": string(targetInfo["url"])
         ]
-    }
-
-    private static func bool(_ value: Any?) -> Bool {
-        if let bool = value as? Bool { return bool }
-        if let number = value as? NSNumber { return number.boolValue }
-        if let string = value as? String { return ["1", "true", "yes"].contains(string.lowercased()) }
-        return false
     }
 
     private static func string(_ value: Any?) -> String {
