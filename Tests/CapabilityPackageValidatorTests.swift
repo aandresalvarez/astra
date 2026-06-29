@@ -298,6 +298,30 @@ struct CapabilityPackageValidatorTests {
         })
     }
 
+    @Test("credential forwarding server with missing URL reports only the URL blocker")
+    func credentialForwardingServerWithMissingURLReportsOnlyURLBlocker() {
+        var package = makePackage(id: "google-workspace", governance: .localDraft())
+        package.mcpServers = [
+            PluginMCPServer(
+                id: "google_workspace_drive",
+                displayName: "Google Workspace Drive",
+                transport: .http,
+                connectorBindings: ["google-workspace"],
+                controlPlane: gatewayAuthorizationControlPlane()
+            )
+        ]
+
+        let report = CapabilityPackageValidator.validate(package: package, checkPrerequisites: false)
+
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains {
+            $0.message.contains("remote MCP URL is missing or invalid")
+        })
+        #expect(!report.blockers.contains {
+            $0.message.contains("credentialed remote MCP endpoint")
+        })
+    }
+
     @Test("trusted Google Workspace gateway endpoint is allowed")
     func trustedGoogleWorkspaceGatewayEndpointIsAllowed() {
         var package = makePackage(id: "google-workspace", governance: .localDraft())
@@ -307,6 +331,26 @@ struct CapabilityPackageValidatorTests {
                 displayName: "Google Workspace Drive",
                 transport: .http,
                 url: URL(string: "https://drivemcp.googleapis.com/mcp/v1"),
+                connectorBindings: ["google-workspace"],
+                controlPlane: gatewayAuthorizationControlPlane()
+            )
+        ]
+
+        let report = CapabilityPackageValidator.validate(package: package, checkPrerequisites: false)
+
+        #expect(report.canInstall)
+        #expect(!report.blockers.map(\.code).contains(.unsafeMCPServer))
+    }
+
+    @Test("trusted Google Workspace gateway endpoint accepts default HTTPS port spelling")
+    func trustedGoogleWorkspaceGatewayEndpointAcceptsDefaultHTTPSPortSpelling() {
+        var package = makePackage(id: "google-workspace", governance: .localDraft())
+        package.mcpServers = [
+            PluginMCPServer(
+                id: "google_workspace_drive",
+                displayName: "Google Workspace Drive",
+                transport: .http,
+                url: URL(string: "https://drivemcp.googleapis.com:443/mcp/v1#ignored"),
                 connectorBindings: ["google-workspace"],
                 controlPlane: gatewayAuthorizationControlPlane()
             )

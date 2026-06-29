@@ -531,10 +531,11 @@ enum CapabilityPackageValidator {
                     component: name
                 ))
             }
-            if let reason = RemoteMCPGatewayEndpointTrustPolicy.credentialForwardingEndpointViolation(
-                packageID: package.id,
-                server: server
-            ) {
+            if server.url != nil,
+               let reason = RemoteMCPGatewayEndpointTrustPolicy.credentialForwardingEndpointViolation(
+                   packageID: package.id,
+                   server: server
+               ) {
                 let name = displayName(server.displayName, fallback: server.id)
                 issues.append(issue(
                     .blocker,

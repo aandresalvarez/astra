@@ -88,11 +88,23 @@ enum RemoteMCPGatewayEndpointTrustPolicy {
             return lhs.absoluteString == rhs.absoluteString
         }
 
-        return lhsComponents.scheme?.lowercased() == rhsComponents.scheme?.lowercased()
+        let lhsScheme = lhsComponents.scheme?.lowercased()
+        let rhsScheme = rhsComponents.scheme?.lowercased()
+        return lhsScheme == rhsScheme
             && lhsComponents.host?.lowercased() == rhsComponents.host?.lowercased()
-            && lhsComponents.port == rhsComponents.port
+            && normalizedPort(lhsComponents.port, scheme: lhsScheme) == normalizedPort(rhsComponents.port, scheme: rhsScheme)
             && lhsComponents.percentEncodedPath == rhsComponents.percentEncodedPath
             && lhsComponents.percentEncodedQuery == rhsComponents.percentEncodedQuery
-            && lhsComponents.percentEncodedFragment == rhsComponents.percentEncodedFragment
+    }
+
+    private static func normalizedPort(_ port: Int?, scheme: String?) -> Int? {
+        switch (scheme, port) {
+        case ("http", nil):
+            return 80
+        case ("https", nil):
+            return 443
+        default:
+            return port
+        }
     }
 }
