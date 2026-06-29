@@ -16,6 +16,51 @@ struct AstraPackCatalogTests {
         #expect(entry.source.manifestURL?.lastPathComponent == "devops-pack.json")
     }
 
+    @Test("DevOps pack loads from bundled resources")
+    func devOpsPackLoadsFromBundledResources() throws {
+        let entry = try Self.bundledDevOpsEntry()
+        let manifest = entry.manifest
+
+        #expect(manifest.capabilityPackageIDs == ["github-workflow"])
+        #expect(manifest.shelfDefaults.map(\.id) == ["plan", "files"])
+        #expect(manifest.shelfDefaults.allSatisfy { $0.kind == "nativeShelf" })
+        #expect(manifest.appTemplates.map(\.id) == ["pr-ci-review"])
+        #expect(manifest.appTemplates.first?.name == "PR / CI Review")
+        #expect(manifest.appTemplates.first?.templateID == "workspace-app.pr-ci-review")
+        #expect(manifest.appTemplates.first?.capabilityPackageIDs == ["github-workflow"])
+        #expect(manifest.vocabulary["prQueue"] == "PR Queue")
+        #expect(manifest.vocabulary["ciReview"] == "CI Review")
+
+        let rootURL = try #require(entry.source.rootURL)
+        #expect(FileManager.default.fileExists(atPath: rootURL.appendingPathComponent("devops/README.md").path))
+        #expect(FileManager.default.fileExists(atPath: rootURL.appendingPathComponent("devops/pr-ci-review-template.md").path))
+    }
+
+    @Test("DevOps pack profile keeps Files and Plan visible while hiding Browser by default")
+    func devOpsPackProfileKeepsFilesAndPlanVisibleAndHidesBrowserByDefault() throws {
+        let manifest = try Self.bundledDevOpsEntry().manifest
+
+        let profile = AstraPackProfileResolver.resolve(enabledPacks: [manifest])
+
+        #expect(profile.visibleShelfIDs == Set([.plan, .files]))
+        #expect(profile.hiddenShelfIDs == Set([.browser, .query, .appPreview]))
+        #expect(profile.capabilityPackageIDsByShelfID[.plan] == ["github-workflow"])
+        #expect(profile.capabilityPackageIDsByShelfID[.files] == ["github-workflow"])
+        #expect(profile.vocabularyValue(for: "prQueue") == "PR Queue")
+        #expect(profile.vocabularyValue(for: "ciReview") == "CI Review")
+    }
+
+    @Test("DevOps pack does not widen policy floor")
+    func devOpsPackDoesNotWidenPolicyFloor() throws {
+        let manifest = try Self.bundledDevOpsEntry().manifest
+        let report = AstraPackManifestValidator.validate(manifest)
+
+        #expect(manifest.capabilityPackageIDs == ["github-workflow"])
+        #expect(manifest.policyRestrictions.isEmpty)
+        #expect(!report.issues.contains { $0.code == .policyWidening })
+        #expect(report.blockers.isEmpty)
+    }
+
     @Test("catalog skips invalid pack and reports diagnostic")
     func catalogSkipsInvalidPackAndReportsDiagnostic() throws {
         let root = try Self.makeTemporaryDirectory(named: "invalid-pack")
@@ -144,6 +189,14 @@ struct AstraPackCatalogTests {
         let snapshot = AstraPackCatalog(builtInDirectory: root, localStorageRoot: nil).load()
 
         #expect(snapshot.packs.map(\.id) == ["astra.pack.alpha", "astra.pack.zeta"])
+    }
+
+    private static func bundledDevOpsEntry() throws -> AstraPackCatalogEntry {
+        let snapshot = AstraPackCatalog(localStorageRoot: nil).load()
+        #expect(!snapshot.diagnostics.contains {
+            $0.source.manifestURL?.lastPathComponent == "devops-pack.json"
+        })
+        return try #require(snapshot.entries.first { $0.manifest.id == "astra.pack.devops" })
     }
 
     private static func makeTemporaryDirectory(named name: String) throws -> URL {

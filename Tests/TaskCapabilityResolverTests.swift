@@ -775,6 +775,55 @@ struct TaskCapabilityResolverTests {
         #expect(prompt.contains("https://stanfordmed.atlassian.net"))
     }
 
+    @Test("Enabled DevOps pack does not activate GitHub runtime resources")
+    func enabledDevOpsPackDoesNotActivateGitHubRuntimeResources() throws {
+        let manifest = try #require(
+            AstraPackCatalog(localStorageRoot: nil).load().packs.first { $0.id == "astra.pack.devops" }
+        )
+        #expect(manifest.capabilityPackageIDs == ["github-workflow"])
+
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "DevOps Pack Only", primaryPath: "/tmp/devops-pack-only")
+        workspace.enabledPackIDs = [manifest.id]
+        context.insert(workspace)
+
+        let githubSkill = Skill(
+            name: "GitHub Agent",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use the GitHub CLI for pull request and CI work."
+        )
+        githubSkill.isGlobal = true
+        context.insert(githubSkill)
+
+        let githubTool = LocalTool(
+            name: "gh — GitHub CLI",
+            toolDescription: "Run GitHub CLI commands",
+            toolType: "cli",
+            command: "gh"
+        )
+        githubTool.isGlobal = true
+        context.insert(githubTool)
+
+        let task = AgentTask(
+            title: "Review PR Queue",
+            goal: "Summarize the PR Queue and CI Review app template.",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let resolver = TaskCapabilityResolver(task: task)
+        #expect(resolver.allBehaviorSkills.map(\.name).isEmpty)
+        #expect(resolver.allLocalTools.map(\.command).isEmpty)
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        #expect(!prompt.contains("[GitHub Agent]:"))
+        #expect(!prompt.contains("gh — GitHub CLI"))
+        #expect(!prompt.contains("Use the GitHub CLI for pull request and CI work."))
+    }
+
     @Test("Provider launch keeps connector owned by selected skill")
     func providerLaunchKeepsConnectorOwnedBySelectedSkill() throws {
         let container = try makeTaskCapabilityResolverContainer()

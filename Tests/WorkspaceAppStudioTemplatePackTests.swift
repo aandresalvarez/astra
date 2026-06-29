@@ -86,6 +86,24 @@ struct WorkspaceAppStudioTemplatePackTests {
         #expect(descriptor.branding?.displayName == "DevOps")
     }
 
+    @Test("bundled DevOps pack template appears when enabled")
+    func devOpsPackTemplateAppearsWhenEnabled() throws {
+        let catalog = WorkspaceAppTemplatePackCatalog(
+            snapshot: AstraPackCatalog(localStorageRoot: nil).load(),
+            enabledPackIDs: ["astra.pack.devops"]
+        )
+
+        let descriptor = try #require(catalog.templates.first { $0.templateContributionID == "pr-ci-review" })
+        #expect(catalog.templates.count == 1)
+        #expect(descriptor.id == "astra.pack.devops/pr-ci-review")
+        #expect(descriptor.packID == "astra.pack.devops")
+        #expect(descriptor.packDisplayName == "DevOps Pack")
+        #expect(descriptor.templateID == "workspace-app.pr-ci-review")
+        #expect(descriptor.displayName == "PR / CI Review")
+        #expect(descriptor.capabilityPackageIDs == ["github-workflow"])
+        #expect(descriptor.branding?.displayName == "DevOps")
+    }
+
     @Test("disabled pack template is hidden")
     func disabledPackTemplateIsHidden() {
         let snapshot = Self.snapshot(entries: [

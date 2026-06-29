@@ -153,6 +153,20 @@ struct PluginCatalogBuiltInTests {
         #expect(package.mcpServers.allSatisfy { $0.environmentKeys.isEmpty })
     }
 
+    @Test("DevOps pack references only known capability packages")
+    func devOpsPackReferencesOnlyKnownCapabilities() throws {
+        let manifest = try Self.bundledDevOpsPackManifest()
+        let referencedIDs = Set(
+            manifest.capabilityPackageIDs
+                + manifest.shelfDefaults.flatMap(\.capabilityPackageIDs)
+                + manifest.appTemplates.flatMap(\.capabilityPackageIDs)
+        )
+        let knownIDs = Set(PluginCatalog.builtInPackages.map(\.id))
+
+        #expect(referencedIDs == ["github-workflow"])
+        #expect(referencedIDs.isSubset(of: knownIDs))
+    }
+
     @Test("Built-in packages all have valid versions")
     func builtInVersionsValid() {
         for pkg in PluginCatalog.builtInPackages {
@@ -165,5 +179,10 @@ struct PluginCatalogBuiltInTests {
     func builtInUniqueIDs() {
         let ids = PluginCatalog.builtInPackages.map(\.id)
         #expect(Set(ids).count == ids.count)
+    }
+
+    private static func bundledDevOpsPackManifest() throws -> AstraPackManifest {
+        let snapshot = AstraPackCatalog(localStorageRoot: nil).load()
+        return try #require(snapshot.packs.first { $0.id == "astra.pack.devops" })
     }
 }
