@@ -104,6 +104,24 @@ struct WorkspaceAppStudioTemplatePackLoadingSource: Equatable, Sendable {
     }
 }
 
+struct WorkspaceAppStudioTemplatePackRefreshApplyGate: Equatable, Sendable {
+    var capturedSignature: String
+
+    func shouldApply(currentSignature: String?, isCancelled: Bool) -> Bool {
+        !isCancelled && capturedSignature == currentSignature
+    }
+
+    func apply(
+        templates: [WorkspaceAppTemplatePackDescriptor],
+        currentSignature: String?,
+        isCancelled: Bool,
+        configure: ([WorkspaceAppTemplatePackDescriptor]) -> Void
+    ) {
+        guard shouldApply(currentSignature: currentSignature, isCancelled: isCancelled) else { return }
+        configure(templates)
+    }
+}
+
 struct WorkspaceAppStudioTemplateChoice: Identifiable, Equatable, Sendable {
     var id: String
     var title: String

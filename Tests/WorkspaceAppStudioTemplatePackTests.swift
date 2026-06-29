@@ -355,6 +355,41 @@ struct WorkspaceAppStudioTemplatePackTests {
         #expect(afterSignature != beforeSignature)
     }
 
+    @MainActor
+    @Test("stale template refresh cannot repopulate session after reset changes signature")
+    func staleTemplateRefreshCannotRepopulateSessionAfterResetChangesSignature() throws {
+        let descriptor = try Self.descriptor(
+            packID: "astra.pack.devops",
+            template: Self.template(id: "pr-review-board", name: "PR Review Board")
+        )
+        let workspace = Self.workspace()
+        workspace.enabledPackIDs = ["astra.pack.devops"]
+        let source = WorkspaceAppStudioTemplatePackLoadingSource(workspace: workspace)
+        let session = WorkspaceAppStudioSession(generate: TemplateContextSpyGenerator(result: Self.result(Self.validManifest)).generate, verify: Self.noVerify)
+        let staleSignature = source.loadSignature(
+            workspaceID: workspace.id,
+            refreshRevision: session.templatePackRefreshRevision
+        )
+        session.configureTemplatePacks([descriptor])
+        session.beginTemplatePackRefresh(signature: staleSignature, isCancelled: false)
+
+        session.reset(for: workspace)
+
+        let currentSignature = source.loadSignature(
+            workspaceID: workspace.id,
+            refreshRevision: session.templatePackRefreshRevision
+        )
+        session.configureTemplatePacks([descriptor], refreshSignature: staleSignature, isCancelled: false)
+        #expect(session.availableTemplatePacks.isEmpty)
+
+        session.beginTemplatePackRefresh(signature: currentSignature, isCancelled: false)
+        session.configureTemplatePacks([descriptor], refreshSignature: currentSignature, isCancelled: true)
+        #expect(session.availableTemplatePacks.isEmpty)
+
+        session.configureTemplatePacks([descriptor], refreshSignature: currentSignature, isCancelled: false)
+        #expect(session.availableTemplatePacks.map(\.id) == [descriptor.id])
+    }
+
     @Test("template guidance renders pack metadata as bounded untrusted data")
     func templateGuidanceRendersPackMetadataAsBoundedUntrustedData() {
         let longDisplayName = String(repeating: "x", count: 5_000)

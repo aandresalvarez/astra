@@ -66,7 +66,7 @@ struct WorkspaceAppStudioChatView: View {
             composerFocused = true
         }
         .task(id: templatePackLoadSignature) {
-            await refreshTemplatePacks()
+            await refreshTemplatePacks(loadSignature: templatePackLoadSignature)
         }
         .onChange(of: session.initialPrompt) { _, _ in applyInitialPromptIfNeeded() }
         .onChange(of: inputText) { _, _ in applyInitialPromptIfNeeded() }
@@ -352,16 +352,31 @@ struct WorkspaceAppStudioChatView: View {
         WorkspaceAppStudioTemplatePackLoadingSource(enabledPackIDs: enabledPackIDs)
     }
 
-    private func refreshTemplatePacks() async {
+    private func refreshTemplatePacks(loadSignature: String) async {
+        await MainActor.run {
+            session.beginTemplatePackRefresh(signature: loadSignature, isCancelled: Task.isCancelled)
+        }
+        guard !Task.isCancelled else { return }
         let source = templatePackLoadingSource
         guard !source.enabledPackIDs.isEmpty else {
-            await MainActor.run { session.configureTemplatePacks([]) }
+            await MainActor.run {
+                session.configureTemplatePacks(
+                    [],
+                    refreshSignature: loadSignature,
+                    isCancelled: Task.isCancelled
+                )
+            }
             return
         }
         let snapshot = AstraPackCatalog().load()
+        guard !Task.isCancelled else { return }
         let templates = source.templates(in: snapshot)
         await MainActor.run {
-            session.configureTemplatePacks(templates)
+            session.configureTemplatePacks(
+                templates,
+                refreshSignature: loadSignature,
+                isCancelled: Task.isCancelled
+            )
         }
     }
 

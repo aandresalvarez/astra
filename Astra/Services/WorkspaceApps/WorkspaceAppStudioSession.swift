@@ -113,6 +113,9 @@ final class WorkspaceAppStudioSession: ObservableObject {
     /// workspaces, or starts a new turn can't overwrite newer state. Bumped on every
     /// submit/reset/cancel; a turn only applies its result if the token is still current.
     private var generationToken = 0
+    /// Current template-pack refresh allowed to write `availableTemplatePacks`. A view refresh may
+    /// be cancelled or outlived by reset/pack changes; stale results must not repopulate choices.
+    private var templatePackRefreshSignature: String?
 
     /// App-builder generation is a heavier one-shot than a typical utility prompt, and a dynamic
     /// HTML app is the heaviest case: the model emits a whole HTML/CSS/JS blob, and `codex exec`
@@ -224,6 +227,24 @@ final class WorkspaceAppStudioSession: ObservableObject {
         }
     }
 
+    func beginTemplatePackRefresh(signature: String, isCancelled: Bool) {
+        guard !isCancelled else { return }
+        templatePackRefreshSignature = signature
+    }
+
+    func configureTemplatePacks(
+        _ templates: [WorkspaceAppTemplatePackDescriptor],
+        refreshSignature: String,
+        isCancelled: Bool
+    ) {
+        WorkspaceAppStudioTemplatePackRefreshApplyGate(capturedSignature: refreshSignature)
+            .apply(
+                templates: templates,
+                currentSignature: templatePackRefreshSignature,
+                isCancelled: isCancelled
+            ) { [self] in configureTemplatePacks($0) }
+    }
+
     func selectTemplate(_ templateID: String?) {
         guard draft == nil, !isGenerating else { return }
         guard let templateID else {
@@ -255,6 +276,7 @@ final class WorkspaceAppStudioSession: ObservableObject {
         selectedTemplate = nil
         availableTemplatePacks = []
         templatePackRefreshRevision &+= 1
+        templatePackRefreshSignature = nil
         generationToken &+= 1  // invalidate any in-flight generation from a prior session
         generationEvents = []
         draftAutosaveRevision = 0
