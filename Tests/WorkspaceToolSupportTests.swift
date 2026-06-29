@@ -743,6 +743,45 @@ struct WorkspaceToolSupportTests {
         #expect(manager.tail(jobID: job.jobID, stream: "stdout", lines: 10).text.contains("ok"))
     }
 
+    @Test("Managed job tail derives log paths from trusted job directory")
+    func managedJobTailDerivesLogPathsFromTrustedJobDirectory() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-store-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let outside = root.appendingPathComponent("host-secret.txt", isDirectory: false)
+        try "HOST_SECRET_FROM_OUTSIDE_JOB_DIR\n".write(to: outside, atomically: true, encoding: .utf8)
+
+        let jobRoot = root.appendingPathComponent("jobs", isDirectory: true)
+        let store = WorkspaceManagedJobStore(rootPath: jobRoot.path)
+        var record = try store.create(
+            command: "printf safe",
+            timeoutSeconds: nil,
+            label: nil,
+            progressProbe: nil,
+            runtime: "docker"
+        )
+        let jobDirectory = jobRoot.appendingPathComponent(record.jobID, isDirectory: true)
+        try "SAFE_STDOUT\n".write(to: jobDirectory.appendingPathComponent("stdout.log"), atomically: true, encoding: .utf8)
+        try "SAFE_STDERR\n".write(to: jobDirectory.appendingPathComponent("stderr.log"), atomically: true, encoding: .utf8)
+
+        record.stdoutLogPath = outside.path
+        record.stderrLogPath = outside.path
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(record).write(to: jobDirectory.appendingPathComponent("job.json"), options: [.atomic])
+
+        let stdout = try store.tail(jobID: record.jobID, stream: "stdout", lines: 10)
+        let stderr = try store.tail(jobID: record.jobID, stream: "stderr", lines: 10)
+
+        #expect(stdout.text.contains("SAFE_STDOUT"))
+        #expect(stderr.text.contains("SAFE_STDERR"))
+        #expect(!stdout.text.contains("HOST_SECRET_FROM_OUTSIDE_JOB_DIR"))
+        #expect(!stderr.text.contains("HOST_SECRET_FROM_OUTSIDE_JOB_DIR"))
+    }
+
     @Test("Docker workspace job manager maps host workspace path before persisting command")
     func dockerWorkspaceJobManagerMapsHostWorkspacePathBeforePersistingCommand() throws {
         let root = FileManager.default.temporaryDirectory

@@ -134,8 +134,9 @@ public final class WorkspaceManagedJobStore {
     public func create(command: String, timeoutSeconds: TimeInterval?, label: String?, progressProbe: String?, runtime: String) throws -> WorkspaceManagedJobRecord {
         let jobID = makeJobID()
         let directory = jobDirectory(jobID: jobID)
+        let layout = WorkspaceManagedJobFileLayout(directory: directory)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        let commandURL = directory.appendingPathComponent("command.sh", isDirectory: false)
+        let commandURL = layout.command
         try ("#!/bin/sh\n" + command + "\n").write(to: commandURL, atomically: true, encoding: .utf8)
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: commandURL.path)
 
@@ -150,10 +151,10 @@ public final class WorkspaceManagedJobStore {
             createdAt: now,
             updatedAt: now,
             timeoutSeconds: timeoutSeconds,
-            stdoutLogPath: directory.appendingPathComponent("stdout.log", isDirectory: false).path,
-            stderrLogPath: directory.appendingPathComponent("stderr.log", isDirectory: false).path,
-            heartbeatPath: directory.appendingPathComponent("heartbeat.json", isDirectory: false).path,
-            resultPath: directory.appendingPathComponent("result.json", isDirectory: false).path
+            stdoutLogPath: layout.stdout.path,
+            stderrLogPath: layout.stderr.path,
+            heartbeatPath: layout.heartbeat.path,
+            resultPath: layout.result.path
         )
         try save(record)
         return record
@@ -161,15 +162,18 @@ public final class WorkspaceManagedJobStore {
 
     public func save(_ record: WorkspaceManagedJobRecord) throws {
         let directory = jobDirectory(jobID: record.jobID)
+        var trustedRecord = record
+        applyTrustedFileLayout(to: &trustedRecord, jobID: safeJobID(record.jobID), directory: directory)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        let data = try encoder.encode(record)
-        try data.write(to: directory.appendingPathComponent("job.json", isDirectory: false), options: [.atomic])
+        let data = try encoder.encode(trustedRecord)
+        try data.write(to: WorkspaceManagedJobFileLayout(directory: directory).metadata, options: [.atomic])
     }
 
     public func load(jobID: String) throws -> WorkspaceManagedJobRecord {
         let directory = jobDirectory(jobID: jobID)
-        let data = try Data(contentsOf: directory.appendingPathComponent("job.json", isDirectory: false))
+        let data = try Data(contentsOf: WorkspaceManagedJobFileLayout(directory: directory).metadata)
         var record = try decoder.decode(WorkspaceManagedJobRecord.self, from: data)
+        applyTrustedFileLayout(to: &record, jobID: safeJobID(jobID), directory: directory)
         applyRuntimeFiles(to: &record, directory: directory)
         return record
     }
@@ -204,28 +208,34 @@ public final class WorkspaceManagedJobStore {
     }
 
     private func applyRuntimeFiles(to record: inout WorkspaceManagedJobRecord, directory: URL) {
-        let heartbeatURL = directory.appendingPathComponent("heartbeat.json", isDirectory: false)
-        if let heartbeat = try? RuntimeHeartbeat.read(from: heartbeatURL, decoder: decoder) {
+        let layout = WorkspaceManagedJobFileLayout(directory: directory)
+        if let heartbeat = try? RuntimeHeartbeat.read(from: layout.heartbeat, decoder: decoder) {
             record.lastHeartbeatAt = heartbeat.timestamp
             if record.status == .queued {
                 record.status = .running
             }
         }
 
-        let stdoutURL = URL(fileURLWithPath: record.stdoutLogPath, isDirectory: false)
-        let stderrURL = URL(fileURLWithPath: record.stderrLogPath, isDirectory: false)
-        record.lastOutputAt = [stdoutURL, stderrURL]
+        record.lastOutputAt = [layout.stdout, layout.stderr]
             .compactMap { (try? fileManager.attributesOfItem(atPath: $0.path)[.modificationDate]) as? Date }
             .max()
 
-        let resultURL = directory.appendingPathComponent("result.json", isDirectory: false)
-        if let result = try? RuntimeResult.read(from: resultURL, decoder: decoder) {
+        if let result = try? RuntimeResult.read(from: layout.result, decoder: decoder) {
             record.status = result.status
             record.exitCode = result.exitCode
             record.completedAt = result.completedAt
             record.updatedAt = result.completedAt
             record.message = result.message ?? record.message
         }
+    }
+
+    private func applyTrustedFileLayout(to record: inout WorkspaceManagedJobRecord, jobID: String, directory: URL) {
+        let layout = WorkspaceManagedJobFileLayout(directory: directory)
+        record.jobID = jobID
+        record.stdoutLogPath = layout.stdout.path
+        record.stderrLogPath = layout.stderr.path
+        record.heartbeatPath = layout.heartbeat.path
+        record.resultPath = layout.result.path
     }
 
     private func safeJobID(_ raw: String) -> String {
@@ -258,6 +268,34 @@ public final class WorkspaceManagedJobStore {
 
         static func read(from url: URL, decoder: JSONDecoder) throws -> RuntimeResult {
             try decoder.decode(RuntimeResult.self, from: Data(contentsOf: url))
+        }
+    }
+
+    private struct WorkspaceManagedJobFileLayout {
+        var directory: URL
+
+        var command: URL {
+            directory.appendingPathComponent("command.sh", isDirectory: false)
+        }
+
+        var metadata: URL {
+            directory.appendingPathComponent("job.json", isDirectory: false)
+        }
+
+        var stdout: URL {
+            directory.appendingPathComponent("stdout.log", isDirectory: false)
+        }
+
+        var stderr: URL {
+            directory.appendingPathComponent("stderr.log", isDirectory: false)
+        }
+
+        var heartbeat: URL {
+            directory.appendingPathComponent("heartbeat.json", isDirectory: false)
+        }
+
+        var result: URL {
+            directory.appendingPathComponent("result.json", isDirectory: false)
         }
     }
 }
