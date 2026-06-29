@@ -308,8 +308,8 @@ struct ExecutionSandboxRunnerTests {
         }
     }
 
-    @Test("sandboxedPlan enables Codex native read access for Git credential context")
-    func sandboxedPlanEnablesCodexGitCredentialAccess() {
+    @Test("sandboxedPlan keeps Codex Git credential access path scoped")
+    func sandboxedPlanKeepsCodexGitCredentialAccessPathScoped() {
         withStandardEnforcement(.off) {
             let runner = AgentRuntimeProcessRunner(gitCredentialContextProvider: { _ in
                 GitCredentialSandboxContext(
@@ -327,14 +327,14 @@ struct ExecutionSandboxRunnerTests {
                 Issue.record("Expected .plan when disabled")
                 return
             }
-            #expect(plan.arguments.contains("--config"))
-            #expect(plan.arguments.contains("sandbox_permissions=[\"disk-full-read-access\"]"))
-            #expect(plan.commandPlannedFields["git_provider_native_read_access"] == "codex_disk_full_read")
+            #expect(!plan.arguments.contains("sandbox_permissions=[\"disk-full-read-access\"]"))
+            #expect(plan.commandPlannedFields["git_provider_native_read_access"] == nil)
+            #expect(plan.sandboxReadablePaths.contains("/tmp/astra-gitconfig"))
         }
     }
 
-    @Test("sandboxedPlan inserts Codex Git credential config before positional prompt")
-    func sandboxedPlanPlacesCodexGitCredentialConfigBeforePrompt() {
+    @Test("sandboxedPlan leaves Codex resume prompt unshifted for Git credential context")
+    func sandboxedPlanLeavesCodexResumePromptUnshiftedForGitCredentialContext() {
         withStandardEnforcement(.off) {
             let runner = AgentRuntimeProcessRunner(gitCredentialContextProvider: { _ in
                 GitCredentialSandboxContext(
@@ -353,13 +353,14 @@ struct ExecutionSandboxRunnerTests {
                 context: makeContext(workspacePath: "/tmp/whatever", permissionPolicy: .restricted)
             )
             guard case .plan(let plan) = outcome,
-                  let configFlagIndex = plan.arguments.firstIndex(of: "--config"),
                   let skipIndex = plan.arguments.firstIndex(of: "--skip-git-repo-check") else {
-                Issue.record("Expected Codex plan with --config and --skip-git-repo-check")
+                Issue.record("Expected Codex plan with --skip-git-repo-check")
                 return
             }
-            #expect(configFlagIndex < skipIndex)
-            #expect(plan.arguments[configFlagIndex + 1] == "sandbox_permissions=[\"disk-full-read-access\"]")
+            #expect(!plan.arguments.contains("sandbox_permissions=[\"disk-full-read-access\"]"))
+            #expect(plan.arguments[skipIndex + 1] == "session-id")
+            #expect(plan.arguments.last == "git pull origin main")
+            #expect(plan.sandboxReadablePaths.contains("/tmp/astra-gitconfig"))
         }
     }
 
@@ -507,7 +508,7 @@ struct ExecutionSandboxRunnerTests {
                 return
             }
             #expect(plan.commandPlannedFields["git_credential_context"] == "true")
-            #expect(plan.commandPlannedFields["git_provider_native_read_access"] == "codex_disk_full_read")
+            #expect(plan.commandPlannedFields["git_provider_native_read_access"] == nil)
             #expect(plan.commandPlannedFields["workspace_executor_mode"] == "host_provider_container_workspace")
             #expect(plan.commandPlannedFields["workspace_executor"] == "docker")
             #expect(plan.sandboxReadablePaths.contains("/tmp/astra-gitconfig"))

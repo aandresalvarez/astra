@@ -259,7 +259,6 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
                 contextText: context.contextText
             )
                 || taskEnv["ASTRA_BROWSER_URL"] != nil,
-            allowExternalFileReadsForSSH: AgentRuntimeProcessRunner.hasWorkspaceSSHConnections(for: context.task),
             mcpConfigArguments: mcpProjection.configArguments,
             resumeSessionID: context.nativeContinuationSessionID
         )

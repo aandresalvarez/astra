@@ -51,12 +51,7 @@ extension AgentRuntimeProcessLaunchPlan {
         var plannedFields = commandPlannedFields
         switch runtime {
         case .codexCLI:
-            let config = "sandbox_permissions=[\"disk-full-read-access\"]"
-            guard !updatedArguments.contains(config) else { return self }
-            let insertIndex = updatedArguments.firstIndex(of: "--skip-git-repo-check")
-                ?? max(0, updatedArguments.count - 1)
-            updatedArguments.insert(contentsOf: ["--config", config], at: insertIndex)
-            plannedFields["git_provider_native_read_access"] = "codex_disk_full_read"
+            return self
         case .copilotCLI:
             guard commandPlannedFields["supports_allow_all_paths"] == "true",
                   !updatedArguments.contains("--allow-all-paths") else {

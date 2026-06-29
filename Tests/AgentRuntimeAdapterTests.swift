@@ -229,7 +229,8 @@ struct AgentRuntimeAdapterTests {
         #expect(enriched.executionEnvironment == environment)
         #expect(enriched.sandboxHomeStateAccess == plan.sandboxHomeStateAccess)
         #expect(enriched.sandboxReadablePaths.contains("/tmp/astra-gitconfig"))
-        #expect(enriched.arguments.contains("sandbox_permissions=[\"disk-full-read-access\"]"))
+        #expect(!enriched.arguments.contains("sandbox_permissions=[\"disk-full-read-access\"]"))
+        #expect(enriched.commandPlannedFields["git_provider_native_read_access"] == nil)
     }
 
     @Test("Registry rejects unregistered provider IDs without losing the raw value")
@@ -822,9 +823,9 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.commandPlannedFields["claude_vertex_adc_readable"] == "true")
     }
 
-    @Test("Codex launch allows external read-only SSH config access for SSH workspaces")
+    @Test("Codex launch does not grant full disk read for SSH workspaces")
     @MainActor
-    func codexLaunchAllowsExternalReadOnlySSHConfigAccess() throws {
+    func codexLaunchDoesNotGrantFullDiskReadForSSHWorkspaces() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-codex-ssh-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -862,8 +863,8 @@ struct AgentRuntimeAdapterTests {
                 timeoutSeconds: 30
             ))
 
-        #expect(plan.arguments.contains("--config"))
-        #expect(plan.arguments.contains("sandbox_permissions=[\"disk-full-read-access\"]"))
+        #expect(!plan.arguments.contains("sandbox_permissions=[\"disk-full-read-access\"]"))
+        #expect(plan.environment["PATH"]?.contains(".runtime-bin") == true)
     }
 
     @Test("Copilot launch audit separates task and runtime support tools")
